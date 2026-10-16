@@ -1,4 +1,4 @@
-{"updated":"2026-10-16T15:49:26Z",
+{"updated":"2026-10-16T15:50:51Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2953,7 +2953,8 @@
 {"id":38918938617,"at":"2026-10-16T14:49:49Z","sha":"e664b845c","title":"Dependencies: Dependabot bumps the pinned Rust toolchain","pr":818,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":88,"macOS simulator build + launch":236,"Linux simulator build + launch":263,"Windows launcher syntax":18}},
 {"id":38924399482,"at":"2026-10-16T15:29:49Z","sha":"b4f57368e","title":"Merge remote-tracking branch 'origin/main' into tmp-818","pr":818,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":136,"macOS tests against bundled FFmpeg and ASS":120,"Linux simulator build + launch":244,"Windows launcher syntax":20}},
 {"id":38924736565,"at":"2026-10-16T15:32:13Z","sha":"8751a5b06","title":"Build: link glibc libm ahead of the Rust staticlib so math calls use VFP","pr":821,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":204,"macOS simulator build + launch":221,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":141}},
-{"id":38925277786,"at":"2026-10-16T15:36:12Z","sha":"e8125923d","title":"Dependencies: Dependabot bumps the pinned Rust toolchain","pr":818,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":129,"macOS simulator build + launch":214,"Windows launcher syntax":15,"Linux simulator build + launch":251}}
+{"id":38925277786,"at":"2026-10-16T15:36:12Z","sha":"e8125923d","title":"Dependencies: Dependabot bumps the pinned Rust toolchain","pr":818,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":129,"macOS simulator build + launch":214,"Windows launcher syntax":15,"Linux simulator build + launch":251}},
+{"id":38926725836,"at":"2026-10-16T15:47:05Z","sha":"7d2588c96","title":"HEVC: strip HDR10+ wherever it sits in an SEI NAL","pr":822,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":125,"macOS simulator build + launch":210,"Linux simulator build + launch":207,"Windows launcher syntax":19}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
