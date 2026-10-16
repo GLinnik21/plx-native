@@ -507,7 +507,10 @@ tried first. None of it is reconstructable from the code without repeating the m
   EVERY frame** — it is taken from the live page, never cached with the blur snapshot — and while
   a morph rect moves its band changes every frame too, so nothing is reused (the standing
   container, sharp 0, takes none). Measured on the standing container the band copy is +2.7%
-  GPU_ACTIVE; the menu's figure and a growing menu's blur region are unmeasured, a TV-phase item.
+  GPU_ACTIVE; the menu's figure is unmeasured, a TV-phase item. The BLUR source of a morphing
+  menu is not re-taken as it grows: `Popover::panel` hands the glass the morph's whole envelope
+  (pill plus settled panel, `Painter::spanning` → `backdrop::surface_spanning`), and the source
+  is requested over that from the first frame.
   Only when no live backdrop exists (a unit test, a surface over the video plane, a frozen page
   outside `host::live`) does `draw` return `false` and the menu fall back to the 15×8 underlay
   field the modal dim latched (`ui::underlay`, reaching a surface as `DrawFrame::underlay`),
@@ -528,7 +531,15 @@ tried first. None of it is reconstructable from the code without repeating the m
   screen around it. Since phase 10 the pairing is the container's (`Screen::scrim` +
   `ModalStack::draw_scrims`), not each panel's. **The dim's ink is the page's own light, not
   black**: a surface names a ROLE (`theme::underlay::DIM_COMPACT`/`DIM_PANEL`/…), never a literal,
-  and a test greps for one.
+  and a test greps for one. **Drawn, yet a glass whose LAST source paint is the dim applies it at
+  composite** (`backdrop::Dim`, `Painter::dim`, `fs_glass.frag`'s `u_dim`): that glass's retained
+  source is the page without the dim, and its composite mixes this frame's dim ink over the
+  filtered page — the same result by linearity (`blur(mix(P, ink, a)) = mix(blur(P), ink, a)`),
+  so a ramping or re-latched dim re-blurs nothing. That is NOT the removed source multiply: the
+  page's modulation is still filtered, and the dim is still a scrim drawn in the visible frame.
+  Anything drawn above the dim under the glass (an opener lift, a lower glass in the DIM band,
+  as the account menu's chip is) keeps the dim in the source, and that glass re-captures while
+  the dim moves.
 
 - **Freezing the host page is a separate, shared policy** — `Popover::caching_host()` +
   `ui::popover::host`. The mechanism is a REFUSAL at the renderer's one shared gate

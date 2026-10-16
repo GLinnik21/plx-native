@@ -330,6 +330,11 @@ pub(crate) mod tests {
                 }
                 let _surface = layer(Z::surface(0), false);
                 pop.panel(pop.content_painter(0.0), panel, 24.0, None, crate::widgets::Ground::Menu);
+                // The host draws the opener pill AFTER the menu, dissolving (`WatchlistMenuScreen::
+                // draw`): over the glass, so its changing alpha is in no source.
+                if let Some(f) = from {
+                    pop.pill_painter(p).rrect(f, f.h * 0.5, f.h * 0.5, [0.9, 0.9, 0.9, 1.0]);
+                }
             }
             let o = {
                 let mut s = sources.borrow_mut();
