@@ -8,7 +8,8 @@ at https://github.com/GLinnik21/plx-native.
 
 Catalogs live in `locales/en`, `locales/es`, `locales/fr`, `locales/it` and `locales/be`, split by UI area. English is the
 source: each scoped, stable key has a `value`, translator `description`, and optional typed
-`args`. The other languages contain the same keys with translated string or plural values.
+`args`. The other languages contain the same keys, except the English-only ones (described
+below), with translated string or plural values.
 The compiler combines each language's files; file names organize ownership, not message identity.
 
 Some English entries carry `"translate": false`. They are technical read-outs meant for the

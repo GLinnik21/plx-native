@@ -423,6 +423,11 @@ impl Diagnostics {
         // The panel is the maintainer's instrument: its own messages are English-only, and the
         // shared helpers it composes (units, decimals, quality labels) read the UI language, so
         // the whole sample is taken in English. Nothing sampled here reaches product UI.
+        self.sample(ps, now);
+    }
+
+    /// Take the sample in English (see `update`). The one entry to `resample`.
+    fn sample(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
         plx_platform::i18n::render_in_english(|| self.resample(ps, now));
     }
 
@@ -3290,18 +3295,29 @@ mod tests {
     /// language elsewhere. Nothing but ASCII and the panel's own symbols may appear.
     #[test]
     fn panel_rows_are_english_in_every_language() {
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let _g = plx_base::testlock::serial();
+        let ps = EnhTestSession::new(EnhTestFixture::default());
+        // Not idle: an idle panel shows only the device rows and builds no pipeline/model columns,
+        // which is where the shared localized helpers are reached.
+        struct RestoreState(u8);
+        impl Drop for RestoreState {
+            fn drop(&mut self) {
+                plx_media::player::restore_state_for_test(self.0);
+            }
+        }
+        let _state = RestoreState(plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing));
         for pref in plx_platform::i18n::SHIPPED {
             let _lang = plx_platform::i18n::language_on_this_thread_for_test(pref);
             let mut panel = Diagnostics::default();
-            panel.resample(&ps, 1_000);
+            panel.sample(&ps, 1_000);
+            assert!(!panel.idle && panel.columns.iter().all(|c| !c.is_empty()), "{}: a live session builds column rows", pref.tag());
             let mut text: Vec<String> = panel.head.to_vec();
             text.extend(panel.rows.iter().chain(panel.columns.iter().flatten()).flat_map(|f| {
                 std::iter::once(f.key.to_string()).chain(f.val.clone())
             }));
             text.extend(panel.chart_values.iter().cloned());
             for t in &text {
-                let stray: Vec<char> = t.chars().filter(|c| !c.is_ascii() && !"·×—≤±…".contains(*c)).collect();
+                let stray: Vec<char> = t.chars().filter(|c| !c.is_ascii() && !"·×—≤±…→".contains(*c)).collect();
                 assert!(stray.is_empty(), "{}: {t:?} carries {stray:?}", pref.tag());
             }
         }
