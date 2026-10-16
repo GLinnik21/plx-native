@@ -294,12 +294,28 @@ pub fn video_plane_bound() -> bool {
 #[inline]
 pub fn note_spring(pos: f32, target: f32, vel: f32) {
     if !settled(pos, target, vel) {
-        MOVING.with(|m| m.set(true));
-        if SCOPE_DEPTH.with(|d| d.get()) == 0 {
-            PAGE_MOVING.with(|m| m.set(true));
-            if DECOR_DEPTH.with(|d| d.get()) == 0 {
-                PAGE_LAYOUT_MOVING.with(|m| m.set(true));
-            }
+        note_motion();
+    }
+}
+
+/// **A time-driven animation visibly moved this frame** — [`note_spring`]'s report without its
+/// rest test, for an animator with no spring to judge: a fixed-length beat stepped by `dt` (the
+/// tab pulse). Attributed exactly as a spring's motion is: to a popover inside a [`MotionScope`],
+/// to the page otherwise, and not to the page's LAYOUT inside [`decorative`].
+///
+/// **Motion, not [`invalidate`], and the difference is the frozen host.** Discrete damage under a
+/// standing popover means "the page changed": `popover::host` re-captures its snapshot, which
+/// moves `page_epoch` and makes the modal dim re-read the page's light. Motion re-draws the page
+/// live only while every panel is FADING and is paused under an open one — the rule every page
+/// decoration already follows. A time-driven animator that reported through `invalidate` made the
+/// item menu's close re-capture Home on each of its frames.
+#[inline]
+pub fn note_motion() {
+    MOVING.with(|m| m.set(true));
+    if SCOPE_DEPTH.with(|d| d.get()) == 0 {
+        PAGE_MOVING.with(|m| m.set(true));
+        if DECOR_DEPTH.with(|d| d.get()) == 0 {
+            PAGE_LAYOUT_MOVING.with(|m| m.set(true));
         }
     }
 }

@@ -328,3 +328,42 @@ fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
     strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S);
     assert_eq!(strip.pulse_read(), None, "ended on its own");
 }
+
+/// **A running pulse is MOTION, never page damage.** It is a time-driven decoration on the chrome,
+/// and "Add to Watchlist" starts it on the frame the item menu is dismissed, so it runs under a
+/// FADING menu. There `popover::host::host_refresh` draws a moving page live, without capturing it
+/// (`CAPTURE_POINTLESS`); page DAMAGE instead re-captures the host every frame, which bumps
+/// `page_epoch`, which re-latches the modal dim's field (a reduction of the whole page and a
+/// readback) on each of the pulse's frames. Red on the build whose pulse called
+/// `idle::invalidate`: HWCNT on the television held 19.4M a frame for the pulse's 0.55 s after Add,
+/// against 9.2M the frame it ended.
+#[test]
+fn a_running_tab_pulse_reports_motion_not_page_damage() {
+    let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let mut strip = StripRender::new();
+    for _ in 0..600 {
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+    }
+    strip.pulse(1);
+    plx_machine::idle::reset_for_test();
+    let _ = plx_machine::idle::take_local_damage();
+    let mut frames = 0;
+    while strip.pulse_read().is_some() {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+        if strip.pulse_read().is_none() {
+            break;
+        }
+        frames += 1;
+        assert!(plx_machine::idle::present_moving(), "frame {frames}: the pulse keeps the gate awake");
+        assert!(plx_machine::idle::page_moving(), "frame {frames}: as the page's own motion");
+        assert!(!plx_machine::idle::page_layout_moving(), "frame {frames}: decorative, not layout");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "frame {frames}: and raises no damage");
+    }
+    assert!(frames >= 30, "the pulse ran its beat ({frames} frames)");
+    // What that buys under the fading menu: the page is redrawn live, and an OPEN menu's frozen
+    // host pauses it, as every decoration on a page the user cannot reach is paused.
+    assert!(crate::popover::host_refresh(true, false, true));
+    assert!(!crate::popover::host_refresh(false, false, true));
+}

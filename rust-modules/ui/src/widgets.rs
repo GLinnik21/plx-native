@@ -6766,13 +6766,16 @@ impl StripRender {
         self.tab_scroll.step(t, K_TAB_SCROLL, dt);
         crate::anim::probe("tabrow.scroll", self.tab_scroll.pos, self.tab_scroll.vel, t, dt);
         // The pulse is decorative: it moves no layout, so it runs inside `idle::decorative` and a
-        // page image is never held for it. It asks for the next frame itself.
+        // page image is never held for it. It asks for the next frame itself, as MOTION
+        // (`idle::note_motion`), never as page damage: it starts on the frame the item menu is
+        // dismissed, and damage under that fading menu re-captured the host and re-latched the
+        // dim's field on every one of its frames.
         if let Some(mut pulse) = self.pulse.take() {
             plx_machine::idle::decorative(|| {
                 pulse.age = pulse.age + dt; // the strip's own step, as its springs take
                 if pulse.age < TAB_PULSE_S {
                     self.pulse = Some(pulse);
-                    plx_machine::idle::invalidate();
+                    plx_machine::idle::note_motion();
                 }
             });
         }
