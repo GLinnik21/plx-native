@@ -145,7 +145,7 @@ impl CatalogStore {
             let load = match io.fetch(&auth, &encode_hex(&hex)) {
                 Ok(item) => Load::Loaded(Box::new(record_of(&item, io.today().as_deref()))),
                 Err(WatchlistError::NotFound) => Load::NotFound,
-                // Offline, refused credential, unreadable body, any other status: Try again.
+                // Offline, refused credential, unreadable body, any other status: nothing is stored; the page shows its unreachable state.
                 Err(_) => Load::Unreachable,
             };
             mailbox.post(Landing { req, load });

@@ -174,7 +174,7 @@ reads "On no server"), re-derived while the page is open when a match lands or a
 Only a title not on the list read falls back to the date rule: a dated title whose date is after today
 is coming soon; one already out is on no server; an undated title has none; with the clock unknown a
 dated title is never called coming. The plan's "progress caption" on a server-offline title is not
-drawn. An unreachable page has no Try again control: it reads again on resume or uncover.
+drawn. An unreachable page has no Try again control: it reads again on resume, or after being covered for about two seconds.
 
 **Defaults awaiting the owner.**
 

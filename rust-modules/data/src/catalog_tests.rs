@@ -182,7 +182,7 @@ fn try_again_reads_again_and_a_landing_raises_one_notice() {
     assert!(s.take_notice().is_some());
     *fake.answer.lock().unwrap() = Ok(item("Back", None));
     s.open(hex());
-    assert_eq!(s.load, Load::Loading, "Try again shows Loading at once");
+    assert_eq!(s.load, Load::Loading, "a fresh read shows Loading at once");
     s.pump();
     assert!(matches!(s.load, Load::Loaded(_)));
     assert!(s.take_notice().is_some());
