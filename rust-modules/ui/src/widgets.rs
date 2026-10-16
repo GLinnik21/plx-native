@@ -1059,6 +1059,15 @@ fn veil_tex() -> std::os::raw::c_uint {
 /// inside it; between them the mark holds on a snowfield and on a black-and-white title card, which
 /// is the case that decided against a bare tick alone.
 pub fn watched_mark(p: Painter, card: Rect, rad: f32) {
+    corner_mark(p, card, rad, crate::icons::Icon::Check);
+}
+
+/// **A tile's one corner mark**: the veil, then `icon` bare over it in the tick's slot. The watched
+/// tick is this with `Icon::Check`; the Watchlist's unplayable marks (a clock for an upcoming
+/// title, a struck-through server for one whose server is offline) are the same object with their
+/// own glyph, so every corner mark shares one veil, one inset, one size and one shadow
+/// (TileStates board: "one bare mark in the watched tick's slot over a darker corner shadow").
+pub fn corner_mark(p: Painter, card: Rect, rad: f32, icon: crate::icons::Icon) {
     let v = card.w * VEIL_RATIO;
     p.tex(
         veil_tex(),
@@ -1078,7 +1087,7 @@ pub fn watched_mark(p: Painter, card: Rect, rad: f32) {
         d * TICK_SHADOW_DY,
         theme::TILE_MARK_SHADOW,
     );
-    crate::icons::draw(p, crate::icons::Icon::Check, tick, theme::TILE_MARK_INK);
+    crate::icons::draw(p, icon, tick, theme::TILE_MARK_INK);
 }
 
 /// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
