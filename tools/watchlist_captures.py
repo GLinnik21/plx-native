@@ -120,16 +120,20 @@ def capture(sim, spec, scenario, out_dir):
                     send(key)
                 time.sleep(scenario["key_wait_s"])
             send("shot")
-            for _ in range(20):
+            shot, last = None, -1
+            for _ in range(40):  # the file appears before it is written: wait for a non-empty, steady size
                 time.sleep(0.5)
                 shots = sorted(runtime.glob("shot-*.png"))
-                if shots:
+                size = shots[-1].stat().st_size if shots else 0
+                if size and size == last:
+                    shot = shots[-1]
                     break
-            else:
-                raise Failure("no shot-N.png appeared")
+                last = size
+            if shot is None:
+                raise Failure("no complete shot-N.png appeared")
         finally:
             os.close(fd)
-        shutil.copy(shots[-1], out_dir / spec["file"])
+        shutil.copy(shot, out_dir / spec["file"])
         want = spec.get("expect_write")
         if want:
             method, _, path = want.partition(" ")
