@@ -474,9 +474,6 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
         plx_ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
-        // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
-        // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
-        app.pages.nav.modals.preload_underlay();
         let mut ph = plx_machine::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,

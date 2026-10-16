@@ -5037,3 +5037,202 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
     assert_eq!(s.rows[0].elems[0], before[2], "the element moved to column 0 with its card");
     assert_eq!(seated, focus, "and the focus is still on it");
 }
+
+/// The billboard as it is on screen: how much of the page the hero art covers, from the
+/// selected art and any art held beneath it while the selection changes. `0` is the bare wash.
+fn billboard_cover(s: &HomeScreen) -> f32 {
+    let incoming = reveal(s.backdrop.tex.0, &s.backdrop.art);
+    let held = reveal(s.backdrop.outgoing_tex.0, &s.backdrop.outgoing_art);
+    1.0 - (1.0 - incoming) * (1.0 - held)
+}
+
+/// What the screen's carousel names, by rating key.
+fn carousel_rk(s: &HomeScreen) -> Option<String> {
+    s.carousel.as_ref().map(|(_, rk)| rk.clone())
+}
+
+/// A Home of `items` Continue Watching cards whose billboard rests on `on` with its art up, the
+/// way the player found it: the frame that covered it saw the art fully revealed. Delivers the
+/// art the billboard asked for, except `withhold`.
+fn home_resting_on(
+    state: &plx_data::pms::PmsState,
+    on: &str,
+    withhold: &[&str],
+) -> HomeScreen {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let view = snapshot.view();
+    let at = (0..view.hero_count()).find(|&i| view.hero(i).unwrap().item.rk == on).expect("premise: a hero");
+    let mut s = screen(view);
+    s.carousel = Some((view.hero(at).unwrap().item.sid, on.to_string()));
+    let _ = step(&mut s, view, None, &hero_tick(16));
+    let probed = HERO_ART.with(|a| a.borrow().probed.clone());
+    for path in probed.iter().collect::<std::collections::BTreeSet<_>>() {
+        if !withhold.iter().any(|w| w == path) {
+            deliver_hero_art(path);
+        }
+    }
+    for frame in 2..=125u32 {
+        let _ = step(&mut s, view, None, &hero_tick(frame * 16));
+    }
+    assert_eq!(carousel_rk(&s).as_deref(), Some(on), "premise: the billboard rests on {on}");
+    assert!(reveal(s.backdrop.tex.0, &s.backdrop.art) > 0.999, "premise: its art is up");
+    let _ = step(&mut s, view, None, &ScreenEvent::Cover);
+    s
+}
+
+/// The return from the player over a catalog the refetch changed: the landing arrives under the
+/// dip (`StoreChanged` while covered — `app/run.rs` holds the dip for it), then the page is
+/// uncovered and runs `frames` frames. Answers each frame's (carousel rk, billboard cover).
+fn return_over(s: &mut HomeScreen, state: &plx_data::pms::PmsState, from: u32, frames: u32) -> Vec<(Option<String>, f32)> {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let view = snapshot.view();
+    let _ = step(s, view, None, &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), view.generation));
+    let _ = step(s, view, None, &ScreenEvent::Uncover);
+    (from..from + frames)
+        .map(|frame| {
+            let _ = step(s, view, None, &hero_tick(frame * 16));
+            (carousel_rk(s), billboard_cover(s))
+        })
+        .collect()
+}
+
+/// **Owner field report (2026-10-16): "after I exit the playback, I got an unpleasant home hero
+/// reload" — the hero blinks through black, and its logo and text load again.** A played film
+/// that was the billboard leaves Continue Watching when it is finished, so the post-playback
+/// refetch (`app/run.rs`, `HubsCmd::RefetchHubs`) rebuilds the hero pool without it.
+/// `reconcile_carousel` then restarted the rotation at hero 0 — another title whose backdrop the
+/// billboard had no reason to hold (only the shown hero and its two neighbours are demand) — and
+/// re-keyed the art to it with nothing beneath: the bare wash, then the new art dissolving in.
+/// Reproduced on the simulator against the mock (`/:/scrobble` of the hero before BACK:
+/// `reconcile_carousel reset from Some("101")`, `bind changed 101 -> 102`).
+///
+/// The owner's rule for the Continue Watching focus applies to the billboard too: the show's next
+/// episode, else the SAME INDEX — the hero after it, whose backdrop the billboard already holds as
+/// its next neighbour. And no frame of the change shows the bare wash.
+#[test]
+fn a_finished_hero_hands_the_billboard_to_its_successor_without_a_bare_frame() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &[]);
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| items.retain(|m| m.rk != "3"));
+    let trace = return_over(&mut s, &state, 126, 40);
+    assert!(
+        trace.iter().all(|(rk, _)| rk.as_deref() == Some("4")),
+        "the billboard goes to the hero that took the finished one's place, not back to the first: \
+         (carousel, cover) per frame {trace:?}"
+    );
+    assert!(
+        trace.iter().all(|&(_, cover)| cover > 0.999),
+        "no frame of the return may show the bare wash under the billboard: {trace:?}"
+    );
+}
+
+/// The same return when the replacement's art is NOT resident (a pool whose order the refetch
+/// rewrote; a texture the cache let go): the art that was showing stays up under the billboard
+/// until the new one is decoded and uploaded, and the new one then dissolves in OVER it. A genuinely
+/// new picture may load; it may never load over black.
+#[test]
+fn a_replacement_hero_without_resident_art_loads_over_the_art_it_replaces() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &["/art/4"]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| items.retain(|m| m.rk != "3"));
+    let waiting = return_over(&mut s, &state, 126, 20);
+    assert!(
+        waiting.iter().all(|&(_, cover)| cover > 0.999),
+        "while the new art is in flight the old one must hold the billboard: {waiting:?}"
+    );
+    assert!(
+        s.backdrop.outgoing_tex.0 == shown,
+        "…and it is the art that was showing (held tex {}, shown {shown})",
+        s.backdrop.outgoing_tex.0
+    );
+
+    deliver_hero_art("/art/4");
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut landing = Vec::new();
+    for frame in 146..=270u32 {
+        let _ = step(&mut s, view, None, &hero_tick(frame * 16));
+        landing.push(billboard_cover(&s));
+    }
+    assert!(landing.iter().all(|&c| c > 0.999), "the new art dissolves in over the old: {landing:?}");
+    assert!(s.backdrop.tex.0 != 0 && s.backdrop.tex.0 != shown, "the new art is the billboard's");
+    assert_eq!(s.backdrop.outgoing_tex.0, 0, "and once it is up nothing is held beneath it");
+}
+
+/// A watched EPISODE is replaced in Continue Watching by the show's next one, under another rating
+/// key, at the head of the deck. The billboard follows the show (the Continue Watching focus's own
+/// rule, `rebind_shows`), and since an episode's backdrop is the show's, the art never changes.
+#[test]
+fn a_watched_episode_hands_the_billboard_to_the_shows_next_episode() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| {
+        for m in items.iter_mut() {
+            let m = std::sync::Arc::make_mut(m);
+            m.kind = 3;
+            m.show_rk = format!("show{}", m.rk);
+        }
+    });
+    let mut s = home_resting_on(&state, "3", &[]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| {
+        let at = items.iter().position(|m| m.rk == "3").unwrap();
+        let mut next = (*items.remove(at)).clone();
+        next.rk = "3n".into();
+        items.insert(0, std::sync::Arc::new(next));
+    });
+    let trace = return_over(&mut s, &state, 126, 40);
+    assert!(
+        trace.iter().all(|(rk, cover)| rk.as_deref() == Some("3n") && *cover > 0.999),
+        "the billboard follows the show to its next episode, art up throughout: {trace:?}"
+    );
+    assert_eq!(s.backdrop.tex.0, shown, "the show's backdrop, the one already showing");
+}
+
+/// The unchanged half of the contract: a refetch that brings the same catalog back moves nothing
+/// on the billboard — the same hero, the same texture, fully up from the first uncovered frame.
+#[test]
+fn an_unchanged_refetch_leaves_the_billboard_exactly_as_it_was() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &[]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |_| {});
+    let trace = return_over(&mut s, &state, 126, 20);
+    assert!(
+        trace.iter().all(|(rk, cover)| rk.as_deref() == Some("3") && *cover > 0.999),
+        "{trace:?}"
+    );
+    assert_eq!(s.backdrop.tex.0, shown);
+}

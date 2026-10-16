@@ -149,7 +149,7 @@ A release attaches five files. **For a direct installation, you need the first o
 | `com.beb.plxnative_X.Y.Z_arm.ipk` | The app. |
 | `com.beb.plxnative.manifest.json` | The Homebrew Channel manifest — how the Channel finds and verifies the update. |
 | `ipk.sha256` | The checksum, for `sha256sum -c`. |
-| `ffmpeg-9.0.tar.xz` | The pristine upstream FFmpeg source, published because we are obliged to. |
+| `ffmpeg-<version>.tar.xz` | The pristine upstream FFmpeg source, published because we are obliged to. |
 | `build-ffmpeg.sh` | The complete configure invocation that produced the bundled FFmpeg libraries. |
 
 ### Verifying the package
@@ -221,7 +221,7 @@ The package contains three FFmpeg shared libraries — `libavformat-plx.so.63`, 
 
 They contain demuxers, parsers, bitstream filters, and subtitle decoders only: video and audio are decoded by the television's own hardware.
 
-The complete corresponding source accompanies every release, as LGPL-2.1 §6 requires and not as a courtesy: `ffmpeg-9.0.tar.xz` is the pristine upstream tarball with no patches applied, and `build-ffmpeg.sh` is the complete configure invocation that produced the libraries.
+The complete corresponding source accompanies every release, as LGPL-2.1 §6 requires and not as a courtesy: `ffmpeg-<version>.tar.xz` (the tarball `ci/dependencies.json` pins) is the pristine upstream tarball with no patches applied, and `build-ffmpeg.sh` is the complete configure invocation that produced the libraries.
 
 It is built with `--disable-everything` plus an explicit component list, and **without** `--enable-gpl`, `--enable-version3`, or `--enable-nonfree`, so no GPL or non-free FFmpeg component is present. Each audit quotes the configure string recorded inside `libavutil` itself, which is the primary evidence for that.
 

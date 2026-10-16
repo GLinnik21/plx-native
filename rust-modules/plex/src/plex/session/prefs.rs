@@ -168,13 +168,11 @@ pub struct Preferences {
     /// has no mute, so this is also the only sound control.
     #[serde(default = "super::default_true", deserialize_with = "super::de_soft_bool_on")]
     pub trailer_autoplay: bool,
-    /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
-    /// rendered on this television, so a route in the Settings/first-run family that opens
-    /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
-    /// profile picker is the case that motivated this — can still seed its frozen ground from
-    /// real light instead of falling all the way to the design system's authored atmosphere
-    /// (`theme::ROUTE_GROUND_FALLBACK`). See `plx_ui::route_screen::RouteGround::draw_home`,
-    /// the only reader, and [`record_last_hero`](super::record_last_hero), its one writer.
+    /// **Retired: nothing reads or writes it any more.** It was the last hero `UltraBlurColors`
+    /// envelope Home rendered, which seeded the first-run routes' frozen ground; those routes now
+    /// paint the authored default ambient (`theme::ROUTE_GROUND_FALLBACK`), because a hero-keyed
+    /// ground read as a rainbow on servers whose art carries saturated corners. The field stays
+    /// so a stored file that carries it still parses and round-trips unchanged.
     ///
     /// Not keyed by profile: it says nothing about content history, only about what colour light
     /// this SET last showed, which is why it lives beside `client_id` rather than in a per-profile

@@ -1470,7 +1470,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   256 KiB durable-record ceiling; the importer still rejects an oversized envelope rather than
   claiming a bound for an arbitrary 256-LWP process. The JSON therefore carries ARM registers and
   real multi-frame stacks for all successfully captured threads, plus modules and both Linux-kernel
-  and webOS firmware context. The pin is **0.16.6** (`ci/build-sentry-native.sh`). The ARM32
+  and webOS firmware context. The pin is the Sentry Native entry in `ci/dependencies.json`. The ARM32
   registers-in-the-event and dual-frame-record walk (GCC leaves `fp` on the LR slot
   (`[fp-4]`/`[fp]`), rustc/LLVM on the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds
   both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now

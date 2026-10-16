@@ -19,6 +19,14 @@
     "value": "Qualità",
     "description": "Option or section label in the player overflow menu."
   },
+  "widgets.menu.quality_converted": {
+    "value": "Convertito",
+    "description": "Second part of the player More menu's Quality row value ('Original \u00b7 Converted'): Original is picked but the video playing is not the original file because the server is converting the picture. A short value, never a sentence; the picked choice stays checked."
+  },
+  "widgets.menu.quality_converted_note": {
+    "value": "Il tuo server Plex sta convertendo questo video.",
+    "description": "One-line sub-label under the checked entry of the player's Quality page when the Quality row reports a conversion the viewer did not pick by name ('Original \u00b7 Converted', 'Auto \u00b7 720p'). Always the same neutral sentence; it names no cause."
+  },
   "widgets.menu.stats": {
     "value": "Statistiche per nerd",
     "description": "Option or section label in the player overflow menu."
@@ -668,7 +676,19 @@
   },
   "widgets.tracks.enh_reason_quality": {
     "value": "Disponibile solo alla qualità Originale.",
-    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows ONLY when the quality in force is not Original (a fixed quality rung, or Auto currently on HLS); picking Original is the way in. Never shown under \"Quality: Original\"."
+  },
+  "widgets.tracks.enh_reason_converting": {
+    "value": "Non disponibile mentre il tuo server Plex converte questo video.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows whenever the Quality row reads 'Original \u00b7 Converted' (Original picked, the server converting the video). Same fact as that row."
+  },
+  "widgets.tracks.enh_reason_forced": {
+    "value": "Non disponibile finché Forza Riproduzione diretta è attivo. Imposta Riproduzione diretta su Automatico nelle Impostazioni per usarlo.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Settings > Force Direct Play is on, so the server never gets to change the sound."
+  },
+  "widgets.tracks.enh_reason_not_copyable": {
+    "value": "Il tuo server Plex non può aggiungerlo a questo video in questo momento.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Original quality is in force (or cannot be reached by picking it) but the video cannot be offered the enhancement as it plays: a relay link, a video the server must convert, a track pick the Original route could not follow. Deliberately generic: the viewer cannot act on the differences."
   },
   "widgets.tracks.enh_reason_refused": {
     "value": "Il tuo server Plex non è riuscito ad attivarlo per questo video.",

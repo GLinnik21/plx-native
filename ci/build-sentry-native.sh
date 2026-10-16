@@ -65,7 +65,9 @@ rm -rf "$SOURCE" "$BUILD" "$PREFIX"
 mkdir -p "$SOURCE" "$BUILD" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
 tar xzf "$ARCHIVE" --strip-components=1 -C "$SOURCE"
 python3 "$DEPS" verify sentry-native || fail "$PATCH does not match the digest pinned in ci/dependencies.json"
-patch -d "$SOURCE" -p1 < "$PATCH"
+# Strict `git apply`, not patch(1): patch accepts fuzz, which let a crash-path hunk land
+# in the wrong place on 0.17.3 (fuzz 2) and still build green. A bump whose context moved must fail.
+python3 "$DEPS" apply-patch "$SOURCE" "$PATCH"
 
 # CMAKE_ASM_COMPILER is set explicitly, and it is load-bearing rather than tidy. libunwind's ARM32
 # sources are `.S`, so CMake enables the ASM language for them; with no compiler named for that

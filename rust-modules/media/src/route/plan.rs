@@ -600,6 +600,44 @@ pub(super) struct EnhancementFacts<'a> {
     pub(super) subtitle_effect: SubtitleEffect,
     /// This playback's server already refused or ignored the params once.
     pub(super) refused: bool,
+    /// The quality in force: the picker's value (what the HUD's Quality row reads) on the live
+    /// session, the resolve's own copy at resolve time. Only a quality that is NOT Original may
+    /// be blamed with [`DisabledReason::NotOriginalQuality`].
+    pub(super) quality: Quality,
+    /// Why `base` is `None` when the resolve (or a mid-play pick) is the reason; `None` for a
+    /// fixed rung, which never asks for an Original candidate.
+    pub(super) declined: Option<OriginalDeclined>,
+}
+
+/// **Why no [`AutoOriginalCandidate`] exists** — recorded where it is not built or is dropped, so
+/// the menu can say the true reason instead of blaming the quality picker. Behaviour never reads
+/// it; only [`enhancement_availability`] and the decline log line do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OriginalDeclined {
+    /// Settings > Force Direct Play is on: the server never gets to copy the video.
+    ForcedDirectPlay,
+    /// The link is a Plex relay, which never carries an Original candidate.
+    Relay,
+    /// The video cannot be copied as it is (the television cannot decode it, or the server must
+    /// convert it).
+    VideoNeedsConverting,
+    /// No file path or no measured link to build the candidate from.
+    NoSource,
+    /// A mid-play audio or subtitle pick the candidate could not follow dropped it.
+    TrackPickDropped,
+}
+
+impl OriginalDeclined {
+    /// One short word-phrase for the decline log line.
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Self::ForcedDirectPlay => "forced direct play",
+            Self::Relay => "relay link",
+            Self::VideoNeedsConverting => "video needs converting",
+            Self::NoSource => "no part or link",
+            Self::TrackPickDropped => "track pick dropped it",
+        }
+    }
 }
 
 /// What the enhancement, once offered, actually asks the server for — the one fork the menu, the
@@ -634,10 +672,20 @@ pub enum DisabledReason {
     /// the DV video regardless of a burn request and silently dropping the subtitle — neither half
     /// of the ask is honoured, so it is never sent.
     DolbyVisionSubtitle,
-    /// The live route is not Direct or Remux (a fixed quality rung, HLS, a relay…), or no Original
-    /// candidate was ever computed for it (I5's exclusion list) — the enhanced route is always an
-    /// uncapped Original.
+    /// The quality in force is not Original (a fixed rung, or Auto currently on HLS) — picking
+    /// Original is the way in. Never used while Original is the quality in force.
     NotOriginalQuality,
+    /// Settings > Force Direct Play is on, so the server cannot add the enhancement.
+    ForcedDirectPlay,
+    /// Original is picked but the route does not copy the video (the live session's
+    /// `original_is_converted`): the Quality row reads "Original · Converted" and this note says the
+    /// same fact. A burn route is also `Converted` (its picture is re-encoded) yet the Audio tab
+    /// explains its own state there (the burn note): the row states the picture fact, the tab its own.
+    ServerConverting,
+    /// Original is in force and the route copies the video, but no Original candidate exists to
+    /// decorate (a relay link, a video that had to be converted, a track pick the Original route
+    /// could not follow). The viewer cannot act on the differences, so one reason.
+    NotCopyable,
     /// This playback's server already refused or ignored the params once.
     ServerRefused,
 }
@@ -661,15 +709,32 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     if f.refused {
         return Disabled(DisabledReason::ServerRefused);
     }
-    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it
-    // (forced direct play, a fixed rung, relay, a non-Original MDE… all read the same to a viewer:
-    // "only at Original quality").
-    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
-        return Disabled(DisabledReason::NotOriginalQuality);
-    }
-    let Some(base) = f.base else {
-        return Disabled(DisabledReason::NotOriginalQuality);
+    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it.
+    // The reason is the true one: "only at Original quality" is said ONLY when the quality in
+    // force is not Original (a fixed rung, Auto on HLS) — saying it under "Quality: Original"
+    // contradicts the Quality row. A missing candidate names why it is missing.
+    let converting = f.quality == Quality::Original && !matches!(target, RouteFamily::Direct | RouteFamily::Remux);
+    let not_original = f.quality != Quality::Original;
+    let unreachable = || {
+        Disabled(match f.declined {
+            Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
+            _ if converting => DisabledReason::ServerConverting,
+            // A pick the Original route could not follow dropped the candidate; under Auto or a
+            // rung the quality in force is the honest thing to name.
+            Some(OriginalDeclined::TrackPickDropped) | None if not_original => DisabledReason::NotOriginalQuality,
+            _ => DisabledReason::NotCopyable,
+        })
     };
+    let Some(base) = f.base else {
+        return unreachable();
+    };
+    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
+        return Disabled(if converting {
+            DisabledReason::ServerConverting
+        } else {
+            DisabledReason::NotOriginalQuality
+        });
+    }
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.
     if base.dovi.base_layer_unusable() {
         return Disabled(DisabledReason::DolbyVisionUnusable);
@@ -1299,6 +1364,9 @@ pub struct Plan {
     /// A measured Remote can begin on HLS and later recover. Preserve the exact no-video-encode
     /// source declaration even when this plan's immediate output is H264/AAC HLS.
     pub(super) auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None` (see [`OriginalDeclined`]); `None` while a candidate exists
+    /// and for a fixed rung, which never asks for one.
+    pub(super) original_declined: Option<OriginalDeclined>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle selected for this part or by the show preference (0 = none/off), so the
@@ -1935,6 +2003,20 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             audio_converted: false,
             subtitle_ordinal,
         });
+    } else if matches!(playback_quality, Quality::Auto | Quality::Original) {
+        // Record WHY Original is unreachable, so the audio-enhancement note can say the true
+        // reason; behaviour never reads this. A fixed rung is not a decline: it never asks.
+        let why = if forced {
+            OriginalDeclined::ForcedDirectPlay
+        } else if location == Some(plx_plex::plex::probe::Location::Relay) {
+            OriginalDeclined::Relay
+        } else if !(directplay || remux_candidate) {
+            OriginalDeclined::VideoNeedsConverting
+        } else {
+            OriginalDeclined::NoSource
+        };
+        plan.original_declined = Some(why);
+        crate::player::log(&format!("original: no candidate ({})", why.log_name()));
     }
     // Issue #266: the audio enhancement decorates the Original route only (I5), so it is judged
     // against the candidate captured above — its DV facts (I7), its carried track, and the family
@@ -1960,6 +2042,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 carried: $candidate.and_then(|c| c.audio.as_ref()),
                 subtitle_effect,
                 refused: false,
+                quality: env.quality,
+                declined: plan.original_declined,
             }
         };
     }

@@ -139,7 +139,7 @@ jobs:
     env:
       RUST_NIGHTLY: nightly
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # FULL history, and it is a correctness requirement rather than a convenience: see the
           # same comment on host-python. Kept on the Rust jobs too so every host job checks out the
@@ -204,7 +204,7 @@ jobs:
     outputs:
       passed: ${{ steps.size.outputs.passed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -247,7 +247,7 @@ jobs:
         # so a red test run still leaves the timings of the build that preceded it; a missing file
         # (the timings step itself failed) is a warning, not a second failure on top of that one.
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-host-unit-default
           path: rust-modules/target/cargo-timings/cargo-timing.html
@@ -264,7 +264,7 @@ jobs:
     outputs:
       passed: ${{ steps.size.outputs.passed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -296,7 +296,7 @@ jobs:
     # concurrently now, so it is much shorter); limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # FULL history, and it is a correctness requirement rather than a convenience.
           # `tools/abr-calibrate-plant.py` derives each measurement capture's chronology from
@@ -323,7 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history, for the same reason as host-python.
           fetch-depth: 0
@@ -385,7 +385,7 @@ jobs:
     # Measured max 5.0 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install nightly Rust
         run: |
@@ -393,7 +393,7 @@ jobs:
         env:
           RUST_NIGHTLY: nightly
 
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust-modules
           # -Z build-std recompiles std from source and rust-cache cannot see those crates
@@ -422,7 +422,7 @@ jobs:
         # it can never hand back wrong objects. This cache key therefore only has to change when
         # those inputs can: the script, the two files it hashes, the evidence stager it runs after
         # install, and the NDK pin (read from the NDK action, which owns the literal).
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/plxnative/ffmpeg
           key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
@@ -534,7 +534,7 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plxnative-${{ github.sha }}
           # NB no `pkg/ipk.sha256` here: `make ipk` writes that file only for the stable flavour,
