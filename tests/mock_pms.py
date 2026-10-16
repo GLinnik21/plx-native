@@ -1890,34 +1890,61 @@ class DiscoverFixture:
             return j({"MediaContainer": {"size": len(rows), "Metadata": rows}})
         return None
 
-    LIST_MODES = ("default", "empty", "movies_only")
+    LIST_MODES = ("default", "empty", "movies_only", "first_movie_off")
 
     def set_list(self, mode):
         """Reset the list to a named starting state: `default` is the first LISTED titles, `empty`
-        none, `movies_only` the movies among those (so a Type = TV Shows filter matches nothing)."""
+        none, `movies_only` the movies among those (so a Type = TV Shows filter matches nothing),
+        `first_movie_off` all but the first movie (the one the PMS library's first movie takes the
+        guid of), so that library movie's Detail page shows the not-on-the-list face."""
         with self.lock:
             base = self.catalog[:self.LISTED]
             if mode == "empty":
                 base = []
             elif mode == "movies_only":
                 base = [c for c in base if c["kind"] == "movie"]
+            elif mode == "first_movie_off":
+                first = next(c for c in base if c["kind"] == "movie")
+                base = [c for c in base if c is not first]
             self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400) for n, c in enumerate(base)]
 
-    def configure(self, patch):
+    def configure(self, patch, lib=None):
         """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}` and/or
-        `{"list": "default"|"empty"|"movies_only"}` (the list reset; the capture recipe)."""
-        keys = {"guid_lookup", "list"}
+        `{"list": "default"|"empty"|"movies_only"|"first_movie_off"}` (the list reset; the capture recipe)."""
+        keys = {"guid_lookup", "list", "guids"}
         if not isinstance(patch, dict) or not patch or set(patch) - keys:
-            return 400, {"error": "need {guid_lookup: fail|ok} and/or {list: default|empty|movies_only}"}
+            return 400, {"error": "need {guid_lookup: fail|ok}, {list: default|empty|movies_only|first_movie_off} and/or {guids: all}"}
+        if "guids" in patch and patch["guids"] != "all":
+            return 400, {"error": "guids is all"}
         if "guid_lookup" in patch and patch["guid_lookup"] not in ("fail", "ok"):
             return 400, {"error": "guid_lookup is fail or ok"}
         if "list" in patch and patch["list"] not in self.LIST_MODES:
-            return 400, {"error": "list is default, empty or movies_only"}
+            return 400, {"error": "list is default, empty, movies_only or first_movie_off"}
         if "guid_lookup" in patch:
             self.guid_lookup_fails = patch["guid_lookup"] == "fail"
         if "list" in patch:
             self.set_list(patch["list"])
+        if patch.get("guids") == "all":
+            if lib is not None:
+                self.bind_all(lib)
         return 200, dict(patch)
+
+    def bind_all(self, lib):
+        """`{"guids": "all"}`: every library title (and every episode's show) carries a synthetic
+        Discover guid the list does not hold, as a real PMS gives each item one, so any card's
+        item menu can offer Add to Watchlist (the W6 menu captures). Items `bind` already gave a
+        listed guid keep it."""
+        def guid_of(it):
+            hx = hashlib.md5(f"bind-all-{it['ratingKey']}".encode()).hexdigest()[:24]
+            return f"plex://{it['type']}/{hx}"
+        for it in lib.items.values():
+            if it.get("type") in ("movie", "show") and not re.fullmatch(
+                    r"plex://(movie|show)/[0-9a-f]{24}", it.get("guid") or ""):
+                it["guid"] = guid_of(it)
+        for it in lib.items.values():
+            if it.get("type") == "episode" and it.get("grandparentRatingKey"):
+                # The show's own guid is a pure function of its rating key (above).
+                it["grandparentGuid"] = guid_of({"type": "show", "ratingKey": it["grandparentRatingKey"]})
 
 
 class MockPms:
@@ -2215,7 +2242,7 @@ class MockPms:
                 patch = json.loads(body or b"{}")
             except json.JSONDecodeError:
                 return j({"error": "invalid JSON body"}, 400)
-            status, obj = self.discover.configure(patch)
+            status, obj = self.discover.configure(patch, self.lib)
             return j(obj, status)
         answered = self.discover.handle(method, p, q, headers, lib)
         if answered is not None:

@@ -10,6 +10,9 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      session is the account; no `token` trigger is armed);
   3. arm the capture's `triggers`, boot, wait `boot_wait_s`, send each key through
      `plxnative-remote` (`hold` is okdown, 1.2 s, okup), then `shot`;
+     A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
+     AFTER the sign-in, so the stored mock session is the account but the service cannot answer
+     (the "plex.tv unreachable" state);
   4. move the instance root's shot-N.png to `<out>/<file>`. A capture with `expect_write` fails
      unless the mock logged that write.
 
@@ -30,7 +33,7 @@ import time
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SCENARIO = ROOT / "tests" / "scenarios" / "watchlist_captures.json"
+SCENARIO = ROOT / "tests" / "scenarios" / "watchlist_captures.json"  # --scenario overrides
 SIGN_IN_DONE = "hubs: landed"  # the event-log line after which the sign-in's session is on disk
 
 
@@ -88,11 +91,14 @@ def capture(sim, spec, scenario, out_dir):
     runtime = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-wl-"))
     proc = None
     try:
-        post(port, "/_mock/discover", {"list": spec["mock"]})
+        post(port, "/_mock/discover", dict({"list": spec["mock"]}, **spec.get("mock_extra", {})))
         for name in ("plextv", "discover"):
             (runtime / f"plxnative-{name}").write_text(f"http://127.0.0.1:{port}")
         sign_in(sim, runtime, port)
         pms.writes.clear()
+        if spec.get("unreachable"):
+            for name in ("plextv", "discover"):
+                (runtime / f"plxnative-{name}").write_text("http://127.0.0.1:1")
         for name, value in spec["triggers"].items():
             (runtime / f"plxnative-{name}").write_text(value)
         log = open(runtime / "sim.out", "w")
@@ -116,8 +122,16 @@ def capture(sim, spec, scenario, out_dir):
                     send("okdown")
                     time.sleep(1.2)
                     send("okup")
+                elif key.startswith("sleep:"):
+                    time.sleep(float(key[6:]))
+                    continue
                 else:
+                    # `key@0.3` waits 0.3 s instead of key_wait_s before the next key (or the shot):
+                    # the way to catch a spring mid-flight.
+                    key, _, wait = key.partition("@")
                     send(key)
+                    time.sleep(float(wait) if wait else scenario["key_wait_s"])
+                    continue
                 time.sleep(scenario["key_wait_s"])
             send("shot")
             shot, last = None, -1
@@ -133,6 +147,7 @@ def capture(sim, spec, scenario, out_dir):
                 raise Failure("no complete shot-N.png appeared")
         finally:
             os.close(fd)
+        (out_dir / spec["file"]).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(shot, out_dir / spec["file"])
         want = spec.get("expect_write")
         if want:
@@ -145,7 +160,7 @@ def capture(sim, spec, scenario, out_dir):
             proc.wait()
             # The run's event log (a panic, a frame guard's catch) and console are kept beside the
             # capture as <file stem>.log / .out.
-            stem = pathlib.Path(spec["file"]).stem
+            stem = spec["file"][:-len(".png")]
             for name, ext in (("plxnative-events.log", ".log"), ("sim.out", ".out")):
                 if (runtime / name).is_file():
                     shutil.copy(runtime / name, out_dir / (stem + ext))
@@ -157,9 +172,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sim", required=True, help="the built plxnative-sim (hostsim)")
     ap.add_argument("--out", help="output directory (default: the scenario's output_dir)")
+    ap.add_argument("--scenario", default=str(SCENARIO), help="a scenario file (default: the committed one)")
     ap.add_argument("--only", nargs="*", default=[], help="capture file names to take (default: all)")
     args = ap.parse_args()
-    scenario = json.loads(SCENARIO.read_text())
+    scenario = json.loads(pathlib.Path(args.scenario).read_text())
     out_dir = pathlib.Path(args.out or scenario["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     failed = []
