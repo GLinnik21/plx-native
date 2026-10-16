@@ -2522,17 +2522,17 @@ mod scrub_ownership_tests {
         }
     }
 
-    /// **(b) A scrub taken while PAUSED leaves the film paused.**
+    /// **(b) A pointer drag taken while PAUSED leaves the film paused.**
     ///
     /// [`PlayerReq::SeekTo`] is the Chapters strip's request — seek and RESUME — and it is the
-    /// wrong one for a scrub: the loop's arm for it calls `resume_if_paused`, so paused scrubbing
-    /// started the film. The scrub commit's own request is [`PlayerReq::CommitSeek`], whose arm is
+    /// wrong one for a drag: the loop's arm for it calls `resume_if_paused`, so paused scrubbing
+    /// started the film. The drag's commit request is [`PlayerReq::CommitSeek`], whose arm is
     /// `app::playback::commit_seek` — a bare seek; the pump opens the seek-preroll override
     /// that decodes the landed frame without publishing a viewer Resume, and re-pauses on landing.
     ///
-    /// What commits while paused is the POINTER (a drag's release): the keys only move the target
-    /// until OK or PLAY takes it (`paused_scrub_tests`), so this graded a paused TAP's debounce
-    /// before the paused key path stopped committing on a timer.
+    /// What commits by itself is the POINTER (a drag's release): the keys only move the target
+    /// until OK or PLAY takes it — with `SeekTo`, which plays on from it
+    /// (`ok_or_play_commits_the_target_and_the_film_plays_on_from_it`).
     #[test]
     fn a_scrub_seek_taken_while_paused_holds_the_pause() {
         let _g = plx_base::testlock::serial();
@@ -3002,7 +3002,7 @@ mod scrub_ownership_tests {
         );
     }
 
-    // ---- BACK, UNDO and the paused scrub (docs: the `step` doc, points 4-6) -----------------------
+    // ---- click-to-confirm, BACK and UNDO (docs: the `step` doc, and ux-scenario §6.6) -------------
 
     const S: i64 = 1_000_000_000;
 
