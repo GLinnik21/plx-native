@@ -26,7 +26,8 @@ environment" means getting three things in place so `make` works:
    `armv7-unknown-linux-gnueabi` with that release's PREBUILT std (the ARMv7 std has no
    SIGILL barrier — see "Why armv7" below). The release is the `channel` in
    `rust-modules/rust-toolchain.toml`; it needs the armv7 rust-std, clippy and rustfmt, and no
-   nightly, no `rust-src`, no `-Z build-std`.
+   nightly, no `rust-src`, no `-Z build-std`. Dependabot bumps that one line weekly (the
+   `rust-toolchain` entry in `.github/dependabot.yml`); nothing else in the repo names the version.
 3. **Host CLI tools** — `curl`, `tar`, CMake (the pinned Sentry Native build), and `sshpass`
    (deploy/run over ssh, only when the TV refuses your key).
 

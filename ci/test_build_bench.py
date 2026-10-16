@@ -117,7 +117,7 @@ FAKE_SYSCTL = ('#!/bin/sh\ncase "$2" in\n'
                '  vm.swapusage) echo "total = 1000.00M  used = ${FAKE_SWAP_USED:-100.00}M  free = 1.00M  (encrypted)";;\n'
                '  *) echo "Fake CPU";;\nesac\n')
 SCRATCH_MAKEFILE = r'''print-bench-config:
-	@printf '%s\n' 'RUST_TOOLCHAIN=1.99.1' 'RUST_TDIR=target' 'RUST_TARGET=armv7-unknown-linux-gnueabi' \
+	@printf '%s\n' 'RUST_TOOLCHAIN=1.0.0' 'RUST_TDIR=target' 'RUST_TARGET=armv7-unknown-linux-gnueabi' \
 	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a' \
 	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'UNIT_RUN=python3 ../tools/cargo-test-parallel.py' 'RELEASE=$(RELEASE)'
 '''

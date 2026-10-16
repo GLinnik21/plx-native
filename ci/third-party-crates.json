@@ -18,6 +18,28 @@
   "object": "0.39.1",
   "rustc-demangle": "0.1.28"
  },
+ "std_not_shipped": [
+  "cc",
+  "dlmalloc",
+  "foldhash",
+  "fortanix-sgx-abi",
+  "getopts",
+  "hermit-abi",
+  "moto-rt",
+  "r-efi",
+  "r-efi-alloc",
+  "rand",
+  "rand_core",
+  "rand_xorshift",
+  "rustc-literal-escaper",
+  "shlex",
+  "unwinding",
+  "vex-sdk",
+  "wasip1",
+  "wasip2",
+  "wasip3",
+  "wit-bindgen"
+ ],
  "not_shipped": [
   "asn1-rs",
   "asn1-rs-derive",

@@ -30,7 +30,7 @@ installed is a skip (exit 0, said out loud) instead of a failure: `make check`'s
 so a host-python runner without Rust is not red, while CI's host-lint job (which installs the
 toolchain) runs it strict.
 
-    python3 ci/check-vfp.py [--toolchain 1.99.1] [--skip-if-missing] [--rustflags '<flags>']
+    python3 ci/check-vfp.py [--toolchain <release>] [--skip-if-missing] [--rustflags '<flags>']
 """
 from __future__ import annotations
 

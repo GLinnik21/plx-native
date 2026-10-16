@@ -436,10 +436,28 @@ class DependabotNotices(unittest.TestCase):
 
     def test_a_new_crate_stops_the_job_before_anything_is_committed(self):
         job = job_body(self.NAME, "regenerate")
-        refusal = job[job.index("\n            2)"):job.index("\n            *)")]
-        self.assertIn("exit 1", refusal)
-        self.assertIn("licence decision", refusal)
-        self.assertLess(job.index("exit 1"), job.index("git -C pr commit"))
+        # two generator steps (the std snapshot of a toolchain bump, then the lock): both refuse a new crate
+        refusals = re.findall(r"\n            2\)(.*?)\n            \*\)", job, re.S)
+        self.assertEqual(len(refusals), 2)
+        for refusal in refusals:
+            self.assertIn("exit 1", refusal)
+            self.assertIn("licence decision", refusal)
+        self.assertLess(job.rindex("exit 1"), job.index("git -C pr commit"))
+
+    def test_a_toolchain_bump_is_re_derived_from_the_new_release_before_the_notices_are_generated(self):
+        job = job_body(self.NAME, "regenerate")
+        triggers = code(self.NAME)
+        self.assertIn("rust-modules/rust-toolchain.toml", triggers[:triggers.index("jobs:")])
+        steps = [job.index(s) for s in ("--print-stale-pin", "rustup toolchain install", "--derive-toolchain",
+                                        "gen-third-party-notices.py --root pr >gen.out")]
+        self.assertEqual(steps, sorted(steps))
+        # the install and the derive run only when the pin moved; the pin reaches the shell through env:
+        self.assertEqual(job.count("if: steps.pin.outputs.pin != ''"), 2)
+        self.assertIn("PIN: ${{ steps.pin.outputs.pin }}", job)
+        self.assertIn('rustup toolchain install "$PIN" --profile minimal --component rust-src', job)
+        # the data file may be pushed only with a moved pin
+        self.assertIn("PIN_MOVED", job)
+        self.assertIn("ci/third-party-crates.json", job[job.index("allowed="):])
 
     def test_cargo_never_runs_here_and_the_backstop_is_in_ci(self):
         # A PR's .cargo/config.toml can name a credential-provider program, so cargo on its files with a
@@ -450,6 +468,41 @@ class DependabotNotices(unittest.TestCase):
         header = (WORKFLOWS / self.NAME).read_text()
         self.assertIn("@dependabot recreate", header)
         self.assertNotIn("`@dependabot rebase` or", header)
+
+
+class ToolchainPin(unittest.TestCase):
+    """`rust-modules/rust-toolchain.toml` is the ONE spelling of the Rust release, so a Dependabot bump of it
+    (the `rust-toolchain` entry of dependabot.yml) is a one-line change that cannot leave a stale copy."""
+
+    # The files that must carry the release: the pin itself, and the snapshot / generated table derived from it
+    # (ci/gen-third-party-notices.py checks them against the pin, and --derive-toolchain rewrites them).
+    DERIVED = {"rust-modules/rust-toolchain.toml", "ci/third-party-crates.json", "THIRD-PARTY-NOTICES.md"}
+
+    def test_dependabot_bumps_the_toolchain_file(self):
+        body = (ROOT / ".github/dependabot.yml").read_text()
+        entry = body[body.index("- package-ecosystem: rust-toolchain"):]
+        entry = entry[:entry.index("\n\n")]
+        self.assertIn("directory: /rust-modules", entry)
+        self.assertIn("interval: weekly", entry)
+        self.assertIn("prefix: Deps", entry)
+        self.assertRegex((ROOT / "rust-modules/rust-toolchain.toml").read_text(), r'(?m)^channel = "1\.\d+\.\d+"$')
+
+    def test_no_second_file_spells_the_release(self):
+        import rust_toolchain
+        pin = rust_toolchain.pinned_channel()
+        literal = re.compile(r"(?<![\w.])" + re.escape(pin) + r"(?![\w.]|-)")
+        files = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout.split("\0")
+        stray = []
+        for rel in filter(None, files):
+            if rel in self.DERIVED or rel.endswith((".lock", ".svg", ".png", ".jpg", ".ico", ".woff2", ".ttf", ".gz", ".zip")):
+                continue
+            try:
+                body = (ROOT / rel).read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if literal.search(body):
+                stray.append(rel)
+        self.assertEqual(stray, [], f"{pin} is spelled outside rust-modules/rust-toolchain.toml: read the file instead of copying the version")
 
 
 class BuildBenchWorkflow(unittest.TestCase):

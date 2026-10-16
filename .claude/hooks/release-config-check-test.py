@@ -156,7 +156,7 @@ VERDICTS = [
     ("ok", 0, ""),
     ("broken", 101, E0428),
     ("broken", 101, DENIED_LINT),                       # `warnings = "deny"` is the sharp edge
-    ("unusable", 1, "error: toolchain '1.99.1' is not installed"),
+    ("unusable", 1, "error: toolchain '1.0.0' is not installed"),
     ("unusable", 127, "error: could not run cargo: [Errno 2] No such file or directory: 'cargo'"),
     ("unusable", 1, "error: failed to acquire package cache lock"),
     ("unusable", 101, SMB_NO_LOCK),                     # a build DIRECTORY fault, not a code fault
@@ -180,9 +180,9 @@ TARGET_DIRS = [
 # line is the wrong choice and was the original one: on these paths cargo has usually printed its
 # `Checking …` banner first, and a note that quotes the banner names nothing the reader can act on.
 FIRST_ERROR = [
-    ("error: toolchain '1.99.1' is not installed",
+    ("error: toolchain '1.0.0' is not installed",
      "    Checking plxnative-modules v0.4.1 (/repo/rust-modules)\n"
-     "error: toolchain '1.99.1' is not installed"),
+     "error: toolchain '1.0.0' is not installed"),
     ("error: could not run cargo: [Errno 2] No such file or directory: 'cargo'",
      "error: could not run cargo: [Errno 2] No such file or directory: 'cargo'"),
     # No `error` line at all: fall back to the first non-empty one rather than saying nothing.

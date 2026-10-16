@@ -399,7 +399,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   dependencies also needs `make notices` (THIRD-PARTY-NOTICES.md section 2.4 is generated from
   `Cargo.lock`; `make check` fails until it is regenerated; on a Dependabot PR
   `.github/workflows/dependabot-notices.yml` does it and pushes the commit when only versions moved, and leaves
-  the PR red naming the crate when the bump added one that needs a row or a `not_shipped` entry). **Reading noise:** before every run the script samples the 1-minute load average
+  the PR red naming the crate when the bump added one that needs a row or a `not_shipped` entry). A Dependabot bump of the
+  pinned Rust toolchain (`rust-modules/rust-toolchain.toml`) goes the same way: the workflow installs the release with
+  rust-src, runs `ci/gen-third-party-notices.py --derive-toolchain` to rewrite the std snapshot in `ci/third-party-crates.json`,
+  regenerates the section and pushes both files (a crate newly in std's lock stays red for a licence decision); the
+  maintainer still measures `make build-bench` before merging it. **Reading noise:** before every run the script samples the 1-minute load average
   (`uptime`) and swap (`sysctl vm.swapusage`) and prints `WARNING: <scenario> run N: load X > <cores>
   cores` or `swap N% used` when load exceeds the core count or swap is over 90% full; this Mac is
   shared with other sessions and its swap is often full, so such numbers are noisy. A warning does

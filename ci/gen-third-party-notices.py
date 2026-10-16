@@ -16,6 +16,10 @@ the std workspace lock, and the rest (licence election, copyright holders, the g
                                                                `cargo tree` for the ARM runtime graph (needs cargo)
     python3 ci/gen-third-party-notices.py --verify-toolchain   also compare the std snapshot and rustc string with the
                                                                pinned toolchain's rust-src (needs rustup + that toolchain)
+    python3 ci/gen-third-party-notices.py --derive-toolchain   after the pin in rust-toolchain.toml MOVED: re-derive the data file's
+                                                               "toolchain" and "std_lock" from that release's rust-src (needs rustup + that
+                                                               toolchain with rust-src); the Dependabot workflow runs it, `make notices` does not
+    python3 ci/gen-third-party-notices.py --print-stale-pin    print the pin when it differs from the data file's, else nothing
 
 WHAT THE OFFLINE CHECK PROVES. Every registry package in `rust-modules/Cargo.lock` is either a row in
 the data file (it ships) or listed in `not_shipped` (it was looked at and does not), so a crate a bump
@@ -34,10 +38,15 @@ THE STD HALF. The standard library is the pinned stable toolchain's PREBUILT arm
 crates' versions are the ones that release was built from: the lock inside its rust-src,
 `library/Cargo.lock`, which a host without that component does not have. `std_lock` in the data file
 is the snapshot of the rows that link; the offline check trusts it, `--verify-toolchain` proves it
-against rust-src when the toolchain is installed (`rustup toolchain install 1.99.1 --profile minimal
+against rust-src when the toolchain is installed (`rustup toolchain install <channel> --profile minimal
 --component rust-src`, the channel in rust-modules/rust-toolchain.toml). `compiler_builtins` is a path
 member of that workspace, not a registry package, so its version is read from the lock row without a
-`source` too. Moving the pin fails the offline check until `toolchain.pin` is moved with it.
+`source` too. Moving the pin fails the offline check until `toolchain.pin` is moved with it, which
+`--derive-toolchain` does: it rewrites `toolchain` and the versions in `std_lock` from the new release's
+rust-src. `std_lock` names the std crates that LINK; every other registry package in std's lock is in
+`std_not_shipped`. A crate the new release's lock ADDED is in neither, which is a licence decision only a
+person can make, so `--derive-toolchain` writes nothing and exits 2 (like an unclassified cargo crate);
+a crate that left std's lock is dropped from `std_not_shipped` silently, and one that left `std_lock` exits 1.
 
 EXIT CODES. 0: ok (or, without --check, the file was rewritten). 1: the tree is inconsistent or stale
 (a moved version in --check mode, a stale row, a moved pin). 2: a registry package in the lock has no
@@ -210,23 +219,91 @@ def std_lock_path(pin):
     return Path(out.stdout.strip()) / 'lib' / 'rustlib' / 'src' / 'rust' / 'library'
 
 
-def verify_toolchain(data):
-    pin = data['toolchain']['pin']
+PIN_RE = re.compile(r'1\.\d+\.\d+')
+
+
+def read_std(pin):
+    """(std lock {name: [versions]}, rustc --version, backtrace version, problems) of the installed `pin` with rust-src."""
     lib = std_lock_path(pin)
     if lib is None or not (lib / 'Cargo.lock').exists():
-        return [f'{pin} with rust-src is not installed (`rustup toolchain install {pin} --profile minimal --component rust-src`)']
-    problems = []
+        return None, None, None, [f'{pin} with rust-src is not installed (`rustup toolchain install {pin} --profile minimal --component rust-src`)']
     std = parse_lock((lib / 'Cargo.lock').read_text(), path_packages=('compiler_builtins',))
+    rustc = subprocess.run(['rustup', 'run', pin, 'rustc', '--version'], capture_output=True, text=True).stdout.strip()
+    bt = re.search(r'^version = "([^"]+)"', (lib / 'backtrace' / 'Cargo.toml').read_text(), re.M)
+    return std, rustc, bt and bt.group(1), []
+
+
+def std_unclassified(std, data):
+    """Registry packages in std's lock that neither link (`std_lock`) nor are listed in `std_not_shipped`."""
+    return sorted(set(std) - set(data['std_lock']) - set(data['std_not_shipped']))
+
+
+def verify_toolchain(data):
+    pin = data['toolchain']['pin']
+    std, rustc, backtrace, problems = read_std(pin)
+    if problems:
+        return problems
     for name, version in sorted(data['std_lock'].items()):
         if version not in std.get(name, ()):
             problems.append(f'std_lock {name} {version}: the {pin} std lock has {std.get(name)}')
-    rustc = subprocess.run(['rustup', 'run', pin, 'rustc', '--version'], capture_output=True, text=True).stdout.strip()
+    for name in std_unclassified(std, data):
+        problems.append(f'{name} is in the {pin} std lock but neither in "std_lock" (it links) nor in "std_not_shipped".')
+    for name in sorted(set(data['std_not_shipped']) - set(std)):
+        problems.append(f'"std_not_shipped" lists {name}, which the {pin} std lock no longer has: drop it.')
     if rustc != data['toolchain']['rustc']:
         problems.append(f'toolchain.rustc is "{data["toolchain"]["rustc"]}" but {pin} reports "{rustc}"')
-    bt = re.search(r'^version = "([^"]+)"', (lib / 'backtrace' / 'Cargo.toml').read_text(), re.M)
-    if not bt or bt.group(1) != data['toolchain']['backtrace']:
-        problems.append(f'toolchain.backtrace is {data["toolchain"]["backtrace"]} but {pin} vendors {bt and bt.group(1)}')
+    if backtrace != data['toolchain']['backtrace']:
+        problems.append(f'toolchain.backtrace is {data["toolchain"]["backtrace"]} but {pin} vendors {backtrace}')
     return problems
+
+
+def stale_pin(data):
+    """The pin in rust-toolchain.toml when the data file still describes another release, else None. A pin that is
+    not a plain `1.x.y` is refused: the value is a PR's, and it ends up in a `rustup toolchain install` command."""
+    pins = workflow_pins()
+    if len(pins) != 1 or not PIN_RE.fullmatch(next(iter(pins))):
+        raise SystemExit(f'rust-modules/rust-toolchain.toml must pin one plain release (1.x.y), got {sorted(pins)}')
+    pin = next(iter(pins))
+    return None if pin == data['toolchain']['pin'] else pin
+
+
+def rewrite_toolchain(text, pin, rustc, backtrace, std_lock, std_not_shipped):
+    """The data file with its "toolchain", "std_lock" and "std_not_shipped" members replaced, in the file's own layout
+    (one-space indent), so the diff holds only what moved."""
+    members = {
+        'toolchain': {'pin': pin, 'rustc': rustc, 'backtrace': backtrace},
+        'std_lock': dict(sorted(std_lock.items())),
+        'std_not_shipped': sorted(std_not_shipped),
+    }
+    for key, value in members.items():
+        body = json.dumps(value, indent=1).replace('\n', '\n ')
+        pattern = re.compile(r'^ "' + key + r'": [\{\[].*?^ [\}\]](?=,?$)', re.S | re.M)
+        if len(pattern.findall(text)) != 1:
+            raise SystemExit(f'ci/third-party-crates.json must hold exactly one "{key}" member in the usual layout')
+        text = pattern.sub(lambda _m: f' "{key}": {body}', text, count=1)
+    return text
+
+
+def derive_toolchain(data, text, pin):
+    """(new data-file text, problems, unclassified std crates) for the pinned release `pin`, from its rust-src."""
+    std, rustc, backtrace, problems = read_std(pin)
+    if problems:
+        return text, problems, []
+    new = {}
+    for name in sorted(data['std_lock']):
+        versions = std.get(name, [])
+        if len(versions) != 1:
+            problems.append(f'std_lock lists {name}, but the {pin} std lock has {versions or "no such crate"}: it needs a person '
+                            f'(remove the row, or settle which version links).')
+        else:
+            new[name] = versions[0]
+    if not backtrace:
+        problems.append(f'cannot read the backtrace version vendored by {pin}')
+    added = std_unclassified(std, data)
+    if problems or added:
+        return text, problems, added
+    kept = sorted(set(data['std_not_shipped']) & set(std))
+    return rewrite_toolchain(text, pin, rustc, backtrace, new, kept), [], []
 
 
 def parse_tree(text):
@@ -274,11 +351,36 @@ def main(argv=None):
     ap.add_argument('--check', action='store_true', help='fail instead of rewriting when the file would change')
     ap.add_argument('--verify-graph', action='store_true', help='compare the crate set with `cargo tree` (needs cargo)')
     ap.add_argument('--verify-toolchain', action='store_true', help='compare the std snapshot with the pinned toolchain\'s rust-src')
+    ap.add_argument('--derive-toolchain', action='store_true', help='re-derive the data file\'s toolchain and std_lock for a moved pin (needs rustup + rust-src)')
+    ap.add_argument('--print-stale-pin', action='store_true', help='print the pin when the data file describes another release')
     ap.add_argument('--root', help='operate on the checkout at this directory instead of the script\'s own')
     args = ap.parse_args(argv)
     if args.root:
         set_root(args.root)
     data, project = load()
+    if args.print_stale_pin:
+        print(stale_pin(data) or '')
+        return 0
+    if args.derive_toolchain:
+        pin = stale_pin(data)
+        if pin is None:
+            print(f'gen-third-party-notices: the data file already describes {data["toolchain"]["pin"]}: nothing to derive')
+            return 0
+        wanted, problems, added = derive_toolchain(data, DATA.read_text(), pin)
+        if problems or added:
+            print('gen-third-party-notices: FAIL')
+            for p in problems:
+                print(f'  {p}')
+            for name in added:
+                print(f'  {name} is in the {pin} std lock but is neither in "std_lock" nor in "std_not_shipped": decide whether it links '
+                      f'into the ARM binary (a licence and copyright decision), then list it in the data file.')
+            if added:
+                print('unclassified: ' + ' '.join(added))
+                return 2
+            return 1
+        DATA.write_text(wanted)
+        print(f'gen-third-party-notices: re-derived toolchain and std_lock for {pin}')
+        return 0
     problems = problems_in(data, project, workflow_pins())
     if args.verify_graph:
         problems += verify_graph(data, project)

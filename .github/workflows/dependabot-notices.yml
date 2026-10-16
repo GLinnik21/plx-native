@@ -5,6 +5,15 @@ name: Dependabot notices
 # `make notices`); `make check` fails until it is regenerated, and the bot cannot run `make`. This
 # workflow does it: it regenerates the section and pushes ONE commit back to the PR branch.
 #
+# A Dependabot PR that bumps the pinned toolchain (`package-ecosystem: rust-toolchain`, which edits
+# `channel` in rust-modules/rust-toolchain.toml) moves the std half of the same section: std's
+# dependency lock is per release, and ci/third-party-crates.json holds a snapshot of it ("toolchain",
+# "std_lock", "std_not_shipped"). When the pin differs from that snapshot this job installs the new
+# release with rust-src, lets `--derive-toolchain` rewrite the snapshot from std's own lock, and then
+# regenerates the section as above; the commit may then carry ci/third-party-crates.json too, and
+# nothing else. A crate the new std lock ADDED is a licence decision exactly like a new cargo crate:
+# the derive step exits 2, writes nothing, and the PR stays red with the crate named.
+#
 # IT WRITES ONLY WHEN NOTHING NEEDS A DECISION. The generator exits 0 and rewrites the file only on a
 # consistent tree, i.e. every registry package in the lock already has a row in
 # ci/third-party-crates.json (or is listed in `not_shipped`) and only VERSIONS moved. A crate the bump
@@ -25,6 +34,9 @@ name: Dependabot notices
 #     `trusted/ci/gen-third-party-notices.py` from the BASE branch (`python3 -I`, stdlib only), told
 #     to read the lock, data file and notices from `pr/` with `--root`. It parses them as text/JSON;
 #     the PR's own copy of the generator is never loaded;
+#   * the only thing a PR contributes to the toolchain step is the pin string, which the trusted generator
+#     accepts only as a plain `1.x.y` before it reaches `rustup toolchain install` (through `env:`); the
+#     release itself comes from static.rust-lang.org, and only `rustc --version` of it runs;
 #   * both checkouts drop their credential (`persist-credentials: false`); the push passes the token
 #     for that one command, so no later step and no file in `pr/` can pick it up;
 #   * `contents: write` and `actions: write` are declared on this job alone (the workflow default is
@@ -59,6 +71,7 @@ on:
     paths:
       - rust-modules/Cargo.lock
       - 'rust-modules/**/Cargo.toml'
+      - rust-modules/rust-toolchain.toml
 
 permissions: {}
 
@@ -96,6 +109,39 @@ jobs:
           path: pr
           persist-credentials: false
 
+      # The pin comes out of the PR's rust-toolchain.toml as data; the trusted generator refuses anything
+      # but a plain release number. Empty output: the snapshot already describes the pin (every cargo PR).
+      - name: Has the toolchain pin moved?
+        id: pin
+        run: |
+          set -euo pipefail
+          pin=$(python3 -I trusted/ci/gen-third-party-notices.py --root pr --print-stale-pin)
+          echo "pin=${pin}" >> "$GITHUB_OUTPUT"
+
+      - name: Install the new pinned toolchain with rust-src
+        if: steps.pin.outputs.pin != ''
+        env:
+          PIN: ${{ steps.pin.outputs.pin }}
+        run: rustup toolchain install "$PIN" --profile minimal --component rust-src
+
+      - name: Re-derive the std snapshot for the new toolchain
+        if: steps.pin.outputs.pin != ''
+        run: |
+          set -uo pipefail
+          status=0
+          python3 -I trusted/ci/gen-third-party-notices.py --root pr --derive-toolchain >derive.out 2>&1 || status=$?
+          cat derive.out
+          case "$status" in
+            0) ;;
+            2)
+              new=$(sed -n 's/^unclassified: //p' derive.out)
+              echo "::error title=New std crate needs a licence decision::The new toolchain's std lock gained ${new}, which is in neither std_lock nor std_not_shipped in ci/third-party-crates.json. Decide whether it links into the ARM binary (licence, copyright), list it, then run make notices on that toolchain. Nothing was written to this PR."
+              exit 1 ;;
+            *)
+              echo "::error title=The std snapshot cannot be re-derived automatically::ci/gen-third-party-notices.py --derive-toolchain exited ${status} (see the log). Nothing was written to this PR; fix it by hand."
+              exit 1 ;;
+          esac
+
       - name: Regenerate section 2.4
         run: |
           set -uo pipefail
@@ -118,6 +164,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PIN_MOVED: ${{ steps.pin.outputs.pin }}
         run: |
           set -euo pipefail
           changed=$(git -C pr status --porcelain)
@@ -125,14 +172,17 @@ jobs:
             echo "THIRD-PARTY-NOTICES.md already matches the lockfile: nothing to push."
             exit 0
           fi
-          if [ "$changed" != " M THIRD-PARTY-NOTICES.md" ]; then
-            echo "::error::expected only THIRD-PARTY-NOTICES.md to change, got: $changed"
+          # The data file may change only when the toolchain pin moved (the derive step).
+          allowed=" M THIRD-PARTY-NOTICES.md"
+          [ -z "$PIN_MOVED" ] || allowed=$(printf '%s\n%s' "$allowed" " M ci/third-party-crates.json")
+          if [ -n "$(printf '%s\n' "$changed" | grep -vxF "$allowed" || true)" ]; then
+            echo "::error::expected only THIRD-PARTY-NOTICES.md (and, for a toolchain bump, ci/third-party-crates.json) to change, got: $changed"
             exit 1
           fi
           case "$HEAD_REF" in dependabot/*) ;; *) echo "::error::unexpected head branch"; exit 1 ;; esac
           git -C pr config user.name "github-actions[bot]"
           git -C pr config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C pr add THIRD-PARTY-NOTICES.md
+          git -C pr add -- THIRD-PARTY-NOTICES.md ci/third-party-crates.json
           git -C pr commit -q -m "Notices: regenerate section 2.4 for the dependency bump"
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -C pr -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
