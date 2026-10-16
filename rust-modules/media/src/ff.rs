@@ -2143,6 +2143,31 @@ struct AvioState {
     /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
     /// the end still asks the transport, which is how a failure there stays an error.
     parked_at_end: bool,
+    /// Reopens of a cut direct-play body that brought nothing back. See [`HealBudget`].
+    heal: HealBudget,
+}
+
+/// Reopens [`read_cb`] has spent at one byte of a cut body, across calls: libavformat retries a
+/// failed read with a fresh call, so a budget per call let a cut no reopen crosses be reopened
+/// round after round and then read as the end of the file. A byte read refills it.
+#[derive(Clone, Copy, Default)]
+struct HealBudget {
+    at: i64,
+    spent: u8,
+}
+
+impl HealBudget {
+    /// Charge one reopen at byte `at`, or `false` when the budget there is spent.
+    fn take(&mut self, at: i64) -> bool {
+        if self.at != at {
+            *self = HealBudget { at, spent: 0 };
+        }
+        if self.spent >= BODY_HEAL_ATTEMPTS {
+            return false;
+        }
+        self.spent += 1;
+        true
+    }
 }
 
 // TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
@@ -2419,7 +2444,8 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
     AVERROR_IO
 }
 
-/// Reopens [`read_cb`] tries, within one read, after the transfer is cut mid-body.
+/// Reopens [`read_cb`] tries at one byte, after the transfer is cut mid-body, before the cut is a
+/// transport failure.
 const BODY_HEAL_ATTEMPTS: u8 = 3;
 
 /// How long a direct-play socket read waits for a byte before the transfer counts as cut.
@@ -2438,7 +2464,6 @@ fn heal_at_offset(s: &mut AvioState) -> bool {
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        let mut heals: u8 = 0;
         loop {
             // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
             // interrupt the read — the demux thread services it itself between two av_read_frame
@@ -2585,8 +2610,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
                 let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
-                if direct_play && inside && heals < BODY_HEAL_ATTEMPTS && matches!(s.src, Src::Socket { .. }) {
-                    heals += 1;
+                if direct_play && inside && matches!(s.src, Src::Socket { .. }) && s.heal.take(s.off) {
                     if heal_at_offset(s) {
                         continue;
                     }
@@ -2596,8 +2620,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                         .body_failure()
                         .is_some_and(|f| matches!(f.rc, 18 | 55 | 56 | 92));
                     let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
-                    if direct_play && cut && inside && heals < BODY_HEAL_ATTEMPTS {
-                        heals += 1;
+                    if direct_play && cut && inside && s.heal.take(s.off) {
                         if cs.seek(s.off) {
                             continue;
                         }
@@ -2609,12 +2632,18 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 return AVERROR_IO;
             }
             // A clean close before the length is a cut too (a server that ends the response early
-            // rather than resetting it): reopen at the byte reached.
-            if r == 0 && direct_play && s.size > 0 && s.off >= 0 && s.off < s.size && heals < BODY_HEAL_ATTEMPTS {
-                heals += 1;
-                if heal_at_offset(s) {
+            // rather than resetting it): reopen at the byte reached. One that no reopen crosses is
+            // still not the end of the file: it is the transfer failing, for the pump to answer.
+            if r == 0 && direct_play && s.size > 0 && s.off >= 0 && s.off < s.size {
+                if s.heal.take(s.off) && heal_at_offset(s) {
                     continue;
                 }
+                crate::player::log(&format!(
+                    "ff: body cut at byte {} of {} and no reopen crossed it; transport failure, not EOF",
+                    s.off, s.size
+                ));
+                s.io_failed = true;
+                return AVERROR_IO;
             }
             if r == 0 {
                 if let Some(acquisition) = &mut s.acquisition {
@@ -2625,6 +2654,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             if let Some(watchdog) = &mut s.transport_watchdog {
                 watchdog.reset();
             }
+            s.heal = HealBudget::default();
             s.body_active_us = s
                 .body_active_us
                 .saturating_add(elapsed_since(read_started).as_micros().max(1) as u64);
@@ -4235,6 +4265,7 @@ unsafe fn hls_input(
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            heal: HealBudget::default(),
         }),
         avio: std::ptr::null_mut(),
         fmt: std::ptr::null_mut(),
@@ -8484,6 +8515,7 @@ pub fn demux(
                     bounce: Vec::new(),
                     bounce_pos: 0,
                     parked_at_end: false,
+                    heal: HealBudget::default(),
                 });
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
@@ -9270,5 +9302,6 @@ mod late_audio_tests;
 #[cfg(test)]
 #[path = "ff_eof_seek_tests.rs"]
 mod eof_seek_tests;
+#[cfg(test)]
 #[path = "ff_body_heal_tests.rs"]
 mod body_heal_tests;
