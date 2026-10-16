@@ -1738,10 +1738,12 @@ class DiscoverFixture:
       * 8, 9  NOT released, held nowhere                                          -> ComingSoon
       * 10-14 released, held nowhere (13 is a catalog-only show)                  -> NotOnAnyServer
 
-    The other two states need a roster this single mock cannot be: ServerOffline (a matching
-    server that later goes Unreachable) and Unknown (no match while some server is silent). The
-    `POST /_mock/discover {"guid_lookup": "fail"}` switch makes `GET /library/all?guid=` answer 503
-    so an unmatched title re-matches as Unknown; ServerOffline comes from a second roster entry.
+    The other two states come from switches: Unknown (no match while some server is silent) from
+    `POST /_mock/discover {"guid_lookup": "fail"}`, which makes `GET /library/all?guid=` answer 503
+    so an unmatched title re-matches as Unknown; ServerOffline (a matching server that later goes
+    Unreachable) from `{"pms": "fail"}` sent AFTER the list matched, which makes every PMS request
+    answer 503: the app's next library read then fails, commits this server Unreachable, and the
+    next list read re-derives the matched tiles (the DetailOffline capture walks exactly that).
     Two catalog titles (15, 16) are NOT listed, so a bookmark press on a catalog page can add them.
     `POST /_mock/discover {"list": "empty"|"movies_only"|"default"}` resets the list (the Watchlist
     capture recipe, tests/scenarios/watchlist_captures.json): empty, the movies among the 14, or all 14.
