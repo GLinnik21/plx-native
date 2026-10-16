@@ -250,12 +250,24 @@ impl Bridge {
         self.watchlist_reread();
     }
 
-    /// The hold menu's Remove: flip at once and let the page play the removal landing.
-    pub(crate) fn watchlist_remove(&mut self, guid: &str) -> bool {
+    /// A Remove from a menu or the Detail disc: flip at once. `from_page` is true only when the
+    /// Watchlist page itself is what the press was made on (`watchlist_page_on_top`): then the page
+    /// plays its removal landing. From any other page (a Detail pushed over a retained Watchlist
+    /// page, a card elsewhere) the page is told nothing, so a title added back before the page is
+    /// uncovered is never faded out as removed.
+    pub(crate) fn watchlist_remove(&mut self, guid: &str, from_page: bool) -> bool {
         let Some(hex) = hex_of_guid(guid) else { return false };
         self.watchlist_press(hex, Intent::Remove);
-        self.watchlist.removed = Some(guid.to_owned());
+        if from_page {
+            self.watchlist.removed = Some(guid.to_owned());
+        }
         true
+    }
+
+    /// Is the Watchlist page the page the user is on (the newest stack entry)? A menu is a modal
+    /// over its host and leaves the stack alone, so this names the host of a menu's action.
+    pub(crate) fn watchlist_page_on_top(d: &Dispatcher<AppHost>) -> bool {
+        d.nav.tabs.stack.entries.last().is_some_and(|e| e.arg == AppArg::Watchlist)
     }
 
     /// The Sort & Filter menu's value reaches the store (client-side ordering: no request).
@@ -392,16 +404,35 @@ impl Bridge {
 
     /// The face for a PMS card row: a movie or show acts on itself, an episode or a season on its
     /// show (`from_episode` makes the labels say "Show").
+    ///
+    /// A row that carries no catalog id is resolved through its own server record
+    /// (`client.metadata(rk or show_rk).guid`, `WatchlistStore::want_hex`): the read is asked for
+    /// here and runs on a worker, so the menu being opened now omits the row and the next one
+    /// offers it. A server that did not answer, or an item with no portable id, never does.
     pub(crate) fn watchlist_card_face(
         &self, item: &plx_data::pms::PmsMovie,
     ) -> Option<plx_screens::item_menu::watchlist::Face> {
         use plx_data::watchlist::model::Kind;
-        match item.kind {
-            0 => self.watchlist_face(item.guid, Kind::Movie, false),
-            1 => self.watchlist_face(item.guid, Kind::Show, false),
-            2 | 3 => self.watchlist_face(item.show_guid, Kind::Show, true),
-            _ => None,
-        }
+        let (known, kind, from_episode, rk) = match item.kind {
+            0 => (item.guid, Kind::Movie, false, item.rk.as_str()),
+            1 => (item.guid, Kind::Show, false, item.rk.as_str()),
+            2 | 3 => (item.show_guid, Kind::Show, true, item.show_rk.as_str()),
+            _ => return None,
+        };
+        let hex = known.or_else(|| {
+            if rk.is_empty() || item.sid == plx_plex::plex::ServerId::UNSET {
+                return None;
+            }
+            let store = &self.stores.watchlist;
+            match store.view().resolved_hex(item.sid, rk) {
+                Some(answer) => answer,
+                None => {
+                    store.want_hex(item.sid, rk);
+                    None
+                }
+            }
+        });
+        self.watchlist_face(hex, kind, from_episode)
     }
 
     /// Once a frame, route-unconditional: the catalog store's landing pass, the catalog page's
@@ -446,8 +477,16 @@ impl Bridge {
             // The page's membership needs the list: read it again on every mount, like the tab does.
             self.stores.watchlist.run(WatchlistCmd::Open);
         }
+        // The status line follows the title's tile on the Watchlist (a match landing or a server
+        // going offline moves it), the record's date rule only for a title not on the list read.
+        let mut load: plx_screens::catalog::Load = (&self.stores.catalog.load).into();
+        if let (plx_screens::catalog::Load::Loaded { status, .. }, Some(tile)) =
+            (&mut load, self.stores.catalog.tile_status(&self.stores.watchlist))
+        {
+            *status = tile.into();
+        }
         screen.input(plx_screens::catalog::CatalogViewModel {
-            load: (&self.stores.catalog.load).into(),
+            load,
             membership: self.stores.catalog.membership(&self.stores.watchlist).into(),
         });
         screen.set_art_server(self.stores.watchlist.view().art_server());
@@ -473,6 +512,12 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn watchlist_for_test(&mut self) -> &mut plx_data::stores::watchlist::WatchlistStore {
         &mut self.stores.watchlist
+    }
+
+    /// The removal landing the Watchlist page is owed, by guid.
+    #[cfg(test)]
+    pub(crate) fn removal_owed_for_test(&self) -> Option<&str> {
+        self.watchlist.removed.as_deref()
     }
 
     /// The hold window the feed last sent the store.

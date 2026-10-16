@@ -17,7 +17,8 @@ use plx_plex::plex::watchlist::{CatalogItem, WatchItem, WatchKind, WatchPage, Wa
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId};
 use plx_screens::catalog::CatalogScreen;
 use plx_screens::registry::ContentArg;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn guid(n: u8) -> String {
@@ -30,6 +31,17 @@ struct Script {
     fail_writes: AtomicBool,
     fail_reads: AtomicBool,
     writes: Mutex<Vec<([u8; 12], Intent)>>,
+    /// The servers on the roster; empty = no server asked.
+    roster: Mutex<Vec<ServerId>>,
+    /// Are they reachable?
+    up: AtomicBool,
+    /// Does every roster server hold every title?
+    holds: AtomicBool,
+    facts: AtomicU32,
+    /// Each server record's own `guid`, by `(server, ratingKey)`: what `client.metadata` would say.
+    records: Mutex<HashMap<(ServerId, String), String>>,
+    /// Record reads made (a hex the row already carried costs none).
+    record_reads: AtomicU32,
 }
 
 impl Script {
@@ -49,16 +61,22 @@ impl Script {
             fail_writes: AtomicBool::new(false),
             fail_reads: AtomicBool::new(false),
             writes: Mutex::new(Vec::new()),
+            roster: Mutex::new(Vec::new()),
+            up: AtomicBool::new(false),
+            holds: AtomicBool::new(false),
+            facts: AtomicU32::new(1),
+            records: Mutex::new(HashMap::new()),
+            record_reads: AtomicU32::new(0),
         })
     }
 }
 
 impl Reach for Script {
     fn reachable(&self, _: ServerId) -> bool {
-        false
+        self.up.load(Ordering::SeqCst)
     }
     fn roster(&self) -> Vec<ServerId> {
-        Vec::new()
+        self.roster.lock().unwrap().clone()
     }
 }
 
@@ -89,14 +107,24 @@ impl WatchlistIo for Script {
         self.writes.lock().unwrap().push((decode_hex(hex).expect("a decodable id"), intent));
         if self.fail_writes.load(Ordering::SeqCst) { Err(WatchlistError::Transport) } else { Ok(()) }
     }
-    fn find(&self, _: ServerId, _: GuidKind, _: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
-        Ok(Vec::new())
+    fn find(&self, _: ServerId, _: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
+        if !self.holds.load(Ordering::SeqCst) {
+            return Ok(Vec::new());
+        }
+        Ok(guids
+            .iter()
+            .map(|g| GuidMatch { guid: g.clone(), rating_key: "42".into(), library_section_id: None, blur: None })
+            .collect())
     }
     fn roster_gen(&self) -> u32 {
         1
     }
     fn facts_gen(&self) -> u32 {
-        1
+        self.facts.load(Ordering::SeqCst)
+    }
+    fn guid_of(&self, server: ServerId, rk: &str) -> Option<String> {
+        self.record_reads.fetch_add(1, Ordering::SeqCst);
+        self.records.lock().unwrap().get(&(server, rk.to_owned())).cloned()
     }
     fn today(&self) -> Option<String> {
         Some("2026-10-15".into())
@@ -354,4 +382,127 @@ fn an_add_pulses_the_watchlist_tab_and_a_removal_does_not() {
     rig.watchlist_add([7; 12]);
     rig.chrome.drop_pulse();
     assert_eq!(rig.chrome.take_pulse(), None);
+}
+
+/// The catalog page's status line follows the title's TILE, not the release date alone: an
+/// `Unknown` tile (a silent server) never reads "on no server", a `ServerOffline` one says the
+/// server is offline, and a flip of the tile (a server going away) moves the line while the page is
+/// open. The scripted record is dated ahead of "today", so the date rule alone would say coming soon.
+#[test]
+fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
+    use plx_screens::catalog::{Load as ScreenLoad, Status};
+    let status = |d: &Dispatcher<AppHost>| match &catalog_page(d).view_model().load {
+        ScreenLoad::Loaded { status, .. } => *status,
+        other => panic!("the record should have landed: {other:?}"),
+    };
+    let _serial = plx_base::testlock::serial();
+    // No server on the roster: the title is Unknown, which says nothing (never "on no server").
+    let silent = Script::new(&[1]);
+    let (mut d, mut rig) = rig_over(&silent);
+    super::open_catalog(&mut d, [1; 12], None);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
+    }
+    settle(&mut d, &mut rig, 60);
+    assert_eq!(rig.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Unknown));
+    assert_eq!(status(&d), Status::None, "a silent server is not 'on no server'");
+
+    // A server that answered "absent": released and held nowhere.
+    let absent = Script::new(&[1]);
+    *absent.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
+    absent.up.store(true, Ordering::SeqCst);
+    let (mut d, mut rig) = rig_over(&absent);
+    super::open_catalog(&mut d, [1; 12], None);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
+    }
+    settle(&mut d, &mut rig, 60);
+    assert_eq!(status(&d), Status::NotOnAnyServer);
+
+    // A copy is held, then its server goes away: the open page's line moves to "Server offline".
+    let held = Script::new(&[1]);
+    *held.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
+    held.up.store(true, Ordering::SeqCst);
+    held.holds.store(true, Ordering::SeqCst);
+    let (mut d, mut rig) = rig_over(&held);
+    super::open_catalog(&mut d, [1; 12], None);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
+    }
+    settle(&mut d, &mut rig, 60);
+    assert_eq!(rig.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available));
+    assert_eq!(status(&d), Status::None, "a reachable copy: nothing to say, whatever the date");
+    held.up.store(false, Ordering::SeqCst);
+    held.facts.fetch_add(1, Ordering::SeqCst);
+    settle(&mut d, &mut rig, 100);
+    assert_eq!(rig.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::ServerOffline));
+    assert_eq!(status(&d), Status::ServerOffline, "the match landing re-derived the status line");
+    assert_eq!(plx_screens::catalog::status_icon(Status::ServerOffline, None), Some(plx_ui::icons::Icon::ServerSlash));
+}
+
+/// A card row that carries no catalog id is resolved through its own server record
+/// (`client.metadata(rk or show_rk).guid`): the menu opened first omits the row and asks, the next
+/// one offers it, and its press ends in the write for the RESOLVED id.
+#[test]
+fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&[1]);
+    let sid = ServerId::from_raw(1);
+    let hex = [7u8; 12];
+    let show_hex = [8u8; 12];
+    script.records.lock().unwrap().insert((sid, "11".into()), format!("plex://movie/{}", encode_hex(&hex)));
+    script.records.lock().unwrap().insert((sid, "5".into()), format!("plex://show/{}", encode_hex(&show_hex)));
+    script.records.lock().unwrap().insert((sid, "12".into()), "local://12".into());
+    let (mut d, mut rig) = rig_over(&script);
+    read_list(&mut d, &mut rig);
+    let movie = plx_data::pms::PmsMovie { sid, rk: "11".into(), kind: 0, ..Default::default() };
+    let episode = plx_data::pms::PmsMovie { sid, rk: "99".into(), show_rk: "5".into(), kind: 3, ..Default::default() };
+    let local = plx_data::pms::PmsMovie { sid, rk: "12".into(), kind: 0, ..Default::default() };
+    for item in [&movie, &episode, &local] {
+        assert!(rig.watchlist_card_face(item).is_none(), "nothing is known until the record is read");
+    }
+    settle(&mut d, &mut rig, 10);
+    assert_eq!(script.record_reads.load(Ordering::SeqCst), 3, "one record read per title, the episode's SHOW record");
+    let face = rig.watchlist_card_face(&movie).expect("the movie now offers the row");
+    assert_eq!((face.hex, face.kind, face.from_episode), (hex, Kind::Movie, false));
+    let face_ep = rig.watchlist_card_face(&episode).expect("the episode offers its show");
+    assert_eq!((face_ep.hex, face_ep.kind, face_ep.from_episode), (show_hex, Kind::Show, true));
+    assert!(rig.watchlist_card_face(&local).is_none(), "a record with no portable id offers no row");
+    settle(&mut d, &mut rig, 20);
+    assert_eq!(script.record_reads.load(Ordering::SeqCst), 3, "an answered title is not asked again");
+    // The press: the menu's row is Add for the resolved id, and the write goes out for it.
+    let (_, action, _) = plx_screens::item_menu::watchlist::face_row(&face);
+    assert_eq!(action, plx_screens::item_menu::Action::WatchlistAdd { hex });
+    rig.watchlist_add(hex);
+    settle(&mut d, &mut rig, 30);
+    assert_eq!(*script.writes.lock().unwrap(), vec![(hex, Intent::Add)]);
+    // A row that already carries its id costs no record read.
+    let carried = plx_data::pms::PmsMovie { sid, rk: "11".into(), kind: 0, guid: Some([3; 12]), ..Default::default() };
+    assert_eq!(rig.watchlist_card_face(&carried).map(|f| f.hex), Some([3; 12]));
+    assert_eq!(script.record_reads.load(Ordering::SeqCst), 3);
+}
+
+/// Only a Remove made ON the Watchlist page asks it to play its removal landing. From a Detail
+/// pushed over a retained page it does not, so a title added back before the page is uncovered is
+/// never faded out as removed.
+#[test]
+fn a_remove_from_another_page_leaves_the_watchlist_page_no_removal_to_replay() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&[1, 2]);
+    let (mut d, mut rig) = rig_over(&script);
+    super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
+    super::frame(&mut d, &mut rig, tick(1), vec![]);
+    settle(&mut d, &mut rig, 2);
+    assert!(Bridge::watchlist_page_on_top(&d), "the page is what the user is on");
+    assert!(rig.watchlist_remove(&guid(2), Bridge::watchlist_page_on_top(&d)));
+    assert_eq!(rig.removal_owed_for_test(), Some(guid(2).as_str()), "on the page: its landing is owed");
+    settle(&mut d, &mut rig, 10);
+    super::open_catalog(&mut d, [2; 12], None);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(30 + i), vec![]);
+    }
+    assert!(!Bridge::watchlist_page_on_top(&d), "a page over the retained list is not the list");
+    rig.watchlist_add([2; 12]);
+    assert!(rig.watchlist_remove(&guid(2), Bridge::watchlist_page_on_top(&d)));
+    assert_eq!(rig.removal_owed_for_test(), None, "from over the page: it is told nothing");
 }

@@ -34,6 +34,25 @@ pub enum CatalogStatus {
     ComingSoon,
     /// Released, and no reachable server holds a copy: the server-slash icon.
     NotOnAnyServer,
+    /// A copy was matched, and every server holding it is unreachable now: the server-slash icon
+    /// and "Server offline" (the date says nothing of this; the Watchlist's tile state does).
+    ServerOffline,
+}
+
+impl CatalogStatus {
+    /// The status the title's tile on the Watchlist dictates, if it has one: `None` leaves the
+    /// record's own date rule ([`record_of`]) standing (the title is not on the list read), or
+    /// says nothing is to be said ([`Some`] of [`CatalogStatus::None`]: an `Unknown` tile, whose
+    /// silent server never produces "on no server", and an `Available` one, which has a copy).
+    pub fn of_tile(state: crate::watchlist::model::TileState) -> CatalogStatus {
+        use crate::watchlist::model::TileState;
+        match state {
+            TileState::ComingSoon | TileState::ComingSoonMatched => CatalogStatus::ComingSoon,
+            TileState::NotOnAnyServer => CatalogStatus::NotOnAnyServer,
+            TileState::ServerOffline => CatalogStatus::ServerOffline,
+            TileState::Available | TileState::Unknown => CatalogStatus::None,
+        }
+    }
 }
 
 /// The loaded record. Strings are empty, not optional, when the service sent none.
@@ -59,7 +78,8 @@ pub enum Load {
     Loaded(Box<CatalogRecord>),
     /// The service answered and has no such title.
     NotFound,
-    /// plex.tv could not be reached (or there is no account credential): Try again, no list needed.
+    /// plex.tv could not be reached (or there is no account credential). The page says so; it
+    /// reads again on resume or when uncovered (`Bridge::catalog_reread`), there is no control.
     Unreachable,
 }
 

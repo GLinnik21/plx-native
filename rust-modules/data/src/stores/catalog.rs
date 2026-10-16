@@ -100,7 +100,7 @@ impl CatalogStore {
         self.notice_gen.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The page mounted (or Try again was pressed) for the title `hex`: capture the identity if
+    /// The page mounted (or was read again: `Bridge::catalog_reread`) for the title `hex`: capture the identity if
     /// the held one is not the seated profile's, and read the record. Every call starts a fresh
     /// request, so an older one still in flight lands into nothing.
     pub fn open(&mut self, hex: [u8; 12]) {
@@ -185,6 +185,13 @@ impl CatalogStore {
             self.bump();
         }
         changed
+    }
+
+    /// The status line the open title wears: what its tile on the Watchlist says (a match landing
+    /// while the page is open moves it), else `None` and the record's own date rule stands.
+    pub fn tile_status(&self, watchlist: &WatchlistStore) -> Option<crate::catalog::CatalogStatus> {
+        let hex = self.hex?;
+        watchlist.view().tile_state_of(&hex).map(crate::catalog::CatalogStatus::of_tile)
     }
 
     /// Is the open title on the signed-in profile's Watchlist? Read from the watchlist store,

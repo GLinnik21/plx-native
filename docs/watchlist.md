@@ -93,9 +93,11 @@ copy a tile opens is chosen current server first, then owned, then shared, Reach
 **The other direction.** A `PmsMovie` carries `guid` and `show_guid` (an episode's `grandparentGuid`),
 each decoded once to `[u8; 12]`. The Detail disc and the hold-menu rows use them to name the catalog
 id. `resolve_catalog_hex(known, fetch)` (`plex/models.rs`) is the helper for a row that lacks one: it
-fetches `client.metadata(rk or show_rk).guid` only when the id is not already known. **It is tested
-(`data/src/watchlist_guid_tests.rs`) but not yet called from the press path:** a hold-menu card whose
-row carries no guid shows no Add row, and the Detail disc reads the guid of the loaded record. Real
+fetches `client.metadata(rk or show_rk).guid` only when the id is not already known. A hold-menu card
+whose row carries no guid asks for it (`WatchlistStore::want_hex`, a worker reading the item's own
+server record, an episode's SHOW record): the menu being opened omits the row, the next one offers it
+once the record named a portable id (tests in `app/watchlist_press_tests.rs`). The Detail disc reads
+the guid of the loaded record. Real
 PMS guids are hex; the mock's default placeholder guids are not, which is why `mock_pms` has a
 `{"guids":"all"}` mode for menu captures.
 
@@ -154,11 +156,16 @@ watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET disc
 /library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
-a line-clamped summary, genres, a status line (clock for coming soon, server-slash for on no server,
-nothing otherwise), the `Coming 12 March` line and the primary pill.
+a line-clamped summary, genres, a status line (clock for coming soon, server-slash for on no server or
+server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
 
-Status: a dated title whose date is after today is coming soon; a dated title already out is on no
-server; an undated title has none; with the clock unknown a dated title is never called coming.
+Status: when the title is a row of the list read, its tile state dictates the line (coming soon, on
+no server, server offline; an Unknown tile and an Available one say nothing, so a silent server never
+reads "On no server"), re-derived while the page is open when a match lands or a server goes away.
+Only a title not on the list read falls back to the date rule: a dated title whose date is after today
+is coming soon; one already out is on no server; an undated title has none; with the clock unknown a
+dated title is never called coming. The plan's "progress caption" on a server-offline title is not
+drawn. An unreachable page has no Try again control: it reads again on resume or uncover.
 
 **Defaults awaiting the owner.**
 

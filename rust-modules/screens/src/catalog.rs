@@ -73,6 +73,7 @@ pub enum Status {
     None,
     ComingSoon,
     NotOnAnyServer,
+    ServerOffline,
 }
 
 /// Where the page's record stands.
@@ -124,6 +125,7 @@ impl From<plx_data::catalog::CatalogStatus> for Status {
             plx_data::catalog::CatalogStatus::None => Self::None,
             plx_data::catalog::CatalogStatus::ComingSoon => Self::ComingSoon,
             plx_data::catalog::CatalogStatus::NotOnAnyServer => Self::NotOnAnyServer,
+            plx_data::catalog::CatalogStatus::ServerOffline => Self::ServerOffline,
         }
     }
 }
@@ -222,15 +224,16 @@ pub fn coming_line(status: Status, release: Option<&str>) -> Option<String> {
 pub fn status_icon(status: Status, release: Option<&str>) -> Option<Icon> {
     match status {
         Status::ComingSoon if coming_line(status, release).is_none() => Some(Icon::Clock),
-        Status::NotOnAnyServer => Some(Icon::ServerSlash),
+        Status::NotOnAnyServer | Status::ServerOffline => Some(Icon::ServerSlash),
         Status::ComingSoon | Status::None => None,
     }
 }
 
 /// The status line's words, present exactly when [`status_icon`] is.
 pub fn status_text(status: Status, release: Option<&str>) -> Option<&'static str> {
-    match status_icon(status, release)? {
-        Icon::Clock => Some(plx_platform::i18n::msg::watchlist_state_coming_soon()),
+    match (status_icon(status, release)?, status) {
+        (Icon::Clock, _) => Some(plx_platform::i18n::msg::watchlist_state_coming_soon()),
+        (_, Status::ServerOffline) => Some(plx_platform::i18n::msg::watchlist_state_server_offline()),
         _ => Some(plx_platform::i18n::msg::watchlist_state_on_no_server()),
     }
 }
@@ -367,7 +370,13 @@ impl CatalogScreen {
         plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         if let (Load::Loaded { art_url, .. }, Some(server)) = (&self.vm.load, self.art_server) {
             if !art_url.is_empty() {
-                let (tex, w, h) = plx_ui::widgets::resolve_tex_wh_on(server.raw(), art_url, 1920, 1080, 0);
+                let (tex, w, h) = plx_ui::widgets::resolve_tex_wh_on(
+                    server.raw(),
+                    art_url,
+                    plx_ui::consts::SCR_W as i32,
+                    plx_ui::consts::SCR_H as i32,
+                    0,
+                );
                 if tex != 0 {
                     p.tex_uv(tex, plx_gfx::gfx::UV_FULL, Rect::FULL.cover(w, h), 0.0, theme::TINT_WHITE);
                 }
