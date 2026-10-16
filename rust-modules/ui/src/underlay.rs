@@ -11,7 +11,7 @@
 //!   it. (`RouteGround`'s own live-frame sample used to read this way, through the four
 //!   `glReadPixels` taps of `gfx::sample_modal_ambient`; PR2 stage B retired both in favour of the
 //!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
-//!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
+//!   frame — a route that opens before Home has drawn — still reaches for.)
 //!
 //! This is the third: a 15x8 grid reduced from the frame itself (`gfx::field_kick`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
@@ -258,8 +258,7 @@ impl UnderlayField {
     }
 
     /// **Latch from a four-corner envelope instead of the framebuffer** — the CPU source, for the
-    /// two cases that have no readable frame: an overlay over the hardware video plane, and a
-    /// route that opens before Home has ever drawn.
+    /// case that has no readable frame: a route that opens before Home has ever drawn.
     ///
     /// It deliberately does NOT low-pass. The source is already a bilinear surface, i.e. band-
     /// limited far below this grid, and the edge-clamped kernel would only flatten it against the

@@ -26,6 +26,7 @@
   "base64",
   "bit-vec",
   "cc",
+  "core_detect",
   "data-encoding",
   "der-parser",
   "deranged",
@@ -34,6 +35,7 @@
   "getrandom",
   "lazy_static",
   "minimal-lexical",
+  "multiversion_no_op",
   "nom",
   "num-bigint",
   "num-conv",
@@ -50,8 +52,10 @@
   "rustls",
   "rustls-pki-types",
   "rustls-webpki",
+  "rustversion",
   "serde_derive",
   "shlex",
+  "simdutf8",
   "subtle",
   "syn",
   "synstructure",
@@ -205,6 +209,11 @@
      "name": "rustc-demangle",
      "licence": "MIT/Apache-2.0",
      "copyright": "Alex Crichton"
+    },
+    {
+     "name": "scopeguard",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2016-2019 Ulrik Sverdrup \"bluss\" and scopeguard developers"
     },
     {
      "name": "serde",

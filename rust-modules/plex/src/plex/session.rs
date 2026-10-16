@@ -937,6 +937,18 @@ impl PlaybackQuality {
         format!("{lines}p \u{b7} {rate}")
     }
 
+    /// The rung's SHORT name for a row that has another part to read beside it ("720p"): the
+    /// picture height alone, which is the format's own conventional name in every shipped language.
+    /// Auto and Original name themselves ([`Self::label`]).
+    pub fn short_label(self) -> String {
+        match self {
+            PlaybackQuality::Auto | PlaybackQuality::Original => self.label(),
+            PlaybackQuality::P1080High | PlaybackQuality::P1080 => "1080p".to_owned(),
+            PlaybackQuality::P720 | PlaybackQuality::P720Low => "720p".to_owned(),
+            PlaybackQuality::P480 => "480p".to_owned(),
+        }
+    }
+
     /// A missing field in an OLD file is handled by [`Session::playback_quality`] and is always
     /// Original. This is only for a genuinely NEW file, where Auto is allowed to become the
     /// default after (and only after) its whole playback path declares itself ready.
