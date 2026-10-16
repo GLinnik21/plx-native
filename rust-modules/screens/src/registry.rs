@@ -2328,7 +2328,12 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
 // item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
 // pin covers those AppArg / menu-arg changes too; the previous pin was 0x6a55_c53a_d931_3acf.
-const SCREEN_SHAPES_PIN: u64 = 0xdb5b_e029_dd4f_0a88;
+// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 -> this): the Detail hero
+// gains the bookmark disc (`ELEM_WATCHLIST`, and with it the `DetailScreen` SHAPE's flip spring and
+// membership face), `ARG_SHAPE` gains `ContentArg::Catalog{hex}` and the item-menu Catalog kind's
+// identity captured at open, and `SCREEN_SHAPES` gains `CatalogScreen::SHAPE`. One bump for the
+// whole of W6; the three replay fixtures were re-recorded against it.
+const SCREEN_SHAPES_PIN: u64 = 0xd479_d84f_2093_4143;
 
 #[cfg(test)]
 mod arg_tests {
