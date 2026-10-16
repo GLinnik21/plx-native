@@ -164,13 +164,19 @@ fn the_tile_corner_veil_is_one_role_token_at_black_55() {
 #[test]
 fn the_watched_tick_reads_the_veil_token_and_no_literal_alpha() {
     let src = include_str!("widgets.rs");
+    // The tick is `corner_mark` with the check glyph (the Watchlist's marks share its body), so
+    // the tokens are graded where they are read.
     let start = src.find("pub fn watched_mark(").expect("watched_mark is in widgets.rs");
     let rest = &src[start..];
-    let body = &rest[..rest.find("\n}\n").expect("watched_mark closes") + 2];
+    let tick = &rest[..rest.find("\n}\n").expect("watched_mark closes") + 2];
+    assert!(tick.contains("corner_mark(") && tick.contains("Icon::Check"), "the watched tick is the shared corner mark:\n{tick}");
+    let start = src.find("pub fn corner_mark(").expect("corner_mark is in widgets.rs");
+    let rest = &src[start..];
+    let body = &rest[..rest.find("\n}\n").expect("corner_mark closes") + 2];
     assert!(body.contains("crate::theme::TILE_MARK_VEIL") || body.contains("theme::TILE_MARK_VEIL"),
-        "the watched tick's veil must be the role token:\n{body}");
+        "the corner mark's veil must be the role token:\n{body}");
     assert!(body.contains("theme::TILE_MARK_SHADOW") && body.contains("theme::TILE_MARK_INK"));
     for literal in ["0.55", "0.40", ".55", ".40"] {
-        assert!(!body.contains(literal), "watched_mark spells an alpha ({literal}) instead of the token");
+        assert!(!body.contains(literal), "corner_mark spells an alpha ({literal}) instead of the token");
     }
 }
