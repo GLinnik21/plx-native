@@ -3108,6 +3108,34 @@ mod scrub_ownership_tests {
         assert!(reqs.is_empty() && page.hud.dismissed, "hide the transport: {reqs:?}");
     }
 
+    /// **A commit is final: BACK afterwards is BACK's ordinary meaning** — hide the transport —
+    /// and never a seek back to where the scrub started. A key target's confirmation and a playing
+    /// film's drag release are the two ways a scrub commits on a playing film.
+    #[test]
+    fn back_after_a_commit_has_its_normal_meaning_and_seeks_nowhere() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(50 * S);
+        let mut page = page_on_the_bar();
+        let (at, commit) = tap_and_commit(&mut page, 1_000);
+        assert_eq!(commit, vec![PlayerReq::SeekTo(60 * S)]);
+        playhead(60 * S); // the seek landed
+        let (handled, reqs) = back(&mut page, at + 1_000);
+        assert_eq!(handled, Handled::Yes);
+        assert!(seeks(reqs.clone()).is_empty(), "no jump back after a key commit: {reqs:?}");
+        assert!(page.hud.dismissed, "BACK hides the transport");
+
+        let mut page = page_on_the_bar();
+        let (mx, my) = on_the_bar(0.9);
+        pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) }, 10_000);
+        let target = page.scrub.ns;
+        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 10_080).1), vec![PlayerReq::CommitSeek(target)]);
+        playhead(target);
+        let (_, reqs) = back(&mut page, 11_000);
+        assert!(seeks(reqs.clone()).is_empty(), "no jump back after a drag's release: {reqs:?}");
+        assert!(page.hud.dismissed, "BACK hides the transport");
+    }
+
     /// **A.4 — a committed tap can be undone with BACK for five seconds**, by one more seek to the
     /// position before the scrub; the transport stays up for the window; a second BACK is not a
     /// redo but BACK's normal meaning.
