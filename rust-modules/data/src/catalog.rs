@@ -1,12 +1,17 @@
 //! The catalog page's data (plan §2.4 W6): the plex.tv discover record of a title no server holds
-//! (`GET discover /library/metadata/<hex>`), and the page's membership answer. CONTRACT-FREEZE
-//! STAGE: the types below are the shared shape; `stores::catalog::CatalogStore` owns the fetch.
+//! (`GET discover /library/metadata/<hex>`), and the page's membership answer. This module holds
+//! the shared shapes, the I/O seam ([`CatalogIo`]: live in production, a script in tests) and the
+//! mapping from the service's item to a [`CatalogRecord`]; `stores::catalog::CatalogStore` owns
+//! the state and the fetch worker.
 //!
 //! No title text appears in a `Debug` of these types' owners; the `Load` itself derives `Debug`
 //! because the log scrubber treats `{:?}` of a page record as the screen's concern, so callers
 //! must not format it into the event log.
 
 use crate::watchlist::model::Kind;
+use crate::watchlist::WatchlistAuth;
+use plx_plex::plex::account::AccountClient;
+use plx_plex::plex::watchlist::{CatalogItem, WatchKind, WatchlistError};
 
 /// Is the title on the signed-in profile's Watchlist? Read from `WatchlistStore` (never fetched by
 /// the catalog store itself). `Unknown` while the list has not landed or plex.tv is unreachable:
@@ -57,3 +62,65 @@ pub enum Load {
     /// plex.tv could not be reached (or there is no account credential): Try again, no list needed.
     Unreachable,
 }
+
+/// Everything the store asks of the outside world. Production is [`LiveCatalogIo`].
+pub trait CatalogIo: Send + Sync {
+    /// MAIN THREAD: the identity to read as (`None` when the profile has no account credential).
+    fn capture_auth(&self) -> Option<WatchlistAuth>;
+    /// MAIN THREAD: is `auth` still the seated profile?
+    fn is_current(&self, auth: &WatchlistAuth) -> bool;
+    /// WORKER THREAD: `GET discover /library/metadata/<hex>`.
+    fn fetch(&self, auth: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError>;
+    /// Today as `YYYY-MM-DD` (UTC): what a release date is compared against.
+    fn today(&self) -> Option<String>;
+}
+
+/// The production seam: libcurl through `plex::watchlist`, the identity from the session.
+pub struct LiveCatalogIo;
+
+impl CatalogIo for LiveCatalogIo {
+    fn capture_auth(&self) -> Option<WatchlistAuth> {
+        WatchlistAuth::capture()
+    }
+    fn is_current(&self, auth: &WatchlistAuth) -> bool {
+        auth.is_current()
+    }
+    fn fetch(&self, auth: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
+        let client = AccountClient::new(&auth.client_id, Some(&auth.credential));
+        let mut transport = client.watchlist_transport();
+        let answer = client.catalog_item(hex, &mut transport);
+        answer
+    }
+    fn today(&self) -> Option<String> {
+        <crate::watchlist::LiveIo as crate::watchlist::WatchlistIo>::today(&crate::watchlist::LiveIo)
+    }
+}
+
+/// The page's record from the service's item. The page opens for a title no reachable server
+/// holds, so a released title reads "not on any server" and one whose date is still ahead reads
+/// "coming soon"; a title with no date at all has nothing to say about release. `today` is
+/// `YYYY-MM-DD`; when it is unknown a dated title is not called coming (the date still shows).
+pub fn record_of(item: &CatalogItem, today: Option<&str>) -> CatalogRecord {
+    let w = &item.item;
+    let release_date = w.originally_available.clone().filter(|d| !d.is_empty());
+    let status = match (&release_date, today) {
+        // `YYYY-MM-DD` compares as text.
+        (Some(d), Some(t)) if d.as_str() > t => CatalogStatus::ComingSoon,
+        (Some(_), _) => CatalogStatus::NotOnAnyServer,
+        (None, _) => CatalogStatus::None,
+    };
+    CatalogRecord {
+        title: w.title.clone().unwrap_or_default(),
+        year: w.year,
+        kind: if w.kind == Some(WatchKind::Show) { Kind::Show } else { Kind::Movie },
+        summary: w.summary.clone().unwrap_or_default(),
+        genres: item.genres.clone(),
+        art_url: w.thumb.clone().unwrap_or_default(),
+        release_date,
+        status,
+    }
+}
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
