@@ -28,7 +28,7 @@ use plx_data::metadata::{Detail, Episode, Extra};
 use plx_ui::label::HAlign;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_view::TextView;
-use plx_ui::widgets::{CircleButton, PosterMark};
+use plx_ui::widgets::PosterMark;
 use plx_ui::{theme, Painter, Rect};
 
 /// The hero owns the local ids below the season block; its controls are the `ELEM_*` ids at its
@@ -48,35 +48,19 @@ pub const ELEM_TRAILER: u32 = 5;
 /// group.
 pub const HERO_GROUP: GroupId = GroupId(0);
 
-/// The Play/Resume pill's minimum width — a pathologically short label still gets a pill.
-const PW: f32 = 168.0;
-
-/// The row's inter-control air and its disc diameter — the SHARED control-family numbers
-/// (`ui::widgets::CTRL_GAP`/`StatusOverlay::CTRL_H`), not a second copy of them.
-const CGAP: f32 = plx_ui::widgets::CTRL_GAP;
-pub const CD: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
+// The row's shared geometry (PW, CGAP, CD, FACTS_R, the pill-width formula, the row accumulation,
+// the disc-unfurl budget and the meta line) lives in `appkit::hero_layout`, so the catalog page lays
+// out with the same numbers.
+pub use plx_appkit::hero_layout::{HeroWidths, CD};
+use plx_appkit::hero_layout::{FACTS_R, PW};
+#[cfg(test)]
+use plx_appkit::hero_layout::CGAP;
 const PEOPLE_MAX_LINES: usize = 2;
 /// Names on the hero's Starring line: a summary. The whole cast is the Cast row further down the
 /// page, one headshot per credit with nothing cut (`cards::Cards` counts `Detail::credits_len`).
 const PEOPLE_SUMMARY: usize = 3;
 const PEOPLE_LABEL_INK: [f32; 4] = theme::TEXT_TERTIARY;
 const FACTS_SEP_PAD: f32 = theme::space::SM;
-const FACTS_R: f32 = plx_ui::consts::SCR_W
-    - plx_ui::consts::MARGIN_X
-    - plx_ui::detail_layout::PEOPLE_W
-    - theme::space::SM;
-
-/// Duplicated from `widgets::Button`'s own PRIVATE `BTN_ICON_RATIO`/`BTN_ICON_GAP` (1.15, 12.0):
-/// those two constants are `widgets.rs`-internal, and this module may not reach past that file's
-/// `pub`/`pub` surface (the layer rule: a screen names `ui/`'s public surface, never its
-/// internals). `BTN_PILL_AIR` IS `pub` and is reused directly rather than copied.
-///
-/// A drift here is COSMETIC, not a hit-test miss: whatever width this formula computes is fed to
-/// BOTH [`Focusable::place`](super::DetailScreen) and `draw`'s `Button::new(label, sz, rect)` (which
-/// only ever fills the rect it is given — see `widgets::Button::new`'s doc), so the two paths can
-/// disagree with the REAL widget's own preferred width, never with EACH OTHER.
-const HERO_ICON_RATIO: f32 = 1.15;
-const HERO_ICON_GAP: f32 = 12.0;
 
 pub fn alt_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_also_available_c() }
 
@@ -333,26 +317,8 @@ pub fn hero_pill_label(has_restart: bool) -> &'static CStr {
     }
 }
 
-/// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `plx_gfx::text` directly
-/// — see [`HERO_ICON_RATIO`]'s doc for why the icon-box constants are duplicated, and
-/// `screens::login::status_action_rect`'s own doc for the general pattern (host-test-safe geometry
-/// shared by `Focusable::place` and `draw`).
-fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: bool) -> f32 {
-    let (isz, gap) = if icon {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
-    } else {
-        (0.0, 0.0)
-    };
-    let (tsz, tgap) = if trailing {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
-    } else {
-        (0.0, 0.0)
-    };
-    isz + gap + measure.width(label, sz, true) + tgap + tsz + plx_ui::widgets::BTN_PILL_AIR
-}
-
 pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
-    pill_w(
+    plx_appkit::hero_layout::pill_w(
         measure,
         hero_pill_label(has_restart),
         theme::size::BODY,
@@ -363,39 +329,24 @@ pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
 }
 
 pub fn alt_pill_w(measure: &dyn Measure) -> f32 {
-    pill_w(measure, alt_label(), theme::size::BODY, false, true)
-}
-
-/// Every measured width the row's accumulation needs, as one value — ported verbatim from
-/// `ui/detail.rs::HeroWidths`.
-#[derive(Clone, Copy, Debug)]
-pub struct HeroWidths {
-    pub pill: f32,
-    pub alt: f32,
-    /// the three discs, in [`disc_verb`]'s slot order, each already unfurled
-    pub disc: [f32; 3],
+    plx_appkit::hero_layout::pill_w(measure, alt_label(), theme::size::BODY, false, true)
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in `set`, given both pills'
 /// measured widths. Ported verbatim from `ui/detail.rs::hero_btn_rect_at`.
 pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect {
     let (v, n) = hero_ctls(set);
-    let mut x = plx_ui::consts::MARGIN_X;
-    let mut w = cw.pill;
-    for (k, c) in v[..n].iter().enumerate() {
-        w = match c {
+    let mut widths = [0.0f32; 5];
+    for (slot, c) in widths.iter_mut().zip(&v[..n]) {
+        *slot = match c {
             HeroCtl::Play => cw.pill,
             HeroCtl::Alt => cw.alt,
             HeroCtl::Restart => cw.disc[0],
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
         };
-        if k >= i {
-            break;
-        }
-        x += w + CGAP;
     }
-    Rect::new(x, y, w, CD)
+    plx_appkit::hero_layout::row_rect(&widths[..n], i, y)
 }
 
 /// Every disc's drawn width right now, given the row's set, both pills' widths, each disc's
@@ -435,35 +386,10 @@ pub(super) fn disc_caps_at(
     label_w: [f32; 3],
 ) -> [f32; 3] {
     let (_, n) = hero_ctls(set);
-    let closed = HeroWidths {
-        pill,
-        alt,
-        disc: [CD; 3],
-    };
-    let last = hero_btn_rect_at(set, n.saturating_sub(1), 0.0, closed);
-    let budget = CircleButton::label_budget(CD, FACTS_R - (last.x + last.w));
-    if label_w.iter().copied().fold(0.0f32, f32::max) > budget {
-        return [CD; 3];
-    }
-    let open = [
-        CircleButton::cap_w(CD, unfurl[0], label_w[0]),
-        CircleButton::cap_w(CD, unfurl[1], label_w[1]),
-        CircleButton::cap_w(CD, unfurl[2], label_w[2]),
-    ];
-    let last_open = hero_btn_rect_at(
-        set,
-        n.saturating_sub(1),
-        0.0,
-        HeroWidths {
-            pill,
-            alt,
-            disc: open,
-        },
-    );
-    if last_open.x + last_open.w > FACTS_R + 0.01 {
-        return [CD; 3];
-    }
-    open
+    plx_appkit::hero_layout::disc_caps_with(unfurl, label_w, |disc| {
+        let last = hero_btn_rect_at(set, n.saturating_sub(1), 0.0, HeroWidths { pill, alt, disc });
+        last.x + last.w
+    })
 }
 
 /// The live widths, combining [`hero_pill_w`]/[`alt_pill_w`]/[`disc_caps`] — the one function
@@ -537,27 +463,7 @@ fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32, mea
 }
 
 fn hero_facts(d: &Detail) -> (String, Option<String>) {
-    if let Some(ep) = hero_episode(d) {
-        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(ep.dur_ms));
-        return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
-    }
-    let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
-    if d.is_show {
-        let seasons = d.seasons.len();
-        if seasons == 0 {
-            return (date, None);
-        }
-        let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let seasons = plx_platform::i18n::msg::browse_detail_seasons(seasons as i64);
-        let extent = if episodes > 0 {
-            plx_platform::i18n::msg::browse_detail_extent(&plx_platform::i18n::msg::browse_detail_episodes(episodes), &seasons)
-        } else { seasons };
-        return (date, Some(extent));
-    }
-    (
-        date,
-        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(d.dur_ms)),
-    )
+    plx_appkit::hero_layout::meta_facts(d, hero_episode(d))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
