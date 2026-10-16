@@ -346,12 +346,24 @@ fn request_with(
     }
 }
 
+/// Also counts the credential spellings an installed backend names.
 fn carries_credential(path: &str, headers: &[&str]) -> bool {
-    path.to_ascii_lowercase().contains("x-plex-token=")
+    #[cfg(feature = "alt-backend")]
+    if let Some(b) = crate::plex::backend::active() {
+        return carries_credential_spelled(path, headers, b.credential_query_keys(), b.credential_headers());
+    }
+    carries_credential_spelled(path, headers, &[], &[])
+}
+
+/// Plex's spellings plus extra lowercase `key=` query prefixes and header names.
+fn carries_credential_spelled(path: &str, headers: &[&str], query: &[&str], named: &[&str]) -> bool {
+    const PLEX_QUERY: [&str; 1] = ["x-plex-token="];
+    const PLEX_HEADERS: [&str; 2] = ["x-plex-token", "authorization"];
+    let path = path.to_ascii_lowercase();
+    PLEX_QUERY.iter().chain(query).any(|key| path.contains(key))
         || headers.iter().any(|header| {
             header.split_once(':').is_some_and(|(name, _)| {
-                name.trim().eq_ignore_ascii_case("x-plex-token")
-                    || name.trim().eq_ignore_ascii_case("authorization")
+                PLEX_HEADERS.iter().chain(named).any(|h| name.trim().eq_ignore_ascii_case(h))
             })
         })
 }
@@ -1208,6 +1220,16 @@ mod tests {
             &[],
             CredentialPolicy::AllowPlaintext,
         ));
+    }
+
+    #[test]
+    fn a_backend_credential_spelling_is_a_credential() {
+        let (query, named) = (&["apikey="][..], &["x-other-token"][..]);
+        assert!(carries_credential_spelled("/stream?Static=true&ApiKey=secret", &[], query, named));
+        assert!(carries_credential_spelled("/items", &["X-Other-Token: secret"], query, named));
+        assert!(!carries_credential_spelled("/stream?Static=true&ApiKey=secret", &[], &[], &[]));
+        assert!(!carries_credential_spelled("/items", &["X-Other-Token: secret"], &[], &[]));
+        assert!(carries_credential_spelled("/x?X-Plex-Token=t", &[], &[], &[]));
     }
 
     #[test]

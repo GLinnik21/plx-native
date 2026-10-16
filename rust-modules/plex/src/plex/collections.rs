@@ -72,6 +72,14 @@ impl Client {
         start: i64,
         size: i64,
     ) -> CollectionOutcome {
+        crate::alt!(b => from_backend(b.section_items_query(&super::params::SectionQuery {
+            section_key: section,
+            sort: "titleSort",
+            filters: &[("type".into(), "18".into())],
+            start,
+            size,
+            include_meta: false,
+        })));
         let path = paged_path(
             &format!("/library/sections/{section}/collections"),
             PageReq::window(start, size),
@@ -81,6 +89,7 @@ impl Client {
 
     /// `GET /library/metadata/{ratingKey}` for one collection's metadata.
     pub fn collection(&self, rating_key: &str) -> CollectionOutcome {
+        crate::alt!(b => from_backend(b.metadata_many(&[rating_key])));
         self.collection_get(&format!("/library/metadata/{rating_key}"))
     }
 
@@ -91,6 +100,7 @@ impl Client {
         start: i64,
         size: i64,
     ) -> CollectionOutcome {
+        crate::alt!(b => from_backend(b.children_paged(rating_key, start, size)));
         let path = paged_path(
             &format!("/library/collections/{rating_key}/children"),
             PageReq::window(start, size),
@@ -112,6 +122,12 @@ impl Client {
             JsonStatusOutcome::Response { .. } => CollectionOutcome::Transport,
         }
     }
+}
+
+/// A backend answer is the page; no answer is a retryable `Transport`.
+#[cfg(feature = "alt-backend")]
+fn from_backend(page: Option<MediaContainer>) -> CollectionOutcome {
+    page.map_or(CollectionOutcome::Transport, CollectionOutcome::Ok)
 }
 
 /// Extract the collection rating key from either supported member-listing route.

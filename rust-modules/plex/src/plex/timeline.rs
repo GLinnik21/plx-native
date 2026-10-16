@@ -20,6 +20,7 @@ impl Client {
     /// same success line for all four. The reporting is `crate::route::scrobble_stop`'s; this
     /// only has to stop throwing the answer away.
     pub fn timeline(&self, r: &TimelineReport) -> bool {
+        crate::alt!(b => b.timeline(r));
         let q = QueryBuilder::new("/:/timeline")
             .str("ratingKey", r.rating_key)
             .str("key", &format!("/library/metadata/{}", r.rating_key))
@@ -39,6 +40,7 @@ impl Client {
 
     /// GET /identity → the server's stable machineIdentifier (None on failure/empty).
     pub fn machine_identity(&self) -> Option<String> {
+        crate::alt!(b => b.machine_identity());
         let mid = self.get_json("/identity")?.machine_identifier;
         if mid.is_empty() {
             None
@@ -69,6 +71,9 @@ impl Client {
         session: &str,
         continuous: bool,
     ) -> Option<PlayQueueResult> {
+        crate::alt!(b => b
+            .play_queue(rating_key, continuous)
+            .map(|mc| PlayQueueResult::of(mc, self.id(), rating_key)));
         let uri = format!(
             "server://{machine_id}/com.plexapp.plugins.library/library/metadata/{rating_key}"
         );

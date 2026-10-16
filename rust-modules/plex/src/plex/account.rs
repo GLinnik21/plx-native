@@ -41,6 +41,11 @@ const PLEX_TV: &str = "https://plex.tv";
 /// plain `http://` to `127.0.0.1`/`localhost` is refused and logged: this trigger must never be
 /// able to point the account API, and the token it carries, at another host. Read once.
 pub fn plex_tv() -> &'static str {
+    // Another backend has no plex.tv account: send account calls to a closed local port.
+    #[cfg(feature = "alt-backend")]
+    if super::backend::active().is_some() {
+        return NO_PLEX_TV;
+    }
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BASE.get_or_init(|| match plx_base::devtrig::read("plextv") {
         Some(v) if loopback_http(&v) => {
@@ -56,6 +61,10 @@ pub fn plex_tv() -> &'static str {
         None => PLEX_TV.to_string(),
     })
 }
+
+/// A closed local port: where plex.tv calls go while another backend is installed.
+#[cfg(feature = "alt-backend")]
+pub const NO_PLEX_TV: &str = "http://127.0.0.1:9";
 
 /// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
 fn loopback_http(v: &str) -> bool {
@@ -316,6 +325,7 @@ impl AccountClient {
     fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
         timeouts: plx_net::net::Timeouts) -> AudioPreferencesOutcome
     {
+        crate::alt!(b => b.audio_preferences().map_or(AudioPreferencesOutcome::Failed, AudioPreferencesOutcome::Available));
         let url = format!("{}/api/v2/user", plex_tv());
         let response = plx_net::net::request_evidence(&url, &self.headers(), "GET", None,
             timeouts, false, None, None);

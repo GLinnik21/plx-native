@@ -472,6 +472,9 @@ impl Metadata {
 
 #[derive(Deserialize, Default)]
 pub struct Media {
+    /// The version's name, for the version list. PMS sends none.
+    #[serde(default)]
+    pub title: String,
     #[serde(rename = "videoCodec", default)]
     pub video_codec: String,
     #[serde(rename = "audioCodec", default)]

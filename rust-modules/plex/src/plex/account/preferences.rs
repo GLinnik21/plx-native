@@ -122,6 +122,7 @@ impl PreferenceRequest {
         if !current() { return Err(PreferenceError::Stale); }
         let flight = cache.begin_settings(self.key.clone(), None)?;
         let result = (|| {
+            crate::alt!(b => b.audio_preferences());
             // /profile itself has no identity fields. Prove the token's owner before accepting
             // its preferences, using the same id/uuid rules as playback's /user request.
             let user = accepted(request("GET", "/api/v2/user", "")?)?;
@@ -149,11 +150,20 @@ impl PreferenceRequest {
         let (query, preferences) = update.apply(&snapshot.preferences)?;
         let flight = cache.begin_settings(self.key.clone(), Some(snapshot.revision))?;
         let result = if query.is_empty() { Ok(preferences) } else {
-            request("PUT", "/api/v2/user/profile", &query).and_then(accepted)
-                .map(|_| preferences)
+            store(&snapshot.preferences, preferences, &query, &mut request)
         };
         finish(cache, flight, result, current)
     }
+}
+
+/// Save the changed preferences (`query`), or hand them to the installed backend.
+#[cfg_attr(not(feature = "alt-backend"), allow(unused_variables))]
+fn store<F>(previous: &AudioPreferences, next: AudioPreferences, query: &str, mut request: F)
+    -> Result<AudioPreferences, PreferenceError>
+where F: FnMut(&str, &str, &str) -> Result<plx_net::net::Resp, PreferenceError>
+{
+    crate::alt!(b => b.save_audio_preferences(previous, &next));
+    request("PUT", "/api/v2/user/profile", query).and_then(accepted).map(|_| next)
 }
 
 fn preference_failure(failure: plx_net::net::RequestFailure) -> PreferenceError {

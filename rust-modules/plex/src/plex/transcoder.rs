@@ -152,6 +152,19 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
     v
 }
 
+/// The video codecs a backend's transcode may copy: the device's direct-play list.
+#[cfg(feature = "alt-backend")]
+pub fn device_video_copy_codecs() -> Vec<&'static str> {
+    direct_play_video_codecs(plx_platform::devcaps::caps())
+}
+
+/// The audio codec a backend's transcode encodes to: the first the device decodes.
+#[cfg(feature = "alt-backend")]
+pub fn device_audio_encode_target() -> &'static str {
+    let caps = plx_platform::devcaps::caps();
+    ["ac3", "eac3", "aac", "dts"].into_iter().find(|c| caps.audio_has(c)).unwrap_or("aac")
+}
+
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it),
 /// as a PURE function of the device's decode capabilities: direct-play an MKV or MP4 whose video
 /// the SoC decodes (H264 everywhere; HEVC when its table says so, VP9 / AV1 when the table lists
@@ -344,6 +357,7 @@ impl Client {
     /// the built PATH (the sole path-returning method): posters uses it as the LRU key AND the
     /// http_get path. `src_path` is the raw thumb/art path; encoding is centralized in enc().
     pub fn image_transcode_path(&self, src_path: &str, w: i64, h: i64, png: bool) -> String {
+        crate::alt!(b => b.image_transcode_path(src_path, w, h, png));
         let mut q = QueryBuilder::new("/photo/:/transcode")
             .int("width", w)
             .int("height", h)
@@ -517,6 +531,7 @@ impl Client {
         subtitle_stream_id: i64,
         forced: bool,
     ) -> Option<MediaContainer> {
+        crate::alt!(b => b.mde_decision(rating_key, session, audio_stream_id, subtitle_stream_id, forced));
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
             .int("mediaIndex", 0)
@@ -551,6 +566,7 @@ impl Client {
     /// `_off` is the proof the round trip is on a worker: the frame thread cannot mint one.
     #[track_caller]
     pub fn transcode_decision(&self, _off: &plx_base::task::OffFrame, spec: &TranscodeSpec) -> Option<MediaContainer> {
+        crate::alt!(b => b.transcode_decision(spec));
         let path = format!(
             "/video/:/transcode/universal/decision?{}",
             self.transcode_query(spec)
@@ -569,6 +585,16 @@ impl Client {
         spec: &TranscodeSpec,
         deadline: std::time::Instant,
     ) -> JsonDeadlineOutcome {
+        #[cfg(feature = "alt-backend")]
+        if let Some(b) = super::backend::active() {
+            return match b.transcode_decision(spec) {
+                Some(mc) => JsonDeadlineOutcome::Response {
+                    reply: crate::http::Reply { status: 200, body: Vec::new(), peer_pin: None },
+                    parsed: Some(mc),
+                },
+                None => JsonDeadlineOutcome::Transport,
+            };
+        }
         let path = format!(
             "/video/:/transcode/universal/decision?{}",
             self.transcode_query(spec)
@@ -579,6 +605,10 @@ impl Client {
 
     /// The delivery-matched stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
+        #[cfg(feature = "alt-backend")]
+        if let Some(u) = super::backend::active().and_then(|b| b.transcode_start_url(spec)) {
+            return u;
+        }
         let endpoint = match spec.contract.delivery {
             TranscodeDelivery::ProgressiveMkv => "start.mkv",
             TranscodeDelivery::FixedHls { .. } => "start.m3u8",
@@ -609,6 +639,7 @@ impl Client {
         if session.is_empty() {
             return false;
         }
+        crate::alt!(b => b.transcode_stop(session));
         self.get_ok(&self.transcode_stop_query(session, true))
     }
 
@@ -620,6 +651,7 @@ impl Client {
         if session.is_empty() {
             return false;
         }
+        crate::alt!(b => b.transcode_stop(session));
         self.get_ok(&self.transcode_stop_query(session, false))
     }
 
@@ -649,6 +681,7 @@ impl Client {
         if session.is_empty() {
             return None;
         }
+        crate::alt!(b => b.transcode_resource_reconciled(session));
         let q =
             QueryBuilder::new("/status/sessions/close").str("X-Plex-Session-Identifier", session);
         match self.post_status(&q.build())? {
@@ -669,6 +702,7 @@ impl Client {
         if session.is_empty() {
             return None;
         }
+        crate::alt!(b => b.transcode_session_present(session));
         let q = QueryBuilder::new("/video/:/transcode/universal/ping").str("session", session);
         match self.get_status(&q.build())? {
             200..=299 => Some(true),

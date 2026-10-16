@@ -918,6 +918,16 @@ fn populated(id: ServerId) -> Option<&'static Client> {
     (!p.is_null()).then(|| unsafe { &*p })
 }
 
+/// On another backend, queue a re-proof for a plaintext origin registered without a grant.
+fn strand_on_backend(machine_id: &str, origin: &Origin) {
+    #[cfg(feature = "alt-backend")]
+    if !origin.is_tls() && super::backend::active().is_some() {
+        super::grant::strand(machine_id);
+    }
+    #[cfg(not(feature = "alt-backend"))]
+    let _ = (machine_id, origin);
+}
+
 /// Record whether `id`'s credential rests on a plaintext grant — see [`Slot::on_grant`].
 fn mark_on_grant(id: ServerId, on_grant: bool) {
     if let Some(s) = slot_of(id) {
@@ -1239,6 +1249,7 @@ fn register_lazy(
             }
         } else {
             s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+            strand_on_backend(grant_machine, origin);
         }
         return id;
     }
@@ -1274,6 +1285,7 @@ fn register_lazy(
     mark_on_grant(id, on_grant);
     if !credential_eligible {
         s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        strand_on_backend(grant_machine, origin);
     }
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
