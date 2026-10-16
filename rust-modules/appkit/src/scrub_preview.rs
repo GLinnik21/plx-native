@@ -823,6 +823,48 @@ mod tests {
         assert!(live(Some(600_000), 700_000, 900, &mut m).is_none(), "gone after its 100 ms fade");
     }
 
+    /// **A fast hold keeps its card.** A held key at `SCRUB_MAX` (480 s/s) moves the target ~7.7 s
+    /// per 16 ms frame, and a still takes ~80 ms to land, so the newest still ARRIVED is always far
+    /// outside the 10 s tolerance of a target that has run on. Measured on the set: 10-14 stills a
+    /// second all answered, and the card still blinked out 400 ms into every hold. While the target
+    /// moves the last arrived still stands for it, whatever its distance.
+    #[test]
+    fn a_fast_hold_keeps_the_card_while_stills_keep_arriving() {
+        let (mut m, mut s) = (ScrubPreview::new(), Server::new(true, 5));
+        let mut hidden = Vec::new();
+        for i in 0..200u32 {
+            let now = i * 16;
+            let target = still_ms(60_000_000_000 + i64::from(i) * 7_680_000_000);
+            m.motion.step_live(true, now);
+            let shown = m.step((7459, GEN), target, now, |ms| s.look(ms));
+            s.frame += 1;
+            let card = m.motion.observe(shown, target, false, 900.0, now);
+            if now > 1_000 && card.is_none_or(|c| c.alpha < 1.0) {
+                hidden.push(now);
+            }
+        }
+        assert!(hidden.is_empty(), "the card dropped out at {hidden:?} ms of a hold with stills landing");
+    }
+
+    /// …and the tolerance is for a target that has SETTLED: a knob that stops with only a far still
+    /// shown hides it after the 400 ms, counted from the last move.
+    #[test]
+    fn a_settled_target_with_only_a_far_still_hides_it_400_ms_after_the_last_move() {
+        let mut m = Motion::new();
+        for (i, t) in (0..=1000).step_by(100).enumerate() {
+            let card = live(Some(600_000), 600_000 + 60_000 * (i as i64 + 1), t, &mut m);
+            assert!(t == 0 || card.is_some(), "moving at {t}"); // t = 0 is the entrance's first frame
+        }
+        // the target stops at 1_260_000 (its last move was at 1000 ms); the shown still is 11 minutes behind
+        let at = |t: u32, m: &mut Motion| live(Some(600_000), 1_260_000, t, m);
+        assert!(at(1_100, &mut m).is_some() && at(1_390, &mut m).is_some(), "up through the 400 ms after the last move");
+        at(1_400, &mut m);
+        at(1_790, &mut m);
+        assert!(m.card_on, "…and 400 ms of staleness after it");
+        at(1_800, &mut m);
+        assert!(!m.card_on, "hidden once 400 ms have passed since the target settled");
+    }
+
     #[test]
     fn a_nearer_still_inside_the_window_keeps_the_card() {
         let mut m = Motion::new();
