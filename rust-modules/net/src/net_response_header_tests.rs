@@ -65,7 +65,7 @@ fn a_null_sink_or_a_non_utf8_line_is_taken_without_a_panic() {
 }
 
 /// One request to a loopback double that answers `reply` verbatim; returns the request head it saw.
-fn served(reply: &'static str, headers: &[String]) -> (Result<Resp, RequestError>, String) {
+fn served(reply: &'static str, headers: &[String]) -> (Option<Resp>, String) {
     use std::io::{Read, Write};
     let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = srv.local_addr().unwrap().port();
