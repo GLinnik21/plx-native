@@ -233,10 +233,11 @@ pub const PANEL_RAD: f32 = 24.0;
 /// DS7), its rows a [`TableView`]. A component the mounting surface owns, like the profile menu's
 /// table: it holds the open/morph state, the row cursor and the geometry, and answers `draw`.
 ///
-/// The host surface draws the 30% scrim and, ABOVE it, the pill through
-/// [`pill_painter`](Self::pill_painter), so the label dissolves as the rows come in and returns on
-/// close (`Popover::pill_painter`). That copy is the only pill while the menu is up: the surface
-/// names the pill as its `opener`, and the page leaves it out of its own pass.
+/// The pill and the panel are ONE surface (`popover_morph`): [`draw`](Self::draw) lays the glass,
+/// then the pill's own focused fill and label as the morph's opener face (`Popover::morph_face`),
+/// then the rows. The surface begins and ends as the pill, at its rect and radius and in its
+/// colours, so the face is the only pill while the menu is up: the host surface names the pill as
+/// its `opener`, and the page leaves it out of its own pass.
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,
@@ -342,18 +343,35 @@ impl OptionsMenu {
         self.table.update(dt, self.panel_rect(measure).h);
     }
 
-    /// The pill's painter while the panel morphs out of it (its share of the cross-dissolve).
-    pub fn pill_painter(&self, p: Painter) -> Painter {
-        self.popover.pill_painter(p)
+    /// Draw the menu on `base` (the surface's frame painter): the glass panel (`Ground::Menu`) at
+    /// the morphing rect, the pill's face over it ([`draw_face`](Self::draw_face)), and the rows
+    /// through `Popover::morph_rows` (clipped to the surface, scaled about the panel anchor, not
+    /// before the glass has replaced the pill's fill).
+    pub fn draw(
+        &self,
+        base: Painter,
+        field: Option<&plx_ui::underlay::UnderlayField>,
+        measure: &dyn plx_machine::machine::Measure,
+        state: &WatchlistOptionsState,
+    ) {
+        let panel = self.panel_rect(measure);
+        let p = self.popover.content_painter_on(base, 0.0);
+        self.popover.panel(p, panel, PANEL_RAD, field, Ground::Menu);
+        self.draw_face(base, measure, state);
+        self.popover.morph_rows(p, panel, PANEL_RAD, |p| self.table.draw(p, panel, measure));
     }
 
-    /// Draw the glass panel (`Ground::Menu`) at the morphing rect and its rows through
-    /// `Popover::morph_rows` (clipped to the glass, scaled about the panel anchor).
-    pub fn draw(&self, field: Option<&plx_ui::underlay::UnderlayField>, measure: &dyn plx_machine::machine::Measure) {
-        let panel = self.panel_rect(measure);
-        let p = self.popover.content_painter(0.0);
-        self.popover.panel(p, panel, PANEL_RAD, field, Ground::Menu);
-        self.popover.morph_rows(p, panel, PANEL_RAD, |p| self.table.draw(p, panel, measure));
+    /// The pill as the morph's opener face: its focused fill as the plate, its label clipped to
+    /// the surface. All a HELD surface shows (`Screen::draw_held`): at the start of the morph it is
+    /// the page's own focused pill.
+    pub fn draw_face(&self, base: Painter, measure: &dyn plx_machine::machine::Measure, state: &WatchlistOptionsState) {
+        let p = self.popover.content_painter_on(base, 0.0);
+        let summary = state.summary();
+        let face = super::header::HeaderFace { title: "", count: None, summary: &summary, pill_focused: true };
+        let pill = self.pill;
+        self.popover.morph_face(p, self.panel_rect(measure), PANEL_RAD, super::header::pill_fill(true), |p| {
+            super::header::draw_pill_label(p, pill, &face)
+        });
     }
 }
 

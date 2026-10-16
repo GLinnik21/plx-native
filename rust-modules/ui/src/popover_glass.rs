@@ -53,6 +53,13 @@ pub(crate) fn face_at(a: f32) -> GlassFace {
 /// carries ([`Painter::opacity`], [`Painter::rest_lift`]). `false` = no live backdrop, nothing drawn.
 #[must_use]
 pub fn draw(p: Painter, r: Rect, radius: f32) -> bool {
+    draw_shadowed(p, r, radius, 1.0)
+}
+
+/// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph lays its glass at
+/// full strength under the opener's fading plate, and its shadow arrives with the fill.
+#[must_use]
+pub fn draw_shadowed(p: Painter, r: Rect, radius: f32, shadow: f32) -> bool {
     let a = p.opacity();
     let glass = crate::widgets::Glass::DYNAMIC_BACKDROP;
     let (tint, rim, face, mat) =
@@ -69,7 +76,9 @@ pub fn draw(p: Painter, r: Rect, radius: f32) -> bool {
     // After the glass, not before: `shadow_outside` cuts the panel's own rounded shape out of the
     // penumbra, so a translucent face has no ink under it, and the grab the rim refracts is taken
     // before the shadow is down. The shadow rides the painter's cascade (alpha and slide) itself.
-    p.shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
+    if shadow > 0.0 {
+        p.alpha(shadow).shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
+    }
     true
 }
 
@@ -104,6 +113,20 @@ pub(crate) mod tests {
         }
         let glass = sources.borrow().paints.iter().filter(|p| p.glass.is_some()).cloned().collect();
         glass
+    }
+
+    /// Every paint `f` declares inside a backdrop DISCOVERY pass, in order.
+    pub(crate) fn declared_all(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+        use crate::frame::backdrop::{discover, Sources};
+        use std::{cell::RefCell, rc::Rc};
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            f();
+        }
+        let paints = sources.borrow().paints.clone();
+        paints
     }
 
     /// The glass the board's panel should declare at `r`, built straight from the pieces (no
@@ -329,12 +352,12 @@ pub(crate) mod tests {
                     flat.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, 0.3);
                 }
                 let _surface = layer(Z::surface(0), false);
-                pop.panel(pop.content_painter(0.0), panel, 24.0, None, crate::widgets::Ground::Menu);
-                // The host draws the opener pill AFTER the menu, dissolving (`WatchlistMenuScreen::
-                // draw`): over the glass, so its changing alpha is in no source.
-                if let Some(f) = from {
-                    pop.pill_painter(p).rrect(f, f.h * 0.5, f.h * 0.5, [0.9, 0.9, 0.9, 1.0]);
-                }
+                let p = pop.content_painter(0.0);
+                pop.panel(p, panel, 24.0, None, crate::widgets::Ground::Menu);
+                // The opener's face and the rows are drawn over the glass (`OptionsMenu::draw`), so
+                // their changing alpha is in no source.
+                pop.morph_face(p, panel, 24.0, [0.9, 0.9, 0.9, 1.0], |p| p.rrect(pill, 4.0, 4.0, [0.1, 0.1, 0.1, 1.0]));
+                pop.morph_rows(p, panel, 24.0, |p| p.rrect(Rect::new(1440.0, 260.0, 400.0, 60.0), 8.0, 8.0, [1.0; 4]));
             }
             let o = {
                 let mut s = sources.borrow_mut();

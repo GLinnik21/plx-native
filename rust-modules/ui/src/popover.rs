@@ -300,6 +300,16 @@ pub enum HostPolicy {
     Cached,
 }
 
+/// [`Popover::ground`]'s answer: where the ground goes, its alpha on the content painter, and its
+/// shadow's factor on top of that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MorphGround {
+    pub(crate) rect: Rect,
+    pub(crate) radius: f32,
+    pub(crate) alpha: f32,
+    pub(crate) shadow: f32,
+}
+
 pub struct Popover {
     open: bool,
     /// [`dismiss`](Self::dismiss) ran and the appear spring is still on its way back to 0: the
@@ -538,14 +548,21 @@ impl Popover {
     /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
     /// caller that draws the dim as part of its host page — see that method for why one does.
     pub fn content_painter(&self, rise: f32) -> Painter {
+        self.content_painter_on(Painter::root(), rise)
+    }
+    /// [`content_painter`](Self::content_painter) on `base` rather than a fresh root: a surface's
+    /// own frame painter, so a held surface's walk (the text recorder) reaches it like any other.
+    pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
         if self.style == OpenStyle::Morph {
-            // The morph owns the panel's arrival: the rows' alpha leads the glass's (never an
-            // empty glass frame) and nothing slides; `rise` is the appear style's.
-            let a = self.morph.frame(None, Rect::default(), 0.0).content_alpha;
-            return Painter::root().alpha(a * crate::nav::page_alpha());
+            // The morph owns the panel's arrival, part by part: the ground (`panel`), the opener's
+            // face (`morph_face`) and the rows (`morph_rows`) each take their own alpha from the
+            // one morph clock. Nothing slides; `rise` is the appear style's. The CONTAINER's
+            // appear is not on this painter either: the surface begins and ends as the opener,
+            // which is not faded in or out.
+            return base.alpha(crate::nav::page_alpha());
         }
         let a = self.appear();
-        let p = Painter::root().alpha(a * crate::nav::page_alpha());
+        let p = base.alpha(a * crate::nav::page_alpha());
         if rise == 0.0 {
             return p;
         }
@@ -665,58 +682,80 @@ impl Popover {
         } else {
             p
         };
-        if let Some((r, rad, mul)) = self.ground(r, rad) {
-            crate::widgets::panel_ground(p.alpha(mul), r, rad, field, ground);
+        if let Some(g) = self.ground(r, rad) {
+            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow);
         }
         self.ground_done();
     }
 
+    /// Draw a MORPHING popover's opener FACE: the opener's own fill (`fill`, the focused pill's
+    /// plate) at the morph's rect and radius, then `label` (the opener's label, with no fill of
+    /// its own) clipped to that rect, both at [`Frame::pill_alpha`](crate::popover_morph::Frame::pill_alpha).
+    /// Call it after [`panel`](Self::panel) and before [`morph_rows`](Self::morph_rows): the
+    /// plate fades OFF the glass laid under it.
+    ///
+    /// This is the opener's only copy while the surface is up (the page leaves it out,
+    /// `Screen::opener`), and it is drawn whatever the popover's state: at rest before the open
+    /// and after the close it is the opener exactly, at the opener's rect and radius, so the
+    /// surface's first and last frames are the page's own pill. Nothing is drawn for a popover
+    /// that does not morph or has no opener rect.
+    pub fn morph_face(&self, p: Painter, panel: Rect, rad: f32, fill: [f32; 4], label: impl FnOnce(Painter)) {
+        if self.style != OpenStyle::Morph || self.from.is_none() {
+            return;
+        }
+        let f = self.morph.frame(self.from, panel, rad);
+        if f.pill_alpha <= 0.0 {
+            return;
+        }
+        let p = p.alpha(f.pill_alpha);
+        p.rrect(f.rect, f.radius, f.radius, fill);
+        let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+        label(p.clipped(f.rect));
+    }
+
     /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
     ///
-    /// - the rows are **clipped to the current glass rect** ([`ClipScope`](crate::screen::ClipScope),
-    ///   which nests with a table's own clip), so nothing draws outside the small glass;
+    /// - the rows are **clipped to the current surface rect** ([`ClipScope`](crate::screen::ClipScope),
+    ///   which nests with a table's own clip), so nothing draws outside it;
     /// - they are **scaled about the panel anchor** ([`popover_morph::rows_anchor`](crate::popover_morph::rows_anchor))
     ///   by the row spring, 0.82 -> 1 (and back on close);
-    /// - their alpha is the content painter's (`p` should come from [`content_painter`](Self::content_painter)),
-    ///   which leads the ground's, so a glass rect larger than the pill always has rows on it.
+    /// - they are drawn at [`Frame::content_alpha`](crate::popover_morph::Frame::content_alpha), which
+    ///   is 0 until the glass has replaced the opener's fill. A frame on which they are invisible
+    ///   does not draw them, except through the text recorder (a held surface's walk), which is
+    ///   what makes their text resident before the first frame that shows them.
     ///
-    /// `panel` and `rad` are the same arguments as [`panel`](Self::panel). Anything but an
-    /// unsettled morph (the fade+slide, or a morph at rest) draws through `p` as it always did.
+    /// `p` should come from [`content_painter`](Self::content_painter); `panel` and `rad` are the
+    /// same arguments as [`panel`](Self::panel). Anything but an unsettled morph (the fade+slide,
+    /// or a morph at rest) draws through `p` as it always did.
     pub fn morph_rows(&self, p: Painter, panel: Rect, rad: f32, draw: impl FnOnce(Painter)) {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return draw(p);
         }
         let f = self.morph.frame(self.from, panel, rad);
+        if f.content_alpha <= 0.0 && !p.records() {
+            return;
+        }
+        let p = p.alpha(f.content_alpha);
         let _clip = crate::screen::ClipScope::open_in(p, f.rect);
         let zoom = crate::popover_morph::rows_zoom(self.from, panel, f.rows_scale);
         draw(p.clipped(f.rect).zoomed(zoom));
     }
 
-    /// The painter for the OPENER PILL's label (and anything else the pill wears) while the panel
-    /// morphs out of it: `p` at the pill's share of the cross-dissolve, `1 - ground alpha`, so the
-    /// label dissolves out as the rows come in and returns as they leave on close. A popover that
-    /// is not morphing, or has no opener rect to dissolve, leaves `p` as it was.
-    pub fn pill_painter(&self, p: Painter) -> Painter {
-        if self.style != OpenStyle::Morph || self.from.is_none() {
-            return p;
-        }
-        p.alpha(self.morph.frame(self.from, Rect::default(), 0.0).pill_alpha)
-    }
-
-    /// What [`panel`](Self::panel) draws as the ground this frame: `(rect, radius, alpha factor on
-    /// the content painter)`, or `None` for nothing yet. Appear style: the caller's `r`/`rad` at
-    /// full factor. Morph: the morphing rect and radius at the GROUND's alpha, as a factor of the
-    /// content painter's (the content alpha, which leads the ground's, so the factor is <= 1 and
-    /// the ground is never ahead of its rows); once settled the caller's own `r`/`rad`.
-    fn ground(&self, r: Rect, rad: f32) -> Option<(Rect, f32, f32)> {
+    /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
+    /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
+    /// an opener: the morphing rect and radius, the glass at FULL strength (the opener's plate
+    /// fades off it, `morph_face`) once the fill has begun to cross, and its shadow on the fill's
+    /// share. The fallback: the glass fades in on the fill's share.
+    fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
-            return Some((r, rad, 1.0));
+            return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
         }
         let f = self.morph.frame(self.from, r, rad);
-        if f.ground_alpha <= 0.0 || f.content_alpha <= 0.0 {
+        if f.ground_alpha <= 0.0 {
             return None;
         }
-        Some((f.rect, f.radius, (f.ground_alpha / f.content_alpha).min(1.0)))
+        let (alpha, shadow) = if self.from.is_some() { (1.0, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
+        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow })
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].

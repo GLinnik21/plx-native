@@ -180,10 +180,23 @@ pub fn panel_ground(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
 ) {
+    panel_ground_shadowed(p, r, radius, field, ground, 1.0);
+}
+
+/// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
+/// ([`crate::popover_glass::draw_shadowed`]); the field ground casts none, so it is unchanged.
+pub fn panel_ground_shadowed(
+    p: Painter,
+    r: Rect,
+    radius: f32,
+    field: Option<&crate::underlay::UnderlayField>,
+    ground: Ground,
+    shadow: f32,
+) {
     // DS6: a menu is glass whenever a live backdrop exists (`popover_glass`); the field ground below
     // is the fallback for a frame without one. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw(p, r, radius))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, shadow))
     {
         return;
     }

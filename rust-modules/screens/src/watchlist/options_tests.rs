@@ -1,5 +1,5 @@
 //! Sort & Filter state, summary, the glass menu's morph wiring, the header and the read-outs.
-use super::super::header::{self, HeaderFace};
+use super::super::header;
 use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
@@ -171,15 +171,12 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
 }
 
 #[test]
-fn the_dissolving_pill_still_records_its_label() {
-    let (m, pill, state) = open_menu();
-    let log = plx_ui::draw_census::capture(|| {
-        let face = HeaderFace { title: "Watchlist", count: Some(12), summary: &state.summary(), pill_focused: false };
-        header::draw_pill(m.pill_painter(plx_ui::Painter::recording()), pill, &face);
-    });
+fn the_pill_face_still_records_its_label() {
+    let (m, _, state) = open_menu();
+    let log = plx_ui::draw_census::capture(|| m.draw_face(plx_ui::Painter::recording(), &ShippedMeasure, &state));
     assert!(log.iter().any(|(tag, _)| *tag == 100), "the pill's label is a text run");
-    // `OptionsMenu::draw` paints through the root painter (GL glass), so the panel itself is graded
-    // by the simulator capture, not here.
+    // The surface's whole morph (plate, glass, label, rows) is graded on `Popover` in `plx_ui`
+    // and on the menu surface in `page_tests`.
 }
 
 // ---- header ----

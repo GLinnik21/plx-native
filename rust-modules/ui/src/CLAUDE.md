@@ -375,14 +375,20 @@ presentation in a design pass.
    morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
    pill -> THE CALLER'S panel radius with a bulge (so settle and the start of a close do not snap),
    rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback when the opener has no
-   rect. Content alpha always leads ground alpha (never an empty glass frame). The shared
-   painters are `Popover::panel` (the ground at the morphing rect), `Popover::morph_rows` (the
-   rows, clipped to the current glass rect and scaled about the panel anchor by the row spring)
-   and `Popover::pill_painter` (the opener label, dissolving out as the rows come in and back on
-   close). That dissolving copy is the opener's ONLY copy: a morphing surface names its opener
-   (`Screen::opener`), so the page leaves it out of its pass (`DrawFrame::lifted`) — a pill left
-   on the page sits under the menu's glass, and the rim's lens refracts its label into the panel's
-   edge. The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
+   rect. The pill and the panel are ONE surface on one clock (the slower rect spring): its fill
+   crosses from the opener's plate to the glass over the first 30% (the glass laid whole under
+   the fading plate, so no frame has neither), and the rows appear only after that and leave
+   before the rect is back near the pill. The shared painters are `Popover::panel` (the glass at
+   the morphing rect), `Popover::morph_face` (the opener's own fill and label at that rect, the
+   label clipped to it) and `Popover::morph_rows` (the rows, clipped to the current rect, scaled
+   about the panel anchor by the row spring). The face is the opener's ONLY copy: a morphing
+   surface names its opener (`Screen::opener`), so the page leaves it out of its pass
+   (`DrawFrame::lifted`) — a pill left on the page sits under the menu's glass, and the rim's lens
+   refracts its label into the panel's edge — and the surface draws the face on its held frames
+   too (`Screen::draw_held`). It is not faded by the container's appear: the surface begins and
+   ends as the opener. A held surface is ticked with no time, so a morph starts on the first
+   frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
+   `popover_morph.rs`.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is

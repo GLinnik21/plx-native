@@ -253,6 +253,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }
+    /// **What a HELD surface still shows.** A surface is held (`PopoverMotion::held`) on its
+    /// capture frame and while its text warms: at appear 0, its `draw` walked through the text
+    /// recorder, which paints nothing. For a surface that redraws its own [`opener`](Self::opener)
+    /// that is wrong, because the page leaves the opener out from the surface's FIRST frame: the
+    /// element would vanish for the length of the hold. Such a surface draws that element here,
+    /// as it stands at the start of its motion, through a live painter. The text it draws is the
+    /// page's own and was resident a frame ago. The default draws nothing.
+    fn draw_held(&mut self, _f: &mut DrawFrame<'_, '_, H>) {}
     /// **The card the page has focused, and where it sits** — the host's question for an item menu
     /// and for the focus probe, asked of whichever card page is on screen so the host names no
     /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's

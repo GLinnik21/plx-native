@@ -1041,13 +1041,16 @@ where
             .filter_map(|e| e.inst.as_ref())
             .map(|i| i.id)
             .collect();
-        let surface_bodies: Vec<InstanceId> = self
+        // A HELD surface (`PopoverMotion::held`: its capture frame, and while its text warms) is at
+        // appear 0 and draws nothing visible, so its own clock does not run either: it is ticked
+        // with no time. Stepped through the hold, a surface's own motion (the Watchlist menu's
+        // morph) ran out frames nobody saw and its first visible frame landed mid-motion.
+        let surface_bodies: Vec<(InstanceId, bool)> = self
             .nav
             .modals
             .surfaces
             .iter()
-            .filter_map(|s| s.entry.inst.as_ref())
-            .map(|i| i.id)
+            .filter_map(|s| Some((s.entry.inst.as_ref()?.id, s.motion.held())))
             .collect();
         // the press machine (§7.4): hold and commit are delivered from the Tick
         for pe in self.input.tick(tick.ms, tick.dt()) {
@@ -1061,11 +1064,14 @@ where
             });
         }
         let page_active = host_update == HostUpdate::Live && rig.page_updates();
-        for id in page_bodies.iter().copied().filter(|_| page_active).chain(surface_bodies) {
+        let held_tick = Tick { dt_us: 0, ..tick };
+        let bodies = page_bodies.iter().map(|&id| (id, false)).filter(|_| page_active).chain(surface_bodies);
+        for (id, held) in bodies {
             report.ticked.push(id);
+            let t = if held { held_tick } else { tick };
             head.push(Stamped {
                 from: MachineId::Nav,
-                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Tick(tick))),
+                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Tick(t))),
             });
         }
         // 5. expired timers, deadline then id order
@@ -1641,6 +1647,11 @@ where
                     backdrop::draw_span("surf", || plx_gfx::gfx::without_frame_clear(|| {
                         super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
                     }));
+                    // …and what it already shows (its opener, which the page has left out) live.
+                    let mut face = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
+                    face.page_alpha = s.motion.appear;
+                    face.underlay = Some(field);
+                    backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {
                     backdrop::draw_span("surf", || inst.screen.draw(&mut f));
                 }

@@ -19,7 +19,6 @@ use plx_ui::screen::{
 };
 use plx_ui::Rect;
 
-use super::header::{self, HeaderFace};
 use super::options::{OptionsMenu, OptionsRow, WatchlistOptionsState};
 use super::page::WatchlistOut;
 use crate::registry::{AppFx, ContentLike, WatchlistMenuArg};
@@ -78,17 +77,6 @@ impl WatchlistMenuScreen {
         if self.menu.press(&mut self.options) {
             fx.push(Fx::App(AppFx::Watchlist(WatchlistOut::SetOptions(self.options))));
         }
-    }
-
-    /// The header pill — its ONLY copy while the menu is up (the page leaves it out, `opener`) —
-    /// above the scrim, through the popover's pill painter: it cross-dissolves with the panel's
-    /// rows as the panel morphs out of it (DS7), and comes back as the close morph runs. Drawn
-    /// focused, as the page drew it on both ends of the morph: OK on the focused pill opened the
-    /// menu, and focus returns to it when the menu goes.
-    fn draw_pill(&self, p: plx_ui::Painter) {
-        let summary = self.options.summary();
-        let face = HeaderFace { title: "", count: None, summary: &summary, pill_focused: true };
-        header::draw_pill(self.menu.pill_painter(p), anchor_rect(&self.arg), &face);
     }
 
     /// The settled panel, for the focus engine and the overscan audit.
@@ -212,10 +200,14 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
         Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
+    /// The menu and the pill it grows out of, as one surface (`OptionsMenu::draw`). It is drawn
+    /// on the frame painter, NOT faded by the container's appear (`f.page_alpha`, which still
+    /// gates the hit stops): the surface begins and ends as the pill, so it has nothing to fade in
+    /// or out. Faded by it, the landed pill dimmed away under the closing scrim and the page's own
+    /// pill popped in at full strength when the surface left (frame dump at 572f46d07, n325–352).
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        self.menu.draw(f.underlay, f.measure);
-        self.draw_pill(p);
+        self.menu.draw(f.painter, f.underlay, f.measure, &self.options);
         for row in 0..OptionsRow::ALL.len() {
             let Some(rect) = self.menu.row_frame(row, f.measure) else { continue };
             f.stop(
@@ -233,6 +225,11 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
+    }
+    /// Held (its capture frame, its text warming), the surface is still the pill the page has left
+    /// out: drawn here, it does not vanish on OK.
+    fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        self.menu.draw_face(f.painter, f.measure, &self.options);
     }
 }
 

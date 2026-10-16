@@ -280,8 +280,8 @@ fn the_pill_is_one_rect_for_paint_focus_and_anchor() {
 
 /// **While Sort & Filter is up the pill is the menu's, not the page's** (DS7: "the pill's glass
 /// becomes the panel"). The menu names the pill as its opener, so the dispatcher lifts it out of
-/// the page pass and the menu's own copy (`OptionsMenu::pill_painter`, dissolving as the rows come
-/// in) is the only pill drawn. Red when the page kept drawing its pill under the scrim: the
+/// the page pass and the menu's own copy (`OptionsMenu::draw_face`, the morph's opener face) is the
+/// only pill drawn. Red when the page kept drawing its pill under the scrim: the
 /// settled menu, slid up over the pill because it is taller than the room below it, refracted
 /// that pill's label into its glass rim (`GlassRim::Menu`'s sharp band) — a ghost "Sort & Filter
 /// · Default" along the panel's top edge.
@@ -308,6 +308,111 @@ fn the_open_menu_lifts_the_pill_out_of_the_page() {
     let lifted = h.draw_census(Some(key));
     assert_eq!(label_in_pill(&lifted), 0, "a lifted pill is not drawn by the page");
     assert!(lifted.iter().any(|(tag, r)| *tag == 100 && r.x < pill.x), "the title still is");
+}
+
+/// **The Sort & Filter surface begins and ends as the page's own pill, and is never nothing** (spec
+/// (a), (b), (d); frame dump at 572f46d07). Driven through the surface itself, as the dispatcher
+/// drives it: Mount, the held face (`Screen::draw_held`), the open's frames, BACK, and the close
+/// run out and past. Graded on the paints each frame DECLARES (a discovery walk):
+///
+/// - the held face and the last close frame are the page's focused pill, primitive for primitive
+///   (red when the face was the pill drawn on the container's appear: on the held frames nothing,
+///   at the end of the close a pill faded to nothing, then the page's popping in);
+/// - every frame between has the opener's plate or the glass (red on the n334–351 empty frames).
+#[test]
+fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
+    use super::cards_harness::{WatchHost, ENTRY};
+    use super::menu::WatchlistMenuScreen;
+    use plx_machine::machine::{
+        Cx, Edge, Effects, EntryId, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, Key, Machine, PressRead, Tick,
+    };
+    use plx_ui::screen::{By, DrawFrame, Screen, ScreenEvent};
+    use std::{cell::RefCell, rc::Rc};
+    let _g = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(3));
+    h.focus_elem(PILL_ELEM, By::Dir);
+    let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
+    let inside = |r: plx_ui::Rect| {
+        let (cx, cy) = (r.cx(), r.cy());
+        cx > pill.x && cx < pill.x + pill.w && cy > pill.y && cy < pill.y + pill.h
+    };
+    type Census = Vec<(u64, plx_ui::Rect)>;
+    let shape = |log: &Census| -> Vec<(u64, [i32; 4])> {
+        log.iter().filter(|(_, r)| inside(*r)).map(|(t, r)| (*t, [r.x, r.y, r.w, r.h].map(|v| v.round() as i32))).collect()
+    };
+    let page_pill = shape(&h.draw_census(None));
+    assert!(page_pill.iter().any(|(t, r)| *t != 100 && r[2] == pill.w.round() as i32), "premise: the page draws its focused pill's plate: {page_pill:?}");
+
+    let arg = crate::registry::WatchlistMenuArg {
+        host: ENTRY,
+        options: WatchlistOptionsState::default(),
+        anchor: [pill.x, pill.y, pill.w, pill.h].map(f32::to_bits),
+    };
+    let entry = EntryId(ENTRY.0 + 1);
+    let mut menu = WatchlistMenuScreen::new(entry, arg);
+    let mut ms = 0;
+    let step = |menu: &mut WatchlistMenuScreen, ev: ScreenEvent<WatchHost>, ms: u32| {
+        let mut present = plx_machine::present::Present::new();
+        let mut out = Vec::new();
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms, dt_us: 16_667 },
+            measure: &plx_ui::fixture::FixtureMeasure,
+            press: PressRead::default(),
+            focus: FocusRead::default(),
+            owner: InputOwner::Entry(entry),
+        };
+        let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
+        Machine::<WatchHost>::step(menu, &ev, &cx, &mut fx);
+    };
+    let draw = |menu: &mut WatchlistMenuScreen, held: bool| -> Census {
+        let sources = Rc::new(RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms: 0, dt_us: 16_667 },
+            measure: &plx_ui::fixture::FixtureMeasure,
+            press: PressRead::default(),
+            focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
+            owner: InputOwner::Entry(entry),
+        };
+        plx_ui::draw_census::capture(|| {
+            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
+            if held {
+                Screen::<WatchHost>::draw_held(menu, &mut f);
+            } else {
+                Screen::<WatchHost>::draw(menu, &mut f);
+            }
+        })
+    };
+    // The plate or the glass: a primitive at least the pill's height and twice as wide (the
+    // surface narrows toward the panel's width, which may be less than the pill's; text runs are
+    // the label's and the rows').
+    let something = |log: &Census| log.iter().any(|(t, r)| *t != 100 && r.h >= pill.h - 1.0 && r.w >= 2.0 * pill.h);
+
+    step(&mut menu, ScreenEvent::Mount, ms);
+    assert_eq!(shape(&draw(&mut menu, true)), page_pill, "held: the surface is the page's pill");
+    assert_eq!(shape(&draw(&mut menu, false)), page_pill, "frame 0: still the page's pill");
+    for _ in 0..40 {
+        ms += 16;
+        step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
+        let log = draw(&mut menu, false);
+        assert!(something(&log), "an open frame with neither plate nor glass: {log:?}");
+    }
+    let back = InputEvent {
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+        at: Tick::default(),
+        source: plx_machine::machine::Source::Sdl,
+    };
+    step(&mut menu, ScreenEvent::Input(back), ms);
+    let mut last = Vec::new();
+    for _ in 0..60 {
+        ms += 16;
+        step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
+        last = draw(&mut menu, false);
+        assert!(something(&last), "a close frame with neither plate nor glass");
+    }
+    assert_eq!(shape(&last), page_pill, "the close lands on the page's own pill: nothing to pop in");
 }
 
 /// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the

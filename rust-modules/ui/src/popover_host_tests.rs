@@ -147,22 +147,27 @@ fn a_field_keeps_its_dither_through_every_motion() {
 /// A caller's own panel radius, deliberately not the board's 22: the morph must END on it.
 const RAD: f32 = 26.0;
 
-/// DS7: the morph open style on a real `Popover`, beside the unchanged fade+slide.
+/// DS7: the morph open style on a real `Popover`, beside the unchanged fade+slide. The pill and
+/// the panel are one surface: on every frame of the open and the close the opener's plate and the
+/// glass together cover it, and a row is only drawn once the fill is all glass.
 #[test]
-fn a_morphing_popover_never_shows_glass_without_rows_and_settles_both_ways() {
+fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     let _g = plx_base::testlock::serial();
     let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
     let mut pop = crate::popover::Popover::new().morphing();
     assert_eq!(pop.open_style(), crate::popover::OpenStyle::Morph);
-    pop.open();
-    let mut seen = 0;
+    pop.open_from(Some(pill));
+    let one_surface = |f: crate::popover_morph::Frame| {
+        assert!((f.pill_alpha + f.ground_alpha - 1.0).abs() < 1e-6, "plate + glass cover the surface: {f:?}");
+        if f.content_alpha > 0.0 {
+            assert_eq!(f.ground_alpha, 1.0, "a row only on a surface that is all glass: {f:?}");
+        }
+    };
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
-        let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        assert!(f.content_alpha >= f.ground_alpha, "rows lead the glass");
-        seen += 1;
+        one_surface(pop.morph_frame(Some(pill), panel, RAD).unwrap());
     }
-    assert!(seen > 0 && pop.appear_settled(), "the open settles, morph included");
+    assert!(pop.appear_settled(), "the open settles, morph included");
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
     assert!((f.radius - RAD).abs() < 0.05 && (f.rect.h - panel.h).abs() < 0.5, "the morph ends on the caller's radius");
     pop.dismiss();
@@ -173,11 +178,13 @@ fn a_morphing_popover_never_shows_glass_without_rows_and_settles_both_ways() {
             break;
         }
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        assert!(f.content_alpha >= f.ground_alpha, "rows lead the glass on the way out too");
+        one_surface(f);
         assert!(f.rect.h <= last + 1e-3, "the close only shrinks");
         last = f.rect.h;
     }
     assert!(!pop.visible(), "the close lands and the panel is gone");
+    let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+    assert_eq!((f.rect, f.pill_alpha), (pill, 1.0), "and what is left is the pill");
     pop.close();
 }
 
@@ -196,11 +203,14 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
     pop.close();
 }
 
-/// A morphing popover's `panel` draws the GROUND at the morphing rect, never ahead of its rows.
-/// Graded on what `Popover::panel` really DECLARES (a discovery pass, the glass command), against
-/// the command built from the morph frame's own rect, radius and alpha ratio.
+/// A morphing popover's `panel` draws the GROUND at the morphing rect: nothing while the fill is
+/// all the opener's, then the glass at FULL strength (the opener's plate fades off it), and the
+/// settled panel's own rect at the end. Graded on what `Popover::panel` really DECLARES (a
+/// discovery pass, the glass command), against the command built from the morph frame's own rect
+/// and radius. Red on the build that faded the glass in under rows that led it: the glass command
+/// there carried a part-faded face over the rows (frame dump, n181: rows outside a faint glass).
 #[test]
-fn a_morphing_panel_grows_from_the_pill_and_its_ground_never_leads_its_rows() {
+fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down() {
     use crate::popover_glass::{face_at, tests::{declared_glass, expected}};
     let _g = plx_base::testlock::serial();
     let _reset = Reset::new(false);
@@ -208,41 +218,28 @@ fn a_morphing_panel_grows_from_the_pill_and_its_ground_never_leads_its_rows() {
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(pill));
     let root = crate::Painter::root();
-    // Frame 0: the ground is not down yet (pill only) -- no empty glass frame.
+    // Frame 0: the opener only, no glass yet.
     assert!(declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu)).is_empty());
     let (mut grew, mut painted) = (false, 0);
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
         let declared = declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu));
-        if f.ground_alpha <= 0.0 || f.content_alpha <= 0.0 {
-            assert!(declared.is_empty(), "no ground before there are rows");
+        if f.ground_alpha <= 0.0 {
+            assert!(declared.is_empty(), "no glass before the fill begins to cross");
             continue;
         }
         assert_eq!(declared.len(), 1);
         painted += 1;
-        let mul = (f.ground_alpha / f.content_alpha).min(1.0);
-        assert!(mul <= 1.0 && f.ground_alpha <= f.content_alpha + 1e-6, "ground alpha <= content alpha");
-        let want = |r, rad, face| expected(root.alpha(mul), r, rad, face);
-        if f.rect == panel {
-            assert!(declared[0] == want(panel, RAD, face_at(mul))[0], "settled: the caller's own rect");
-        } else {
-            let morph = declared[0] == want(f.rect, f.radius, face_at(mul))[0];
-            // The morph hands over to the caller's own rect once it has settled (a sub-pixel
-            // tolerance in `popover_morph`), so the last frames may legitimately be the settled one.
-            let snapped = declared[0] == want(panel, RAD, face_at(mul))[0];
-            if snapped {
-                // The hand-over to the settled ground: no visible jump in rect OR radius.
-                assert!((f.radius - RAD).abs() < 0.5 && (f.rect.h - panel.h).abs() < 1.0, "a snap at settle: {f:?}");
-            }
-            assert!(morph || (snapped && mul == 1.0 && (panel.h - f.rect.h).abs() < 8.0), "mid-open: the morph rect, radius and faded face");
-            if !morph {
-                continue;
-            }
-            assert!(declared[0] != want(panel, RAD, face_at(mul))[0], "not the settled rect");
-            grew = true;
-            assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
+        let want = |r, rad| expected(root, r, rad, face_at(1.0));
+        if declared[0] == want(panel, RAD)[0] {
+            // The hand-over to the settled ground: no visible jump in rect OR radius.
+            assert!((f.radius - RAD).abs() < 0.5 && (f.rect.h - panel.h).abs() < 1.0, "a snap at settle: {f:?}");
+            continue;
         }
+        assert!(declared[0] == want(f.rect, f.radius)[0], "mid-open: the morph rect and radius, the face whole: {f:?}");
+        grew = true;
+        assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
     }
     assert!(painted > 0 && grew, "mid-open the ground is the morphing rect, not the settled one");
     let settled = declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu));
@@ -281,7 +278,7 @@ fn the_ground_radius_does_not_snap_at_settle_or_at_the_start_of_a_close() {
     let (mut prev, mut seam) = (None::<f32>, None::<f32>);
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
-        let Some((_, rad, _)) = pop.ground(panel, RAD) else { continue };
+        let Some(crate::popover::MorphGround { radius: rad, .. }) = pop.ground(panel, RAD) else { continue };
         if pop.appear_settled() && seam.is_none() {
             let before = prev.expect("frames before the settle");
             seam = Some((rad - before).abs());
@@ -298,15 +295,18 @@ fn the_ground_radius_does_not_snap_at_settle_or_at_the_start_of_a_close() {
     let at_rest = pop.morph_frame(Some(pill), panel, RAD).unwrap().radius;
     assert!((at_rest - RAD).abs() < 0.05, "the morph's curve starts the close on {at_rest}, not the caller's {RAD}");
     pop.update(1.0 / 60.0);
-    let (_, first_close, _) = pop.ground(panel, RAD).expect("the close still has a ground");
+    let first_close = pop.ground(panel, RAD).expect("the close still has a ground").radius;
     assert_eq!(first_close, pop.morph_frame(Some(pill), panel, RAD).unwrap().radius, "one curve");
     pop.close();
 }
 
-/// Finding 2: the rows of an unsettled morph are clipped to the CURRENT glass rect and scaled about
-/// the panel anchor by the row spring; settled (and the fade+slide) they draw through `p` untouched.
+/// Spec (c): the rows of an unsettled morph are clipped to the CURRENT surface rect on every frame
+/// they draw, scaled about the panel anchor by the row spring, at the content alpha, and not drawn
+/// at all before the glass has taken over (but still walked by the text recorder, so their text is
+/// resident in time); settled (and the fade+slide) they draw through `p` untouched. Red on the
+/// build whose rows led the glass: rows drew at progress 0.05, on a surface that was still pill.
 #[test]
-fn morph_rows_are_clipped_to_the_glass_rect_and_scaled_about_the_anchor() {
+fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
     use crate::{popover_morph::rows_anchor, screen::ClipScope, Painter, Rect};
     let _g = plx_base::testlock::serial();
     let (pill, panel) = (Rect::new(1500.0, 40.0, 196.0, 38.0), Rect::new(1380.0, 40.0, 316.0, 400.0));
@@ -314,9 +314,11 @@ fn morph_rows_are_clipped_to_the_glass_rect_and_scaled_about_the_anchor() {
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(pill));
     let root = Painter::root();
-    let mut mid = 0;
-    for _ in 0..240 {
-        pop.update(1.0 / 60.0);
+    let mut drew_held = false;
+    pop.morph_rows(Painter::recording(), panel, RAD, |_| drew_held = true);
+    assert!(drew_held, "the recorder walks the rows even while they are invisible");
+    let (mut mid, mut waited) = (0, 0);
+    let mut check = |pop: &crate::popover::Popover| {
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
         let mut drew = false;
         pop.morph_rows(root, panel, RAD, |p| {
@@ -329,19 +331,36 @@ fn morph_rows_are_clipped_to_the_glass_rect_and_scaled_about_the_anchor() {
                 return;
             }
             mid += 1;
+            assert!(f.content_alpha > 0.0 && f.ground_alpha == 1.0, "rows drawn on a surface that is not yet glass: {f:?}");
+            assert!((p.opacity() - f.content_alpha).abs() < 1e-6, "at the content alpha");
             let same = |a: Rect, b: Rect| (a.x - b.x).abs() + (a.y - b.y).abs() + (a.w - b.w).abs() + (a.h - b.h).abs() < 1e-2;
-            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the glass rect");
-            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the glass rect");
+            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the surface rect");
+            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the surface rect");
             let placed = p.place(row);
             assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the row spring");
             let (ax, ay) = rows_anchor(Some(pill), panel);
             let fixed = p.place(Rect::new(ax, ay, 1.0, 1.0));
             assert!((fixed.x - ax).abs() < 1e-3 && (fixed.y - ay).abs() < 1e-3, "the anchor does not move");
         });
-        assert!(drew, "the rows are always drawn");
+        if !drew {
+            assert_eq!(f.content_alpha, 0.0, "only invisible rows are skipped: {f:?}");
+            waited += 1;
+        }
         assert_eq!(ClipScope::current(), None, "the scissor is released");
+    };
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+        check(&pop);
     }
-    assert!(mid > 5, "the morph ran through unsettled frames");
+    pop.dismiss();
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+        if !pop.visible() {
+            break;
+        }
+        check(&pop);
+    }
+    assert!(mid > 5 && waited >= 4, "the morph ran through unsettled frames ({mid}) and frames without rows ({waited})");
     // The fade+slide popover is never clipped or scaled.
     let mut plain = crate::popover::Popover::new();
     plain.open();
@@ -354,45 +373,66 @@ fn morph_rows_are_clipped_to_the_glass_rect_and_scaled_about_the_anchor() {
     pop.close();
 }
 
-/// Finding 2: a glass rect larger than the pill always has rows on it (open and close), and the
-/// pill's label dissolves out while they come in and back in while they go.
+/// Spec (a), (b), (d): the opener's FACE is the surface's other half. It starts as the focused
+/// pill exactly (the opener's own fill at its rect and radius, the label at full strength), fades
+/// off the glass as the fill crosses, with its label clipped to the surface, and a close lands
+/// back on it: it never fades out and never pops. Red on the build whose pill was its own draw
+/// faded by the CONTAINER's appear (frame dump n325–352: the landed pill faded out, seven empty
+/// frames, then the page's pill popped in at full white).
 #[test]
-fn a_grown_glass_rect_always_has_rows_and_the_pill_cross_dissolves() {
+fn the_opener_face_starts_and_ends_as_the_pill_and_crosses_to_the_glass() {
+    use crate::{Painter, Rect};
     let _g = plx_base::testlock::serial();
-    let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
-    let root = crate::Painter::root();
+    let (pill, panel) = (Rect::new(1500.0, 40.0, 196.0, 38.0), Rect::new(1380.0, 40.0, 316.0, 400.0));
+    const FILL: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
+    let plate = |pop: &crate::popover::Popover| {
+        let mut label = None;
+        let paints = crate::popover_glass::tests::declared_all(|| {
+            pop.morph_face(Painter::root(), panel, RAD, FILL, |p| label = Some((p.opacity(), p.clip_rect())));
+        });
+        let plates: Vec<[f32; 4]> = paints.iter().filter(|p| p.kind() == "rrect").map(|p| p.placed()).collect();
+        (plates, label)
+    };
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(pill));
-    assert_eq!(pop.pill_painter(root).opacity(), 1.0, "frame 0: the full pill label");
-    let (mut last_pill, mut grown) = (1.0_f32, 0);
-    let check = |pop: &crate::popover::Popover, opening: bool, last: &mut f32| {
+    let (plates, label) = plate(&pop);
+    assert_eq!(plates, vec![[pill.x, pill.y, pill.w, pill.h]], "frame 0: the opener's plate at the pill");
+    assert_eq!(label, Some((1.0, pill)), "frame 0: the label whole, inside the pill");
+    let mut crossed = 0;
+    let mut check = |pop: &crate::popover::Popover| {
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        let larger = f.rect.w > pill.w + 1.0 || f.rect.h > pill.h + 1.0;
-        if larger && f.ground_alpha > 0.0 {
-            assert!(pop.content_painter(0.0).opacity() > 0.0, "an empty glass frame: {f:?}");
+        let (plates, label) = plate(pop);
+        if f.pill_alpha <= 0.0 {
+            assert!(plates.is_empty() && label.is_none(), "no face once the fill is glass: {f:?}");
+            return;
         }
-        let pa = pop.pill_painter(root).opacity();
-        assert!((pa - (1.0 - f.ground_alpha)).abs() < 1e-6, "the pill is the ground's complement");
-        // 1e-2: the underdamped row spring rebounds a hair past its start after the close lands
-        // (ground alpha ~3e-4 there, invisible), which is not a label dissolving the wrong way.
-        assert!(if opening { pa <= *last + 1e-2 } else { pa >= *last - 1e-2 }, "the label only dissolves one way: opening {opening}, {pa} after {last}");
-        *last = pa;
-        larger
+        assert_eq!(plates, vec![[f.rect.x, f.rect.y, f.rect.w, f.rect.h]], "the plate is the surface: {f:?}");
+        let (a, clip) = label.expect("the label rides the plate");
+        assert!((a - f.pill_alpha).abs() < 1e-6, "the label at the plate's alpha");
+        let near = (clip.x - f.rect.x).abs() + (clip.y - f.rect.y).abs() + (clip.w - f.rect.w).abs() + (clip.h - f.rect.h).abs();
+        assert!(near < 1e-2, "the label is clipped to the surface: {clip:?} vs {:?}", f.rect);
+        if f.pill_alpha < 1.0 {
+            crossed += 1;
+        }
     };
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
-        grown += check(&pop, true, &mut last_pill) as u32;
+        check(&pop);
     }
-    assert!(grown > 5 && last_pill == 0.0, "the label is gone once the rows are in");
     pop.dismiss();
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
+        check(&pop);
         if !pop.visible() {
             break;
         }
-        check(&pop, false, &mut last_pill);
     }
+    assert!(crossed >= 4, "the fill crosses over frames, both ways ({crossed})");
+    assert!(!pop.visible());
+    let (plates, label) = plate(&pop);
+    assert_eq!(plates, vec![[pill.x, pill.y, pill.w, pill.h]], "the close lands on the opener's plate");
+    assert_eq!(label, Some((1.0, pill)), "…with its label whole: nothing left to pop in");
     pop.close();
     let plain = crate::popover::Popover::new();
-    assert_eq!(plain.pill_painter(root).opacity(), 1.0, "a non-morphing popover leaves the pill alone");
+    assert!(plate(&plain).0.is_empty(), "a popover that does not morph has no face");
 }

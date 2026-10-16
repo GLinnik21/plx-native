@@ -17,15 +17,27 @@
 //! not stated, they fall out of the stiffnesses: the height spring (the one the eye follows) is
 //! within 6% of rest at 150 ms and the width spring within 6% at 190 ms.
 //!
-//! **Never an empty glass frame.** The glass ground, the rows and the pill face are all functions
-//! of the ONE rows-progress number, and the ramps are ordered so the content always leads the
-//! ground: [`Frame::content_alpha`] reaches 1 at half the rows progress that [`Frame::ground_alpha`]
-//! needs, so a frame with any glass visible has rows on it (`content_alpha >= ground_alpha`,
-//! tested for every frame of an open and a close). The pill fades out as the ground fades in
-//! (`pill_alpha = 1 - ground_alpha`): a cross-dissolve, never a gap.
+//! **One surface, one clock.** The pill and the panel are ONE surface whose rect, radius and fill
+//! animate. Everything but the rows' scale is a function of [`Frame::progress`], the slower of the
+//! two rect springs (0 = the opener's rect, 1 = the panel):
+//!
+//! - the FILL crosses from the opener's own (the focused pill's accent plate) to the glass over
+//!   the first [`FILL_AT`] of the progress, a smoothstep: the glass is laid at full strength under
+//!   the plate and the plate fades off it ([`Frame::pill_alpha`] `= 1 -` [`Frame::ground_alpha`]),
+//!   so the surface is covered on every frame, and there is never a frame with no pill and no
+//!   glass. The opener's label rides the plate's alpha: it dissolves out as the fill crosses and
+//!   back in as a close lands;
+//! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`], once the glass has taken over,
+//!   and are opaque by [`ROWS_OPAQUE_AT`]; on a close they are gone while the rect is still well
+//!   larger than the pill. They are clipped to the current rect (`Popover::morph_rows`), so no row
+//!   ever draws outside the surface.
+//!
+//! A close runs the same curve backwards and ends ON the opener: plate and label at full strength
+//! at the pill's rect and radius, which is what the page draws there once the menu has gone.
 //!
 //! **No measured opener, no morph.** [`Frame`] with `from == None` is the fade+scale FALLBACK:
-//! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and fades.
+//! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and its glass fades in on
+//! the same fill curve; there is no plate and no label.
 
 use crate::{Rect, Spring, Zoom};
 
@@ -51,11 +63,12 @@ pub const K_ROWS: f32 = 720.0;
 pub const ZETA_ROWS: f32 = 0.6;
 /// The rows' scale when the morph starts (the board's `scale(.82)`).
 pub const ROWS_FROM: f32 = 0.82;
-/// Rows progress at which the rows are fully opaque.
-pub const ROWS_OPAQUE_AT: f32 = 0.5;
-/// Rows progress at which the glass ground is fully opaque. Larger than [`ROWS_OPAQUE_AT`] on
-/// purpose: that ordering is the "never an empty glass frame" invariant.
-pub const GROUND_OPAQUE_AT: f32 = 0.8;
+/// Progress at which the glass has fully replaced the opener's fill (and the opener's label is gone).
+pub const FILL_AT: f32 = 0.3;
+/// Progress at which the rows begin to appear: not before the glass has taken over.
+pub const ROWS_FROM_AT: f32 = FILL_AT;
+/// Progress at which the rows are fully opaque.
+pub const ROWS_OPAQUE_AT: f32 = 0.6;
 /// Fallback when the opener has no measured rect to morph from: a fade+scale of the panel about
 /// its centre, starting at this scale. The board's `menuout` keyframes leave a menu at 0.92, so an
 /// entrance from the same scale is the matching motion.
@@ -64,18 +77,34 @@ pub const FALLBACK_SCALE_FROM: f32 = 0.92;
 /// Everything a draw needs from the morph at one instant.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
-    /// The glass panel's current rect.
+    /// The surface's current rect.
     pub rect: Rect,
     /// Its current corner radius.
     pub radius: f32,
-    /// Alpha of the glass ground (0 = pill only).
+    /// The morph's progress, 0 = the opener's rect, 1 = the panel: the slower rect spring.
+    pub progress: f32,
+    /// The glass's share of the fill (0 = the opener's fill only, 1 = glass only). With an opener
+    /// the glass is laid at FULL strength once this is above 0 and the plate fades off it; for
+    /// the fallback it is the glass's alpha.
     pub ground_alpha: f32,
-    /// Alpha of the panel's rows; never below [`ground_alpha`](Self::ground_alpha).
+    /// Alpha of the panel's rows: 0 until [`ROWS_FROM_AT`], so a row is only ever drawn on a
+    /// surface whose fill is all glass.
     pub content_alpha: f32,
     /// Scale of the rows about their own centres (0.82 -> 1, with a small overshoot).
     pub rows_scale: f32,
-    /// Alpha of the opener's pill face: the cross-dissolve partner of the ground.
+    /// Alpha of the opener's plate and label: `1 - ground_alpha` with an opener, 0 without.
     pub pill_alpha: f32,
+}
+
+/// `x` mapped from `[a, b]` to `[0, 1]`, clamped.
+fn ramp(x: f32, a: f32, b: f32) -> f32 {
+    ((x - a) / (b - a)).clamp(0.0, 1.0)
+}
+
+/// The fill crossover at progress `t`: a smoothstep over `[0, FILL_AT]`.
+pub fn fill_at(t: f32) -> f32 {
+    let u = ramp(t, 0.0, FILL_AT);
+    u * u * (3.0 - 2.0 * u)
 }
 
 /// The panel's rect when the width spring is at `pw` and the height spring at `ph` (0 = the
@@ -170,11 +199,6 @@ impl Morph {
         self.w.pos >= 0.999 && self.h.pos >= 0.999 && (self.rows.pos - 1.0).abs() <= 0.001
     }
 
-    /// The rows spring's progress, 0 at [`ROWS_FROM`], 1 at rest. Overshoot is clamped away.
-    fn rows_progress(&self) -> f32 {
-        ((self.rows.pos - ROWS_FROM) / (1.0 - ROWS_FROM)).clamp(0.0, 1.0)
-    }
-
     /// The draw state now, for the opener rect `from` (`None` = the fade+scale fallback) and the
     /// final `panel` rect.
     ///
@@ -182,17 +206,17 @@ impl Morph {
     /// starts from it), so the settled ground and the morphing one are the same shape.
     pub fn frame(&self, from: Option<Rect>, panel: Rect, panel_radius: f32) -> Frame {
         let (pw, ph) = (self.w.pos.clamp(0.0, 1.0), self.h.pos.clamp(0.0, 1.0));
-        let rp = self.rows_progress();
-        let content_alpha = (rp / ROWS_OPAQUE_AT).clamp(0.0, 1.0);
-        let ground_alpha = (rp / GROUND_OPAQUE_AT).clamp(0.0, 1.0);
+        let progress = pw.min(ph);
+        let ground_alpha = fill_at(progress);
         let pill_radius = from.map_or(panel_radius, |f| f.w.min(f.h) * 0.5);
         Frame {
             rect: rect_at_xy(from, panel, pw, ph),
             radius: if from.is_some() { radius_at(pill_radius, panel_radius, ph) } else { panel_radius },
+            progress,
             ground_alpha,
-            content_alpha,
+            content_alpha: ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT),
             rows_scale: self.rows.pos,
-            pill_alpha: 1.0 - ground_alpha,
+            pill_alpha: if from.is_some() { 1.0 - ground_alpha } else { 0.0 },
         }
     }
 }
@@ -227,8 +251,8 @@ mod tests {
     fn starts_as_the_pill_and_settles_on_the_panel() {
         let f = open_frames();
         assert_eq!(f[0].1.rect, PILL);
-        assert_eq!(f[0].1.ground_alpha, 0.0);
-        assert_eq!(f[0].1.pill_alpha, 1.0);
+        assert_eq!(f[0].1.radius, PILL.h * 0.5);
+        assert_eq!((f[0].1.ground_alpha, f[0].1.content_alpha, f[0].1.pill_alpha), (0.0, 0.0, 1.0));
         let (m, last) = f.last().copied().unwrap();
         assert!(m.settled());
         assert!((last.rect.w - PANEL.w).abs() < 0.5 && (last.rect.h - PANEL.h).abs() < 0.5);
@@ -325,24 +349,51 @@ mod tests {
         assert!((f.last().unwrap().1.rows_scale - 1.0).abs() < 0.002);
     }
 
-    #[test]
-    fn no_frame_shows_glass_without_rows_on_open_or_close() {
-        let mut frames: Vec<Frame> = open_frames().into_iter().map(|(_, fr)| fr).collect();
+    /// An open and the close after it, every frame.
+    fn open_then_close(from: Option<Rect>) -> (Vec<Frame>, Vec<Frame>) {
         let mut m = Morph::new();
+        let mut open = vec![m.frame(from, PANEL, RAD)];
         for _ in 0..120 {
             m.step(true, DT);
+            open.push(m.frame(from, PANEL, RAD));
         }
+        let mut close = Vec::new();
         for _ in 0..120 {
             m.step(false, DT);
-            frames.push(m.frame(Some(PILL), PANEL, RAD));
+            close.push(m.frame(from, PANEL, RAD));
         }
-        for fr in frames {
-            assert!(fr.content_alpha >= fr.ground_alpha, "rows lead the glass: {fr:?}");
-            if fr.ground_alpha > 0.0 {
-                assert!(fr.content_alpha > 0.0, "an empty glass frame: {fr:?}");
+        (open, close)
+    }
+
+    /// Spec (d): the pill's plate and the glass are one surface, so no frame has neither.
+    #[test]
+    fn the_fill_crosses_from_the_pill_to_the_glass_with_no_frame_of_neither() {
+        let (open, close) = open_then_close(Some(PILL));
+        for fr in open.iter().chain(&close) {
+            assert!((fr.pill_alpha + fr.ground_alpha - 1.0).abs() < 1e-6, "plate + glass cover the surface: {fr:?}");
+            if fr.progress >= FILL_AT {
+                assert_eq!((fr.ground_alpha, fr.pill_alpha), (1.0, 0.0), "all glass from {FILL_AT}: {fr:?}");
             }
-            assert!((fr.pill_alpha + fr.ground_alpha - 1.0).abs() < 1e-6, "a cross-dissolve");
         }
+        assert!(open.iter().any(|fr| fr.ground_alpha > 0.0 && fr.ground_alpha < 1.0), "the fill crosses over frames");
+        let last = close.last().unwrap();
+        assert_eq!((last.rect, last.pill_alpha, last.ground_alpha), (PILL, 1.0, 0.0), "a close lands ON the pill");
+    }
+
+    /// Spec (c): no row before the glass has taken over, and none left by the time the rect is back
+    /// near the pill.
+    #[test]
+    fn rows_only_draw_on_a_surface_that_is_all_glass() {
+        let (open, close) = open_then_close(Some(PILL));
+        for fr in open.iter().chain(&close) {
+            if fr.content_alpha > 0.0 {
+                assert!(fr.progress > ROWS_FROM_AT && fr.ground_alpha == 1.0, "a row on a part-pill surface: {fr:?}");
+            }
+        }
+        assert!(open.iter().take_while(|fr| fr.progress < ROWS_FROM_AT).count() >= 2, "the rows wait for the glass");
+        let gone = close.iter().find(|fr| fr.content_alpha == 0.0).expect("the rows leave");
+        assert!(gone.rect.w > PILL.w + 0.2 * (PANEL.w - PILL.w), "the rows are gone while the rect is still large: {gone:?}");
+        assert_eq!(open.last().unwrap().content_alpha, 1.0);
     }
 
     #[test]
@@ -352,6 +403,8 @@ mod tests {
         assert!((fr.rect.w - PANEL.w * FALLBACK_SCALE_FROM).abs() < 1e-3);
         assert!((fr.rect.cx() - PANEL.cx()).abs() < 1e-3 && (fr.rect.cy() - PANEL.cy()).abs() < 1e-3);
         assert_eq!(rect_at(None, PANEL, 1.0), PANEL);
+        let (open, close) = open_then_close(None);
+        assert!(open.iter().chain(&close).all(|fr| fr.pill_alpha == 0.0), "no opener, no plate");
         assert_eq!(rect_at(Some(PILL), PANEL, 0.0), PILL);
         assert_eq!(rect_at(Some(PILL), PANEL, 1.0), PANEL);
     }

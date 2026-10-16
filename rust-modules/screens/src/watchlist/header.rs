@@ -75,12 +75,25 @@ pub fn draw_title(p: Painter, frame: Rect, face: &HeaderFace<'_>) -> f32 {
     w
 }
 
-/// The pill alone, at `rect` (from [`pill_rect`]). While the Sort & Filter menu is up the page
-/// leaves its pill out and the menu surface draws it here through the painter
-/// `OptionsMenu::pill_painter` hands back, so the label dissolves while the panel morphs out of it.
+/// The pill alone, at `rect` (from [`pill_rect`]).
 pub fn draw_pill(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
-    let (name, value) = pill_text(face.summary);
-    ValueChip::new(name, &value, None, rect).focused(face.pill_focused).icon(Icon::ChevronDown).draw(&Env::inert(), p);
+    pill_chip(rect, face, &pill_text(face.summary)).draw(&Env::inert(), p);
+}
+
+/// The pill's label and chevron with no fill of its own: while the Sort & Filter menu is up the
+/// page leaves its pill out and the menu surface draws it as its morph's opener face
+/// (`OptionsMenu::draw`), the fill ([`pill_fill`]) as the morph's plate and this over it.
+pub fn draw_pill_label(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
+    pill_chip(rect, face, &pill_text(face.summary)).bare().draw(&Env::inert(), p);
+}
+
+/// The pill's fill, focused or not ([`ValueChip::fill`]).
+pub fn pill_fill(focused: bool) -> [f32; 4] {
+    ValueChip::fill(focused)
+}
+
+fn pill_chip<'a>(rect: Rect, face: &HeaderFace<'_>, text: &'a (&'a std::ffi::CStr, CString)) -> ValueChip<'a> {
+    ValueChip::new(text.0, &text.1, None, rect).focused(face.pill_focused).icon(Icon::ChevronDown)
 }
 
 /// Draw the header into `frame` (the [`header_frame`]): the title and count, then the pill.

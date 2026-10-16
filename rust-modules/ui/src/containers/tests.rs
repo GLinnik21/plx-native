@@ -1624,6 +1624,51 @@ fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
     plx_gfx::text::reset_prewarm_for_test();
 }
 
+/// **A held surface's clock does not run, and its opener face is still drawn live.** A surface is
+/// HELD (`PopoverMotion::held`) for its capture frame and while its text warms — up to
+/// `SURFACE_TEXT_HOLD_MAX_MS`, six frames — at appear 0, walked through the text recorder. Two
+/// things went wrong on those frames for the Watchlist's Sort & Filter morph (frame dump at
+/// 572f46d07, n180–181):
+///
+/// - its `Tick`s carried the real `dt`, so the morph's springs ran through frames nobody saw and
+///   the first visible frame landed mid-morph, a small glass with rows already on it;
+/// - the page leaves a lifted opener out from the surface's first frame (`lifted_opener`), and
+///   the recorder paints nothing, so the focused pill VANISHED on OK.
+///
+/// So a held surface is delivered `Tick { dt_us: 0 }`, and `Screen::draw_held` is asked for the
+/// part of it that is already on screen, through a LIVE painter.
+#[test]
+fn a_held_surface_ticks_with_no_time_and_draws_its_held_face_live() {
+    let (mut d, mut rig, _) = booted();
+    plx_gfx::text::reset_prewarm_for_test();
+    crate::fixture::modal_draws_text(true);
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let (mut ms, mut held_frames, mut live_frames) = (16, 0, 0);
+    for _ in 0..12 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let held = d.nav.modals.top().unwrap().motion.held();
+        d.draw(&mut rig, true);
+        d.prune(&r.unmounted);
+        let m = modal_mut(&mut d, id);
+        let dt = *m.tick_dts.last().expect("the surface is ticked every frame");
+        let faces = std::mem::take(&mut m.held_faces);
+        if held {
+            held_frames += 1;
+            assert_eq!(dt, 0, "a held surface's clock does not run");
+            // once per walk of the frame (the backdrop discovery walk and the visible one)
+            assert!(!faces.is_empty() && faces.iter().all(|&live| live), "a held surface draws its face through a live painter: {faces:?}");
+        } else {
+            live_frames += 1;
+            assert!(dt > 0, "an unheld surface gets the frame's time");
+            assert!(faces.is_empty(), "an unheld surface draws itself whole");
+        }
+    }
+    assert!(held_frames >= 2 && live_frames >= 2, "premise: both kinds of frame ran ({held_frames} held, {live_frames} live)");
+    crate::fixture::modal_draws_text(false);
+    plx_gfx::text::reset_prewarm_for_test();
+}
+
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out
 /// PREPARES a pushed destination — its body mounts ahead of the floor, and a mount is where a
 /// screen consumes its one-shot seed (the player's origin, a detail page's season). A second

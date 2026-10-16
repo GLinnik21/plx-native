@@ -573,6 +573,11 @@ pub struct FixtureModal {
     /// What this surface names as its opener (`Screen::opener`): the host page and the element
     /// whose card the opener lift owns. `None` like every surface that opens from nothing.
     pub opener: Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)>,
+    /// The `dt_us` of every `Tick` this surface was delivered, in order.
+    pub tick_dts: Vec<u32>,
+    /// One entry per [`Screen::draw_held`] call: whether the painter it was handed was LIVE (not
+    /// the text recorder a held surface's `draw` is walked through).
+    pub held_faces: Vec<bool>,
 }
 
 thread_local! {
@@ -613,6 +618,8 @@ impl FixtureModal {
             draw_at: 0,
             render: RenderReport::NONE,
             opener: None,
+            tick_dts: Vec::new(),
+            held_faces: Vec::new(),
         }
     }
 
@@ -755,6 +762,7 @@ impl Machine<FixtureHost> for FixtureModal {
                 }
             }
             ScreenEvent::Tick(t) => {
+                self.tick_dts.push(t.dt_us);
                 // the surface's own foreground spring: reports motion while it settles
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
@@ -797,6 +805,9 @@ impl Screen<FixtureHost> for FixtureModal {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
     fn opener(&self) -> Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)> {
         self.opener
+    }
+    fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.held_faces.push(!f.painter.records());
     }
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
