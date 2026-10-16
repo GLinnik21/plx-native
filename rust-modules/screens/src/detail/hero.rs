@@ -91,7 +91,8 @@ pub enum HeroCtl {
     MarkWatched,
     /// the − face of that same toggle — worn once the item IS watched
     MarkUnwatched,
-    /// the bookmark disc — always present, always SECOND (right after Play/Resume), never labelled
+    /// the bookmark disc — present only for an item with a Watchlist-takeable guid, then always
+    /// SECOND (right after Play/Resume), never labelled
     Watchlist,
 }
 
@@ -134,6 +135,8 @@ impl HeroCtl {
 /// toggle wears.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct HeroSet {
+    /// the item carries a `plex://movie|show` guid the Watchlist takes — the bookmark disc exists only then
+    pub watchlist: bool,
     pub restart: bool,
     pub trailer: bool,
     pub alt: bool,
@@ -145,12 +148,15 @@ pub struct HeroSet {
 pub const MAX_CTLS: usize = 6;
 
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
-/// live count, so no per-frame allocation. The bookmark disc is always SECOND, after Play/Resume;
+/// live count, so no per-frame allocation. The bookmark disc (only when `set.watchlist`) is SECOND, after Play/Resume;
 /// whether it wears the outline or the filled face is membership ([`face`]), not presence.
 pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     let mut v = [HeroCtl::Play; MAX_CTLS];
-    v[1] = HeroCtl::Watchlist;
-    let mut n = 2;
+    let mut n = 1;
+    if set.watchlist {
+        v[n] = HeroCtl::Watchlist;
+        n += 1;
+    }
     if set.restart {
         v[n] = HeroCtl::Restart;
         n += 1;
@@ -342,12 +348,10 @@ pub fn face_icon(f: Face) -> plx_ui::icons::Icon {
 
 /// How far the ribbon drops at the middle of a flip, px (the board's 3 px). `theme` has no token for
 /// a glyph nudge this small — the nearest, `space::XS`, is eight — so the board's value is named here.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
 pub const RIBBON_DROP: f32 = 3.0;
 
 /// One instant of the flip between the faces, from the face's progress `p` (0 = outline at rest,
 /// 1 = filled at rest — the spring the screen steps toward the target face).
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FlipFrame {
     /// How much of the filled glyph is revealed, measured up from the glyph's bottom edge (0..1).
@@ -358,7 +362,6 @@ pub struct FlipFrame {
 
 /// The flip's frame at progress `p` (clamped to 0..1). Both rests are exact (`fill` 0 / 1, no
 /// offset), so a settled disc is the plain outline or filled icon with nothing left of the animation.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
 pub fn flip_frame(p: f32) -> FlipFrame {
     let p = p.clamp(0.0, 1.0);
     FlipFrame { fill: p, ribbon_dy: RIBBON_DROP * 4.0 * p * (1.0 - p) }
@@ -366,20 +369,19 @@ pub fn flip_frame(p: f32) -> FlipFrame {
 
 /// The part of the glyph's box `frame` reveals the filled face in: bottom-anchored, `fill` of the
 /// height. The outline draws under it over the whole box.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+#[cfg(test)]
 pub fn fill_clip(glyph: Rect, frame: FlipFrame) -> Rect {
     let h = glyph.h * frame.fill;
     Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h)
 }
 
 /// The glyph's box moved down by the ribbon drop.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+#[cfg(test)]
 pub fn dropped(glyph: Rect, frame: FlipFrame) -> Rect {
     Rect::new(glyph.x, glyph.y + frame.ribbon_dy, glyph.w, glyph.h)
 }
 
 /// The 12 hex bytes of a PMS item's `plex://movie|show/<hex>` guid, `None` for any other shape.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
 pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {
     plx_data::watchlist::decode_hex(guid.rsplit('/').next()?)
 }
@@ -388,7 +390,6 @@ pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {
 /// when it is. `None` when the item carries no guid in the form the service takes — the disc then
 /// stays drawn but the press does nothing. The Remove arm is keyed by the guid string, like the
 /// menu's own.
-#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
 pub fn press(guid: &str, m: Membership) -> Option<crate::registry::ItemMenuAction> {
     use crate::registry::ItemMenuAction as Action;
     let hex = guid_hex(guid)?;
@@ -858,6 +859,7 @@ mod tests {
 
     fn set_full(restart: bool, alt: bool, mark: PosterMark, trailer: bool) -> HeroSet {
         HeroSet {
+            watchlist: true,
             restart,
             trailer,
             alt,
@@ -1324,6 +1326,7 @@ mod tests {
     #[test]
     fn restart_and_the_watch_tail_are_independent() {
         let set = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: false,
             alt: false,
@@ -1339,12 +1342,14 @@ mod tests {
     #[test]
     fn the_actions_row_grows_an_also_available_control_only_for_a_second_source() {
         let without = HeroSet {
+            watchlist: true,
             restart: false,
             trailer: false,
             alt: false,
             mark: PosterMark::None,
         };
         let with = HeroSet {
+            watchlist: true,
             alt: true,
             ..without
         };
@@ -1357,6 +1362,7 @@ mod tests {
         for alt in [false, true] {
             for trailer in [false, true] {
                 let set = HeroSet {
+                    watchlist: true,
                     restart: true,
                     trailer,
                     alt,
@@ -1484,12 +1490,14 @@ mod tests {
     #[test]
     fn hero_indices_mean_different_actions_in_the_two_control_sets() {
         let compact = HeroSet {
+            watchlist: true,
             restart: false,
             trailer: false,
             alt: false,
             mark: PosterMark::None,
         };
         let wide = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: false,
             alt: true,
@@ -1505,6 +1513,7 @@ mod tests {
     #[test]
     fn the_actions_row_accumulates_around_a_variable_width_control() {
         let set = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: false,
             alt: true,
@@ -1581,6 +1590,7 @@ mod tests {
     fn the_real_verbs_all_fit_the_widest_row() {
         let measure = plx_ui::fixture::FixtureMeasure;
         let wide = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: true,
             alt: true,
@@ -1604,6 +1614,7 @@ mod tests {
         );
 
         let roomy = HeroSet {
+            watchlist: true,
             restart: false,
             trailer: true,
             alt: false,
@@ -1630,6 +1641,7 @@ mod tests {
     #[test]
     fn a_verb_that_does_not_fit_is_dropped_whole() {
         let set = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: true,
             alt: true,
@@ -1669,6 +1681,7 @@ mod tests {
     #[test]
     fn the_widest_action_row_clears_the_people_column() {
         let set = HeroSet {
+            watchlist: true,
             restart: true,
             trailer: true,
             alt: true,

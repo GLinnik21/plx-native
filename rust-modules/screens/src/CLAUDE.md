@@ -135,7 +135,9 @@ Every Settings drill-down is a family-stack push through `family::form_activate`
 - **The hero disc is second and unlabelled** (`detail/hero.rs`: `ELEM_WATCHLIST`, `HeroCtl::Watchlist`,
   `face(Membership)`, `flip_frame`). There is one element id for both faces so focus survives a flip,
   it is always the circle width so it never unfurls, and it is not a focus anchor in full-trailer
-  mode. Its guid must be `plex://movie|show/<24 hex>` or it is absent.
+  mode. Its guid must be `plex://movie|show/<24 hex>` or it is absent: `HeroSet::watchlist` is
+  set from `catalog_hex_of_guid` and `hero_ctls` omits the disc otherwise. The first membership
+  answer snaps the fill (`set_watchlist`); only a change from a known face plays the flip.
 - **New widths, rungs and ids come from the existing systems.** The catalog page's 36 px board line
   is drawn at `HEADLINE` because the type ladder has no 36 rung; where a board and the shipped
   tokens disagree the tokens win and the difference is reported, not patched in with a literal.

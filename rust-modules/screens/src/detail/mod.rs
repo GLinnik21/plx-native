@@ -509,6 +509,11 @@ impl DetailScreen {
     /// (the PUT is idempotent, so an unknown membership offers Add). A change flips the disc.
     pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) {
         if self.watchlist != membership {
+            // The first answer (the list landing, or the page opening on an on-list title) is the
+            // disc's REST face, not a flip: snap. Only a change from a known face animates.
+            if self.watchlist == plx_data::catalog::Membership::Unknown {
+                self.watchlist_flip = Spring::at(f32::from(hero::face(membership) == hero::Face::Filled));
+            }
             self.watchlist = membership;
             plx_machine::idle::invalidate();
         }
@@ -4126,6 +4131,7 @@ impl DetailScreen {
             trailer: false,
             alt: self.alt_available(meta),
             mark,
+            watchlist: self.detail(meta).is_some_and(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid).is_some()),
         }
     }
 

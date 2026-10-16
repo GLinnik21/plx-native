@@ -506,3 +506,51 @@ fn a_remove_from_another_page_leaves_the_watchlist_page_no_removal_to_replay() {
     assert!(rig.watchlist_remove(&guid(2), Bridge::watchlist_page_on_top(&d)));
     assert_eq!(rig.removal_owed_for_test(), None, "from over the page: it is told nothing");
 }
+
+/// The item menu's Watchlist rows, as the app receives them (`input::apply_item_action`): Add
+/// queues the write and pulses the tab, Remove queues the removal without a pulse, and Go to opens
+/// the catalog page by the identity the menu captured (a guid with no catalog id opens nothing).
+#[test]
+fn the_item_menu_watchlist_arms_queue_the_write_pulse_and_route() {
+    use plx_screens::item_menu::Action;
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&[1]);
+    let (mut d, mut rig) = rig_over(&script);
+    super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
+    super::frame(&mut d, &mut rig, tick(1), vec![]);
+    settle(&mut d, &mut rig, 2);
+    let key = plx_ui::widgets::TAB_KEY_WATCHLIST;
+    let at = rig.chrome.keys.iter().position(|k| *k == key).expect("the mark is on the strip");
+    let mut ps = plx_media::route::PlaybackSession::default();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
+    let mut await_play = None;
+    let mut apply = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, act: Action| unsafe {
+        crate::app::input::apply_item_action(
+            &mut ps, &mut pa,
+            plx_screens::registry::ItemMenuReq { act, sid: ServerId::UNSET, item: None, season: None,
+                loaded_episode: false, from_home: false },
+            d, rig, &mut crate::app::playback::LivePlaybackResources, &mut await_play, 0,
+        );
+    };
+    apply(&mut d, &mut rig, Action::WatchlistAdd { hex: [7; 12] });
+    assert!(member(&mut rig, 7), "the Add row queued the write (the face flipped at the press)");
+    assert_eq!(rig.chrome.take_pulse(), Some(at), "and the Watchlist mark pulsed");
+    settle(&mut d, &mut rig, 10);
+    assert!(script.writes.lock().unwrap().contains(&([7u8; 12], Intent::Add)));
+    apply(&mut d, &mut rig, Action::WatchlistRemove(guid(7)));
+    assert!(!member(&mut rig, 7), "the Remove row flipped the tile off");
+    assert_eq!(rig.chrome.take_pulse(), None, "a removal does not pulse");
+    settle(&mut d, &mut rig, 20);
+    assert!(script.writes.lock().unwrap().contains(&([7u8; 12], Intent::Remove)));
+    apply(&mut d, &mut rig, Action::GoToCatalog("plex://movie/not-a-hex".into()));
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(100 + i), vec![]);
+    }
+    assert!(d.top_arg() == Some(&AppArg::Watchlist), "a guid with no catalog id opens nothing");
+    apply(&mut d, &mut rig, Action::GoToCatalog(guid(3)));
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(200 + i), vec![]);
+    }
+    assert!(d.top_arg() == Some(&AppArg::Content(ContentArg::Catalog { hex: [3; 12] })), "Go to opens the catalog page");
+}

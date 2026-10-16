@@ -3498,6 +3498,42 @@ mod lifecycle_regression_tests {
         assert_eq!(plx_telemetry::telemetry::window::take_recorded_for_test(), ["wayland_released"]);
     }
 
+    /// The Watchlist page's `OpenCatalog` request reaches `content::watchlist_requests` and pushes
+    /// the catalog page of the tile's id; a guid the service does not form pushes nothing.
+    #[test]
+    fn a_watchlist_open_catalog_request_pushes_the_catalog_page() {
+        use plx_machine::machine::MachineId;
+        use plx_screens::registry::{ContentArg, HomeTab};
+        use plx_screens::watchlist::page::WatchlistOut;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        frame(&mut app, 0);
+        super::super::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Watchlist, None, None);
+        for i in 1..40 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Watchlist);
+        let instance = app.pages.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
+        let hex = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
+        let fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        app.bridge.push_watchlist_req_for_test(MachineId::Instance(instance), WatchlistOut::OpenCatalog("plex://movie/not-a-hex".into()));
+        content_requests(&mut app, &fr);
+        for i in 40..80 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Watchlist, "a guid with no catalog id opens nothing");
+        app.bridge.push_watchlist_req_for_test(
+            MachineId::Instance(instance),
+            WatchlistOut::OpenCatalog("plex://movie/5d776b1d96b655001f2a9c3e".into()),
+        );
+        content_requests(&mut app, &fr);
+        for i in 80..140 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Content(ContentArg::Catalog { hex }));
+    }
+
     #[test]
     fn controlled_content_boot_waits_for_the_queued_home_root() {
         use plx_machine::machine::{Fx, MachineId, NavOp};

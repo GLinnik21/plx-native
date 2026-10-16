@@ -136,7 +136,9 @@ this id lives on another service with another token). `IntentLedger`:
   otherwise **Unknown**, which every surface draws as the Add face.
 
 **Surfaces.** The Detail hero's bookmark disc is second after Play/Resume (`ELEM_WATCHLIST`, unlabeled,
-outline when off the list, filled when on; the fill rises from the bottom with a 3 px ribbon drop).
+outline when off the list, filled when on; the fill rises from the bottom with a 3 px ribbon drop on a
+flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
+(`HeroSet::watchlist`).
 The item menu offers `Add to Watchlist` / `Remove from Watchlist` for a movie and `Add Show to
 Watchlist` / `Remove Show...` for an episode or season, with the identity captured when the menu
 opened. A catalog page's primary pill reads `Add to Watchlist` / `On Watchlist`. An add from a menu

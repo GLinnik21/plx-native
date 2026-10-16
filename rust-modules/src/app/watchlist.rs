@@ -365,6 +365,13 @@ impl Bridge {
         }
     }
 
+    /// A page's request as the bridge would have collected it from the dispatcher (tests that drive
+    /// `content::watchlist_requests` without the page's key path).
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn push_watchlist_req_for_test(&mut self, from: MachineId, req: WatchlistOut) {
+        self.watchlist_reqs.push((from, req, ReturnState::default()));
+    }
+
     pub(crate) fn take_watchlist_reqs(&mut self) -> Vec<(MachineId, WatchlistOut, ReturnState<u32, PageMemory>)> {
         std::mem::take(&mut self.watchlist_reqs)
     }
