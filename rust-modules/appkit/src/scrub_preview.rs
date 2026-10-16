@@ -241,11 +241,17 @@ const RESHOW_MS: u32 = 100;
 const EXIT_MS: u32 = 120;
 /// One still replacing the next, in place.
 const SWAP_MS: u32 = 80;
-/// How long the last still stays up once it is out of tolerance of the target and no nearer one
-/// has arrived. Not instant: a fast hold crosses the index faster than stills land, and hiding at
-/// once would flicker the card.
+/// How long the last still stays up once the target has SETTLED out of tolerance of it, counted
+/// from the target's last move (or from the still going out of tolerance, whichever is later), with
+/// no nearer still having arrived. Not instant: hiding at once would flicker the card.
+///
+/// While the target is MOVING there is no clock: a held key slews it up to 480 s/s while a still
+/// takes ~80 ms to land, so the newest still ARRIVED is nearly always further than
+/// [`STILL_TOLERANCE_MS`] from it, and hiding on distance would blink the card out of every fast
+/// hold with stills landing all the while. Every move restarts this timer instead (see
+/// [`Motion::observe`]).
 pub const STALE_HIDE_MS: u32 = 400;
-/// A still stands for the target while it is within this many ms of it. The server's index
+/// A still stands for a SETTLED target while it is within this many ms of it. The server's index
 /// interval is not known to us (a PMS default is 10 s), so it is the floor and the constant.
 pub const STILL_TOLERANCE_MS: i64 = 10_000;
 /// The knob clock's size at full growth: the type-ladder rung nearest 1.25x its resting
@@ -356,8 +362,11 @@ pub struct Motion {
     entered: bool,
     /// the card is currently wanted
     card_on: bool,
-    /// since when the shown still has been out of tolerance
+    /// since when the shown still has been out of tolerance of a target that has not moved on: the
+    /// target's every move restarts it, so it only runs out once the target has settled
     stale_since: Option<u32>,
+    /// the target the last [`Motion::observe`] was asked about, to see it move
+    last_target: Option<i64>,
     /// the memo found no index for this part
     no_index: bool,
     clock: Ramp,
@@ -387,6 +396,7 @@ impl Motion {
             entered: false,
             card_on: false,
             stale_since: None,
+            last_target: None,
             no_index: false,
             clock: Ramp::rest(0.0),
             clock_up: false,
@@ -409,6 +419,7 @@ impl Motion {
             self.entered = false;
             self.card_on = false;
             self.stale_since = None;
+            self.last_target = None;
             self.last = None;
             self.swap = None;
             self.last_shown = None;
@@ -480,8 +491,16 @@ impl Motion {
     ) -> Option<Show> {
         self.no_index = absent;
         let within = shown.is_some_and(|ms| within_tolerance(ms, target_ms));
+        // A target that is still MOVING (a hold, a key step, a drag) keeps the last arrived still up
+        // whatever its distance: the clock restarts on every move and only runs once the target
+        // has settled.
+        let moved = self.last_target.replace(target_ms) != Some(target_ms);
         if shown.is_some() && !within {
-            self.stale_since.get_or_insert(now);
+            if moved {
+                self.stale_since = Some(now);
+            } else {
+                self.stale_since.get_or_insert(now);
+            }
         } else {
             self.stale_since = None;
         }
@@ -813,8 +832,8 @@ mod tests {
         let mut m = Motion::new();
         assert!(live(Some(600_000), 600_000, 0, &mut m).is_some() || m.card_on);
         assert!(live(Some(600_000), 600_000, 200, &mut m).is_some());
-        // the knob runs 60 s away and no nearer still arrives
-        assert!(live(Some(600_000), 660_000, 300, &mut m).is_some(), "still up at once");
+        // the knob runs 100 s away and settles there; no nearer still arrives
+        assert!(live(Some(600_000), 700_000, 300, &mut m).is_some(), "still up at once");
         assert!(live(Some(600_000), 700_000, 600, &mut m).is_some(), "still up at 300 ms stale");
         live(Some(600_000), 700_000, 700, &mut m);
         assert!(m.stale_since.is_some() && !m.card_on, "at 400 ms stale the card is asked to hide");
@@ -858,11 +877,9 @@ mod tests {
         // the target stops at 1_260_000 (its last move was at 1000 ms); the shown still is 11 minutes behind
         let at = |t: u32, m: &mut Motion| live(Some(600_000), 1_260_000, t, m);
         assert!(at(1_100, &mut m).is_some() && at(1_390, &mut m).is_some(), "up through the 400 ms after the last move");
+        assert!(m.card_on);
         at(1_400, &mut m);
-        at(1_790, &mut m);
-        assert!(m.card_on, "…and 400 ms of staleness after it");
-        at(1_800, &mut m);
-        assert!(!m.card_on, "hidden once 400 ms have passed since the target settled");
+        assert!(!m.card_on, "hidden 400 ms after the target settled: one clock, not a settle window plus a grace");
     }
 
     #[test]
