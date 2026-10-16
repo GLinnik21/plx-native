@@ -10,6 +10,7 @@ use plx_ui::theme;
 
 use super::cards_harness::{copy, tile, tile_in, tiles, Harness};
 use super::caption;
+use super::header::Count;
 use super::options::WatchlistOptionsState;
 use super::page::{ListState, MatchedFacts, WatchlistIn, WatchlistOut, WatchlistScreen, PILL_ELEM};
 use super::readout::Readout;
@@ -195,7 +196,7 @@ fn back_is_a_request() {
 fn the_readout_follows_the_list() {
     let mut s = screen(2);
     assert_eq!(s.readout(), None);
-    assert_eq!(s.count(), Some(2));
+    assert_eq!(s.count(), Some(Count::All(2)));
     s.input(WatchlistIn::Rows(vec![]));
     assert_eq!(s.readout(), Some(Readout::Filtered), "narrowed to nothing, 2 on the list");
     s.input(WatchlistIn::List(ListState::Ready { total: 0 }));
@@ -471,12 +472,40 @@ fn a_failed_first_read_offers_try_again() {
 fn the_count_reads_the_whole_list_while_the_tail_loads() {
     let mut s = screen(100);
     s.input(WatchlistIn::List(ListState::Ready { total: 250 }));
-    assert_eq!(s.count(), Some(250), "100 loaded of 250");
+    assert_eq!(s.count(), Some(Count::All(250)), "100 loaded of 250");
     s.input(WatchlistIn::Options(WatchlistOptionsState {
         type_: super::options::TypeFilter::Movies,
         ..Default::default()
     }));
-    assert_eq!(s.count(), Some(100), "a narrowed list counts what is shown");
+    assert_eq!(s.count(), Some(Count::Of { shown: 100, total: 250 }), "a narrowed list counts what is shown of the whole");
+}
+
+/// **Sort alone does not narrow**, and a filter that leaves nothing still counts "0 of N" beside the
+/// pill (board WatchlistFiltered) while the empty list and the failed reads show no count.
+#[test]
+fn the_count_is_all_or_shown_of_total_and_absent_off_the_landed_list() {
+    let mut s = screen(3);
+    s.input(WatchlistIn::Options(WatchlistOptionsState { sort: super::options::SortKey::Title, ..Default::default() }));
+    assert_eq!(s.count(), Some(Count::All(3)), "sort alone does not narrow");
+    s.input(WatchlistIn::Options(WatchlistOptionsState { show: super::options::ShowFilter::Released, ..Default::default() }));
+    s.input(WatchlistIn::Rows(vec![]));
+    assert_eq!(s.readout(), Some(Readout::Filtered));
+    assert_eq!(s.count(), Some(Count::Of { shown: 0, total: 3 }));
+    s.input(WatchlistIn::List(ListState::Ready { total: 0 }));
+    assert_eq!((s.readout(), s.count()), (Some(Readout::Empty), None));
+    for l in [ListState::Loading, ListState::Unavailable, ListState::Failed] {
+        s.input(WatchlistIn::List(l));
+        assert_eq!(s.count(), None);
+    }
+}
+
+/// **A Remove updates the count with the landing**, narrowed or not.
+#[test]
+fn a_remove_lowers_the_count() {
+    let mut s = screen(3);
+    let guid = "plex://movie/g0".to_string();
+    s.input(WatchlistIn::Removed(guid));
+    assert_eq!(s.count(), Some(Count::All(2)));
 }
 
 /// **`SHAPE` lists the fields in the order `write` emits them**, and the options in the canonical

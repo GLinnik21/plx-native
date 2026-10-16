@@ -1,5 +1,5 @@
 //! Sort & Filter state, summary, the glass menu's morph wiring, the header and the read-outs.
-use super::super::header::{self, HeaderFace};
+use super::super::header::{self, Count, HeaderFace};
 use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
@@ -174,7 +174,7 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
 fn the_dissolving_pill_still_records_its_label() {
     let (m, pill, state) = open_menu();
     let log = plx_ui::draw_census::capture(|| {
-        let face = HeaderFace { title: "Watchlist", count: Some(12), summary: &state.summary(), pill_focused: false };
+        let face = HeaderFace { title: "Watchlist", count: Some(Count::All(12)), summary: &state.summary(), pill_focused: false };
         header::draw_pill(m.pill_painter(plx_ui::Painter::recording()), pill, &face);
     });
     assert!(log.iter().any(|(tag, _)| *tag == 100), "the pill's label is a text run");
@@ -193,6 +193,47 @@ fn the_pill_is_right_aligned_and_centred_on_the_title_line() {
     assert_eq!(frame.x, plx_ui::consts::MARGIN_X);
     assert_eq!(frame.y, 172.0, "board: title top 172");
     assert_eq!(header::HEADER_CY, 196.0);
+}
+
+/// **The count sits just left of the pill**: 24 px clear of it, right-aligned there, centred on the
+/// pill's line, LABEL regular; the pill does not move for it.
+#[test]
+fn the_count_hangs_24px_left_of_the_pill_on_its_line() {
+    let frame = header::header_frame(1771.0);
+    let pill = header::pill_rect(frame, &FixtureMeasure, "Default");
+    let c = header::count_rect(frame, &FixtureMeasure, "Default", &Count::All(14).text());
+    assert_eq!(c.x + c.w, pill.x - theme::space::MD);
+    assert_eq!(c.cy(), pill.cy());
+    let face = HeaderFace { title: "Watchlist", count: Some(Count::All(14)), summary: "Default", pill_focused: false };
+    let log = plx_ui::draw_census::capture(|| header::draw_header(plx_ui::Painter::recording(), frame, &FixtureMeasure, &face));
+    let runs = log.iter().filter(|(t, _)| *t == 100).count();
+    assert_eq!(runs, 4, "title, count, and the pill's label and value");
+    let bare = HeaderFace { count: None, ..face };
+    let log = plx_ui::draw_census::capture(|| header::draw_header(plx_ui::Painter::recording(), frame, &FixtureMeasure, &bare));
+    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 3);
+    assert_eq!(header::pill_rect(frame, &FixtureMeasure, "Default"), pill, "the pill is where it was");
+}
+
+/// **Copy**: "{n} titles" at Default with real plural forms, "{shown} of {total}" when narrowed.
+#[test]
+fn the_count_reads_in_every_language_with_its_plural_forms() {
+    let want = [
+        (Preference::En, [(1, "1 title"), (2, "2 titles"), (21, "21 titles")], "6 of 14"),
+        (Preference::Es, [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
+        (Preference::Fr, [(1, "1 titre"), (2, "2 titres"), (21, "21 titres")], "6 sur 14"),
+        (Preference::Be, [(1, "1 назва"), (2, "2 назвы"), (21, "21 назва")], "6 з 14"),
+    ];
+    for (lang, all, of) in want {
+        let _g = language_on_this_thread_for_test(lang);
+        for (n, text) in all {
+            assert_eq!(Count::All(n).text(), text, "{lang:?} {n}");
+        }
+        assert_eq!(Count::Of { shown: 6, total: 14 }.text(), of);
+    }
+    let _g = language_on_this_thread_for_test(Preference::Be);
+    assert_eq!(Count::All(3).text(), "3 назвы");
+    assert_eq!(Count::All(5).text(), "5 назваў");
+    assert_eq!(Count::All(11).text(), "11 назваў");
 }
 
 // ---- read-outs ----
@@ -254,12 +295,23 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
         long.show = ShowFilter::OnYourServers;
         let frame = header::header_frame(1771.0);
         let pill = header::pill_rect(frame, &ShippedMeasure, &long.summary());
-        // The title (tracked) and a five-digit count, then the air `space::MD` the count keeps.
+        // The title (tracked), then the longest count (five digits, or "99999 of 99999") and its
+        // 24 px gap to the pill, then the air the title keeps.
         let title = CString::new(msg::watchlist_page_title()).unwrap();
         let title_w = plx_machine::machine::Measure::width(&ShippedMeasure, &title, theme::size::DISPLAY, true)
             + theme::TRACKING_TITLE_TIGHT * title.as_bytes().len() as f32;
-        let count_w = plx_machine::machine::Measure::width(&ShippedMeasure, c"88888", theme::size::HEADLINE, false);
-        let title_end = plx_ui::consts::MARGIN_X + title_w + theme::space::MD + count_w + theme::space::LG;
+        let title_end = plx_ui::consts::MARGIN_X + title_w + theme::space::LG;
+        let longest = [Count::All(88888), Count::All(11111), Count::All(22222), Count::Of { shown: 88888, total: 88888 }];
+        for count in longest {
+            let c = header::count_rect(frame, &ShippedMeasure, &long.summary(), &count.text());
+            if c.x < title_end {
+                bad.push(format!("{tag} count {:?} ({:.0}px) at x {:.0} runs into the title (needs >= {title_end:.0})", count.text(), c.w, c.x));
+            }
+            let def = header::count_rect(frame, &ShippedMeasure, &default_state().summary(), &count.text());
+            if def.x < title_end {
+                bad.push(format!("{tag} count {:?} at the Default pill is at x {:.0}, title ends {title_end:.0}", count.text(), def.x));
+            }
+        }
         if pill.x < title_end {
             bad.push(format!("{tag} pill {:.0}px wide runs into the title (needs x >= {title_end:.0}, is {:.0})", pill.w, pill.x));
         }
