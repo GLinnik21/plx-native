@@ -1669,6 +1669,42 @@ fn a_held_surface_ticks_with_no_time_and_draws_its_held_face_live() {
     plx_gfx::text::reset_prewarm_for_test();
 }
 
+/// **The page knows when a menu veils it, before it ticks.** The dispatcher states the veil right
+/// after it steps the surfaces: full while a surface opens or stands open, the surface's own
+/// appear while it fades out, nothing once it has gone. A landing reads it on the page's tick in
+/// the same frame (`cards::landing`), so a Remove chosen in a menu moves the grid only after it.
+#[test]
+fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
+    use crate::containers::modal::{page_veiled, VEIL, VEIL_CLEAR};
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let mut ms = 16;
+    for _ in 0..40 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&r.unmounted);
+        assert!(page_veiled() && VEIL.with(|v| v.get()) == 1.0, "an opening or open surface veils the page");
+    }
+    d.request(MachineId::Nav, NavOp::Dismiss(id));
+    let (mut cleared_while_fading, mut frames) = (false, 0);
+    while d.nav.modals.top().is_some() && frames < 200 {
+        ms += 16;
+        frames += 1;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let veil = VEIL.with(|v| v.get());
+        if let Some(s) = d.nav.modals.top().filter(|s| s.phase == Phase::Closing) {
+            assert_eq!(veil, s.motion.appear.clamp(0.0, 1.0), "a fading surface veils by its appear");
+            cleared_while_fading |= !page_veiled() && veil > 0.0;
+            assert_eq!(page_veiled(), veil >= VEIL_CLEAR);
+        }
+        d.prune(&r.unmounted);
+    }
+    assert!(cleared_while_fading, "the veil clears in the fade's tail, before the surface is gone");
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(!page_veiled() && VEIL.with(|v| v.get()) == 0.0, "no surface, no veil");
+}
+
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out
 /// PREPARES a pushed destination — its body mounts ahead of the floor, and a mount is where a
 /// screen consumes its one-shot seed (the player's origin, a detail page's season). A second

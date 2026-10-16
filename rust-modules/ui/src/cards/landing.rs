@@ -11,13 +11,17 @@
 //!   publication cannot make it show another card. A ghost drawn at rest is not lifted; one that
 //!   was the focused card starts at the scale it was drawn at and eases to rest while it fades;
 //! - **a card that stays** starts where it was on screen and a spring carries it to its new slot.
-//!   A slot is a point, `(x, y)`: a strip's slots share a `y`, a grid's do not, and a card that
-//!   crosses a line break goes to its new slot as ONE straight 2-D spring (an `x` and a `y` spring
-//!   of the same stiffness started together stay proportional, so the path is a straight line
-//!   with no arc and no two phases). There is no stagger: every survivor starts on the frame of
-//!   the change. The offsets are taken against the scroll's own move for the focused card (the landing rule of
-//!   `mod.rs` has already kept it at its slot, so its offset is 0), but the scroll is clamped to
-//!   its range, so a focused card at an end of the strip can still move on screen;
+//!   A slot is a point, `(x, y)`: a strip's slots share a `y`, a grid's do not. A card that keeps
+//!   its row slides along it; one that **changes row** (crosses a line break) never flies across
+//!   the grid: it fades out where it stood and in at its new slot, the two alphas complementary
+//!   (`out = 1 - in`) on the fade's stiffness, the leaving copy drawn under the cards that slide
+//!   ([`Landing::leaving`]). A diagonal flight crossed a whole row of tiles on its way. A card that
+//!   only moves with the scroll (its slot's `y` did not change) keeps the plain 2-D spring: every
+//!   card on screen moves the same way, so nothing crosses anything. There is no stagger: every
+//!   survivor starts on the same frame. The offsets are taken against the scroll's own move for
+//!   the focused card (the landing rule of `mod.rs` has already kept it at its slot, so its offset
+//!   is 0), but the scroll is clamped to its range, so a focused card at an end of the strip can
+//!   still move on screen;
 //! - **an inserted card** fades in, each card on its own alpha.
 //!
 //! The owner names the layout through [`Scene::slot`] (index to the slot's top-left in the
@@ -32,6 +36,16 @@
 //! **No cap.** Every card of the source is diffed (by element, through a map), but only cards whose
 //! old or new slot is on-axis (plus the cull margin) get a spring, a fade or a ghost; the rest snap,
 //! because nothing of them is on screen to animate.
+//!
+//! **After the menu, not under it.** A landing that a menu's choice started (the Watchlist's
+//! Remove from the card's hold menu) does not step while a menu still veils the page
+//! ([`page_veiled`](crate::containers::modal::page_veiled): a surface opening, open, or not yet
+//! faded below [`VEIL_CLEAR`](crate::containers::modal::VEIL_CLEAR)), and once the veil clears
+//! it waits a further [`LANDING_BEAT_S`] before every spring starts together. Run under the
+//! menu's fade, the tiles slid beneath its text, and their motion forced a page pass under the
+//! menu's cached host on every frame of the fade (`popover::host_refresh`). While the landing
+//! waits under the veil it reports no motion at all (the fading menu presents those frames); only
+//! the beat's frames are its own. A landing no menu ever veiled starts on its first frame.
 //!
 //! **Layout motion and the held page image.** These springs move layout, so they are not
 //! `idle::decorative`: while they run the dispatcher keeps a page image held. A landing that
@@ -55,6 +69,10 @@ use plx_machine::machine::Host;
 use super::pool::key;
 use super::CardSource;
 use crate::Spring;
+
+/// The pause between a menu leaving the page and the landing it started, s: long enough to read
+/// as "the menu went, then the grid answered", short enough not to read as lag.
+pub(crate) const LANDING_BEAT_S: f32 = 0.12;
 
 /// A removed card still on screen.
 #[derive(Clone, Copy)]
@@ -109,7 +127,13 @@ struct Anim {
     off: HashMap<u64, Slide>,
     /// The alpha of each arriving card, springing to 1.
     fade: HashMap<u64, Spring>,
+    /// Each card that changed row (by [`key`]): its leaving copy's offset from its new slot, px —
+    /// where it stood on screen. The copy's alpha is `1 -` the card's [`fade`](Self::fade).
+    wrap: HashMap<u64, (f32, f32)>,
     ghosts: Vec<Ghost>,
+    /// The cell the focused card left as a ghost, now held by another card (the takeover): its
+    /// pop is restarted from rest by the owner, once ([`Landing::take_takeover`]).
+    takeover: Option<usize>,
 }
 
 impl Anim {
@@ -117,6 +141,8 @@ impl Anim {
         use plx_machine::idle::settled;
         self.off.retain(|_, s| !s.settled());
         self.fade.retain(|_, s| !settled(s.pos, 1.0, s.vel));
+        let fade = &self.fade;
+        self.wrap.retain(|k, _| fade.contains_key(k));
         self.ghosts.retain(|g| !settled(g.alpha.pos, 0.0, g.alpha.vel));
     }
 
@@ -139,11 +165,18 @@ pub(crate) struct Landing {
     /// (the sum of the landing shifts of the ticks that saw the change).
     shift: (f32, f32),
     anim: Option<Anim>,
+    /// A menu veiled the page since the playing landing began: its beat is still owed.
+    veiled: bool,
+    /// How long the page has been clear of the veil while the beat is owed, s.
+    beat: f32,
+    /// The last [`step`](Self::step) did not advance anything (veiled, in the beat, or under a
+    /// held page image).
+    paused: bool,
 }
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, veiled: false, beat: 0.0, paused: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
@@ -160,6 +193,8 @@ impl Landing {
         self.revision = src.revision();
         self.shift = (0.0, 0.0);
         self.anim = None;
+        self.veiled = false;
+        self.paused = false;
     }
 
     /// Take the cards as they are and drop whatever is playing (a dormant section).
@@ -179,6 +214,32 @@ impl Landing {
     /// the release.
     pub(crate) fn held(&self) -> bool {
         self.anim.is_some() && crate::containers::transition::page_image_held()
+    }
+
+    /// A landing is playing but its last step did not run: a menu veils the page, its beat is
+    /// still counting, or the page is a held image. An owner holds the motion it pairs with the
+    /// landing (the takeover's pop) while this is true, so everything starts together.
+    pub(crate) fn waiting(&self) -> bool {
+        self.anim.is_some() && self.paused
+    }
+
+    /// The cell whose focused card left as a ghost and that another card now holds, once: the
+    /// owner restarts that cell's pop from rest, so the takeover rises as the ghost sinks (one
+    /// lifted tile at a time, never two side by side).
+    pub(crate) fn take_takeover(&mut self) -> Option<usize> {
+        self.anim.as_mut().and_then(|a| a.takeover.take())
+    }
+
+    /// The cards that changed row, of `n`: each one's index, its leaving copy's offset from its
+    /// slot (px, where it stood on screen) and the copy's alpha (`1 -` the card's own).
+    pub(crate) fn leaving(&self, n: usize) -> impl Iterator<Item = (usize, (f32, f32), f32)> + '_ {
+        self.anim.as_ref().filter(|a| a.n == n && !a.wrap.is_empty()).into_iter().flat_map(move |a| {
+            self.keys.iter().enumerate().filter_map(move |(i, k)| {
+                let off = *a.wrap.get(k)?;
+                let inn = a.fade.get(k).map_or(1.0, |s| s.pos.clamp(0.0, 1.0));
+                Some((i, off, 1.0 - inn))
+            })
+        })
     }
 
     /// Ghosts still on screen.
@@ -246,6 +307,7 @@ impl Landing {
         // where a card stood on screen is its old slot plus the scroll's move; the focused card,
         // which the landing rule kept in place, comes out at 0 and so does not move
         let shift = std::mem::take(&mut self.shift);
+        let playing = self.anim.is_some();
         let mut prev = self.anim.take().unwrap_or_default();
         let mut next = Anim { n, ..Anim::default() };
         for (i, &k) in new.iter().enumerate() {
@@ -263,9 +325,14 @@ impl Landing {
             let (was_at, now_at) = ((scene.slot)(was), (scene.slot)(i));
             let start = (was_at.0 - now_at.0 + shift.0 + carried.0, was_at.1 - now_at.1 + shift.1 + carried.1);
             // off-axis both before and after: nothing of it is on screen to slide
-            if (start.0.abs() >= 0.5 || start.1.abs() >= 0.5)
-                && ((scene.on)(now_at.0, now_at.1) || (scene.on)(now_at.0 + start.0, now_at.1 + start.1))
-            {
+            let seen = (scene.on)(now_at.0, now_at.1) || (scene.on)(now_at.0 + start.0, now_at.1 + start.1);
+            // its row changed AND it would move up or down on screen: it crossfades instead
+            if seen && (was_at.1 - now_at.1).abs() >= 0.5 && start.1.abs() >= 0.5 {
+                next.wrap.insert(k, start);
+                next.fade.insert(k, Spring::at(0.0));
+                continue;
+            }
+            if seen && (start.0.abs() >= 0.5 || start.1.abs() >= 0.5) {
                 next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1) });
             }
             if let Some(s) = prev.fade.get(&k) {
@@ -282,9 +349,19 @@ impl Landing {
         for (was, &k) in old.iter().enumerate().filter(|(_, k)| !kept.contains(k)) {
             let at = (scene.slot)(was);
             if (scene.on)(at.0 + shift.0, at.1 + shift.1) {
-                let s = scene.lifted.filter(|&(c, _)| c == was).map_or(1.0, |(_, s)| s.max(1.0));
+                let lifted = scene.lifted.filter(|&(c, _)| c == was);
+                if lifted.is_some() {
+                    next.takeover = Some(was);
+                }
+                let s = lifted.map_or(1.0, |(_, s)| s.max(1.0));
                 next.ghosts.push(Ghost { key: k, was, shift, alpha: Spring::at(1.0), lift: Spring::at(s) });
             }
+        }
+        // a landing over one still waiting waits with it; a fresh one owes no beat yet
+        if !playing {
+            self.veiled = false;
+            self.beat = 0.0;
+            self.paused = false;
         }
         self.anim = (!next.empty()).then_some(next);
         self.keys = new;
@@ -293,13 +370,31 @@ impl Landing {
         self.revision = src.revision();
     }
 
-    /// One frame of the animation. Nothing steps while the page is a held image: the first live
-    /// frame after it shows the start state.
+    /// One frame of the animation. Nothing steps while the page is a held image (the first live
+    /// frame after it shows the start state), nor while a menu veils the page and for
+    /// [`LANDING_BEAT_S`] after it cleared (module doc).
     pub(crate) fn step(&mut self, dt: f32, k: (f32, f32)) {
         let Some(a) = self.anim.as_mut() else { return };
+        self.paused = true;
         if crate::containers::transition::page_image_held() {
             return;
         }
+        if crate::containers::modal::page_veiled() {
+            // the menu's own fade presents these frames: nothing of the page moves under it
+            self.veiled = true;
+            self.beat = 0.0;
+            return;
+        }
+        if self.veiled {
+            self.beat += dt;
+            if self.beat < LANDING_BEAT_S {
+                // the beat's frames are this landing's own: ask for the next one
+                plx_machine::idle::note_motion();
+                return;
+            }
+            self.veiled = false;
+        }
+        self.paused = false;
         for s in a.off.values_mut() {
             s.x.step(0.0, k.0, dt);
             s.y.step(0.0, k.0, dt);

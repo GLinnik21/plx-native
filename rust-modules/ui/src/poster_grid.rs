@@ -150,6 +150,17 @@ impl GridPop {
         }
     }
 
+    /// The focused card at cell `to` took over a cell whose card left lifted (a landing's ghost
+    /// carries that lift down while it fades): its pop starts from REST and grows with the
+    /// landing, so the two never stand lifted side by side. Nothing lets go — the card that held
+    /// the pop is the ghost, which eases itself.
+    pub fn rise(&mut self, to: usize) {
+        self.pop = (Some(to), Spring::at(1.0));
+        if self.shrink.0 == Some(to) {
+            self.shrink = (None, Spring::at(1.0));
+        }
+    }
+
     /// Cell `to` is focused with no deliberate move (a restore, a reconcile): FULL scale at once
     /// and nothing lets go, the cell it left is simply at rest.
     pub fn adopt(&mut self, to: usize, style: &RowStyle) {

@@ -84,11 +84,14 @@ impl GridSpec {
 
     /// Play a content landing that no move announced (`landing.rs`): a removed card fades out where
     /// it stood on `style.k_scale` ([`Grid::paint_ghosts`] paints it from the card the owner kept),
-    /// every card that stays springs to its new slot on `style.k_scroll`, all together (no stagger),
-    /// and a card that crosses a line break travels one straight 2-D spring from its old cell to its
-    /// new one. Cards with no end on screen cut. Focus is not this spring's: the engine's reconcile
-    /// has already put it on the card that took the removed one's index (the next card). Off by
-    /// default: a grid whose owner keeps no removed cards for the ghosts still gets the slide.
+    /// every card that keeps its row slides along it on `style.k_scroll`, all together (no
+    /// stagger), and a card that crosses a line break crossfades on `style.k_scale` (out where it
+    /// stood, in at its new cell) instead of flying over the row between. Cards with no end on
+    /// screen cut. Focus is not this spring's: the engine's reconcile has already put it on the
+    /// card that took the removed one's index (the next card), whose pop rises from rest as the
+    /// removed card's ghost sinks. Nothing starts while a menu veils the page, and a beat after
+    /// it cleared (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
+    /// the ghosts still gets the slide.
     pub const fn animate_landings(self, on: bool) -> Self {
         Self { landings: on, ..self }
     }
@@ -246,13 +249,20 @@ impl Grid {
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
         self.play_landing(src, sy0, lifted, dt);
+        // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks
+        if let (Some(_), Some(i)) = (self.landing.take_takeover(), focus) {
+            self.pop.rise(i);
+        }
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
             poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
         });
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
-        self.pop.tick(focus, &self.spec.style, dt);
+        // the takeover's rise starts with the landing's springs, not under the menu that chose it
+        if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
+            self.pop.tick(focus, &self.spec.style, dt);
+        }
         self.shrink.note(&self.pop, src);
         if self.spec.scroll == ScrollMode::External {
             return;
@@ -516,12 +526,15 @@ impl Grid {
         Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
     }
 
-    /// Draw the grid into `p` (page alpha already applied) and register its stops: non-focused
-    /// cards first, the focused one last; only the cards the scroll can show are touched.
+    /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
+    /// the leaving copies of the cards a landing moved to another row (over the owner's ghosts,
+    /// which it paints before this), the non-focused cards, the focused one last; only the cards
+    /// the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
+        self.draw_leaving(f, p, src, &bands);
         for i in self.window(src.len()) {
             if focus == Some(i) || self.above_edge(i, &bands) {
                 continue;
@@ -614,6 +627,24 @@ impl Grid {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+    }
+
+    /// The cards a landing moved to another row, fading out where they stood (at rest, never
+    /// captioned or registered: the card itself is fading in at its new slot).
+    fn draw_leaving<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, bands: &[GridBand]) {
+        for (i, (dx, dy), a) in self.landing.leaving(src.len()) {
+            if a <= 0.0 || !src.loaded(i) || super::lifted_out(f, self.entry, src, i) {
+                continue;
+            }
+            let cell = self.cell(i, bands);
+            let rect = super::to_local(p, Rect::new(cell.x + dx, cell.y + dy, cell.w, cell.h));
+            if !card_row::paint_visible(p, rect, 1.0, false) {
+                continue;
+            }
+            let pr = p.alpha(a);
+            card_row::draw_tile(pr, src.art(i), rect, 1.0, &self.spec.style, src.progress(i));
+            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false }, f.measure);
+        }
     }
 
     /// A landing is playing: an owner that keeps the cards it removed for

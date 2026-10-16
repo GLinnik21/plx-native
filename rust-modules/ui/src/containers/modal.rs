@@ -237,6 +237,45 @@ pub fn style_caches_host(style: Style) -> bool {
     surface_policy(style, Phase::Opening, false).1 != HostRender::Live
 }
 
+/// **Below this a closing surface no longer veils the page**: its panel and text are faint enough
+/// that a page layout moving under it reads as the page's own motion, not as tiles sliding under a
+/// menu's text. About a sixth of the way into the fade-out tail (the appear spring at
+/// [`APPEAR_K`] is there ~170 ms after the dismiss, where waiting for the prune would cost ~500 ms).
+pub const VEIL_CLEAR: f32 = 0.15;
+
+thread_local! {
+    /// The most opaque surface over the page after this frame's surface step ([`set_veil`]).
+    pub(crate) static VEIL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// The dispatcher's statement, right after it steps the surfaces and before any page tick, of how
+/// much of a surface stands over the page this frame: 1 for an `Opening` or `Open` one, the
+/// appear of a `Closing` one, the largest of them, 0 for none. Thread-local, like
+/// [`page_image_held`](super::transition::page_image_held), and for the same reader: a page's
+/// layout animation that must not run under a menu ([`page_veiled`]).
+pub(crate) fn set_veil(v: f32) {
+    VEIL.with(|c| c.set(v));
+}
+
+/// The page is under a menu this frame: a surface is opening, open, or still at least
+/// [`VEIL_CLEAR`] opaque on its way out. A page layout motion that a menu's choice started (the
+/// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`).
+pub fn page_veiled() -> bool {
+    VEIL.with(|c| c.get()) >= VEIL_CLEAR
+}
+
+/// The veil a set of surfaces casts ([`set_veil`]).
+pub(crate) fn veil_of<H: Host>(surfaces: &[Surface<H>]) -> f32 {
+    surfaces
+        .iter()
+        .map(|s| match s.phase {
+            Phase::Hidden => 0.0,
+            Phase::Closing => s.motion.appear.clamp(0.0, 1.0),
+            _ => 1.0,
+        })
+        .fold(0.0, f32::max)
+}
+
 /// What a miss beside a surface does, by style — consulted only while `Open`.
 pub fn on_miss(style: Style) -> OnMiss {
     match style {

@@ -52,6 +52,8 @@ struct Cards {
     before: bool,
     /// The screen rect each card was really painted at, as the overlay hook saw it.
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
+    /// The same paints in call order with the alpha each was painted at.
+    painted: std::cell::RefCell<Vec<(u32, Rect, f32)>>,
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
     /// (`Members::elem`'s `unwrap_or(HEADER_ELEM)`) and `index_of` knows no such element.
     unindexed_from: usize,
@@ -65,7 +67,7 @@ struct Cards {
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
     }
 }
 
@@ -105,6 +107,7 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
+        self.painted.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1, p.opacity()));
     }
 }
 
@@ -3468,45 +3471,186 @@ fn a_grid_ghost_fades_in_its_cell_on_k_scale() {
     assert!(!r.sect.landing_pending() && !r.sect.has_ghosts() && !r.run(1), "and the grid is quiet");
 }
 
-/// Survivors spring home on `K_SCROLL`, all on the same frame (no stagger), each along a straight
-/// line: the card that crosses the line break travels one 2-D spring from the end of the row above
-/// to the start of its new row (its `x` and `y` progress are one number), never overshooting.
+/// Every card the grid paints this frame, in call order, with its alpha.
+fn grid_paints(r: &Rig<Grid>) -> Vec<(u32, Rect, f32)> {
+    let cx = r.cx();
+    let mut f = DrawFrame::new(&cx, Painter::recording());
+    r.src.painted.borrow_mut().clear();
+    let p = f.painter;
+    r.sect.draw(&mut f, p, &r.src);
+    r.src.painted.take()
+}
+
+/// Survivors that keep their row slide along it on `K_SCROLL`, all on the same frame (no
+/// stagger), and never leave it. The card that crosses the line break does NOT fly diagonally
+/// over the row between: it fades out where it stood and in at its new slot, each copy on
+/// `K_SCALE`, the two alphas complementary, and it is never painted anywhere in between.
 #[test]
-fn survivors_spring_home_together_and_a_line_break_is_one_straight_spring() {
+fn a_card_that_changes_row_crossfades_and_the_rest_slide_along_their_rows() {
     let mut r = animated_grid(40, 108, GRID);
-    let watch = [110u32, 111, 112, 113, 118];
+    let watch = [110u32, 111, 113, 117];
+    let wrap = 112u32;
     let old: Vec<Rect> = watch.iter().map(|&e| settled_rect(&r, e)).collect();
+    let wrap_old = settled_rect(&r, wrap);
     remove_focused_grid(&mut r, 8);
-    let series: Vec<Vec<Rect>> = (1..=40).map(|_| { r.run(1); watch.iter().map(|&e| settled_rect(&r, e)).collect() }).collect();
+    let mut series = Vec::new();
+    let mut paints = Vec::new();
+    for _ in 1..=40 {
+        r.run(1);
+        series.push(watch.iter().map(|&e| settled_rect(&r, e)).collect::<Vec<_>>());
+        paints.push(grid_paints(&r));
+    }
     r.run(600);
     let new: Vec<Rect> = watch.iter().map(|&e| settled_rect(&r, e)).collect();
-    // 112 was the first card of the next row and is now the last of this one
-    let cross = watch.iter().position(|&e| e == 112).unwrap();
-    let (dx, dy) = (old[cross].x - new[cross].x, old[cross].y - new[cross].y);
-    assert!(dx < -poster_grid::STYLE.w && dy > 100.0, "premise: a diagonal move across the line break: {dx} {dy}");
+    let wrap_new = settled_rect(&r, wrap);
+    assert!(wrap_old.y - wrap_new.y > 100.0 && wrap_new.x - wrap_old.x > poster_grid::STYLE.w,
+        "premise: 112 goes from the start of the next row to the end of this one: {wrap_old:?} -> {wrap_new:?}");
     for (f, rects) in series.iter().enumerate() {
         let want = critical(1.0, K_SCROLL, f as u32 + 1);
         for (j, &e) in watch.iter().enumerate() {
-            let (sx, sy) = (old[j].x - new[j].x, old[j].y - new[j].y);
-            let (px, py) = (rects[j].x - new[j].x, rects[j].y - new[j].y);
+            let (sx, py) = (old[j].x - new[j].x, rects[j].y - new[j].y);
+            assert!(py.abs() < 0.01, "frame {}: card {e} left its row: {py}", f + 1);
+            assert!((old[j].y - new[j].y).abs() < 0.01, "premise: card {e} keeps its row");
             if sx.abs() > 0.5 {
+                let px = rects[j].x - new[j].x;
                 assert!((px / sx - want).abs() < 3e-3, "frame {}: card {e} x is off the shared K_SCROLL curve: {} vs {want}", f + 1, px / sx);
             }
-            if sy.abs() > 0.5 {
-                assert!((py / sy - want).abs() < 3e-3, "frame {}: card {e} y is off the shared K_SCROLL curve: {} vs {want}", f + 1, py / sy);
-            } else {
-                assert!(py.abs() < 0.01, "frame {}: card {e} left its row: {py}", f + 1);
-            }
         }
+        // the crossing card: exactly an out copy where it stood and an in copy at its slot
+        let copies: Vec<_> = paints[f].iter().filter(|p| p.0 == wrap).collect();
+        let fade_in = 1.0 - critical(1.0, K_SCALE, f as u32 + 1);
+        let at = |want: Rect| copies.iter().find(|c| rect_close(c.1, want)).map(|c| c.2);
+        let (out, inn) = (at(wrap_old), at(wrap_new));
+        assert!(copies.iter().all(|c| rect_close(c.1, wrap_old) || rect_close(c.1, wrap_new)),
+            "frame {}: 112 painted somewhere between its two slots: {copies:?}", f + 1);
+        let inn = inn.unwrap_or_else(|| panic!("frame {}: no in copy: {copies:?}", f + 1));
+        assert!((inn - fade_in).abs() < 3e-3, "frame {}: the in copy is off K_SCALE: {inn} vs {fade_in}", f + 1);
+        if 1.0 - inn > 1e-3 {
+            let out = out.unwrap_or_else(|| panic!("frame {}: no out copy: {copies:?}", f + 1));
+            assert!((out + inn - 1.0).abs() < 1e-4, "frame {}: out {out} + in {inn} is not 1", f + 1);
+        }
+        assert_eq!(r.sect.landing_probe(r.src.elems.len(), 11).0, (0.0, 0.0), "the crossing card never slides");
     }
-    let first = &series[0][cross];
-    assert!((first.y - old[cross].y).abs() < 0.1 * dy && (first.x - old[cross].x).abs() < 0.1 * dx.abs(),
-        "the first frame is still near where it stood: {first:?} vs {:?}", old[cross]);
+    assert!(!r.sect.landing_pending() && !r.run(1));
+    assert_eq!(grid_paints(&r).iter().filter(|p| p.0 == wrap).count(), 1, "one copy once settled");
+}
+
+/// Z-order of a remove: the leaving copy is painted before (under) every card that slides, and the
+/// focused card last (on top); the owner's ghost goes under all of them (`paint_ghosts` runs
+/// before `draw`).
+#[test]
+fn a_remove_paints_the_leaving_copy_under_the_sliding_cards_and_the_focus_on_top() {
+    let mut r = animated_grid(40, 108, GRID);
+    remove_focused_grid(&mut r, 8);
+    r.run(3);
+    let order: Vec<u32> = grid_paints(&r).iter().map(|p| p.0).collect();
+    let first = |e: u32| order.iter().position(|&x| x == e).unwrap();
+    let out = first(112);
+    for e in [110u32, 111, 113, 114] {
+        assert!(out < first(e), "the leaving copy of 112 is over sliding card {e}: {order:?}");
+    }
+    assert_eq!(order.last(), Some(&109), "the focused card is painted last: {order:?}");
+}
+
+/// The focused card leaves from the end of its row: the card focus reconciles to comes up from the
+/// next row, so the focused card itself crossfades: its leaving copy is a plain tile at rest under
+/// the others, its arriving copy the focused one, painted last, rising from rest.
+#[test]
+fn a_focused_card_that_changes_row_crossfades_on_top() {
+    let mut r = animated_grid(40, 111, GRID);
+    let from = settled_rect(&r, 112);
+    let to = centre(<Rig<Grid> as CardHarness>::place(&r, 111, At::Drawn).unwrap().rect);
+    remove_focused_grid(&mut r, 11);
+    assert_eq!(r.focus.map(|k| k.elem), Some(112));
+    let mut last = 0.0;
+    for frame in 0..30 {
+        r.run(1);
+        let paints = grid_paints(&r);
+        let mine: Vec<_> = paints.iter().enumerate().filter(|(_, p)| p.0 == 112).collect();
+        for (_, p) in &mine {
+            let c = centre(p.1);
+            assert!(rect_close(p.1, from) || ((c.0 - to.0).abs() < 0.5 && (c.1 - to.1).abs() < 0.5),
+                "frame {frame}: 112 painted between its two slots: {:?}", p.1);
+        }
+        let (top, inn) = *mine.last().unwrap();
+        assert_eq!(top, paints.len() - 1, "frame {frame}: the arriving focused copy is on top");
+        assert!(inn.2 >= last, "frame {frame}: fades in monotonically");
+        last = inn.2;
+        if inn.2 < 0.999 {
+            let (_, out) = mine.first().filter(|(j, _)| *j != top).expect("a leaving copy");
+            assert!(rect_close(out.1, from), "frame {frame}: the leaving copy stands where 112 was at rest: {:?} {from:?}", out.1);
+            assert!((out.2 + inn.2 - 1.0).abs() < 1e-4);
+        }
+        assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
+    }
+}
+
+/// **A landing a menu's choice started waits for the menu.** While a surface veils the page
+/// (opening, open, or closing above `VEIL_CLEAR`) nothing of the landing moves or reports motion:
+/// the ghost stands lifted at full alpha, the survivors where they were, the takeover at rest. Once
+/// the veil clears it waits a beat, asking for its frames, and then every spring starts on one frame.
+#[test]
+fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
+    use crate::containers::modal::{set_veil, VEIL_CLEAR};
+    let mut r = animated_grid(40, 108, GRID);
+    let stood = settled_rect(&r, 109);
+    set_veil(1.0);
+    remove_focused_grid(&mut r, 8);
+    assert!(!r.run(1), "the landing's first frame under the menu reports no motion");
+    let n = r.src.elems.len();
+    let start = r.sect.landing_probe(n, 8);
+    assert!(start.0 .0 > 1.0, "premise: 109 has a slide to make: {start:?}");
+    let mut fade = 1.0f32;
+    for frame in 0..40 {
+        // the menu's fade-out, down to just above the veil's edge
+        if frame >= 10 {
+            fade = (fade * 0.9).max(VEIL_CLEAR + 1e-3);
+            set_veil(fade);
+        }
+        let moved = r.run(1);
+        assert!(!moved, "frame {frame}: the waiting landing reported motion under the menu");
+        assert_eq!(r.sect.landing_probe(n, 8), start, "frame {frame}: 109 moved under the menu");
+        assert_eq!(r.sect.ghost_probe().1, 1.0, "frame {frame}: the ghost faded under the menu");
+        assert_eq!(r.scale(109), Some(1.0), "frame {frame}: the takeover rose under the menu");
+        let drawn = <Rig<Grid> as CardHarness>::place(&r, 109, At::Drawn).unwrap().rect;
+        assert!(rect_close(drawn, stood), "frame {frame}: 109 is not where it stood: {drawn:?} {stood:?}");
+    }
+    set_veil(VEIL_CLEAR * 0.5);
+    let beat = (super::landing::LANDING_BEAT_S / 0.016_667).ceil() as u32;
+    for frame in 0..beat - 1 {
+        assert!(r.run(1), "beat frame {frame}: the beat asks for its frames");
+        assert_eq!(r.sect.landing_probe(n, 8), start, "beat frame {frame}: moved inside the beat");
+    }
+    r.run(1);
+    let ((x, _), _) = r.sect.landing_probe(n, 8);
+    assert!(x < start.0 .0, "the slide starts once the beat is over");
+    assert!(r.sect.ghost_probe().1 < 1.0, "the ghost fades on the same frame");
+    let s = r.scale(109).unwrap();
+    assert!(s > 1.0, "and the takeover rises on it: {s}");
+    eprintln!("frames from the veil clearing to the first move: {beat}");
+    set_veil(0.0);
+    r.run(600);
+    assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4);
     assert!(!r.sect.landing_pending() && !r.run(1));
 }
 
-/// The next card is the focus: it takes the removed card's cell with the pop held (one lifted
-/// tile in every frame), and its stop is the rect it is drawn at.
+/// A landing no menu veiled starts on its first frame: no beat.
+#[test]
+fn a_landing_with_no_menu_starts_at_once() {
+    crate::containers::modal::set_veil(0.0);
+    let mut r = animated_grid(40, 108, GRID);
+    let n0 = r.src.elems.len();
+    let before = r.sect.landing_probe(n0, 9);
+    remove_focused_grid(&mut r, 8);
+    r.run(1);
+    let ((x, _), _) = r.sect.landing_probe(r.src.elems.len(), 8);
+    assert!(before.0 == (0.0, 0.0) && x > 0.0 && x < settled_rect(&r, 110).x - settled_rect(&r, 109).x, "moved on frame 1: {x}");
+    assert!((r.sect.ghost_probe().1 - critical(1.0, K_SCALE, 1)).abs() < 2e-3);
+}
+
+/// The next card is the focus: it takes the removed card's cell rising from rest as the ghost
+/// sinks (one lifted tile in every frame, the takeover's pop on `K_SCALE`), and its stop is the
+/// rect it is drawn at.
 #[test]
 fn focus_moves_to_the_next_card_and_it_slides_into_the_cell() {
     let mut r = animated_grid(40, 108, GRID);
@@ -3517,7 +3661,9 @@ fn focus_moves_to_the_next_card_and_it_slides_into_the_cell() {
     let full = poster_grid::STYLE.focus_scale;
     for frame in 0..90 {
         r.run(1);
-        assert_eq!(r.scale(109), Some(full), "frame {frame}: the pop held");
+        let want = full - (full - 1.0) * critical(1.0, K_SCALE, frame + 1);
+        let s = r.scale(109).unwrap();
+        assert!((s - want).abs() < 2e-3, "frame {frame}: the takeover rises from rest on K_SCALE: {s} vs {want}");
         assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
         let (drawn, stops) = r.drawn_and_stops(1.0, 0.0);
         let d = drawn.iter().find(|&&(e, _)| e == 109).map(|&(_, d)| d).expect("the next card is drawn");
@@ -3544,7 +3690,8 @@ fn a_grid_snaps_what_is_off_screen_and_animates_what_is_not() {
     r.run(1);
     let n = r.src.elems.len();
     assert_ne!(r.sect.landing_probe(n, 9).0, (0.0, 0.0), "a card on screen springs");
-    assert_ne!(r.sect.landing_probe(n, 11).0 .1, 0.0, "one on the next row springs across the break");
+    let ((_, dy), a) = r.sect.landing_probe(n, 11);
+    assert!(dy == 0.0 && a < 1.0, "one from the next row crossfades across the break: {dy} {a}");
     for i in [150, 199 - 1] {
         assert_eq!(r.sect.landing_probe(n, i).0, (0.0, 0.0), "card {i} is off screen at both ends and cuts");
     }

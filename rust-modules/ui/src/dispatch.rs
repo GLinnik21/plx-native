@@ -1018,6 +1018,8 @@ where
             let mut ph = PresentHandle::of(present);
             nav.modals.tick(tick, &mut ph);
             present.set_scope(plx_machine::present::Scope::Page);
+            // the pages tick next: what of a menu stands over them this frame
+            super::containers::modal::set_veil(super::containers::modal::veil_of(&nav.modals.surfaces));
         }
         let (host_update, host_render) = self.nav.modals.host_policy();
         report.host_update = Some(host_update);
