@@ -2337,7 +2337,14 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // kind's identity is captured at open, and `SCREEN_SHAPES` gains `CatalogScreen::SHAPE`. One bump
 // for the whole of W6; the three replay fixtures were re-recorded against it. `WatchlistRemove` /
 // `GoToCatalog` stay guid-string keyed.
-const SCREEN_SHAPES_PIN: u64 = 0x7c51_bee4_bc22_94ab;
+// Home hero bookmark disc: `HomeScreen`'s hero control pop grows a third spring
+// (`hero_pop:{sp:[Spring;3]..}`, Play / Info / the disc; the disc's membership and flip are
+// not hashed, as on Detail). One bump; the three replay fixtures were re-recorded against it;
+// the previous pin was 0x7c51_bee4_bc22_94ab.
+// Merged tree (wl-home-hero onto the zero-tick held-surface work, 8d8098110): that re-anchored the
+// Settings and Filmography fixtures without touching any hashed shape, so the Home-hero bump is the
+// only change and the pin stands; the three fixtures were re-recorded on the merged tree.
+const SCREEN_SHAPES_PIN: u64 = 0x0ac5_4c7f_729b_ee06;
 
 #[cfg(test)]
 mod arg_tests {

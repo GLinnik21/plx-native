@@ -1592,7 +1592,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     popped.pop_shelf_for_test(snapshot.view());
     assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
-    assert_eq!(HERO_NBTN, 2);
+    assert_eq!(HERO_NBTN, 3);
     assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
@@ -5038,3 +5038,6 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
     assert_eq!(s.rows[0].elems[0], before[2], "the element moved to column 0 with its card");
     assert_eq!(seated, focus, "and the focus is still on it");
 }
+
+#[path = "hero_watchlist_tests.rs"]
+mod hero_watchlist;

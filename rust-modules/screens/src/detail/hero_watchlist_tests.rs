@@ -97,50 +97,6 @@ fn the_disc_has_no_label_and_never_widens() {
     assert_eq!(next.x, r.x + r.w + CGAP);
 }
 
-/// Outline unless the title is on the list; unknown wears the outline (the Add face).
-#[test]
-fn the_face_table() {
-    assert_eq!(face(Membership::Off), Face::Outline);
-    assert_eq!(face(Membership::Unknown), Face::Outline);
-    assert_eq!(face(Membership::On), Face::Filled);
-    assert_eq!(face_icon(Face::Outline), plx_ui::icons::Icon::Bookmark);
-    assert_eq!(face_icon(Face::Filled), plx_ui::icons::Icon::BookmarkFill);
-}
-
-/// The flip fills from the bottom, drops the ribbon 3 px at most, and rests exactly at both ends.
-#[test]
-fn the_flip_endpoints_and_the_ribbon_drop() {
-    assert_eq!(RIBBON_DROP, 3.0);
-    assert_eq!(flip_frame(0.0), FlipFrame { fill: 0.0, ribbon_dy: 0.0 });
-    assert_eq!(flip_frame(1.0), FlipFrame { fill: 1.0, ribbon_dy: 0.0 });
-    assert_eq!(flip_frame(-4.0), flip_frame(0.0));
-    assert_eq!(flip_frame(9.0), flip_frame(1.0));
-    let mid = flip_frame(0.5);
-    assert_eq!((mid.fill, mid.ribbon_dy), (0.5, RIBBON_DROP));
-    let mut last = -1.0;
-    for i in 0..=100 {
-        let f = flip_frame(i as f32 / 100.0);
-        assert!(f.fill >= last, "fill only rises");
-        assert!((0.0..=RIBBON_DROP).contains(&f.ribbon_dy));
-        last = f.fill;
-    }
-}
-
-#[test]
-fn the_fill_rises_from_the_bottom_edge() {
-    let g = Rect::new(10.0, 20.0, 18.0, 24.0);
-    let bottom = g.y + g.h;
-    for p in [0.0, 0.25, 0.5, 1.0] {
-        let c = fill_clip(g, flip_frame(p));
-        assert_eq!(c.y + c.h, bottom, "p={p}: anchored to the bottom");
-        assert_eq!((c.x, c.w), (g.x, g.w));
-        assert_eq!(c.h, g.h * p);
-    }
-    let d = dropped(g, flip_frame(0.5));
-    assert_eq!((d.x, d.y, d.w, d.h), (g.x, g.y + RIBBON_DROP, g.w, g.h));
-    assert_eq!(dropped(g, flip_frame(1.0)), g);
-}
-
 /// Membership x press: Add from Off and Unknown, Remove from On; no usable guid, no press.
 #[test]
 fn the_press_table() {

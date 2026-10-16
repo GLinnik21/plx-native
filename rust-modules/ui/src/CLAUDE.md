@@ -425,11 +425,11 @@ presentation in a design pass.
    runs inside `idle::decorative` so a page image is never held for it. **No plate behind the
    mark**: a disc there is the strip's selected plate and reads as "this tab is selected". The APPLICATION asks
    (`ChromeSnapshot::pulse`); no screen does, and a screen that wants one reports an `AppFx`. A
-   hero disc that swaps a glyph for its filled twin (the Detail bookmark) uses
+   hero disc that swaps a glyph for its filled twin (the Detail and Home hero bookmark) uses
    `CircleButton::icon_fill(filled, fill, dy)`: the filled glyph is revealed from the box's bottom
    up with a downward nudge, the two icons share one silhouette, and a settled control passes the
    resting icon alone so nothing of the animation lingers. The 3 px ribbon drop is a named constant
-   in the screen (`RIBBON_DROP`), since no theme token is 3 px.
+   in `plx_appkit::watchlist_disc` (`RIBBON_DROP`), since no theme token is 3 px.
 
 ## The route family says where BACK goes ONCE, as a crumb
 

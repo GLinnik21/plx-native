@@ -419,13 +419,8 @@ impl Bridge {
     pub(crate) fn watchlist_card_face(
         &self, item: &plx_data::pms::PmsMovie,
     ) -> Option<plx_screens::item_menu::watchlist::Face> {
-        use plx_data::watchlist::model::Kind;
-        let (known, kind, from_episode, rk) = match item.kind {
-            0 => (item.guid, Kind::Movie, false, item.rk.as_str()),
-            1 => (item.guid, Kind::Show, false, item.rk.as_str()),
-            2 | 3 => (item.show_guid, Kind::Show, true, item.show_rk.as_str()),
-            _ => return None,
-        };
+        let (kind, known, from_episode) = item.watchlist_subject()?;
+        let rk = if from_episode { item.show_rk.as_str() } else { item.rk.as_str() };
         let hex = known.or_else(|| {
             if rk.is_empty() || item.sid == plx_plex::plex::ServerId::UNSET {
                 return None;
@@ -452,10 +447,12 @@ impl Bridge {
         }
         let mut catalog: Option<(EntryId, [u8; 12])> = None;
         let mut details: Vec<EntryId> = Vec::new();
+        let mut homes: Vec<EntryId> = Vec::new();
         for e in &d.nav.tabs.stack.entries {
             match &e.arg {
                 AppArg::Content(ContentArg::Catalog { hex }) => catalog = Some((e.id, *hex)),
                 AppArg::Content(ContentArg::Detail { .. }) => details.push(e.id),
+                _ if e.inst.as_ref().and_then(|i| i.screen.as_any()).is_some_and(|a| a.is::<plx_screens::home::HomeScreen>()) => homes.push(e.id),
                 _ => {}
             }
         }
@@ -466,6 +463,16 @@ impl Bridge {
                 .and_then(|a| a.downcast_mut::<plx_screens::detail::DetailScreen>()) else { continue };
             let Some(hex) = screen.watchlist_hex() else { continue };
             screen.set_watchlist(membership_in(&self.stores.watchlist.view(), &hex));
+            self.watchlist_open_if_idle();
+        }
+        // The Home hero's bookmark disc, for the title the hero shows now.
+        for id in homes {
+            let Some(screen) = d.nav.entry_mut(id)
+                .and_then(|e| e.inst.as_mut())
+                .and_then(|i| i.screen.as_any_mut())
+                .and_then(|a| a.downcast_mut::<plx_screens::home::HomeScreen>()) else { continue };
+            let Some(hex) = screen.watchlist_hex() else { continue };
+            screen.set_watchlist(hex, membership_in(&self.stores.watchlist.view(), &hex));
             self.watchlist_open_if_idle();
         }
         let Some((id, hex)) = catalog else {
