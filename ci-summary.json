@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T12:30:56Z",
+ "generated": "2026-10-16T12:35:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.4,
-   "change7_pct": 20.6,
+   "change30_pct": -57.6,
+   "change7_pct": 20.0,
    "d30": 998,
-   "delta30": -573,
-   "delta7": 72.5,
+   "delta30": -575.0,
+   "delta7": 70.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 123,
+   "n_now": 124,
    "n_prev": 120,
-   "now": 425,
+   "now": 423.0,
    "prev7": 352.5,
    "shown": true,
    "state": "worse",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 130.8,
-   "change7_pct": -1.9,
+   "change30_pct": 130.3,
+   "change7_pct": -2.1,
    "d30": 99,
-   "delta30": 129.5,
-   "delta7": -4.5,
+   "delta30": 129,
+   "delta7": -5.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 104,
-   "now": 228.5,
+   "now": 228,
    "prev7": 233.0,
    "shown": true,
    "state": "flat",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 149.3,
-   "change7_pct": -49.2,
+   "change30_pct": 148.6,
+   "change7_pct": -49.3,
    "d30": 74,
-   "delta30": 110.5,
-   "delta7": -178.5,
+   "delta30": 110,
+   "delta7": -179.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 104,
-   "now": 184.5,
+   "now": 184,
    "prev7": 363.0,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -4.2,
+   "change7_pct": -3.8,
    "d30": null,
    "delta30": null,
-   "delta7": -6.5,
+   "delta7": -6,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 77,
-   "now": 149.5,
+   "now": 150,
    "prev7": 156,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 0.0,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 0.0,
+   "delta30": 0,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 104,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 220.7,
    "commits": [
     {
-     "pr": 792,
-     "sha": "100d384a7",
-     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
-    },
-    {
      "pr": 793,
      "sha": "8ae3a2849",
      "title": "Home: a hero that leaves the pool hands the billboard to its successor, never a bare frame"
@@ -657,6 +652,11 @@
      "pr": 804,
      "sha": "a3e2dc6a5",
      "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
     }
    ],
    "from": 53.8,
@@ -670,11 +670,6 @@
    "change_pct": 91.7,
    "commits": [
     {
-     "pr": 792,
-     "sha": "100d384a7",
-     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
-    },
-    {
      "pr": 793,
      "sha": "8ae3a2849",
      "title": "Home: a hero that leaves the pool hands the billboard to its successor, never a bare frame"
@@ -718,6 +713,11 @@
      "pr": 804,
      "sha": "a3e2dc6a5",
      "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
     }
    ],
    "from": 211.0,
@@ -731,11 +731,6 @@
    "change_pct": 50.4,
    "commits": [
     {
-     "pr": 792,
-     "sha": "100d384a7",
-     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
-    },
-    {
      "pr": 793,
      "sha": "8ae3a2849",
      "title": "Home: a hero that leaves the pool hands the billboard to its successor, never a bare frame"
@@ -779,6 +774,11 @@
      "pr": 804,
      "sha": "a3e2dc6a5",
      "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
     }
    ],
    "from": 269.0,
@@ -792,11 +792,6 @@
    "change_pct": 33.0,
    "commits": [
     {
-     "pr": 792,
-     "sha": "100d384a7",
-     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
-    },
-    {
      "pr": 793,
      "sha": "8ae3a2849",
      "title": "Home: a hero that leaves the pool hands the billboard to its successor, never a bare frame"
@@ -840,6 +835,11 @@
      "pr": 804,
      "sha": "a3e2dc6a5",
      "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
     }
    ],
    "from": 359,
@@ -850,13 +850,8 @@
    "to": 477.5
   },
   {
-   "change_pct": 20.6,
+   "change_pct": 20.0,
    "commits": [
-    {
-     "pr": 792,
-     "sha": "100d384a7",
-     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
-    },
     {
      "pr": 793,
      "sha": "8ae3a2849",
@@ -901,6 +896,11 @@
      "pr": 804,
      "sha": "a3e2dc6a5",
      "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
     }
    ],
    "from": 352.5,
@@ -908,7 +908,7 @@
    "label": "Wait after merge",
    "since": "2026-10-16",
    "threshold_pct": 15.0,
-   "to": 425
+   "to": 423.0
   }
  ],
  "schema": 2,
