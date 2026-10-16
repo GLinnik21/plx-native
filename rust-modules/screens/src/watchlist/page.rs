@@ -138,6 +138,9 @@ pub const PILL_ELEM: u32 = 1;
 pub const RETRY_ELEM: u32 = 2;
 /// The first card's element; cards count up from here, never reused within a page.
 const FIRST_CARD_ELEM: u32 = 0x1000;
+/// The first element of the reserved cells past the loaded tail (plan §1.3): the card keys count up
+/// to here, so the two ranges never meet, and a reserved cell is the `n`th past the last row.
+const UNLOADED_ELEM: u32 = plx_ui::geom::NAMESPACE_FLOOR / 2;
 
 const GRID_GROUP: GroupId = GroupId(0);
 const HEADER_GROUP: GroupId = GroupId(1);
@@ -206,7 +209,7 @@ impl Keys {
                 let elem = self.by_guid.get(&t.row.guid).copied().unwrap_or_else(|| {
                     // A billion keys is far beyond any session: this is the loud failure of an
                     // impossible state, not a limit on the list.
-                    assert!(self.next < plx_ui::geom::NAMESPACE_FLOOR, "watchlist element-key space exhausted");
+                    assert!(self.next < UNLOADED_ELEM, "watchlist element-key space exhausted");
                     self.next += 1;
                     self.next - 1
                 });
@@ -237,6 +240,9 @@ struct Page {
     /// The tiles a landing is fading out, by `elem_key` (DS4): kept from the removal until the
     /// grid has nothing left to fade, since the snapshot no longer knows them. Not logical state.
     ghosts: HashMap<u64, (WatchTile, Cell)>,
+    /// Test support: how many ghost posters the grid has drawn.
+    #[cfg(test)]
+    ghost_draws: std::cell::Cell<usize>,
     /// Moves whenever anything the sections read moves (`StackPage::revision`).
     rev: u64,
 }
@@ -312,6 +318,18 @@ impl Page {
         let unfiltered = self.options.type_ == TypeFilter::All && self.options.show == ShowFilter::All;
         Some(if unfiltered { total.max(self.tiles.len()) } else { self.tiles.len() })
     }
+
+    /// The cells the list has that no row has landed for yet (plan §1.3): the service's total less
+    /// the loaded rows, while the options show everything (a narrowed list has no total to compare).
+    fn unloaded(&self) -> usize {
+        let ListState::Ready { total } = self.list else { return 0 };
+        let unfiltered = self.options.type_ == TypeFilter::All && self.options.show == ShowFilter::All;
+        if unfiltered {
+            total.saturating_sub(self.tiles.len())
+        } else {
+            0
+        }
+    }
 }
 
 /// A matched copy's colours as the painter takes them (the wire's bytes, back to 0..1).
@@ -345,28 +363,45 @@ struct Titles<'a> {
 }
 
 impl<H: ContentLike> CardSource<H> for Titles<'_> {
+    /// The loaded rows and the reserved cells past them, so the grid's extent is the list's.
     fn len(&self) -> usize {
-        self.page.cells.len()
+        self.page.cells.len() + self.page.unloaded()
     }
     fn elem(&self, i: usize) -> u32 {
-        self.page.cells[i].elem
+        match self.page.cells.get(i) {
+            Some(c) => c.elem,
+            None => UNLOADED_ELEM + (i - self.page.cells.len()) as u32,
+        }
     }
     fn index_of(&self, e: &u32) -> Option<usize> {
-        self.page.index.get(e).copied()
+        match e.checked_sub(UNLOADED_ELEM) {
+            Some(n) => ((n as usize) < self.page.unloaded()).then_some(self.page.cells.len() + n as usize),
+            None => self.page.index.get(e).copied(),
+        }
     }
     fn art(&self, i: usize) -> Art<'_> {
-        let (t, c) = (&self.page.tiles[i], &self.page.cells[i]);
-        Art::Poster(Some(tile_facts(t, c)))
+        match (self.page.tiles.get(i), self.page.cells.get(i)) {
+            (Some(t), Some(c)) => Art::Poster(Some(tile_facts(t, c))),
+            _ => Art::Poster(None),
+        }
     }
     fn label(&self, i: usize) -> TileLabel {
-        let t = &self.page.tiles[i];
-        TileLabel::titled(&t.row.title, &caption::caption(&t.row, t.state))
+        match self.page.tiles.get(i) {
+            Some(t) => TileLabel::titled(&t.row.title, &caption::caption(&t.row, t.state)),
+            None => TileLabel::default(),
+        }
     }
     fn progress(&self, i: usize) -> Option<f32> {
-        self.page.cells[i].resume
+        self.page.cells.get(i)?.resume
     }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, _measure: &dyn plx_machine::machine::Measure) {
-        tiles::paint(p, self.page.tiles[i].state, tile);
+        if let Some(t) = self.page.tiles.get(i) {
+            tiles::paint(p, t.state, tile);
+        }
+    }
+    /// A reserved cell has no row to paint yet: the grid keeps its place and draws nothing there.
+    fn loaded(&self, i: usize) -> bool {
+        i < self.page.cells.len()
     }
 }
 
@@ -374,6 +409,9 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
 /// the page did not keep is `None` and is not drawn.
 struct GhostTitles<'a> {
     tiles: Vec<Option<&'a (WatchTile, Cell)>>,
+    /// Test support: the ghost posters actually asked for (`Page::ghost_draws`).
+    #[cfg(test)]
+    drawn: &'a std::cell::Cell<usize>,
 }
 
 impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
@@ -388,6 +426,8 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
         self.tiles.iter().position(|t| t.is_some_and(|(_, c)| c.elem == *e))
     }
     fn art(&self, i: usize) -> Art<'_> {
+        #[cfg(test)]
+        self.drawn.set(self.drawn.get() + 1);
         Art::Poster(self.tiles.get(i).copied().flatten().map(|(t, c)| tile_facts(t, c)))
     }
     fn label(&self, _i: usize) -> TileLabel {
@@ -463,7 +503,11 @@ impl<H: ContentLike> StackPage<H> for Page {
 
     /// DS4: the removed tile fades where it stood, under the survivors that spring over its cell.
     fn paint_ghosts(&self, _k: Sec, grid: &Grid, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
-        let ghosts = GhostTitles { tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect() };
+        let ghosts = GhostTitles {
+            tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(),
+            #[cfg(test)]
+            drawn: &self.ghost_draws,
+        };
         grid.paint_ghosts(f, p, &ghosts);
     }
 
@@ -546,6 +590,8 @@ impl WatchlistScreen {
             index: HashMap::new(),
             art_server: None,
             ghosts: HashMap::new(),
+            #[cfg(test)]
+            ghost_draws: std::cell::Cell::new(0),
             rev: 0,
         };
         page.rebuild();
@@ -783,8 +829,20 @@ impl WatchlistScreen {
         (named, self.page.ghosts.keys().copied().collect())
     }
 
-    /// Test support: the poster path and server the tile at `i` asks the poster store for
-    /// (empty path: the skeleton).
+    /// Test support: the grid's content, as the stack reads it.
+    #[cfg(test)]
+    pub(crate) fn cards_for_test(&self) -> impl ui_cards::CardSource<crate::watchlist::cards_harness::WatchHost> + '_ {
+        Titles { page: &self.page }
+    }
+
+    /// Test support: the ghost posters the grid has drawn so far.
+    #[cfg(test)]
+    pub(crate) fn ghost_draws(&self) -> usize {
+        self.page.ghost_draws.get()
+    }
+
+    /// The poster path and server the tile at `i` asks the poster store for (empty path: the
+    /// skeleton); the app's wiring tests read it too.
     pub fn art_of(&self, i: usize) -> Option<(String, u16)> {
         self.page.cells.get(i).map(|c| (c.thumb.clone(), c.src))
     }
@@ -948,6 +1006,3 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
         Some(self)
     }
 }
-
-#[allow(unused_imports)]
-use ui_cards as _;

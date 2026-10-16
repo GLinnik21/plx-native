@@ -2310,7 +2310,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `WatchlistScreen::SHAPE` and `watchlist::menu::SHAPE` (appended after the preferences picker).
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
 // item-menu kind and its subject) is `ARG_SHAPE`'s, hashed with the app census, not here; the
-// previous pin was 0x4a8a_e825_dc50_1647 (the list state gained `Failed`, the options a canonical form).
+// previous pin was 0x6a55_c53a_d931_3acf.
 const SCREEN_SHAPES_PIN: u64 = 0xdb5b_e029_dd4f_0a88;
 
 #[cfg(test)]

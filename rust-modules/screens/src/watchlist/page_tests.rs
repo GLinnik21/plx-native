@@ -8,7 +8,7 @@ use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
 use plx_ui::fit::HEADROOM;
 use plx_ui::theme;
 
-use super::cards_harness::{copy, mount, tile, tile_in, tiles, Harness};
+use super::cards_harness::{copy, tile, tile_in, tiles, Harness};
 use super::caption;
 use super::options::WatchlistOptionsState;
 use super::page::{ListState, MatchedFacts, WatchlistIn, WatchlistOut, WatchlistScreen, PILL_ELEM};
@@ -297,6 +297,39 @@ fn a_removed_tile_is_a_ghost_the_page_can_paint() {
     assert!(named.is_empty() && kept.is_empty(), "the ghosts are let go once nothing fades");
 }
 
+/// **The page draws the ghost it kept**: drawing the screen a few frames into the landing asks for
+/// the removed tile's poster, so a `StackView::paint` that skips `paint_ghosts` (or a page that
+/// paints none) fails here.
+#[test]
+fn a_removed_tile_is_drawn_while_it_fades() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(2);
+    h.landing(Landing::RemoveFocused).unwrap();
+    h.run(3);
+    assert!(!h.screen.ghost_probe().0.is_empty(), "still fading");
+    let before = h.screen.ghost_draws();
+    h.draw();
+    assert!(h.screen.ghost_draws() > before, "the removed tile's poster was drawn");
+}
+
+/// **Cells past the loaded tail are reserved** (plan §1.3): the grid is as long as the list, and
+/// the cells past the rows are not loaded, so nothing is drawn or pressed there.
+#[test]
+fn cells_past_the_loaded_tail_are_reserved_and_unloaded() {
+    use plx_ui::cards::CardSource;
+    let mut s = screen(100);
+    s.input(WatchlistIn::List(ListState::Ready { total: 250 }));
+    let src = s.cards_for_test();
+    assert_eq!(CardSource::<super::cards_harness::WatchHost>::len(&src), 250);
+    let loaded = |i| CardSource::<super::cards_harness::WatchHost>::loaded(&src, i);
+    assert!(loaded(99) && !loaded(100) && !loaded(249));
+    let elem = |i| CardSource::<super::cards_harness::WatchHost>::elem(&src, i);
+    assert_eq!(CardSource::<super::cards_harness::WatchHost>::index_of(&src, &elem(150)), Some(150));
+    assert_eq!(s.press_at(150), None, "a reserved cell opens nothing");
+    assert_eq!(s.hold_at(150), None);
+}
+
 /// **Discover art needs a reachable server's photo proxy** (Q9): an unmatched title asks for its
 /// poster through one, and draws the skeleton when none is reachable.
 #[test]
@@ -357,21 +390,4 @@ fn the_count_reads_the_whole_list_while_the_tail_loads() {
 fn the_shape_follows_the_write_order() {
     assert!(WatchlistScreen::SHAPE.starts_with("WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,"));
     assert!(!WatchlistScreen::SHAPE.contains("sort:str"));
-}
-
-/// **The Tier 2 card conformance cases pass for the Watchlist grid** (the screen's harness is not
-/// yet in `cards_conformance_tests.rs`'s table; this runs the same cases on it). Memory is the one
-/// case the page cannot take: `PageMemory` has no Watchlist arm.
-#[test]
-fn the_card_conformance_cases_pass() {
-    use plx_ui::cards::conformance::{run_all, Mount, Outcome};
-    let matrix = run_all(&[("watchlist", mount as Mount)]);
-    let bad: Vec<String> = matrix
-        .iter()
-        .filter_map(|(s, c, o)| match o {
-            Outcome::Fail(m) => Some(format!("{s} {c}: {m}")),
-            _ => None,
-        })
-        .collect();
-    assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

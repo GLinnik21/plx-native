@@ -1,7 +1,6 @@
 //! **The Watchlist page** (docs/watchlist-plan.md §1.1-§1.11, §2.4 W45).
 //!
-//! CONTRACT FREEZE: this module currently holds the interfaces the W45 packages build against and
-//! stub bodies where a package fills them in. The shapes are what is frozen:
+//! The modules:
 //!
 //! * [`page`]: [`page::WatchlistScreen`] (the page's state), its input/output alphabets
 //!   [`page::WatchlistIn`] / [`page::WatchlistOut`] and the row snapshot [`page::WatchTile`].

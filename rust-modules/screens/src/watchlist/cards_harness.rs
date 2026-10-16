@@ -99,6 +99,21 @@ impl Harness {
         }
     }
 
+    /// Draw the screen once through a recording painter.
+    pub(crate) fn draw(&mut self) {
+        use plx_ui::screen::Screen;
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms: self.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
+            focus: FocusRead { current: self.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        Screen::<WatchHost>::draw(&mut self.screen, &mut f);
+    }
+
     /// Step one event; returns the effects it queued and whether the step reported page motion.
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();
