@@ -573,7 +573,15 @@ impl WatchlistStore {
         self.state.list_retry = self.state.list_retry.saturating_sub(1);
         self.state.write_retry = self.state.write_retry.saturating_sub(1);
         let adapter = Arc::clone(&self.adapter);
-        for landed in super::take_landings(gate, super::StoreId::Watchlist, || adapter.take_all()) {
+        // In the frame dump's landing gate this waits until no list or write worker is out, so a
+        // landing is a function of the frame that spawned the work. The flags are read BEFORE the
+        // drain: a worker posts, then clears its flag, so a flag read clear means its mail is in.
+        let was_idle = std::cell::Cell::new(true);
+        let landings = super::take_landings_owed(gate, super::StoreId::Watchlist, |_| !was_idle.get(), || {
+            was_idle.set(!adapter.list_busy.load(Ordering::SeqCst) && !adapter.write_busy.load(Ordering::SeqCst));
+            adapter.take_all()
+        });
+        for landed in landings {
             plx_machine::idle::invalidate();
             changed |= self.apply(landed);
         }
@@ -581,7 +589,7 @@ impl WatchlistStore {
             self.rederive();
             changed = true;
         }
-        changed |= self.pump_resolves();
+        changed |= self.pump_resolves(gate);
         self.maybe_spawn();
         if changed {
             self.bump();
@@ -711,9 +719,14 @@ impl WatchlistStore {
 
     /// Spawn a worker per asked-for record and land the answers. Needs no account: the read is
     /// the user's own server's.
-    fn pump_resolves(&mut self) -> bool {
+    fn pump_resolves(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let mut changed = false;
-        let answers: Vec<_> = self.adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
+        // Every claim in `resolving` owes one answer (a refused spawn removes its claim at once),
+        // which the frame dump's landing gate waits for.
+        let (adapter, claimed) = (&self.adapter, self.state.resolving.len());
+        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got| got.len() < claimed, || {
+            adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
+        });
         for (sid, rk, hex) in answers {
             self.state.resolving.remove(&(sid, rk.clone()));
             if let Some(hex) = hex {
