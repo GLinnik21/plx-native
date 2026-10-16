@@ -158,5 +158,40 @@ class Offline(unittest.TestCase):
             self.assertIsNone(deps.machine_cache())
 
 
+class StrictPatchTest(unittest.TestCase):
+    """The sentry-native patch is a crash-path change: a hunk that lands by fuzz must fail the build."""
+
+    ORIGINAL = ''.join('line %d\n' % n for n in range(1, 21))
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.tmp = Path(self.scratch.name)
+        self.source = self.tmp / 'src'
+        self.source.mkdir()
+        (self.source / 'f.c').write_text(self.ORIGINAL)
+
+    def patch(self, context):
+        path = self.tmp / 'x.patch'
+        path.write_text('--- a/f.c\n+++ b/f.c\n@@ -9,5 +9,6 @@\n %s\n line 10\n line 11\n+added\n line 12\n line 13\n'
+                        % context)
+        return path
+
+    def test_a_patch_whose_context_matches_applies(self):
+        deps.apply_patch(self.source, self.patch('line 9'))
+        self.assertIn('added\n', (self.source / 'f.c').read_text())
+
+    def test_a_patch_that_only_applies_with_fuzz_is_rejected_and_leaves_the_file_alone(self):
+        # patch(1) takes this (one wrong context line is fuzz 1); git apply does not.
+        with self.assertRaises(ValueError):
+            deps.apply_patch(self.source, self.patch('line nine'))
+        self.assertEqual((self.source / 'f.c').read_text(), self.ORIGINAL)
+
+    def test_the_sentry_build_applies_its_patch_through_that_strict_routine(self):
+        script = (ROOT / 'ci/build-sentry-native.sh').read_text()
+        self.assertNotRegex(script, r'(?m)^\s*patch\s')
+        self.assertIn('apply-patch', script)
+
+
 if __name__ == '__main__':
     unittest.main()

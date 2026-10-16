@@ -2,11 +2,11 @@
   {
     "id": "ffmpeg",
     "bundled": true,
-    "version": "9.0",
+    "version": "9.0.2",
     "license": "LGPL-2.1-or-later",
-    "archive": "ffmpeg-9.0.tar.xz",
-    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz",
-    "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52",
+    "archive": "ffmpeg-9.0.2.tar.xz",
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+    "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
     "update": {
       "type": "listing",
       "url": "https://ffmpeg.org/releases/",
@@ -17,11 +17,11 @@
   {
     "id": "sentry-native",
     "bundled": true,
-    "version": "0.16.6",
+    "version": "0.17.3",
     "license": "MIT",
-    "archive": "sentry-native-0.16.6.tar.gz",
-    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.16.6.tar.gz",
-    "sha256": "a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab",
+    "archive": "sentry-native-0.17.3.tar.gz",
+    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.17.3.tar.gz",
+    "sha256": "a762fdda9374fe1576be1377a18e96f347cc656118ed1f1b932bf1cdd7551a32",
     "update": {
       "type": "github-release",
       "repo": "getsentry/sentry-native",
@@ -30,7 +30,7 @@
     "patches": [
       {
         "path": "ci/patches/sentry-native-0001-webos-arm32.patch",
-        "sha256": "3d5042f224fc00ba69bcd4036d3103823c46a1098c5ef819a72dabe13d6fa443"
+        "sha256": "59bcf1e14370a67bf9239c3702b68547e61a189df854dbd886ee1d539d44d953"
       }
     ]
   },
@@ -38,14 +38,14 @@
     "id": "freetype",
     "group": "libass",
     "bundled": true,
-    "version": "2.14.3",
+    "version": "2.15.0",
     "license": "FTL AND MIT AND Zlib",
-    "archive": "freetype-2.14.3.tar.xz",
-    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+    "archive": "freetype-2.15.0.tar.xz",
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.15.0.tar.xz",
     "mirrors": [
-      "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz"
+      "https://downloads.sourceforge.net/project/freetype/freetype2/2.15.0/freetype-2.15.0.tar.xz"
     ],
-    "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+    "sha256": "93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5",
     "update": {
       "type": "listing",
       "url": "https://download.savannah.gnu.org/releases/freetype/",
@@ -74,11 +74,11 @@
     "id": "harfbuzz",
     "group": "libass",
     "bundled": true,
-    "version": "14.5.0",
+    "version": "14.6.0",
     "license": "MIT",
-    "archive": "harfbuzz-14.5.0.tar.xz",
-    "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.0/harfbuzz-14.5.0.tar.xz",
-    "sha256": "b7132e148358a45185c9feafd049dbaf243649d3c44414b3534d9c95d18592b9",
+    "archive": "harfbuzz-14.6.0.tar.xz",
+    "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.6.0/harfbuzz-14.6.0.tar.xz",
+    "sha256": "d07a007327277708a2a73ae437887cdbaf282937f6d03ca5467723e9099af586",
     "update": {
       "type": "github-release",
       "repo": "harfbuzz/harfbuzz",

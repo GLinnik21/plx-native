@@ -226,6 +226,9 @@ pub struct PlaybackSession {
     /// HLS is active: the HLS worker owns only measurements, while the main thread owns the
     /// codec/session transition back to this exact source declaration.
     auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None`, when it is known (see [`OriginalDeclined`]): read by the
+    /// audio-enhancement reason and nothing else.
+    original_declined: Option<OriginalDeclined>,
     /// Debug pipeline-tier substitute for PMS's fixed-rendition endpoints. Empty in every
     /// production plan; see [`arm_auto_fixture`].
     auto_fixture_base: String,
@@ -496,6 +499,7 @@ impl PlaybackSession {
         cur_source_decodable: true,
         cur_auto_original_watched: false,
         auto_original: None,
+        original_declined: None,
         auto_fixture_base: String::new(),
         auto_switches: 0,
         auto_last_switch: None,
@@ -577,6 +581,7 @@ impl PlaybackSession {
             cur_source_decodable,
             cur_auto_original_watched,
             auto_original,
+            original_declined,
             auto_fixture_base,
             auto_switches,
             auto_last_switch,
@@ -640,6 +645,7 @@ impl PlaybackSession {
             cur_source_decodable: *cur_source_decodable,
             cur_auto_original_watched: *cur_auto_original_watched,
             auto_original: auto_original.clone(),
+            original_declined: *original_declined,
             auto_fixture_base: auto_fixture_base.clone(),
             auto_switches: *auto_switches,
             auto_last_switch: *auto_last_switch,
@@ -4319,6 +4325,9 @@ pub(super) struct OriginalRecoveryPlan {
     flavour: RecoveryFlavour,
     /// Whether an enhancement this recovery carries is the subtitle-burning flavour.
     burn: bool,
+    /// The selected subtitle is one the candidate cannot show, so the replacement is a burn even
+    /// with no enhancement params and survives a refused enhancement.
+    subtitle_burn: bool,
     pub(super) client: Option<&'static plx_plex::plex::Client>,
     sid: ServerId,
     rk: String,
@@ -4337,7 +4346,7 @@ pub(super) struct OriginalRecoveryPlan {
 
 impl OriginalRecoveryPlan {
     fn force_burn_for(&self, audio: plx_plex::plex::AudioEnhancements) -> bool {
-        audio.any() && self.burn
+        (audio.any() && self.burn) || self.subtitle_burn
     }
 
     /// Whether the PMS half will actually reach the server: a replacement remux's selection PUT and
@@ -4386,7 +4395,15 @@ fn plan_original_recovery(
         || (cause == RecoveryCause::EnhancementReleased && applied_quality() == Quality::Auto);
     let candidate = ps.auto_original.clone()?;
     let route = recovery_route(ps, &candidate);
-    let flavour = recovery_flavour(&candidate, recovery_want(ps, &candidate));
+    // A subtitle only the server's burn can show stays burned: the recovery is the Original
+    // burn (an enhanced one when wanted), never a direct play or plain remux that drops it.
+    let subtitle_burn = !candidate_shows_selected_subtitle(ps, &candidate);
+    let want = recovery_want(ps, &candidate);
+    let flavour = if subtitle_burn {
+        RecoveryFlavour::Remux(want)
+    } else {
+        recovery_flavour(&candidate, want)
+    };
     // The worker may have committed several HLS encoders since the main-thread plan was installed.
     // Mirror the physical route into the session before replacing it, otherwise the rollback pairs
     // the newest encoder id with the bootstrap URL/rung and reopens different media at a different
@@ -4423,6 +4440,7 @@ fn plan_original_recovery(
     Some(OriginalRecoveryPlan {
         flavour,
         burn: matches!(route, Some(EnhancementRoute::Burn)),
+        subtitle_burn,
         client: cur_client(ps),
         sid: cur_sid(ps),
         rk: cur_rk(ps),
@@ -4502,7 +4520,7 @@ pub(super) fn run_original_recovery(
             }
             AdmitOrPlainRemux::PlainRemux => {
                 let none = plx_plex::plex::AudioEnhancements::NONE;
-                match prepare_original_remux(off, plan, none, false, true)? {
+                match prepare_original_remux(off, plan, none, plan.subtitle_burn, true)? {
                     OriginalRemux::Prepared(prepared) => Some(OriginalRecoveryNet::Remux(prepared)),
                     OriginalRemux::RefusedToDirect => None,
                 }
@@ -5317,8 +5335,9 @@ pub fn cur_audio_sid(ps: &PlaybackSession) -> i64 {
 /// The currently-playing item's Part id. Written once per item by `build_stream` from its own
 /// `part` argument. In-playback callers (audio switch, subtitle toggle, retranscode) want this;
 /// `build_stream` must pass its freshly-derived local instead, since this is not yet updated
-/// for the item being started.
-fn cur_part_id(ps: &PlaybackSession) -> i64 {
+/// for the item being started. Also read outside the route: the scrub preview names its BIF
+/// stills by it. 0 with no item.
+pub fn cur_part_id(ps: &PlaybackSession) -> i64 {
     ps.cur_part_id
 }
 /// The stable app-owned playback generation (and the first encoder's PMS session id).
@@ -8364,6 +8383,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_source_decodable: plan.source_decodable,
             cur_auto_original_watched: plan.auto_original_watched,
             auto_original: plan.auto_original,
+            original_declined: plan.original_declined,
             auto_fixture_base: String::new(),
             // A NEW playback starts a new switch history: the count exists to stop this film
             // flapping, and inheriting the last one's would price a first decision as a fourth.
@@ -8545,13 +8565,13 @@ fn prepare_original_remux(
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         note_enhancement_refused(" in Original recovery; fell back", audio);
-        if candidate.feeds_part() {
+        if candidate.feeds_part() && !plan.subtitle_burn {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
         }
         enhancement_refused = true;
         audio = plx_plex::plex::AudioEnhancements::NONE;
-        force_burn = false;
+        force_burn = plan.subtitle_burn;
         spec = spec_for(audio, force_burn);
         decision = c.transcode_decision(off, &spec);
     }
@@ -9169,7 +9189,80 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
         carried: ps.cur_audio.as_ref(),
         subtitle_effect: subtitle_effect_of(ps),
         refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+        quality: quality(),
+        declined: ps.original_declined,
     }
+}
+
+/// **Is "Original" picked while the video on screen is NOT the original?** The quality in force
+/// (the picker, which the HUD's Quality row reads) says Original, but the route playing is neither
+/// a direct play nor a codec-preserving remux: a fixed rung or HLS is still on screen, or the
+/// server is re-encoding the video (a burned subtitle, a forced fallback). A burn route is
+/// converted: its picture IS re-encoded, so the Quality row keeps "Original · Converted" there even
+/// though the Audio tab treats a burn as its own Original-family state (`enhancement_family`) and
+/// explains it with the burn note. The honest rule is that the row states the picture fact and the
+/// Audio tab explains its own state; the two read the same `quality()` but not always the same route
+/// family.
+pub fn original_is_converted(ps: &PlaybackSession) -> bool {
+    quality() == Quality::Original && live_family(ps) == RouteFamily::Other
+}
+
+/// What the Quality row reads after the picked choice ("Auto · 720p", "Original · Converted").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayingQuality {
+    /// The stream has not resolved, or a switch is pending: the row shows the choice alone.
+    Unsettled,
+    /// The original picture plays (a direct play, or a remux that keeps the video).
+    Original,
+    /// The server is converting the picture and no rung names it ([`original_is_converted`] under
+    /// Original; under Auto a re-encode with no ceiling).
+    Converted,
+    /// Auto (or a fixed rung) is on a converted stream at this picture height, in lines.
+    Rung(i64),
+}
+
+/// **What is actually playing, for the Quality row.** Read when the popover opens or rebuilds,
+/// never while it is on screen. Settled means no start, switch or user edit is in flight.
+pub fn playing_quality(ps: &PlaybackSession) -> PlayingQuality {
+    let settled = {
+        let c = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(c.phase, ControlPhase::Idle | ControlPhase::Stable)
+            && c.pending_user.is_none()
+            && c.pending_auto.is_none()
+    };
+    if !settled {
+        return PlayingQuality::Unsettled;
+    }
+    if live_family(ps) != RouteFamily::Other {
+        return PlayingQuality::Original;
+    }
+    if original_is_converted(ps) {
+        return PlayingQuality::Converted;
+    }
+    match ps.cur_contract.ceiling {
+        Some(c) if c.max_h > 0 => PlayingQuality::Rung(c.max_h),
+        // Converted with no rung to name: a burn under Auto, or a picture this television cannot
+        // decode and the server therefore converts.
+        _ => PlayingQuality::Converted,
+    }
+}
+
+/// **Is the selected subtitle an external sidecar the app can draw itself?** `cur_sub_sidecar`
+/// alone only says the pick has no demuxer ordinal; an image sidecar the client cannot draw has
+/// none either and needs the server's burn.
+fn sidecar_drawn_by_client(ps: &PlaybackSession) -> bool {
+    ps.cur_sub_sidecar && ps.cur_sub_client_drawable
+}
+
+/// **Will the Original candidate SHOW the selected subtitle** when the route returns to it? No
+/// subtitle: trivially. Otherwise the candidate's own render ordinal (the demuxer draws it on a
+/// direct play, the side reader over a remux), or a sidecar the app fetches itself. Anything else
+/// (an image sidecar, a pick with no ordinal and no sidecar key) is shown only by the server's
+/// burn, so a route that returns to the candidate must keep the burn. This reads the candidate,
+/// not `cur_sub_client_drawable`: a cold start that lands on a Burn records that as `false` for a
+/// track the app can draw, and the candidate still names its ordinal.
+fn candidate_shows_selected_subtitle(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> bool {
+    ps.cur_sub_sid == 0 || candidate.subtitle_ordinal.is_some() || sidecar_drawn_by_client(ps)
 }
 
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
@@ -9177,7 +9270,8 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 fn subtitle_effect_of(ps: &PlaybackSession) -> SubtitleEffect {
     match ps.cur_sub_sid {
         0 => SubtitleEffect::None,
-        _ if ps.cur_sub_sidecar || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
+        // A sidecar the app cannot draw (an image .sup/.idx) is a burn, never "unaffected".
+        _ if sidecar_drawn_by_client(ps) || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
         _ => SubtitleEffect::Embedded,
     }
 }
@@ -9365,7 +9459,7 @@ fn live_is_original_burn(ps: &PlaybackSession) -> bool {
         && ps.cur_contract.ceiling.is_none()
         && !ps.cur_contract.no_video_copy
         && ps.cur_sub_sid != 0
-        && !ps.cur_sub_sidecar
+        && !sidecar_drawn_by_client(ps)
 }
 
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
@@ -9467,7 +9561,9 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
-            Some(candidate) if candidate.feeds_part() => EnhancementStep::ReleaseToDirect,
+            Some(candidate) if candidate.feeds_part() && candidate_shows_selected_subtitle(ps, candidate) => {
+                EnhancementStep::ReleaseToDirect
+            }
             // An embedded subtitle still on screen is kept by the plain burn, never dropped by a
             // plain remux (which cannot carry it, M4/M7).
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
@@ -10051,6 +10147,13 @@ pub struct EnhTestFixture {
     /// A remembered subtitle was chosen for this play but the route shows none of it
     /// ([`cur_memory_note`]): the Subtitles tab says why.
     pub memory_note: bool,
+    /// The quality the HUD's Quality row reads (the picker). Defaults to Original: the shape
+    /// whose "only at Original quality" note contradicted the row.
+    pub quality: Quality,
+    /// Why `base_present: false` is so (see [`OriginalDeclined`]); `None` = a fixed rung.
+    pub declined: Option<OriginalDeclined>,
+    /// The ladder rung an Auto stream is converting to (`cur_contract.ceiling`).
+    pub rung: Option<crate::abr::Rung>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10071,6 +10174,9 @@ impl Default for EnhTestFixture {
             in_flight: false,
             side_reader: false,
             memory_note: false,
+            quality: Quality::Original,
+            declined: None,
+            rung: None,
         }
     }
 }
@@ -10104,6 +10210,8 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
     plx_plex::plex::serverinfo::store_for_test(sid, route.pass, "1.43.4");
 
     let mut ps = PlaybackSession::IDLE;
+    restore_quality(route.quality);
+    ps.original_declined = route.declined;
     ps.cur_sid = sid;
     ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
     ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
@@ -10122,7 +10230,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
         remux: matches!(route.remux, Some(true)) && !(route.applied_burn && route.applied.any()),
         delivery: plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
         no_video_copy: false,
-        ceiling: None,
+        ceiling: route.rung.map(|r| r.ceiling()),
         audio: route.applied,
     };
     ps.tsession = if route.remux.is_some() { "enh-menu-test-session".to_owned() } else { String::new() };
@@ -10242,6 +10350,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
                 plx_plex::plex::TranscodeDelivery::FixedHls { .. }
             ) {
                 ps.auto_original = None;
+                ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
             }
         }
         // Issue #266: on the Original family the candidate is also the way back from an enhanced
@@ -10250,6 +10359,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
             if let Some(candidate) = ps.auto_original.as_mut() {
                 if !candidate.retarget_audio(&audio, direct_plays) {
                     ps.auto_original = None;
+                    ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10370,6 +10480,7 @@ fn commit_subtitle_selection_inner(
                     }
                 } else {
                     s.auto_original = None;
+                    s.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10378,9 +10489,7 @@ fn commit_subtitle_selection_inner(
         RouteFamily::Direct | RouteFamily::Remux => {
             let pick = (stream_id != 0).then_some(sub_idx);
             if let Some(candidate) = ps.auto_original.as_mut() {
-                if !candidate.retarget_subtitle(pick, client_renderable) {
-                    ps.auto_original = None;
-                }
+                candidate.retarget_subtitle(pick);
             }
         }
     }

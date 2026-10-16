@@ -21,7 +21,7 @@
 //!
 //! **Quality leads.** It is the primary playback control this popover exists to reach — a rung
 //! picked here re-routes the picture that is on screen right now (see below). On the ROOT it is one
-//! headerless drill-in row ([`MoreRow::OpenQuality`]) whose value is the current rung's label;
+//! headerless drill-in row ([`MoreRow::OpenQuality`]) whose value is the choice then what is playing ("Original · Converted", [`quality_readout`]);
 //! RIGHT or OK pushes the **Quality page** (a title band, then the rungs). **Options** trails it on
 //! the root: the diagnostics switch is an overflow affordance, something a viewer reaches for once,
 //! to photograph a bug, not a control anyone returns to.
@@ -120,7 +120,7 @@ impl MorePage {
 /// [`Action`] (a rung on the Quality page, an Options switch on the root).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MoreRow {
-    /// The root's Quality row ([`MorePage::Quality`]): reads out the current rung.
+    /// The root's Quality row ([`MorePage::Quality`]): reads out the choice and what is playing.
     OpenQuality,
     Act(Action),
 }
@@ -207,7 +207,7 @@ fn quality_offered(rows: &[Action], forced: bool) -> bool {
 }
 
 /// The ROOT as a pure form: the Quality drill-in (headerless, like the Subtitles root's Style —
-/// it reads out the current rung as its value), then Options.
+/// it reads out the choice and what is playing as its value), then Options.
 fn root_form(
     ps: &plx_media::route::PlaybackSession,
     rows: &[Action],
@@ -223,9 +223,38 @@ fn root_form(
         MoreRow::OpenQuality,
         RowKind::Nav(MorePage::Quality),
         Action::None,
-        Row::new(plx_platform::i18n::msg::widgets_menu_quality()).value(current.label()),
+        Row::new(plx_platform::i18n::msg::widgets_menu_quality()).value(quality_readout(ps, current)),
     );
     Form::new().section(quality).section(options)
+}
+
+/// **The Quality row's value: "{choice} · {playing}".** The first word is what was picked; the
+/// second says what is actually playing and is left out only when it would repeat the first. Auto
+/// always shows its result. A fixed rung reads by its SHORT name ("720p"; the page keeps the full
+/// "720p · 4 Mbps"). While the stream is unsettled the choice stands alone. Read when the popover
+/// opens or rebuilds, never while it is on screen.
+fn quality_readout(ps: &plx_media::route::PlaybackSession, current: plx_media::route::Quality) -> String {
+    use plx_media::route::{PlayingQuality, Quality};
+    let joined = |second: String| format!("{} \u{b7} {second}", current.short_label());
+    match (current, plx_media::route::playing_quality(ps)) {
+        (Quality::Original | Quality::Auto, PlayingQuality::Converted) => {
+            joined(plx_platform::i18n::msg::widgets_menu_quality_converted().to_owned())
+        }
+        (Quality::Auto, PlayingQuality::Original) => joined(Quality::Original.label()),
+        (Quality::Auto, PlayingQuality::Rung(lines)) => joined(format!("{lines}p")),
+        _ => current.short_label(),
+    }
+}
+
+/// Does the checked Quality entry carry the "your server is converting this video" sub-line? Only
+/// when the row reports a conversion the viewer did not pick by name: "Original · Converted" and
+/// "Auto · 720p".
+fn quality_conversion_note(ps: &plx_media::route::PlaybackSession, current: plx_media::route::Quality) -> bool {
+    use plx_media::route::{PlayingQuality, Quality};
+    matches!(
+        (current, plx_media::route::playing_quality(ps)),
+        (Quality::Original | Quality::Auto, PlayingQuality::Converted) | (Quality::Auto, PlayingQuality::Rung(_))
+    )
 }
 
 /// The Quality PAGE: one checked-rung row per rung of `rows`, the current one checked.
@@ -237,7 +266,11 @@ fn quality_form(
     let sec = rows.iter().copied().filter(|a| matches!(a, Action::SetQuality(_))).fold(
         FormSection::new(""),
         |sec, a| {
-            sec.choice(MoreRow::Act(a), a, row_for(ps, a), |id| {
+            let mut row = row_for(ps, a);
+            if a == Action::SetQuality(current) && quality_conversion_note(ps, current) {
+                row = row.detail(plx_platform::i18n::msg::widgets_menu_quality_converted_note());
+            }
+            sec.choice(MoreRow::Act(a), a, row, |id| {
                 *id == MoreRow::Act(Action::SetQuality(current))
             })
         },
@@ -830,7 +863,7 @@ mod tests {
     }
 
     /// The text a row reads out as its value (a Nav row's current setting).
-    fn value_of(st: &mut MoreMenuState, id: MoreRow) -> Option<String> {
+    pub(super) fn value_of(st: &mut MoreMenuState, id: MoreRow) -> Option<String> {
         let i = st.form.index_of(&id)?;
         st.form.table.row_mut(i as i32).and_then(|r| r.value.clone())
     }
@@ -880,13 +913,19 @@ mod tests {
         assert_eq!(order(&quality_page(Quality::Original)), ladder);
     }
 
-    /// **The root's Quality row reads out the CURRENT rung** — "Auto", "Original", "1080p · 8 Mbps"
-    /// — as its value, and the page checks that rung and no other.
+    /// **The root's Quality row reads out the CURRENT choice** — "Auto · Original" (an untouched
+    /// file under Auto), "Original", "1080p" (the short name; the page keeps "1080p · 8 Mbps") —
+    /// as its value, and the page checks that rung and no other.
     #[test]
     fn the_quality_row_reads_the_current_rung_and_the_page_checks_it() {
         for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(false, q);
-            assert_eq!(value_of(&mut st, MoreRow::OpenQuality), Some(q.label()), "{q:?}");
+            let want = if q == plx_media::route::Quality::Auto {
+                format!("{} \u{b7} {}", q.label(), plx_media::route::Quality::Original.label())
+            } else {
+                q.short_label()
+            };
+            assert_eq!(value_of(&mut st, MoreRow::OpenQuality), Some(want), "{q:?}");
             assert!(
                 !checked(&mut st, MoreRow::OpenQuality),
                 "a drill-in row carries no check — a mark says where you are, a word says what is set"
@@ -1388,6 +1427,117 @@ mod focus_tests {
             let forced = MoreMenuState::new(&ps);
             check(language.tag(), &forced.form);
         }
+        plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    fn detail_at(st: &mut MoreMenuState, id: MoreRow) -> String {
+        let i = st.form.index_of(&id).expect("a row");
+        st.form.table.row_mut(i as i32).map(|r| r.detail.clone()).unwrap()
+    }
+
+    /// The Quality row's value, and the sub-line under the checked entry on the page, for a fixture.
+    fn quality_row(fixture: plx_media::route::EnhTestFixture, rung: Option<plx_media::abr::Rung>) -> (String, String) {
+        let (ps, _) = plx_media::route::enhancement_test_session(plx_media::route::EnhTestFixture { rung, ..fixture });
+        let current = plx_media::route::quality();
+        let mut root = MoreMenuState::new(&ps);
+        let value = super::tests::value_of(&mut root, MoreRow::OpenQuality).expect("a value");
+        let mut page = MoreMenuState::new(&ps);
+        page.rows = rows_for(false);
+        page.focus_key(MoreRow::OpenQuality.key().0);
+        page.push(&ps, MorePage::Quality);
+        let checked_row = MoreRow::Act(Action::SetQuality(current));
+        let note = detail_at(&mut page, checked_row);
+        plx_media::route::reset_player_control_for_test(&ps);
+        plx_plex::plex::reset_servers_for_test();
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
+        (value, note)
+    }
+
+    /// **The five situations of the UX board's verdict**, one assertion each: the row reads
+    /// "{choice} · {playing}", the second part left out only when it would repeat the first, and
+    /// the checked entry's sub-line appears only for a conversion the viewer did not pick by name.
+    #[test]
+    fn the_quality_row_reads_choice_then_what_is_playing() {
+        use plx_media::route::{EnhTestFixture, Quality};
+        let _g = plx_base::testlock::serial();
+        let note = plx_platform::i18n::msg::widgets_menu_quality_converted_note();
+        let converted = plx_platform::i18n::msg::widgets_menu_quality_converted();
+        let original = Quality::Original.label();
+        let auto = Quality::Auto.label();
+        let fixture = |remux, quality| EnhTestFixture { remux, quality, ..Default::default() };
+        // 1. Original, the file untouched (a direct play, and a remux that keeps the picture)
+        for remux in [None, Some(true)] {
+            let (v, n) = quality_row(fixture(remux, Quality::Original), None);
+            assert_eq!((v.as_str(), n.contains(note)), (original.as_str(), false), "1 {remux:?}");
+        }
+        // 2. Original, the picture converted
+        let (v, n) = quality_row(fixture(Some(false), Quality::Original), None);
+        assert_eq!(v, format!("{original} \u{b7} {converted}"), "2");
+        assert_eq!(n, note, "2: the sub-line sits under the checked Original");
+        // 3. Auto, the file untouched
+        let (v, n) = quality_row(fixture(None, Quality::Auto), None);
+        assert_eq!(v, format!("{auto} \u{b7} {original}"), "3");
+        assert!(!n.contains(note), "3");
+        // 4. Auto on a converted rung
+        let (v, n) = quality_row(fixture(Some(false), Quality::Auto), Some(plx_media::abr::Rung::P720));
+        assert_eq!(v, format!("{auto} \u{b7} 720p"), "4");
+        assert_eq!(n, note, "4");
+        // 4b. Auto on a converted route with no rung to name (a burn under Auto, or a picture this
+        // television cannot decode): "Auto · Converted", never "Auto" alone
+        let (v, n) = quality_row(fixture(Some(false), Quality::Auto), None);
+        assert_eq!(v, format!("{auto} \u{b7} {converted}"), "4b");
+        assert_eq!(n, note, "4b");
+        // burns re-encode the picture, so the row keeps "Original · Converted": Boost on with an
+        // embedded subtitle (the enhancement's own burn), and a plain Original burn
+        let burn_own = EnhTestFixture {
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..fixture(Some(true), Quality::Original)
+        };
+        let (v, n) = quality_row(burn_own, None);
+        assert_eq!((v, n.as_str()), (format!("{original} \u{b7} {converted}"), note), "own burn");
+        let burn_plain = EnhTestFixture {
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            ..fixture(Some(false), Quality::Original)
+        };
+        let (v, n) = quality_row(burn_plain, None);
+        assert_eq!((v, n.as_str()), (format!("{original} \u{b7} {converted}"), note), "plain burn");
+        // 5. a fixed 720p: the short name, no sub-line (the page keeps the full label)
+        let (v, n) = quality_row(EnhTestFixture { base_present: false, ..fixture(Some(false), Quality::P720) }, None);
+        assert_eq!((v.as_str(), n.contains(note)), ("720p", false), "5");
+        // a switch in flight: the choice alone
+        let (v, _) = quality_row(EnhTestFixture { in_flight: true, ..fixture(Some(false), Quality::Auto) }, None);
+        assert_eq!(v, auto, "unsettled");
+    }
+
+    /// The converted read-out and note fit the panel in every shipped language.
+    #[test]
+    fn the_converted_marks_fit_in_every_language() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let _g = plx_base::testlock::serial();
+        let (ps, _) = plx_media::route::enhancement_test_session(plx_media::route::EnhTestFixture {
+            remux: Some(false),
+            ..Default::default()
+        });
+        let rows = rows_for(false);
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let root = MoreMenuState::new(&ps);
+            let mut page = MoreMenuState::new(&ps);
+            page.rows = rows.clone();
+            page.focus_key(MoreRow::OpenQuality.key().0);
+            page.push(&ps, MorePage::Quality);
+            for form in [&root.form, &page.form] {
+                out.extend(form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
+                out.extend(form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+                out.extend(form.table.app_fit_failures_hugged(language.tag()));
+            }
+        }
+        plx_media::route::reset_player_control_for_test(&ps);
+        plx_plex::plex::reset_servers_for_test();
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_ui::table::assert_no_fit_failures(&out);
     }
 }

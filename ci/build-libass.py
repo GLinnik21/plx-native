@@ -278,8 +278,10 @@ def build_locked(host, darwin, target, prefix, work, sources):
                 run(['make', '-j' + jobs], cwd=directory, env=env)
                 run(['make', 'install'], cwd=directory, env=env)
 
+        # HVF: we render no Apple HVF fonts, and on macOS FreeType 2.15's hvf module
+        # links against an external HVF renderer that does not exist (undefined _HVF_*).
         cmake_build('freetype', ['-DFT_DISABLE_' + dep + '=ON'
-                               for dep in ['ZLIB', 'BZIP2', 'PNG', 'HARFBUZZ', 'BROTLI']])
+                               for dep in ['ZLIB', 'BZIP2', 'PNG', 'HARFBUZZ', 'BROTLI', 'HVF']])
         autotools_build('fribidi', [])
         cmake_build('harfbuzz', ['-DHB_HAVE_FREETYPE=ON', '-DFREETYPE_LIBRARY=' + str(prefix / 'lib/libfreetype.a'),
                                 '-DFREETYPE_INCLUDE_DIRS=' + str(prefix / 'include/freetype2'),

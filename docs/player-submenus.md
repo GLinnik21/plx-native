@@ -210,12 +210,13 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
   `d=`/`s=` fields, wall/cpu/run-queue ms): the thread was off the CPU, not busy.
   `--arm framedrop=17 --arm framering --arm framecb` captures the same evidence while writing only
   the slow frames and their neighbours.
-- **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) is the modal underlay latching its field
-  from the UltraBlur corners, and it was paid again on every open. `navcommit` is ~6 ms, of which
-  `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is
-  kept across closes and preloaded once the page has rested ~0.5 s with nothing open (`ModalUnderlay::retire`/`note_at_rest`/`preload`), and
-  the overlay's `prepare` queues the root strings on the mount frame (`warm_open`): the open frame
-  measured 17.8-21.7 ms on the 2026-10-02 capture (below), the rest being `after_step`'s focus seat.
+- **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) was the modal underlay latching its field
+  from the playing item's UltraBlur corners, paid again on every open. That envelope has since been
+  removed altogether: the player's menu dim is the flat neutral ink (`Scrim::over_video`), so there
+  is nothing to latch. `navcommit` is ~6 ms, of which `tmnew` is under 1 ms. Then come the root
+  page's first strings, which the overlay's `prepare` queues on the mount frame (`warm_open`): the
+  open frame measured 17.8-21.7 ms on the 2026-10-02 capture (below), the rest being `after_step`'s
+  focus seat.
 - **Playback start.** The Play/ACB call and single Starfish `Feed()` calls block for 5–28 ms in
   the first seconds.
 

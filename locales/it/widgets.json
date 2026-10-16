@@ -1,6 +1,8 @@
 {
   "widgets.menu.options": "Opzioni",
   "widgets.menu.quality": "Qualità",
+  "widgets.menu.quality_converted": "Convertito",
+  "widgets.menu.quality_converted_note": "Il server Plex sta convertendo il video.",
   "widgets.menu.stats": "Statistiche per nerd",
   "widgets.menu.diagnostics": "Invia dati diagnostici",
   "widgets.badge.forced": "FORZATI",
@@ -150,6 +152,9 @@
   "widgets.tracks.enh_reason_dv_unusable": "Non disponibile per questo video Dolby Vision.",
   "widgets.tracks.enh_reason_dv_subtitle": "Non utilizzabile con i sottotitoli in questo video Dolby Vision. Disattiva i sottotitoli per usare questa funzione.",
   "widgets.tracks.enh_reason_quality": "Disponibile solo con qualità Originale.",
+  "widgets.tracks.enh_reason_converting": "Non disponibile mentre il tuo server Plex converte questo video.",
+  "widgets.tracks.enh_reason_forced": "Non disponibile mentre Direct Play forzato è attivo. Imposta Direct Play su Automatico nelle Impostazioni per usarlo.",
+  "widgets.tracks.enh_reason_not_copyable": "Il tuo server Plex non può aggiungerlo a questo video in questo momento.",
   "widgets.tracks.enh_reason_refused": "Il server Plex non ha potuto attivare questa opzione per il video.",
   "widgets.tracks.sub_burn_audio": "Inseriti nel video dal server durante la conversione audio.",
   "widgets.tracks.sub_burn_quality": "Inseriti nel video dal server a questa qualità.",

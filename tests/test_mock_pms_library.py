@@ -1097,5 +1097,40 @@ class ContainerPaging(unittest.TestCase):
                 self.assertPaged(empty, 0, [], 0)
 
 
+class BifStills(unittest.TestCase):
+    """`/library/parts/<part>/indexes/sd/<ms>` through the photo transcoder: the scrub preview's
+    stills."""
+
+    @unittest.skipUnless(HAS_FFMPEG_AND_FFPROBE, "no ffmpeg/ffprobe")
+    def test_a_part_with_a_file_answers_a_jpeg_in_the_films_aspect_and_one_without_404s(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            film = pathlib.Path(tmp) / "film.mkv"
+            subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                            "testsrc=size=480x200:rate=5:duration=25", "-pix_fmt", "yuv420p", str(film)],
+                           check=True)
+            lib = object.__new__(CatalogLibrary)
+            lib.__dict__.update(Library(movies=3).__dict__)
+            lib._scaled, lib._lock = {}, __import__("threading").Lock()
+            lib.media_files = {7459: film}
+            url = "/library/parts/7459/indexes/sd/14000"
+            ctype, data = lib.image(url, "320", "180")
+            self.assertEqual((ctype, data[:2]), ("image/jpeg", b"\xff\xd8"))
+            probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                                    "-of", "csv=p=0", "-"], input=data, capture_output=True)
+            self.assertEqual(probe.stdout.decode().strip(), "320,134", "320 wide, the film's 2.4:1 aspect")
+            # the nearest 10 s still: 14 s and 10 s are the same picture
+            self.assertEqual(lib.image("/library/parts/7459/indexes/sd/10000", "320", "180")[1], data)
+            self.assertIsNone(lib.image("/library/parts/7460/indexes/sd/0", "320", "180"), "no file: 404")
+            self.assertIsNone(lib.image("/library/parts/7459/indexes/sd/9999999", "320", "180"),
+                              "past the end: 404")
+
+    def test_without_any_media_file_there_is_no_index(self):
+        lib = object.__new__(CatalogLibrary)
+        lib.__dict__.update(Library(movies=3).__dict__)
+        lib._scaled, lib._lock = {}, __import__("threading").Lock()
+        lib.media_files = {}
+        self.assertIsNone(lib.image("/library/parts/7459/indexes/sd/0", "320", "180"))
+
+
 if __name__ == "__main__":
     unittest.main()
