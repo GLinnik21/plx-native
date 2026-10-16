@@ -36,9 +36,18 @@ outside one add/check/remove/check pair on that profile.
   100 and follows the container's `totalSize` (or a short or empty page) to the end: there is no page
   cap. The response carries `X-Plex-Container-Total-Size` and a weak `ETag`; a request with
   `If-None-Match` answers 304.
-- **ETag is not used.** `net::Resp` carries no headers and there is no header callback, so reading
-  an ETag is a curl FFI addition (plan item NET1) that has not shipped. The client has the
-  `If-None-Match` seam, always `None`; every read is a full read.
+- **ETag (NET1, shipped).** `net::Resp::etag` is the final response's `ETag`, trimmed and otherwise
+  verbatim (the weak `W/` prefix and quotes stay), read by a `CURLOPT_HEADERFUNCTION` that keeps only
+  that header; a redirect hop's validator never survives into the final answer. The store keeps the
+  page-0 `ETag` of the last COMPLETE read of the list (every page arrived) and the next read sends it
+  as `If-None-Match` on **page 0 only**: a 304 on a later page is UNVERIFIED against the service, so
+  later pages and the `released` variant never send it. A 304 has an empty body, reads no page and
+  keeps the rows held (the same commit a whole read makes at its end); the `released` set is still
+  re-read, since a title's release moves it without moving the list. The validator is dropped on a
+  profile switch, sign-out or store reset (a new epoch), when a write is spawned (the next read is a
+  whole one, so a write's own re-read never gets a 304 for the list it just changed), and for a read
+  that was cut short or that a write overtook. A read the service answers without an `ETag` is always
+  read in full.
 - **Released:** the same path with `released` in place of `all`. `unreleased` answers 404 and is never
   used. "Coming soon" is "listed and not in the released set".
 - **List rows carry no `watchlistedAt`**; the date-added order is the server's order, and the reverse
@@ -225,7 +234,8 @@ heard of is on none of the household's servers. The page has no focus stop, so B
 PMS pushes nothing about plex.tv membership, so the account side is always a re-read: on tab entry
 and page mount, on resume while the Watchlist or catalog is live (`reread.rs`: `WatchlistRead`, `CatalogRead`),
 two seconds after a burst of writes, and on a profile switch. A landed watched or unwatched mark on a
-matched item is not a list read: its `ViewChange` patches that tile in place. There is no polling.
+matched item is not a list read: its `ViewChange` patches that tile in place. There is no polling. A re-read
+of an unchanged list costs one conditional request for page 0 (see the ETag note under Wire facts).
 
 What the PMS notification feed (`docs/pms-api.md` section 9) does and does not carry:
 

@@ -60,6 +60,9 @@ pub struct WatchPage {
     /// The raw entry count on the wire. Paging advances by this, not by `items.len()`: an entry
     /// with no usable id is dropped from `items` but still occupied a slot.
     pub raw: u32,
+    /// The response's `ETag`, when it sent one (read by [`AccountClient::watchlist_page`] callers
+    /// that hold a validator for the next read).
+    pub etag: Option<String>,
 }
 
 /// `GET .../{hex}/userState`: `watchlisted_at` is `Some` only while the item is on the list.
@@ -80,7 +83,8 @@ pub struct CatalogItem {
 /// Why a watchlist call did not produce its answer. HTTP statuses map to the named variants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WatchlistError {
-    /// 304 (only with an If-None-Match, which needs NET1).
+    /// 304: the page-0 `If-None-Match` validator still matches, so the list is unchanged. Carries
+    /// no body, and is not logged as a failure.
     NotModified,
     /// 400: a malformed request (a page Size over 100, a bad id).
     BadRequest,
@@ -106,7 +110,7 @@ pub struct WatchRequest {
     pub method: &'static str,
     /// Absolute URL, base from [`discover`].
     pub url: String,
-    /// `If-None-Match` value (NET1; always `None` until then).
+    /// `If-None-Match` value: only the default-order list's page 0 ever sets it (NET1).
     pub if_none_match: Option<String>,
 }
 
@@ -115,6 +119,8 @@ pub struct WatchRequest {
 pub struct WatchResponse {
     pub status: u16,
     pub body: Vec<u8>,
+    /// The response's `ETag` header, verbatim (`net::Resp::etag`).
+    pub etag: Option<String>,
 }
 
 /// The injectable request closure every call takes (tests pass a canned one; production passes
@@ -176,11 +182,21 @@ fn is_hex_id(s: &str) -> bool {
 /// Run one request through the transport and map the status to a typed answer: 2xx yields the
 /// response, everything else its [`WatchlistError`]. Failures are logged by shape.
 fn call(req: WatchTransport, method: &'static str, url: String) -> Result<WatchResponse, WatchlistError> {
-    let request = WatchRequest { method, url, if_none_match: None };
+    call_if_none_match(req, method, url, None)
+}
+
+/// [`call`] with an `If-None-Match` validator. A 304 is the answer the validator asked for, so it
+/// maps to [`WatchlistError::NotModified`] without a failure line.
+fn call_if_none_match(req: WatchTransport, method: &'static str, url: String, if_none_match: Option<String>)
+    -> Result<WatchResponse, WatchlistError>
+{
+    let request = WatchRequest { method, url, if_none_match };
     match req(&request) {
         Ok(response) if (200..300).contains(&response.status) => Ok(response),
         Ok(response) => {
-            plx_base::eventlog::log(&failure_line(method, &request.url, Ok(response.status)));
+            if response.status != 304 {
+                plx_base::eventlog::log(&failure_line(method, &request.url, Ok(response.status)));
+            }
             Err(match response.status {
                 304 => WatchlistError::NotModified,
                 400 => WatchlistError::BadRequest,
@@ -196,6 +212,16 @@ fn call(req: WatchTransport, method: &'static str, url: String) -> Result<WatchR
             Err(e)
         }
     }
+}
+
+/// The headers the live transport hands to `net` for `req`: the account's identity headers and
+/// token, plus the page-0 validator when the request carries one.
+fn request_headers(client: &AccountClient, req: &WatchRequest) -> Vec<String> {
+    let mut headers = client.headers();
+    if let Some(tag) = &req.if_none_match {
+        headers.push(format!("If-None-Match: {tag}"));
+    }
+    headers
 }
 
 fn parse(response: &WatchResponse) -> Result<Value, WatchlistError> {
@@ -269,7 +295,8 @@ fn list_from(response: &WatchResponse, start: u32) -> Result<(WatchPage, usize),
     let entries: &[Value] = c.get("Metadata").and_then(Value::as_array).map_or(&[], Vec::as_slice);
     let items = entries.iter().filter_map(|e| item_from(e, None)).collect();
     let total = int(c, "totalSize").and_then(|t| u32::try_from(t).ok());
-    Ok((WatchPage { items, total, start, raw: u32::try_from(entries.len()).unwrap_or(u32::MAX) }, entries.len()))
+    let raw = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+    Ok((WatchPage { items, total, start, raw, etag: response.etag.clone() }, entries.len()))
 }
 
 impl AccountClient {
@@ -284,20 +311,17 @@ impl AccountClient {
                     req.method, endpoint_shape(&req.url)));
                 return Err(e);
             }
-            let mut headers = self.headers();
-            if let Some(tag) = &req.if_none_match {
-                headers.push(format!("If-None-Match: {tag}"));
-            }
+            let headers = request_headers(self, req);
             let body = (req.method == "PUT").then_some(b"".as_slice());
             let response = plx_net::net::request_evidence(&req.url, &headers, req.method, body,
                 plx_net::net::API, false, None, None);
             note_response_contact(&req.url, &response);
             match response {
-                Ok(r) => Ok(WatchResponse { status: r.status, body: r.body }),
+                Ok(r) => Ok(WatchResponse { status: r.status, body: r.body, etag: r.etag }),
                 // A refusal whose body did not finish is still an authoritative status; a 2xx
                 // that did not finish is not an answer.
                 Err(f) => match f.status {
-                    Some(status) if !(200..300).contains(&status) => Ok(WatchResponse { status, body: Vec::new() }),
+                    Some(status) if !(200..300).contains(&status) => Ok(WatchResponse { status, body: Vec::new(), etag: None }),
                     _ => Err(WatchlistError::Transport),
                 },
             }
@@ -305,8 +329,15 @@ impl AccountClient {
     }
 
     /// One page of the default-order list (`start` 0-based, `size` clamped to [`MAX_PAGE`]).
-    pub fn watchlist_page(&self, start: u32, size: u32, req: WatchTransport) -> Result<WatchPage, WatchlistError> {
-        self.list_page("all", start, size, req).map(|(page, _)| page)
+    /// `if_none_match` is the `ETag` of the last complete read of this list; it is sent on page 0
+    /// ONLY (a 304 on a later page is unverified against the service), and a 304 answers
+    /// `Err(`[`WatchlistError::NotModified`]`)`. On a 200, [`WatchPage::etag`] is the validator for
+    /// the next read.
+    pub fn watchlist_page(&self, start: u32, size: u32, if_none_match: Option<&str>, req: WatchTransport)
+        -> Result<WatchPage, WatchlistError>
+    {
+        let validator = if_none_match.filter(|_| start == 0).map(str::to_owned);
+        self.list_page("all", start, size, validator, req).map(|(page, _)| page)
     }
 
     /// The `released` variant of the list (items already released), all pages folded in. The
@@ -317,7 +348,7 @@ impl AccountClient {
         let mut out = Vec::new();
         let mut start = 0;
         loop {
-            let (page, raw) = self.list_page("released", start, MAX_PAGE, &mut *req)?;
+            let (page, raw) = self.list_page("released", start, MAX_PAGE, None, &mut *req)?;
             let total = page.total;
             out.extend(page.items);
             start += raw as u32;
@@ -376,7 +407,7 @@ impl AccountClient {
         call(req, "PUT", format!("{}/actions/{action}?ratingKey={hex}", discover())).map(|_| ())
     }
 
-    fn list_page(&self, variant: &str, start: u32, size: u32, req: WatchTransport)
+    fn list_page(&self, variant: &str, start: u32, size: u32, if_none_match: Option<String>, req: WatchTransport)
         -> Result<(WatchPage, usize), WatchlistError>
     {
         let size = size.clamp(1, MAX_PAGE);
@@ -385,7 +416,7 @@ impl AccountClient {
             "/library/sections/watchlist/{variant}?includeCollections=1&includeExternalMedia=1{order}");
         let url = format!("{}{}", discover(),
             paged_path(&path, PageReq { start: start as usize, size: size as usize }));
-        list_from(&call(req, "GET", url)?, start)
+        list_from(&call_if_none_match(req, "GET", url, if_none_match)?, start)
     }
 }
 
@@ -401,11 +432,11 @@ mod tests {
     }
 
     fn ok(body: &str) -> Result<WatchResponse, WatchlistError> {
-        Ok(WatchResponse { status: 200, body: body.as_bytes().to_vec() })
+        Ok(WatchResponse { status: 200, body: body.as_bytes().to_vec(), etag: None })
     }
 
     fn status(code: u16) -> Result<WatchResponse, WatchlistError> {
-        Ok(WatchResponse { status: code, body: b"{}".to_vec() })
+        Ok(WatchResponse { status: code, body: b"{}".to_vec(), etag: None })
     }
 
     /// Run `f` against a closure that answers `replies` in order and records every request.
@@ -430,9 +461,59 @@ mod tests {
         format!(r#"{{"MediaContainer":{{"size":{},"totalSize":{total},"Metadata":[{}]}}}}"#, hexes.len(), items.join(","))
     }
 
+
+    fn tagged(body: &str, etag: &str) -> Result<WatchResponse, WatchlistError> {
+        Ok(WatchResponse { status: 200, body: body.as_bytes().to_vec(), etag: Some(etag.to_owned()) })
+    }
+
+    #[test]
+    fn page_zero_sends_if_none_match_when_given_one_and_nothing_otherwise() {
+        let (_, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(0, 100, Some("W/\"v1\""), t));
+        assert_eq!(seen[0].if_none_match.as_deref(), Some("W/\"v1\""));
+        let (_, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(0, 100, None, t));
+        assert_eq!(seen[0].if_none_match, None);
+    }
+
+    #[test]
+    fn a_later_page_never_sends_if_none_match() {
+        // 304 on a later page is unverified against the service, so the validator stays on page 0.
+        let (_, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(100, 100, Some("W/\"v1\""), t));
+        assert_eq!(seen[0].if_none_match, None);
+    }
+
+    #[test]
+    fn the_released_variant_never_sends_it() {
+        let (_, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_released(t));
+        assert_eq!(seen[0].if_none_match, None);
+    }
+
+    #[test]
+    fn a_304_with_an_empty_body_is_not_modified_not_unreadable() {
+        let reply = Ok(WatchResponse { status: 304, body: Vec::new(), etag: Some("W/\"v1\"".into()) });
+        let (out, _) = run(vec![reply], |c, t| c.watchlist_page(0, 100, Some("W/\"v1\""), t));
+        assert_eq!(out, Err(WatchlistError::NotModified));
+    }
+
+    #[test]
+    fn a_200_hands_back_its_etag_and_a_200_without_one_has_none() {
+        let (out, _) = run(vec![tagged(&list_body(&[HEX], 1), "W/\"v2\"")], |c, t| c.watchlist_page(0, 100, None, t));
+        assert_eq!(out.unwrap().etag.as_deref(), Some("W/\"v2\""));
+        let (out, _) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(0, 100, None, t));
+        assert_eq!(out.unwrap().etag, None);
+    }
+
+    #[test]
+    fn the_live_transport_puts_the_validator_in_the_headers_it_hands_to_net() {
+        let c = client();
+        let req = WatchRequest { method: "GET", url: "u".into(), if_none_match: Some("W/\"v1\"".into()) };
+        assert!(request_headers(&c, &req).contains(&"If-None-Match: W/\"v1\"".to_string()));
+        let req = WatchRequest { if_none_match: None, ..req };
+        assert!(!request_headers(&c, &req).iter().any(|h| h.to_ascii_lowercase().starts_with("if-none-match")));
+    }
+
     #[test]
     fn the_page_url_carries_the_paging_and_sort_params() {
-        let (page, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(200, 100, t));
+        let (page, seen) = run(vec![ok(&list_body(&[HEX], 1))], |c, t| c.watchlist_page(200, 100, None, t));
         let page = page.unwrap();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].method, "GET");
@@ -455,7 +536,7 @@ mod tests {
             r#"{{"ratingKey":"{i:024x}","guid":"plex://movie/{i:024x}","type":"movie","title":"T"}}"#)).collect();
         entries.push(r#"{"type":"movie","title":"No id"}"#.to_owned());
         let body = format!(r#"{{"MediaContainer":{{"size":100,"Metadata":[{}]}}}}"#, entries.join(","));
-        let (page, _) = run(vec![ok(&body)], |c, t| c.watchlist_page(0, 100, t));
+        let (page, _) = run(vec![ok(&body)], |c, t| c.watchlist_page(0, 100, None, t));
         let page = page.unwrap();
         assert_eq!(page.total, None);
         assert_eq!(page.items.len(), 99);
@@ -464,9 +545,9 @@ mod tests {
 
     #[test]
     fn a_page_size_over_the_limit_is_clamped_never_sent() {
-        let (_, seen) = run(vec![ok(&list_body(&[], 0))], |c, t| c.watchlist_page(0, 500, t));
+        let (_, seen) = run(vec![ok(&list_body(&[], 0))], |c, t| c.watchlist_page(0, 500, None, t));
         assert!(seen[0].url.ends_with("X-Plex-Container-Size=100"), "{}", seen[0].url);
-        let (_, seen) = run(vec![ok(&list_body(&[], 0))], |c, t| c.watchlist_page(0, 0, t));
+        let (_, seen) = run(vec![ok(&list_body(&[], 0))], |c, t| c.watchlist_page(0, 0, None, t));
         assert!(seen[0].url.ends_with("X-Plex-Container-Size=1"), "{}", seen[0].url);
     }
 
@@ -523,26 +604,26 @@ mod tests {
             (401, WatchlistError::Unauthorized), (404, WatchlistError::NotFound),
             (503, WatchlistError::Other(503)), (403, WatchlistError::Other(403))]
         {
-            let (out, _) = run(vec![status(code)], |c, t| c.watchlist_page(0, 100, t));
+            let (out, _) = run(vec![status(code)], |c, t| c.watchlist_page(0, 100, None, t));
             assert_eq!(out, Err(want), "status {code}");
         }
     }
 
     #[test]
     fn a_200_is_read_and_a_transport_error_passes_through() {
-        let (out, _) = run(vec![ok(&list_body(&[HEX, HEX2], 2))], |c, t| c.watchlist_page(0, 100, t));
+        let (out, _) = run(vec![ok(&list_body(&[HEX, HEX2], 2))], |c, t| c.watchlist_page(0, 100, None, t));
         assert_eq!(out.unwrap().items.len(), 2);
-        let (out, _) = run(vec![Err(WatchlistError::Transport)], |c, t| c.watchlist_page(0, 100, t));
+        let (out, _) = run(vec![Err(WatchlistError::Transport)], |c, t| c.watchlist_page(0, 100, None, t));
         assert_eq!(out, Err(WatchlistError::Transport));
     }
 
     #[test]
     fn a_body_that_is_not_the_container_is_unreadable_not_empty() {
         for body in ["not json", "{}", r#"{"MediaContainer":[]}"#] {
-            let (out, _) = run(vec![ok(body)], |c, t| c.watchlist_page(0, 100, t));
+            let (out, _) = run(vec![ok(body)], |c, t| c.watchlist_page(0, 100, None, t));
             assert_eq!(out, Err(WatchlistError::Unreadable), "{body}");
         }
-        let (out, _) = run(vec![ok(r#"{"MediaContainer":{"size":0}}"#)], |c, t| c.watchlist_page(0, 100, t));
+        let (out, _) = run(vec![ok(r#"{"MediaContainer":{"size":0}}"#)], |c, t| c.watchlist_page(0, 100, None, t));
         assert_eq!(out.unwrap().items, Vec::new());
     }
 
@@ -554,7 +635,7 @@ mod tests {
             {{"guid":"plex://movie/{HEX2}","type":"movie","year":null}},
             {{"ratingKey":"{HEX2}","type":"collection"}}
         ]}}}}"#);
-        let (out, _) = run(vec![ok(&body)], |c, t| c.watchlist_page(0, 100, t));
+        let (out, _) = run(vec![ok(&body)], |c, t| c.watchlist_page(0, 100, None, t));
         let page = out.unwrap();
         assert_eq!(page.total, Some(3));
         assert_eq!(page.items.len(), 2, "{:?}", page.items);
