@@ -42,6 +42,9 @@
 //! `app::input::apply_item_action`, which does the routing, the server call and the hub refresh.
 //! It never mutates playback or PMS state itself.
 
+/// The Watchlist grid's hold-menu rows (`ItemMenuKind::Catalog`, plan §1.9).
+pub mod hold;
+
 use std::borrow::Cow;
 use std::convert::Infallible;
 use std::os::raw::c_int;
@@ -473,14 +476,14 @@ fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
     Form::new().section(state_rows(FormSection::new(""), rk, mark, true, None, ""))
 }
 
-/// The Watchlist grid's hold menu (plan §1.9): [`crate::watchlist::hold::rows_for`] bound to
+/// The Watchlist grid's hold menu (plan §1.9): [`self::hold::rows_for`] bound to
 /// actions. The "go" row is Detail (`rk`, the matched copy on [`ItemMenuArg::sid`]) or the catalog
 /// page (`guid`); Remove is destructive, so the menu opens on the "go" row, never on it. W6's
 /// catalog-only rows (Add/Remove are the whole Catalog menu today) would join here.
 fn build_catalog(state: plx_data::watchlist::model::TileState, rk: &str, guid: &str) -> ItemForm {
-    use crate::watchlist::hold::HoldRowId;
+    use self::hold::HoldRowId;
     let mut sec = FormSection::new("");
-    for r in crate::watchlist::hold::rows_for(state) {
+    for r in self::hold::rows_for(state) {
         let (id, action) = match r.id {
             HoldRowId::GoToDetail => (ItemRow::GoToItem, Action::GoToItem(rk.to_string())),
             HoldRowId::GoToCatalog => (ItemRow::GoToCatalog, Action::GoToCatalog(guid.to_string())),
@@ -2138,7 +2141,7 @@ mod tests {
         plx_ui::table::assert_no_fit_failures(&out);
     }
 
-    /// **The Watchlist hold menu** is `watchlist::hold::rows_for` bound to actions: the go row
+    /// **The Watchlist hold menu** is `hold::rows_for` bound to actions: the go row
     /// names the matched rk or the guid, Remove names the guid, and only Remove is destructive.
     #[test]
     fn the_catalog_menu_binds_the_hold_rows() {

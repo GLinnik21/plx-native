@@ -414,6 +414,11 @@ pub(crate) struct Bridge {
     /// …and what the item context menu asked, drained by `content::content_requests` — which holds
     /// the route, the trail and the playback session's `&mut` that its dispatch needs.
     item_menu_reqs: Vec<plx_screens::registry::ItemMenuReq>,
+    /// What the Watchlist page and its Sort & Filter surface asked, drained by
+    /// `content::watchlist_requests` (the Search pattern).
+    watchlist_reqs: Vec<(MachineId, plx_screens::watchlist::page::WatchlistOut, ReturnState<u32, PageMemory>)>,
+    /// What the Watchlist page was last handed from the store (`watchlist::Feed`).
+    watchlist: watchlist::Feed,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -621,6 +626,8 @@ impl Bridge {
             search_reqs: Vec::new(),
             player_reqs: Vec::new(),
             item_menu_reqs: Vec::new(),
+            watchlist_reqs: Vec::new(),
+            watchlist: watchlist::Feed::default(),
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
@@ -912,8 +919,10 @@ impl Bridge {
         let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
         let search = *route == AppArg::Search;
-        if matches!(route, AppArg::Home | AppArg::Library) || search {
-            d.nav.tabs.strip_fallback = Some(if search { plx_ui::dispatch::STRIP_BASE + 3 } else { plx_screens::home::STRIP_HOME_ELEM });
+        let watchlist = *route == AppArg::Watchlist;
+        if matches!(route, AppArg::Home | AppArg::Library) || search || watchlist {
+            d.nav.tabs.strip_fallback = Some(if search { plx_ui::widgets::TAB_KEY_SEARCH }
+                else if watchlist { plx_ui::widgets::TAB_KEY_WATCHLIST } else { plx_screens::home::STRIP_HOME_ELEM });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
@@ -922,7 +931,8 @@ impl Bridge {
             }
             self.chrome_selection = if *route == AppArg::Library {
                 self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
-            } else if search { self.chrome.search_selection() } else { 0 };
+            } else if search { self.chrome.search_selection()
+            } else if watchlist { self.chrome.watchlist_selection() } else { 0 };
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
         } else {
@@ -1319,6 +1329,7 @@ impl Bridge {
         match arg {
             AppArg::Library => self.stores.library_held_keys(),
             AppArg::Search => self.stores.search.held_keys(),
+            AppArg::Watchlist => self.stores.watchlist.held_keys(),
             AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
                 self.stores.person.held_keys(content),
             AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
@@ -1894,6 +1905,7 @@ impl Bridge {
             AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
+            AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
         }
     }
 
@@ -3128,6 +3140,7 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
     match arg {
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
+        AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
         AppArg::Library => {
             let kind = directory.current().map(|i| directory.sections()[i].kind)?;
             pill_of(directory, Pill::Section(kind))
@@ -3165,6 +3178,7 @@ pub(crate) fn nav_tab(
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
+                    Pill::Watchlist => HomeTab::Watchlist,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -3179,6 +3193,7 @@ pub(crate) fn nav_tab(
             AppArg::Library
         }
         HomeTab::Search => AppArg::Search,
+        HomeTab::Watchlist => AppArg::Watchlist,
     };
     nav_peer(d, arg, ret);
 }
@@ -3859,6 +3874,14 @@ mod library_tab_arrival_tests;
 #[cfg(test)]
 #[path = "strip_home_pill_tests.rs"]
 mod strip_home_pill_tests;
+
+#[path = "watchlist.rs"]
+mod watchlist;
+pub(crate) use watchlist::open_watchlist_menu;
+
+#[cfg(test)]
+#[path = "watchlist_wiring_tests.rs"]
+mod watchlist_wiring_tests;
 
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]

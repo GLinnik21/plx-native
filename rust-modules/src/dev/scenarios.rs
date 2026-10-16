@@ -1182,6 +1182,12 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
         if let Some(q) = plx_base::devtrig::read("search") {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
+        // `/tmp/plxnative-watchlist` — boot straight onto the Watchlist page (`SelectTab`, as the
+        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>`, or the
+        // page reads the real discover host; `tools/tv-session.sh --mock-plextv` arms both.
+        if plx_base::devtrig::flag("watchlist") {
+            crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
+        }
         if let Some(s) = plx_base::devtrig::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
                 app.bridge.home_command(HomeCmd::SelectHero(n));

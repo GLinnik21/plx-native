@@ -17,24 +17,24 @@ use crate::registry::{AppFx, AppMsg, PageMemory};
 /// A host with no stores: the page reads its rows from itself.
 pub(crate) struct WatchHost;
 impl Host for WatchHost {
-    type Arg = crate::family::SettingsPage;
+    type Arg = super::super::family::SettingsPage;
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ();
-    type Init = crate::family::NoInit;
+    type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
 
 pub(crate) const ENTRY: EntryId = EntryId(9);
 
-/// A row named `t<i>`, a movie of 2000 + i.
+/// A row titled `<i>`, a movie of 2000 + i.
 pub(crate) fn row(i: usize) -> WatchRow {
     WatchRow {
         guid: format!("plex://movie/g{i}"),
         hex: [0; 12],
         kind: Kind::Movie,
-        title: format!("Title {i}"),
+        title: i.to_string(),
         title_sort: String::new(),
         year: Some(2000 + i as i32),
         added_at: None,

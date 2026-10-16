@@ -43,7 +43,7 @@ SCENES = ROOT / "tests" / "screenshots" / "scenes.json"
 CATALOG = ROOT / "tests" / "demo_library" / "catalog.json"
 RUST = ROOT / "rust-modules" / "src"
 # Armed by tools/screenshots.py on every scene, not by the manifest.
-DRIVER_TRIGGERS = {"token", "plextv", "stillclock"}
+DRIVER_TRIGGERS = {"token", "plextv", "discover", "stillclock"}
 
 HAVE_CACHE = (mock_pms.demo_cache_dir() / "derived").is_dir() and shutil.which("ffmpeg") and shutil.which("ffprobe")
 

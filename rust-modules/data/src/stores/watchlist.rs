@@ -686,8 +686,9 @@ impl WatchlistStore {
         self.pump_with_gate(plx_machine::landgate::fixture_gate())
     }
 
-    #[cfg(test)]
-    fn with_spawn_for_test(mut self, spawn: Spawn) -> Self {
+    /// Run the workers through `spawn` (an inline runner makes a landing deterministic).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_spawn_for_test(mut self, spawn: fn(&str, Box<dyn FnOnce() + Send + 'static>) -> bool) -> Self {
         self.spawn = spawn;
         self
     }
@@ -753,6 +754,12 @@ impl WatchlistView<'_> {
     /// Is this catalog id on the watchlist, intents in flight included?
     pub fn is_member(&self, hex: &[u8; 12]) -> bool {
         self.store.state.members.contains(hex)
+    }
+
+    /// Titles on the list, before the options narrow it and with the presses in flight counted:
+    /// what separates "your watchlist is empty" from "nothing matches".
+    pub fn list_len(&self) -> usize {
+        self.store.state.members.len()
     }
 
     /// The service's list length, once it said, for the skeleton cells past the loaded tail.

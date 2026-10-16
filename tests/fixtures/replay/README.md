@@ -389,3 +389,13 @@ three anchors were refused on load, then recorded again against the synthetic se
 retained. The recorder now encodes `HubsCmd::Hold` (`hubs.hold: [lo, hi]`), and the closed alphabet
 admits the Related hub's page key `/library/metadata/<digits>/similar`. Targets and Resolve both
 report SAME with every difference counter at zero.
+
+The Watchlist page and its Sort & Filter surface (`AppArg::Watchlist`, `AppArg::WatchlistMenu`,
+the Catalog item-menu kind) joined `SCREEN_SHAPES`, which moved the state shape from
+1703904437409982862 to 12458998658850644726 (`SCREEN_SHAPES_PIN` `0x4a8a_e825_dc50_1647`; the
+recorder's own `APP_SHAPES` pin did not move). All three anchors were refused on load, then
+recorded again against the synthetic server with `tests/focusfp.sh --rec --only 1,6,12` and
+installed with `tools/plxnative-rec rerecord`, anchors retained. The mock now binds the Watchlist
+fixture's guids onto the first library movies and shows (`DiscoverFixture.bind`), so Detail's
+guid matches carry seven fixture guids; `ALPHABET.json` lists them literally (never as a general
+24-hex pattern). Targets and Resolve both report SAME with every difference counter at zero.

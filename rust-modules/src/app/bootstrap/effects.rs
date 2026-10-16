@@ -28,7 +28,8 @@ fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {
         HomeCmd::FocusGrid { row,col } => json!({"focus_grid":[row,col]}),
         HomeCmd::Hero => json!("hero"),
         HomeCmd::FocusStrip(tab) => json!({"focus_strip":match tab {
-            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search" }}),
+            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
+            HomeTab::Watchlist => "watchlist" }}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::PinHero(index) => json!({"pin_hero":index}),

@@ -1,6 +1,6 @@
 //! The grid's hold menu (plan §1.9): which rows a tile in each state offers, and what a press on
 //! one asks of the app. The rows are the Watchlist's own; `item_menu` presents them for
-//! `ItemMenuKind::Catalog` and the app maps the results onto its actions.
+//! `ItemMenuKind::Catalog` (this module is its child, so no screen names a sibling) and the app maps the results onto its actions.
 use plx_data::watchlist::model::TileState;
 use plx_ui::icons::Icon;
 

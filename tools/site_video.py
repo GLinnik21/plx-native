@@ -1846,6 +1846,7 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
     finished = False
     try:
         (runtime / "plxnative-plextv").write_text(f"http://127.0.0.1:{port}")
+        (runtime / "plxnative-discover").write_text(f"http://127.0.0.1:{port}")  # the Watchlist reads the mock, never discover.provider.plex.tv
         sign_in_demo_profile(sim_bin, runtime, port, say)
         with pms.lock:
             pms.request_log.clear()  # the log below is the film's alone
