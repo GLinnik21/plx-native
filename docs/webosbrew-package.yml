@@ -101,10 +101,10 @@ description: |
     device the video path needs; 2018 sets on platform release 3.9.3, where video has never been
     seen to start (issue #249); and a crash on k6hp sets (issue #174).
   * **Dolby Vision is confirmed on ONE television.** On the 2019 set this is developed against, a
-    Profile 5 or Profile 8 film moves the panel into its Dolby Vision picture mode, and a Profile 7
-    film — the dual-layer kind this app cannot feed — is refused and lands on HDR10, which is what
-    refusing it should produce. That is one set. If yours is a different year or a different panel,
-    that is still the report worth sending.
+    Profile 5 or Profile 8 film moves the panel into its Dolby Vision picture mode. A Profile 7
+    film (the dual-layer kind on UHD Blu-ray remuxes) is converted to Profile 8.1 by the app and
+    played as one; that conversion has not been watched on that set. That is one set. If yours is
+    a different year or a different panel, that is still the report worth sending.
   * **Seeking on webOS 5 and newer takes a slower route.** It reloads the stream rather than
     moving within it. It works; it has not been watched on hardware.
   * **Bit depth is asserted, not probed.** The app reads the codec table your television publishes

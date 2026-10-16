@@ -10115,9 +10115,9 @@ pub struct EnhTestFixture {
     pub base_present: bool,
     /// The base route's own Dolby Vision declaration (I7).
     pub dv_declared: bool,
-    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
-    /// enhancement layer) — a source the offer must refuse regardless of `dv_declared`, since a
-    /// declaration only ever accompanies a USABLE base layer.
+    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5, or a dual
+    /// layer the feed path does not convert to 8.1) — a source the offer must refuse regardless of
+    /// `dv_declared`, since a declaration only ever accompanies a USABLE base layer.
     pub dv_base_unusable: bool,
     /// `None` = server default audio, facts unknown (fails closed). `Some(capable)` = a known
     /// carried track with or without `canNormalizeLoudness`.

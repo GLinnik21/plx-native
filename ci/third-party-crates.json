@@ -128,9 +128,19 @@
      "copyright": "Jonas Schievink, oyvindln"
     },
     {
+     "name": "anyhow",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "David Tolnay"
+    },
+    {
      "name": "bitflags",
      "licence": "MIT OR Apache-2.0",
      "copyright": "2014 The Rust Project Developers"
+    },
+    {
+     "name": "bitstream-io",
+     "licence": "MIT/Apache-2.0",
+     "copyright": "2017 Brian Langenberger"
     },
     {
      "name": "bytemuck",
@@ -151,6 +161,16 @@
      "name": "chardetng",
      "licence": "Apache-2.0 OR MIT",
      "copyright": "Mozilla Foundation"
+    },
+    {
+     "name": "crc",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2017 crc-rs Developers"
+    },
+    {
+     "name": "crc-catalog",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Akhil Velagapudi"
     },
     {
      "name": "crc32fast",
@@ -213,6 +233,11 @@
      "copyright": "2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln"
     },
     {
+     "name": "no_std_io2",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "2020-2021 Brendan Molloy"
+    },
+    {
      "name": "num-traits",
      "licence": "MIT OR Apache-2.0",
      "copyright": "2014 The Rust Project Developers"
@@ -263,6 +288,11 @@
      "copyright": "Copyright (c) 2017 Robert Grosse"
     },
     {
+     "name": "tinyvec",
+     "licence": "Zlib OR Apache-2.0 OR MIT",
+     "copyright": "2019 Daniel \"Lokathor\" Gee"
+    },
+    {
      "name": "zune-core",
      "licence": "MIT OR Apache-2.0 OR Zlib",
      "copyright": "The zune-image developers"
@@ -303,8 +333,24 @@
    ],
    "crates": [
     {
+     "name": "bitvec",
+     "copyright": "Copyright (c) 2018 myrrlyn (Alexander Payne)"
+    },
+    {
+     "name": "bitvec_helpers",
+     "copyright": "Copyright (c) 2026 quietvoid"
+    },
+    {
      "name": "core_maths",
      "copyright": "Copyright (c) 2024 Robert Bastian"
+    },
+    {
+     "name": "dolby_vision",
+     "copyright": "Copyright (c) 2026 quietvoid. Parses and rewrites Dolby Vision RPUs for the Profile 7 to 8.1 conversion (`plx_media`'s `ff.rs`); used unmodified, with no optional features"
+    },
+    {
+     "name": "funty",
+     "copyright": "Copyright (c) 2020 myrrlyn (Alexander Payne)"
     },
     {
      "name": "libm",
@@ -315,8 +361,20 @@
      "copyright": "Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt`"
     },
     {
+     "name": "radium",
+     "copyright": "Copyright (c) 2019 kneecaw (Nika Layzell)"
+    },
+    {
      "name": "simd-adler32",
      "copyright": "(c) 2021 Marvin Countryman"
+    },
+    {
+     "name": "tap",
+     "copyright": "Copyright (c) 2017 Elliot Linder"
+    },
+    {
+     "name": "wyz",
+     "copyright": "Copyright (c) 2018 myrrlyn (Alexander Payne)"
     },
     {
      "name": "zmij",

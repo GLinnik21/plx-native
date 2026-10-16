@@ -3980,11 +3980,32 @@ mod payload_tests {
     }
 
     /// The three ways the node is NOT sent, each of which must leave the payload byte-identical:
-    /// a file with no Dolby Vision, a Dolby Vision file we refuse (the dual-layer P7 — declaring a
-    /// layer we cannot feed is worse than refusing it), and the disarmed trigger, which is what a
-    /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
+    /// a file with no Dolby Vision, a Dolby Vision file we refuse (a dual layer without a
+    /// cross-compatible base layer — declaring a layer we cannot feed is worse than refusing it),
+    /// and the disarmed trigger, which is what a `RELEASE=1` build compiles in and what every boot
+    /// without `/tmp/plxnative-dv` does today.
     #[test]
     fn nothing_is_spliced_unless_the_stream_is_declared() {
+        let unconvertible_p7 = Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 0,
+            el_present: true,
+            ..Dovi::NONE
+        };
+        for dv in [
+            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            unconvertible_p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        ] {
+            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
+        }
+    }
+
+    /// A Profile 7 with a cross-compatible base layer is fed as the 8.1 `ff::packet_to_annexb`
+    /// makes of it, and the node says so: `profileId` 8, one track — never 7, never `"dual"`.
+    #[test]
+    fn a_converted_profile_7_declares_profile_8_single() {
         let p7 = Dovi {
             present: true,
             profile: 7,
@@ -3992,13 +4013,15 @@ mod payload_tests {
             el_present: true,
             ..Dovi::NONE
         };
-        for dv in [
-            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        let out = with_dolby_hdr_info(
+            PAYLOAD_AV,
+            "H265",
             p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
-            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
-        ] {
-            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
-        }
+        );
+        const NODE: &str =
+            r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":8}"#;
+        assert!(out.contains(NODE), "{out}");
+        assert_eq!(out.replace(NODE, ""), PAYLOAD_AV);
     }
 
     /// **What we actually send for a Dolby Atmos track**, at the key path `libpf` reads

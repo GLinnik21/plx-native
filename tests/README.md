@@ -1209,7 +1209,9 @@ secondary to the real item shapes, and still to be labelled synthetic:
   (`contents.DolbyHdrInfo`, the node LG's own pipeline has parsed all along), and a declared
   single-layer Profile 5 direct-plays *correctly* — so with it armed the P5 item's expectation is a
   playing stream, one `dv: sourceInfo contents.DolbyHdrInfo …` line in the event log, and a picture
-  only a human can grade. The dual-layer P7 is refused either way. `metadata::Dovi::presentation` is
+  only a human can grade. A dual layer without a cross-compatible base layer is refused either
+  way; a P7 with one (the dev server's, CCID 6) is converted to 8.1 on the feed path and
+  direct-plays (`docs/dolby-vision.md` §1). `metadata::Dovi::presentation` is
   the single predicate behind both the gate and the node; `base_layer_unusable` is now specifically
   the COPY question (a remux carries no declaration), which is why `no_video_copy` still rides a
   declared P5 that ends up on the transcode branch for some other reason.

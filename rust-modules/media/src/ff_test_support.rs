@@ -14,8 +14,26 @@ pub(super) fn avcc(nals: &[&[u8]]) -> Vec<u8> {
 
 pub(super) fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
     let mut out = Vec::new();
-    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, param, &mut out) };
+    let key =
+        unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, false, param, &mut out) };
     (key, out)
+}
+
+/// [`to_annexb`] for an HEVC stream with the Dolby Vision Profile 7 -> 8.1 conversion armed.
+pub(super) fn to_annexb_p7(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
+    let mut out = Vec::new();
+    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, true, param, &mut out) };
+    (key, out)
+}
+
+/// One of `tests/fixtures/dovi-p7-*-rpu.bin` (an RPU as `dovi_tool` writes it: a 4-byte start
+/// code, then the payload after the `7C 01` NAL header) as the `UNSPEC62` NAL a demuxed packet
+/// carries.
+pub(super) fn rpu_fixture_nal(file: &[u8]) -> Vec<u8> {
+    assert_eq!(&file[..4], &[0, 0, 0, 1], "a dovi_tool RPU file starts with a start code");
+    let mut nal = vec![0x7C, 0x01];
+    nal.extend_from_slice(&file[4..]);
+    nal
 }
 
 // -- parse_dovi_conf: the Dolby Vision configuration record ---------------------------
