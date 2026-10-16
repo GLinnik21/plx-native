@@ -229,6 +229,17 @@ pub fn status_icon(status: Status, release: Option<&str>) -> Option<Icon> {
     }
 }
 
+/// The read-out of a page with no record to show. A discover 404 reuses "On no server": the service
+/// knows no such title, so no library of the household's can hold it, and the shipped locales carry
+/// no separate not-found string (docs/watchlist.md, "A record the service does not know").
+pub fn verdict_text(load: &Load) -> Option<&'static str> {
+    match load {
+        Load::NotFound => Some(plx_platform::i18n::msg::watchlist_state_on_no_server()),
+        Load::Unreachable => Some(plx_platform::i18n::msg::watchlist_empty_unreachable()),
+        Load::Loaded { .. } | Load::Loading => None,
+    }
+}
+
 /// The status line's words, present exactly when [`status_icon`] is.
 pub fn status_text(status: Status, release: Option<&str>) -> Option<&'static str> {
     match (status_icon(status, release)?, status) {
@@ -597,9 +608,12 @@ impl<H: ContentLike> Screen<H> for CatalogScreen {
         self.draw_ground(p);
         match &self.vm.load {
             Load::Loaded { .. } => self.draw_record(f, p),
-            Load::NotFound => self.draw_verdict(p, plx_platform::i18n::msg::watchlist_state_on_no_server()),
-            Load::Unreachable => self.draw_verdict(p, plx_platform::i18n::msg::watchlist_empty_unreachable()),
             Load::Loading => {}
+            load => {
+                if let Some(text) = verdict_text(load) {
+                    self.draw_verdict(p, text);
+                }
+            }
         }
     }
     fn render(&self) -> RenderStrategy {

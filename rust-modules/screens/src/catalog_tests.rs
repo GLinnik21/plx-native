@@ -369,3 +369,11 @@ fn every_state_draws_and_the_pill_registers_a_stop() {
         }
     }
 }
+
+#[test]
+fn a_page_with_no_record_draws_its_verdict_string() {
+    assert_eq!(verdict_text(&Load::NotFound), Some(msg::watchlist_state_on_no_server()));
+    assert_eq!(verdict_text(&Load::Unreachable), Some(msg::watchlist_empty_unreachable()));
+    assert_eq!(verdict_text(&Load::Loading), None);
+    assert_eq!(verdict_text(&loaded(Status::None, None)), None);
+}

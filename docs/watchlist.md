@@ -190,6 +190,12 @@ drawn. An unreachable page has no Try again control: it reads again on resume, o
 - The "Coming" line is drawn at the 32 px rung where the board says 36: the type ladder has no 36.
 - The Detail ribbon drop is a named constant (`RIBBON_DROP`, 3 px) because no theme token is 3 px.
 
+### A record the service does not know
+
+A discover 404 (`Load::NotFound`) draws the "On no server" verdict (`catalog::verdict_text`). The shipped
+locales have no separate not-found string; the words are accurate, since a title the service has never
+heard of is on none of the household's servers. The page has no focus stop, so BACK is the way out.
+
 ## Live-update gaps
 
 PMS pushes nothing about plex.tv membership, so the account side is always a re-read: on tab entry
