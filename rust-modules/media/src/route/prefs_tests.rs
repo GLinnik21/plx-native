@@ -70,7 +70,7 @@ fn t_live_catches_a_row_forgotten_in_either_list() {
     assert!(!agrees(&plex), "a setting declared live in plex but missing in media is caught");
 }
 
-/// The legacy install-wide keys of a record with the ten settings away from every default.
+/// The legacy install-wide keys of a record with the eleven settings away from every default.
 fn stored_prefs() -> Preferences {
     let s = session::Session::default()
         .with_pref::<QualityPref>(Quality::P1080High)
@@ -81,6 +81,7 @@ fn stored_prefs() -> Preferences {
         .with_pref::<SkipIntervalPref>(SkipInterval::Seconds30)
         .with_pref::<DeckPressPref>(DeckPress::Play)
         .with_pref::<SubtitleTonePref>(SubtitleTone::Silver)
+        .with_pref::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half)
         .with_pref::<AudioEnhancementsPref>(AudioEnhancements { boost_dialog: true, normalize_loudness: true })
         .with_pref::<TrailerAutoplayPref>(false);
     s.prefs
@@ -121,22 +122,22 @@ fn restore(record: &session::Session, seat: &Seat, ov: Overrides) {
 
 #[derive(Debug, PartialEq)]
 struct Cells(Quality, DirectPlayMode, SubtitleSize, SubtitlePosition, NextEpisodeMode, SkipInterval, DeckPress,
-    SubtitleTone, AudioEnhancements, bool);
+    SubtitleTone, AudioEnhancements, HdrOverlayBrightness, bool);
 
 fn cells() -> Cells {
     Cells(quality(), direct_play_mode(), subtitle_size(), subtitle_position(), next_episode_mode(), skip_interval(),
         deck_press(), crate::player::subtitle_tone(), crate::player::audio_enhancements(),
-        crate::player::preview::TRAILER_AUTOPLAY.get())
+        hdr_overlay_brightness(), crate::player::preview::TRAILER_AUTOPLAY.get())
 }
 
-/// The ten legacy values of [`stored_prefs`], as the cells hold them once they are restored.
+/// The eleven legacy values of [`stored_prefs`], as the cells hold them once they are restored.
 fn legacy_cells() -> Cells {
     Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
         NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
-        AudioEnhancements { boost_dialog: true, normalize_loudness: true }, false)
+        AudioEnhancements { boost_dialog: true, normalize_loudness: true }, HdrOverlayBrightness::Half, false)
 }
 
-/// Put the ten cells back to what they held, and the mirrors to never-seeded, on drop. Declared
+/// Put the eleven cells back to what they held, and the mirrors to never-seeded, on drop. Declared
 /// AFTER `serial()` so it drops first, while the lock `restore_*` asserts is still held.
 struct Put(Option<Cells>);
 impl Put {
@@ -147,7 +148,7 @@ impl Put {
 impl Drop for Put {
     fn drop(&mut self) {
         unseed_profile_prefs_for_test();
-        let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh, trailer)) = self.0.take() else { return };
+        let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh, hdr, trailer)) = self.0.take() else { return };
         restore_quality(q);
         restore_direct_play_mode(dpm);
         restore_subtitle_size(size);
@@ -157,6 +158,7 @@ impl Drop for Put {
         restore_deck_press(deck);
         crate::player::restore_subtitle_tone(tone);
         crate::player::restore_audio_enhancements(enh);
+        restore_hdr_overlay_brightness(hdr);
         crate::player::preview::restore_trailer_autoplay(trailer);
     }
 }
@@ -171,6 +173,7 @@ fn scramble() {
     restore_deck_press(DeckPress::Play);
     crate::player::restore_subtitle_tone(SubtitleTone::Grey);
     crate::player::restore_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true });
+    restore_hdr_overlay_brightness(HdrOverlayBrightness::Full);
     crate::player::preview::restore_trailer_autoplay(true);
 }
 
@@ -201,7 +204,7 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
         cells(),
         Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
             NextEpisodeMode::Countdown, SkipInterval::Seconds10, DeckPress::Details, SubtitleTone::White,
-            AudioEnhancements::NONE, false),
+            AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, false),
         "a record that chose nothing restores every default (an absent quality is Original; the derived \
          `Preferences::default()` has trailers off: a PARSED record reads them on, see below)"
     );
@@ -226,10 +229,10 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
 
     scramble();
     restore(&rec, &seat("u1"), Overrides::default());
-    let Cells(q, dpm, _, position, next, _, deck, tone, enh, _) = legacy_cells();
+    let Cells(q, dpm, _, position, next, _, deck, tone, enh, hdr, _) = legacy_cells();
     assert_eq!(
         cells(),
-        Cells(q, dpm, SubtitleSize::ExtraLarge, position, next, SkipInterval::Seconds60, deck, tone, enh, true),
+        Cells(q, dpm, SubtitleSize::ExtraLarge, position, next, SkipInterval::Seconds60, deck, tone, enh, hdr, true),
         "u1: its three picks (trailers ON over the TV's off) over the TV's seven"
     );
 
@@ -403,7 +406,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
         cells(),
         Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
             NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
-            AudioEnhancements::NONE, true)
+            AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, true)
     );
 }
 
@@ -576,4 +579,29 @@ fn t_settings_catches_a_row_or_choice_dropped() {
     rows.insert("playback_quality");
     rows.insert("subtitle_tone"); // a panel-only setting gains a row with no Choice
     assert!(!agrees(&rows), "a Settings row with no Choice is caught");
+}
+
+/// The overlay dim rule: nothing changes for SDR or at 100%; HDR at 75% / 50% scales by exactly
+/// that; a server re-encode is an SDR picture whatever the source was, a remux keeps it HDR.
+#[test]
+fn overlay_gain_is_one_for_sdr_and_full_and_the_rung_for_hdr() {
+    use HdrOverlayBrightness::{Full, Half, ThreeQuarters};
+    for pick in [Full, ThreeQuarters, Half] {
+        assert_eq!(overlay_gain_for(false, false, false, pick), 1.0, "SDR direct play, {pick:?}");
+        assert_eq!(overlay_gain_for(false, true, true, pick), 1.0, "SDR remux, {pick:?}");
+    }
+    assert_eq!(overlay_gain_for(true, false, false, Full), 1.0);
+    assert_eq!(overlay_gain_for(true, false, false, ThreeQuarters), 0.75);
+    assert_eq!(overlay_gain_for(true, false, false, Half), 0.5);
+    assert_eq!(overlay_gain_for(true, true, true, Half), 0.5, "a remux keeps the HDR stream");
+    assert_eq!(overlay_gain_for(true, true, false, Half), 1.0, "a re-encode is tone-mapped to SDR");
+}
+
+#[test]
+fn the_default_pick_dims_an_hdr_picture_to_75_percent_and_never_an_sdr_one() {
+    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(HdrOverlayBrightness::from_index(99), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::default()), 0.75);
+    assert_eq!(overlay_gain_for(false, false, false, HdrOverlayBrightness::default()), 1.0);
+    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::Full), 1.0, "a chosen 100% stays off");
 }

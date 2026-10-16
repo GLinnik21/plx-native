@@ -861,7 +861,6 @@ Inter if you're willing to re-tune the size ladder.
 | jsmpeg (fetched by `ci/deps.py` for `tools/stream-screen.py`) | MIT, Dominic Szablewski | Not in the repository (it was a banner-less copy at `tools/jsmpeg.min.js`); upstream licence text is `licenses/jsmpeg.txt`. |
 | Rust crates (30 third-party) | 100% permissive, **zero copyleft** | Standard MIT/Apache notices. `moxcms` and `pxfm` are `BSD-3-Clause OR Apache-2.0` — elect Apache to avoid BSD-3's binary-reproduction clause. |
 | Rust std via `-Z build-std` | MIT OR Apache-2.0 | One notices entry. **Plus `compiler_builtins 0.1.160`, whose licence is a *conjunction*: `MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)`** — the LLVM-exception text must be reproduced. This is the most-missed entry in Rust NOTICES files. |
-| `include/SDL2/*` | Zlib (stock upstream 2.0.4, **not** an LG fork) + Mesa MIT + Khronos MIT/Apache | Notices. |
 | webosbrew NDK | n/a | A compiler doesn't licence its output. Just never add `-static` (that would pull LGPL §6(a) in for glibc). |
 
 ### 5.5 Trademarks — the part with real teeth

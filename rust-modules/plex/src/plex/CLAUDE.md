@@ -485,7 +485,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
-  (the nine player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
+  (the ten player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
@@ -500,7 +500,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   Callers read `session.prefs.<field>` or the hand-written getter, and change a value with
   `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the ten
   per-profile settings it is a fixture builder for the legacy fallback, never what a pick does).
-  **The nine player settings and hero trailer autoplay are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
+  **The ten player settings and hero trailer autoplay are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
   in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
   `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
   top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys

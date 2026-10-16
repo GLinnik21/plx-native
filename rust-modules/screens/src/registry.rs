@@ -1912,7 +1912,7 @@ where
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
-                entry, H::directory(cx), H::hubs(cx))),
+                entry, H::directory(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1968,14 +1968,13 @@ where
             // match is exhaustive over pages that can really mount and there is no unreachable
             // arm left to keep honest.
             AppArg::Settings(root) => {
-                Box::new(RouteSurface::new(entry, id, Family::Settings, *root, H::hubs(cx)))
+                Box::new(RouteSurface::new(entry, id, Family::Settings, *root))
             }
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
                 id,
                 Family::FirstRunConsent,
                 SettingsPage::ConsentStage(*stage),
-                H::hubs(cx),
             )),
         }
     }

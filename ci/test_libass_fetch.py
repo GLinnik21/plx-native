@@ -158,9 +158,11 @@ class Manifest(unittest.TestCase):
         freetype = deps['freetype']
         self.assertTrue(freetype['url'].startswith('https://download.savannah.gnu.org/'))
         self.assertEqual(build_libass.sources_of(freetype)[0], freetype['url'])
+        # Derived from the entry's own version: a bump must not break this test.
+        v = freetype['version']
         self.assertEqual(freetype['mirrors'], [
-            'https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz'])
-        self.assertEqual(freetype['sha256'], '36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f')
+            'https://downloads.sourceforge.net/project/freetype/freetype2/%s/freetype-%s.tar.xz' % (v, v)])
+        self.assertRegex(freetype['sha256'], r'^[0-9a-f]{64}$')
 
     def test_every_mirror_is_https_and_names_the_pinned_archive(self):
         for dep in build_libass.stack(json.loads((ROOT / 'ci/dependencies.json').read_text())):

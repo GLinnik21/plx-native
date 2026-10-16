@@ -217,6 +217,15 @@ struct Backdrop {
     tex: (u32, f32, f32),
     outgoing_tex: (u32, f32, f32),
     keyed: Option<(plx_plex::plex::ServerId, String)>,
+    /// The art `tex` was resolved from — `(server, path)` of the hero the page names now.
+    bound_art: Option<(u16, String)>,
+    /// The art that was showing when the billboard's hero was REPLACED rather than flipped to
+    /// (the hero left the pool: a finished film, a refetched catalog — `reconcile_carousel`).
+    /// It stays up as the `outgoing_*` layer, resolved by its path every frame (a draw probe, so
+    /// it keeps its texture), while the new art is fetched and dissolves in over it, and is let go
+    /// once that art is up. Without it the replacement re-keyed `art` over nothing: the bare wash,
+    /// then the new picture fading in — the owner's "hero reload" (2026-10-16).
+    held: Option<(u16, String)>,
     /// The hero art path the page names NOW when that art is wanted on screen and has no texture
     /// yet (`bind` sets it, `draw` counts it — `placeholder.rs`: a count belongs at the DRAW,
     /// never at the resolve, and `prefetch` resolves neighbours it never draws). Empty otherwise.
@@ -242,6 +251,8 @@ impl Backdrop {
             tex: (0, 0.0, 0.0),
             outgoing_tex: (0, 0.0, 0.0),
             keyed: None,
+            bound_art: None,
+            held: None,
             pending_art: String::new(),
             repeat_ms: None,
         }
@@ -294,9 +305,27 @@ impl Backdrop {
             h.map(|h| plx_ui::widgets::resolve_tex_wh_on(h.item.sid.raw(), &h.item.art, 1280, 720, 0))
                 .unwrap_or((0, 0.0, 0.0))
         };
+        let changed = match (self.keyed.as_ref(), selected) {
+            (Some((a, x)), Some((b, y))) => a != b || x != y,
+            (None, None) => false,
+            _ => true,
+        };
+        let art_of = |h: Option<HeroRef<'_>>| h.map(|h| (h.item.sid.raw(), h.item.art.clone()));
+        if changed {
+            // A replacement in place (no slide carries an outgoing hero) holds the picture that was
+            // showing beneath the new one; a flip, or a first selection, holds nothing.
+            let showing = self.bound_art.take().filter(|_| reveal(self.tex.0, &self.art) > 0.01);
+            self.held = showing.filter(|art| {
+                outgoing.is_none() && self.keyed.is_some() && Some(art) != art_of(hero).as_ref()
+            });
+        }
+        self.bound_art = art_of(hero);
         if snap < HERO_ART_CULL {
             self.tex = resolve(hero);
-            self.outgoing_tex = resolve(outgoing);
+            self.outgoing_tex = match (outgoing, self.held.as_ref()) {
+                (Some(_), _) | (None, None) => resolve(outgoing),
+                (None, Some((sid, art))) => plx_ui::widgets::resolve_tex_wh_on(*sid, art, 1280, 720, 0),
+            };
         } else {
             self.tex = (0, 0.0, 0.0);
             self.outgoing_tex = (0, 0.0, 0.0);
@@ -306,15 +335,12 @@ impl Backdrop {
             self.pending_art.push_str(&h.item.art);
         }
 
-        let changed = match (self.keyed.as_ref(), selected) {
-            (Some((a, x)), Some((b, y))) => a != b || x != y,
-            (None, None) => false,
-            _ => true,
-        };
         if changed {
             plx_gfx::gfx::control_ground_invalidate();
             self.outgoing_art.jump(self.art.pos);
-            self.art.jump(f32::from(self.tex.0 != 0));
+            // Over held art the new picture dissolves in, resident or not; over nothing it is up
+            // at once when it can be.
+            self.art.jump(f32::from(self.tex.0 != 0 && self.held.is_none()));
             if self.keyed.is_none() {
                 self.wash
                     .jump(wash_corners(hero.map(|h| h.item), self.grid_target, snap));
@@ -343,6 +369,14 @@ impl Backdrop {
                 self.outgoing_art.step(1.0, AmbientWash::K, dt);
             }
         });
+        // The held art is let go once the picture over it is up — or once it is no longer
+        // resident, when there is nothing left to hold.
+        if self.held.is_some()
+            && (reveal(self.tex.0, &self.art) > 0.999 || (snap < HERO_ART_CULL && self.outgoing_tex.0 == 0))
+        {
+            self.held = None;
+            self.outgoing_tex = (0, 0.0, 0.0);
+        }
         if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| !self.held(ms)) {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
@@ -366,9 +400,13 @@ impl Backdrop {
         // fading in) and the atmospheric ramp over both, as ONE pass per pixel
         // (`AmbientWash::draw_ground`). A hero FLIP slides two art layers, which one pass cannot
         // carry, so there the art and the ramp stay layers of their own.
-        let wash = !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
+        // Art held beneath a replaced hero (`held`) is the un-sliding outgoing layer: the new art
+        // dissolves in over it, so the two cannot ride the ground's single art layer.
+        let held = slide.is_none() && self.outgoing_tex.0 != 0;
+        let art_a = if held { incoming_a.max(outgoing_a) } else { incoming_a };
+        let wash = !wash_hidden(env.sp, art_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
-        let art_in_ground = wash && slide.is_none() && env.sp < HERO_ART_CULL;
+        let art_in_ground = wash && slide.is_none() && !held && env.sp < HERO_ART_CULL;
         let ramp = (env.hero_a > 0.01 && slide.is_none()).then(|| hero_ramp(env.hero_a));
         let ramp_in_ground = wash
             && self.wash.draw_ground(
@@ -382,6 +420,7 @@ impl Backdrop {
             && env.hero_a > 0.01
             && env.sp < 0.001
             && slide.is_none()
+            && !held
             && self.tex.0 != 0
             && incoming_a > 0.01
             && plx_ui::widgets::hero_ground_armed();
@@ -400,6 +439,9 @@ impl Backdrop {
                 backdrop_art(p, self.outgoing_tex, env.sp, out_x, outgoing_a);
                 backdrop_art(p, self.tex, env.sp, in_x, incoming_a);
             } else {
+                if held {
+                    backdrop_art(p, self.outgoing_tex, env.sp, 0.0, outgoing_a);
+                }
                 backdrop_art(p, self.tex, env.sp, 0.0, incoming_a);
             }
         }
@@ -424,6 +466,14 @@ impl Backdrop {
             plx_ui::widgets::hero_scrim(p, env.hero_a, false);
         }
     }
+}
+
+/// [`HomeScreen::carousel_anchor`]: the billboard hero's index in the pool and, for an episode, its
+/// show on its server.
+#[derive(Clone, PartialEq, Debug)]
+struct CarouselAnchor {
+    index: usize,
+    show: Option<(plx_plex::plex::ServerId, String)>,
 }
 
 /// A card named by borrowed parts, so a lookup in the key table clones nothing.
@@ -475,6 +525,10 @@ pub struct HomeScreen {
     /// The server offset of the window `cw_cards` was taken from: a rebind (`rebind_shows`) is a
     /// replacement inside one window, never a window that slid. Not canon.
     cw_offset: usize,
+    /// Where the billboard's hero stood in the pool the page last projected, and its show — what
+    /// [`HomeScreen::reconcile_carousel`] hands the billboard to when that hero leaves the pool.
+    /// A note about the previous projection (as `cw_cards` is). Not canon.
+    carousel_anchor: Option<CarouselAnchor>,
     /// Elements `rebind_shows` / `adopt_shows` handed on to the card that replaced their episode.
     /// The one reason a restored key may find its element already held (`restore`), spent there.
     /// Not canon.
@@ -556,6 +610,7 @@ impl HomeScreen {
             restore_reveal: false,
             hold_sent: None,
             carousel: None,
+            carousel_anchor: None,
             outgoing: None,
             hero_flip_cd: 0.0,
             hero_slide: Spring::at(1.0),
@@ -1052,18 +1107,55 @@ impl HomeScreen {
         })
     }
 
+    /// Keep the carousel on a hero the pool holds. When its hero has LEFT the pool (a finished
+    /// film off Continue Watching, a watched episode replaced by the next under another key — the
+    /// post-playback refetch), the billboard goes where the Continue Watching focus goes, by the
+    /// same owner rule (`next_episode_of`): the show's next episode, else the hero now at the SAME
+    /// index — the one after it, whose art the billboard already holds as its next neighbour
+    /// (`prefetch_order`). Restarting at hero 0 put another title, one the billboard
+    /// had no reason to hold, under the viewer the moment they came back (owner report 2026-10-16,
+    /// "an unpleasant home hero reload"). With no hero before it, the rotation starts at the first.
     fn reconcile_carousel(&mut self, view: HubsView<'_>) {
-        if self
-            .carousel
-            .as_ref()
-            .and_then(|id| Self::hero_by_identity(view, id))
-            .is_some()
-        {
+        let n = view.hero_count();
+        let at = |id: &(plx_plex::plex::ServerId, String)| {
+            (0..n).find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id)))
+        };
+        if let Some(index) = self.carousel.as_ref().and_then(at) {
+            self.anchor_carousel(view, index);
             return;
         }
+        let successor = self.carousel.as_ref().and(self.carousel_anchor.as_ref()).filter(|_| n > 0).map(|anchor| {
+            anchor
+                .show
+                .as_ref()
+                .and_then(|(sid, show)| {
+                    (0..n).find(|&i| view.hero(i).is_some_and(|h| h.item.sid == *sid && show_of(h.item) == Some(show)))
+                })
+                .unwrap_or(anchor.index.min(n - 1))
+        });
         self.outgoing = None;
         self.hero_slide.jump(1.0);
-        self.carousel = Self::first_hero(view).and_then(|h| Self::identity_of(h.item));
+        let index = successor.or((n > 0).then_some(0));
+        self.carousel = index
+            .and_then(|i| view.hero(i))
+            .or_else(|| Self::first_hero(view))
+            .and_then(|h| Self::identity_of(h.item));
+        match index.filter(|_| self.carousel.is_some()) {
+            Some(i) => self.anchor_carousel(view, i),
+            None => self.carousel_anchor = None,
+        }
+    }
+
+    fn anchor_carousel(&mut self, view: HubsView<'_>, index: usize) {
+        // Runs on every tick: compare borrowed before allocating.
+        let show = view.hero(index).and_then(|h| Some((h.item.sid, show_of(h.item)?)));
+        if self.carousel_anchor.as_ref().is_some_and(|a| {
+            a.index == index && a.show.as_ref().map(|(sid, show)| (*sid, show.as_str())) == show
+        }) {
+            return;
+        }
+        let show = show.map(|(sid, show)| (sid, show.to_owned()));
+        self.carousel_anchor = Some(CarouselAnchor { index, show });
     }
 
     fn selected_hero<'a>(&self, view: HubsView<'a>) -> Option<HeroRef<'a>> {
@@ -1333,6 +1425,13 @@ impl HomeScreen {
         let dt = t.dt();
         self.sync_catalog(cx);
         let view = H::hubs(cx);
+        // A flip or an addressed command moves the carousel between publications, and
+        // `sync_catalog` only reconciles on a new one: note where the hero stands every tick.
+        if let Some(index) = self.carousel.as_ref().and_then(|id| {
+            (0..view.hero_count()).find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id)))
+        }) {
+            self.anchor_carousel(view, index);
+        }
         let cta_available = hero_group_len(view) > 0;
         if cta_available
             && !self.cta_available
@@ -2143,7 +2242,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
