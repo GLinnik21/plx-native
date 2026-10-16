@@ -29,7 +29,14 @@ pub struct WatchRow {
     /// The row's server-side position in the default order, so Date Added ascending is the exact
     /// reverse of what the server sent.
     pub order: u32,
+    /// The Discover item's poster (`thumb`): an absolute URL the poster store hands to a reachable
+    /// server's `/photo/:/transcode?url=` proxy (plan §0, §3), or empty when the service sent none.
+    pub thumb: String,
 }
+
+/// A matched item's `UltraBlurColors` corners in `Painter::ambient`'s order, one byte per channel
+/// (the wire's hex colours are bytes, so nothing is lost and the match stays `Eq`).
+pub type Blur = [[u8; 3]; 4];
 
 /// One server's copy of a guid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +44,16 @@ pub struct ServerMatch {
     pub server_id: ServerId,
     /// This server's ratingKey for the title, parsed once.
     pub rating_key: i64,
+    /// The copy's UltraBlur colours when the guid lookup's row carried them (plan §1.6): the
+    /// ground the page keys while this title is focused.
+    pub blur: Option<Blur>,
+}
+
+impl ServerMatch {
+    /// A copy with no colours.
+    pub fn new(server_id: ServerId, rating_key: i64) -> Self {
+        Self { server_id, rating_key, blur: None }
+    }
 }
 
 /// What one server answered for one guid, so "absent" (answered, not held) stays apart from
@@ -147,11 +164,12 @@ mod tests {
             rating: None,
             released,
             order: 0,
+            thumb: String::new(),
         }
     }
 
     fn held(s: ServerId) -> (ServerId, Asked) {
-        (s, Asked::Held(ServerMatch { server_id: s, rating_key: 7 }))
+        (s, Asked::Held(ServerMatch::new(s, 7)))
     }
 
     fn table(r: &WatchRow, v: Vec<(ServerId, Asked)>) -> MatchTable {

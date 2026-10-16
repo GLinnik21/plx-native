@@ -18,12 +18,14 @@ pub enum GuidKind {
 }
 
 /// One guid this server holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GuidMatch {
     pub guid: String,
     /// This server's own ratingKey for it.
     pub rating_key: String,
     pub library_section_id: Option<i64>,
+    /// The row's `UltraBlurColors` corners (`UltraBlurColors::corners`) when the server sent them.
+    pub blur: Option<[[f32; 3]; 4]>,
 }
 
 /// Why `find_by_guids` could not answer.
@@ -119,6 +121,7 @@ impl Client {
                     && !found.iter().any(|m| m.guid == item.guid)
                 {
                     found.push(GuidMatch {
+                        blur: item.ultra_blur_colors.and_then(|c| c.corners()),
                         library_section_id: (item.library_section_id != 0).then_some(item.library_section_id),
                         guid: item.guid,
                         rating_key: item.rating_key,

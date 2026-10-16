@@ -30,5 +30,9 @@
   "watchlist.state.server_offline": "Servidor sin conexión",
   "watchlist.empty.list": "Tu lista de seguimiento está vacía",
   "watchlist.empty.filtered": "Nada coincide con estos filtros",
+  "watchlist.empty.no_token": "La lista de seguimiento no está disponible para este perfil",
+  "watchlist.empty.list_body": "Los títulos que añadas a tu lista de seguimiento desde cualquier dispositivo aparecen aquí.",
+  "watchlist.empty.filtered_body": "Cambia Ordenar y filtrar para ver el resto de tu lista de seguimiento.",
+  "watchlist.empty.unreachable": "No se puede acceder a tu lista de seguimiento",
   "watchlist.detail.trailer": "Tráiler"
 }

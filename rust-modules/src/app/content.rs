@@ -776,6 +776,7 @@ fn watchlist_requests(app: &mut App) {
                 }
             }
             WatchlistOut::Account => chip_activate(&mut app.pages),
+            WatchlistOut::Retry => app.bridge.watchlist_retry(),
             WatchlistOut::OpenOptions => {
                 let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
                 bridge::open_watchlist_menu(&mut app.pages, arg);

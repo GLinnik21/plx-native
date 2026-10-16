@@ -42,11 +42,12 @@ pub(crate) fn row(i: usize) -> WatchRow {
         rating: None,
         released: true,
         order: i as u32,
+        thumb: String::new(),
     }
 }
 
 pub(crate) fn copy(i: usize) -> ServerMatch {
-    ServerMatch { server_id: plx_plex::plex::ServerId::from_raw(0), rating_key: 100 + i as i64 }
+    ServerMatch::new(plx_plex::plex::ServerId::from_raw(0), 100 + i as i64)
 }
 
 /// An available, matched tile.

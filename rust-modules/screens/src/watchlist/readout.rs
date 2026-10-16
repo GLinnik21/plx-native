@@ -21,31 +21,43 @@ pub enum Readout {
     Filtered,
     /// Q2: a managed profile without a plex.tv token has no list to read.
     NoToken,
+    /// The first read of the list failed (plex.tv unreachable): the page-placed `Failed` read-out
+    /// with Try again. A list that has landed is never replaced by it.
+    Unreachable,
 }
 
 impl Readout {
     /// The verdict sentence.
-    /// TODO(integrator): `NoToken` has no catalog key yet ("Watchlist isn't available for this
-    /// profile"); with `watchlist.empty.no_token` added to the string tables this arm reads it.
     pub fn verdict(self) -> &'static str {
         match self {
             Readout::Empty => plx_platform::i18n::msg::watchlist_empty_list(),
             Readout::Filtered => plx_platform::i18n::msg::watchlist_empty_filtered(),
-            Readout::NoToken => "Watchlist isn't available for this profile",
+            Readout::NoToken => plx_platform::i18n::msg::watchlist_empty_no_token(),
+            Readout::Unreachable => plx_platform::i18n::msg::watchlist_empty_unreachable(),
         }
     }
 
     /// The line under the verdict (the boards' body copy), or none.
-    /// TODO(integrator): English until `watchlist.empty.list_body` / `watchlist.empty.filtered_body`
-    /// exist in the four string tables; the board texts are "Titles you add to your Watchlist on any
-    /// device show up here." and "Change Sort & Filter to see the rest of your Watchlist.".
     pub fn body(self) -> Option<&'static str> {
         match self {
-            Readout::Empty => Some("Titles you add to your Watchlist on any device show up here."),
-            Readout::Filtered => Some("Change Sort & Filter to see the rest of your Watchlist."),
-            Readout::NoToken => None,
+            Readout::Empty => Some(plx_platform::i18n::msg::watchlist_empty_list_body()),
+            Readout::Filtered => Some(plx_platform::i18n::msg::watchlist_empty_filtered_body()),
+            Readout::NoToken | Readout::Unreachable => None,
         }
     }
+
+    /// Whether the read-out offers Try again (a focusable action that reads the list again).
+    pub fn retries(self) -> bool {
+        self == Readout::Unreachable
+    }
+}
+
+/// The page-placed `Failed` read-out of [`Readout::Unreachable`]: the shared verdict at the 540
+/// anchor with its Try again action, built the way Home's and the Collection's are.
+pub fn unreachable_overlay<'a>() -> StatusOverlay<'a> {
+    StatusOverlay::new(Rect::FULL, plx_platform::i18n::msg::watchlist_empty_unreachable_c(), StatusKind::Failed)
+        .page(plx_ui::icons::Icon::ServerBadgeMinus)
+        .action(plx_platform::i18n::msg::browse_action_retry_c())
 }
 
 /// The verdict's and the reason's bands for a read-out drawn into `frame` (the page rect). The
@@ -62,6 +74,9 @@ pub fn bands(frame: Rect, measure: &dyn Measure) -> (Rect, Rect) {
 
 /// Draw `readout` into `frame` (the page rect).
 pub fn draw_readout(readout: Readout, p: Painter, frame: Rect) {
+    if readout.retries() {
+        return;
+    }
     let measure = LegacyMeasure;
     let (cap_sz, bold, ink) = StatusOverlay::verdict_face(StatusKind::Failed);
     let (reason_sz, reason_ink) = StatusOverlay::reason_face(StatusKind::Failed);

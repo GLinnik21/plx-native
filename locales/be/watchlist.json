@@ -30,5 +30,9 @@
   "watchlist.state.server_offline": "Сервер адключаны",
   "watchlist.empty.list": "Спіс для прагляду пусты",
   "watchlist.empty.filtered": "Нічога не адпавядае гэтым фільтрам",
+  "watchlist.empty.no_token": "Спіс для прагляду недаступны для гэтага профілю",
+  "watchlist.empty.list_body": "Назвы, якія вы дадаяце ў спіс для прагляду на любой прыладзе, з’явяцца тут.",
+  "watchlist.empty.filtered_body": "Змяніце «Сартаванне і фільтр», каб убачыць астатнюю частку спісу для прагляду.",
+  "watchlist.empty.unreachable": "Не ўдалося атрымаць доступ да спісу для прагляду",
   "watchlist.detail.trailer": "Трэйлер"
 }

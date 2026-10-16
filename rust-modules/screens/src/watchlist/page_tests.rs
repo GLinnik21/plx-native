@@ -60,15 +60,18 @@ fn the_verdicts_title_and_pill_fit_in_every_language() {
     let mut over = Vec::new();
     for language in LANGUAGES {
         let _guard = language_on_this_thread_for_test(language);
-        let mut lines: Vec<(&str, String, i32)> = vec![
-            ("title", msg::watchlist_page_title().into(), theme::size::DISPLAY),
-            ("pill", msg::watchlist_page_sort_filter_summary("Movies & Shows, Release Date"), theme::size::LABEL),
+        // The verdicts are measured in the face `draw_readout` paints them in (`verdict_face`: bold
+        // TITLE), not in a stand-in.
+        let (verdict_sz, verdict_bold, _) = plx_ui::widgets::StatusOverlay::verdict_face(plx_ui::widgets::StatusKind::Failed);
+        let mut lines: Vec<(&str, String, i32, bool)> = vec![
+            ("title", msg::watchlist_page_title().into(), theme::size::DISPLAY, false),
+            ("pill", msg::watchlist_page_sort_filter_summary("Movies & Shows, Release Date"), theme::size::LABEL, false),
         ];
-        for r in [Readout::Empty, Readout::Filtered, Readout::NoToken] {
-            lines.push(("verdict", r.verdict().into(), theme::size::HEADLINE));
+        for r in [Readout::Empty, Readout::Filtered, Readout::NoToken, Readout::Unreachable] {
+            lines.push(("verdict", r.verdict().into(), verdict_sz, verdict_bold));
         }
-        for (what, text, size) in lines {
-            let w = ShippedMeasure.width_str(&text, size, false);
+        for (what, text, size, bold) in lines {
+            let w = ShippedMeasure.width_str(&text, size, bold);
             if w > column {
                 over.push(format!("{} {what}: {w}px of {column}px: {text:?}", language.tag()));
             }
@@ -253,6 +256,107 @@ fn removing_the_focused_title_leaves_focus_on_a_neighbour() {
     let now = h.focused().expect("focus survives");
     assert_ne!(now, removed);
     assert!(h.screen.index_of(now).is_some());
+}
+
+/// **The pill's focus ring, hit target and menu anchor are the pill the header draws, and it ends
+/// on the grid's right edge** (not on the screen edge, not 150 px left of it).
+#[test]
+fn the_pill_is_one_rect_for_paint_focus_and_anchor() {
+    use super::header;
+    use plx_ui::screen::{At, Focusable};
+    let h = Harness::new(tiles(3));
+    let cx = h.cx();
+    let focus = Focusable::<super::cards_harness::WatchHost>::place(&h.screen, &PILL_ELEM, &cx, At::Drawn)
+        .expect("the pill is a focus stop")
+        .rect;
+    let style = plx_ui::cards::GRID_STYLE;
+    let grid_right = plx_ui::consts::MARGIN_X + 6.0 * style.w + 5.0 * style.gap;
+    let drawn = header::pill_rect(header::header_frame(grid_right), &plx_ui::fixture::FixtureMeasure, &h.screen.options().summary());
+    assert_eq!(focus, drawn, "the focus rect is the drawn pill");
+    assert_eq!(h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure), drawn, "so is the menu's anchor");
+    assert_eq!(focus.x + focus.w, grid_right, "right-aligned to the grid, not the screen");
+    assert!(focus.x + focus.w < plx_ui::consts::SCR_W);
+}
+
+/// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the
+/// page can paint it.
+#[test]
+fn a_removed_tile_is_a_ghost_the_page_can_paint() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(2);
+    assert!(h.screen.ghost_probe().0.is_empty());
+    h.landing(Landing::RemoveFocused).unwrap();
+    let (named, kept) = h.screen.ghost_probe();
+    assert!(!named.is_empty(), "the grid is fading a card out");
+    for key in &named {
+        assert!(kept.contains(key), "the page kept the card the grid names ({key})");
+    }
+    h.run(600);
+    let (named, kept) = h.screen.ghost_probe();
+    assert!(named.is_empty() && kept.is_empty(), "the ghosts are let go once nothing fades");
+}
+
+/// **Discover art needs a reachable server's photo proxy** (Q9): an unmatched title asks for its
+/// poster through one, and draws the skeleton when none is reachable.
+#[test]
+fn an_unmatched_title_gets_discover_art_only_through_a_reachable_server() {
+    let sid = plx_plex::plex::ServerId::from_raw(3);
+    let mut unmatched = tile_in(0, TileState::ComingSoon);
+    unmatched.row.thumb = "https://image.example/poster.jpg".into();
+    let mut s = WatchlistScreen::new(vec![unmatched], WatchlistOptionsState::default());
+    assert_eq!(s.art_of(0), Some((String::new(), 0)), "no server reachable: the skeleton");
+    s.input(WatchlistIn::ArtServer(Some(sid)));
+    assert_eq!(s.art_of(0), Some(("https://image.example/poster.jpg".to_string(), 3)));
+    s.input(WatchlistIn::ArtServer(None));
+    assert_eq!(s.art_of(0), Some((String::new(), 0)), "the server went: the skeleton again");
+}
+
+/// **A matched copy's UltraBlur colours key the ground** with no hand-fed facts.
+#[test]
+fn a_matched_copys_colours_key_the_ground() {
+    let blur = [[200, 20, 20], [20, 200, 20], [20, 20, 200], [128, 128, 128]];
+    let mut row = tile(0);
+    row.copy.as_mut().unwrap().blur = Some(blur);
+    let mut s = WatchlistScreen::new(vec![row, tile(1)], WatchlistOptionsState::default());
+    s.set_focus_index(0);
+    assert_ne!(s.ground_goal(), [theme::SURFACE_APP; 4]);
+    s.set_focus_index(1);
+    assert_eq!(s.ground_goal(), [theme::SURFACE_APP; 4]);
+}
+
+/// **A failed first read is a read-out with Try again**, not a blank page; Try again asks the
+/// application to read the list again.
+#[test]
+fn a_failed_first_read_offers_try_again() {
+    let mut h = Harness::new(vec![]);
+    h.screen.input(WatchlistIn::List(ListState::Failed));
+    assert_eq!(h.screen.readout(), Some(Readout::Unreachable));
+    assert!(Readout::Unreachable.retries());
+    let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::Activate(super::page::RETRY_ELEM));
+    assert_eq!(requests(fx), vec![WatchlistOut::Retry]);
+}
+
+/// **The count is the list's length while pages are still arriving**, and the shown titles under
+/// a narrowing filter.
+#[test]
+fn the_count_reads_the_whole_list_while_the_tail_loads() {
+    let mut s = screen(100);
+    s.input(WatchlistIn::List(ListState::Ready { total: 250 }));
+    assert_eq!(s.count(), Some(250), "100 loaded of 250");
+    s.input(WatchlistIn::Options(WatchlistOptionsState {
+        type_: super::options::TypeFilter::Movies,
+        ..Default::default()
+    }));
+    assert_eq!(s.count(), Some(100), "a narrowed list counts what is shown");
+}
+
+/// **`SHAPE` lists the fields in the order `write` emits them**, and the options in the canonical
+/// form the menu uses (the sort a number, never a `Debug` string).
+#[test]
+fn the_shape_follows_the_write_order() {
+    assert!(WatchlistScreen::SHAPE.starts_with("WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,"));
+    assert!(!WatchlistScreen::SHAPE.contains("sort:str"));
 }
 
 /// **The Tier 2 card conformance cases pass for the Watchlist grid** (the screen's harness is not

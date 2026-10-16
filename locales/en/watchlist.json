@@ -132,6 +132,22 @@
     "value": "Nothing matches these filters",
     "description": "Full-screen verdict on the Watchlist page when the sort and filter choices leave no title."
   },
+  "watchlist.empty.no_token": {
+    "value": "Watchlist isn’t available for this profile",
+    "description": "Full-screen verdict on the Watchlist page for a managed profile that has no plex.tv sign-in to read a list with."
+  },
+  "watchlist.empty.list_body": {
+    "value": "Titles you add to your Watchlist on any device show up here.",
+    "description": "Line under the empty-Watchlist verdict."
+  },
+  "watchlist.empty.filtered_body": {
+    "value": "Change Sort & Filter to see the rest of your Watchlist.",
+    "description": "Line under the verdict shown when the Watchlist's sort and filter choices leave no title."
+  },
+  "watchlist.empty.unreachable": {
+    "value": "Can’t reach your Watchlist",
+    "description": "Full-screen verdict on the Watchlist page when plex.tv could not be read and no list had loaded yet; it carries a Try again button."
+  },
   "watchlist.detail.trailer": {
     "value": "Trailer",
     "description": "Button on a catalogue title's page that plays its trailer. Shown only where a trailer exists."

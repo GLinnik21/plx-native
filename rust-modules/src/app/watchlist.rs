@@ -46,6 +46,8 @@ pub(crate) struct Feed {
     /// The store generation the rows were built from.
     generation: Option<u32>,
     list: Option<ListState>,
+    /// The art server as the page was last told (outer `None`: not told yet).
+    art_server: Option<Option<plx_plex::plex::ServerId>>,
     options: Option<WatchlistOptionsState>,
     window: Option<std::ops::Range<usize>>,
     /// Facts per guid as the page was last told, to send only what moved.
@@ -63,10 +65,14 @@ pub(crate) fn hex_of_guid(guid: &str) -> Option<[u8; 12]> {
 fn list_state(view: &plx_data::stores::watchlist::WatchlistView<'_>) -> ListState {
     match view.status() {
         Status::NoAccount => ListState::Unavailable,
-        Status::Ready => ListState::Ready { total: view.list_len() },
-        // A first read that has not landed, or failed: the page shows nothing and no read-out
-        // (there is no Failed face yet, so a failure reads as a list that never arrives).
-        Status::Idle | Status::Loading | Status::Failed(_) => ListState::Loading,
+        // The whole list, the pages still to arrive included, so the count beside the title does
+        // not climb as they land.
+        Status::Ready => ListState::Ready { total: view.list_len() + view.unloaded() },
+        // The first read failed and no list had landed (a populated list is never replaced by
+        // this): the page-placed read-out with Try again.
+        Status::Failed(_) => ListState::Failed,
+        // A first read that has not landed.
+        Status::Idle | Status::Loading => ListState::Loading,
     }
 }
 
@@ -126,6 +132,12 @@ impl Bridge {
         let generation = store.gen();
         let view = store.view();
         let mut changed = false;
+        let art_server = view.art_server();
+        if feed.art_server != Some(art_server) {
+            feed.art_server = Some(art_server);
+            screen.input(WatchlistIn::ArtServer(art_server));
+            changed = true;
+        }
         let options = WatchlistOptionsState::from_specs(view.sort(), view.filter());
         if feed.options != Some(options) {
             feed.options = Some(options);
@@ -174,6 +186,12 @@ impl Bridge {
     /// A bookmark press (or the hold menu's Remove) on the catalog id `hex`.
     pub(crate) fn watchlist_press(&mut self, hex: [u8; 12], intent: Intent) {
         self.stores.watchlist.run(WatchlistCmd::Press { hex, intent });
+        plx_machine::idle::invalidate();
+    }
+
+    /// Try again on the unreachable read-out: read the list again.
+    pub(crate) fn watchlist_retry(&mut self) {
+        self.stores.watchlist.run(WatchlistCmd::Reread);
         plx_machine::idle::invalidate();
     }
 

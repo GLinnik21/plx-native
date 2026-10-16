@@ -309,8 +309,11 @@ impl OptionsMenu {
         let safe = plx_ui::consts::SAFE;
         let w = self.table.menu_panel_width(measure);
         let x = (self.pill.x + self.pill.w - w).max(safe.x);
-        let y = self.pill.y + self.pill.h + theme::space::SM;
-        let h = self.table.measured_height().min(safe.y + safe.h - y);
+        let h = self.table.measured_height().min(safe.h);
+        // Hung under the pill; when the whole menu (ten rows, three headings) is taller than the
+        // room below it, it slides up over the pill rather than cutting its last rows off, the
+        // pill having dissolved into the panel by then (DS7).
+        let y = (self.pill.y + self.pill.h + theme::space::SM).min(safe.y + safe.h - h);
         Rect::new(x, y, w, h)
     }
 

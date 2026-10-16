@@ -21,7 +21,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_ui::cards::{
-    self as ui_cards, CardEvent, CardSource, GridSpec, Kind, SectionSpec, Stack, StackEvent, StackPage, Tile,
+    self as ui_cards, CardEvent, Grid, CardSource, GridSpec, Kind, SectionSpec, Stack, StackEvent, StackPage, Tile,
     TileLabel,
 };
 use plx_ui::consts::*;
@@ -32,12 +32,13 @@ use plx_ui::screen::{
 use plx_ui::theme;
 use plx_ui::tile::{Resume, TileFacts, TileKind};
 use plx_ui::widgets::{AmbientWash, Art, PageGround};
+use plx_plex::plex::ServerId;
 use plx_ui::{Painter, Rect};
 
 use super::caption;
-use super::header::{draw_header, HeaderFace};
+use super::header::{self, draw_header, HeaderFace};
 use super::options::{ShowFilter, TypeFilter, WatchlistOptionsState};
-use super::readout::{draw_readout, Readout};
+use super::readout::{draw_readout, unreachable_overlay, Readout};
 use super::tiles;
 use crate::registry::{AppFx, ContentArg, ContentLike, ContentReq, HomeTab};
 
@@ -77,6 +78,9 @@ pub enum ListState {
     Ready { total: usize },
     /// Q2: a managed profile without a plex.tv token has no list to read.
     Unavailable,
+    /// The first read failed (plex.tv unreachable) and no list had landed: the read-out with Try
+    /// again. A list that has landed is never replaced by this.
+    Failed,
 }
 
 /// What the page asks the app to do. The app owns routing (a screen names no sibling).
@@ -97,6 +101,8 @@ pub enum WatchlistOut {
     Tab(HomeTab),
     /// A press on the profile chip.
     Account,
+    /// Try again on the unreachable read-out: read the list again.
+    Retry,
     /// The Sort & Filter menu changed the value (sent by the menu surface, not the page).
     SetOptions(WatchlistOptionsState),
 }
@@ -114,6 +120,9 @@ pub enum WatchlistIn {
     List(ListState),
     /// What the matched PMS item lends the tile of `guid`.
     Facts(String, MatchedFacts),
+    /// The reachable server whose photo proxy fetches the art of titles no server holds (plan §0,
+    /// §3). `None`: no server is reachable, and those titles draw the skeleton (Q9).
+    ArtServer(Option<ServerId>),
 }
 
 // ── Geometry: `Watchlist.dc.html`, a 1920 x 1080 stage.
@@ -123,17 +132,10 @@ pub const GRID_TOP: f32 = 282.0;
 /// The content edge a scrolled row snaps to, and where the header is gone: the same 96 on every
 /// side as every other card page.
 const CONTENT_TOP: f32 = MARGIN_X;
-/// The Sort & Filter pill (`right:150px; top:169px; height:54px`, 26 px text, a 20 px chevron).
-const PILL_RIGHT: f32 = 150.0;
-const PILL_TOP: f32 = 169.0;
-const PILL_H: f32 = 54.0;
-const PILL_PAD_LEAD: f32 = 24.0;
-const PILL_PAD_TRAIL: f32 = 22.0;
-const PILL_GAP: f32 = 10.0;
-const PILL_CHEVRON: f32 = 20.0;
-
 /// The pill's focus element, below the card keys.
 pub const PILL_ELEM: u32 = 1;
+/// The unreachable read-out's Try again, below the card keys.
+pub const RETRY_ELEM: u32 = 2;
 /// The first card's element; cards count up from here, never reused within a page.
 const FIRST_CARD_ELEM: u32 = 0x1000;
 
@@ -158,15 +160,22 @@ fn head_alpha(scroll: f32) -> f32 {
     (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
 }
 
-/// The pill's rect in the page's document space.
-/// TODO(W45H): `header` owns the pill's paint; when it exports its rect this delegates to it.
-fn pill_rect(measure: &dyn plx_machine::machine::Measure, summary: &str) -> Rect {
-    let text = plx_platform::i18n::msg::watchlist_page_sort_filter_summary(summary);
-    let w = PILL_PAD_LEAD + measure.width_str(&text, theme::size::LABEL, false) + PILL_GAP + PILL_CHEVRON + PILL_PAD_TRAIL;
-    Rect::new(SCR_W - PILL_RIGHT - w, PILL_TOP, w, PILL_H)
+/// The grid's right edge: the pill's right edge is the grid's (plan §1.2), not a board literal.
+fn grid_right() -> f32 {
+    let spec = GridSpec::new(GRID_TOP, CONTENT_TOP);
+    spec.left + spec.cols as f32 * spec.style.w + (spec.cols - 1) as f32 * spec.style.gap
+}
+
+/// The header band `y` px from the document origin (the section's top, on screen or in the page):
+/// the ONE frame the title, the pill's paint, its focus ring, its hit target and the menu's morph
+/// anchor are all cut from.
+fn head_frame(y: f32) -> Rect {
+    let f = header::header_frame(grid_right());
+    Rect::new(f.x, f.y + y, f.w, f.h)
 }
 
 /// One title's derived drawing facts, rebuilt when the snapshot or the facts move.
+#[derive(Clone)]
 struct Cell {
     elem: u32,
     src: u16,
@@ -223,6 +232,11 @@ struct Page {
     cells: Vec<Cell>,
     /// Element to index in `tiles`. Derived, not logical state.
     index: HashMap<u32, usize>,
+    /// The reachable server whose photo proxy fetches art for titles no server holds.
+    art_server: Option<ServerId>,
+    /// The tiles a landing is fading out, by `elem_key` (DS4): kept from the removal until the
+    /// grid has nothing left to fade, since the snapshot no longer knows them. Not logical state.
+    ghosts: HashMap<u64, (WatchTile, Cell)>,
     /// Moves whenever anything the sections read moves (`StackPage::revision`).
     rev: u64,
 }
@@ -245,26 +259,44 @@ impl Page {
             let thumb = match (facts.map(|f| f.thumb.as_str()).filter(|s| !s.is_empty()), t.copy) {
                 (Some(path), _) => path.to_string(),
                 (None, Some(copy)) if playable => format!("/library/metadata/{}/thumb", copy.rating_key),
+                // No copy to ask: the Discover poster, fetched by a reachable server's photo proxy
+                // (`src` names that server). With none reachable the tile draws the skeleton (Q9).
+                (None, _) if self.art_server.is_some() => t.row.thumb.clone(),
                 _ => String::new(),
             };
+            let src = t.copy.map(|c| c.server_id).or(self.art_server.filter(|_| !thumb.is_empty())).map_or(0, |s| s.raw());
             // One corner mark per tile: an unplayable mark replaces the watched tick.
             let watched = facts.is_some_and(|f| f.watched) && !tiles::owns_corner(t.state);
             self.cells.push(Cell {
                 elem,
-                src: t.copy.map_or(0, |c| c.server_id.raw()),
+                src,
                 thumb,
                 watched,
                 resume: facts.and_then(|f| f.resume),
-                blur: facts.and_then(|f| f.blur),
+                blur: facts.and_then(|f| f.blur).or_else(|| t.copy.and_then(|c| c.blur).map(unquantize)),
             });
             self.index.insert(elem, i);
         }
         self.touch();
     }
 
+    /// Swap the snapshot for `rows`: a tile that leaves is kept, with what was derived for it, as
+    /// a ghost for the grid's landing to fade out (DS4); the survivors keep their keys.
+    fn replace_tiles(&mut self, rows: Vec<WatchTile>) {
+        let staying: std::collections::HashSet<&str> = rows.iter().map(|t| t.row.guid.as_str()).collect();
+        for (t, cell) in self.tiles.iter().zip(&self.cells) {
+            if !staying.contains(t.row.guid.as_str()) {
+                self.ghosts.insert(ui_cards::elem_key(&cell.elem), (t.clone(), cell.clone()));
+            }
+        }
+        self.tiles = rows;
+        self.rebuild();
+    }
+
     fn readout(&self) -> Option<Readout> {
         match self.list {
             ListState::Unavailable => Some(Readout::NoToken),
+            ListState::Failed => Some(Readout::Unreachable),
             ListState::Ready { total } if self.tiles.is_empty() => {
                 Some(if total == 0 { Readout::Empty } else { Readout::Filtered })
             }
@@ -272,9 +304,38 @@ impl Page {
         }
     }
 
-    /// Q7: the count beside the title: the titles shown, once the list has landed.
+    /// Q7: the count beside the title, once the list has landed: the titles shown, or, while the
+    /// options show everything, the list's whole length (the service's own, while later pages are
+    /// still arriving) so the count does not climb as they land.
     fn count(&self) -> Option<usize> {
-        matches!(self.list, ListState::Ready { .. }).then_some(self.tiles.len())
+        let ListState::Ready { total } = self.list else { return None };
+        let unfiltered = self.options.type_ == TypeFilter::All && self.options.show == ShowFilter::All;
+        Some(if unfiltered { total.max(self.tiles.len()) } else { self.tiles.len() })
+    }
+}
+
+/// A matched copy's colours as the painter takes them (the wire's bytes, back to 0..1).
+fn unquantize(b: plx_data::watchlist::model::Blur) -> [[f32; 3]; 4] {
+    b.map(|corner| corner.map(|v| f32::from(v) / 255.0))
+}
+
+/// What the tile showing `t` (derived as `c`) draws as its poster.
+fn tile_facts<'a>(t: &'a WatchTile, c: &'a Cell) -> TileFacts<'a> {
+    TileFacts {
+        owner: c.elem as usize,
+        src: c.src,
+        kind: match t.row.kind {
+            WatchKind::Movie => TileKind::Movie,
+            WatchKind::Show => TileKind::Show,
+        },
+        title: &t.row.title,
+        thumb: &c.thumb,
+        year: t.row.year.unwrap_or(0),
+        resume: c.resume.map(|frac| Resume { frac, left_ms: 0 }),
+        watched: c.watched,
+        unwatched: !c.watched && c.resume.is_none(),
+        blur: c.blur,
+        ..Default::default()
     }
 }
 
@@ -295,22 +356,7 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     }
     fn art(&self, i: usize) -> Art<'_> {
         let (t, c) = (&self.page.tiles[i], &self.page.cells[i]);
-        Art::Poster(Some(TileFacts {
-            owner: c.elem as usize,
-            src: c.src,
-            kind: match t.row.kind {
-                WatchKind::Movie => TileKind::Movie,
-                WatchKind::Show => TileKind::Show,
-            },
-            title: &t.row.title,
-            thumb: &c.thumb,
-            year: t.row.year.unwrap_or(0),
-            resume: c.resume.map(|frac| Resume { frac, left_ms: 0 }),
-            watched: c.watched,
-            unwatched: !c.watched && c.resume.is_none(),
-            blur: c.blur,
-            ..Default::default()
-        }))
+        Art::Poster(Some(tile_facts(t, c)))
     }
     fn label(&self, i: usize) -> TileLabel {
         let t = &self.page.tiles[i];
@@ -324,6 +370,42 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     }
 }
 
+/// The tiles a landing is fading out, in the order the grid names them (`Grid::ghost_keys`); one
+/// the page did not keep is `None` and is not drawn.
+struct GhostTitles<'a> {
+    tiles: Vec<Option<&'a (WatchTile, Cell)>>,
+}
+
+impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
+    fn len(&self) -> usize {
+        self.tiles.len()
+    }
+    /// The tile's own element; a ghost is never focused, pressed or registered, so nothing asks.
+    fn elem(&self, i: usize) -> u32 {
+        self.tiles.get(i).copied().flatten().map_or(0, |(_, c)| c.elem)
+    }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.tiles.iter().position(|t| t.is_some_and(|(_, c)| c.elem == *e))
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        Art::Poster(self.tiles.get(i).copied().flatten().map(|(t, c)| tile_facts(t, c)))
+    }
+    fn label(&self, _i: usize) -> TileLabel {
+        TileLabel::default()
+    }
+    fn progress(&self, i: usize) -> Option<f32> {
+        self.tiles.get(i).copied().flatten().and_then(|(_, c)| c.resume)
+    }
+    fn overlay(&self, p: Painter, i: usize, tile: &Tile, _measure: &dyn plx_machine::machine::Measure) {
+        if let Some((t, _)) = self.tiles.get(i).copied().flatten() {
+            tiles::paint(p, t.state, tile);
+        }
+    }
+    fn loaded(&self, i: usize) -> bool {
+        self.tiles.get(i).copied().flatten().is_some()
+    }
+}
+
 impl<H: ContentLike> StackPage<H> for Page {
     type Key = Sec;
     type Cards<'a> = Titles<'a>;
@@ -332,7 +414,7 @@ impl<H: ContentLike> StackPage<H> for Page {
         self.rev
     }
 
-    fn sections(&self, _cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
+    fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
         out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: true }, HEADER_GROUP).ranked(1));
         // DS4: a removal plays (survivors spring to their cells) instead of cutting.
         out.push(SectionSpec::new(
@@ -340,11 +422,18 @@ impl<H: ContentLike> StackPage<H> for Page {
             Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP).animate_landings(true) },
             GRID_GROUP,
         ));
-        out.push(SectionSpec::new(Sec::Status, Kind::Overlay { rect: Rect::FULL, focusable: false }, STATUS_GROUP).ranked(2));
+        // The unreachable read-out's Try again is the one focusable thing in the status section.
+        let retry = (self.list == ListState::Failed)
+            .then(|| unreachable_overlay().action_frame_measured(cx.measure))
+            .flatten();
+        out.push(
+            SectionSpec::new(Sec::Status, Kind::Overlay { rect: retry.unwrap_or(Rect::FULL), focusable: retry.is_some() }, STATUS_GROUP)
+                .ranked(2),
+        );
     }
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
-        out.extend([Sec::Items, Sec::Head]);
+        out.extend([Sec::Items, Sec::Status, Sec::Head]);
     }
 
     fn cards<'a>(&'a self, _cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
@@ -352,7 +441,11 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 
     fn elem_of(&self, k: Sec) -> Option<u32> {
-        (k == Sec::Head).then_some(PILL_ELEM)
+        match k {
+            Sec::Head => Some(PILL_ELEM),
+            Sec::Status => (self.list == ListState::Failed).then_some(RETRY_ELEM),
+            Sec::Items => None,
+        }
     }
 
     /// Every title has a hold menu (at least Remove), so the hold hint shows on every card.
@@ -362,12 +455,16 @@ impl<H: ContentLike> StackPage<H> for Page {
 
     fn focus_rect(&self, cx: &Cx<'_, H>, k: Sec, section: Rect) -> Rect {
         match k {
-            Sec::Head => {
-                let r = pill_rect(cx.measure, &self.options.summary());
-                Rect::new(r.x, r.y + section.y, r.w, r.h)
-            }
+            // The drawn pill's own rect: the header's, from the same frame `custom_draw` paints.
+            Sec::Head => header::pill_rect(head_frame(section.y), cx.measure, &self.options.summary()),
             Sec::Items | Sec::Status => section,
         }
+    }
+
+    /// DS4: the removed tile fades where it stood, under the survivors that spring over its cell.
+    fn paint_ghosts(&self, _k: Sec, grid: &Grid, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
+        let ghosts = GhostTitles { tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect() };
+        grid.paint_ghosts(f, p, &ghosts);
     }
 
     fn plain_group(&self, _cx: &Cx<'_, H>, _k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
@@ -383,16 +480,18 @@ impl<H: ContentLike> StackPage<H> for Page {
         }
     }
 
-    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, _r: Rect, scroll: f32) {
+    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, scroll: f32) {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
                 let p = p.alpha(head_alpha(scroll));
                 let summary = self.options.summary();
                 let on = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
+                // The header rides the page: its frame is the section's own top, scroll included.
                 draw_header(
                     p,
-                    Rect::new(0.0, -scroll, SCR_W, GRID_TOP),
+                    head_frame(r.y),
+                    f.measure,
                     &HeaderFace {
                         title: plx_platform::i18n::msg::watchlist_page_title(),
                         count: self.count(),
@@ -401,11 +500,14 @@ impl<H: ContentLike> StackPage<H> for Page {
                     },
                 );
             }
-            Sec::Status => {
-                if let Some(readout) = self.readout() {
-                    draw_readout(readout, p, Rect::FULL);
+            Sec::Status => match self.readout() {
+                Some(readout) if readout.retries() => {
+                    let on = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == RETRY_ELEM);
+                    unreachable_overlay().focused(on).draw_measured(&plx_ui::Env::inert(), p, f.measure);
                 }
-            }
+                Some(readout) => draw_readout(readout, p, Rect::FULL),
+                None => {}
+            },
             Sec::Items => {}
         }
     }
@@ -426,7 +528,7 @@ impl WatchlistScreen {
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 
-    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,list:{tag:u32,total:u64},options:{type:u32,sort:str,descending:bool,show:u32},next_elem:u32,tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]}}";
+    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,descending:bool,show:u32},tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]}}";
 
     /// A page over `rows` (a snapshot already ordered and filtered by `options`), landed. The
     /// entry is unset: mount with [`at_entry`](Self::at_entry).
@@ -442,6 +544,8 @@ impl WatchlistScreen {
             keys: Keys::new(),
             cells: Vec::new(),
             index: HashMap::new(),
+            art_server: None,
+            ghosts: HashMap::new(),
             rev: 0,
         };
         page.rebuild();
@@ -510,7 +614,7 @@ impl WatchlistScreen {
 
     /// The Sort & Filter pill's rect in the page's document space.
     pub fn pill_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        pill_rect(measure, &self.page.options.summary())
+        header::pill_rect(head_frame(0.0), measure, &self.page.options.summary())
     }
 
     /// Take an input. `Rows` and `Options` replace the state; `Removed` drops the tile, leaving
@@ -518,24 +622,19 @@ impl WatchlistScreen {
     /// the grid's landing to play the survivors into their cells (DS4).
     pub fn input(&mut self, ev: WatchlistIn) {
         match ev {
-            WatchlistIn::Rows(rows) => {
-                self.page.tiles = rows;
-                self.page.rebuild();
-            }
+            WatchlistIn::Rows(rows) => self.page.replace_tiles(rows),
             WatchlistIn::Options(options) => {
                 self.page.options = options;
                 self.page.touch();
             }
             WatchlistIn::Removed(guid) => {
-                let before = self.page.tiles.len();
-                self.page.tiles.retain(|t| t.row.guid != guid);
+                let rows: Vec<WatchTile> = self.page.tiles.iter().filter(|t| t.row.guid != guid).cloned().collect();
+                let gone = rows.len() < self.page.tiles.len();
                 self.page.facts.remove(&guid);
-                if let ListState::Ready { total } = &mut self.page.list {
-                    if self.page.tiles.len() < before {
-                        *total = total.saturating_sub(1);
-                    }
+                if let (ListState::Ready { total }, true) = (&mut self.page.list, gone) {
+                    *total = total.saturating_sub(1);
                 }
-                self.page.rebuild();
+                self.page.replace_tiles(rows);
             }
             WatchlistIn::List(list) => {
                 self.page.list = list;
@@ -544,6 +643,12 @@ impl WatchlistScreen {
             WatchlistIn::Facts(guid, facts) => {
                 self.page.facts.insert(guid, facts);
                 self.page.rebuild();
+            }
+            WatchlistIn::ArtServer(server) => {
+                if self.page.art_server != server {
+                    self.page.art_server = server;
+                    self.page.rebuild();
+                }
             }
         }
         self.focus = self.focus.min(self.page.tiles.len().saturating_sub(1));
@@ -595,6 +700,13 @@ impl WatchlistScreen {
             .and_then(|key| self.page.index.get(&key.elem).copied())
         {
             self.focus = i;
+        }
+        // The removed tiles are let go once the grid has nothing left to fade (the step ran the
+        // stack first, so a landing the last input started is already pending here).
+        if !self.page.ghosts.is_empty()
+            && !self.stack.grid(Sec::Items).is_some_and(|g| g.landing_pending() || g.has_ghosts())
+        {
+            self.page.ghosts.clear();
         }
         let target = self.ground_target();
         if self.ground_seeded {
@@ -663,6 +775,20 @@ impl WatchlistScreen {
         self.ground_target()
     }
 
+    /// Test support: the grid's ghost keys (`Grid::ghost_keys`) and the keys of the removed tiles
+    /// the page kept for them.
+    #[cfg(test)]
+    pub(crate) fn ghost_probe(&self) -> (Vec<u64>, Vec<u64>) {
+        let named = self.stack.grid(Sec::Items).map(|g| g.ghost_keys().collect()).unwrap_or_default();
+        (named, self.page.ghosts.keys().copied().collect())
+    }
+
+    /// Test support: the poster path and server the tile at `i` asks the poster store for
+    /// (empty path: the skeleton).
+    pub fn art_of(&self, i: usize) -> Option<(String, u16)> {
+        self.page.cells.get(i).map(|c| (c.thumb.clone(), c.src))
+    }
+
     /// Test support: set the mirrored focus index, as a tick would from the engine's focus.
     #[cfg(test)]
     pub(crate) fn set_focus_index(&mut self, i: usize) {
@@ -680,20 +806,9 @@ impl LogicalState for WatchlistScreen {
             ListState::Loading => c.u32(0).u64(0),
             ListState::Ready { total } => c.u32(1).u64(total as u64),
             ListState::Unavailable => c.u32(2).u64(0),
+            ListState::Failed => c.u32(3).u64(0),
         };
-        let o = &page.options;
-        c.u32(match o.type_ {
-            TypeFilter::All => 0,
-            TypeFilter::Movies => 1,
-            TypeFilter::Shows => 2,
-        })
-        .str(&format!("{:?}", o.sort))
-        .bool(o.descending)
-        .u32(match o.show {
-            ShowFilter::All => 0,
-            ShowFilter::Released => 1,
-            ShowFilter::OnYourServers => 2,
-        });
+        page.options.write_canon(c);
         c.seq(page.tiles.len());
         for (t, cell) in page.tiles.iter().zip(&page.cells) {
             c.str(&t.row.guid).u32(t.state as u32).u32(cell.elem);
@@ -706,6 +821,7 @@ impl LogicalState for WatchlistScreen {
             ListState::Loading => ("loading", 0),
             ListState::Ready { total } => ("ready", total),
             ListState::Unavailable => ("unavailable", 0),
+            ListState::Failed => ("failed", 0),
         };
         out.push_str(&format!(
             "watchlist tiles={} next={} focus={} list={list} total={total}",
@@ -735,6 +851,10 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
             }
             ScreenEvent::FocusMoved { .. } | ScreenEvent::StoreChanged(..) => {
                 fx.invalidate(Provenance::Input);
+                Handled::Yes
+            }
+            ScreenEvent::Activate(elem) if *elem == RETRY_ELEM => {
+                self.route(WatchlistOut::Retry, fx);
                 Handled::Yes
             }
             ScreenEvent::Activate(elem) if *elem == PILL_ELEM => {

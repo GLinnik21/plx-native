@@ -480,10 +480,12 @@ fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
 /// actions. The "go" row is Detail (`rk`, the matched copy on [`ItemMenuArg::sid`]) or the catalog
 /// page (`guid`); Remove is destructive, so the menu opens on the "go" row, never on it. W6's
 /// catalog-only rows (Add/Remove are the whole Catalog menu today) would join here.
-fn build_catalog(state: plx_data::watchlist::model::TileState, rk: &str, guid: &str) -> ItemForm {
+fn build_catalog(
+    state: plx_data::watchlist::model::TileState, kind: plx_data::watchlist::model::Kind, rk: &str, guid: &str,
+) -> ItemForm {
     use self::hold::HoldRowId;
     let mut sec = FormSection::new("");
-    for r in self::hold::rows_for(state) {
+    for r in self::hold::rows_for(state, kind) {
         let (id, action) = match r.id {
             HoldRowId::GoToDetail => (ItemRow::GoToItem, Action::GoToItem(rk.to_string())),
             HoldRowId::GoToCatalog => (ItemRow::GoToCatalog, Action::GoToCatalog(guid.to_string())),
@@ -604,7 +606,8 @@ impl ItemMenuScreen {
             ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
             ItemMenuKind::Catalog { state } => {
                 let guid = self.arg.catalog.as_ref().map_or("", |c| c.guid.as_str());
-                build_catalog(*state, &self.arg.rk, guid)
+                let kind = self.arg.catalog.as_ref().map_or(plx_data::watchlist::model::Kind::Movie, |c| c.kind);
+                build_catalog(*state, kind, &self.arg.rk, guid)
             }
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
@@ -2154,7 +2157,7 @@ mod tests {
             TileState::ServerOffline,
             TileState::Unknown,
         ] {
-            let menu = built(super::build_catalog(state, "42", "plex://movie/abc"));
+            let menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "42", "plex://movie/abc"));
             let go_detail = matches!(state, TileState::Available | TileState::ComingSoonMatched);
             assert_eq!(menu.ids(), vec![
                 if go_detail { ItemRow::GoToItem } else { ItemRow::GoToCatalog },
@@ -2170,6 +2173,18 @@ mod tests {
         }
     }
 
+    /// The go row of a show's hold menu reads "Go to Show" where a movie's reads "Go to Movie".
+    #[test]
+    fn the_catalog_menus_go_row_names_the_kind() {
+        use plx_data::watchlist::model::{Kind, TileState};
+        let _guard = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let label = |kind| {
+            let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc"));
+            menu.0.table.sections.iter().flat_map(|s| s.rows.iter()).next().map(|r| r.label.to_string())
+        };
+        assert_ne!(label(Kind::Show), label(Kind::Movie));
+    }
+
     /// The Remove row's label fits the widest panel in every shipped language.
     #[test]
     fn the_catalog_menu_fits_in_every_language() {
@@ -2180,7 +2195,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for state in [TileState::Available, TileState::ComingSoon] {
-                let mut menu = built(super::build_catalog(state, "1", "g"));
+                let mut menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "1", "g"));
                 menu.0.table.compact = true;
                 let name = format!("{} catalog {state:?}", language.tag());
                 let table = &menu.0.table;

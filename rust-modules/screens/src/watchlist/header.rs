@@ -11,7 +11,6 @@ use plx_ui::consts::MARGIN_X;
 use plx_ui::icons::Icon;
 use plx_ui::theme;
 use plx_ui::value_chip::ValueChip;
-use plx_ui::widgets::LegacyMeasure;
 use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 
@@ -51,18 +50,25 @@ fn pill_text(summary: &str) -> (&'static std::ffi::CStr, CString) {
 pub fn pill_rect(frame: Rect, measure: &dyn Measure, summary: &str) -> Rect {
     let (name, value) = pill_text(summary);
     let w = ValueChip::width(measure, name, &value, None);
-    Rect::new(frame.x + frame.w - w, HEADER_CY - PILL_H * 0.5, w, PILL_H)
+    Rect::new(frame.x + frame.w - w, frame_cy(frame) - PILL_H * 0.5, w, PILL_H)
+}
+
+/// The title's and the pill's shared centre line in `frame`: [`HEADER_CY`] when the frame is the
+/// document-space [`header_frame`], and the same line carried down or up by a scrolled page.
+fn frame_cy(frame: Rect) -> f32 {
+    frame.y + frame.h * 0.5
 }
 
 /// The title run (and the count after it): returns the title's painted width.
-pub fn draw_title(p: Painter, face: &HeaderFace<'_>) -> f32 {
+pub fn draw_title(p: Painter, frame: Rect, face: &HeaderFace<'_>) -> f32 {
+    let cy = frame_cy(frame);
     let sz = theme::size::DISPLAY;
-    let y = plx_gfx::text::text_vcenter_y(sz, 1, HEADER_CY);
+    let y = plx_gfx::text::text_vcenter_y(sz, 1, cy);
     let title = CString::new(face.title).unwrap_or_default();
     let w = p.text_tracked(title.as_ptr(), MARGIN_X, y, sz, theme::TEXT_PRIMARY, 0, 1, theme::TRACKING_TITLE_TIGHT);
     if let Some(n) = face.count {
         let sz = theme::size::HEADLINE;
-        let y = plx_gfx::text::baseline_y(sz, 0, theme::size::DISPLAY, 1, plx_gfx::text::text_vcenter_y(theme::size::DISPLAY, 1, HEADER_CY));
+        let y = plx_gfx::text::baseline_y(sz, 0, theme::size::DISPLAY, 1, plx_gfx::text::text_vcenter_y(theme::size::DISPLAY, 1, cy));
         let count = CString::new(n.to_string()).unwrap_or_default();
         p.text(count.as_ptr(), MARGIN_X + w + theme::space::MD, y, sz, theme::TEXT_TERTIARY, 0, 0);
     }
@@ -77,7 +83,7 @@ pub fn draw_pill(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
 }
 
 /// Draw the header into `frame` (the [`header_frame`]): the title and count, then the pill.
-pub fn draw_header(p: Painter, frame: Rect, face: &HeaderFace<'_>) {
-    draw_title(p, face);
-    draw_pill(p, pill_rect(frame, &LegacyMeasure, face.summary), face);
+pub fn draw_header(p: Painter, frame: Rect, measure: &dyn Measure, face: &HeaderFace<'_>) {
+    draw_title(p, frame, face);
+    draw_pill(p, pill_rect(frame, measure, face.summary), face);
 }

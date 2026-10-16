@@ -30,5 +30,9 @@
   "watchlist.state.server_offline": "Serveur hors ligne",
   "watchlist.empty.list": "Votre liste de suivi est vide",
   "watchlist.empty.filtered": "Aucun résultat pour ces filtres",
+  "watchlist.empty.no_token": "La liste de suivi n’est pas disponible pour ce profil",
+  "watchlist.empty.list_body": "Les titres que vous ajoutez à votre liste de suivi sur n’importe quel appareil apparaissent ici.",
+  "watchlist.empty.filtered_body": "Modifiez Trier et filtrer pour voir le reste de votre liste de suivi.",
+  "watchlist.empty.unreachable": "Impossible d’accéder à votre liste de suivi",
   "watchlist.detail.trailer": "Bande-annonce"
 }

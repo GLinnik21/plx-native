@@ -258,7 +258,13 @@ pub fn row_of(item: &WatchItem, order: u32) -> Option<WatchRow> {
         // Settled by the released set when it lands; until then a row counts as released.
         released: true,
         order,
+        thumb: item.thumb.clone().unwrap_or_default(),
     })
+}
+
+/// A lookup row's colours as bytes (the wire's hex colours are bytes, so this is exact).
+fn quantize_blur(c: [[f32; 3]; 4]) -> crate::watchlist::model::Blur {
+    c.map(|corner| corner.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
 }
 
 fn guid_kind(kind: Kind) -> GuidKind {
@@ -284,12 +290,17 @@ pub fn match_rows(io: &dyn WatchlistIo, rows: &[(String, Kind)]) -> Vec<Answer> 
             for chunk in guids.chunks(GUIDS_PER_REQUEST) {
                 let Ok(found) = io.find(sid, guid_kind(kind), chunk) else { continue };
                 for g in chunk {
-                    let held = found.iter().find(|m| &m.guid == g).and_then(|m| m.rating_key.parse::<i64>().ok());
-                    match (found.iter().any(|m| &m.guid == g), held) {
+                    let hit = found.iter().find(|m| &m.guid == g);
+                    let held = hit.and_then(|m| m.rating_key.parse::<i64>().ok());
+                    match (hit.is_some(), held) {
                         (true, Some(rating_key)) => out.push((
                             g.clone(),
                             sid,
-                            Asked::Held(ServerMatch { server_id: sid, rating_key }),
+                            Asked::Held(ServerMatch {
+                                server_id: sid,
+                                rating_key,
+                                blur: hit.and_then(|m| m.blur).map(quantize_blur),
+                            }),
                         )),
                         (true, None) => {} // a key we cannot use: neither held nor absent
                         (false, _) => out.push((g.clone(), sid, Asked::Absent)),

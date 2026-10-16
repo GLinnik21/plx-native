@@ -19,6 +19,7 @@ use plx_ui::screen::{
 };
 use plx_ui::Rect;
 
+use super::header::{self, HeaderFace};
 use super::options::{OptionsMenu, OptionsRow, WatchlistOptionsState};
 use super::page::WatchlistOut;
 use crate::registry::{AppFx, ContentLike, WatchlistMenuArg};
@@ -77,6 +78,15 @@ impl WatchlistMenuScreen {
         if self.menu.press(&mut self.options) {
             fx.push(Fx::App(AppFx::Watchlist(WatchlistOut::SetOptions(self.options))));
         }
+    }
+
+    /// The header pill again, above the scrim, through the popover's pill painter: its label
+    /// cross-dissolves with the panel's rows as the panel morphs out of it (DS7), and comes back
+    /// as the close morph runs.
+    fn draw_pill(&self, p: plx_ui::Painter) {
+        let summary = self.options.summary();
+        let face = HeaderFace { title: "", count: None, summary: &summary, pill_focused: false };
+        header::draw_pill(self.menu.pill_painter(p), anchor_rect(&self.arg), &face);
     }
 
     /// The settled panel, for the focus engine and the overscan audit.
@@ -195,6 +205,7 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         self.menu.draw(f.underlay, f.measure);
+        self.draw_pill(p);
         for row in 0..OptionsRow::ALL.len() {
             let Some(rect) = self.menu.row_frame(row, f.measure) else { continue };
             f.stop(

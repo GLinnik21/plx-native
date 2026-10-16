@@ -240,6 +240,10 @@ pub trait StackPage<H: Host> {
     fn draw_heading(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _lift: f32) {}
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
+    /// The cards grid section `k`'s landing is fading out, painted BEFORE the grid's own cards so
+    /// the ones that slid over their cells cover them. A page that keeps the cards it removed
+    /// paints them with [`Grid::paint_ghosts`] (named by [`Grid::ghost_keys`]); the default keeps none.
+    fn paint_ghosts(&self, _k: Self::Key, _grid: &Grid, _f: &mut DrawFrame<'_, '_, H>, _p: crate::Painter) {}
 }
 
 enum Body {
@@ -399,6 +403,15 @@ impl<K: Copy + Eq> Stack<K> {
     pub fn shelf(&self, k: K) -> Option<&Shelf> {
         match self.bodies.get(self.index(k)?) {
             Some(Body::Shelf(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Grid `k`'s state (`None` while the layout has no such grid): a page that keeps its removed
+    /// cards for the landing's ghosts reads [`Grid::landing_pending`] and [`Grid::ghost_keys`] here.
+    pub fn grid(&self, k: K) -> Option<&Grid> {
+        match self.bodies.get(self.index(k)?) {
+            Some(Body::Grid(g)) => Some(g),
             _ => None,
         }
     }
@@ -937,6 +950,9 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
                     sh.draw(f, p, &src, s.frame(page, f.cx, i));
                 }
                 (Kind::Grid { .. }, Body::Grid(g)) => {
+                    if g.has_ghosts() {
+                        page.paint_ghosts(k, g, f, p);
+                    }
                     if let Some(src) = page.cards(f.cx, k) {
                         g.draw(f, p, &src);
                     }

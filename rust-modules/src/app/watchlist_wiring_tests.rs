@@ -29,6 +29,9 @@ struct Script {
     items: Vec<WatchItem>,
     token: bool,
     fail_writes: AtomicBool,
+    fail_reads: AtomicBool,
+    reads: std::sync::atomic::AtomicU32,
+    server: Option<ServerId>,
     writes: Mutex<Vec<([u8; 12], Intent)>>,
 }
 
@@ -48,17 +51,20 @@ impl Script {
                 .collect(),
             token,
             fail_writes: AtomicBool::new(false),
+            fail_reads: AtomicBool::new(false),
+            reads: Default::default(),
+            server: None,
             writes: Mutex::new(Vec::new()),
         })
     }
 }
 
 impl Reach for Script {
-    fn reachable(&self, _: ServerId) -> bool {
-        false
+    fn reachable(&self, s: ServerId) -> bool {
+        self.server == Some(s)
     }
     fn roster(&self) -> Vec<ServerId> {
-        Vec::new()
+        self.server.into_iter().collect()
     }
 }
 
@@ -75,6 +81,10 @@ impl WatchlistIo for Script {
         auth.generation == 1
     }
     fn page(&self, _: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.fail_reads.load(Ordering::SeqCst) {
+            return Err(WatchlistError::Transport);
+        }
         let items: Vec<WatchItem> = self.items.iter().skip(start as usize).take(size as usize).cloned().collect();
         let raw = items.len() as u32;
         Ok(WatchPage { items, total: Some(self.items.len() as u32), start, raw })
@@ -257,4 +267,46 @@ fn a_hold_names_its_tile_by_guid_and_opens_the_catalog_menu() {
     assert!(arg.rk.is_empty() && !arg.sid.is_set(), "an unmatched title names no server item");
     // A title the page no longer shows opens nothing.
     assert!(rig.watchlist_hold_arg(&mut d, entry, None, &guid(9), TileState::ComingSoon, None).is_none());
+}
+
+/// A first read that fails is a read-out with Try again, not a blank page; Try again reads again.
+#[test]
+fn a_failed_first_read_reads_out_and_try_again_reads_the_list() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    script.fail_reads.store(true, Ordering::SeqCst);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(page(&d).list(), ListState::Failed);
+    assert_eq!(page(&d).readout(), Some(Readout::Unreachable));
+    assert!(guids(&d).is_empty());
+    let before = script.reads.load(Ordering::SeqCst);
+    script.fail_reads.store(false, Ordering::SeqCst);
+    rig.watchlist_retry();
+    settle(&mut d, &mut rig, 10);
+    assert!(script.reads.load(Ordering::SeqCst) > before, "Try again read the list again");
+    assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)]);
+    assert_eq!(page(&d).list(), ListState::Ready { total: 3 });
+}
+
+/// An unmatched title's poster goes through a reachable server's photo proxy (Q9); with none
+/// reachable it stays a skeleton.
+#[test]
+fn an_unmatched_title_gets_its_poster_through_a_reachable_server() {
+    let _serial = plx_base::testlock::serial();
+    let mut script = Script::new(&THREE, true);
+    Arc::get_mut(&mut script).unwrap().items[0].thumb = Some("https://image.example/one.jpg".into());
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(page(&d).art_of(0), Some((String::new(), 0)), "no server reachable: the skeleton");
+
+    let mut with_server = Script::new(&THREE, true);
+    {
+        let w = Arc::get_mut(&mut with_server).unwrap();
+        w.items[0].thumb = Some("https://image.example/one.jpg".into());
+        w.server = Some(ServerId::from_raw(1));
+    }
+    let (mut d, mut rig) = mounted(&with_server);
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(page(&d).art_of(0), Some(("https://image.example/one.jpg".to_string(), 1)));
 }

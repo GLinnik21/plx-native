@@ -1,7 +1,7 @@
 //! The grid's hold menu (plan §1.9): which rows a tile in each state offers, and what a press on
 //! one asks of the app. The rows are the Watchlist's own; `item_menu` presents them for
 //! `ItemMenuKind::Catalog` (this module is its child, so no screen names a sibling) and the app maps the results onto its actions.
-use plx_data::watchlist::model::TileState;
+use plx_data::watchlist::model::{Kind, TileState};
 use plx_ui::icons::Icon;
 
 /// A row's identity (hand-assigned, never a position, like `item_menu::ItemRow`).
@@ -44,17 +44,20 @@ impl HoldRowId {
     }
 }
 
-/// The rows for a tile in `state`: a "go" row (Detail when a reachable copy is matched, else the
-/// catalog page), then the destructive Remove row. Per the §1.9 table every state offers Remove.
-/// TODO(W45H): the catalog "go" label needs its own key (the integrator adds it to the tables);
-/// until then it reads the movie label.
-pub fn rows_for(state: TileState) -> Vec<ItemMenuRow> {
+/// The rows for a `kind` tile in `state`: a "go" row (Detail when a reachable copy is matched,
+/// else the catalog page; its label names the kind, "Go to Movie" or "Go to Show"), then the
+/// destructive Remove row. Per the §1.9 table every state offers Remove.
+/// The catalog "go" row is inert until W6 routes `ContentArg::Catalog` (`input.rs`
+/// `Action::GoToCatalog`); it is kept because the table lists it for the unmatched states.
+pub fn rows_for(state: TileState, kind: Kind) -> Vec<ItemMenuRow> {
+    let label = match kind {
+        Kind::Movie => plx_platform::i18n::msg::browse_menu_go_movie(),
+        Kind::Show => plx_platform::i18n::msg::browse_menu_go_show(),
+    };
     let go = match state {
-        TileState::Available | TileState::ComingSoonMatched => {
-            (HoldRowId::GoToDetail, plx_platform::i18n::msg::browse_menu_go_movie())
-        }
+        TileState::Available | TileState::ComingSoonMatched => (HoldRowId::GoToDetail, label),
         TileState::ComingSoon | TileState::NotOnAnyServer | TileState::ServerOffline | TileState::Unknown => {
-            (HoldRowId::GoToCatalog, plx_platform::i18n::msg::browse_menu_go_movie())
+            (HoldRowId::GoToCatalog, label)
         }
     };
     vec![

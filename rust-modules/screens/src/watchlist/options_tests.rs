@@ -130,9 +130,28 @@ fn the_panel_hangs_under_the_pill_right_aligned_inside_the_safe_frame() {
     let panel = m.panel_rect(&ShippedMeasure);
     let safe = plx_ui::consts::SAFE;
     assert!((panel.x + panel.w - (pill.x + pill.w)).abs() < 0.5, "right edges align");
-    assert_eq!(panel.y, pill.y + pill.h + theme::space::SM);
+    let hung = pill.y + pill.h + theme::space::SM;
+    assert_eq!(panel.y, hung.min(safe.y + safe.h - panel.h), "under the pill, or slid up to stay whole");
+    assert!(panel.y <= hung);
     assert!(panel.x >= safe.x && panel.y + panel.h <= safe.y + safe.h + 0.01);
     assert!(panel.w >= plx_ui::table::MENU_MIN_W && panel.w <= MENU_MAX_W);
+}
+
+/// **Every row of the ten-row menu lies inside the panel, in every language** (the panel used to
+/// run past the safe frame and clip its last rows).
+#[test]
+fn every_row_lies_inside_the_panel_in_every_language() {
+    let safe = plx_ui::consts::SAFE;
+    for lang in LANGUAGES {
+        let _g = language_on_this_thread_for_test(lang);
+        let (m, _, _) = open_menu();
+        let panel = m.panel_rect(&ShippedMeasure);
+        assert!(panel.y >= safe.y - 0.01 && panel.y + panel.h <= safe.y + safe.h + 0.01, "{}: panel in the safe frame", lang.tag());
+        for i in 0..OptionsRow::ALL.len() {
+            let r = m.row_frame(i, &ShippedMeasure).expect("row frame");
+            assert!(r.y >= panel.y - 0.01 && r.y + r.h <= panel.y + panel.h + 0.01, "{}: row {i} inside the panel", lang.tag());
+        }
+    }
 }
 
 #[test]
@@ -202,9 +221,10 @@ fn each_readout_has_its_own_verdict_and_only_the_list_ones_have_a_body() {
     let _g = language_on_this_thread_for_test(Preference::En);
     assert_eq!(Readout::Empty.verdict(), "Your watchlist is empty");
     assert_eq!(Readout::Filtered.verdict(), "Nothing matches these filters");
-    assert_eq!(Readout::NoToken.verdict(), "Watchlist isn't available for this profile");
+    assert_eq!(Readout::NoToken.verdict(), "Watchlist isn’t available for this profile");
+    assert_eq!(Readout::Unreachable.verdict(), "Can’t reach your Watchlist");
     assert!(Readout::Empty.body().is_some() && Readout::Filtered.body().is_some());
-    assert!(Readout::NoToken.body().is_none());
+    assert!(Readout::NoToken.body().is_none() && Readout::Unreachable.body().is_none());
     let log = plx_ui::draw_census::capture(|| readout::draw_readout(Readout::Empty, plx_ui::Painter::recording(), Rect::FULL));
     assert_eq!(log.iter().filter(|(tag, _)| *tag == 100).count(), 2, "a verdict and a reason");
 }
@@ -244,7 +264,7 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
             bad.push(format!("{tag} pill {:.0}px wide runs into the title (needs x >= {title_end:.0}, is {:.0})", pill.w, pill.x));
         }
         // Verdicts: one line inside the page margins; bodies in the reason's two-line slot.
-        for r in [Readout::Empty, Readout::Filtered, Readout::NoToken] {
+        for r in [Readout::Empty, Readout::Filtered, Readout::NoToken, Readout::Unreachable] {
             let c = CString::new(r.verdict()).unwrap();
             let w = plx_machine::machine::Measure::width(&ShippedMeasure, &c, theme::size::TITLE, true) / HEADROOM;
             if w > plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X {

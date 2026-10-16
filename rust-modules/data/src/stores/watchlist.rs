@@ -762,9 +762,27 @@ impl WatchlistView<'_> {
         self.store.state.members.len()
     }
 
+    /// The server whose photo proxy fetches Discover art for titles no server holds (plan §0, §3):
+    /// the reachable one `copy_rank` prefers, ties in roster order. `None` when no server is
+    /// reachable; those titles then draw the skeleton (Q9).
+    pub fn art_server(&self) -> Option<ServerId> {
+        let io = &*self.store.io;
+        io.roster().into_iter().filter(|s| io.reachable(*s)).min_by_key(|s| io.copy_rank(*s))
+    }
+
     /// The service's list length, once it said, for the skeleton cells past the loaded tail.
     pub fn total(&self) -> Option<u32> {
         self.store.state.total
+    }
+
+    /// Titles the service counted that no page has delivered yet (0 once a later page failed:
+    /// that tail is not coming), for the count beside the title and the skeleton tail.
+    pub fn unloaded(&self) -> usize {
+        let s = &self.store.state;
+        if s.truncated {
+            return 0;
+        }
+        s.total.map_or(0, |t| (t as usize).saturating_sub(s.rows.len()))
     }
 
     /// A later page failed: the rows are only the pages that arrived.
@@ -933,7 +951,7 @@ mod tests {
                 .iter()
                 .filter_map(|g| {
                     held.get(&(server, g.clone()))
-                        .map(|rk| GuidMatch { guid: g.clone(), rating_key: rk.clone(), library_section_id: None })
+                        .map(|rk| GuidMatch { guid: g.clone(), rating_key: rk.clone(), library_section_id: None, blur: None })
                 })
                 .collect())
         }

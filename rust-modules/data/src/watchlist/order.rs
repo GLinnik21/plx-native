@@ -164,6 +164,7 @@ mod tests {
             rating: None,
             released: true,
             order,
+            thumb: String::new(),
         }
     }
 
