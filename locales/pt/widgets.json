@@ -1,6 +1,8 @@
 {
   "widgets.menu.options": "Opções",
   "widgets.menu.quality": "Qualidade",
+  "widgets.menu.quality_converted": "Convertido",
+  "widgets.menu.quality_converted_note": "O seu servidor Plex está a converter este vídeo.",
   "widgets.menu.stats": "Estatísticas avançadas",
   "widgets.menu.diagnostics": "Enviar diagnósticos",
   "widgets.badge.forced": "FORÇADAS",
@@ -150,6 +152,9 @@
   "widgets.tracks.enh_reason_dv_unusable": "Não disponível para este vídeo Dolby Vision.",
   "widgets.tracks.enh_reason_dv_subtitle": "Não pode ser usado com legendas neste vídeo Dolby Vision. Desative as legendas para o usar.",
   "widgets.tracks.enh_reason_quality": "Disponível apenas na qualidade Original.",
+  "widgets.tracks.enh_reason_converting": "Não disponível enquanto o seu servidor Plex converte este vídeo.",
+  "widgets.tracks.enh_reason_forced": "Não disponível com a Reprodução direta em Forçar. Defina-a como Automático nas Definições para o usar.",
+  "widgets.tracks.enh_reason_not_copyable": "O seu servidor Plex não consegue adicionar isto a este vídeo neste momento.",
   "widgets.tracks.enh_reason_refused": "O seu servidor Plex não conseguiu ativar isto para este vídeo.",
   "widgets.tracks.sub_burn_audio": "Desenhadas pelo seu servidor enquanto converte o áudio.",
   "widgets.tracks.sub_burn_quality": "Desenhadas pelo seu servidor nesta qualidade.",
