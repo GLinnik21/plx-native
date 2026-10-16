@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T15:18:28Z",
+ "generated": "2026-10-16T15:28:46Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.2,
-   "change7_pct": 30.3,
+   "change30_pct": -48.1,
+   "change7_pct": 30.5,
    "d30": 920,
-   "delta30": -443.0,
-   "delta7": 111.0,
+   "delta30": -442.5,
+   "delta7": 111.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 276,
    "n_prev": 212,
-   "now": 477.0,
+   "now": 477.5,
    "prev7": 366.0,
    "shown": true,
    "state": "worse",
@@ -246,17 +246,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.9,
+   "change7_pct": 10.8,
    "d30": null,
    "delta30": null,
-   "delta7": 98.5,
+   "delta7": 98.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 18,
+   "n_now": 19,
    "n_prev": 48,
-   "now": 1004.5,
+   "now": 1004,
    "prev7": 906.0,
    "shown": true,
    "state": "flat",
@@ -479,17 +479,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 0.0,
+   "change7_pct": 2.7,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 18,
+   "n_now": 19,
    "n_prev": 48,
-   "now": 18.5,
+   "now": 19,
    "prev7": 18.5,
    "shown": false,
    "state": "flat",
@@ -529,9 +529,9 @@
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 18,
+   "n_now": 19,
    "n_prev": 48,
-   "now": 15.0,
+   "now": 15,
    "prev7": 14.0,
    "shown": false,
    "state": "flat",
@@ -789,7 +789,7 @@
    "to": 405
   },
   {
-   "change_pct": 30.3,
+   "change_pct": 30.5,
    "commits": [
     {
      "pr": 808,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-16",
    "threshold_pct": 25.0,
-   "to": 477.0
+   "to": 477.5
   },
   {
    "change_pct": 21.0,
@@ -917,7 +917,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1004.5
+   "now": 1004
   },
   {
    "group": "ci",
