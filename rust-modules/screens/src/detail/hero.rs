@@ -41,6 +41,9 @@ pub const ELEM_ALT: u32 = 2;
 pub const ELEM_MARK_WATCHED: u32 = 3;
 pub const ELEM_MARK_UNWATCHED: u32 = 4;
 pub const ELEM_TRAILER: u32 = 5;
+/// The bookmark disc — the Watchlist toggle. ONE identity for both faces (outline / filled): the
+/// face is membership, not a different control, so focus rides straight through a flip.
+pub const ELEM_WATCHLIST: u32 = 6;
 
 /// The hero's one focus group. Local to this screen — nothing outside `screens::detail` ever names
 /// it — so, like `screens::profiles`'s `ROSTER_GROUP`/`FOOTER_GROUP`, any small integer would do;
@@ -88,6 +91,8 @@ pub enum HeroCtl {
     MarkWatched,
     /// the − face of that same toggle — worn once the item IS watched
     MarkUnwatched,
+    /// the bookmark disc — always present, always SECOND (right after Play/Resume), never labelled
+    Watchlist,
 }
 
 impl HeroCtl {
@@ -100,10 +105,11 @@ impl HeroCtl {
             HeroCtl::Alt => ELEM_ALT,
             HeroCtl::MarkWatched => ELEM_MARK_WATCHED,
             HeroCtl::MarkUnwatched => ELEM_MARK_UNWATCHED,
+            HeroCtl::Watchlist => ELEM_WATCHLIST,
         }
     }
-    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the six identities
-    /// above, which is every elem a NON-hero group can mint (the completed sections use
+    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the seven identities
+    /// above (seven with the bookmark), which is every elem a NON-hero group can mint (the completed sections use
     /// their own disjoint range, per the module doc).
     pub fn of_elem(e: u32) -> Option<Self> {
         match e {
@@ -113,6 +119,7 @@ impl HeroCtl {
             ELEM_ALT => Some(HeroCtl::Alt),
             ELEM_MARK_WATCHED => Some(HeroCtl::MarkWatched),
             ELEM_MARK_UNWATCHED => Some(HeroCtl::MarkUnwatched),
+            ELEM_WATCHLIST => Some(HeroCtl::Watchlist),
             _ => None,
         }
     }
@@ -133,12 +140,17 @@ pub struct HeroSet {
     pub mark: PosterMark,
 }
 
-/// The row's controls, in drawn order, for a given set. A fixed 5-slot array (Play + Restart +
-/// Trailer + Alt + one watch face is the widest the row ever gets) plus a live count, so no
-/// per-frame allocation.
-pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; 5], usize) {
-    let mut v = [HeroCtl::Play; 5];
-    let mut n = 1;
+/// How many controls the row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
+/// watch face.
+pub const MAX_CTLS: usize = 6;
+
+/// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
+/// live count, so no per-frame allocation. The bookmark disc is always SECOND, after Play/Resume;
+/// whether it wears the outline or the filled face is membership ([`face`]), not presence.
+pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
+    let mut v = [HeroCtl::Play; MAX_CTLS];
+    v[1] = HeroCtl::Watchlist;
+    let mut n = 2;
     if set.restart {
         v[n] = HeroCtl::Restart;
         n += 1;
@@ -189,12 +201,12 @@ pub fn focusable(ctl: HeroCtl, full_trailer: bool) -> bool {
 /// presentation mode. Every call site that enumerates the row for focus/hit-testing extent must go
 /// through this rather than `hero_ctls` directly, or the two can disagree about which controls
 /// exist right now.
-pub fn visible_ctls(set: HeroSet, full_trailer: bool) -> ([HeroCtl; 5], usize) {
+pub fn visible_ctls(set: HeroSet, full_trailer: bool) -> ([HeroCtl; MAX_CTLS], usize) {
     let (all, n) = hero_ctls(set);
     if !full_trailer {
         return (all, n);
     }
-    let mut v = [HeroCtl::Play; 5];
+    let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut count = 0;
     for &c in &all[..n] {
         if focusable(c, full_trailer) {
@@ -288,7 +300,8 @@ pub fn watch_names_show(d: &Detail) -> bool {
     hero_episode(d).is_some()
 }
 
-/// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS.
+/// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS
+/// and for the bookmark disc, which has no label.
 pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
         (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
@@ -300,6 +313,94 @@ pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)
         _ => None,
     }
 }
+
+// ---- the bookmark disc (docs/watchlist-plan.md §1.8) ---------------------------------------------
+
+use plx_data::catalog::Membership;
+
+/// The two faces the bookmark disc wears. Membership picks one; an UNKNOWN membership (the list has
+/// not landed, or plex.tv is unreachable) wears the outline, the Add face — the PUT is idempotent,
+/// so a press on it is still allowed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Face {
+    Outline,
+    Filled,
+}
+
+/// The face for `m`.
+pub fn face(m: Membership) -> Face {
+    if m == Membership::On { Face::Filled } else { Face::Outline }
+}
+
+/// The glyph a face draws. The pair share one silhouette (`icons.rs`), so a flip never moves an edge.
+pub fn face_icon(f: Face) -> plx_ui::icons::Icon {
+    match f {
+        Face::Outline => plx_ui::icons::Icon::Bookmark,
+        Face::Filled => plx_ui::icons::Icon::BookmarkFill,
+    }
+}
+
+/// How far the ribbon drops at the middle of a flip, px (the board's 3 px). `theme` has no token for
+/// a glyph nudge this small — the nearest, `space::XS`, is eight — so the board's value is named here.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub const RIBBON_DROP: f32 = 3.0;
+
+/// One instant of the flip between the faces, from the face's progress `p` (0 = outline at rest,
+/// 1 = filled at rest — the spring the screen steps toward the target face).
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct FlipFrame {
+    /// How much of the filled glyph is revealed, measured up from the glyph's bottom edge (0..1).
+    pub fill: f32,
+    /// The ribbon's downward offset, px: 0 at both rests, [`RIBBON_DROP`] at the middle.
+    pub ribbon_dy: f32,
+}
+
+/// The flip's frame at progress `p` (clamped to 0..1). Both rests are exact (`fill` 0 / 1, no
+/// offset), so a settled disc is the plain outline or filled icon with nothing left of the animation.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub fn flip_frame(p: f32) -> FlipFrame {
+    let p = p.clamp(0.0, 1.0);
+    FlipFrame { fill: p, ribbon_dy: RIBBON_DROP * 4.0 * p * (1.0 - p) }
+}
+
+/// The part of the glyph's box `frame` reveals the filled face in: bottom-anchored, `fill` of the
+/// height. The outline draws under it over the whole box.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub fn fill_clip(glyph: Rect, frame: FlipFrame) -> Rect {
+    let h = glyph.h * frame.fill;
+    Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h)
+}
+
+/// The glyph's box moved down by the ribbon drop.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub fn dropped(glyph: Rect, frame: FlipFrame) -> Rect {
+    Rect::new(glyph.x, glyph.y + frame.ribbon_dy, glyph.w, glyph.h)
+}
+
+/// The 12 hex bytes of a PMS item's `plex://movie|show/<hex>` guid, `None` for any other shape.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {
+    plx_data::watchlist::decode_hex(guid.rsplit('/').next()?)
+}
+
+/// What a press on the disc asks for: Add when the title is not (known to be) on the list, Remove
+/// when it is. `None` when the item carries no guid in the form the service takes — the disc then
+/// stays drawn but the press does nothing. The Remove arm is keyed by the guid string, like the
+/// menu's own.
+#[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
+pub fn press(guid: &str, m: Membership) -> Option<crate::item_menu::Action> {
+    use crate::item_menu::Action;
+    let hex = guid_hex(guid)?;
+    Some(match m {
+        Membership::On => Action::WatchlistRemove(guid.to_string()),
+        Membership::Off | Membership::Unknown => Action::WatchlistAdd { hex },
+    })
+}
+
+#[cfg(test)]
+#[path = "hero_watchlist_tests.rs"]
+mod watchlist_tests;
 
 /// The Trailer disc's play fields — extra identity and HUD title, always from start.
 /// `None` when the loaded item has no playable trailer (no button, no-op activate).
@@ -336,12 +437,14 @@ pub fn alt_pill_w(measure: &dyn Measure) -> f32 {
 /// measured widths. Ported verbatim from `ui/detail.rs::hero_btn_rect_at`.
 pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect {
     let (v, n) = hero_ctls(set);
-    let mut widths = [0.0f32; 5];
+    let mut widths = [0.0f32; MAX_CTLS];
     for (slot, c) in widths.iter_mut().zip(&v[..n]) {
         *slot = match c {
             HeroCtl::Play => cw.pill,
             HeroCtl::Alt => cw.alt,
             HeroCtl::Restart => cw.disc[0],
+            // never labelled, so never unfurls: a circle at every instant
+            HeroCtl::Watchlist => CD,
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
         };
@@ -924,7 +1027,7 @@ mod tests {
         assert!(has_restart(1), "any positive resume position offers one");
         let with = set(true, false, PosterMark::None);
         let without = set(false, false, PosterMark::None);
-        assert_eq!(index_of(with, HeroCtl::Restart), Some(1));
+        assert_eq!(index_of(with, HeroCtl::Restart), Some(2), "after Play and the bookmark disc");
         assert_eq!(
             index_of(without, HeroCtl::Restart),
             None,
@@ -985,6 +1088,7 @@ mod tests {
                                     HeroCtl::Alt => cw.alt,
                                     HeroCtl::Restart => cw.disc[0],
                                     HeroCtl::Trailer => cw.disc[1],
+                                    HeroCtl::Watchlist => CD,
                                     HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
                                 };
                                 if k >= i {
@@ -1008,9 +1112,11 @@ mod tests {
         // in CGAP / MARGIN_X / CD shows here, not only against the copy above.
         let s = set_full(false, false, PosterMark::None, true);
         let play = hero_btn_rect_at(s, 0, 0.0, cw);
-        let trailer = hero_btn_rect_at(s, 1, 0.0, cw);
+        let mark = hero_btn_rect_at(s, 1, 0.0, cw);
+        let trailer = hero_btn_rect_at(s, 2, 0.0, cw);
         assert_eq!((play.x, play.w), (plx_ui::consts::MARGIN_X, 211.0));
-        assert_eq!((trailer.x, trailer.w), (plx_ui::consts::MARGIN_X + 211.0 + CGAP, 61.0));
+        assert_eq!((mark.x, mark.w), (plx_ui::consts::MARGIN_X + 211.0 + CGAP, CD), "the bookmark disc is a plain circle");
+        assert_eq!((trailer.x, trailer.w), (mark.x + CD + CGAP, 61.0));
     }
 
     /// `ctl_at`/`index_of` are exact inverses over every index the set actually has.
@@ -1226,7 +1332,7 @@ mod tests {
         let (controls, n) = hero_ctls(set);
         assert_eq!(
             &controls[..n],
-            &[HeroCtl::Play, HeroCtl::Restart, HeroCtl::MarkUnwatched]
+            &[HeroCtl::Play, HeroCtl::Watchlist, HeroCtl::Restart, HeroCtl::MarkUnwatched]
         );
     }
 
@@ -1265,6 +1371,7 @@ mod tests {
                         | HeroCtl::Alt
                         | HeroCtl::MarkWatched
                         | HeroCtl::MarkUnwatched
+                        | HeroCtl::Watchlist
                 )));
             }
         }
@@ -1388,9 +1495,11 @@ mod tests {
             alt: true,
             mark: PosterMark::None,
         };
-        assert_eq!(ctl_at(compact, 1), Some(HeroCtl::MarkWatched));
-        assert_eq!(ctl_at(wide, 1), Some(HeroCtl::Restart));
-        assert_eq!(ctl_at(wide, 2), Some(HeroCtl::Alt));
+        assert_eq!(ctl_at(compact, 1), Some(HeroCtl::Watchlist));
+        assert_eq!(ctl_at(compact, 2), Some(HeroCtl::MarkWatched));
+        assert_eq!(ctl_at(wide, 1), Some(HeroCtl::Watchlist));
+        assert_eq!(ctl_at(wide, 2), Some(HeroCtl::Restart));
+        assert_eq!(ctl_at(wide, 3), Some(HeroCtl::Alt));
     }
 
     #[test]
@@ -1580,13 +1689,14 @@ mod tests {
     }
 
     #[test]
-    fn trailer_false_matches_today_s_four_control_sets() {
+    fn trailer_false_matches_today_s_control_sets_plus_the_bookmark() {
         let set = set(true, true, PosterMark::None);
         let (controls, n) = hero_ctls(set);
         assert_eq!(
             &controls[..n],
             &[
                 HeroCtl::Play,
+                HeroCtl::Watchlist,
                 HeroCtl::Restart,
                 HeroCtl::Alt,
                 HeroCtl::MarkWatched
@@ -1602,6 +1712,7 @@ mod tests {
             &controls[..n],
             &[
                 HeroCtl::Play,
+                HeroCtl::Watchlist,
                 HeroCtl::Restart,
                 HeroCtl::Trailer,
                 HeroCtl::Alt,
@@ -1617,7 +1728,7 @@ mod tests {
         assert_eq!(index_of(before, HeroCtl::Play), Some(0));
         assert_eq!(index_of(after, HeroCtl::Play), Some(0));
         assert_eq!(index_of(before, HeroCtl::Trailer), None);
-        assert_eq!(index_of(after, HeroCtl::Trailer), Some(1));
+        assert_eq!(index_of(after, HeroCtl::Trailer), Some(2));
         let watch = index_of(after, HeroCtl::MarkWatched).unwrap();
         assert_eq!(watch, index_of(before, HeroCtl::MarkWatched).unwrap() + 1);
         assert_eq!(ctl_at(after, watch).unwrap().elem(), ELEM_MARK_WATCHED);
@@ -1627,7 +1738,7 @@ mod tests {
     fn losing_the_trailer_disc_drops_its_identity() {
         let with = set_full(true, false, PosterMark::None, true);
         let without = set(true, false, PosterMark::None);
-        assert_eq!(index_of(with, HeroCtl::Trailer), Some(2));
+        assert_eq!(index_of(with, HeroCtl::Trailer), Some(3));
         assert_eq!(index_of(without, HeroCtl::Trailer), None);
     }
 
