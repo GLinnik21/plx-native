@@ -189,10 +189,16 @@ impl Bridge {
         plx_machine::idle::invalidate();
     }
 
-    /// Try again on the unreachable read-out: read the list again.
-    pub(crate) fn watchlist_retry(&mut self) {
+    /// Read the list again (and with it the matches): Try again on the unreachable read-out, and
+    /// a resume or a long cover of a live Watchlist page (`reread.rs`).
+    pub(crate) fn watchlist_reread(&mut self) {
         self.stores.watchlist.run(WatchlistCmd::Reread);
         plx_machine::idle::invalidate();
+    }
+
+    /// Try again on the unreachable read-out.
+    pub(crate) fn watchlist_retry(&mut self) {
+        self.watchlist_reread();
     }
 
     /// The hold menu's Remove: flip at once and let the page play the removal landing.
@@ -241,10 +247,17 @@ impl Bridge {
         let catalog = plx_screens::registry::CatalogRef {
             guid: guid.to_owned(), kind: tile.row.kind, title: tile.row.title.clone(),
         };
+        // Plan §1.9: a playable title (and a coming-soon one with a reachable copy, Q6) is a
+        // card of that copy plus Remove; any other title gets the catalog rows.
+        let playable = matches!(state, plx_data::watchlist::model::TileState::Available | plx_data::watchlist::model::TileState::ComingSoonMatched);
+        let kind = match copy.filter(|_| playable) {
+            Some(c) => ItemMenuKind::Card { row: Box::new(self.matched_card(&tile.row, c)), from_deck: false },
+            None => ItemMenuKind::Catalog { state },
+        };
         Some(plx_screens::registry::ItemMenuArg {
             sid: copy.map_or(plx_plex::plex::ServerId::UNSET, |c| c.server_id),
             rk: copy.map(|c| c.rating_key.to_string()).unwrap_or_default(),
-            kind: ItemMenuKind::Catalog { state },
+            kind,
             host: entry,
             focus,
             anchor: anchor_bits(rect),
@@ -252,6 +265,30 @@ impl Bridge {
             from_home: false,
             catalog: Some(catalog),
         })
+    }
+
+    /// The catalog row the PMS item menu is built over for a tile whose copy is `copy`: identity
+    /// and the watch state the store holds for it (so Mark watched / unwatched read right).
+    fn matched_card(
+        &self, row: &plx_data::watchlist::model::WatchRow, copy: plx_data::watchlist::model::ServerMatch,
+    ) -> plx_data::pms::PmsMovie {
+        use plx_data::watchlist::model::Kind;
+        let view = self.stores.watchlist.view();
+        let facts = (0..view.len())
+            .find(|&i| view.row(i).is_some_and(|r| r.guid == row.guid))
+            .and_then(|i| view.facts(i))
+            .unwrap_or_default();
+        plx_data::pms::PmsMovie {
+            sid: copy.server_id,
+            rk: copy.rating_key.to_string(),
+            title: row.title.clone(),
+            kind: match row.kind { Kind::Movie => 0, Kind::Show => 1 },
+            resume_ms: facts.resume_ms,
+            dur_ns: facts.dur_ms.saturating_mul(1_000_000),
+            watched: facts.watched,
+            unwatched: !facts.watched && facts.resume_ms <= 0,
+            ..Default::default()
+        }
     }
 
     pub(crate) fn take_watchlist_reqs(&mut self) -> Vec<(MachineId, WatchlistOut, ReturnState<u32, PageMemory>)> {

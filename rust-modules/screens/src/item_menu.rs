@@ -267,6 +267,17 @@ fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
     build_with(m, from_deck, DeckPress::Play, None)
 }
 
+/// [`build_card`] without the Watchlist's Remove row.
+#[cfg(test)]
+fn build_with(
+    m: &PmsMovie,
+    from_deck: bool,
+    deck_press: DeckPress,
+    trailer: Option<&plx_data::metadata::Extra>,
+) -> ItemForm {
+    build_card(m, from_deck, deck_press, trailer, None)
+}
+
 /// `deck_press` is the Continue Watching setting. It changes this menu for a card FROM the deck
 /// only, and only while OK there opens the page ([`DeckPress::Details`]): the menu then leads with
 /// Play (the opening row — the press that used to play now lives here) and drops the row that
@@ -275,11 +286,15 @@ fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
 /// ([`deck_episode_opens_show`]), so there the menu keeps Go to Episode and drops Go to Show; an
 /// episode with no show row has OK open its own page, and loses Go to Episode as before. Any
 /// other card, and a deck card while OK plays, gets the menu it always had.
-fn build_with(
+///
+/// `watchlist_guid` is set for the Watchlist grid's hold menu (plan §1.9, "Card kind + Remove"):
+/// the destructive Remove from Watchlist row follows the card's own rows.
+fn build_card(
     m: &PmsMovie,
     from_deck: bool,
     deck_press: DeckPress,
     trailer: Option<&plx_data::metadata::Extra>,
+    watchlist_guid: Option<&str>,
 ) -> ItemForm {
     let leaf = m.kind == 0 || m.kind == 3;
     let opens_details = from_deck && !deck_press.press_plays();
@@ -379,6 +394,14 @@ fn build_with(
         Action::RemoveFromDeck(m.rk.clone()),
         Row::new(plx_platform::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true),
     );
+    if let Some(guid) = watchlist_guid {
+        sec = sec.item(
+            ItemRow::WatchlistRemove,
+            RowKind::Button,
+            Action::WatchlistRemove(guid.to_string()),
+            Row::new(plx_platform::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
+        );
+    }
     Form::new().section(sec)
 }
 
@@ -600,7 +623,9 @@ impl ItemMenuScreen {
         let form = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
-                build_with(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref())
+                // A Watchlist tile with a reachable copy is a card of that copy, and Remove joins it.
+                let remove = self.arg.catalog.as_ref().map(|c| c.guid.as_str());
+                build_card(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref(), remove)
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
@@ -2171,6 +2196,23 @@ mod tests {
             assert!(menu.is_destructive(ItemRow::WatchlistRemove));
             assert!(!menu.is_destructive(ItemRow::GoToItem) && !menu.is_destructive(ItemRow::GoToCatalog));
         }
+    }
+
+    /// **A playable Watchlist title's hold menu is the PMS card menu plus Remove** (plan §1.9): the
+    /// card's own rows (Go to, Mark watched, Play from Start) and the destructive Remove last.
+    #[test]
+    fn a_playable_catalog_hold_menu_is_the_card_menu_plus_remove() {
+        let movie = item(0, PosterMark::None);
+        let menu = built(super::build_card(&movie, false, DeckPress::Play, None, Some("plex://movie/abc")));
+        let ids = menu.ids();
+        for row in [ItemRow::GoToItem, ItemRow::MarkWatched, ItemRow::PlayFromStart] {
+            assert!(ids.contains(&row), "the card's {row:?} row is there: {ids:?}");
+        }
+        assert_eq!(ids.last(), Some(&ItemRow::WatchlistRemove), "Remove is last");
+        assert_eq!(menu.action(ItemRow::WatchlistRemove), Action::WatchlistRemove("plex://movie/abc".into()));
+        assert!(menu.is_destructive(ItemRow::WatchlistRemove));
+        let plain = built(super::build_with(&movie, false, DeckPress::Play, None));
+        assert!(!plain.offers(ItemRow::WatchlistRemove), "a plain card menu has no Remove");
     }
 
     /// The go row of a show's hold menu reads "Go to Show" where a movie's reads "Go to Movie".

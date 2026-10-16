@@ -310,3 +310,52 @@ fn an_unmatched_title_gets_its_poster_through_a_reachable_server() {
     settle(&mut d, &mut rig, 2);
     assert_eq!(page(&d).art_of(0), Some(("https://image.example/one.jpg".to_string(), 1)));
 }
+
+/// Plan §1.3 / §1.11 B: a resume while the Watchlist is live reads the plex.tv list again (which
+/// re-matches it), where before only the 2 s write timer and Try again did.
+#[test]
+fn a_resume_with_the_page_live_reads_the_list_again() {
+    use super::super::reread::{self, Reread};
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let mut reread = Reread::default();
+    let before = script.reads.load(Ordering::SeqCst);
+    for _ in 0..3 {
+        reread::run(&mut reread, &mut d, &mut rig);
+        settle(&mut d, &mut rig, 10);
+    }
+    assert_eq!(script.reads.load(Ordering::SeqCst), before, "nothing is read before a resume");
+    reread.resume();
+    reread::run(&mut reread, &mut d, &mut rig);
+    settle(&mut d, &mut rig, 20);
+    assert!(script.reads.load(Ordering::SeqCst) > before, "the resume read the list again");
+    assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "and the page still shows it");
+}
+
+/// Plan §1.9: a playable title's hold menu is the PMS card menu of its copy (sid, rk) plus Remove;
+/// a title with no reachable copy keeps the catalog rows.
+#[test]
+fn a_playable_titles_hold_is_the_card_menu_of_its_copy() {
+    use plx_data::watchlist::model::{ServerMatch, TileState};
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let entry = d.nav.top_page().unwrap().id;
+    let copy = ServerMatch { server_id: ServerId::from_raw(1), rating_key: 42, blur: None };
+    for state in [TileState::Available, TileState::ComingSoonMatched] {
+        let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), state, Some(copy)).expect("on the page");
+        match &arg.kind {
+            ItemMenuKind::Card { row, from_deck } => {
+                assert!(!from_deck);
+                assert_eq!((row.sid, row.rk.as_str(), row.kind), (ServerId::from_raw(1), "42", 0), "{state:?}");
+            }
+            _ => panic!("{state:?}: a playable title is a card of its copy"),
+        }
+        assert_eq!(arg.catalog.as_ref().map(|c| c.guid.clone()), Some(guid(2)), "Remove names the guid");
+    }
+    let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::NotOnAnyServer, None).unwrap();
+    assert!(matches!(arg.kind, ItemMenuKind::Catalog { .. }), "no copy: the catalog rows");
+}
