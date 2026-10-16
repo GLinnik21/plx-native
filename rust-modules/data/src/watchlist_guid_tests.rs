@@ -52,3 +52,22 @@ fn a_carried_hex_costs_no_record_read_and_an_unanswered_read_leaves_none() {
     let bare = record(r#"{"ratingKey":"12","type":"movie"}"#);
     assert_eq!(resolve_catalog_hex(None, || Some(bare.guid)), None, "no portable id: no row, no disc");
 }
+
+/// A season row carries its show's guid as `parentGuid` (the server sends no `grandparentGuid` on a
+/// season), so the row knows its show without the record read; an episode keeps `grandparentGuid`.
+#[test]
+fn a_season_row_takes_its_show_guid_from_parent_guid() {
+    let season = record(&format!(
+        r#"{{"ratingKey":"21","type":"season","guid":"plex://season/5d7768264de0ee001fcc87e4","parentGuid":"plex://show/{HEX}"}}"#
+    ));
+    let row = crate::pms::parse_item(&season, plx_plex::plex::ServerId::UNSET);
+    assert_eq!(row.show_guid, decode_hex(HEX));
+    let (_, known, from_episode) = row.watchlist_subject().expect("a season acts on its show");
+    assert!(from_episode);
+    assert_eq!(resolve_catalog_hex(known, || panic!("no round trip")), decode_hex(HEX));
+    let episode = record(&format!(
+        r#"{{"ratingKey":"22","type":"episode","parentGuid":"plex://season/5d7768264de0ee001fcc87e4","grandparentGuid":"plex://show/{HEX}"}}"#
+    ));
+    let row = crate::pms::parse_item(&episode, plx_plex::plex::ServerId::UNSET);
+    assert_eq!(row.show_guid, decode_hex(HEX), "an episode keeps grandparentGuid");
+}

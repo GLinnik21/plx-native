@@ -55,7 +55,8 @@ itself. (In this capture the frame under it was decoded by the simulator.)
   frame-rate regression scenes that measure it on the television rather than trusting it.
 - **Sign in on the TV** with an on-screen QR code and pick a Plex Home profile.
 - **Browse and search your libraries** — on your own servers and on ones shared with you. Your
-  servers' libraries, that is, not Plex's catalogue or Watchlist.
+  servers' libraries, that is, plus the plex.tv Watchlist as its own tab, where any title can be added or
+  removed; search covers servers only.
 - **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos, and AV1 or VP9 (10-bit VP9 only on webOS 4 sets)
   on televisions whose codec table lists that decoder — decided against your television's own
   codec table where it publishes one. Anything else the server transcodes, and you can switch a
@@ -151,7 +152,8 @@ the final release over it either: reinstall the final by hand once it is out.
 ## Privacy
 
 **Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,
-and to `discover.provider.plex.tv` for cast biographies.
+and to `discover.provider.plex.tv` for cast biographies and the Watchlist (reading it, and adding or
+removing a title when you ask, with the active profile's plex.tv token).
 
 **Crash reports and usage analytics are off until you turn them on** — two separate first-run
 questions, each answerable with Don't Share, both reversible later under Account → Settings →

@@ -4,8 +4,10 @@
 //!
 //! The page is a `plx_ui::cards::Stack` of three sections, like the Collection page: the head (the
 //! title band and its one focus element, the Sort & Filter pill), the grid, and the full-screen
-//! read-outs. Unlike Collection it is not windowed: the app hands it the WHOLE snapshot, already
-//! ordered and filtered by the options ([`WatchlistIn::Rows`]), so there are no holes and no paging.
+//! read-outs. Unlike Collection it is not windowed: the app hands it the snapshot loaded so far, already
+//! ordered and filtered by the options ([`WatchlistIn::Rows`]). While later pages arrive the grid
+//! reserves cells past the loaded tail (`UNLOADED_ELEM`, `unloaded()`): `len()` is the list total,
+//! not the loaded rows.
 //!
 //! **Routing.** A screen names no sibling, so a press becomes an effect: OK on a matched title is
 //! a Detail push (`ContentReq::Push`), and everything else leaves as `AppFx::Watchlist` (the

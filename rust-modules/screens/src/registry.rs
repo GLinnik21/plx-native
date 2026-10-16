@@ -2328,8 +2328,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
 // item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
 // pin covers those AppArg / menu-arg changes too; the previous pin was 0x6a55_c53a_d931_3acf.
-// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 -> this; re-pinned once
-// more before landing, 0xd479_d84f_2093_4143 -> this, when ARG_SHAPE and item_menu::SHAPE gained
+// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 ->
+// 0x7c51_bee4_bc22_94ab, via 0xd479_d84f_2093_4143, the re-pin before landing when ARG_SHAPE and item_menu::SHAPE gained
 // the Catalog/hex fields): the Detail hero gains the bookmark disc (`ELEM_WATCHLIST`; the
 // `DetailScreen` SHAPE is unchanged, because membership and the flip spring are not hashed),
 // `ARG_SHAPE` gains `Content::Catalog{hex}` (canonical tag 4 plus the hex string),
