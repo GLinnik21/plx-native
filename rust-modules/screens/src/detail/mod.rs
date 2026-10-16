@@ -3676,7 +3676,7 @@ impl DetailScreen {
         });
         // A spring idle has stopped asking frames for can rest a hair short of its target; land it
         // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
-        plx_machine::idle::settled(self.watchlist_flip.pos, flip_target, self.watchlist_flip.vel) {
+        if plx_machine::idle::settled(self.watchlist_flip.pos, flip_target, self.watchlist_flip.vel) {
             self.watchlist_flip.jump(flip_target);
         }
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
