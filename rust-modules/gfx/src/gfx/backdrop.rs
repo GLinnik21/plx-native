@@ -2,7 +2,8 @@
 //!
 //! Capture jobs follow visible dependencies, not every retained entry: a lower glass hidden by a
 //! frozen or opaque replacement cannot force an upper band onto the inline-framebuffer path. The
-//! direct replay includes that replacement and any live dim above it. The PageDip page layer (a
+//! direct replay includes that replacement and any live dim above it, unless the glass applies
+//! that dim at composite (below). The PageDip page layer (a
 //! held image, or a capture frame whose source walk draws the page live) also splits stable
 //! content revision from composite alpha. Its full-alpha filtered source is reused through the
 //! fade; `gfx` applies the changing alpha over the constant app ground at composite

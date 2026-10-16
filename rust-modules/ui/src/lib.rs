@@ -353,7 +353,8 @@ pub struct Painter {
     /// `rest_dy` so its snapshot is grabbed around the rest rect; `None` for everything else.
     lift: Option<f32>,
     /// The envelope a MORPHING panel's glass moves inside for its whole life (the opener pill and
-    /// the settled panel), set only by `Popover::panel` for a morph that has an opener rect. The
+    /// the settled panel, or the panel alone for the fade+scale fallback, which grows inside it),
+    /// set only by `Popover::panel` for a morph. The
     /// glass asks for its retained source over this rect, so the growth does not re-take it per
     /// frame ([`plx_gfx::gfx::backdrop::surface_spanning`]); `None` for everything else.
     extent: Option<Rect>,

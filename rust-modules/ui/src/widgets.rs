@@ -5779,8 +5779,9 @@ pub struct StripRender {
     chip_expand: crate::Spring,
     /// A running tab pulse (see [`TAB_PULSE_S`]): the pill's index in the captured faces and how
     /// long it has run. Time-driven rather than a spring on purpose: it is a one-shot ornament
-    /// that must start and end at exactly rest, and it asks for its frames with `idle::invalidate`
-    /// itself.
+    /// that must start and end at exactly rest, and it asks for its frames as motion
+    /// (`idle::note_motion`), never with `idle::invalidate`: it starts on the frame the item menu
+    /// is dismissed, and damage under that fading menu re-captured the host on every frame.
     pulse: Option<TabPulse>,
 }
 
