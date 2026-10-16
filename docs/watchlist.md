@@ -90,7 +90,7 @@ The result is a per-profile match table held in memory (it is not persisted acro
 question Q5). It is incremental for new guids and fully recomputed when the server roster changes. The
 copy a tile opens is chosen current server first, then owned, then shared, Reachable only.
 
-**The other direction.** A `PmsMovie` carries `guid` and `show_guid` (an episode's `grandparentGuid`),
+**The other direction.** A `PmsMovie` carries `guid` and `show_guid` (an episode's `grandparentGuid`, a season's `parentGuid`: the server sends a season no `grandparentGuid`),
 each decoded once to `[u8; 12]`. The Detail and Home hero discs and the hold-menu rows use them to name the catalog
 id. `resolve_catalog_hex(known, fetch)` (`plex/models.rs`) is the helper for a row that lacks one: it
 fetches `client.metadata(rk or show_rk).guid` only when the id is not already known. A hold-menu card
@@ -140,7 +140,7 @@ outline when off the list, filled when on; the fill rises from the bottom with a
 flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
 (`HeroSet::watchlist`).
 The **Home hero** carries the same disc, second after Play/Continue and before Info (Play, disc, Info, with
-the shipped 12 px between controls). It is present when the hero row stands for a title
+`HERO_CTRL_GAP` = `CTRL_GAP`, 20 px, between controls; the 12 px `HERO_ICON_GAP` is inside the Play pill). It is present when the hero row stands for a title
 (`PmsMovie::watchlist_subject`: a movie or show itself, a season or episode its SHOW, "Add Show"
 semantics) with a known id. The application feeds it the membership of the title the hero shows
 (`HomeScreen::watchlist_hex` / `set_watchlist`, `app::watchlist::catalog_feed`); it flips only on a real

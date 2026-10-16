@@ -386,9 +386,14 @@ pub struct Metadata {
     pub grandparent_title: String, // episode → show title
     /// An episode's SHOW guid (`plex://show/<hex>`): the watchlist identity of "Add Show to
     /// Watchlist". Empty on a movie, and on an episode whose server did not send it (then the show's
-    /// own record is read: [`resolve_catalog_hex`]).
+    /// own record is read: [`resolve_catalog_hex`]). A season row carries no `grandparentGuid`.
     #[serde(rename = "grandparentGuid", default, deserialize_with = "de_str")]
     pub grandparent_guid: String,
+    /// A season's SHOW guid (`plex://show/<hex>`); an episode's is its season's
+    /// (`plex://season/…`), which names no catalog title. [`Metadata::show_guid_hex`] reads this
+    /// for a season row and `grandparentGuid` for an episode.
+    #[serde(rename = "parentGuid", default, deserialize_with = "de_str")]
+    pub parent_guid: String,
     #[serde(rename = "leafCount", default, deserialize_with = "de_i64")]
     pub leaf_count: i64,
     #[serde(rename = "viewedLeafCount", default, deserialize_with = "de_i64")]
@@ -487,9 +492,11 @@ impl Metadata {
         catalog_hex_of_guid(&self.guid)
     }
 
-    /// An episode's show's catalog id, decoded once.
+    /// The show's catalog id for a season (its `parentGuid`) or an episode (its
+    /// `grandparentGuid`), decoded once.
     pub fn show_guid_hex(&self) -> Option<[u8; 12]> {
-        catalog_hex_of_guid(&self.grandparent_guid)
+        let guid = if self.kind == "season" { &self.parent_guid } else { &self.grandparent_guid };
+        catalog_hex_of_guid(guid)
     }
 
     /// Media[0].Part[0] — the primary playable part (None for a show container, which carries

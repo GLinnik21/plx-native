@@ -100,7 +100,8 @@
 //! (`placeholder::Frame::absent`), a card that can never resolve (an empty key while nothing else
 //! is pending) and an art request that FAILED (a 404, bytes that do not decode, a refused connect:
 //! the card would hold on its placeholder to the timeout; the run ends at once naming the key),
-//! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, and any
+//! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, unless `ALLOW_OVERLAY` (`site_video.py render --allow-overlay`)
+//! marks a motion review, which is never a deliverable; so does any
 //! PANIC on the loop's thread (a landgate take that never got its answer names the owed mailbox):
 //! a panic hook writes `dump.json` with the message and exits 3, so a failed run always leaves a
 //! valid summary. The launcher renames a failed run's master to `master.partial.mkv`. At the end the driver
