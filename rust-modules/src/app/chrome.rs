@@ -66,15 +66,38 @@ pub(crate) struct ChromeSnapshot {
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
-    keys: Vec<u32>,
+    pub(crate) keys: Vec<u32>,
     widths: Vec<f32>,
     thumb: String,
     initial: std::ffi::CString,
     name: std::ffi::CString,
     name_w: f32,
+    /// A pulse asked for and not yet handed to the strip's renderer: the destination key.
+    pulse: Option<u32>,
 }
 
 impl ChromeSnapshot {
+    /// **Pulse the strip destination `key`** (~1.35x scale and a glow, decorative): the Watchlist
+    /// mark after a title was put on the list. The APPLICATION asks, never a screen; the bridge
+    /// hands it to the strip's renderer on its next chrome update. A frame is requested so an
+    /// idle app wakes for it.
+    pub(crate) fn pulse(&mut self, key: u32) {
+        self.pulse = Some(key);
+        plx_machine::idle::invalidate();
+    }
+
+    /// The pending pulse as the strip index of its destination; `None` when nothing is pending or
+    /// the destination is not on the strip (a Home with no Watchlist mark). Consumes it.
+    pub(crate) fn take_pulse(&mut self) -> Option<usize> {
+        let key = self.pulse.take()?;
+        self.keys.iter().position(|k| *k == key)
+    }
+
+    /// Forget a pending pulse: the bar is not on screen, so it would play late on the next page.
+    pub(crate) fn drop_pulse(&mut self) {
+        self.pulse = None;
+    }
+
     pub(crate) fn refresh(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>) {
         self.refresh_with_profile(measure, directory, None);
     }

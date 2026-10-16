@@ -24,12 +24,12 @@ const HEX: [u8; 12] = [7; 12];
 /// A host with no stores: the page reads its record from itself.
 struct CatHost;
 impl Host for CatHost {
-    type Arg = crate::family::SettingsPage;
+    type Arg = crate::registry::SettingsPage;
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
     type Views<'a> = ();
-    type Init = crate::family::NoInit;
+    type Init = crate::registry::NoInit;
     type Memory = PageMemory;
 }
 
@@ -95,7 +95,7 @@ fn back_asked(fx: &[Stamped<CatHost>]) -> bool {
     fx.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Content(ContentReq::Back))))
 }
 
-fn key(sym: Key) -> ScreenEvent<CatHost> {
+fn press_key(sym: Key) -> ScreenEvent<CatHost> {
     ScreenEvent::Input(InputEvent {
         at: Default::default(),
         source: Source::Script,
@@ -289,7 +289,7 @@ fn a_press_asks_for_the_write_and_back_leaves() {
     assert_eq!(asked(step(&mut on, ScreenEvent::PressCommit(PressId(0)), pill())), [CatalogOut::Remove { hex: HEX }]);
     // nothing focused: a stray commit asks for nothing
     assert!(asked(step(&mut on, ScreenEvent::PressCommit(PressId(0)), None)).is_empty());
-    let fx = step(&mut on, key(Key::Back), pill());
+    let fx = step(&mut on, press_key(Key::Back), pill());
     assert!(back_asked(&fx));
     assert!(asked(fx).is_empty());
 }

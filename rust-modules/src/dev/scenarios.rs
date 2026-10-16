@@ -2581,6 +2581,7 @@ fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
                 loaded_episode: false,
                 from_home: true,
                 catalog: None,
+                watchlist: None,
             };
             crate::app::bridge::open_item_menu(&mut app.pages, arg);
         }

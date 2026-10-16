@@ -389,8 +389,8 @@ pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {
 /// stays drawn but the press does nothing. The Remove arm is keyed by the guid string, like the
 /// menu's own.
 #[allow(dead_code)] // until DetailScreen paints/presses the disc (shared delta on detail/mod.rs); drop then
-pub fn press(guid: &str, m: Membership) -> Option<crate::item_menu::Action> {
-    use crate::item_menu::Action;
+pub fn press(guid: &str, m: Membership) -> Option<crate::registry::ItemMenuAction> {
+    use crate::registry::ItemMenuAction as Action;
     let hex = guid_hex(guid)?;
     Some(match m {
         Membership::On => Action::WatchlistRemove(guid.to_string()),

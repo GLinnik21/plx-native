@@ -11,7 +11,7 @@
 //! a Detail push (`ContentReq::Push`), and everything else leaves as `AppFx::Watchlist` (the
 //! registry's spelling of [`WatchlistOut`]) for the application to route: the strip's tabs and the
 //! profile chip, BACK, the Sort & Filter menu, the hold menu, and the catalog page of an unmatched
-//! title (TODO(W6): `ContentArg::Catalog` does not exist yet, so the application drops that one).
+//! title (the application opens `ContentArg::Catalog` for it).
 use std::collections::HashMap;
 
 use plx_data::watchlist::model::{Kind as WatchKind, ServerMatch, TileState, WatchRow};
@@ -89,7 +89,6 @@ pub enum WatchlistOut {
     /// OK on a tile with a reachable matched copy: the Detail page of that (server, ratingKey).
     OpenDetail(ServerMatch),
     /// OK on a tile with no playable copy: the catalog page of this guid.
-    /// TODO(W6): the app has no `ContentArg::Catalog` yet; until W6 lands the app drops this.
     OpenCatalog(String),
     /// Hold on the tile at `index` (in the shown order).
     Hold { index: usize, guid: String, state: TileState, copy: Option<ServerMatch> },
@@ -766,7 +765,7 @@ impl WatchlistScreen {
         Some(match (t.state, t.copy) {
             // Q6 (default): coming soon AND matched keeps the clock and stays playable.
             (TileState::Available | TileState::ComingSoonMatched, Some(copy)) => WatchlistOut::OpenDetail(copy),
-            // TODO(W6): the catalog page; the app drops this until `ContentArg::Catalog` exists.
+            // The catalog page: the application pushes `ContentArg::Catalog` for the guid.
             _ => WatchlistOut::OpenCatalog(t.row.guid.clone()),
         })
     }

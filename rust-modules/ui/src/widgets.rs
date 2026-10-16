@@ -2843,6 +2843,9 @@ pub struct CircleButton {
     /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
     /// plain disc, which is what every caller that has not opted in still gets.
     pub label: Option<(*const c_char, f32)>,
+    /// A glyph that fills IN over [`icon`](Self::icon) from its bottom edge — see
+    /// [`CircleButton::icon_fill`].
+    pub fill: Option<(crate::icons::Icon, f32, f32)>,
 }
 impl CircleButton {
     pub fn new(glyph: *const c_char) -> Self {
@@ -2850,6 +2853,7 @@ impl CircleButton {
             frame: Rect::new(0.0, 0.0, 60.0, 60.0),
             glyph,
             icon: None,
+            fill: None,
             focused: false,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
@@ -2881,6 +2885,15 @@ impl CircleButton {
     /// own outline circle (Info) would double-ring against the disc face.
     pub fn icon(mut self, i: crate::icons::Icon) -> Self {
         self.icon = Some(i);
+        self
+    }
+    /// Mid-flip between a bare glyph and its filled twin (a bookmark taking its ribbon): `filled`
+    /// is revealed from the glyph box's BOTTOM up to `fill` (0..1) over the plain
+    /// [`icon`](Self::icon), and both ride `dy` px down. The two glyphs must share one silhouette
+    /// (`icons.rs` keeps the pair so). A caller at either rest passes the resting icon alone and
+    /// does not call this, so nothing of the animation is left on a settled control.
+    pub fn icon_fill(mut self, filled: crate::icons::Icon, fill: f32, dy: f32) -> Self {
+        self.fill = Some((filled, fill.clamp(0.0, 1.0), dy));
         self
     }
     pub fn focused(mut self, f: bool) -> Self {
@@ -3045,12 +3058,15 @@ impl View for CircleButton {
                 DISC_LABEL_TAIL * self.scale,
             );
             let ix = r.x + closed_inset + (lead - closed_inset) * e;
-            crate::icons::draw(
-                p,
-                icon,
-                Rect::new(ix, r.y + (r.h - isz) * 0.5, isz, isz),
-                ink,
-            );
+            let dy = self.fill.map_or(0.0, |(_, _, dy)| dy * self.scale);
+            let glyph = Rect::new(ix, r.y + (r.h - isz) * 0.5 + dy, isz, isz);
+            crate::icons::draw(p, icon, glyph, ink);
+            if let Some((filled, fill, _)) = self.fill.filter(|&(_, f, _)| f > 0.0) {
+                let h = glyph.h * fill;
+                p.clip(Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h));
+                crate::icons::draw(p, filled, glyph, ink);
+                p.clip_clear();
+            }
             if let Some((text, _, label_w)) = unfurl {
                 // The label rides the TAIL of the widening, and the ramp is the GEOMETRY rather
                 // than a chosen fraction of it: it fades in exactly as fast as the capsule's tail
@@ -5761,6 +5777,33 @@ pub struct StripRender {
     /// Home↔Library↔Search route flip rather than restart on the far side. It lived in `home.rs`
     /// while Home was the only screen the chip could be focused on.
     chip_expand: crate::Spring,
+    /// A running tab pulse (see [`TAB_PULSE_S`]): the pill's index in the captured faces and how
+    /// long it has run. Time-driven rather than a spring on purpose: it is a one-shot ornament
+    /// that must start and end at exactly rest, and it asks for its frames with `idle::invalidate`
+    /// itself.
+    pulse: Option<TabPulse>,
+}
+
+/// How long the tab pulse runs, seconds: up to its peak and back, one beat.
+pub const TAB_PULSE_S: f32 = 0.6;
+/// The pulsed mark's peak scale (the app's `ChromeSnapshot::pulse`: ~1.35x).
+pub const TAB_PULSE_SCALE: f32 = 1.35;
+/// The peak alpha of the glow disc behind the pulsed mark, over [`theme::ACCENT`].
+pub const TAB_PULSE_GLOW_A: f32 = 0.35;
+
+#[derive(Clone, Copy)]
+struct TabPulse {
+    idx: usize,
+    age: f32,
+}
+
+/// The pulse's envelope at `age` seconds: 0 at both ends, 1 at the peak (a half sine, so the
+/// scale and the glow rise and fall with no corner).
+pub fn tab_pulse_envelope(age: f32) -> f32 {
+    if !(0.0..TAB_PULSE_S).contains(&age) {
+        return 0.0;
+    }
+    (std::f32::consts::PI * age / TAB_PULSE_S).sin().max(0.0)
 }
 
 impl StripRender {
@@ -5769,7 +5812,20 @@ impl StripRender {
             tab_scroll: crate::Spring::at(0.0),
             top_strip: TabStrip::new(),
             chip_expand: crate::Spring::at(0.0),
+            pulse: None,
         }
+    }
+
+    /// Start a pulse on pill `idx` (a restart if one is running). The application asks for it
+    /// through `ChromeSnapshot::pulse`; no screen does.
+    pub fn pulse(&mut self, idx: usize) {
+        self.pulse = Some(TabPulse { idx, age: 0.0 });
+        plx_machine::idle::invalidate();
+    }
+
+    /// The running pulse as `(pill index, envelope)`, `None` at rest.
+    pub fn pulse_read(&self) -> Option<(usize, f32)> {
+        self.pulse.map(|p| (p.idx, tab_pulse_envelope(p.age)))
     }
 
     /// The strip's current scroll offset — what [`tab_members`] needs to place `StripMember`s in
@@ -6709,6 +6765,17 @@ impl StripRender {
         });
         self.tab_scroll.step(t, K_TAB_SCROLL, dt);
         crate::anim::probe("tabrow.scroll", self.tab_scroll.pos, self.tab_scroll.vel, t, dt);
+        // The pulse is decorative: it moves no layout, so it runs inside `idle::decorative` and a
+        // page image is never held for it. It asks for the next frame itself.
+        if let Some(mut pulse) = self.pulse.take() {
+            plx_machine::idle::decorative(|| {
+                pulse.age = pulse.age + dt; // the strip's own step, as its springs take
+                if pulse.age < TAB_PULSE_S {
+                    self.pulse = Some(pulse);
+                    plx_machine::idle::invalidate();
+                }
+            });
+        }
     }
 }
 
@@ -6749,6 +6816,7 @@ impl StripRender {
                    // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
     band.material = BarMaterial::Flat;
+    let pulse = self.pulse_read();
     with_tab_metrics_for(data, |faces, words, widths| {
         let n = faces.len();
         if n == 0 {
@@ -6954,7 +7022,15 @@ impl StripRender {
                     // capsule in step with its neighbours instead of being a separate colour story.
                     TabFace::Icon(icon) => {
                         let d = TAB_ICON_D;
-                        let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                        let mut ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                        // The pulse: a glow disc behind the mark, and the mark grown about its centre.
+                        if let Some(env) = pulse.filter(|&(at, _)| at == i).map(|(_, e)| e).filter(|&e| e > 0.0) {
+                            let a = theme::ACCENT;
+                            let grow = 1.0 + (TAB_PULSE_SCALE - 1.0) * env;
+                            p.rrect(r.scaled(grow), r.h * 0.5, r.h * 0.5,
+                                [a[0], a[1], a[2], a[3] * TAB_PULSE_GLOW_A * env]);
+                            ir = ir.scaled(grow);
+                        }
                         crate::icons::draw(p, *icon, ir, TabPill::mixed_ink(fm, sm));
                     }
                     TabFace::Label(_) => {

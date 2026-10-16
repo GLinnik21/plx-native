@@ -144,7 +144,7 @@ fn the_fill_rises_from_the_bottom_edge() {
 /// Membership x press: Add from Off and Unknown, Remove from On; no usable guid, no press.
 #[test]
 fn the_press_table() {
-    use crate::item_menu::Action;
+    use crate::registry::ItemMenuAction as Action;
     let hex = plx_data::watchlist::decode_hex(HEX).unwrap();
     assert_eq!(guid_hex(GUID), Some(hex));
     assert_eq!(press(GUID, Membership::Off), Some(Action::WatchlistAdd { hex }));

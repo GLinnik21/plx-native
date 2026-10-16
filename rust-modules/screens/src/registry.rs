@@ -24,7 +24,7 @@
 //! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
-use crate::family::SettingsPage;
+pub use crate::family::SettingsPage;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -96,6 +96,10 @@ pub enum PreferenceCmd {
 /// app declines a menu with and the card screens' hold hint is gated by. The screens reach it
 /// here, never by naming the sibling `item_menu`.
 pub use crate::item_menu::has_actions as item_has_menu;
+/// The item menu's action vocabulary, for a screen that builds one (the Detail disc's press).
+pub use crate::item_menu::Action as ItemMenuAction;
+/// Re-exported so a screen's test host names its init through the registry.
+pub use crate::family::NoInit;
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
@@ -361,6 +365,12 @@ pub struct ItemMenuArg {
     /// The catalog title a [`ItemMenuKind::Catalog`] menu is about (a Watchlist tile with no
     /// playable copy); `None` for every PMS kind.
     pub catalog: Option<CatalogRef>,
+    /// What the Watchlist knew of the menu's title when it opened (captured, never re-read): the
+    /// catalog id, the membership and whether the rows say "Show". `None` when the item has no
+    /// catalog id or plex.tv could not be reached, and the Watchlist row is then omitted. Not part
+    /// of the argument's identity or canonical form: it is a fact about the title, not a second
+    /// menu.
+    pub watchlist: Option<crate::item_menu::watchlist::Face>,
 }
 
 /// **A discover-catalog title**, the subject of an [`ItemMenuKind::Catalog`] menu: identity only,
@@ -1922,7 +1932,8 @@ where
         match arg {
             AppArg::LibraryMenu(arg) => Box::new(crate::library::menu::LibraryMenu::new(entry, arg.clone())),
             AppArg::AccountMenu => Box::new(crate::account_menu::AccountMenuScreen::new(entry)),
-            AppArg::ItemMenu(arg) => Box::new(crate::item_menu::ItemMenuScreen::new(entry, arg.clone())),
+            AppArg::ItemMenu(arg) => Box::new(
+                crate::item_menu::ItemMenuScreen::new(entry, arg.clone()).with_watchlist(arg.watchlist)),
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
             AppArg::PlayerOverlay(arg) => Box::new(
                 crate::player::overlay::PlayerOverlayScreen::new_with(
@@ -2089,6 +2100,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             loaded_episode: false,
             from_home: false,
             catalog: None,
+            watchlist: None,
         }),
         AppArg::WatchlistMenu(WatchlistMenuArg {
             host: EntryId(0),

@@ -57,6 +57,35 @@ pub(crate) struct Feed {
     reread_at: Option<u32>,
 }
 
+/// The membership of `hex` in `view`: member (intents in flight counted), absent from a read list,
+/// or not known yet.
+fn membership_in(view: &plx_data::stores::watchlist::WatchlistView<'_>, hex: &[u8; 12]) -> plx_data::catalog::Membership {
+    use plx_data::catalog::Membership;
+    if view.is_member(hex) {
+        Membership::On
+    } else if view.status() == Status::Ready {
+        Membership::Off
+    } else {
+        Membership::Unknown
+    }
+}
+
+/// Push the catalog page of `hex`, carrying the opener's `ret` when it froze one.
+pub(crate) fn open_catalog(
+    d: &mut Dispatcher<AppHost>, hex: [u8; 12], ret: Option<ReturnState<u32, PageMemory>>,
+) {
+    use plx_ui::screen::ScreenArg;
+    let arg = Bridge::open_catalog_arg(hex);
+    // A second press inside the push's dip-out is inert against its twin.
+    if d.nav.tabs.stack.pending_dest().is_some_and(|pending| pending.same_instance(&arg)) {
+        return;
+    }
+    match ret {
+        Some(ret) => nav_push_with_return(d, arg, ret),
+        None => nav_push(d, arg),
+    }
+}
+
 /// The catalog id of a `plex://movie|show/<24 hex>` guid.
 pub(crate) fn hex_of_guid(guid: &str) -> Option<[u8; 12]> {
     plx_data::watchlist::decode_hex(guid.rsplit('/').next()?)
@@ -184,6 +213,25 @@ impl Bridge {
         }
     }
 
+    /// **A title put on the Watchlist from anywhere** (a menu row, the Detail disc, the catalog
+    /// pill): the write is queued like any press, and the strip's bookmark mark pulses
+    /// (`ChromeSnapshot::pulse`, app-owned: no screen asks for it). Only an Add pulses; a removal
+    /// has nothing to fly to the tab.
+    pub(crate) fn watchlist_add(&mut self, hex: [u8; 12]) {
+        self.watchlist_press(hex, Intent::Add);
+        self.chrome.pulse(plx_ui::widgets::TAB_KEY_WATCHLIST);
+    }
+
+    /// What the catalog page's pill asked for (`AppFx::Catalog`): the same write the item menu's rows
+    /// make, so an Add pulses the tab here too. The page flips nothing itself; the ledger does.
+    pub(crate) fn catalog_effect(&mut self, out: plx_screens::catalog::CatalogOut) {
+        use plx_screens::catalog::CatalogOut;
+        match out {
+            CatalogOut::Add { hex } => self.watchlist_add(hex),
+            CatalogOut::Remove { hex } => self.watchlist_press(hex, Intent::Remove),
+        }
+    }
+
     /// A bookmark press (or the hold menu's Remove) on the catalog id `hex`.
     pub(crate) fn watchlist_press(&mut self, hex: [u8; 12], intent: Intent) {
         self.stores.watchlist.run(WatchlistCmd::Press { hex, intent });
@@ -260,6 +308,13 @@ impl Bridge {
             ),
             None => (ItemMenuKind::Catalog { state }, plx_plex::plex::ServerId::UNSET, String::new()),
         };
+        // A Catalog menu's membership row: the tile IS on the list, so it offers Remove.
+        let watchlist = match (&kind, hex_of_guid(guid)) {
+            (ItemMenuKind::Catalog { .. }, Some(hex)) => Some(plx_screens::item_menu::watchlist::Face {
+                hex, member: plx_data::catalog::Membership::On, kind: tile.row.kind, from_episode: false,
+            }),
+            _ => None,
+        };
         Some(plx_screens::registry::ItemMenuArg {
             sid,
             rk,
@@ -270,6 +325,7 @@ impl Bridge {
             loaded_episode: false,
             from_home: false,
             catalog: Some(catalog),
+            watchlist,
         })
     }
 
@@ -303,9 +359,115 @@ impl Bridge {
 
     /// Is this catalog id on the watchlist, intents in flight counted? (The Detail and catalog
     /// bookmark faces read it.)
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn watchlist_member(&self, hex: &[u8; 12]) -> bool {
         self.stores.watchlist.view().is_member(hex)
+    }
+
+    /// Read the list once for a page that needs membership (a Detail page, a menu) when nobody has:
+    /// `Idle` only, so a failed or empty read is never retried per frame.
+    pub(crate) fn watchlist_open_if_idle(&mut self) {
+        if self.stores.watchlist.view().status() == Status::Idle {
+            self.stores.watchlist.run(WatchlistCmd::Open);
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    /// **The Watchlist subject of an item menu, captured now** ([`plx_screens::item_menu::watchlist::Face`]).
+    /// `None` when the title has no catalog id (`hex` unknown) or plex.tv could not be reached (no
+    /// account, or the first read failed): the menu then omits its row rather than offer a press that
+    /// can only fail. An unread list is `Unknown`, which wears the Add face.
+    pub(crate) fn watchlist_face(
+        &self, hex: Option<[u8; 12]>, kind: plx_data::watchlist::model::Kind, from_episode: bool,
+    ) -> Option<plx_screens::item_menu::watchlist::Face> {
+        let hex = hex?;
+        let view = self.stores.watchlist.view();
+        if matches!(view.status(), Status::NoAccount | Status::Failed(_)) {
+            return None;
+        }
+        Some(plx_screens::item_menu::watchlist::Face {
+            hex, member: membership_in(&view, &hex), kind, from_episode,
+        })
+    }
+
+    /// The face for a PMS card row: a movie or show acts on itself, an episode or a season on its
+    /// show (`from_episode` makes the labels say "Show").
+    pub(crate) fn watchlist_card_face(
+        &self, item: &plx_data::pms::PmsMovie,
+    ) -> Option<plx_screens::item_menu::watchlist::Face> {
+        use plx_data::watchlist::model::Kind;
+        match item.kind {
+            0 => self.watchlist_face(item.guid, Kind::Movie, false),
+            1 => self.watchlist_face(item.guid, Kind::Show, false),
+            2 | 3 => self.watchlist_face(item.show_guid, Kind::Show, true),
+            _ => None,
+        }
+    }
+
+    /// Once a frame, route-unconditional: the catalog store's landing pass, the catalog page's
+    /// feed (open on mount, hand it the record, the membership and the art server), and the
+    /// bookmark disc of every Detail page on the stack.
+    pub(crate) fn catalog_feed(&mut self, d: &mut Dispatcher<AppHost>) {
+        use plx_screens::registry::ContentArg;
+        if self.stores.catalog.pump() {
+            plx_machine::idle::invalidate();
+        }
+        let mut catalog: Option<(EntryId, [u8; 12])> = None;
+        let mut details: Vec<EntryId> = Vec::new();
+        for e in &d.nav.tabs.stack.entries {
+            match &e.arg {
+                AppArg::Content(ContentArg::Catalog { hex }) => catalog = Some((e.id, *hex)),
+                AppArg::Content(ContentArg::Detail { .. }) => details.push(e.id),
+                _ => {}
+            }
+        }
+        for id in details {
+            let Some(screen) = d.nav.entry_mut(id)
+                .and_then(|e| e.inst.as_mut())
+                .and_then(|i| i.screen.as_any_mut())
+                .and_then(|a| a.downcast_mut::<plx_screens::detail::DetailScreen>()) else { continue };
+            let Some(hex) = screen.watchlist_hex() else { continue };
+            screen.set_watchlist(membership_in(&self.stores.watchlist.view(), &hex));
+            self.watchlist_open_if_idle();
+        }
+        let Some((id, hex)) = catalog else {
+            if self.catalog_seat.take().is_some() {
+                self.stores.catalog.reset();
+            }
+            return;
+        };
+        let Some(inst) = d.nav.entry_mut(id).and_then(|e| e.inst.as_mut()) else { return };
+        let instance = inst.id;
+        let Some(screen) = inst.screen.as_any_mut().and_then(|a| a.downcast_mut::<plx_screens::catalog::CatalogScreen>())
+            else { return };
+        if self.catalog_seat != Some(instance) {
+            self.catalog_seat = Some(instance);
+            self.stores.catalog.open(hex);
+            // The page's membership needs the list: read it again on every mount, like the tab does.
+            self.stores.watchlist.run(WatchlistCmd::Open);
+        }
+        screen.input(plx_screens::catalog::CatalogViewModel {
+            load: (&self.stores.catalog.load).into(),
+            membership: self.stores.catalog.membership(&self.stores.watchlist).into(),
+        });
+        screen.set_art_server(self.stores.watchlist.view().art_server());
+    }
+
+    /// The catalog page's re-read (`reread.rs`): the list again, which re-matches the title, and
+    /// the discover record when it never landed (a loaded record is kept, not blanked).
+    pub(crate) fn catalog_reread(&mut self, hex: [u8; 12]) {
+        self.watchlist_reread();
+        if self.stores.catalog.hex == Some(hex)
+            && !matches!(self.stores.catalog.load, plx_data::catalog::Load::Loaded(_))
+        {
+            self.stores.catalog.open(hex);
+        }
+    }
+
+    /// Open the catalog page of `hex` (a title no server holds). Shared by the Watchlist tile's OK
+    /// and the hold menu's Go to row.
+    pub(crate) fn open_catalog_arg(hex: [u8; 12]) -> AppArg {
+        AppArg::Content(plx_screens::registry::ContentArg::Catalog { hex })
     }
 
     #[cfg(test)]
