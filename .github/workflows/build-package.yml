@@ -297,9 +297,12 @@ jobs:
             # took the production branch, and so that `ENVIRONMENT` is `production` and every event
             # from this release lands in the right project. Substring, not whole-line: Rust string
             # literals are not NUL-terminated and adjacent ones merge into one `strings` record.
-            strings pkg/plxnative | grep -qF "$PLX_SENTRY_DSN" \
+            # `strings` runs to a file first: `grep -q` quits on its match, and under pipefail the
+            # producer's SIGPIPE (141) would fail the step although the string was found.
+            strings pkg/plxnative > "$RUNNER_TEMP/plxnative.strings"
+            grep -qF "$PLX_SENTRY_DSN" "$RUNNER_TEMP/plxnative.strings" \
               || { echo "::error::the packaged binary does not carry the production Sentry DSN"; exit 1; }
-            strings pkg/plxnative | grep -qF "$PLX_POSTHOG_KEY" \
+            grep -qF "$PLX_POSTHOG_KEY" "$RUNNER_TEMP/plxnative.strings" \
               || { echo "::error::the packaged binary does not carry the production PostHog key"; exit 1; }
             # Fingerprints, not values. These are publishable, but they are also usable to write junk
             # into the project and burn a free-tier quota, and a workflow log is a far more casually
