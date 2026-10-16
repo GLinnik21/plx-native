@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T00:22:50Z",
+ "generated": "2026-10-16T00:24:59Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -68,15 +68,15 @@
    "change30_pct": -58.6,
    "change7_pct": 16.3,
    "d30": 998,
-   "delta30": -585,
+   "delta30": -585.0,
    "delta7": 58.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 123,
+   "n_now": 124,
    "n_prev": 122,
-   "now": 413,
+   "now": 413.0,
    "prev7": 355.0,
    "shown": true,
    "state": "flat",
@@ -290,15 +290,15 @@
    "change30_pct": 128.3,
    "change7_pct": -3.6,
    "d30": 99,
-   "delta30": 127.0,
+   "delta30": 127,
    "delta7": -8.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 106,
-   "now": 226.0,
+   "now": 226,
    "prev7": 234.5,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 149.3,
-   "change7_pct": -56.4,
+   "change30_pct": 150.0,
+   "change7_pct": -56.3,
    "d30": 74,
-   "delta30": 110.5,
-   "delta7": -238.5,
+   "delta30": 111,
+   "delta7": -238.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 106,
-   "now": 184.5,
+   "now": 185,
    "prev7": 423.0,
    "shown": true,
    "state": "better",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -6.7,
+   "change7_pct": -6.4,
    "d30": null,
    "delta30": null,
-   "delta7": -10.5,
+   "delta7": -10.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 74,
-   "now": 146.5,
+   "now": 147,
    "prev7": 157.0,
    "shown": true,
    "state": "flat",
@@ -481,15 +481,15 @@
    "change30_pct": 0.0,
    "change7_pct": 3.0,
    "d30": 17,
-   "delta30": 0.0,
+   "delta30": 0,
    "delta7": 0.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 106,
-   "now": 17.0,
+   "now": 17,
    "prev7": 16.5,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 84.2,
    "commits": [
     {
-     "pr": 771,
-     "sha": "fbab7cf29",
-     "title": "Add Italian localization (it)"
-    },
-    {
      "pr": 781,
      "sha": "f15b24805",
      "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
@@ -615,6 +610,11 @@
      "pr": 800,
      "sha": "4490753db",
      "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
+    },
+    {
+     "pr": 808,
+     "sha": "440959492",
+     "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
     }
    ],
    "from": 212.0,
@@ -628,11 +628,6 @@
    "change_pct": 47.0,
    "commits": [
     {
-     "pr": 771,
-     "sha": "fbab7cf29",
-     "title": "Add Italian localization (it)"
-    },
-    {
      "pr": 781,
      "sha": "f15b24805",
      "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
@@ -676,6 +671,11 @@
      "pr": 800,
      "sha": "4490753db",
      "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
+    },
+    {
+     "pr": 808,
+     "sha": "440959492",
+     "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
     }
    ],
    "from": 270.5,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 226.0
+   "now": 226
   }
  ],
  "slowest_local": [
