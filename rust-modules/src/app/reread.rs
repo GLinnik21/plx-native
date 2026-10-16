@@ -113,6 +113,8 @@ pub(crate) enum Action {
     /// The Watchlist page: the read-back of its matched copies, and the plex.tv list read again
     /// (which re-matches it), so a title added elsewhere or newly on a server shows up.
     WatchlistRead,
+    /// The catalog page: the discover record read again, and the plex.tv list.
+    CatalogRead,
     /// Tell a Detail page under the top to re-read when it owns its slot.
     DetailDeferred,
     /// The visible Detail page, after a resume: its own item read back, which owes the page its
@@ -126,9 +128,11 @@ pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
     match arg {
         AppArg::Home => Action::HomeQuiet,
         // The Watchlist page reads back the matched copies it holds (`WatchlistStore::held_keys`).
-        // TODO(W6): `ContentArg::Catalog` (the catalog page for a title no server holds) owes the
-        // re-match for its guid; it has no arm until W6 adds the variant.
         AppArg::Watchlist => Action::WatchlistRead,
+        // The catalog page of a title no server holds owes the re-match for its guid: the plex.tv
+        // list read again (a title newly on a server, or added elsewhere, re-derives its status
+        // line and bookmark face), and the record itself when the first read did not land.
+        AppArg::Content(ContentArg::Catalog { .. }) => Action::CatalogRead,
         AppArg::Library | AppArg::Search => Action::ReadBack,
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
@@ -164,6 +168,9 @@ pub(super) fn run(
                 bridge.owe_read_back(keys);
                 bridge.watchlist_reread();
             }
+            Action::CatalogRead => if let AppArg::Content(ContentArg::Catalog { hex }) = &arg {
+                bridge.catalog_reread(*hex);
+            },
             Action::DetailDeferred => if let Some(instance) = instance {
                 pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
                     Delivery::Screen(ScreenEvent::App(AppMsg::DetailReconcile {

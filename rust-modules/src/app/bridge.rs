@@ -419,6 +419,8 @@ pub(crate) struct Bridge {
     watchlist_reqs: Vec<(MachineId, plx_screens::watchlist::page::WatchlistOut, ReturnState<u32, PageMemory>)>,
     /// What the Watchlist page was last handed from the store (`watchlist::Feed`).
     watchlist: watchlist::Feed,
+    /// The catalog page instance the store was last opened for (`watchlist::catalog_feed`).
+    catalog_seat: Option<InstanceId>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -628,6 +630,7 @@ impl Bridge {
             item_menu_reqs: Vec::new(),
             watchlist_reqs: Vec::new(),
             watchlist: watchlist::Feed::default(),
+            catalog_seat: None,
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
@@ -938,6 +941,7 @@ impl Bridge {
         } else {
             d.nav.tabs.strip.clear();
             d.nav.tabs.strip_fallback = None;
+            self.chrome.drop_pulse();
         }
     }
 
@@ -973,6 +977,9 @@ impl Bridge {
         glass: &mut plx_ui::frame::glass::GlassPlan, dt: f32) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
+        if let Some(idx) = self.chrome.take_pulse() {
+            self.strip.pulse(idx);
+        }
         let labels = self.chrome.labels();
         let chrome_focus = self.chrome.focus(focus);
         self.strip.update(labels, selected, chrome_focus, dt);
@@ -1046,11 +1053,16 @@ impl Bridge {
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
                 // the write's scope cannot be read off one (`apply_item_action`)
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect));
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect);
+                // a season acts on its show: the page's own catalog id, when the page is the show
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect));
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect);
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
             }
         }
         // A card page answers its focused card and where it sits: Person, Collection, and Detail's
@@ -1061,7 +1073,9 @@ impl Bridge {
         if !matches!(e.arg, AppArg::Content(_)) { return None; }
         let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
         let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().filter(|m| plx_screens::item_menu::has_actions(m))?;
-        Some(card_menu_arg(item, false, false, entry, ret.focus, card.rect))
+        let mut arg = card_menu_arg(item, false, false, entry, ret.focus, card.rect);
+        arg.watchlist = self.watchlist_card_face(item);
+        Some(arg)
     }
 
     /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
@@ -1906,8 +1920,12 @@ impl Bridge {
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
             AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
-            // Staged by the W6 weave: the app glue (queue the write, pulse the tab) lands with the next package.
-            AppFx::Catalog(_) => {}
+            // The catalog page's pill: the same write the item menu's rows make, so an Add pulses
+            // the tab here too. The page flips nothing itself; the store's ledger flips the face.
+            AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex }) => self.watchlist_add(hex),
+            AppFx::Catalog(plx_screens::catalog::CatalogOut::Remove { hex }) => {
+                self.watchlist_press(hex, plx_data::watchlist::ledger::Intent::Remove);
+            }
         }
     }
 
@@ -2759,6 +2777,7 @@ pub(crate) fn card_menu_arg(
         loaded_episode: false,
         from_home,
         catalog: None,
+        watchlist: None,
     }
 }
 
@@ -2783,6 +2802,7 @@ fn strip_menu_arg(
         anchor: anchor_bits(rect),
         from_home: false,
         catalog: None,
+        watchlist: None,
     }
 }
 
@@ -3879,7 +3899,7 @@ mod strip_home_pill_tests;
 
 #[path = "watchlist.rs"]
 mod watchlist;
-pub(crate) use watchlist::open_watchlist_menu;
+pub(crate) use watchlist::{hex_of_guid, open_catalog, open_watchlist_menu};
 
 #[cfg(test)]
 #[path = "watchlist_wiring_tests.rs"]

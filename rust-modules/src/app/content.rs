@@ -679,7 +679,9 @@ fn home_requests(app: &mut App, now: u32) {
                 // `from_home: true` is the ONE thing `MenuHost::Home` still decided by phase 10;
                 // since D1 it carries no navigation of its own — the container is the only history
                 // there is, and a menu opened on the root leaves onto the root's own stack.
-                let arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
@@ -742,7 +744,9 @@ fn search_requests(app: &mut App) {
             SearchReq::ItemMenu { sid, rk } => {
                 let Some((plx_data::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != *sid || item.rk != *rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(&item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
@@ -787,9 +791,13 @@ fn watchlist_requests(app: &mut App) {
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
-            // TODO(W6): the catalog page of a title no server holds. `ContentArg::Catalog` does not
-            // exist yet, so OK on such a tile is a no-op until W6 adds the page and this arm pushes it.
-            WatchlistOut::OpenCatalog(_) => {}
+            // The catalog page of a title no server holds, by the tile's guid (a guid the service
+            // does not form as `plex://movie|show/<hex>` has no page to open).
+            WatchlistOut::OpenCatalog(guid) => {
+                if let Some(hex) = bridge::hex_of_guid(&guid) {
+                    bridge::open_catalog(&mut app.pages, hex, Some(ret));
+                }
+            }
             // The page pushes a matched copy's Detail itself (`ContentReq::Push`), and the surface
             // is the only sender of the options value (handled above).
             WatchlistOut::OpenDetail(_) | WatchlistOut::SetOptions(_) => {}
@@ -893,7 +901,9 @@ fn library_requests(app: &mut App, now: u32) {
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(&item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
