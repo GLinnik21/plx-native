@@ -6769,7 +6769,7 @@ impl StripRender {
         // page image is never held for it. It asks for the next frame itself.
         if let Some(mut pulse) = self.pulse.take() {
             plx_machine::idle::decorative(|| {
-                pulse.age += dt;
+                pulse.age = pulse.age + dt; // the strip's own step, as its springs take
                 if pulse.age < TAB_PULSE_S {
                     self.pulse = Some(pulse);
                     plx_machine::idle::invalidate();

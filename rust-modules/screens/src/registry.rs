@@ -24,7 +24,7 @@
 //! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
-use crate::family::SettingsPage;
+pub use crate::family::SettingsPage;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -96,6 +96,10 @@ pub enum PreferenceCmd {
 /// app declines a menu with and the card screens' hold hint is gated by. The screens reach it
 /// here, never by naming the sibling `item_menu`.
 pub use crate::item_menu::has_actions as item_has_menu;
+/// The item menu's action vocabulary, for a screen that builds one (the Detail disc's press).
+pub use crate::item_menu::Action as ItemMenuAction;
+/// Re-exported so a screen's test host names its init through the registry.
+pub use crate::family::NoInit;
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
