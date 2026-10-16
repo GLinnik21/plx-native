@@ -59,7 +59,7 @@ import time
 # lanes has not been proven for it (its host FFmpeg and libass builds make that a long
 # experiment). The storage helper's trees (`target-storage`, `target-release-storage`) are left out
 # for a measured reason: the Makefile links that helper with
-# CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER set to an ABSOLUTE path inside the lane
+# CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER set to an ABSOLUTE path inside the lane
 # (ci/arm-cc.py), and cargo hashes the linker setting into every unit's fingerprint ("dirty:
 # ConfigSettingsChanged"), so a seed made in one lane recompiles the whole helper tree, std
 # included, in the next. It is also the smallest tree (~0.25 GB, a 13 s compile).

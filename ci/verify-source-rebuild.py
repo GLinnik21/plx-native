@@ -34,7 +34,7 @@ source=work/'source';env=dict(os.environ,RUSTUP_HOME=str(work/'rustup'),CARGO_HO
 commands=[
  [sys.executable,str(Path(__file__).with_name('restore-source-inputs.py')),str(a.archive.resolve()),'--expect-snapshot',a.expect_snapshot,'--destination',str(source),'--rust-sysroot',str(isolated)],
  ['rustup','toolchain','link','source-rebuild',str(isolated)],
- ['make','-C',str(source),'RUST_NIGHTLY=source-rebuild','RELEASE=1','FLAVOR=stable',
+ ['make','-C',str(source),'RUST_NIGHTLY=source-rebuild','RUST_ARM_TOOLCHAIN=source-rebuild','RELEASE=1','FLAVOR=stable',
   'PLX_SENTRY_DSN=','PLX_POSTHOG_KEY=','PLX_SENTRY_DSN_DEV=','PLX_POSTHOG_KEY_DEV=','ipk']]
 result={'ndk_gcc_sha256':ndk_hash,'source_snapshot_sha256':a.expect_snapshot,'rebuild_status':'FAIL','configuration':'production ARM stable, no private telemetry configuration','bit_for_bit':'NOT_CLAIMED','commands':commands}
 with (work/'build.log').open('w') as log:

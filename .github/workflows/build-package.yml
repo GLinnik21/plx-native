@@ -157,21 +157,23 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Install pinned nightly Rust
-        # Pinned by DATE for releases. `-Z build-std` recompiles std from source and is the most
-        # drift-sensitive thing this build does; a release should be reproducible from its tag,
-        # which an unpinned `nightly` cannot be. Bump deliberately, alongside a device test run.
+      - name: Install pinned stable Rust and the armv7 target
+        # Pinned by VERSION for releases: a release should be reproducible from its tag, which an
+        # unpinned `stable` cannot be. The ARM build is STABLE since it moved to
+        # `armv7-unknown-linux-gnueabi` (prebuilt ARMv7 std, no `-Z build-std`); rust-src stays
+        # because the GPL source bundle ships the std sources the binary was built from. Bump
+        # deliberately, alongside a device test run.
         run: |
-          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
-          rustup run "$RUST_NIGHTLY" rustc --version
+          rustup toolchain install "$RUST_ARM_TOOLCHAIN" --profile minimal --component rust-src --target armv7-unknown-linux-gnueabi
+          rustup run "$RUST_ARM_TOOLCHAIN" rustc --version
         env:
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
+          RUST_ARM_TOOLCHAIN: ${{ vars.RUST_ARM_TOOLCHAIN || '1.99.1' }}
 
       - if: inputs.caches
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust-modules
-          key: armv7-build-std
+          key: armv7-stable
 
       - if: inputs.caches
         name: Cache the pinned downloads
@@ -194,7 +196,7 @@ jobs:
         # one by construction rather than by discipline — check-elf.sh asserts it below.
         env:
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
-          RUST_NIGHTLY: ${{ vars.RUST_NIGHTLY || 'nightly-2026-07-02' }}
+          RUST_ARM_TOOLCHAIN: ${{ vars.RUST_ARM_TOOLCHAIN || '1.99.1' }}
           TELEMETRY: ${{ inputs.telemetry }}
           # Drops the `devtools` cargo feature — no on-screen counter in a public build.
           RELEASE: "1"
@@ -561,6 +563,7 @@ jobs:
           # The NDK the release was built with: prepare-source-release.py records its compiler hash
           # and verify-source-rebuild.py rebuilds with it. Both refuse to run without it.
           WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+          RUST_ARM_TOOLCHAIN: ${{ vars.RUST_ARM_TOOLCHAIN || '1.99.1' }}
           FLAVOR: ${{ inputs.flavor }}
           RELEASE: "1"
         run: |
@@ -578,7 +581,7 @@ jobs:
           # graph — since #104 added the `rcgen` dev-dependency, asn1-rs and friends were missing and
           # vendoring died with exit 101. Fetch the whole lock here, pinned by its checksums; the
           # collection script itself stays download-free.
-          cargo +nightly-2026-07-02 fetch --locked --manifest-path rust-modules/Cargo.toml
+          cargo +$RUST_ARM_TOOLCHAIN fetch --locked --manifest-path rust-modules/Cargo.toml
           # Named after the version the build REPORTS, read off what it produced — never the
           # tracked pkg/appinfo.json template, which a nightly does not ship (a nightly named its
           # bundle 0.6.0 that way). A stable build's is the one in the ipk's own filename (the
@@ -600,10 +603,10 @@ jobs:
             || { echo "::error::cannot name the source bundle: got version label '$label' from $ipk"; exit 1; }
           source="pkg/plxnative-source-$label.tar.gz"
           python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
-            --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
+            --output "$source" --rust-toolchain "$RUST_ARM_TOOLCHAIN" --binary "$ipk" --private-values "$private_values"
           snapshot=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_snapshot_sha256"])' "$source.release.json")
           python3 ci/verify-source-rebuild.py "$source" --expect-snapshot "$snapshot" \
-            --rust-toolchain nightly-2026-07-02 --work "$RUNNER_TEMP/gpl-source-rebuild" --private-values "$private_values"
+            --rust-toolchain "$RUST_ARM_TOOLCHAIN" --work "$RUNNER_TEMP/gpl-source-rebuild" --private-values "$private_values"
           cp "$RUNNER_TEMP/gpl-source-rebuild/result.json" pkg/source-rebuild.json
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

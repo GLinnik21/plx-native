@@ -117,8 +117,8 @@ FAKE_SYSCTL = ('#!/bin/sh\ncase "$2" in\n'
                '  vm.swapusage) echo "total = 1000.00M  used = ${FAKE_SWAP_USED:-100.00}M  free = 1.00M  (encrypted)";;\n'
                '  *) echo "Fake CPU";;\nesac\n')
 SCRATCH_MAKEFILE = r'''print-bench-config:
-	@printf '%s\n' 'RUST_NIGHTLY=nightly' 'RUST_TDIR=target' 'RUST_TARGET=arm-unknown-linux-gnueabi' \
-	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a' \
+	@printf '%s\n' 'RUST_NIGHTLY=nightly' 'RUST_TDIR=target' 'RUST_TARGET=armv7-unknown-linux-gnueabi' \
+	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a' \
 	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'UNIT_RUN=python3 ../tools/cargo-test-parallel.py' 'RELEASE=$(RELEASE)'
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
@@ -282,7 +282,7 @@ class ShapeTests(unittest.TestCase):
     def test_cargo_is_called_the_way_the_makefile_does(self):
         with Sandbox() as sb:
             (sb.repo / "rust-modules" / "target-fast").mkdir(parents=True)
-            lib = sb.repo / "rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a"
+            lib = sb.repo / "rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a"
             lib.parent.mkdir(parents=True)
             lib.write_bytes(b"old")
             proc = sb.run("--runs", "1", "--only", "noop,leaf-inc,tests,arm")
@@ -303,7 +303,7 @@ class ShapeTests(unittest.TestCase):
                           [c["args"] for c in plain])
             arm = [c for c in calls if c["args"][0] == "rustc"]
             self.assertEqual(len(arm), 1)
-            self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "arm-unknown-linux-gnueabi",
+            self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "armv7-unknown-linux-gnueabi",
                                               "--lib", "--crate-type", "staticlib", "--target-dir", "target",
                                               "--message-format=json-render-diagnostics"])
             self.assertEqual(arm[0]["incr"], "0")

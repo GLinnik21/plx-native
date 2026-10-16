@@ -234,7 +234,7 @@ def read_make_config(repo: Path) -> dict[str, str]:
 
 
 def arm_argv(cfg: dict[str, str]) -> list[str]:
-    """The ARM staticlib cargo argv, in the Makefile's order, after `cargo +<nightly>`."""
+    """The ARM staticlib cargo argv, in the Makefile's order, after `cargo +<RUST_ARM_TOOLCHAIN>`."""
     return [*ARM_ARGS_HEAD, *shlex.split(cfg.get("ARM_PROFILE_FLAG", "--release")), *ARM_ARGS_TARGET,
             cfg["RUST_TARGET"], *ARM_ARGS_LIB, cfg["RUST_TDIR"],
             *shlex.split(cfg.get("RUST_FEATFLAGS", "")), *ARM_ARGS_TAIL]
@@ -312,9 +312,9 @@ class Cargo:
             e["CARGO_TARGET_DIR"] = self.cfg["TEST_FAST_TDIR"]
         return e
 
-    def run(self, args, env, what: str, check: bool = True):
+    def run(self, args, env, what: str, check: bool = True, toolchain: str | None = None):
         t0 = time.monotonic()
-        proc = subprocess.run(["cargo", self.toolchain, *args], cwd=self.cwd, env=env,
+        proc = subprocess.run(["cargo", toolchain or self.toolchain, *args], cwd=self.cwd, env=env,
                               capture_output=True, text=True)
         secs = time.monotonic() - t0
         if check and proc.returncode != 0:
@@ -640,7 +640,8 @@ class Bench:
                 k, v = word.split("=", 1)
                 env[k] = v
         os.utime(self.repo / TOUCH_FILE, None)
-        secs, _ = self.cargo.run(arm_argv(self.cfg), env, "ARM staticlib rebuild")
+        secs, _ = self.cargo.run(arm_argv(self.cfg), env, "ARM staticlib rebuild",
+                                 toolchain="+" + self.cfg.get("RUST_ARM_TOOLCHAIN", "stable"))
         lib = self.repo / self.cfg["RUST_LIB"]
         if not lib.is_file():
             raise BenchError(f"ARM staticlib rebuild: {self.cfg['RUST_LIB']} missing after cargo succeeded")

@@ -255,7 +255,7 @@ def graph_problems(tree, data, project):
 
 def verify_graph(data, project):
     cmd = ['cargo', 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'), '--no-default-features',
-           '--target', 'arm-unknown-linux-gnueabi', '--edges', 'normal,no-proc-macro', '--prefix', 'none', '--format', '{p}']
+           '--target', 'armv7-unknown-linux-gnueabi', '--edges', 'normal,no-proc-macro', '--prefix', 'none', '--format', '{p}']
     out = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, 'CARGO_INCREMENTAL': '0'})
     if out.returncode != 0:
         return [f'cargo tree failed: {out.stderr.strip()[-400:]}']

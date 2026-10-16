@@ -213,7 +213,7 @@ print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 # flags: toolchain, target dirs, feature flags, RUSTFLAGS. Never the telemetry credentials -- the
 # `build-bench` recipe hands those over in the environment, exactly like `test-fast` does.
 print-bench-config:
-	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
+	@printf '%s\n' 'RUST_NIGHTLY=$(RUST_NIGHTLY)' 'RUST_ARM_TOOLCHAIN=$(RUST_ARM_TOOLCHAIN)' 'RUST_TDIR=$(RUST_TDIR)' 'RUST_TARGET=$(RUST_TARGET)' \
 	  'RUST_FEATFLAGS=$(RUST_FEATFLAGS)' 'RUST_LIB=$(RUST_LIB)' 'RUST_ENV=$(RUST_ENV)' \
 	  'ARM_PROFILE=$(ARM_PROFILE)' 'ARM_PROFILE_FLAG=$(ARM_PROFILE_FLAG)' \
 	  'TEST_FAST_TDIR=$(TEST_FAST_TDIR)' 'UNIT_RUN=$(UNIT_RUN)' 'RELEASE=$(RELEASE)' \
@@ -243,6 +243,10 @@ WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
 # NB a rust-toolchain.toml would NOT work here: a `cargo +toolchain` on the command line outranks
 # the file, so the pin has to come through this variable.
 RUST_NIGHTLY ?= nightly
+# The toolchain for the ARM cross-build ONLY (host tests, clippy and rustfmt keep $(RUST_NIGHTLY)).
+# STABLE since the target moved to `armv7-unknown-linux-gnueabi`, whose prebuilt std is ARMv7 and
+# so needs no `-Z build-std`. CI pins an exact release: `make RUST_ARM_TOOLCHAIN=1.99.1 …`.
+RUST_ARM_TOOLCHAIN ?= stable
 
 # sha256 helper: coreutils `sha256sum` on Linux, perl `shasum -a 256` on macOS. Both print the
 # same "<hex>  <path>" format, so `-c -` works against either.
@@ -379,7 +383,7 @@ RUST_REMAP   = --remap-path-prefix=$(HOME)=/build \
 ifeq ($(CAPLINTS),1)
 RUST_CAPLINTS = --cap-lints=warn
 endif
-RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C force-frame-pointers=yes $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
+RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon,-soft-float -C force-frame-pointers=yes $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
 # No C translation unit includes an SDL, GLES or KHR header (the Rust layers declare their own
 # `extern` signatures and read SDL structs by raw offset), so no copy of those headers is kept
 # in the repository and CFLAGS has no -Iinclude.
@@ -793,7 +797,7 @@ ifneq ($(CONFIG_LOCAL_SIG),$(shell cat $(CONFIG_LOCAL_STAMP) 2>/dev/null))
 endif
 endif
 
-RUST_TARGET = arm-unknown-linux-gnueabi
+RUST_TARGET = armv7-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
@@ -809,18 +813,21 @@ all: pkg/plxnative pkg/plxnative-storage
 src/%.o: src/%.c $(wildcard src/*.h) Makefile $(CONFIG_LOCAL_STAMP)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Rust staticlib (built-in arm-unknown-linux-gnueabi target = soft-float ABI,
-# matching the NDK's softfp calling convention). A staticlib needs no linker, so
-# this needs only the nightly compiler + rust-src — no external cross-linker.
+# Rust staticlib (target armv7-unknown-linux-gnueabi = soft-float CALLING convention, matching the
+# NDK's softfp one). A staticlib needs no linker, so this needs only the STABLE compiler and the
+# target's prebuilt std (`rustup target add armv7-unknown-linux-gnueabi`) — no nightly, no rust-src.
 # CRITICAL codegen flags for this TV (32-bit ARMv7+ / A53):
-#  - target-cpu=cortex-a9: the default arm-*-gnueabi (ARMv6) codegen emits the
-#    legacy CP15 memory barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53
-#    (ARMv8) → SIGILL. cortex-a9 (ARMv7-A) emits the dedicated `dmb`, matching
-#    the C side's default and staying portable to older ARMv7 webOS devices.
+#  - the target itself: its prebuilt std is ARMv7 (+v7,+thumb2), so it carries `dmb`, not the legacy
+#    CP15 barrier (mcr p15,...,c7,c10,5) that the ARMv6 arm-unknown-linux-gnueabi std carries and
+#    that is UNDEFINED on the A53 -> SIGILL. That is what `-Z build-std` used to buy.
+#  - target-cpu=cortex-a9: ARMv7-A codegen for our crates, portable to older ARMv7 webOS devices.
+#  - target-feature=-soft-float: the target defaults to `+soft-float` (no VFP instructions at all);
+#    this turns VFP back on in OUR crates while the calling convention stays soft (llvm-floatabi
+#    "soft" is a property of the target, not of this feature), i.e. what cortex-a9 gave on the old
+#    ARMv6 target. std's own float code stays software. rustc accepts it with an "unstable feature"
+#    warning, like -neon.
 #  - target-feature=-neon: NEON isn't needed (VFP still on for floats), and it
 #    dodges crates (simd-adler32, ...) whose NEON path uses unstable intrinsics.
-#  - -Z build-std: rebuilds std itself with these flags (precompiled std shipped
-#    the CP15 barriers), so needs the nightly toolchain + rust-src.
 # Codegen flags now live in rust-modules/.cargo/config.toml so they bind to the TARGET and
 # every cargo invocation gets them, not just this recipe. See that file before changing them.
 #
@@ -924,7 +931,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	mkdir -p rust-modules/$(RUST_TDIR)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  $(TELEMETRY_ENV) \
-	  cargo +$(RUST_NIGHTLY) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
+	  cargo +$(RUST_ARM_TOOLCHAIN) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
 	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
 	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
 	@# The crate declares `crate-type = ["rlib"]`, so this `.a` exists only because the line above
@@ -960,8 +967,8 @@ STORAGE_INPUTS := $(shell find rust-modules/storage rust-modules/build_support r
 STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/plxnative-storage
 pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
-	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
-	  cargo +$(RUST_NIGHTLY) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
+	  CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
+	  cargo +$(RUST_ARM_TOOLCHAIN) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
 	    -p plxnative-storage --bin plxnative-storage --target-dir $(STORAGE_TDIR) --no-default-features -- \
 	    -C link-arg=--sysroot=$(SYSROOT) -L native=$(SYSROOT)/usr/lib \
 	    -C link-arg=-Wl,-rpath-link,$(SYSROOT)/usr/lib -C link-arg=-Wl,--build-id=sha1
