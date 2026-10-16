@@ -407,8 +407,9 @@ by `Recording::parse`, freshly recorded with `tests/focusfp.sh --rec`, replaced 
 
 The Sort & Filter morph (`6a0724459`: the pill and the panel are one surface) changed recorded
 behaviour without moving the shape: a surface held under a capture now gets a zero-length tick
-(`held_tick`, `dt_us: 0`) where it used to be skipped, so the recorded `Deliver tick` payload on the
-capture/text-warm frames differs. `6-settings-family` and `12-filmography-detail-return` diverged
+(`held_tick`, `dt_us: 0`) where it used to get the frame's real dt, so the recorded `Deliver tick`
+payload on the capture/text-warm frames differs (the `Deliver` was always there; only its `dt_us`
+changed). `6-settings-family` and `12-filmography-detail-return` diverged
 with `effect_diffs=2` at frames 31/32 (recorded `dt_us` 19000/17000) in both modes, every other
 counter zero; `1-boot-home-chip-grid` stayed SAME. The divergence was attributed by bisecting the
 branch: `fdbc7182e`, the commit before it, replayed all three SAME, and `6a0724459` reproduced the

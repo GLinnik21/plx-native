@@ -323,7 +323,7 @@ Discover trailer playable?
 - **DS3 Bright verdict** (boards: WatchlistEmpty, WatchlistFiltered): TEXT_PRIMARY verdict, secondary body, everywhere; amend idiom #4.
   ui-sim captures of every read-out.
 - **DS4 Grid landings** (boards: WatchlistRemoved + Motion's Remove card): `Scene` → slot→(x,y); `GridSpec::animate_landings`; ghost on K_SCALE,
-  survivors K_SCROLL, no stagger; line-break reflow = straight 2-D spring; off-screen snap; focus
+  survivors K_SCROLL, no stagger; a card that changes row crossfades on K_SCALE (the 2-D spring only for a scroll-only move); off-screen snap; focus
   next. Cards Tier-1 + conformance; update "Grid has none yet". Host + ui-sim + TV feel.
 - **DS5 Strip N icon tabs (neutral)** (board: Main, strip geometry only — the bookmark tab itself lands in W45): `TabFace::{Label, Icon}` replaces "last label is Search";
   shipped 60×60 pill, 32 px mark, 16 px gap, `TabPill::mixed_ink`; positional maps → key lookups
@@ -387,7 +387,7 @@ DS7, DS8 before or alongside → W6a → W6 → W7.
   fallback, profile-tv measurement.
 - DS6 reverses the popover glass policy for every menu; re-measure popover frame numbers
   (popover.rs:8-14).
-- Grid reflow diagonal travel needs a TV feel check.
+- Grid reflow row-change crossfade and the post-menu beat (`LANDING_BEAT_MS`) need a TV feel check.
 - Tab bar: vocabulary + positional maps only; two pin bumps re-record fixtures twice.
 - Icon-only tab accessibility UNVERIFIED (Q3). i18n: Be genitive, four languages, size delta
   UNVERIFIED. No reachable PMS → skeleton Discover posters (Q9). plex.tv offline → flip+revert
@@ -518,20 +518,24 @@ menus, 30% scrim, icon-tab pill, darker tick veil, bright-verdict rule, new icon
    state flip + 3 px ribbon drop. The fill is the confirmation.
 2. Add from hold menu: menu closes as today; tab bar bookmark pulses once (~1.35× + soft glow,
    back). Only confirmation.
-3. Remove from Watchlist grid: exactly the #737 landing (`ui/src/cards/landing.rs`): ghost fades
-   in place on `K_SCALE` 320 easing off its focus pop; survivors spring home together on
-   `K_SCROLL` 170, no stagger; next card takes focus. GAP: landings only on `Shelf`
+3. Remove from Watchlist grid: the #737 landing (`ui/src/cards/landing.rs`), run AFTER the menu
+   (it waits for the veil to clear, then `LANDING_BEAT_MS`): ghost fades in place on `K_SCALE`
+   320 easing off its focus pop, carried above the dim by the opener lift; same-row survivors
+   slide home together on `K_SCROLL` 170, no stagger; a card that changes row crossfades; the
+   next card rises from rest once focus reconciles. GAP: landings only on `Shelf`
    (`animate_landings(true)`, Home CW only); ui CLAUDE.md "`Grid` has none yet". Need Grid
-   landings incl. reflow across line breaks (first card of next line travels to end of line
-   above).
+   landings incl. reflow across line breaks: a card that crosses a line break crossfades (out
+   where it stood, in at its new cell, on K_SCALE); it never flies over the row between.
 4. Page colour: existing AmbientWash crossfade.
 5. Sort & Filter popover: glass MORPH (pill's glass becomes the panel, iOS 26 Liquid Glass).
    Rect animates pill→panel anchored top-right; panel hugs rows (8 px padding). Width k≈620,
    height k≈950, critically damped (height leads). Corner radius pill→22 with rounder bulge
    mid-flight. NO shape overshoot. Open ~190 ms, close ~150 ms. Rows keep own size, clipped by
    glass, rise scale 0.82→1 on underdamped spring (zeta 0.6, k≈720, ~1.5% give), opacity+blur
-   resolve on landing; pill label dissolves out as rows come in; on close rows dissolve while
-   glass drains back and pill's NEW value dissolves in; never an empty glass frame.
+   resolve on landing; the pill's plate and label cross to glass over the first 30% of the rect's progress, THEN
+   the rows come in (clipped to the surface); on close the rows leave first, while the rect is
+   still well larger than the pill, and the surface ends as the pill with its NEW value; never
+   an empty glass frame.
    Engine: today every popover opens with one shared fade-and-slide (`Popover`, `K_APPEAR`
    300, `ui/src/popover.rs`). Morph = second open style for glass openers (Sort & Filter pill,
    profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect reuses

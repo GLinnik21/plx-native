@@ -54,8 +54,9 @@
 //! ([`page_image_held`](crate::containers::transition::page_image_held)); the stepping begins on
 //! the first tick after the image is released.
 //!
-//! Time is the frame's own `dt` through [`Spring::step`](crate::Spring::step); nothing reads a
-//! clock. The state is transient render history: it is never written to the motion canon, and a
+//! The springs step on the frame's own `dt` through [`Spring::step`](crate::Spring::step); the
+//! beat after the veil clears is counted on the tick clock (`Tick::ms`), never by summing `dt`.
+//! No wall clock is read. The state is transient render history: it is never written to the motion canon, and a
 //! replay reconstructs it by running the same ticks.
 //!
 //! A settled or disabled section pays nothing per tick when the source's length and
