@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T13:46:12Z",
+ "generated": "2026-10-16T14:20:13Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.3,
-   "change7_pct": 21.0,
+   "change30_pct": -57.4,
+   "change7_pct": 20.6,
    "d30": 998,
-   "delta30": -571.5,
-   "delta7": 74.0,
+   "delta30": -573,
+   "delta7": 72.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 126,
+   "n_now": 127,
    "n_prev": 118,
-   "now": 426.5,
+   "now": 425,
    "prev7": 352.5,
    "shown": true,
    "state": "worse",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 129.8,
-   "change7_pct": -2.8,
+   "change30_pct": 130.3,
+   "change7_pct": -2.6,
    "d30": 99,
-   "delta30": 128.5,
-   "delta7": -6.5,
+   "delta30": 129,
+   "delta7": -6,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 103,
-   "now": 227.5,
+   "now": 228,
    "prev7": 234,
    "shown": true,
    "state": "flat",
@@ -353,15 +353,15 @@
    "change30_pct": 148.6,
    "change7_pct": -48.9,
    "d30": 74,
-   "delta30": 110.0,
-   "delta7": -176.0,
+   "delta30": 110,
+   "delta7": -176,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 103,
-   "now": 184.0,
+   "now": 184,
    "prev7": 360,
    "shown": true,
    "state": "better",
@@ -396,14 +396,14 @@
    "change7_pct": -3.8,
    "d30": null,
    "delta30": null,
-   "delta7": -6.0,
+   "delta7": -6,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 77,
-   "now": 150.0,
+   "now": 150,
    "prev7": 156,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 0.0,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 0.0,
-   "delta7": 0.0,
+   "delta30": 0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 103,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 220.7,
    "commits": [
     {
-     "pr": 800,
-     "sha": "4490753db",
-     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
-    },
-    {
      "pr": 808,
      "sha": "440959492",
      "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
@@ -657,6 +652,11 @@
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
    "from": 53.8,
@@ -670,11 +670,6 @@
    "change_pct": 93.8,
    "commits": [
     {
-     "pr": 800,
-     "sha": "4490753db",
-     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
-    },
-    {
      "pr": 808,
      "sha": "440959492",
      "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
@@ -718,6 +713,11 @@
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
    "from": 211.0,
@@ -731,11 +731,6 @@
    "change_pct": 50.8,
    "commits": [
     {
-     "pr": 800,
-     "sha": "4490753db",
-     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
-    },
-    {
      "pr": 808,
      "sha": "440959492",
      "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
@@ -779,6 +774,11 @@
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
    "from": 268.5,
@@ -792,11 +792,6 @@
    "change_pct": 32.4,
    "commits": [
     {
-     "pr": 800,
-     "sha": "4490753db",
-     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
-    },
-    {
      "pr": 808,
      "sha": "440959492",
      "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
@@ -840,6 +835,11 @@
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
    "from": 361.0,
@@ -850,13 +850,8 @@
    "to": 478.0
   },
   {
-   "change_pct": 21.0,
+   "change_pct": 20.6,
    "commits": [
-    {
-     "pr": 800,
-     "sha": "4490753db",
-     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
-    },
     {
      "pr": 808,
      "sha": "440959492",
@@ -901,6 +896,11 @@
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
    "from": 352.5,
@@ -908,7 +908,7 @@
    "label": "Wait after merge",
    "since": "2026-10-16",
    "threshold_pct": 15.0,
-   "to": 426.5
+   "to": 425
   }
  ],
  "schema": 2,
