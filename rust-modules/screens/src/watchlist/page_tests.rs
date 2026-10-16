@@ -681,3 +681,61 @@ fn the_shape_follows_the_write_order() {
     assert!(WatchlistScreen::SHAPE.starts_with("WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,"));
     assert!(!WatchlistScreen::SHAPE.contains("sort:str"));
 }
+
+/// **Nothing on the grid changes between a Remove's commit and the landing's start**: under the
+/// hold menu's veil (and the landing's beat) every survivor keeps the slot and the scale it was
+/// drawn at, the new focus rests (no pop, no caption move), and the first frame of the landing is
+/// the only frame anything moves on.
+#[test]
+fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
+    use plx_ui::cards::conformance::CardHarness;
+    use plx_ui::containers::modal::{set_veil, VEIL_CLEAR};
+    let mut h = Harness::new(tiles(14));
+    h.focus_index(2);
+    h.run(60);
+    let before: Vec<(u32, plx_ui::Rect, f32)> =
+        h.cards().into_iter().map(|e| (e, h.drawn_rect(e, 1.0).unwrap(), h.scale(e).unwrap())).collect();
+    let removed = h.focused().unwrap();
+    set_veil(1.0);
+    let guid = h.screen.tiles()[h.screen.index_of(removed).unwrap()].row.guid.clone();
+    h.screen.input(WatchlistIn::Removed(guid));
+    for frame in 0..30 {
+        h.run(1);
+        h.reconcile();
+        let now = h.focused().unwrap();
+        assert_ne!(now, removed, "premise: focus reconciled off the removed tile");
+        let leaving = h.screen.leaving_probe();
+        for (e, rect, scale) in &before {
+            if *e == removed || rect.y > 1080.0 {
+                // (a card below the screen snaps: nothing of it is on screen to animate)
+                continue;
+            }
+            let (mut r, s) = (h.drawn_rect(*e, 1.0).unwrap(), h.scale(*e).unwrap());
+            // a card that changed row stands as its leaving copy, at full alpha, where it was drawn
+            if let Some((_, copy, alpha)) = h.screen.index_of(*e).and_then(|i| leaving.iter().find(|l| l.0 == i)) {
+                assert!((alpha - 1.0).abs() < 1e-3, "frame {frame}: card {e}'s copy is not whole: {alpha}");
+                r = *copy;
+            }
+            let want = if *e == now { 1.0 } else { *scale };
+            assert!(
+                *e == now // the focused card's stop carries the full pop; its scale is checked below
+                    || (r.x - rect.x).abs() < 0.5 && (r.y - rect.y).abs() < 0.5 && (r.w - rect.w).abs() < 0.5 && (r.h - rect.h).abs() < 0.5,
+                "frame {frame}: card {e} moved under the menu: {rect:?} -> {r:?}"
+            );
+            assert!((s - want).abs() < 1e-3, "frame {frame}: card {e} rescaled under the menu: {want} -> {s}");
+        }
+    }
+    set_veil(VEIL_CLEAR * 0.5);
+    let now = h.focused().unwrap();
+    let mut last = 1.0f32;
+    let mut rose = false;
+    for frame in 0..120 {
+        h.run(1);
+        let s = h.scale(now).unwrap();
+        assert!(s + 1e-4 >= last, "frame {frame}: the new focus collapsed from {last} to {s}");
+        rose |= s > 1.001;
+        last = s;
+    }
+    assert!(rose && (last - h.focus_scale()).abs() < 1e-3, "the new focus rose once to the pop and rests there");
+    set_veil(0.0);
+}

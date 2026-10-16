@@ -929,6 +929,12 @@ impl WatchlistScreen {
         self.ground_target()
     }
 
+    /// Test support: the leaving copies the grid draws, `(index, rect, alpha)`.
+    #[cfg(test)]
+    pub(crate) fn leaving_probe(&self) -> Vec<(usize, Rect, f32)> {
+        self.stack.grid(Sec::Items).map(|g| g.leaving_rects(self.page.len())).unwrap_or_default()
+    }
+
     /// Test support: the grid's removal landing has stepped (it is playing and no longer waiting).
     #[cfg(test)]
     pub(crate) fn landing_started(&self) -> bool {
