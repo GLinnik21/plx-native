@@ -49,8 +49,8 @@ impl HoldRowId {
 /// destructive Remove row. Per the §1.9 table every state offers Remove. (A title with a reachable
 /// copy is presented by the app as a PMS card menu plus Remove instead, `ItemMenuKind::Card`; these
 /// rows serve the titles with none.)
-/// The catalog "go" row is inert until W6 routes `ContentArg::Catalog` (`input.rs`
-/// `Action::GoToCatalog`); it is kept because the table lists it for the unmatched states.
+/// The catalog "go" row opens the catalog page: `input.rs` routes `Action::GoToCatalog` to
+/// `ContentArg::Catalog`; the table lists it for the unmatched states.
 pub fn rows_for(state: TileState, kind: Kind) -> Vec<ItemMenuRow> {
     let label = match kind {
         Kind::Movie => plx_platform::i18n::msg::browse_menu_go_movie(),

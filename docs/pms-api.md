@@ -236,6 +236,34 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
 
 ---
 
+## 2d. Which of these guids does this server hold? — `GET /library/all?type=T&guid=a,b,c`
+
+(Measured 2026-10 on PMS 1.43.4 with a per-server token, read-only. The Watchlist's join from a
+Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
+
+- **One request answers many guids.** `guid=<a>,<b>,<c>` in a SINGLE parameter returns every row whose
+  `guid` is listed; a guid the server does not hold is silently absent, there is no error row.
+  Repeated `guid=a&guid=b` keeps only the last. The separator is a literal `,`; each guid is
+  percent-encoded on its own first.
+- **Only the primary `plex://` guid matches.** `plex://movie/<24 hex>` and `plex://show/<24 hex>`.
+  `imdb://`, `tmdb://` and `tvdb://` (which the items carry in `Guid[]` with `includeGuids=1`) answer
+  size 0, so a title with no `plex://` guid cannot be looked up this way.
+- **`type` narrows and must be right.** `type=1` movies, `type=2` shows. A wrong `type` answers
+  size 0, which is indistinguishable from "not held", so the call is made once per kind and the kind
+  comes from the guid's own prefix. Rows carry `librarySectionID` and, when the server has them,
+  `UltraBlurColors`.
+- **The client chunks at 40 guids** (`GUIDS_PER_REQUEST`) to keep the URL short; PMS's own URL limit
+  was not measured, so 40 is a conservative choice rather than a found ceiling. Cost is
+  servers x kinds x ceil(N/40) requests (about 10 to 12 for 200 titles on two servers).
+- **Absence is only proof when the server answered.** `Client::find_by_guids` returns `Err` when any
+  chunk got no readable answer, and the caller must not read that as "absent": a silent share would
+  otherwise turn a playable title into "On no server".
+- The same guid in two libraries is reported once, with the first row's key.
+- A single-guid form `GET /library/all?guid=plex://movie/<hex>[&type=1]` also works and is what
+  "Also available" uses one guid at a time.
+
+---
+
 ## 3. Hubs (home shelves)
 
 ```
@@ -1322,6 +1350,8 @@ a recording or replay is armed: it stays queued. A feed that comes back after a 
 seen and owes the covered pages their re-read. A hint is never a playback event: it does not queue a
 stop, an end-of-stream candidate or a resume point, so a stranger's `stopped` cannot scrobble our
 other servers.
+
+What a hint does NOT do for the Watchlist: the feed subscribes to `filters=playing` and the parser drops every other type, so a library scan's timeline events are not received, and a title that a server gains or loses flips its Watchlist tile (playable, on no server) only at the next re-match (tab entry, resume, a cover re-read, a roster change); a watched toggle on another client emits nothing either. The plex.tv membership itself has no PMS signal at all (`docs/watchlist.md`, *Live-update gaps*).
 
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
 5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
