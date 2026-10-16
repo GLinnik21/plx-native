@@ -273,7 +273,7 @@ WERROR      ?= -Werror
 # The out-of-process crash walker follows ARM's APCS frame chain. Keeping r11 frame pointers in
 # every C frame is therefore part of the crash-reporting ABI, not debug-only codegen; without it a
 # valid envelope contains only the faulting PC. Rust's matching flag is in RUST_ENV/config.toml.
-CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables -Wall -Wextra $(WERROR) -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
@@ -380,8 +380,9 @@ ifeq ($(CAPLINTS),1)
 RUST_CAPLINTS = --cap-lints=warn
 endif
 RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C force-frame-pointers=yes $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
-# -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
-# the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
+# No C translation unit includes an SDL, GLES or KHR header (the Rust layers declare their own
+# `extern` signatures and read SDL structs by raw offset), so no copy of those headers is kept
+# in the repository and CFLAGS has no -Iinclude.
 
 # Real sysroot libraries. Every one of these has the SAME SONAME on every webOS release from
 # 2.2.3 to 11.2.0 (`tools/fwcompat.py --inventory` will show you), which is what makes linking
@@ -1113,7 +1114,7 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,$(ICO
 # and in `.claude/hooks/outbound-guard.py`'s PRIVATE_FILES — it carries a live credential.
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/appfont-emoji.ttf pkg/OFL.txt \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
@@ -1155,7 +1156,8 @@ SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manife
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
 # the television's own DroidSansFallback is present on the sets we have measured but is not
 # something a submission can be graded against. `rust-modules/base/src/fontcov.rs`'s host gate asserts
-# what it must cover; `text.rs`'s module doc is the chain.
+# what it must cover; `text.rs`'s module doc is the chain. appfont-emoji.ttf (monochrome Noto
+# Emoji, tools/cut-noto-emoji.py, under 1 MB) is the chain's emoji link.
 
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
 # statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`

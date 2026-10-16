@@ -63,7 +63,7 @@ fn no_lift(_: ScrimLiftRead<'_>) {}
 /// `theme::underlay::DIM_*` rows — no surface states a number of its own — and the container paints
 /// it through the stack's one `UnderlayField` (`containers::modal::ModalUnderlay`) as
 /// `Role::Dim { weight: theme::underlay::TINT }`, latched from the undimmed host page (or, over the
-/// video plane, from [`UnderlaySource::Corners`]). So the dim keeps the page's colour where the
+/// video plane, [`UnderlaySource::Flat`], the neutral ink). So the dim keeps the page's colour where the
 /// page has it; at `TINT == 0` it is the flat `theme::scrim_black` rect to the bit.
 ///
 /// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
@@ -101,11 +101,8 @@ pub enum UnderlaySource {
     /// The host page itself, read off the framebuffer before any dim is on it — every surface
     /// presented over a page.
     Page,
-    /// A four-corner envelope (tl, tr, br, bl — `plex::UltraBlurColors::corners`' ring): a surface
-    /// over the hardware video plane, which GL cannot read back, inherits the playing item's own
-    /// UltraBlur colours instead.
-    Corners([[f32; 3]; 4]),
-    /// Nothing honest to inherit (a video-plane surface whose item carries no envelope): the flat
+    /// Nothing honest to inherit (a surface over the hardware video plane, which GL cannot read
+    /// back, and which takes no colour from the playing item's artwork either): the flat
     /// `theme::scrim_black` ink.
     Flat,
 }
@@ -137,16 +134,14 @@ impl Scrim {
         }
     }
 
-    /// A dim of `alpha` over the VIDEO PLANE, inheriting the playing item's `corners` (or the flat
-    /// ink when it has none) — the player's panels, whose page is a hole GL cannot sample.
-    pub const fn over_video(alpha: f32, corners: Option<[[f32; 3]; 4]>) -> Scrim {
+    /// A dim of `alpha` over the VIDEO PLANE in the neutral flat ink — the player's panels, whose
+    /// page is a hole GL cannot sample, and which stay neutral rather than casting the playing
+    /// item's artwork colour over the picture.
+    pub const fn over_video(alpha: f32) -> Scrim {
         Scrim {
             alpha,
             lift: no_lift,
-            source: match corners {
-                Some(c) => UnderlaySource::Corners(c),
-                None => UnderlaySource::Flat,
-            },
+            source: UnderlaySource::Flat,
         }
     }
 }
@@ -206,14 +201,6 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// only surfaces, and only ones whose host is cached rather than replaced.
     fn scrim(&self) -> Scrim {
         Scrim::NONE
-    }
-    /// **The envelope a surface opened over this PAGE would inherit its dim from**, when the page
-    /// is the hardware video plane (`Scrim::over_video`'s `corners`). Asked of the top page on a
-    /// presenting frame while no surface is up, so the container can latch the field BEFORE the
-    /// first popover opens instead of inside its open frame (`ModalUnderlay::note_at_rest`, which
-    /// waits for the page to rest). `None` for every page that is not a video plane.
-    fn underlay_corners(&self, _cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
-        None
     }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after

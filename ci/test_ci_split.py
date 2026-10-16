@@ -211,7 +211,7 @@ class CiRunsEveryTarget(unittest.TestCase):
         self.assertIn(f"name: {AGGREGATOR_NAME}", block)
         needs = re.search(r"^    needs: \[([^\]]*)\]", block, flags=re.M)
         self.assertIsNotNone(needs)
-        self.assertEqual(sorted(n.strip() for n in needs.group(1).split(",")), sorted(JOBS))
+        self.assertEqual(sorted(n.strip() for n in needs.group(1).split(",")), sorted(["changes", *JOBS]))
         self.assertRegex(block, re.compile(r"^    if: always\(\)", re.M), "a job that needs a failed job is skipped, and a skip is not red")
         for job in JOBS:
             self.assertIn(f"needs.{job}.result", block)

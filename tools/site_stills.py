@@ -62,11 +62,11 @@ SCHEMA = 1
 
 # Everything that can change a pixel of a still, as git trees (or blobs) at a revision: every crate, the assets
 # and locale strings the app embeds, the C shims, the scene manifest, the demo library and the mock that serves
-# it, the card's page, the three fonts the simulator reads out of `pkg/`, and the tools that cut the files.
+# it, the card's page, the fonts the simulator reads out of `pkg/`, and the tools that cut the files.
 TREE_PATHS = (
     "rust-modules", "assets", "locales", "src",
     "tests/screenshots", "tests/demo_library", "tests/mock_pms.py", "site/og",
-    "pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf",
+    "pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf",
     "tools/screenshots.py", "tools/render-og-card.sh", "tools/render-site-variants.py",
     "tools/render-site-glows.py", "tools/site_stills.py",
 )

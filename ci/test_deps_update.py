@@ -29,7 +29,20 @@ spec.loader.exec_module(du)
 WORKFLOW = ROOT / '.github/workflows/deps-update.yml'
 
 
+# Everything that asserts a version, digest or URL reads this frozen copy, never the live manifest:
+# the weekly updater edits ci/dependencies.json (and THIRD-PARTY-NOTICES.md) on every bump PR, so a
+# test pinned to the live pin would fail on the updater's own output. Only the generic checks
+# (live_manifest) read the live files, and they assert no specific version.
+FIXTURES = ROOT / 'ci/testdata'
+FIXTURE_MANIFEST = FIXTURES / 'dependencies.json'
+FIXTURE_NOTICES = FIXTURES / 'THIRD-PARTY-NOTICES.md'
+
+
 def manifest():
+    return json.loads(FIXTURE_MANIFEST.read_text())
+
+
+def live_manifest():
     return json.loads((ROOT / 'ci/dependencies.json').read_text())
 
 
@@ -57,7 +70,7 @@ def fake_github(payloads):
 
 class Manifest(unittest.TestCase):
     def test_every_entry_declares_a_valid_update_source(self):
-        self.assertEqual(du.update_problems(manifest()), [])
+        self.assertEqual(du.update_problems(live_manifest()), [])
 
     def test_the_committed_file_is_what_the_script_would_write(self):
         text = (ROOT / 'ci/dependencies.json').read_text()
@@ -186,9 +199,9 @@ class Rewrite(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch)
         path = scratch / 'm.json'
-        shutil.copy(ROOT / 'ci/dependencies.json', path)
+        shutil.copy(FIXTURE_MANIFEST, path)
         notices = scratch / 'NOTICES.md'
-        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
+        shutil.copy(FIXTURE_NOTICES, notices)
         before = json.loads(path.read_text())
         release = {'version': '1.0.18', 'tag': 'v1.0.18', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \
@@ -206,9 +219,9 @@ class Rewrite(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch)
         path = scratch / 'm.json'
-        shutil.copy(ROOT / 'ci/dependencies.json', path)
+        shutil.copy(FIXTURE_MANIFEST, path)
         notices = scratch / 'NOTICES.md'
-        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
+        shutil.copy(FIXTURE_NOTICES, notices)
         release = {'version': '9.9.9', 'tag': '9.9.9', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \
                 mock.patch.object(du, 'download_digest', return_value='d' * 64), \
@@ -231,7 +244,7 @@ class Rewrite(unittest.TestCase):
         release = {'version': '1.0.18; rm -rf', 'tag': 'v1.0.18', 'url': ''}
         with mock.patch.object(du, 'latest', return_value=release):
             with self.assertRaises(du.BumpError):
-                du.bump('fribidi', path=ROOT / 'ci/dependencies.json')
+                du.bump('fribidi', path=FIXTURE_MANIFEST)
 
 
 class FilteringTarfile:
@@ -278,14 +291,16 @@ class Notices(unittest.TestCase):
         return old, new
 
     def test_every_rule_names_a_manifest_entry_and_matches_the_committed_notices(self):
+        # Live files, no specific version: the committed notices must follow the committed manifest.
         text = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text()
-        self.assertEqual(sorted(set(du.NOTICE_ROWS) - {d['id'] for d in manifest()}), [])
+        live = {d['id']: d for d in live_manifest()}
+        self.assertEqual(sorted(set(du.NOTICE_ROWS) - set(live)), [])
         for name, rows in du.NOTICE_ROWS.items():
             for row in rows:
-                self.assertIn(du.notice_text(row, dep(name)), text, name)
+                self.assertIn(du.notice_text(row, live[name]), text, name)
 
     def test_each_entry_with_rows_is_rewritten_and_the_old_strings_are_gone(self):
-        text = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text()
+        text = FIXTURE_NOTICES.read_text()
         for name in du.NOTICE_ROWS:
             old, new = self.moved(name, '99.1.2')
             out = du.update_notices(old, new, text)
@@ -311,8 +326,8 @@ class Notices(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch)
         path, notices = scratch / 'm.json', scratch / 'NOTICES.md'
-        shutil.copy(ROOT / 'ci/dependencies.json', path)
-        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
+        shutil.copy(FIXTURE_MANIFEST, path)
+        shutil.copy(FIXTURE_NOTICES, notices)
         release = {'version': '9.1', 'tag': '9.1', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \
                 mock.patch.object(du, 'download_digest', return_value='a' * 64):
@@ -326,7 +341,7 @@ class Notices(unittest.TestCase):
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch)
         path, notices = scratch / 'm.json', scratch / 'NOTICES.md'
-        shutil.copy(ROOT / 'ci/dependencies.json', path)
+        shutil.copy(FIXTURE_MANIFEST, path)
         notices.write_text('nothing here\n')
         release = {'version': '1.0.18', 'tag': 'v1.0.18', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \

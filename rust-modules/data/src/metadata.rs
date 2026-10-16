@@ -2609,11 +2609,6 @@ pub struct PlayingItem {
     pub dovi: Dovi,
     pub markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
-    /// The played leaf's own `UltraBlurColors` corners (tl, tr, br, bl), or `None` when the server
-    /// sent no usable envelope. What the player's panels dim WITH: GL cannot read the video plane,
-    /// so this is the one honest source of "the light under the panel" there
-    /// (`screen::Scrim::over_video`).
-    pub blur: Option<[[f32; 3]; 4]>,
     /// The played leaf's video stream is HDR: a PQ or HLG transfer, or Dolby Vision
     /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
     /// keeps it true, so the HDR overlay dim also asks the route (`route::overlay_gain`).
@@ -2639,7 +2634,6 @@ impl PlayingItem {
             dovi: Default::default(),
             markers: Vec::new(),
             chapters: Vec::new(),
-            blur: None,
             hdr: false,
         }
     }
@@ -2688,7 +2682,6 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
-            blur: d.has_blur.then_some(d.blur),
             hdr: d.hdr,
         })
 }
@@ -2734,10 +2727,6 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
         .unwrap_or((0, 0, 0));
-    let blur = it
-        .as_ref()
-        .and_then(|it| it.ultra_blur_colors)
-        .and_then(|u| u.corners());
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -2753,7 +2742,6 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         dovi,
         markers,
         chapters,
-        blur,
         hdr,
     }
 }

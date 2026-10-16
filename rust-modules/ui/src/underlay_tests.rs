@@ -212,7 +212,7 @@ fn a_ramp_reconstructs_without_a_step() {
 }
 
 /// **A corner envelope still produces the bilinear it stands in for.** This is the compatibility
-/// contract for the CPU source: the video-plane and pre-Home cases hand four corners to a field
+/// contract for the CPU source: the pre-Home case hands four corners to a field
 /// where they used to hand them to an `AmbientWash`, and the picture must not change.
 ///
 /// The epsilon is not slop, it is two named quantities: the cells store LINEAR light, so a cubic

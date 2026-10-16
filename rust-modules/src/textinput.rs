@@ -23,8 +23,8 @@
 //! ## Three traps, all of them silent
 //!
 //! 1. **The event is shifted.** webOS inserts a `Uint32 inputSource` at `+12`, so the UTF-8 text
-//!    starts at **+16**, not the `+12` the vendored `include/SDL2/SDL_events.h` declares. That
-//!    header is stock 2.0.4 and lies about this build; the NDK sysroot's fork copy is the proof.
+//!    starts at **+16**, not the `+12` that stock SDL 2.0.4's `SDL_events.h` declares. That
+//!    header lies about this build; the NDK sysroot's fork copy is the proof.
 //!    Under `hostsim` the offset really is `+12` — desktop SDL2 is stock — so this is a `cfg`, and
 //!    a single hard-coded number ships garbage on one of the two platforms. [`TEXT_OFF`] is that
 //!    `cfg`; `decode_text_at` takes the offset as an argument so `make check` grades both.
