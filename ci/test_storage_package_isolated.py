@@ -14,7 +14,7 @@ It asks cargo for the resolved UNIT GRAPH of BOTH invocations the repo uses for 
 (`cargo ... --unit-graph`, `-Zunstable-options`, let through with RUSTC_BOOTSTRAP=1 on the stable pin) instead of compiling them:
   * `cargo test <bin> --no-run`, what `make check` builds before running the helper's unit tests;
   * `cargo rustc <bin> --no-default-features`, the shape of the `pkg/plxnative-storage` rule. That
-    rule passes `--release --target arm-unknown-linux-gnueabi`; here it is the HOST, dev-profile
+    rule passes `--release --target armv7-unknown-linux-gnueabi`; here it is the HOST, dev-profile
     graph of the same package and binary, because the property checked (which crates cargo would
     compile for this binary) is decided by the package graph, not by the profile or the triple.
 and fails on any unit that belongs to the app package -- its library, and also its build script,

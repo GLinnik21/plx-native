@@ -56,6 +56,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'ci'))
+from rust_toolchain import pinned  # noqa: E402
 DATA = ROOT / 'ci' / 'third-party-crates.json'
 NOTICES = ROOT / 'THIRD-PARTY-NOTICES.md'
 LOCK = ROOT / 'rust-modules' / 'Cargo.lock'
@@ -259,7 +261,7 @@ def graph_problems(tree, data, project):
 
 
 def verify_graph(data, project):
-    cmd = ['cargo', 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'), '--no-default-features',
+    cmd = ['cargo', '+' + pinned(ROOT), 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'), '--no-default-features',
            '--target', 'armv7-unknown-linux-gnueabi', '--edges', 'normal,no-proc-macro', '--prefix', 'none', '--format', '{p}']
     out = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, 'CARGO_INCREMENTAL': '0'})
     if out.returncode != 0:

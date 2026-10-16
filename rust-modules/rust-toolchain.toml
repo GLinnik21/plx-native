@@ -5,7 +5,8 @@
 #   * the Makefile  -> RUST_TOOLCHAIN (a `cargo +<channel>` on a command line outranks this file,
 #                      so make passes the value explicitly; a bare `cargo` in rust-modules/ and
 #                      rust-analyzer pick the file up on their own),
-#   * CI            -> `make -s print-rust-toolchain` (the host-rust and build jobs install it),
+#   * CI            -> .github/actions/rust-toolchain/action.yml reads `channel` from this file with sed
+#                      (the host-rust and build jobs install it),
 #   * the notices   -> ci/gen-third-party-notices.py checks THIRD-PARTY-NOTICES.md's std half
 #                      against this release.
 # To move it: change `channel`, then `make notices` (std's dependency list is per release).

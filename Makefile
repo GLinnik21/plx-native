@@ -243,8 +243,8 @@ WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
 # by the ARM cross-build AND the host unit suites, clippy and rustfmt. A fresh machine needs that
 # release plus its `armv7-unknown-linux-gnueabi` rust-std (`make setup-env` installs both) and
 # nothing else: no nightly, no `rust-src`, no `-Z build-std`. Override with `make RUST_TOOLCHAIN=...`
-# (the GPL source rebuild links its isolated toolchain as `source-rebuild`); CI reads the value with
-# `make -s print-rust-toolchain`.
+# (the GPL source rebuild links its isolated toolchain as `source-rebuild`); CI reads the value from the
+# file itself (.github/actions/rust-toolchain/action.yml, with sed); `make -s print-rust-toolchain` prints it.
 # NB the file alone would NOT be enough: a `cargo +toolchain` on the command line outranks it, so
 # every recipe passes `+$(RUST_TOOLCHAIN)` explicitly and this variable is how the file reaches them.
 RUST_TOOLCHAIN ?= $(shell sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' $(CURDIR)/rust-modules/rust-toolchain.toml)
@@ -2177,7 +2177,7 @@ sim: sim-macos
 
 sim-macos: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	$(TELEMETRY_ENV) \
-	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
+	  cargo +$(RUST_TOOLCHAIN) build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
 # Full product replay is a renderer-backed host gate. Keep the fast unit suite usable without
 # a window system; Simulator CI runs this same driver against the simulator it just built.
@@ -2210,7 +2210,7 @@ SHOT_CHECK  ?=
 SHOT_HERO   ?=
 SHOT_HERO_VARIANTS ?=
 screenshots-sim: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
-	CARGO_INCREMENTAL=0 cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
+	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
 	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
 
 demo-library:
@@ -2227,7 +2227,7 @@ screenshots: screenshots-sim demo-library
 # seam's existing "no video path" result.
 sim-linux: $(LIBASS_HOST_STAGED)
 	$(TELEMETRY_ENV) \
-	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
+	  cargo +$(RUST_TOOLCHAIN) build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
 	  --features hostsim --bin plxnative-sim
 
 # The demo video's frame-dump simulator (`rust-modules/src/dev/framedump.rs`; `tools/site_video.py render`
@@ -2241,7 +2241,7 @@ sim-linux: $(LIBASS_HOST_STAGED)
 SITE_VIDEO_TDIR ?= $(SIM_TDIR)-video
 SITE_VIDEO_BIN   = $(SITE_VIDEO_TDIR)/release/plxnative-sim
 site-video-sim: $(LIBASS_HOST_STAGED)
-	CARGO_INCREMENTAL=0 cargo build --release --manifest-path rust-modules/Cargo.toml \
+	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --release --manifest-path rust-modules/Cargo.toml \
 	  --target-dir $(SITE_VIDEO_TDIR) --no-default-features \
 	  --features hostsim,devtriggers,placeholder-sentinel --bin plxnative-sim
 

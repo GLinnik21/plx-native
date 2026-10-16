@@ -11,7 +11,7 @@ name: Dependabot notices
 # ADDED is a licence decision (ships or not, which licence, which copyright holder) that a person
 # must make: the generator then exits 2 without touching anything, this job fails, and the PR stays
 # red with an error annotation naming the crate(s). Any other inconsistency (a row whose crate left
-# the lock, a moved nightly pin) exits 1, also writes nothing, and also leaves the PR red.
+# the lock, a moved toolchain pin) exits 1, also writes nothing, and also leaves the PR red.
 #
 # WHY `pull_request_target`. A `pull_request` run for a Dependabot PR gets a read-only GITHUB_TOKEN
 # and no Actions secrets whatever `permissions:` asks for, so it cannot push. `pull_request_target`

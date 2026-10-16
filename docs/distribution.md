@@ -1113,8 +1113,8 @@ between here and a release, and none of them is code:
 - **Make the repo public**, for the same reason: that raw URL must return 200.
 - ~~Set the `RUST_NIGHTLY` repo variable~~ **DONE 2026-08-02** — `nightly-2026-07-02`, the toolchain
   the device-verified builds actually used. Unset, both workflows fell back to floating `nightly`,
-  which defeats the pin `-Z build-std` needs (and a `rust-toolchain.toml` cannot substitute — see
-  the Makefile).
+  which defeats the pin `-Z build-std` needs. (Superseded: the pin is now `rust-modules/rust-toolchain.toml`,
+  see "Toolchain pinning" below.)
 - **Run `ci.yml` by `workflow_dispatch` before ever cutting a tag.** Nothing in `.github/` has ever
   executed: no CI run, no Release, no tag. The NDK action's cache and relocate step, the toolbox
   `.deb` download, the pip install, the arm64 runner — all unexecuted. The first run should not be
