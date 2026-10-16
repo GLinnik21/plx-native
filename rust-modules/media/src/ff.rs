@@ -3170,10 +3170,14 @@ static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 
 /// True if this HEVC NAL is an SEI (prefix=39 / suffix=40) carrying a user-data-registered
 /// ITU-T T.35 HDR10+ dynamic-metadata message (payloadType 4, country_code 0xB5, terminal
-/// provider 0x003C). webOS's HEVC decoder does NOT support per-frame HDR10+ metadata and
-/// stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and it can
-/// cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
-/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) is kept.
+/// provider 0x003C) among its messages. webOS's HEVC decoder does NOT support per-frame HDR10+
+/// metadata and stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and
+/// it can cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
+/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) in a NAL of its own
+/// is kept; one sharing a NAL with HDR10+ goes with it, since the NAL is dropped whole.
+///
+/// Every message is walked, not just the first: an SEI NAL may carry several, and an HDR10+
+/// message behind another one reached the decoder.
 fn is_hdr10plus_sei(nal: &[u8]) -> bool {
     if nal.len() < 2 {
         return false;
@@ -3182,23 +3186,47 @@ fn is_hdr10plus_sei(nal: &[u8]) -> bool {
     if nal_type != 39 && nal_type != 40 {
         return false;
     }
-    let mut p = 2usize; // SEI RBSP starts after the 2-byte NAL header
-    let mut ptype = 0usize; // payloadType (0xFF-run + terminator)
-    while p < nal.len() && nal[p] == 0xff {
-        ptype += 255;
-        p += 1;
+    let rbsp = sei_rbsp(&nal[2..]);
+    let mut p = 0usize;
+    // Each message: payloadType and payloadSize as 0xFF runs plus a terminator, then the payload.
+    // The 0x80 trailing-bits byte ends the list.
+    while p < rbsp.len() && rbsp[p] != 0x80 {
+        let mut read = || {
+            let mut v = 0usize;
+            while p < rbsp.len() && rbsp[p] == 0xff {
+                v += 255;
+                p += 1;
+            }
+            let last = *rbsp.get(p)?;
+            p += 1;
+            Some(v + last as usize)
+        };
+        let (Some(ptype), Some(psize)) = (read(), read()) else {
+            return false;
+        };
+        let payload = rbsp.get(p..p.saturating_add(psize)).unwrap_or(&rbsp[p.min(rbsp.len())..]);
+        if ptype == 4 && payload.len() >= 3 && payload[..3] == [0xb5, 0x00, 0x3c] {
+            return true;
+        }
+        p = p.saturating_add(psize);
     }
-    if p >= nal.len() {
-        return false;
+    false
+}
+
+/// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
+/// message sizes count the bytes they describe.
+fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ebsp.len());
+    let mut zeros = 0;
+    for &b in ebsp {
+        if zeros >= 2 && b == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        out.push(b);
     }
-    ptype += nal[p] as usize;
-    p += 1;
-    while p < nal.len() && nal[p] == 0xff {
-        p += 1; // skip payloadSize (0xFF-run + terminator); value unused
-    }
-    p += 1;
-    // user_data_registered_itu_t_t35 == 4; T.35 header: country 0xB5, provider 0x003C
-    ptype == 4 && p + 3 <= nal.len() && nal[p] == 0xb5 && nal[p + 1] == 0x00 && nal[p + 2] == 0x3c
+    out
 }
 
 /// End offset of a NAL of length `nl` starting at `i`, or None if it is empty or would run

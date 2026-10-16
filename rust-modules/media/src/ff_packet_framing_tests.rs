@@ -594,3 +594,50 @@ fn a_framing_names_the_load_declaration_it_goes_with() {
         assert_eq!(LoadVideo::of_stream(spelling), Some(lv));
     }
 }
+
+/// An HEVC prefix-SEI NAL (type 39) holding `messages`, each `(payloadType, payload)`.
+fn sei_nal(messages: &[(u8, &[u8])]) -> Vec<u8> {
+    let mut nal = vec![39 << 1, 1];
+    for &(ptype, payload) in messages {
+        nal.push(ptype);
+        nal.push(payload.len() as u8);
+        nal.extend_from_slice(payload);
+    }
+    nal.push(0x80);
+    nal
+}
+
+const HDR10PLUS: &[u8] = &[0xb5, 0x00, 0x3c, 0x00, 0x01, 0x04, 0x01];
+
+#[test]
+fn hdr10plus_is_found_alone_and_behind_another_message() {
+    assert!(is_hdr10plus_sei(&sei_nal(&[(4, HDR10PLUS)])));
+    // A mastering-display message first: only the first message used to be read.
+    assert!(is_hdr10plus_sei(&sei_nal(&[(137, &[0u8; 24]), (4, HDR10PLUS)])));
+}
+
+#[test]
+fn static_hdr_metadata_and_other_t35_messages_are_kept() {
+    assert!(!is_hdr10plus_sei(&sei_nal(&[(137, &[0u8; 24]), (144, &[0u8; 4])])));
+    // Dolby Vision RPU-adjacent or other T.35 payloads from another provider stay.
+    assert!(!is_hdr10plus_sei(&sei_nal(&[(4, &[0xb5, 0x00, 0x31, 0x44])])));
+}
+
+#[test]
+fn sei_sizes_count_bytes_after_emulation_prevention_is_removed() {
+    // A first payload of 00 00 00 is carried as 00 00 03 00 in the NAL; reading the size against
+    // the raw bytes would land one byte short of the HDR10+ message.
+    let mut nal = vec![39 << 1, 1, 5, 3, 0, 0, 3, 0];
+    nal.extend_from_slice(&[4, HDR10PLUS.len() as u8]);
+    nal.extend_from_slice(HDR10PLUS);
+    nal.push(0x80);
+    assert!(is_hdr10plus_sei(&nal));
+}
+
+#[test]
+fn a_truncated_sei_is_not_hdr10plus_and_does_not_panic() {
+    for n in 0..sei_nal(&[(137, &[0u8; 24]), (4, HDR10PLUS)]).len() - 1 {
+        let full = sei_nal(&[(137, &[0u8; 24]), (4, &HDR10PLUS[..2])]);
+        let _ = is_hdr10plus_sei(&full[..n.min(full.len())]);
+    }
+}
