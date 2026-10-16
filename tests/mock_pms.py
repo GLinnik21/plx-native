@@ -1936,6 +1936,19 @@ class DiscoverFixture:
                 self.bind_all(lib)
         return 200, dict(patch)
 
+    def _know(self, it):
+        """Give a library title bound by [`bind_all`] a Discover record of its own, off the list, so an
+        Add of its guid is answered (a guid the fixture does not know is a 404 and the flip reverts)
+        and the re-read lists it."""
+        hx = it["guid"].rsplit("/", 1)[1]
+        if self.by_hex(hx) is not None:
+            return
+        title, year = it.get("title", hx), it.get("year") or 2020
+        self.catalog.append({
+            "hex": hx, "guid": it["guid"], "kind": it["type"], "title": title, "titleSort": title.lower(),
+            "year": year, "date": f"{year}-01-01", "released": True, "held": True, "rating": 7.0,
+            "summary": f"{title} is bound to a synthetic Discover guid by the mock.", "genres": ["Drama"]})
+
     def bind_all(self, lib):
         """`{"guids": "all"}`: every library title (and every episode's show) carries a synthetic
         Discover guid the list does not hold, as a real PMS gives each item one, so any card's
@@ -1948,6 +1961,7 @@ class DiscoverFixture:
             if it.get("type") in ("movie", "show") and not re.fullmatch(
                     r"plex://(movie|show)/[0-9a-f]{24}", it.get("guid") or ""):
                 it["guid"] = guid_of(it)
+                self._know(it)
         for it in lib.items.values():
             if it.get("type") == "episode" and it.get("grandparentRatingKey"):
                 # The show's own guid is a pure function of its rating key (above).
@@ -2558,6 +2572,13 @@ class MockPms:
                                                    include_collections=q.get("includeCollections") == "1")))
         if p == "/photo/:/transcode" and catalog:
             img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
+            if img is None:
+                # A Watchlist title's poster (`/library/metadata/<24-hex guid>/thumb/..`): the Discover
+                # fixture's, not the catalog's, so it gets the flat colour a catalog-less mock draws
+                # instead of a 404 (a frame dump fails closed on a failed art request).
+                segs = [x for x in urllib.parse.urlsplit(q.get("url", "")).path.split("/") if x]
+                if len(segs) >= 4 and segs[:2] == ["library", "metadata"] and self.discover.by_hex(segs[2]):
+                    return (200, "image/png", flat_png(q.get("width", 250), q.get("height", 375), colour_for(q["url"])))
             return (200, *img) if img else (404, "text/plain", b"no image")
         if p == "/photo/:/transcode":
             src = q.get("url", "")

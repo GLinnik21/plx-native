@@ -190,6 +190,24 @@ class DiscoverMock(unittest.TestCase):
         self.assertEqual(pms.discover.configure({"list": "empty", "x": 1})[0], 400)
         self.assertEqual(page(pms)["totalSize"], 14)
 
+    def test_a_title_bound_by_guids_all_can_be_added_and_listed(self):
+        pms = make()
+        before = page(pms)["totalSize"]
+        status, _ = pms.discover.configure({"guids": "all"}, pms.lib)
+        self.assertEqual(status, 200)
+        it = next(i for i in pms.lib.items.values() if i.get("type") == "movie"
+                  and i["guid"] not in {c["guid"] for c in pms.discover.catalog[:DiscoverFixture.LISTED]})
+        hx = it["guid"].rsplit("/", 1)[1]
+        self.assertEqual(page(pms)["totalSize"], before, "known, but not on the list")
+        jcall(pms, "PUT", f"/actions/addToWatchlist?ratingKey={hx}")
+        listed = page(pms)
+        self.assertEqual(listed["totalSize"], before + 1)
+        self.assertEqual(listed["Metadata"][0]["title"], it["title"])
+        jcall(pms, "PUT", f"/actions/removeFromWatchlist?ratingKey={hx}")
+        self.assertEqual(page(pms)["totalSize"], before)
+        self.assertEqual(call(pms, "PUT", f"/actions/addToWatchlist?ratingKey={'0' * 24}")[0], 404,
+                         "a guid nothing bound is still unknown")
+
     def test_scenario_modes_are_all_known_to_the_mock(self):
         scenario = json.loads((pathlib.Path(__file__).resolve().parent / "scenarios"
                                / "watchlist_captures.json").read_text())
