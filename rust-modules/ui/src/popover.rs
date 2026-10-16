@@ -643,6 +643,12 @@ impl Popover {
     ///
     /// `ground` is the caller's explicit choice of material ([`widgets::Ground`](crate::widgets::Ground)):
     /// glass for a MENU, the pre-DS6 field ground for a sheet or an alert.
+    ///
+    /// A MORPH hands its glass the whole envelope it moves inside, the opener pill and `r` (`r`
+    /// alone for the fade+scale fallback, which grows inside it) ([`Painter::spanning`]), for as
+    /// long as it is visible: the retained source is taken
+    /// once for the growth, the settled panel and the shrink back, rather than re-taken on every
+    /// frame the growing rect leaves the last one.
     pub fn panel(
         &self,
         p: Painter,
@@ -651,6 +657,14 @@ impl Popover {
         field: Option<&crate::underlay::UnderlayField>,
         ground: crate::widgets::Ground,
     ) {
+        let p = if self.style == OpenStyle::Morph {
+            let f = self.from.unwrap_or(r);
+            let (x0, y0) = (f.x.min(r.x), f.y.min(r.y));
+            let (x1, y1) = ((f.x + f.w).max(r.x + r.w), (f.y + f.h).max(r.y + r.h));
+            p.spanning(Rect::new(x0, y0, x1 - x0, y1 - y0))
+        } else {
+            p
+        };
         if let Some((r, rad, mul)) = self.ground(r, rad) {
             crate::widgets::panel_ground(p.alpha(mul), r, rad, field, ground);
         }

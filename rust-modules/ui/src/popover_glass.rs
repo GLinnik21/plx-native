@@ -298,6 +298,59 @@ pub(crate) mod tests {
         assert_eq!(s.composite_dim(z), None, "and the composite applies no second dim");
     }
 
+    /// **A menu morphing out of its pill captures its source once, not once per frame of growth.**
+    /// The glass rect grows from the pill to the panel over the morph; a source sized by the rect
+    /// it was first asked for has to be re-taken every frame the rect leaves it. The morph knows
+    /// its whole envelope (the pill and the settled panel) from the first frame, so the glass asks
+    /// for that. Red on the build that requested only the frame's own rect: Sort & Filter's
+    /// GLASSDIFF on the television named `grow` on 8 consecutive frames of every open. The
+    /// fade+scale fallback (no opener rect) grows inside the panel and is held to the same.
+    #[test]
+    fn a_morphing_menu_captures_its_source_once_for_the_whole_growth() {
+        use crate::frame::backdrop::{commit, discover, layer, Sources, Z};
+        let _g = plx_base::testlock::serial();
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
+        let flat = crate::underlay::UnderlayField::new();
+        let pill = Rect::new(1700.0, 150.0, 180.0, 56.0);
+        let panel = Rect::new(1420.0, 220.0, 472.0, 600.0);
+        for from in [Some(pill), None] {
+        let mut pop = crate::popover::Popover::new().morphing();
+        pop.open_from(from);
+        let mut owed = Vec::new();
+        for _ in 0..90 {
+            pop.update(1.0 / 60.0);
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = Painter::root();
+                p.rect(Rect::FULL, 0.0, [0.2, 0.3, 0.4, 1.0], [0.2, 0.3, 0.4, 1.0], 0.0);
+                {
+                    let _dim = layer(Z::DIM, false);
+                    flat.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, 0.3);
+                }
+                let _surface = layer(Z::surface(0), false);
+                pop.panel(pop.content_painter(0.0), panel, 24.0, None, crate::widgets::Ground::Menu);
+            }
+            let o = {
+                let mut s = sources.borrow_mut();
+                s.resolve();
+                s.jobs().iter().any(|&(z, _)| z >= Z::surface(0))
+            };
+            commit(&sources);
+            if sources.borrow().entries.keys().any(|&z| z >= Z::surface(0)) {
+                owed.push(o);
+            }
+            if pop.appear_settled() {
+                break;
+            }
+        }
+        pop.close();
+        assert!(owed.len() > 8, "the morph ran over several frames with a glass: {owed:?}");
+        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole morph from {from:?}: {owed:?}");
+        sources.borrow_mut().clear();
+        }
+    }
+
     /// The tint arithmetic itself: scrim and rim alphas scale by the opacity.
     #[test]
     fn the_face_scales_every_alpha() {

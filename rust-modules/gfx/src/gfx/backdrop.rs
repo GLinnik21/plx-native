@@ -1097,6 +1097,16 @@ pub fn surface(rect: Rect) -> Option<Surface> {
 /// [`surface`] for a glass that says whether it RISES (slides from its rest rect, as the hold hint
 /// does). `false` sizes its region with [`BLUR_REACH`] alone — see [`crate::gfx::blur_region_for`].
 pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
+    surface_spanning(rect, None, rises)
+}
+/// [`surface_with`] for a glass whose rect moves inside a KNOWN envelope, `extent`, over its
+/// lifetime (a menu morphing out of its pill: the pill and the settled panel bound every frame of
+/// the growth). The source is asked for the envelope, not the frame's own rect, so the first
+/// capture already holds every pixel a later frame of the motion reads; asking for the growing
+/// rect re-takes the source on each frame it leaves the last one ("grow"). `None` is
+/// [`surface_with`]. The returned [`Surface::rect`] is still the frame's own rect.
+pub fn surface_spanning(rect: Rect, extent: Option<Rect>, rises: bool) -> Option<Surface> {
+    let reach = extent.map_or(rect, |e| union(e, rect));
     WALK.with(|slot| {
         let mut slot = slot.borrow_mut();
         let w = slot.as_mut()?;
@@ -1107,7 +1117,7 @@ pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
         );
         let key = (w.layer, w.next);
         let z = if w.discovery {
-            let r = crate::gfx::blur_region_for(rises, rect.x, rect.y, rect.w, rect.h);
+            let r = crate::gfx::blur_region_for(rises, reach.x, reach.y, reach.w, reach.h);
             let footprint = Rect::new(r[0], r[1], r[2], r[3]);
             let overlaps = w.glasses.iter().any(|&old| {
                 intersects(
@@ -1120,7 +1130,7 @@ pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
             } else {
                 Z(w.layer.0 + w.next)
             };
-            w.glasses.push(rect);
+            w.glasses.push(reach);
             w.sources.borrow_mut().assignments.insert(key, z);
             z
         } else {
@@ -1163,7 +1173,8 @@ pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
                 refresh: false,
             });
         }
-        let d = w.sources.borrow_mut().request(z, rect, rises);
+        let reach = w.clip.map_or(Some(reach), |c| intersection(c, reach)).unwrap_or(rect);
+        let d = w.sources.borrow_mut().request(z, reach, rises);
         Some(Surface {
             z,
             rect,

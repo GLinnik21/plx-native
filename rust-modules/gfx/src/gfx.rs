@@ -5590,12 +5590,16 @@ impl GlassFace {
     };
 }
 
+/// `extent` is the envelope a MORPHING glass moves inside over its whole life (its retained source
+/// is requested for that, [`backdrop::surface_spanning`]); `None` for every glass whose rect only
+/// slides, which `rest` already carries.
 pub fn draw_blur_backdrop(
     x: f32,
     y: f32,
     w: f32,
     h: f32,
     rest: [f32; 4],
+    extent: Option<Rect>,
     radius: f32,
     tint: *const f32,
     rim: GlassRim,
@@ -5603,7 +5607,7 @@ pub fn draw_blur_backdrop(
     deep: f32,
     rises: bool,
 ) -> bool {
-    let live = backdrop::surface_with(Rect::new(x,y,w,h), rises);
+    let live = backdrop::surface_spanning(Rect::new(x,y,w,h), extent, rises);
     if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
         // Direct jobs never intersect a lower glass: those bands capture the visible prefix

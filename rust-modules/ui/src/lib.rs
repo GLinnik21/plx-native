@@ -352,6 +352,11 @@ pub struct Painter {
     /// `Popover::content_painter` for a sliding panel. A glass panel hands it to the backdrop as
     /// `rest_dy` so its snapshot is grabbed around the rest rect; `None` for everything else.
     lift: Option<f32>,
+    /// The envelope a MORPHING panel's glass moves inside for its whole life (the opener pill and
+    /// the settled panel), set only by `Popover::panel` for a morph that has an opener rect. The
+    /// glass asks for its retained source over this rect, so the growth does not re-take it per
+    /// frame ([`plx_gfx::gfx::backdrop::surface_spanning`]); `None` for everything else.
+    extent: Option<Rect>,
 }
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -482,6 +487,7 @@ impl Painter {
             text_recorder: false,
             zoom: Zoom::NONE,
             lift: None,
+            extent: None,
         }
     }
     pub const fn recording() -> Self {
@@ -548,6 +554,11 @@ impl Painter {
     /// The popover appear slide this painter carries, if it was made by [`lifted`](Self::lifted).
     pub fn rest_lift(self) -> Option<f32> {
         self.lift
+    }
+    /// A painter whose glass backdrops take their retained source over `extent` (this painter's
+    /// space), the envelope a morphing panel stays inside ([`extent`](Self::extent)'s field doc).
+    pub fn spanning(self, extent: Rect) -> Self {
+        Self { extent: Some(extent), ..self }
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self {
@@ -1016,7 +1027,7 @@ impl Painter {
     ) -> bool {
         if self.records() { return false; }
         if frame::backdrop::discovering() {
-            frame::backdrop::surface_with(self.place(r), rises);
+            frame::backdrop::surface_spanning(self.place(r), self.extent.map(|e| self.place(e)), rises);
             self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
                 use frame::backdrop::Value;
                 (rim as u32).record(data);
@@ -1035,6 +1046,7 @@ impl Painter {
             m.w,
             m.h,
             [m.x, m.y - self.px(rest_dy), m.w, m.h],
+            self.extent.map(|e| self.place(e)),
             self.px(rad),
             t.as_ptr(),
             rim,
