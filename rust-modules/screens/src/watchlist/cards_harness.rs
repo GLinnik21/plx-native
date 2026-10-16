@@ -165,7 +165,7 @@ impl Harness {
         moved
     }
 
-    fn reconcile(&mut self) {
+    pub(crate) fn reconcile(&mut self) {
         if let Some(want) = self.focus {
             let now = Focusable::<WatchHost>::reconcile(&self.screen, want, &self.cx());
             if now != want {
