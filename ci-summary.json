@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T08:47:15Z",
+ "generated": "2026-10-16T09:29:43Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,9 +95,9 @@
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 2,
-   "now": 22.9,
+   "now": 22.3,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -116,9 +116,9 @@
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 2,
-   "now": 41.7,
+   "now": 42.9,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -137,9 +137,9 @@
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 2,
-   "now": 46.0,
+   "now": 46.5,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -158,9 +158,9 @@
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 2,
-   "now": 103.0,
+   "now": 108.8,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -179,9 +179,9 @@
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 2,
-   "now": 112.0,
+   "now": 165.7,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -200,19 +200,19 @@
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 1,
-   "now": 1268.5,
+   "now": 1343.6,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1267.0
+     "now": 1342.0
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 903.0
+     "now": 952.0
     }
    ],
    "prev7": null,
@@ -443,9 +443,9 @@
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 1,
-   "now": 1267.0,
+   "now": 1342.0,
    "parent": "bench.check",
    "prev7": null,
    "shown": false,
@@ -465,9 +465,9 @@
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 1,
-   "now": 903.0,
+   "now": 952.0,
    "parent": "bench.check",
    "prev7": null,
    "shown": false,
@@ -592,7 +592,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 2,
    "now": 0.8,
    "prev7": null,
@@ -888,31 +888,31 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1268.5
+   "now": 1343.6
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 112.0
+   "now": 165.7
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 103.0
+   "now": 108.8
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 46.0
+   "now": 46.5
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 41.7
+   "now": 42.9
   }
  ],
  "thresholds": {
