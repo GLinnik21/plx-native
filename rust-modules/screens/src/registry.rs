@@ -1712,7 +1712,7 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -2328,12 +2328,16 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
 // item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
 // pin covers those AppArg / menu-arg changes too; the previous pin was 0x6a55_c53a_d931_3acf.
-// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 -> this): the Detail hero
-// gains the bookmark disc (`ELEM_WATCHLIST`, and with it the `DetailScreen` SHAPE's flip spring and
-// membership face), `ARG_SHAPE` gains `ContentArg::Catalog{hex}` and the item-menu Catalog kind's
-// identity captured at open, and `SCREEN_SHAPES` gains `CatalogScreen::SHAPE`. One bump for the
-// whole of W6; the three replay fixtures were re-recorded against it.
-const SCREEN_SHAPES_PIN: u64 = 0xd479_d84f_2093_4143;
+// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 -> this; re-pinned once
+// more before landing, 0xd479_d84f_2093_4143 -> this, when ARG_SHAPE and item_menu::SHAPE gained
+// the Catalog/hex fields): the Detail hero gains the bookmark disc (`ELEM_WATCHLIST`, and with it
+// the `DetailScreen` SHAPE's flip spring and membership face; `DetailScreen` deliberately does not
+// hash it), `ARG_SHAPE` gains `Content::Catalog{hex}` (canonical tag 4 plus the hex string),
+// `item_menu::SHAPE`'s `Action` gains `WatchlistAdd`'s trailing hex string, the item-menu Catalog
+// kind's identity is captured at open, and `SCREEN_SHAPES` gains `CatalogScreen::SHAPE`. One bump
+// for the whole of W6; the three replay fixtures were re-recorded against it. `WatchlistRemove` /
+// `GoToCatalog` stay guid-string keyed.
+const SCREEN_SHAPES_PIN: u64 = 0x7c51_bee4_bc22_94ab;
 
 #[cfg(test)]
 mod arg_tests {

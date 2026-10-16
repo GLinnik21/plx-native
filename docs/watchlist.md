@@ -145,6 +145,13 @@ opened. A catalog page's primary pill reads `Add to Watchlist` / `On Watchlist`.
 pulses the strip's bookmark tab (about 1.35x and a glow, decorative, no page image held): the
 application does it (`ChromeSnapshot::pulse`), never a screen.
 
+**Accepted deviation, action keying.** `Action::WatchlistAdd` carries the 12-byte `{ hex }`; the
+`WatchlistRemove` and `GoToCatalog` actions carry the discover guid string and decode the hex from
+its tail at press time, so a guid with no decodable tail does nothing instead of being refused at
+open. The plan's `{hex}` keying for all three is not implemented; the owner has not yet confirmed
+the difference. The Remove row's wording is `Remove Show...` for an episode (plan 1.8), not the
+brief's `Remove Show from Watchlist`.
+
 **plex.tv unreachable.** The page shows the full-screen read-out with Retry (a populated list is never
 blanked). Detail and catalog controls draw the outline face when membership is unknown, the item-menu
 row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
