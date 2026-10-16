@@ -4784,7 +4784,7 @@ fn movie_with_guid(guid: &str) -> Detail {
     }
 }
 
-fn item_menu_acts(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Vec<crate::item_menu::Action> {
+fn item_menu_acts(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Vec<crate::registry::ItemMenuAction> {
     effects
         .iter()
         .filter_map(|e| match &e.fx {
@@ -4821,10 +4821,10 @@ fn the_bookmark_disc_press_emits_the_item_menu_write() {
     tick_page(&mut screen, None, 16);
     assert_eq!(screen.watchlist_hex(), Some(WL_HEX));
     let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
-    assert_eq!(item_menu_acts(&fx), vec![crate::item_menu::Action::WatchlistAdd { hex: WL_HEX }]);
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistAdd { hex: WL_HEX }]);
     screen.set_watchlist(plx_data::catalog::Membership::On);
     let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
-    assert_eq!(item_menu_acts(&fx), vec![crate::item_menu::Action::WatchlistRemove(WL_GUID.into())]);
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistRemove(WL_GUID.into())]);
 }
 
 /// The first membership answer is the disc's rest face: no fill/ribbon flip plays on open. A later
