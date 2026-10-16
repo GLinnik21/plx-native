@@ -3010,7 +3010,7 @@ impl DetailScreen {
                     if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
-                    if ctl == hero::HeroCtl::Watchlist && (0.0..1.0).contains(&self.watchlist_flip.pos) {
+                    if ctl == hero::HeroCtl::Watchlist && self.watchlist_flip.pos > 0.0 && self.watchlist_flip.pos < 1.0 {
                         let frame = hero::flip_frame(self.watchlist_flip.pos);
                         button = button.icon_fill(hero::face_icon(hero::Face::Filled), frame.fill, frame.ribbon_dy);
                     }
@@ -3674,6 +3674,11 @@ impl DetailScreen {
         plx_machine::idle::decorative(|| {
             self.watchlist_flip.step(flip_target, plx_ui::widgets::K_DISC_UNFURL, dt);
         });
+        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
+        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
+        plx_machine::idle::settled(self.watchlist_flip.pos, flip_target, self.watchlist_flip.vel) {
+            self.watchlist_flip.jump(flip_target);
+        }
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
             spring.step(
                 f32::from(disc == Some(i)),
