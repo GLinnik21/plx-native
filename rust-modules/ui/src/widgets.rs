@@ -3793,6 +3793,20 @@ impl PageGround {
         self.wash.step(self.target, AmbientWash::K, dt);
     }
 
+    /// [`key_target`](Self::key_target) at a rate the screen chooses, for ONE ease that must catch up
+    /// faster than the shared [`AmbientWash::K`] (the Watchlist's, after a Remove's landing held
+    /// the wash). Every other call keeps `key_target`; a dissolve time goes as `1/sqrt(k)`.
+    pub fn key_target_k(&mut self, target: [[f32; 4]; 4], k: f32, dt: f32) {
+        self.target = target;
+        self.wash.step(self.target, k, dt);
+    }
+
+    /// Has the wash reached `target` at the 8-bit codes it is drawn at? Past that point a further
+    /// step changes nothing the panel shows.
+    pub fn drawn_at(&self, target: [[f32; 4]; 4]) -> bool {
+        self.wash.corners.iter().zip(target).all(|(c, t)| c.iter().zip(t).all(|(s, v)| code(s.pos) == code(v)))
+    }
+
     /// [`key_target`](Self::key_target) without the dissolve — for a page that has just changed
     /// SUBJECT, where the previous subject's colours must not wash across the new one. Mount-time
     /// only; a jump on a page already on screen is a hard colour cut.

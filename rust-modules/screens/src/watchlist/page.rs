@@ -638,6 +638,12 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 }
 
+/// The wash's rate for the ease that follows a Remove's landing: four times the shared
+/// `AmbientWash::K` (80), which halves the dissolve (its time goes as `1/sqrt(k)`), so the tab
+/// strip's glass is re-blurred, and the page drawn twice, for half as many frames. Only this
+/// screen's post-landing ease uses it; focus moves and every other page keep the shared rate.
+const POST_REMOVE_EASE_K: f32 = 4.0 * AmbientWash::K;
+
 pub struct WatchlistScreen {
     page: Page,
     /// The page's layout, one scroll, groups, reconcile and the grid (`ui::cards::Stack`).
@@ -646,6 +652,9 @@ pub struct WatchlistScreen {
     ground_seeded: bool,
     /// The target last handed to the wash: what a Remove's landing holds it at.
     ground_applied: [[f32; 4]; 4],
+    /// A landing held the wash, so the ease that follows it runs at [`POST_REMOVE_EASE_K`] until it
+    /// has reached its target.
+    ground_catching_up: bool,
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
@@ -688,6 +697,7 @@ impl WatchlistScreen {
             ground: PageGround::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
+            ground_catching_up: false,
             focus: 0,
         }
     }
@@ -886,10 +896,21 @@ impl WatchlistScreen {
             self.page.ghosts.clear();
         }
         self.release_count_hold();
+        let held = self.ground_seeded && self.landing_in_flight();
         let target = self.ground_target();
         self.ground_applied = target;
+        if held {
+            self.ground_catching_up = true;
+        }
         if self.ground_seeded {
-            self.ground.key_target(target, t.dt());
+            if self.ground_catching_up {
+                self.ground.key_target_k(target, POST_REMOVE_EASE_K, t.dt());
+                if !held && self.ground.drawn_at(target) {
+                    self.ground_catching_up = false;
+                }
+            } else {
+                self.ground.key_target(target, t.dt());
+            }
         } else {
             self.ground.jump_target(target);
             self.ground_seeded = true;
@@ -952,6 +973,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn ground_goal(&self) -> [[f32; 4]; 4] {
         self.ground_target()
+    }
+
+    /// Test support: the wash's corners as the 8-bit codes the GPU is sent.
+    #[cfg(test)]
+    pub(crate) fn ground_codes(&self) -> Vec<i32> {
+        self.ground.corners().iter().flatten().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as i32).collect()
     }
 
     /// Test support: the leaving copies the grid draws, `(index, rect, alpha)`.
