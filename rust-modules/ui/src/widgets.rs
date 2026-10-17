@@ -3801,10 +3801,15 @@ impl PageGround {
         self.wash.step(self.target, k, dt);
     }
 
-    /// Has the wash reached `target` at the 8-bit codes it is drawn at? Past that point a further
-    /// step changes nothing the panel shows.
-    pub fn drawn_at(&self, target: [[f32; 4]; 4]) -> bool {
-        self.wash.corners.iter().zip(target).all(|(c, t)| c.iter().zip(t).all(|(s, v)| code(s.pos) == code(v)))
+    /// Has the wash come to rest on `target`: within a quarter of an 8-bit code of it on every
+    /// channel and moving slower than one code a second? A screen that ran [`key_target_k`](Self::key_target_k)
+    /// hands back to the shared rate only from here: changing a spring's stiffness mid-flight keeps
+    /// its velocity, which the slower rate then carries past the target.
+    pub fn at_rest_on(&self, target: [[f32; 4]; 4]) -> bool {
+        const CODE: f32 = 1.0 / 255.0;
+        self.wash.corners.iter().zip(target).all(|(c, t)| {
+            c.iter().zip(t).all(|(s, v)| (s.pos - v).abs() < 0.25 * CODE && s.vel.abs() < CODE)
+        })
     }
 
     /// [`key_target`](Self::key_target) without the dissolve — for a page that has just changed

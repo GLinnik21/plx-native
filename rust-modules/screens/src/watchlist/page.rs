@@ -638,11 +638,13 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 }
 
-/// The wash's rate for the ease that follows a Remove's landing: four times the shared
-/// `AmbientWash::K` (80), which halves the dissolve (its time goes as `1/sqrt(k)`), so the tab
-/// strip's glass is re-blurred, and the page drawn twice, for half as many frames. Only this
-/// screen's post-landing ease uses it; focus moves and every other page keep the shared rate.
-const POST_REMOVE_EASE_K: f32 = 4.0 * AmbientWash::K;
+/// The wash's rate for the ease that follows a Remove's landing: eight times the shared
+/// `AmbientWash::K` (80). The cost is the frames on which a drawn 8-bit code changes (each
+/// re-blurs the tab strip's glass, so the page is drawn twice), and that count falls with `ln k`,
+/// not `1/sqrt(k)`: measured in the sim, 4x left 0.63 of the frames and 8x leaves 0.45 (35-37
+/// down to 16 double-drawn frames). Only this screen's post-landing ease uses it; focus moves and
+/// every other page keep the shared rate.
+const POST_REMOVE_EASE_K: f32 = 8.0 * AmbientWash::K;
 
 pub struct WatchlistScreen {
     page: Page,
@@ -905,7 +907,7 @@ impl WatchlistScreen {
         if self.ground_seeded {
             if self.ground_catching_up {
                 self.ground.key_target_k(target, POST_REMOVE_EASE_K, t.dt());
-                if !held && self.ground.drawn_at(target) {
+                if !held && self.ground.at_rest_on(target) {
                     self.ground_catching_up = false;
                 }
             } else {

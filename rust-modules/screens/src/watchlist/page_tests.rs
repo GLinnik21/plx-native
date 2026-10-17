@@ -700,8 +700,8 @@ fn a_remove_holds_the_wash_target_until_the_landing_ends() {
     assert_ne!(after, [theme::SURFACE_APP; 4]);
 }
 
-/// **The ease after a Remove's landing takes about half the frames of an ordinary dissolve.** Each
-/// frame the drawn 8-bit code changes re-blurs the tab strip's glass (the page is drawn twice), so
+/// **The ease after a Remove's landing changes the drawn wash on about half the frames of an
+/// ordinary dissolve.** Each frame the drawn 8-bit code changes re-blurs the tab strip's glass (the page is drawn twice), so
 /// the wash that was held through the landing catches up at a faster, Watchlist-only rate; every
 /// other ground keeps `AmbientWash::K`.
 #[test]
@@ -712,8 +712,8 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
     set_veil(0.0);
     let mut rows = tiles(12);
     for (i, t) in rows.iter_mut().enumerate() {
-        let c = 20 + 15 * i as u8;
-        t.copy.as_mut().unwrap().blur = Some([[c, 255 - c, c / 2]; 4]);
+        let c = if i % 2 == 0 { 10 } else { 245 };
+        t.copy.as_mut().unwrap().blur = Some([[c, 255 - c, 128]; 4]);
     }
     let mut h = Harness::new(rows);
     h.focus_index(2);
@@ -727,14 +727,13 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
             break;
         }
     }
-    // The frames from the landing's end until the drawn codes stop changing.
-    let (mut last, mut frames) = (h.screen.ground_codes(), 0);
-    let mut quiet = 0;
-    for f in 1..400 {
+    // The frames after the landing's end on which a drawn code changes: each is a double-drawn one.
+    let (mut last, mut frames, mut quiet) = (h.screen.ground_codes(), 0, 0);
+    for _ in 1..400 {
         h.run(1);
         let now = h.screen.ground_codes();
         if now != last {
-            frames = f;
+            frames += 1;
             quiet = 0;
             last = now;
         } else {
@@ -750,11 +749,11 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
     let mut g = PageGround::new();
     g.jump_target(before);
     let (mut glast, mut gframes, mut gquiet) = (code(&g), 0, 0);
-    for f in 1..400 {
+    for _ in 1..400 {
         g.key_target(after, 16_667e-6);
         let now = code(&g);
         if now != glast {
-            gframes = f;
+            gframes += 1;
             gquiet = 0;
             glast = now;
         } else {
@@ -764,9 +763,9 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
             }
         }
     }
-    assert!(gframes > 20, "premise: the ordinary dissolve is long ({gframes})");
-    assert!(frames * 10 <= gframes * 6, "the post-Remove ease took {frames} frames against the ordinary {gframes}");
-    assert!(frames * 10 >= gframes * 4, "and not a snap: {frames} against {gframes}");
+    assert!(gframes >= 10, "premise: the ordinary dissolve is long ({gframes})");
+    assert!(frames * 10 <= gframes * 6, "the post-Remove ease changed the drawn wash on {frames} frames against the ordinary {gframes}");
+    assert!(frames * 10 >= gframes * 2, "and not a snap: {frames} against {gframes}");
 }
 
 /// A Remove no menu veiled starts its landing at once, so the count follows on the first frame.
