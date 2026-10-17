@@ -247,17 +247,17 @@ of an unchanged list costs one conditional request for page 0 (see the ETag note
 What the PMS notification feed (`docs/pms-api.md` section 9) does and does not carry:
 
 - **(a) Library adds and removes flip a tile live on an owned server.** The feed subscribes to
-  `filters=playing,timeline`; a finished movie or show create or delete (`TimelineEntry` state 5
-  and 9) owes the Watchlist one re-match of that server (`stores::notify_map`, plan §1.11 B(a)):
+  `filters=playing,timeline`; a finished movie or show create or delete (`TimelineEntry` state 5 with no `metadataState`, and
+  state 9, which is UNVERIFIED: no delete has been captured) owes the Watchlist one re-match of that server (`stores::notify_map`, plan §1.11 B(a)):
   a delete of the item a tile is matched to asks again about that guid, a create asks again about the
   titles of that kind the server was not seen to hold (40 guids to a request). It is made at most once
   per quiet-refetch spacing per server and kind, only once the list has loaded and only when a re-read
   is allowed, and the tile flips when the answer lands, with the page open or not. A feed that came back
-  after a gap re-asks the server's titles whole. **The `timeline` frame shape is community-documented and
-  has not been captured from a live server** (`docs/pms-api.md` section 9); until it is, this path is
-  tested against synthetic frames only, and the scan rate is not measured. A delete re-match also
-  assumes the PMS guid search no longer returns the item once the delete timeline event fires; that
-  is unverified until the real capture. A change that arrives before the first load is not owed
+  after a gap re-asks the server's titles whole. The `timeline` frame shape was captured from an owned server
+  (`docs/pms-api.md` section 9, with the measured frame rates); this path is tested against frames
+  built from that shape. A delete frame has NOT been observed, and a delete re-match also
+  assumes the PMS guid search no longer returns the item once the delete timeline event fires;
+  both are unverified. A change that arrives before the first load is not owed
   (the read to come reflects it); one that arrives while that read is out is kept. Shared servers have no feed (d).
 - **(b) Watched and progress on a matched tile ride the existing path.** `WatchlistStore::held_keys()`
   is the page's hold window; `Shown.watchlist` adds it to what notify_map holds, so a session on a

@@ -1988,15 +1988,24 @@ TIMELINE_TYPES = {"movie": 1, "show": 2}
 
 
 def timeline_frame(entries):
-    """One SSE `notification` frame of type `timeline`, in the community-documented shape the app
-    parses (docs/pms-api.md section 9: NOT yet captured live, so this is the documented shape and not
-    a recording). `entries` are `(itemID, kind, state)` with kind `movie|show` and state
-    `created|deleted`."""
-    rows = [{"identifier": LIBRARY_IDENTIFIER, "sectionID": "1", "itemID": str(rk),
-             "type": TIMELINE_TYPES[kind], "title": "", "state": TIMELINE_STATES[state],
-             "metadataState": state, "updatedAt": int(time.time())} for rk, kind, state in entries]
-    body = {"NotificationContainer": {"type": "timeline", "size": len(rows), "TimelineEntry": rows}}
-    return ("event: notification\ndata: " + json.dumps(body) + "\n\n").encode()
+    """The SSE `timeline` frames a library change sends, in the shape the owner's own server was
+    captured sending (docs/pms-api.md section 9): one `event: timeline` frame per entry, its data a
+    single `{"TimelineEntry": {...}}` object with no envelope. A create is the captured three-frame
+    sequence (state 5 + metadataState processing, state 4 + loading, then the finished state 5 with
+    no metadataState); a delete is one state 9 frame, whose real shape is NOT yet observed.
+    `entries` are `(itemID, kind, state)` with kind `movie|show` and state `created|deleted`."""
+    out = b""
+    for rk, kind, state in entries:
+        steps = ([(5, "processing"), (4, "loading"), (5, None)] if state == "created"
+                 else [(TIMELINE_STATES["deleted"], None)])
+        for code, meta in steps:
+            row = {"identifier": LIBRARY_IDENTIFIER, "sectionID": "1", "itemID": str(rk),
+                   "type": TIMELINE_TYPES[kind], "title": "", "state": code}
+            if meta:
+                row["metadataState"] = meta
+            row["updatedAt"] = int(time.time())
+            out += ("event: timeline\ndata: " + json.dumps({"TimelineEntry": row}) + "\n\n").encode()
+    return out
 
 
 class MockPms:
@@ -3619,27 +3628,29 @@ def _selftest_library_feed():
             assert feed.readline() == b": ping\n" and feed.readline() == b"\n"
 
             def frame():
-                assert feed.readline() == b"event: notification\n"
+                assert feed.readline() == b"event: timeline\n"
                 data = json.loads(feed.readline().split(b"data: ", 1)[1])
                 feed.readline()
-                return data["NotificationContainer"]
+                return data["TimelineEntry"]
 
             assert post("/_mock/notify", {"type": "timeline", "entries": [
                 {"itemID": 5, "kind": "show", "state": "deleted"}]}) == {"delivered": 1}
-            c = frame()
-            e = c["TimelineEntry"][0]
-            assert c["type"] == "timeline" and (e["itemID"], e["type"], e["state"]) == ("5", 2, 9), c
+            e = frame()
+            assert (e["itemID"], e["type"], e["state"]) == ("5", 2, 9) and "metadataState" not in e, e
             assert e["identifier"] == LIBRARY_IDENTIFIER
             title = "Northbound Tide"  # a catalog movie no library item carries
             guid = next(c_["guid"] for c_ in pms.discover.catalog if c_["title"] == title)
             assert held(guid) == []
             added = post("/_mock/library", {"op": "add", "title": title})
             assert [str(x) for x in held(guid)] == [str(added["ratingKey"])], (held(guid), added)
-            e = frame()["TimelineEntry"][0]
-            assert (e["itemID"], e["type"], e["state"]) == (str(added["ratingKey"]), 1, 5), e
+            steps = [frame() for _ in range(3)]
+            assert [(x["state"], x.get("metadataState")) for x in steps] == [
+                (5, "processing"), (4, "loading"), (5, None)], steps
+            e = steps[-1]
+            assert (e["itemID"], e["type"]) == (str(added["ratingKey"]), 1), e
             post("/_mock/library", {"op": "remove", "title": title})
             assert held(guid) == []
-            assert frame()["TimelineEntry"][0]["state"] == 9
+            assert frame()["state"] == 9
         for bad in ({"type": "timeline"}, {"type": "timeline", "entries": [{"itemID": 1}]}):
             try:
                 post("/_mock/notify", bad)

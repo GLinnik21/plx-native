@@ -1,44 +1,86 @@
 //! The `timeline` frames [`super::classify`] is tested against, in one place.
 //!
-//! **COMMUNITY-DOCUMENTED, NOT YET CAPTURED LIVE.** The shape is the one python-plexapi's
-//! `AlertListener` consumers document (`NotificationContainer.type == "timeline"`, a
-//! `TimelineEntry` array with `identifier`, `sectionID`, `itemID`, `type`, `state`,
-//! `metadataState`, `mediaState`, `updatedAt`; `state` 5 = processed, 9 = deleted). No frame from a
-//! real server has been recorded (`docs/pms-api.md` §9). When the owner's passive capture exists,
-//! its scrubbed frames REPLACE the constants below; the tests in `super::tests` read only these
-//! names, so swapping them is a one-file change. Titles and ids here are synthetic.
+//! **CAPTURED SHAPE, SCRUBBED.** These are built from passive captures of a real server's feed
+//! (`docs/pms-api.md` §9): `event: timeline`, `data: {"TimelineEntry":{...}}`, ONE object per frame, no
+//! `NotificationContainer`; `sectionID` and `itemID` strings, `type` and `state` integers. Titles, ids
+//! and section ids are synthetic ("Movie A"), `updatedAt` is rebased to 1760000000, and the order of
+//! the frames inside each sequence is the order they arrived in. Each constant is the `data:` text of
+//! the frames of one item's sequence, in arrival order.
+//!
+//! What the captures show: a movie or show runs state 5 (`metadataState` "processing"), 4 ("loading"),
+//! then 5 with NO `metadataState` (the finished frame); a season runs 2 ("matching"), 5, 3 ("queued"),
+//! 3 ("processing"), 4 ("loading"), 5 and its episodes interleave; a music track (type 10) is two
+//! state-5 frames, the first with `mediaState` "analyzing". No delete was observed: [`MOVIE_DELETED`]
+//! is the community-documented state 9 and is NOT a recording.
 
-/// A movie the scanner finished (state 5) in section 1, id 123.
-pub const MOVIE_CREATED: &str = r#"{"NotificationContainer":{"type":"timeline","size":1,"TimelineEntry":[
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"123","type":1,"title":"Synthetic Movie","state":5,"metadataState":"created","mediaState":"analyzing","updatedAt":1760000000}]}}"#;
+/// A movie add, as captured: processing, loading, then the finished frame.
+pub const MOVIE_ADD: [&str; 3] = [
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,"title":"Movie A","state":5,"metadataState":"processing","updatedAt":1760000001}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,"title":"Movie A","state":4,"metadataState":"loading","updatedAt":1760000002}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,"title":"Movie A","state":5,"updatedAt":1760000002}}"#,
+];
 
-/// A show removed from the library (state 9), ids as strings.
-pub const SHOW_DELETED: &str = r#"{"NotificationContainer":{"type":"timeline","size":1,"TimelineEntry":[
-    {"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"456","type":"2","title":"Synthetic Show","state":"9","metadataState":"deleted","updatedAt":1760000001}]}}"#;
+/// A show add: the same three frames as a movie with type 2.
+pub const SHOW_ADD: [&str; 3] = [
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"2001","type":2,"title":"Show A","state":5,"metadataState":"processing","updatedAt":1760000101}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"2001","type":2,"title":"Show A","state":4,"metadataState":"loading","updatedAt":1760000102}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"2001","type":2,"title":"Show A","state":5,"updatedAt":1760000102}}"#,
+];
 
-/// One scan: progress states (0 created, 1 scanning, 3 analysed), an episode and an artist (types
-/// 4 and 8), another plugin's entry, then the one finished movie and one finished delete.
-pub const SCAN_MIXED: &str = r#"{"NotificationContainer":{"type":"timeline","size":7,"TimelineEntry":[
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"10","type":1,"state":0,"metadataState":"created"},
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"10","type":1,"state":3},
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"11","type":4,"state":5},
-    {"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"12","type":8,"state":5},
-    {"identifier":"tv.plex.provider.other","sectionID":"1","itemID":"13","type":1,"state":5},
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"14","type":1,"state":5,"unknown":{"a":[1]}},
-    {"sectionID":"1","itemID":14,"type":1,"state":9}]}}"#;
+/// A season with two episodes, in arrival order: season matching, season 5, season queued and
+/// processing and loading, the episodes (each 5, 4, 4, 5), the season's finished frame last. Nothing
+/// here is a movie or a show.
+pub const SEASON_AND_EPISODES: [&str; 20] = [
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":2,"metadataState":"matching","updatedAt":1760000201}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":5,"updatedAt":1760000201}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":3,"metadataState":"queued","updatedAt":1760000201}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":3,"metadataState":"processing","updatedAt":1760000201}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":4,"metadataState":"loading","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3002","type":4,"title":"Episode A","state":5,"metadataState":"processing","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3002","type":4,"title":"Episode A","state":4,"metadataState":"loading","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3002","type":4,"title":"Episode A","state":4,"metadataState":"loading","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3002","type":4,"title":"Episode A","state":5,"updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3003","type":4,"title":"Episode B","state":5,"metadataState":"processing","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3003","type":4,"title":"Episode B","state":4,"metadataState":"loading","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3003","type":4,"title":"Episode B","state":4,"metadataState":"loading","updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3003","type":4,"title":"Episode B","state":5,"updatedAt":1760000202}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3004","type":4,"title":"Episode C","state":5,"metadataState":"processing","updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3004","type":4,"title":"Episode C","state":4,"metadataState":"loading","updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3004","type":4,"title":"Episode C","state":4,"metadataState":"loading","updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3004","type":4,"title":"Episode C","state":5,"updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3001","type":3,"title":"Season 1","state":5,"updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3005","type":4,"title":"Episode D","state":4,"metadataState":"loading","updatedAt":1760000203}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"3","itemID":"3005","type":4,"title":"Episode D","state":5,"updatedAt":1760000203}}"#,
+];
 
-/// Only scan progress and a non-movie, non-show type: nothing a Watchlist tile can follow.
-pub const UNFINISHED: &str = r#"{"NotificationContainer":{"type":"timeline","size":2,"TimelineEntry":[
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"20","type":1,"state":2},
-    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"21","type":4,"state":5}]}}"#;
+/// A music track (type 10), as captured: an `analyzing` frame, then the bare state-5 frame. The
+/// identifier is the library plugin's; the TYPE is what makes it not ours.
+pub const MUSIC_TRACK: [&str; 2] = [
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"4","itemID":"4001","type":10,"title":"Track A","state":5,"mediaState":"analyzing","updatedAt":1760000301}}"#,
+    r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"4","itemID":"4001","type":10,"title":"Track A","state":5,"updatedAt":1760000301}}"#,
+];
+
+/// A delete as the community docs show it (state 9). NOT a recording: no delete has been observed.
+pub const MOVIE_DELETED: &str = r#"{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1002","type":1,"title":"Movie B","state":9,"updatedAt":1760000401}}"#;
+
+/// The envelope the community docs show (`NotificationContainer` around a `TimelineEntry` ARRAY, ids
+/// and numbers as strings), which the parser still reads although the captured shape differs.
+pub const COMMUNITY_ENVELOPE: &str = r#"{"NotificationContainer":{"type":"timeline","size":2,"TimelineEntry":[
+    {"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1003","type":"1","state":"5"},
+    {"identifier":"com.plexapp.plugins.library","sectionID":"2","itemID":"2003","type":2,"state":5}]}}"#;
+
+/// Another plugin's finished movie: not the library's.
+pub const OTHER_PLUGIN: &str = r#"{"TimelineEntry":{"identifier":"tv.plex.provider.other","sectionID":"1","itemID":"1004","type":1,"title":"Movie C","state":5,"updatedAt":1760000501}}"#;
 
 /// Entries missing a field or carrying one of the wrong shape: each is dropped, none panics.
-pub const MALFORMED: &str = r#"{"NotificationContainer":{"type":"timeline","TimelineEntry":[
-    {"type":1,"state":5},
-    {"itemID":"30","state":5},
-    {"itemID":"31","type":1},
-    {"itemID":"","type":1,"state":5},
-    {"itemID":{"a":1},"type":1,"state":5},
-    {"itemID":"32","type":"movie","state":5},
-    {"itemID":"33","type":1,"state":null},
-    "not an object", 7]}}"#;
+pub const MALFORMED: [&str; 9] = [
+    r#"{"TimelineEntry":{"type":1,"state":5}}"#,
+    r#"{"TimelineEntry":{"itemID":"30","state":5}}"#,
+    r#"{"TimelineEntry":{"itemID":"31","type":1}}"#,
+    r#"{"TimelineEntry":{"itemID":"","type":1,"state":5}}"#,
+    r#"{"TimelineEntry":{"itemID":{"a":1},"type":1,"state":5}}"#,
+    r#"{"TimelineEntry":{"itemID":"32","type":"movie","state":5}}"#,
+    r#"{"TimelineEntry":{"itemID":"33","type":1,"state":null}}"#,
+    r#"{"TimelineEntry":"not an object"}"#,
+    r#"{"TimelineEntry":[]}"#,
+];

@@ -263,11 +263,11 @@ gaps: watched toggles on another client emit nothing (§9); shared servers have 
 carry the episode rk, so a matched SHOW tile's progress refreshes only on re-read (as Home show
 cards today).
 
-**B(a) Library add/remove → tile flips live: BUILT in PR W-notify (Q12 answered yes); the timeline frame shape is community-documented and NOT yet captured live, so the capture below is still owed.**
+**B(a) Library add/remove → tile flips live: BUILT in PR W-notify (Q12 answered yes); the timeline frame shape and scan rate are CAPTURED (pms-api.md §9); a delete frame is not yet observed.**
 Gated on a passive capture: a read-only GET stream on the owner's own PMS while the owner changes
 the library out of band (the app never triggers a scan); token kept out of capture/log/commit,
 only scrubbed frame shapes committed; frame rate during a scan measured. Subscribe
-`filters=playing,timeline` (comma syntax UNVERIFIED; fallback: no `filters`, its cost measured
+`filters=playing,timeline` (the encoded comma list is measured to work; fallback: no `filters`, its cost measured
 too). Parser `Notification::Library(Vec<LibraryEntry{item_id, kind, state, section}>)`, keeping
 finished create + delete for movies/shows (fields UNVERIFIED until capture). Timeline carries an
 itemID, not a guid: DELETE where itemID = a matched tile's rk on that sid → re-match that guid
@@ -370,11 +370,11 @@ Discover trailer playable?
   patch test (its docs name `facts_gen`). W45 adds `Shown.watchlist`, the run.rs fold, the
   `held()` arm, reread.rs `Watchlist` + `Catalog` arms, the notify sim scenario, pms-api.md §9
   "What a hint does" listing the Watchlist page, parity-gaps.md notes on the (b)/(d) gaps.
-- **W-notify (Q12 answered yes; BUILT, capture still owed):** timeline subscription, parser,
+- **W-notify (Q12 answered yes; BUILT, capture DONE except a delete):** timeline subscription, parser,
   itemID→re-match mapping, mock + sim; pms-api.md §9 gains the measured timeline frames and scan
-  rate; doc-claim audit. Built against the community-documented frame shape: the fixtures
-  (`rust-modules/plex/src/plex/notify/fixtures.rs`) and pms-api.md §9 are marked UNVERIFIED and the owner's
-  passive capture replaces them; the scan rate stays unmeasured until then.
+  rate; doc-claim audit. The owner's passive capture replaced the community-documented shape: the fixtures
+  (`rust-modules/plex/src/plex/notify/fixtures.rs`) are the captured shape, scrubbed, and pms-api.md §9
+  carries the measured rates. A delete frame (state 9) is still UNVERIFIED: none occurred in the capture.
 - **W6a appkit::hero_layout extraction** (boards: Detail for reference; no visual change): behaviour-neutral; host geometry test, Detail
   conformance row, unchanged pin.
 - **W6 Detail + catalog + menus (Bump B)** (boards: Detail, DetailOnList, DetailAdded, DetailNotOnServer, DetailOffline, HoldMenu, WatchlistHold, WatchlistHoldUnplayable): P4 first; `PmsMovie` guid/show_guid; Detail disc;

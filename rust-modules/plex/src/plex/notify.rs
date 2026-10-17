@@ -4,9 +4,10 @@
 //! the path and the query parameter differently and is not the authority here.
 //!
 //! The feed carries `playing` (other clients' sessions) and `timeline` (library items created or
-//! deleted); [`classify`] reads both. **The `timeline` frame shape is community-documented and NOT
-//! yet captured live** (`docs/pms-api.md` §9); the fixtures it is tested against live in
-//! `notify/fixtures.rs` and the capture replaces them.
+//! deleted); [`classify`] reads both. **The `timeline` frame shape is the one captured from a real
+//! server** (`docs/pms-api.md` §9): `event: timeline`, `data: {"TimelineEntry":{...}}`, one OBJECT per
+//! frame, no `NotificationContainer`. A delete has not been observed. The scrubbed frames it is
+//! tested against live in `notify/fixtures.rs`.
 //!
 //! This file is the PROTOCOL half and nothing else: [`SseParser`] turns bytes into frames,
 //! [`classify`] turns a frame into a [`Notification`], and [`Client::notifications`] runs one
@@ -28,7 +29,7 @@ use std::time::Duration;
 const ACCEPT_EVENT_STREAM: &str = "Accept: text/event-stream";
 
 /// The event types the feed asks for. `timeline` is the library's creates and deletes; the comma
-/// list is UNVERIFIED against a server (`docs/pms-api.md` §9).
+/// list (percent-encoded) was measured to deliver `timeline` frames (`docs/pms-api.md` §9).
 const FILTERS: &str = "playing,timeline";
 
 /// How long the feed may be silent before the read ends as [`NotifyEnd::Silent`]. The server pings
@@ -165,9 +166,12 @@ pub enum LibraryKind {
 /// A library item's lifecycle as a finished `timeline` entry reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LibraryState {
-    /// The scanner finished the item (state 5, "processed"): it can be found by guid.
+    /// The scanner finished the item: state 5 with no `metadataState` and no `mediaState`, the LAST
+    /// frame of its sequence. State 5 also opens the sequence (with `metadataState: "processing"`),
+    /// before the item has its metadata, so state alone is not "finished".
     Created,
-    /// The item left the library (state 9, "deleted").
+    /// The item left the library (state 9). **UNVERIFIED: no delete has been captured**; 9 is the
+    /// community-documented value and the frame's other fields are unknown.
     Deleted,
 }
 
@@ -209,7 +213,13 @@ pub fn classify(frame: &SseFrame, own_client_id: &str) -> Notification {
     let Ok(root) = serde_json::from_str::<serde_json::Value>(data) else {
         return Notification::Ignored;
     };
-    let container = &root["NotificationContainer"];
+    // A captured `timeline` frame has no `NotificationContainer`: the event name is its type and the
+    // data is `{"TimelineEntry":{...}}`. The community envelope (`type` inside the container) is
+    // still read, for `playing` frames, whose real shape has not been captured here.
+    let container = if root["NotificationContainer"].is_object() { &root["NotificationContainer"] } else { &root };
+    if event == "timeline" {
+        return library(container);
+    }
     match container["type"].as_str() {
         Some("timeline") => return library(container),
         Some(kind) if kind != "playing" => return Notification::Ignored,
@@ -229,18 +239,24 @@ pub fn classify(frame: &SseFrame, own_client_id: &str) -> Notification {
 
 /// The `identifier` a library entry carries; another plugin's timeline (music, a channel) is not ours.
 const LIBRARY_IDENTIFIER: &str = "com.plexapp.plugins.library";
-/// `TimelineEntry.type` of a movie and of a show, and the `state` values of a finished create
-/// (processed) and of a delete. Every other state is scan progress.
+/// `TimelineEntry.type` of a movie and of a show, and the `state` values of a processed item and of a
+/// delete (UNVERIFIED, never captured). Every other state is scan progress. Captured states: 2, 3, 4
+/// and 5; a movie runs 5 (`metadataState` processing), 4 (loading), 5 (no `metadataState`).
 const TYPE_MOVIE: i64 = 1;
 const TYPE_SHOW: i64 = 2;
 const STATE_PROCESSED: i64 = 5;
 const STATE_DELETED: i64 = 9;
 
-/// The finished movie and show creates and deletes of a `timeline` container. An entry missing its
+/// The finished movie and show creates and deletes of a `timeline` payload. `TimelineEntry` is one
+/// object on the wire (an array is read too, as the community docs show it). An entry missing its
 /// `itemID`, `type` or `state` is dropped, never guessed at; numbers may arrive as strings.
-fn library(container: &serde_json::Value) -> Notification {
-    let Some(entries) = container["TimelineEntry"].as_array() else { return Notification::Ignored };
-    let kept: Vec<LibraryEntry> = entries.iter().filter_map(library_entry).collect();
+fn library(payload: &serde_json::Value) -> Notification {
+    let entry = &payload["TimelineEntry"];
+    let kept: Vec<LibraryEntry> = match entry {
+        serde_json::Value::Array(entries) => entries.iter().filter_map(library_entry).collect(),
+        serde_json::Value::Object(_) => library_entry(entry).into_iter().collect(),
+        _ => return Notification::Ignored,
+    };
     if kept.is_empty() { Notification::Ignored } else { Notification::Library(kept) }
 }
 
@@ -255,11 +271,18 @@ fn library_entry(entry: &serde_json::Value) -> Option<LibraryEntry> {
         _ => return None,
     };
     let state = match whole(&entry["state"])? {
+        STATE_PROCESSED if in_progress(entry) => return None,
         STATE_PROCESSED => LibraryState::Created,
         STATE_DELETED => LibraryState::Deleted,
         _ => return None,
     };
     Some(LibraryEntry { item_id, kind, state, section: text(&entry["sectionID"]) })
+}
+
+/// State 5 opens a sequence too, flagged by a `metadataState` ("processing") or, for analysis, a
+/// `mediaState`; the finished frame carries neither.
+fn in_progress(entry: &serde_json::Value) -> bool {
+    ["metadataState", "mediaState"].iter().any(|k| text(&entry[*k]).is_some_and(|v| !v.is_empty()))
 }
 
 /// A whole number the server wrote as a number or as a numeric string.
@@ -403,7 +426,7 @@ impl Client {
     }
 }
 
-/// Timeline frames the parser is tested against: community-documented, NOT captured live.
+/// Timeline frames the parser is tested against: the captured shape, scrubbed.
 #[cfg(test)]
 mod fixtures;
 
@@ -552,8 +575,12 @@ mod tests {
         assert_eq!(classify(&msg("ping", ""), "own"), Notification::Ping);
     }
 
+    fn timeline(data: &str) -> Notification {
+        classify(&msg("timeline", data), "own")
+    }
+
     fn library_of(data: &str) -> Vec<LibraryEntry> {
-        match classify(&msg("notification", data), "own") {
+        match timeline(data) {
             Notification::Library(entries) => entries,
             other => panic!("{other:?}"),
         }
@@ -563,52 +590,102 @@ mod tests {
         LibraryEntry { item_id: id.into(), kind, state, section: section.map(str::to_owned) }
     }
 
+    /// The entries a whole sequence of captured frames yields, in order.
+    fn kept(frames: &[&str]) -> Vec<LibraryEntry> {
+        frames
+            .iter()
+            .filter_map(|f| match timeline(f) {
+                Notification::Library(e) => Some(e),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
     #[test]
-    fn a_finished_create_and_a_delete_become_library_entries() {
+    fn a_captured_movie_add_yields_one_created_entry_on_its_finished_frame() {
+        // 5 + processing and 4 + loading are scan progress; only the bare 5 is the finished create.
+        assert_eq!(timeline(fixtures::MOVIE_ADD[0]), Notification::Ignored);
+        assert_eq!(timeline(fixtures::MOVIE_ADD[1]), Notification::Ignored);
         assert_eq!(
-            library_of(fixtures::MOVIE_CREATED),
-            [entry("123", LibraryKind::Movie, LibraryState::Created, Some("1"))]
+            library_of(fixtures::MOVIE_ADD[2]),
+            [entry("1001", LibraryKind::Movie, LibraryState::Created, Some("1"))]
         );
-        // Ids and numbers as strings are the same entry.
+        assert_eq!(kept(&fixtures::MOVIE_ADD).len(), 1);
+    }
+
+    #[test]
+    fn a_captured_show_add_yields_one_created_entry() {
         assert_eq!(
-            library_of(fixtures::SHOW_DELETED),
-            [entry("456", LibraryKind::Show, LibraryState::Deleted, Some("2"))]
+            kept(&fixtures::SHOW_ADD),
+            [entry("2001", LibraryKind::Show, LibraryState::Created, Some("2"))]
         );
     }
 
     #[test]
-    fn a_scan_keeps_only_finished_movie_and_show_creates_and_deletes() {
+    fn seasons_episodes_and_music_tracks_are_dropped_whole() {
+        assert_eq!(kept(&fixtures::SEASON_AND_EPISODES), [], "type 3 and 4 never reach the Watchlist");
+        assert_eq!(kept(&fixtures::MUSIC_TRACK), [], "type 10, analyzing or not");
+        assert_eq!(timeline(fixtures::OTHER_PLUGIN), Notification::Ignored);
+    }
+
+    #[test]
+    fn a_metadata_state_marks_a_frame_unfinished_whatever_its_state() {
+        let frame = |state: &str, extra: &str| {
+            format!(
+                r#"{{"TimelineEntry":{{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"9","type":1,"state":{state}{extra}}}}}"#
+            )
+        };
+        assert!(matches!(timeline(&frame("5", "")), Notification::Library(_)));
+        for extra in [r#","metadataState":"processing""#, r#","metadataState":"queued""#, r#","mediaState":"analyzing""#] {
+            assert_eq!(timeline(&frame("5", extra)), Notification::Ignored, "{extra}");
+        }
+        for state in ["0", "1", "2", "3", "4", "6"] {
+            assert_eq!(timeline(&frame(state, "")), Notification::Ignored, "state {state}");
+        }
+    }
+
+    #[test]
+    fn a_delete_is_read_at_the_unverified_state_9() {
+        // No delete was ever captured; this pins the community-documented value, not a recording.
         assert_eq!(
-            library_of(fixtures::SCAN_MIXED),
-            [
-                entry("14", LibraryKind::Movie, LibraryState::Created, Some("1")),
-                entry("14", LibraryKind::Movie, LibraryState::Deleted, Some("1")),
-            ],
-            "progress states, other types and another plugin's identifier are dropped"
+            library_of(fixtures::MOVIE_DELETED),
+            [entry("1002", LibraryKind::Movie, LibraryState::Deleted, Some("1"))]
         );
     }
 
     #[test]
-    fn unfinished_and_wrong_type_entries_alone_are_ignored() {
-        assert_eq!(classify(&msg("notification", fixtures::UNFINISHED), "own"), Notification::Ignored);
+    fn the_community_envelope_with_string_numbers_and_an_array_is_still_read() {
+        let n = classify(&msg("notification", fixtures::COMMUNITY_ENVELOPE), "own");
+        assert_eq!(
+            n,
+            Notification::Library(vec![
+                entry("1003", LibraryKind::Movie, LibraryState::Created, Some("1")),
+                entry("2003", LibraryKind::Show, LibraryState::Created, Some("2")),
+            ])
+        );
     }
 
     #[test]
     fn malformed_timeline_entries_are_dropped_without_a_panic() {
-        assert_eq!(classify(&msg("notification", fixtures::MALFORMED), "own"), Notification::Ignored);
+        for data in fixtures::MALFORMED {
+            assert_eq!(timeline(data), Notification::Ignored, "{data}");
+        }
         for data in [
             r#"{"NotificationContainer":{"type":"timeline"}}"#,
             r#"{"NotificationContainer":{"type":"timeline","TimelineEntry":{"itemID":"1"}}}"#,
-            r#"{"NotificationContainer":{"type":"timeline","TimelineEntry":[]}}"#,
+            r#"{"TimelineEntry":{"itemID":"1"}}"#,
+            "{}",
+            "[]",
         ] {
-            assert_eq!(classify(&msg("notification", data), "own"), Notification::Ignored, "{data}");
+            assert_eq!(timeline(data), Notification::Ignored, "{data}");
         }
     }
 
     #[test]
     fn a_timeline_frame_is_not_filtered_by_our_own_client_id() {
         // Library changes carry no session: the own-session filter has nothing to match.
-        let n = classify(&msg("notification", fixtures::MOVIE_CREATED), "cid-own");
+        let n = classify(&msg("timeline", fixtures::MOVIE_ADD[2]), "cid-own");
         assert!(matches!(n, Notification::Library(e) if e.len() == 1));
     }
 

@@ -1303,9 +1303,10 @@ Measured against a local server with a Guest token:
   The measurements win.
 - **A Guest token receives only `playing` events** (session key, the playing client's
   `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). The app requests `filters=playing,timeline`
-  (the comma sent percent-encoded); the measurements below were taken with `filters=playing` alone,
-  so **whether a server accepts the comma list, and whether it then sends `timeline`, is UNVERIFIED**
-  (the fallback, no `filters`, is not wired).
+  (the comma sent percent-encoded). The idle measurements below used `filters=playing` alone; a later
+  capture on the owner's own server shows the server **accepts both `filters=playing,timeline` and
+  `filters=playing%2Ctimeline` and then sends `timeline` frames** (the fallback, no `filters`, is not
+  wired and is not needed).
 - **An owner token, watched read-only from the host over loopback HTTP** (one stream at a time, the
   app's identity headers' client identifier, token in a header, no other request): with
   `filters=playing`, 601 s: HTTP 200 `text/event-stream`, 60 frames, every one an SSE `ping`
@@ -1335,18 +1336,42 @@ names are the parser's reading and are not yet confirmed by a capture committed 
 frame would carry the session's key, client id and rating key, so it stays out of the repository
 (scrubbed captures hold only the ping cadence).
 
-**`timeline` frames: UNVERIFIED, community-documented, not captured live.** The parser reads the shape
-python-plexapi's `AlertListener` consumers document:
-`{"NotificationContainer":{"type":"timeline","size":N,"TimelineEntry":[{"identifier":"com.plexapp.plugins.library",
-"sectionID":"1","itemID":"123","type":1,"title":"…","state":5,"metadataState":"created","mediaState":"analyzing",
-"updatedAt":…}]}}`. It keeps an entry only when `itemID`, `type` and `state` are present (numbers as
-numbers or numeric strings), `type` is 1 (movie) or 2 (show), `state` is 5 (processed: a finished
-create) or 9 (deleted) and `identifier`, when present, is the library plugin's; progress states and every
-other type are dropped, as is a frame left with no entry. An `itemID` is the item's `ratingKey` on that
-server, not a guid. Whether state 5 can also be a metadata update, what a real scan emits and **the
-frames-per-minute during a scan are not measured**: the owner's passive capture (a read-only stream on the
-owner's own server while the library changes out of band) replaces the fixtures in
-`rust-modules/plex/src/plex/notify/fixtures.rs` and fills this paragraph in.
+**`timeline` frames: CAPTURED** (passive, read-only streams on the owner's own server while its library
+scanned; the raw captures hold titles and paths and stay out of the repository). One frame is
+`event: timeline` + `data: {"TimelineEntry":{...}}`: a single OBJECT, not an array, and no
+`NotificationContainer`. Scrubbed shape (synthetic values):
+`{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,
+"title":"Movie A","state":5,"metadataState":"processing","updatedAt":1760000001}}`. `sectionID` and
+`itemID` are STRINGS; `type` and `state` are integers; `metadataState` ("queued", "matching",
+"processing", "loading") and `mediaState` ("analyzing") appear on some frames only. `type`: 1 movie, 2
+show, 3 season, 4 episode, 10 track. `state` values seen: 2, 3, 4, 5.
+
+The sequence of one movie or show is `state` 5 + `metadataState` "processing", then 4 + "loading", then
+**5 with no `metadataState`: the finished frame, the last of its sequence**. So state 5 opens AND closes a
+sequence (the first, before the item has metadata, is not "finished"). A season runs 2 ("matching"), 5, 3
+("queued"), 3 ("processing"), 4 ("loading") and a final 5, with its episodes (5, 4, 4, 5 each)
+interleaved; a music track is two state-5 frames, the first with `mediaState` "analyzing". The sequence
+is the same whether the item is new or only refreshed (the captures cannot tell them apart), so a
+"create" is "the item finished processing". **Deletion has NOT been observed** (no delete happened in any
+capture): the community-documented state 9 is kept as the delete value and is UNVERIFIED, as is the rest
+of the delete frame.
+
+The parser keeps an entry only when `itemID`, `type` and `state` are present (numbers as numbers or
+numeric strings), `type` is 1 or 2, the `identifier`, when present, is the library plugin's and
+`state` is 5 with neither `metadataState` nor `mediaState` (created) or 9 (deleted, UNVERIFIED); every
+other frame is dropped. The community `NotificationContainer` envelope with an array is still read.
+An `itemID` is the item's `ratingKey` on that server, not a guid. The fixtures
+(`rust-modules/plex/src/plex/notify/fixtures.rs`) are this shape with synthetic titles and ids.
+
+**Frame rates (measured, owner's server, 12 h).** `timeline`: 53 frames in 720 min = 0.07 per minute
+over the window, 7.6 per minute over the 7 minutes that had any; a scan arrives in bursts, the peak
+60 s window held 20 frames (all within one second, a 10-track music add) and a 36-frame season add held
+18 in its busiest minute. Idle is pings only: 6 per minute (4319 in 720 min), 2 bytes of data each.
+`filters=playing,timeline` costs 53 timeline + 4319 ping frames, 19 KB, in 12 h. **Without `filters`**
+the same 12 h held 27 990 frames and 6.8 MB: `activity` 22 004 frames, mean 30.6 per minute over the
+window, 66.9 over its 329 active minutes, peak 215 in one minute and 62 in one second (437 bytes at most),
+plus `progress` 1 401, `status` 106, `account` 59, `reachability` 47 and `preference` 1. Filtering is what
+keeps the feed quiet; an unfiltered subscription is not an option.
 
 What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
 HOLDS owes that item a read-back of OUR state. A page holds what its store enumerates while the page
