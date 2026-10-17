@@ -10,7 +10,7 @@
 //!
 //! **What it draws.** The art ground (the discover art through a reachable server's photo proxy,
 //! else the neutral app ground), the title (a text title: a discover item has no clearLogo), the
-//! meta line (kind, up to two genres, year), the status line with its icon (clock / server-slash /
+//! meta line (kind, up to two genres, year), the status line with its icon (clock / circle-slash / server-slash /
 //! none), the *Coming 12 March* line, the line-clamped summary and the primary pill, *Add to
 //! Watchlist* with the outline bookmark / *On Watchlist* with the filled one. The hero's rung
 //! constants and the pill's width come from `appkit::hero_layout`, the same numbers the Detail
@@ -66,7 +66,7 @@ pub enum Membership {
     Unknown,
 }
 
-/// The status line's meaning, which picks its icon (clock / server-slash / none).
+/// The status line's meaning, which picks its icon (clock / circle-slash / server-slash / none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Status {
     #[default]
@@ -224,7 +224,8 @@ pub fn coming_line(status: Status, release: Option<&str>) -> Option<String> {
 pub fn status_icon(status: Status, release: Option<&str>) -> Option<Icon> {
     match status {
         Status::ComingSoon if coming_line(status, release).is_none() => Some(Icon::Clock),
-        Status::NotOnAnyServer | Status::ServerOffline => Some(Icon::ServerSlash),
+        Status::NotOnAnyServer => Some(Icon::CircleSlash),
+        Status::ServerOffline => Some(Icon::ServerSlash),
         Status::ComingSoon | Status::None => None,
     }
 }

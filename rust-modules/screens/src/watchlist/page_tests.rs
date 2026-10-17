@@ -110,8 +110,10 @@ fn marks_and_washes_follow_the_state() {
     assert_eq!(marks::mark(TileState::ComingSoonMatched), Some(Icon::Clock));
     assert_eq!(marks::mark(TileState::ServerOffline), Some(Icon::ServerSlash));
     assert_eq!(marks::mark(TileState::Available), None);
-    assert_eq!(marks::mark(TileState::NotOnAnyServer), None);
-    assert!(marks::wash(TileState::NotOnAnyServer, false) > marks::wash(TileState::NotOnAnyServer, true));
+    assert_eq!(marks::mark(TileState::NotOnAnyServer), Some(Icon::CircleSlash));
+    assert!(marks::owns_corner(TileState::NotOnAnyServer));
+    assert_eq!(marks::wash(TileState::NotOnAnyServer, false), 0.55);
+    assert_eq!(marks::wash(TileState::NotOnAnyServer, true), 0.25);
     assert_eq!(marks::wash(TileState::Available, false), 0.0);
 }
 

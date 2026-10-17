@@ -239,6 +239,9 @@ pub enum Icon {
     /// A server with a slash through it — the Watchlist's server-offline mark (the read-out's server
     /// base, slashed the way [`Icon::WifiSlash`] is).
     ServerSlash,
+    /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
+    /// sign at the inline weight.
+    CircleSlash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -263,7 +266,7 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
-        Icon::Clock | Icon::ServerSlash => (1.9 / 24.0, 22.1 / 24.0),
+        Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -280,7 +283,7 @@ pub const fn band(id: Icon) -> f32 {
         Icon::Play => 16.0 / 24.0,
         // Measured ink heights of the Watchlist marks (y 1.9..21.4, 1.9..22.1, 1.5..22.5).
         Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
-        Icon::Clock => 20.2 / 24.0,
+        Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
         Icon::ServerSlash => 21.0 / 24.0,
         _ => 1.0,
     }
@@ -336,6 +339,7 @@ fn src(id: Icon) -> &'static str {
         Icon::BookmarkFill => include_str!("../../../assets/icons/bookmark-fill.svg"),
         Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
         Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
+        Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
     }
 }
 
@@ -617,12 +621,12 @@ mod ink_tests {
         nums.chunks(2).map(|p| (p[0], p[1])).collect()
     }
 
-    /// The four Watchlist marks rasterize at the two sizes the Watchlist draws them at (the 28px
+    /// The five Watchlist marks rasterize at the two sizes the Watchlist draws them at (the 28px
     /// control-size mark and the 112px read-out) through the production clamp: full opacity reached,
     /// no ink on the border. Same two checks the read-out family is graded by.
     #[test]
     fn the_watchlist_marks_rasterize_clean_at_28_and_112() {
-        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash] {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
             for px in [28, 112] {
                 let px = icon_raster_px(px);
                 let rgba = plx_gfx::svg::rasterize(src(id), px, px)
@@ -646,7 +650,7 @@ mod ink_tests {
     /// gives the chevron, measured from the path data this time.
     #[test]
     fn the_watchlist_marks_ink_entries_match_their_assets() {
-        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash] {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
             let pts = path_points(src(id));
             let xs = pts.iter().map(|p| p.0);
             let ys = pts.iter().map(|p| p.1);

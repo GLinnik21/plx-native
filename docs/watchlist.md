@@ -131,7 +131,7 @@ PMS guids are hex; the mock's default placeholder guids are not, which is why `m
 | Available | released, matched on a Reachable server | PMS tick / progress | Detail of the chosen copy | card kind plus Remove |
 | ComingSoon | not released, unmatched | clock | Catalog | Catalog rows plus Remove |
 | ComingSoonMatched | not released, but a Reachable server has it | clock kept | Detail | card kind plus Remove |
-| NotOnAnyServer | released, every server on the roster answered "absent" | none; a 30% wash at rest, 10% on focus | Catalog | Catalog |
+| NotOnAnyServer | released, every server on the roster answered "absent" | circle-slash; a 55% wash at rest, 25% on focus | Catalog | Catalog |
 | ServerOffline | matched earlier, every matching server now Unreachable | server-slash, cached progress | Catalog | Catalog (no Play or Mark watched) |
 | Unknown | no match and some server has not answered | none | Catalog | Catalog; excluded from "On your servers" |
 
@@ -216,8 +216,8 @@ watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET disc
 /library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
-a line-clamped summary, genres, a status line (clock for coming soon, server-slash for on no server or
-server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
+a line-clamped summary, genres, a status line (clock for coming soon, circle-slash for on no server,
+server-slash for server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
 
 Status: when the title is a row of the list read, its tile state dictates the line (coming soon, on
 no server, server offline; an Unknown tile and an Available one say nothing, so a silent server never
