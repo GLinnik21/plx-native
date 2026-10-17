@@ -2163,6 +2163,15 @@ impl SessionMachine {
                 next.server = server.clone();
                 next.sources = sources.clone();
                 next.home_users = users.iter().map(super::UserTile::to_ref).collect();
+                // `Authorized` emptied the offline profile cache because the new token names no
+                // account. The roster does: the same owner as the stored record gets that
+                // record's cache back (nothing of another account's, nor when either is unknown).
+                if pending.key.op == SessionOp::Login && self.state.authorized_in_flow
+                    && next.profiles.is_empty()
+                    && plx_plex::plex::session::same_owner(&self.state.committed_credentials.home_users,
+                        &next.home_users) {
+                    next.profiles = self.state.committed_credentials.profiles.clone();
+                }
                 // A fresh QR sign-in's account token is the owner's plex.tv credential. Keep it
                 // on the owner profile too; rediscovery can belong to a managed active profile
                 // and must not overwrite that profile's switch credential with the owner's.
@@ -2637,6 +2646,9 @@ impl SessionMachine {
                         // them may ride into the new account: `SignedIn` writes the roster and
                         // `Session::account` names a single-user account from it; a Home account
                         // seats through the picker. Reset BEFORE `expected` is recomputed below.
+                        // The new token cannot say whose cache this is (every sign-in mints one),
+                        // so the cache is emptied while the identity is unknown and `SignedIn`
+                        // restores the STORED record's when its roster names the same owner.
                         self.state.persisted.user = UserRef::default();
                         self.state.persisted.home_users.clear();
                         self.state.persisted.profiles.clear();
@@ -4153,6 +4165,52 @@ mod tests {
         assert_eq!(account.name.as_deref(), Some("Demo"), "the chip names the account that signed in");
         assert!(published.as_ref().is_none_or(|u| u.uuid != "previous-owner" && u.thumb.is_empty()));
         assert!(owner.state.persisted.profiles.is_empty());
+    }
+
+    /// **The same person signing in again keeps the offline profile cache.** A fresh QR sign-in
+    /// mints a new account token, so the token cannot say whose cache it is: `Authorized` resets it
+    /// (identity unknown then) and the `SignedIn` roster decides. A roster naming the same owner as
+    /// the stored record restores that record's `profiles`; a roster naming another owner, or none
+    /// at all, leaves it empty (`a_sign_in_over_another_accounts_session_publishes_the_new_accounts_name`).
+    #[test]
+    fn a_sign_in_over_the_same_accounts_session_keeps_its_offline_profile_cache() {
+        use plx_plex::plex::session::{HomeUserRef, ProfileCreds};
+        let saved_profiles = |users: Vec<UserTile>| {
+            let mut init = local_session();
+            init.persisted.account_token = "synthetic-token-before".into();
+            init.persisted.user = UserRef { id: 7, uuid: "stored-owner".into(), title: "Stored Name".into(),
+                token: "synthetic-token".into(), ..Default::default() };
+            init.persisted.home_users = vec![HomeUserRef { id: 7, uuid: "stored-owner".into(),
+                title: "Stored Name".into(), admin: true, ..Default::default() }];
+            init.persisted.profiles = vec![ProfileCreds { uuid: "stored-owner".into(),
+                user: init.persisted.user.clone(), ..Default::default() }];
+            init.committed_credentials = CredentialPatch::of(&init.persisted);
+            let mut owner = SessionMachine::from_init(init);
+            assert!(owner.restart_login(true, &mut |_| {}));
+            let epoch = owner.state.epoch;
+            let req = owner.state.next_req;
+            let authorized = qr_event(&owner, req, 1, super::super::LoginProgress::Authorized {
+                epoch, token: "synthetic-token-after".into(),
+            }, false);
+            assert!(owner.apply_qr_observation(&authorized, &mut |_| {}));
+            assert!(owner.state.persisted.profiles.is_empty(), "identity is unknown at Authorized");
+            let signed_in = qr_event(&owner, req, 2, super::super::LoginProgress::SignedIn {
+                epoch, server: local_server(), sources: Vec::new(), users,
+            }, true);
+            let effects = step(&mut owner, SessionEvent::Result(signed_in));
+            effects.iter().find_map(|fx| match fx {
+                SessionFx::Commit { plan, .. } => plan.credentials.clone(), _ => None,
+            }).expect("the sign-in saves its credentials")
+        };
+        let tile = |id: i64| UserTile { id, uuid: format!("owner-{id}"), title: "Synthetic".into(),
+            admin: true, ..Default::default() };
+
+        let same = saved_profiles(vec![tile(7)]);
+        assert_ne!(same.account_token, "synthetic-token-before", "control: a new token was minted");
+        assert_eq!(same.profiles.len(), 1, "the same owner keeps the offline profile cache");
+        assert_eq!(same.profiles[0].uuid, "stored-owner");
+        assert!(saved_profiles(vec![tile(8)]).profiles.is_empty(), "another owner gets none");
+        assert!(saved_profiles(Vec::new()).profiles.is_empty(), "an unnamed owner gets none");
     }
 
     /// **The consent answer**: the read-out's verdict reaches the publication; *Connect* records
