@@ -120,8 +120,7 @@ fn opening_settings_never_writes_the_session_file() {
     let sess = scratch_session("surface-no-session-write");
     let file = sess.path();
     let before = std::fs::metadata(&file).expect("the scratch session exists");
-    let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view());
+    let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
     step(&mut s, ScreenEvent::Mount, None);
     let after = std::fs::metadata(&file).expect("the scratch session still exists");
     assert_eq!(

@@ -208,6 +208,7 @@ fn scalars() -> Vec<Scalar> {
         Scalar { key: "subtitle_tone", future: json!("grey_10"), fallback: Some(json!("white")) },
         Scalar { key: "subtitle_size", future: json!("gigantic"), fallback: None },
         Scalar { key: "subtitle_position", future: json!("top"), fallback: None },
+        Scalar { key: "hdr_overlay_brightness", future: json!("a_quarter"), fallback: None },
         Scalar { key: "next_episode_mode", future: json!("sometimes"), fallback: None },
         Scalar { key: "skip_interval", future: json!("45s"), fallback: None },
         Scalar { key: "deck_press", future: json!("hold"), fallback: None },

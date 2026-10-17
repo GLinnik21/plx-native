@@ -1,0 +1,191 @@
+name: Dependabot notices
+
+# A Dependabot PR that bumps a Rust crate moves versions in rust-modules/Cargo.lock, and
+# THIRD-PARTY-NOTICES.md section 2.4 is generated from that lock (ci/gen-third-party-notices.py,
+# `make notices`); `make check` fails until it is regenerated, and the bot cannot run `make`. This
+# workflow does it: it regenerates the section and pushes ONE commit back to the PR branch.
+#
+# A Dependabot PR that bumps the pinned toolchain (`package-ecosystem: rust-toolchain`, which edits
+# `channel` in rust-modules/rust-toolchain.toml) moves the std half of the same section: std's
+# dependency lock is per release, and ci/third-party-crates.json holds a snapshot of it ("toolchain",
+# "std_lock", "std_not_shipped"). When the pin differs from that snapshot this job installs the new
+# release with rust-src, lets `--derive-toolchain` rewrite the snapshot from std's own lock, and then
+# regenerates the section as above; the commit may then carry ci/third-party-crates.json too, and
+# nothing else. A crate the new std lock ADDED is a licence decision exactly like a new cargo crate:
+# the derive step exits 2, writes nothing, and the PR stays red with the crate named.
+#
+# IT WRITES ONLY WHEN NOTHING NEEDS A DECISION. The generator exits 0 and rewrites the file only on a
+# consistent tree, i.e. every registry package in the lock already has a row in
+# ci/third-party-crates.json (or is listed in `not_shipped`) and only VERSIONS moved. A crate the bump
+# ADDED is a licence decision (ships or not, which licence, which copyright holder) that a person
+# must make: the generator then exits 2 without touching anything, this job fails, and the PR stays
+# red with an error annotation naming the crate(s). Any other inconsistency (a row whose crate left
+# the lock, a moved toolchain pin) exits 1, also writes nothing, and also leaves the PR red.
+#
+# WHY `pull_request_target`. A `pull_request` run for a Dependabot PR gets a read-only GITHUB_TOKEN
+# and no Actions secrets whatever `permissions:` asks for, so it cannot push. `pull_request_target`
+# runs THIS file as it exists on the base branch, with the token the job declares (docs.github.com:
+# "Automate Dependabot with GitHub Actions", "Events that trigger workflows"). The hazard of that
+# trigger is running PR-controlled code with a write token, so the rules are:
+#   * the job runs only when github.actor AND the PR author are `dependabot[bot]`, the head branch
+#     lives in THIS repository (not a fork), and the PR targets the default branch;
+#   * the PR head is checked out into `pr/` as DATA. Nothing from it is executed: no Makefile, no
+#     cargo (build.rs, proc macros), no script, no composite action. The only code that runs is
+#     `trusted/ci/gen-third-party-notices.py` from the BASE branch (`python3 -I`, stdlib only), told
+#     to read the lock, data file and notices from `pr/` with `--root`. It parses them as text/JSON;
+#     the PR's own copy of the generator is never loaded;
+#   * the only thing a PR contributes to the toolchain step is the pin string, which the trusted generator
+#     accepts only as a plain `1.x.y` before it reaches `rustup toolchain install` (through `env:`); the
+#     release itself comes from static.rust-lang.org, and only `rustc --version` of it runs;
+#   * both checkouts drop their credential (`persist-credentials: false`); the push passes the token
+#     for that one command, so no later step and no file in `pr/` can pick it up;
+#   * `contents: write` and `actions: write` are declared on this job alone (the workflow default is
+#     none); the branch name and SHA reach the shell through `env:`, never interpolated into a script;
+#   * the push is a fast-forward of exactly the head SHA that was checked out, so it is refused if the
+#     branch moved meanwhile, and it carries only THIRD-PARTY-NOTICES.md (anything else dirty fails).
+# A human who pushes to a Dependabot branch is not `dependabot[bot]`, so this never rewrites their work.
+#
+# RETRIGGERING CI. Events caused by a push made with GITHUB_TOKEN do not start workflows (docs:
+# "Triggering a workflow from a workflow"), except `workflow_dispatch` and `repository_dispatch`. The
+# documented routes to a native re-run are a personal access token or a GitHub App token, which are
+# secrets this repository does not keep for a bot, so the job dispatches ci.yml on the branch
+# (`gh workflow run`, why `actions: write`). That run is not the PR's `pull_request` run, but its
+# checks attach to the new head commit and show in the PR's checks list. LIMITS: it tests the
+# branch head, not the merge with main (the `pull_request` run does), and the red `pull_request` run
+# on the previous commit stays in the history. `@dependabot recreate` (or close/reopen) starts a normal one. NOT `@dependabot rebase`: once github-actions[bot]
+# has pushed, Dependabot treats the PR as edited by a person and stops rebasing it; `recreate` rebuilds the
+# branch from scratch and this job then runs again.
+#
+# NO CARGO HERE, deliberately. A PR's own `.cargo/config.toml` can name a credential-provider program (and
+# build.rs / proc macros run on build), so cargo on the PR files would run PR code beside a write token. That
+# is why this job only reads the lock as text and cannot prove which crates SHIP: the backstop is ci.yml's
+# host-lint job, which runs `gen-third-party-notices.py --check --verify-graph` (cargo, read-only token) on
+# the PR after the push. It also means this job can write a notices table for a bump whose licence or
+# copyright changed: those columns come from ci/third-party-crates.json, not the lock.
+#
+# Listed in .github/dependabot.yml's header and tested by ci/test_ci_workflows.py (DependabotNotices).
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - rust-modules/Cargo.lock
+      - 'rust-modules/**/Cargo.toml'
+      - rust-modules/rust-toolchain.toml
+
+permissions: {}
+
+concurrency:
+  # One run per PR, never cancelled mid-push; a newer one queues behind it.
+  group: dependabot-notices-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    name: regenerate THIRD-PARTY-NOTICES.md
+    if: >-
+      github.actor == 'dependabot[bot]'
+      && github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      # The base branch: the only code this job runs.
+      - name: Check out the trusted generator (base branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: trusted
+          persist-credentials: false
+
+      # The PR head, as data. The exact SHA the event named, so the push below is a fast-forward of it.
+      - name: Check out the pull request files (data only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          persist-credentials: false
+
+      # The pin comes out of the PR's rust-toolchain.toml as data; the trusted generator refuses anything
+      # but a plain release number. Empty output: the snapshot already describes the pin (every cargo PR).
+      - name: Has the toolchain pin moved?
+        id: pin
+        run: |
+          set -euo pipefail
+          pin=$(python3 -I trusted/ci/gen-third-party-notices.py --root pr --print-stale-pin)
+          echo "pin=${pin}" >> "$GITHUB_OUTPUT"
+
+      - name: Install the new pinned toolchain with rust-src
+        if: steps.pin.outputs.pin != ''
+        env:
+          PIN: ${{ steps.pin.outputs.pin }}
+        run: rustup toolchain install "$PIN" --profile minimal --component rust-src
+
+      - name: Re-derive the std snapshot for the new toolchain
+        if: steps.pin.outputs.pin != ''
+        run: |
+          set -uo pipefail
+          status=0
+          python3 -I trusted/ci/gen-third-party-notices.py --root pr --derive-toolchain >derive.out 2>&1 || status=$?
+          cat derive.out
+          case "$status" in
+            0) ;;
+            2)
+              new=$(sed -n 's/^unclassified: //p' derive.out)
+              echo "::error title=New std crate needs a licence decision::The new toolchain's std lock gained ${new}, which is in neither std_lock nor std_not_shipped in ci/third-party-crates.json. Decide whether it links into the ARM binary (licence, copyright), list it, then run make notices on that toolchain. Nothing was written to this PR."
+              exit 1 ;;
+            *)
+              echo "::error title=The std snapshot cannot be re-derived automatically::ci/gen-third-party-notices.py --derive-toolchain exited ${status} (see the log). Nothing was written to this PR; fix it by hand."
+              exit 1 ;;
+          esac
+
+      - name: Regenerate section 2.4
+        run: |
+          set -uo pipefail
+          status=0
+          python3 -I trusted/ci/gen-third-party-notices.py --root pr >gen.out 2>&1 || status=$?
+          cat gen.out
+          case "$status" in
+            0) ;;
+            2)
+              new=$(sed -n 's/^unclassified: //p' gen.out)
+              echo "::error title=New crate needs a licence decision::The lockfile gained ${new}, which has no row in ci/third-party-crates.json and is not in not_shipped. Decide whether it ships, add the row (licence, copyright) or list it in not_shipped, then run make notices. Nothing was written to this PR."
+              exit 1 ;;
+            *)
+              echo "::error title=Notices cannot be regenerated automatically::ci/gen-third-party-notices.py exited ${status} (see the log). Nothing was written to this PR; fix it by hand and run make notices."
+              exit 1 ;;
+          esac
+
+      - name: Commit and push the regenerated file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PIN_MOVED: ${{ steps.pin.outputs.pin }}
+        run: |
+          set -euo pipefail
+          changed=$(git -C pr status --porcelain)
+          if [ -z "$changed" ]; then
+            echo "THIRD-PARTY-NOTICES.md already matches the lockfile: nothing to push."
+            exit 0
+          fi
+          # The data file may change only when the toolchain pin moved (the derive step).
+          allowed=" M THIRD-PARTY-NOTICES.md"
+          [ -z "$PIN_MOVED" ] || allowed=$(printf '%s\n%s' "$allowed" " M ci/third-party-crates.json")
+          if [ -n "$(printf '%s\n' "$changed" | grep -vxF "$allowed" || true)" ]; then
+            echo "::error::expected only THIRD-PARTY-NOTICES.md (and, for a toolchain bump, ci/third-party-crates.json) to change, got: $changed"
+            exit 1
+          fi
+          case "$HEAD_REF" in dependabot/*) ;; *) echo "::error::unexpected head branch"; exit 1 ;; esac
+          git -C pr config user.name "github-actions[bot]"
+          git -C pr config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C pr add -- THIRD-PARTY-NOTICES.md ci/third-party-crates.json
+          git -C pr commit -q -m "Notices: regenerate section 2.4 for the dependency bump"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -C pr -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+            push origin "HEAD:refs/heads/${HEAD_REF}"
+          # A GITHUB_TOKEN push starts no workflow; workflow_dispatch is the exception (see the header).
+          gh workflow run ci.yml --ref "$HEAD_REF"

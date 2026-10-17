@@ -23,7 +23,12 @@ uniform highp float u_radius;
 uniform vec4 u_colTop;
 uniform vec4 u_colBot;
 uniform float u_focus;
-uniform float u_focus_rgb;
+// The Painter's RGB gain (cascade x the scoped output gain). Fill and rim arrive pre-scaled by it,
+// but the rim, glow and focus ring are ADDED to the fill, so the sum can run past what the gain
+// allows (a white rim on a near-white fill: 0.5*0.96 + 0.5*1.0 = 0.98 under a 0.5 gain, where
+// the undimmed 0.96 + 1.0 clips to 1.0). The result is capped at the gain, which is exactly
+// `clamp(sum) * gain`: the same picture, dimmed. 1.0 for a draw with no gain: a no-op.
+uniform float u_rgb_cap;
 uniform highp float u_radR;
 uniform float u_rimw;
 uniform vec4 u_rimcol;
@@ -177,8 +182,8 @@ void main(){
   if (u_focus > 0.001) {
     float ring = (1.0 - smoothstep(1.5, 4.0, abs(d - 5.0))) * u_focus;
     float glow = exp(-max(d, 0.0) / 14.0) * 0.40 * u_focus * step(0.0, d);
-    rgb += (vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow) * u_focus_rgb;
+    rgb += (vec3(1.0) * ring + vec3(0.85, 0.9, 1.0) * glow) * u_rgb_cap;
     a = max(a, max(ring, glow));
   }
-  gl_FragColor = vec4(rgb, a);
+  gl_FragColor = vec4(min(rgb, vec3(u_rgb_cap)), a);
 }

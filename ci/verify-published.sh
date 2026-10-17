@@ -81,7 +81,7 @@ import json, sys, os
 m = json.load(open(sys.argv[1]))
 sys.exit(0 if m["ipkHash"]["sha256"] == sys.argv[2] and m["ipkSize"] == os.path.getsize(sys.argv[3]) else 1)
 PY
-  gh release view "$TAG" --json body --jq .body 2>/dev/null | grep -q "$SHA" \
+  gh release view "$TAG" --json body --jq .body 2>/dev/null | grep "$SHA" >/dev/null \
     && ok "the release note quotes this hash" || bad "the note's hash is not the published artifact's"
 
   # Who built it. A person's name here means the gates did not run.

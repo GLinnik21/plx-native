@@ -2,9 +2,8 @@
 """Seed a new lane's cargo target dir with an APFS clone of third-party build output.
 
 A linked worktree ("lane") has its own cargo target dirs (`rust-modules/target`,
-`target-release`, ...). Cold, each one recompiles every registry crate and the build-std
-sysroot (std/core/alloc built from source) even though those artifacts are byte-for-byte what
-the previous lane already built: cargo's metadata hash for a registry crate does not depend on
+`target-release`, ...). Cold, each one recompiles every registry crate even though those
+artifacts are byte-for-byte what the previous lane already built: cargo's metadata hash for a registry crate does not depend on
 the path of the checkout. About 40% of a lane's target bytes (0.9 GB host, 0.44 GB ARM release) are exactly that.
 
     cargo-seed.py restore KIND TDIR     clone the seed into TDIR, only if TDIR does not exist
@@ -30,7 +29,7 @@ What makes this safe, in order of importance:
 * **Linked worktrees only.** The main checkout keeps its own incremental cache and full DWARF,
   which no lane could share, so the Makefile does not call this there and the script refuses
   too. `PLX_CARGO_SEED=off` disables it everywhere.
-* **A key guards the seed**: the sha256 of the toolchain (`rustc +nightly -vV` and `rustc -vV`),
+* **A key guards the seed**: the sha256 of the toolchain (`rustc +<pinned toolchain> -vV` and `rustc -vV`),
   `Cargo.lock`, the manifests (minus the app's own `version =` line), and every cargo config that
   applies. A seed with a different key is not restored, and the next lane to finish a build
   replaces it.
@@ -59,7 +58,7 @@ import time
 # lanes has not been proven for it (its host FFmpeg and libass builds make that a long
 # experiment). The storage helper's trees (`target-storage`, `target-release-storage`) are left out
 # for a measured reason: the Makefile links that helper with
-# CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER set to an ABSOLUTE path inside the lane
+# CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER set to an ABSOLUTE path inside the lane
 # (ci/arm-cc.py), and cargo hashes the linker setting into every unit's fingerprint ("dirty:
 # ConfigSettingsChanged"), so a seed made in one lane recompiles the whole helper tree, std
 # included, in the next. It is also the smallest tree (~0.25 GB, a 13 s compile).
@@ -159,9 +158,19 @@ def cargo_configs(root):
     return out
 
 
+def pinned_toolchain(root):
+    """`channel` of rust-modules/rust-toolchain.toml in this checkout (the repo's one pin), else `stable`."""
+    try:
+        with open(os.path.join(root, "rust-modules", "rust-toolchain.toml")) as f:
+            m = re.search(r'^channel\s*=\s*"([^"]+)"', f.read(), re.M)
+        return m.group(1) if m else "stable"
+    except OSError:
+        return "stable"
+
+
 def seed_key(root, kind):
     """The identity of the third-party artifacts a seed holds, or None if it cannot be computed."""
-    toolchain = os.environ.get("RUST_NIGHTLY", "nightly")
+    toolchain = os.environ.get("RUST_TOOLCHAIN") or pinned_toolchain(root)
     pinned = run_text(["rustc", f"+{toolchain}", "-vV"])
     if not pinned:
         return None

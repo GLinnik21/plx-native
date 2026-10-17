@@ -37,7 +37,7 @@
 //! plain suite. It skips (returns, loudly) when the `ffmpeg` / `ffprobe` command line tools are
 //! absent. Run it with:
 //! `cd rust-modules && PLX_FFMPEG_DIR=<dir holding libav*-plx.*.dylib> CARGO_INCREMENTAL=0
-//! cargo +nightly test --lib -p plx_media ff::late_audio_tests -- --ignored`
+//! cargo test --lib -p plx_media ff::late_audio_tests -- --ignored`
 //! (`make check-ffmpeg` stages the libraries into `pkg/`, which is the default directory).
 
 use super::*;

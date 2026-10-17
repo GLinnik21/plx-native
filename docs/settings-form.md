@@ -128,7 +128,7 @@ The bullets below are the design, written before the migration. `family::table_f
 
 ## Verification tiers
 
-- Every PR: `make check` (report the `test result:` lines), `CARGO_INCREMENTAL=0 cargo +nightly
+- Every PR: `make check` (report the `test result:` lines), `CARGO_INCREMENTAL=0 cargo +$(make -s print-rust-toolchain)
   check --manifest-path rust-modules/Cargo.toml --lib --no-default-features`, ARM `make`.
 - Sim (`ui-sim`): captures of each touched page before/after; leaf pages pixel-identical.
 - PR3 (push path changes): which-tier animation checks + TV push/pop verification, and the

@@ -169,14 +169,16 @@ pub enum PlayerReq {
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
     /// neither and is carried as `None`.
     Transport(Option<bool>),
-    /// Seek to this position in ns and resume if paused — the Chapters strip's OK.
+    /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
+    /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
     /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
-    /// a viewer who picked a chapter asked to watch it. A scrub does not: the transport's bar is
-    /// how a PAUSED film is moved, and starting it there is a behaviour nobody asked for. Holding
+    /// a viewer who picked a chapter asked to watch it. A pointer drag does not: its release on the
+    /// bar is how a PAUSED film is moved (a KEY scrub never commits by itself — OK or PLAY takes its
+    /// target with `SeekTo`, playing or paused), and starting it there is a behaviour nobody asked for. Holding
     /// the pause across the seek is the media layer's: the pump opens the bounded seek-preroll feed
     /// override when it arms the seek, decodes the landed frame without publishing a viewer
     /// Resume, and re-pauses on the landing — which is why this is a request rather than something
@@ -1991,7 +1993,7 @@ where
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
-                entry, H::directory(cx), H::hubs(cx))),
+                entry, H::directory(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -2050,14 +2052,13 @@ where
             // match is exhaustive over pages that can really mount and there is no unreachable
             // arm left to keep honest.
             AppArg::Settings(root) => {
-                Box::new(RouteSurface::new(entry, id, Family::Settings, *root, H::hubs(cx)))
+                Box::new(RouteSurface::new(entry, id, Family::Settings, *root))
             }
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
                 id,
                 Family::FirstRunConsent,
                 SettingsPage::ConsentStage(*stage),
-                H::hubs(cx),
             )),
         }
     }
@@ -2204,6 +2205,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::tracks_panel::SHAPE,
     crate::about_panel::SHAPE,
     crate::person_bio::SHAPE,
+    // Descriptive only, and already behind the shipped list (no fr, no it): never generate this
+    // from the language registry, or every added language moves SCREEN_SHAPES_PIN and forces the
+    // replay fixtures to be re-recorded.
     "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::preferences::SHAPE,
     crate::preferences::PICKER_SHAPE,
@@ -2323,11 +2327,15 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // About panel scroll: `AboutPanelScreen{}` gains the synopsis viewport's cursor and spring
 // (`page:usize,scroll:Spring{pos:f32,vel:f32}`, person_bio's shape); the previous pin was
 // 0x7435_d234_b769_60c2.
+// Scrub click-to-confirm: a key scrub never commits by itself, so the player's tap-commit debounce
+// is gone and `PlayerScreen`'s shape loses `scrub.commit_at:u32`; the previous pin was
+// 0x6a55_c53a_d931_3acf. Replay fixtures need `tools/plxnative-rec rerecord`.
 // The Watchlist page and its Sort & Filter surface (W45D): `SCREEN_SHAPES` gains
 // `WatchlistScreen::SHAPE` and `watchlist::menu::SHAPE` (appended after the preferences picker).
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
 // item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
-// pin covers those AppArg / menu-arg changes too; the previous pin was 0x6a55_c53a_d931_3acf.
+// pin covers those AppArg / menu-arg changes too; the previous pin was 0xedcd_d7d2_87ac_4e6a
+// (main's scrub click-to-confirm, above).
 // Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 ->
 // 0x7c51_bee4_bc22_94ab, via 0xd479_d84f_2093_4143, the re-pin before landing when ARG_SHAPE and item_menu::SHAPE gained
 // the Catalog/hex fields): the Detail hero gains the bookmark disc (`ELEM_WATCHLIST`; the
@@ -2344,7 +2352,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Merged tree (wl-home-hero onto the zero-tick held-surface work, 8d8098110): that re-anchored the
 // Settings and Filmography fixtures without touching any hashed shape, so the Home-hero bump is the
 // only change and the pin stands; the three fixtures were re-recorded on the merged tree.
-const SCREEN_SHAPES_PIN: u64 = 0x0ac5_4c7f_729b_ee06;
+// Merged tree (origin/main's scrub click-to-confirm and Home-hero successor into the Watchlist
+// branch): both sides' shape changes stand; the pin below is the value the pin test reported for
+// the merged tree, and the three replay fixtures were re-recorded on it.
+const SCREEN_SHAPES_PIN: u64 = 0x07c8_d161_c006_f959;
 
 #[cfg(test)]
 mod arg_tests {

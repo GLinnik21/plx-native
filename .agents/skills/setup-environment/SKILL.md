@@ -2,12 +2,12 @@
 name: setup-environment
 description: >
   Set up (or repair) the cross-compile build environment for this native webOS TV
-  app on a macOS host — the webOS NDK toolchain, the Rust nightly + rust-src needed
-  for the static lib, and the sysroot the Makefile links against. Use this whenever
+  app on a macOS host — the webOS NDK toolchain, the pinned stable Rust toolchain
+  (with its armv7 rust-std) needed for the static lib, and the sysroot the Makefile links against. Use this whenever
   the build environment isn't ready or is broken: a fresh clone, a new machine, a
   teammate onboarding, or errors like "arm-webos-linux-gnueabi-gcc: command not
   found", "cannot find -lSDL2 / -lplayerAPIs", "No such file or directory
-  ...sysroot...", `cargo +nightly` / `-Z build-std` failures, or a binary that
+  ...sysroot...", `cargo +<toolchain>` "target may not be installed" failures, or a binary that
   SIGILLs on the TV, or "cmake is required" while building Sentry Native. Also use it to understand *why* the build is structured the
   way it is (why some libs are real and two are still stubs). Reach for this before
   hand-debugging toolchain/link errors — most of them are a missing or mis-located
@@ -22,10 +22,12 @@ environment" means getting three things in place so `make` works:
 1. **The webOS NDK** — a buildroot cross-toolchain (GCC 12, glibc 2.12, armv7-a
    soft-float) plus a **sysroot** containing the TV's own SONAME'd libraries. The
    Makefile compiles and links against this.
-2. **Rust nightly + `rust-src`** — the UI/logic is a Rust static lib built with
-   `-Z build-std`, which recompiles `std` with our codegen flags (needed to avoid
-   a SIGILL on the TV — see "Why build-std" below). That requires the nightly
-   toolchain and the `rust-src` component.
+2. **The pinned stable Rust toolchain** — the UI/logic is a Rust static lib built for
+   `armv7-unknown-linux-gnueabi` with that release's PREBUILT std (the ARMv7 std has no
+   SIGILL barrier — see "Why armv7" below). The release is the `channel` in
+   `rust-modules/rust-toolchain.toml`; it needs the armv7 rust-std, clippy and rustfmt, and no
+   nightly, no `rust-src`, no `-Z build-std`. Dependabot bumps that one line weekly (the
+   `rust-toolchain` entry in `.github/dependabot.yml`); nothing else in the repo names the version.
 3. **Host CLI tools** — `curl`, `tar`, CMake (the pinned Sentry Native build), and `sshpass`
    (deploy/run over ssh, only when the TV refuses your key).
 
@@ -40,12 +42,11 @@ From the repo root:
 make setup-env        # download + extract + relocate the NDK into ~/webos-ndk
 ```
 
-Then make sure the Rust side is ready (safe to re-run — no-ops if already done):
+`make setup-env` also runs `make setup-rust`, which installs the pinned toolchain with clippy,
+rustfmt and the armv7 rust-std (safe to re-run). Then the host tools:
 
 ```bash
-rustup toolchain install nightly
-rustup component add rust-src --toolchain nightly
-rustup component add clippy   --toolchain nightly   # `make check` runs `make lint` first
+make setup-rust           # only the Rust half; `make -s print-rust-toolchain` prints the pinned release
 brew install cmake        # builds the pinned, statically linked Sentry Native capture backend
 brew install sshpass      # deploy/run fallback when the TV refuses your ssh key; skip if you won't touch the TV
 ```
@@ -107,14 +108,12 @@ is **required**: the SDK bakes absolute paths at build time, and `relocate-sdk.s
 rewrites them to wherever you extracted it. If you ever move the SDK directory,
 re-run `relocate-sdk.sh` or nothing will compile.
 
-Manual equivalent (useful if the download URL changed — check the
-[latest release](https://github.com/webosbrew/native-toolchain/releases)):
+Manual equivalent. The release, URLs and sha256 of each host build are pinned in
+`ci/dependencies.json` (entry `webos-ndk`); `ci/deps.py` downloads and verifies:
 
 ```bash
 mkdir -p ~/webos-ndk && cd ~/webos-ndk
-curl -fL -o sdk.tar.bz2 \
-  https://github.com/webosbrew/native-toolchain/releases/download/webos-d7ed7ee.6/arm-webos-linux-gnueabi_sdk-buildroot_darwin-arm64.tar.bz2
-tar xjf sdk.tar.bz2
+tar xjf "$(python3 <repo>/ci/deps.py fetch webos-ndk --asset darwin-arm64 --into .)"
 cd arm-webos-linux-gnueabi_sdk-buildroot && ./relocate-sdk.sh
 ```
 
@@ -155,16 +154,19 @@ has**, prefer linking it real (add `-l<name>` to `LIBS_REAL`) over writing a stu
 that's the whole point of the NDK. Only reach for a stub when the sysroot lacks it
 or ships a different SONAME than the TV.
 
-### Why `build-std` (don't remove it)
+### Why `armv7-unknown-linux-gnueabi` (don't go back to `arm-unknown-linux-gnueabi`)
 
-Rust's default `arm-unknown-linux-gnueabi` codegen is ARMv6 and emits the legacy
+Rust's `arm-unknown-linux-gnueabi` target is ARMv6, and its PREBUILT `std` carries the legacy
 CP15 memory barrier (`mcr p15, ..., c7, c10, 5`), which is **UNDEFINED on the TV's
-Cortex-A53 (ARMv8) → SIGILL** the moment std touches an atomic. `-C
-target-cpu=cortex-a9` fixes our crates, but the *precompiled* `std` still carries
-the bad barrier — so we rebuild std from source (`-Z build-std`, hence nightly +
-`rust-src`) with the same flags. `-C target-feature=-neon` dodges crates whose NEON
-paths use unstable intrinsics. These live in `RUSTFLAGS_TV` in the Makefile; leave
-them.
+Cortex-A53 (ARMv8) → SIGILL** the moment std touches an atomic. `-C target-cpu=cortex-a9`
+fixes only OUR crates, so the build used to rebuild std from source (`-Z build-std`, hence nightly
++ `rust-src`). `armv7-unknown-linux-gnueabi` ships a prebuilt ARMv7 std that emits `dmb`, so stable
+rustc is enough. That target defaults to `+soft-float` (every float op a libcall), so the codegen
+flags carry `-C target-feature=-neon,-soft-float` to give our crates VFP back: `-soft-float` is an
+UNSTABLE target feature on stable rustc, and `ci/check-vfp.py` (in `make check` and CI) fails if a
+rustc release stops honouring it. `-neon` dodges crates whose NEON paths use unstable intrinsics.
+The flags live in `RUST_CODEGEN` in the Makefile and, as the fallback for a bare cargo, in
+`rust-modules/.cargo/config.toml`; keep the two in step and leave them.
 
 ## Verify the setup
 
@@ -212,10 +214,10 @@ the path with `make -s print-eventlog FLAVOR=debug` rather than typing one. The
 | `arm-webos-linux-gnueabi-gcc: command not found` / `No such file ...sysroot...` | NDK not installed or moved. Run `make setup-env`; if you moved it, re-run `relocate-sdk.sh`. |
 | Paths inside the SDK point at `/Users/runner/...` | You skipped/failed `relocate-sdk.sh`. Re-run it from the SDK root. |
 | `cannot find -lSDL2 / -lplayerAPIs / -lpf-1.0` | Wrong/incomplete sysroot (partial download, or `WEBOS_SDK` points somewhere stale). Re-extract; verify `find $SYSROOT -name 'libplayerAPIs.so*'`. |
-| `error: "-Z build-std" ... rust-src` or `cargo +nightly` fails | Missing nightly or rust-src: `rustup toolchain install nightly && rustup component add rust-src --toolchain nightly`. |
-| `make check` dies at `make lint` with `no such command: clippy` | The nightly was installed with `--profile minimal`, which omits clippy (the default profile ships it): `rustup component add clippy --toolchain nightly`. `make check` runs `lint` first; the cross-build itself never needs clippy. |
+| E0463 "can't find crate for core", or "toolchain is not installed" | The pinned toolchain or its armv7 target is missing: `make setup-rust` (`rustup toolchain install <pin> --profile minimal --target armv7-unknown-linux-gnueabi`). No nightly or `rust-src` is involved. |
+| `make check` dies at `make lint` with `no such command: clippy` | The toolchain was installed without clippy: `make setup-rust` (or `rustup component add clippy --toolchain $(make -s print-rust-toolchain)`). `make check` runs `lint` first; the cross-build itself never needs clippy. |
 | `build-sentry-native: cmake is required` | Install the host build generator with `brew install cmake`. It runs the webOS cross-compiler; it does not compile target code with the Mac toolchain. |
-| Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUSTFLAGS_TV` got dropped, or std wasn't rebuilt. Ensure `-C target-cpu=cortex-a9` and `-Z build-std` are intact; `rm` the stale `libplxnative_modules.a` and rebuild. |
+| Binary is `Tag_CPU_arch: v6`, or SIGILLs on the TV at first atomic | `RUST_CODEGEN` got dropped, or the build targeted `arm-unknown-linux-gnueabi` (ARMv6 std). Ensure `--target armv7-unknown-linux-gnueabi` and `-C target-cpu=cortex-a9` are intact (`make -s print-rust-codegen`); `rm` the stale `libplxnative_modules.a` and rebuild. |
 | `relocation R_ARM_MOVW_ABS_NC ... recompile with -fPIC` when building a stub | A stub needs PIC. Stubs already use `-fPIC` in `STUBFLAGS`; if you added a bespoke stub rule, add `-fPIC`. |
 | Deploy/run steps fail with `the TV refused this machine's ssh key and sshpass is not installed` | Authorize your key on the TV, or `brew install sshpass`. `the TV is unreachable` means it is off or asleep (wake-tv skill; `make TV=<ip> ...`). |
 

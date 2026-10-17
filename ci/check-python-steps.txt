@@ -60,6 +60,10 @@ python3 ci/test_source_bundle.py
 ci/check-deps.sh
 # Catalog completeness is checked by the Rust build; these check the UI text entry points too.
 make --no-print-directory check-localization
+# A UI language is a locales/ directory plus its languages.json entry: no hand-written list of
+# languages in Rust, "each language" loops read i18n::SHIPPED (docs/localization.md).
+python3 ci/check-language-lists.py
+python3 ci/test_check_language_lists.py
 python3 tests/test_mock_pms_library.py
 python3 tests/test_mock_pms_discover.py
 # `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
@@ -257,6 +261,9 @@ python3 ci/check-user-agent.py
 # The link conditioner and the mock's paging contract (rate, determinism, per-class, run-time change; the
 # mock's own --selftest rides along): real loopback sockets on port 0, a few seconds.
 python3 tests/test_link_conditioner.py
+# The fault-injecting TCP proxy for real-looking network loss (pass/blackhole/reset/refuse, control endpoint,
+# the mock's --advertise-port): loopback sockets on port 0, ~8 s.
+python3 tests/test_netloss_proxy.py
 # The conditioned paging test's analysis on synthetic logs (the run itself needs a window and minutes: not here).
 python3 tests/paging_link.py --selftest
 
@@ -264,3 +271,19 @@ python3 tests/paging_link.py --selftest
 python3 ci/test_check_debug_files.py
 # The ASS header fixture generator's Matroska parsing and validation, on synthetic input (no ffmpeg run).
 python3 ci/test_ass_header_fixture.py
+python3 ci/test_dependencies.py
+# ci/deps-update.py: update-source schema, tag/version handling per source type (fixtures), bump rewriting, dependency-graph snapshot shape, deps-update.yml security shape. No network.
+python3 ci/test_deps_update.py
+# THIRD-PARTY-NOTICES.md section 2.4's package tables are generated from rust-modules/Cargo.lock (ci/gen-third-party-notices.py;
+# inputs in ci/third-party-crates.json): the gate fails when a dependency bump moved a version, a crate entered the lock
+# unclassified, or the std snapshot's toolchain is not the one rust-modules/rust-toolchain.toml pins. Reads files only, no cargo; the self-test
+# runs on synthetic locks and data.
+python3 ci/test_gen_notices.py
+python3 ci/gen-third-party-notices.py --check
+# The soft-float guard: `-C target-feature=-soft-float` (what gives our crates VFP on the armv7 target) is an UNSTABLE
+# feature flag on stable rustc, so a release may stop honouring it. check-vfp.py compiles a tiny float probe with the
+# Makefile's exact codegen flags and fails on any __aeabi_f* libcall or a missing VFP op, with a negative control; its
+# self-test drives the scan and verdict on canned assembly and, where the pinned toolchain is installed, the real probe.
+# --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
+python3 ci/test_check_vfp.py
+python3 ci/check-vfp.py --skip-if-missing

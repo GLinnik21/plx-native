@@ -1,0 +1,23 @@
+# THE one pin for the Rust toolchain: the ARM cross-build, the host unit suites, clippy and rustfmt
+# all use this exact release. Nothing else in the repo spells a Rust version.
+#
+# Who reads it:
+#   * the Makefile  -> RUST_TOOLCHAIN (a `cargo +<channel>` on a command line outranks this file,
+#                      so make passes the value explicitly; a bare `cargo` in rust-modules/ and
+#                      rust-analyzer pick the file up on their own),
+#   * CI            -> .github/actions/rust-toolchain/action.yml reads `channel` from this file with sed
+#                      (the host-rust and build jobs install it),
+#   * the notices   -> ci/gen-third-party-notices.py checks THIRD-PARTY-NOTICES.md's std half
+#                      against this release.
+# Dependabot moves it (`rust-toolchain` in .github/dependabot.yml); .github/workflows/dependabot-notices.yml
+# then re-derives the std half. By hand: change `channel`, install the release with rust-src, then
+# `python3 ci/gen-third-party-notices.py --derive-toolchain && make notices` (std's dependency list is per
+# release). ci/test_ci_workflows.py fails if a second file spells the version.
+#
+# `targets` is the ARMv7 std the cross-build links (`armv7-unknown-linux-gnueabi`): a prebuilt
+# rust-std component, so the build needs neither nightly, `rust-src` nor `-Z build-std`.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = ["armv7-unknown-linux-gnueabi"]

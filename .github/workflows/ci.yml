@@ -50,8 +50,13 @@ on:
     # Likewise `docs/release-notes/v*.md` and `docs/release-audits/v*.md` are linted by
     # ci/check-package.py only for the STABLE flavour (release.yml and rc.yml); this workflow
     # builds `FLAVOR=debug` (see the cross-build job), so they stay excluded.
-    # There are no required status checks on `main` (branch protection allows merging without a
-    # green run), so a run this filter skips can never wedge a PR waiting on it.
+    # This filter applies to `push` ONLY. `main` requires two status checks (`host checks (NOT a
+    # device gate)` and `cross-build (armv7) + artifact assertions`), and a pull request whose
+    # workflow never starts never reports them, so it could only be admin-merged (Dependabot's
+    # requirements-docs.txt bump, #772). `pull_request` therefore starts on EVERY PR and the
+    # `changes` job below applies this same list to the PR's changed files (ci/ci_paths.py reads
+    # it from this file): a PR that touches nothing a gate reads skips the heavy jobs, and the two
+    # required names still report, green, from their always-running aggregators.
     paths: &ci_paths
       - '**'
       - '!README.md'
@@ -103,8 +108,8 @@ on:
       - '!.github/*.md'
       - '!.github/CODEOWNERS'
       - '!.github/dependabot.yml'
+  # NO `paths` here, deliberately: see the comment on `push`'s list.
   pull_request:
-    paths: *ci_paths
   workflow_dispatch:
 
 permissions:
@@ -115,6 +120,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether the heavy jobs run. `gated` is 'true' for every event but a pull request, and for
+  # a pull request when at least one changed file (a rename counts both its old and new path) is
+  # included by the `push` filter's `&ci_paths` list above, evaluated with GitHub's ordered
+  # include/exclude rules by ci/ci_paths.py. FAIL CLOSED: any error listing or evaluating the files,
+  # an empty list, or a list at the REST API's 3000-file cap sets `gated` to 'true' (a skipped run
+  # that should have run is the silent failure; a needless run only costs minutes). The files come
+  # from the pulls/N/files REST listing, paginated, because it needs no history and works with the
+  # read-only token a fork's PR gets. The checkout is only ci/ci_paths.py and this file.
+  changes:
+    name: which gates apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      gated: ${{ steps.gate.outputs.gated }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            ci/ci_paths.py
+            .github/workflows/ci.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gated=true
+          if [ "$EVENT" = pull_request ]; then
+            if gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > files.txt \
+               && [ "$(wc -l < files.txt)" -gt 0 ] && [ "$(wc -l < files.txt)" -lt 3000 ] \
+               && out=$(python3 ci/ci_paths.py --workflow .github/workflows/ci.yml < files.txt) \
+               && { [ "$out" = true ] || [ "$out" = false ]; }; then
+              gated=$out
+            else
+              echo '::warning::could not decide from the changed files; running every gate'
+            fi
+            echo "changed-file lines: $(wc -l < files.txt 2>/dev/null || echo unknown)"
+          fi
+          echo "gated=$gated" | tee -a "$GITHUB_OUTPUT"
   # The host gates are FOUR parallel jobs plus one aggregator, all deliberately SEPARATE from
   # cross-build rather than a prerequisite of it: the Makefile documents that `make check` is not a
   # prerequisite of `all` so the cross-build never depends on a host toolchain run. Running them in
@@ -133,13 +185,13 @@ jobs:
 
   host-lint:
     name: host lint + type-checks
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
-    env:
-      RUST_NIGHTLY: nightly
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # FULL history, and it is a correctness requirement rather than a convenience: see the
           # same comment on host-python. Kept on the Rust jobs too so every host job checks out the
@@ -165,7 +217,15 @@ jobs:
         # pull request. Cheap here for the same reason it is cheap there — cargo keys fingerprints
         # by feature set, so the two configurations coexist in one `target/` and this is a warm
         # incremental check rather than a second build.
-        run: cd rust-modules && cargo "+$RUST_NIGHTLY" check --lib --no-default-features
+        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features
+
+      - name: Soft-float guard (our Rust code must compile to VFP)
+        # `-C target-feature=-soft-float` is an UNSTABLE target feature on stable rustc ("its behavior
+        # can change in the future"): a release that stops honouring it leaves a binary that links
+        # and runs, with every float op a libcall. ci/check-vfp.py compiles a probe with the Makefile's
+        # exact flags and fails on that. STRICT here: unlike `make check`'s step it does not skip when
+        # the toolchain is missing, and this job installed it.
+        run: python3 ci/check-vfp.py
 
       - name: Build budgets (dependency graph and source size)
         # Deterministic, so a red result is always a change to the tree: third-party package count
@@ -175,6 +235,15 @@ jobs:
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
         run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/appkit/src --src rust-modules/screens/src
 
+      - name: Third-party notices vs the ARM runtime graph
+        # `make check` runs only the OFFLINE half of this (ci/gen-third-party-notices.py --check), which
+        # classifies lock packages by name. `not_shipped` holds common crates that dev/build deps pull in,
+        # so a bump that makes a shipping crate depend on one passes it with no licence row. This compares
+        # the data file with `cargo tree` for the ARM graph. `--locked` resolves and compiles nothing and
+        # runs no build script, so it is cheap here. (The Dependabot auto-fix job cannot run cargo: see
+        # dependabot-notices.yml; this is its backstop.)
+        run: python3 ci/gen-third-party-notices.py --check --verify-graph
+
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
         # `make macapp`, which ships `--release --no-default-features --features hostsim` to
@@ -182,20 +251,20 @@ jobs:
         # only breaks the Mac side merges green and is found by a person trying to demo the app.
         run: |
           cd rust-modules
-          cargo "+$RUST_NIGHTLY" check --lib --features hostsim
-          cargo "+$RUST_NIGHTLY" check --lib --no-default-features --features hostsim
+          cargo "+$RUST_TOOLCHAIN" check --lib --features hostsim
+          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim
 
   host-unit-default:
     name: host unit tests (default features)
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 10.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 25
-    env:
-      RUST_NIGHTLY: nightly
     outputs:
       passed: ${{ steps.size.outputs.passed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -214,7 +283,7 @@ jobs:
         # for plxnative-modules both ways), so the `cargo test --lib` below finds everything built
         # and this step is where the compile happens, not an extra one. The upload below carries it.
         shell: bash
-        run: cd rust-modules && cargo "+$RUST_NIGHTLY" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run --timings
+        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run --timings
 
       - name: make check-cargo-unit-default
         # Teed to a file so the size step below can read the `test result:` lines this run already
@@ -238,7 +307,7 @@ jobs:
         # so a red test run still leaves the timings of the build that preceded it; a missing file
         # (the timings step itself failed) is a warning, not a second failure on top of that one.
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-host-unit-default
           path: rust-modules/target/cargo-timings/cargo-timing.html
@@ -247,15 +316,15 @@ jobs:
 
   host-unit-hostsim:
     name: host unit tests (hostsim)
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 12.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 30
-    env:
-      RUST_NIGHTLY: nightly
     outputs:
       passed: ${{ steps.size.outputs.passed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -282,12 +351,14 @@ jobs:
 
   host-python:
     name: host python/shell/C gates
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 4.6 min over the last 40 successful runs of the old serial recipe (it runs its steps
     # concurrently now, so it is much shorter); limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # FULL history, and it is a correctness requirement rather than a convenience.
           # `tools/abr-calibrate-plant.py` derives each measurement capture's chronology from
@@ -311,10 +382,12 @@ jobs:
   # `make check-python` is still the two halves, run side by side locally.
   host-python-harness:
     name: host harness tests
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history, for the same reason as host-python.
           fetch-depth: 0
@@ -326,18 +399,21 @@ jobs:
   # it is RED unless every host job above is green. `if: always()` because a job that needs a failed
   # job is otherwise SKIPPED, and a skipped check reads as "not required" to merge gating rather
   # than as a failure; each result is compared with `success` explicitly, so cancelled and skipped
-  # count as failures too. (No status check is required on `main` today; this keeps one if that
-  # changes.)
+  # count as failures too. This name is a REQUIRED status check on `main`, and it reports on every
+  # pull request: when `changes` says no gated file was touched the host jobs are skipped and this
+  # passes, on purpose and only then (a skip with `gated` true is red).
   host-checks:
     name: host checks (NOT a device gate)
     runs-on: ubuntu-latest
     # Measured max under 1 (the 31.6 in the raw data predates the job split, when this name was the whole suite) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
-    needs: [host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
+    needs: [changes, host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
     if: always()
     steps:
       - name: Every host job must have succeeded
         env:
+          GATED: ${{ needs.changes.outputs.gated }}
+          CHANGES: ${{ needs.changes.result }}
           RESULTS: |
             host-lint=${{ needs.host-lint.result }}
             host-unit-default=${{ needs.host-unit-default.result }}
@@ -345,7 +421,20 @@ jobs:
             host-python=${{ needs.host-python.result }}
             host-python-harness=${{ needs.host-python-harness.result }}
         run: |
-          printf '%s\n' "$RESULTS"
+          printf 'changes=%s gated=%s\n%s\n' "$CHANGES" "$GATED" "$RESULTS"
+          if [ "$CHANGES" != success ]; then
+            echo '::error::the changes job did not succeed'
+            exit 1
+          fi
+          if [ "$GATED" = false ]; then
+            # a pull request that touches no file a gate reads: the host jobs were skipped on purpose
+            if printf '%s\n' "$RESULTS" | grep -v '=skipped$' | grep -q .; then
+              echo '::error::gated is false but a host job ran or is missing'
+              exit 1
+            fi
+            echo 'no gated file changed: the host gates were skipped'
+            exit 0
+          fi
           if printf '%s\n' "$RESULTS" | grep -v '=success$' | grep -q .; then
             echo '::error::a host job did not succeed (see the results above)'
             exit 1
@@ -368,7 +457,9 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   cross-build:
-    name: cross-build (armv7) + artifact assertions
+    name: armv7 cross-build and artifact assertions
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     # MUST be arm64 Linux. webosbrew/native-toolchain publishes darwin-arm64, darwin-x86_64 and
     # linux-aarch64 for this release — there is NO linux-x86_64 build, so ubuntu-latest cannot
     # obtain the toolchain at all. See the Makefile's NDK bootstrap block.
@@ -376,21 +467,21 @@ jobs:
     # Measured max 5.0 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install nightly Rust
-        run: |
-          rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rust-src
-        env:
-          RUST_NIGHTLY: nightly
+      - name: Install the pinned Rust and the armv7 target
+        # rust-modules/rust-toolchain.toml's release, with the prebuilt ARMv7 std. No nightly, no
+        # rust-src, no `-Z build-std`.
+        uses: ./.github/actions/rust-toolchain
 
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust-modules
-          # -Z build-std recompiles std from source and rust-cache cannot see those crates
-          # (Swatinem/rust-cache#161: cargo metadata never mentions them, so they are pruned).
-          # The crate's own deps still cache; std is rebuilt each run and that is expected.
-          key: armv7-build-std
+          # The prebuilt armv7 std needs no build-std, so everything the build compiles caches.
+          key: armv7
+
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
 
       - id: ndk
         uses: ./.github/actions/webos-ndk
@@ -410,10 +501,10 @@ jobs:
         # it can never hand back wrong objects. This cache key therefore only has to change when
         # those inputs can: the script, the two files it hashes, the evidence stager it runs after
         # install, and the NDK pin (read from the NDK action, which owns the literal).
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/plxnative/ffmpeg
-          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
 
       - name: Build
         run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
@@ -462,7 +553,7 @@ jobs:
           ./tools/font-hint-audit.py
 
       - name: webosbrew compatibility check
-        # Step-level bound: the curl downloads and the apt install of the local .debs (which pulls
+        # Step-level bound: the ci/deps.py downloads and the apt install of the local .debs (which pulls
         # their dependencies from the network) are the only network phases of this step.
         timeout-minutes: 15
         # THE gate that matters for distribution: resolves the ELF's DT_NEEDED and symbols against
@@ -477,17 +568,11 @@ jobs:
         # from the only people who can settle it.
         run: |
           set -euo pipefail
-          TAG=v20260731-e1bb0c0
-          declare -A SHA256=(
-            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
-            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
-          )
-          for p in fw-symbols ipk-verify; do
-            file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
-            curl -fsSL --connect-timeout 20 --max-time 120 --retry 3 --retry-delay 5 -o "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
-            echo "${SHA256[$p]}  $file" | sha256sum -c -
-          done
-          sudo apt-get install -y ./webosbrew-toolbox-*.deb
+          # The release, each package's URL and its sha256 are pinned in ci/dependencies.json
+          # (entry webosbrew-toolbox); ci/deps.py downloads and verifies, and the download
+          # cache step restores them so an outage of the host does not fail this step.
+          debs=$(python3 ci/deps.py fetch webosbrew-toolbox --asset fw-symbols --asset ipk-verify)
+          sudo apt-get install -y $debs
           webosbrew-ipk-verify --details --format markdown \
             --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -528,7 +613,7 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plxnative-${{ github.sha }}
           # NB no `pkg/ipk.sha256` here: `make ipk` writes that file only for the stable flavour,
@@ -539,3 +624,29 @@ jobs:
           # comment — that is a literal block scalar, and every line in it is a path.)
           path: |
             pkg/*.ipk
+
+  # The required status check `cross-build (armv7) + artifact assertions`, as its own always-running
+  # job: the heavy job above is skipped on a PR that touches no gated file, and a required check that
+  # is SKIPPED is not something to lean on (whether merging treats it as passing is a setting and a
+  # history of changes in GitHub's behaviour). This reports a real result on every run: green when the
+  # heavy job succeeded, or when `changes` found nothing gated and the heavy job was skipped; red for
+  # anything else, including a cancelled or skipped heavy job on a gated run.
+  cross-build-required:
+    name: cross-build (armv7) + artifact assertions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, cross-build]
+    if: always()
+    steps:
+      - name: The cross-build must have succeeded, or been skipped for a reason
+        env:
+          GATED: ${{ needs.changes.outputs.gated }}
+          CHANGES: ${{ needs.changes.result }}
+          BUILD: ${{ needs.cross-build.result }}
+        run: |
+          echo "changes=$CHANGES gated=$GATED cross-build=$BUILD"
+          if [ "$CHANGES" = success ] && { [ "$BUILD" = success ] || { [ "$GATED" = false ] && [ "$BUILD" = skipped ]; }; }; then
+            exit 0
+          fi
+          echo '::error::the armv7 cross-build did not succeed (see the results above)'
+          exit 1

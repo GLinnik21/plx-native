@@ -123,8 +123,8 @@ Two preconditions, and neither is in the `--help` text.
 
 **1. A ~317 MB firmware inventory database, fetched ONCE.** `ensure_db` runs before every mode —
 `--inventory` and `--lib` included — and looks for `~/.cache/plxnative/fwsym/data`. If that is
-absent it downloads `webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb` from GitHub (pinned in the
-script as `FWSYM_TAG = v20260731-e1bb0c0`, so a database refresh is a visible commit rather than a
+absent it downloads `webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb` from GitHub (pinned, with its sha256, in
+`ci/dependencies.json` as entry `webosbrew-toolbox`, so a database refresh is a visible commit rather than a
 silent change of verdict) and unpacks it. **So the first invocation on a machine needs the
 network; every invocation after it is genuinely offline** — measured on this checkout 2026-08-23,
 0.07 s for `--inventory`, 0.27 s for the full matrix. In a sandbox with no egress and a cold
@@ -376,13 +376,13 @@ infer past.)
   and `release-guard`; `make -s print-appdir` is safe, `make -p` is never (it prints unexpanded
   recursive variables).
 * Host-only tooling is fine and encouraged: `tools/fwcompat.py`, `ci/check-elf.sh`, the NDK's
-  `arm-webos-linux-gnueabi-readelf` / `-objdump`, `cd rust-modules && cargo +nightly check`,
+  `arm-webos-linux-gnueabi-readelf` / `-objdump`, `cd rust-modules && cargo check`,
   `make check`. **`make check` is NOT in `SIDE_EFFECT_FREE`** (Makefile line 358 — that list is
   the seven `print-*` goals plus `release-guard`, and nothing else), so on a checkout whose last
   build was `RELEASE=1`, a plain `make check` rewrites `pkg/.build-config` at parse time and takes
   `pkg/plxnative` and the staged `.so` files with it: the binary you were about to grade, gone
   before cargo has started. **Grade the ELF first and run host checks after**, or invoke
-  `cargo +nightly check` inside `rust-modules/` directly, which never touches the stamp.
+  `cargo check` inside `rust-modules/` directly, which never touches the stamp.
 
 ## OUTPUT
 

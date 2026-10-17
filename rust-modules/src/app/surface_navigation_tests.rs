@@ -3,7 +3,7 @@
 //!
 //! The tests marked `#[cfg(feature = "hostsim")]` below (the item-menu opener-lift ones) run ONLY
 //! with that feature: `make test-crate C=app T=<filter>` filters them out and exits 0. Run them with
-//! `CARGO_INCREMENTAL=0 PATH="$HOME/.cargo/bin:$PATH" cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`
+//! `CARGO_INCREMENTAL=0 PATH="$HOME/.cargo/bin:$PATH" cargo test --lib -p plxnative-modules --features hostsim -- <filter>`
 //! from `rust-modules/`.
 
 use super::*;

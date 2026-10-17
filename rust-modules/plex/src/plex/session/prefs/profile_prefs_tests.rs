@@ -1,10 +1,10 @@
-//! The nine player settings and hero trailer autoplay per profile: the record and its soft parse, the fallback read, the
+//! The ten player settings and hero trailer autoplay per profile: the record and its soft parse, the fallback read, the
 //! write that always records an own value and prunes foreign stamps, and the seat a publication
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
 use super::super::{
     current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
-    NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
+    HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
 };
@@ -43,8 +43,8 @@ fn the_row_declares_a_profile_scoped_account_bound_soft_list() {
 }
 
 /// **T-fields.** `ProfilePrefs` has a field for exactly the settings whose `FALLBACK` is the legacy
-/// install key, under the same name: the nine player settings and `trailer_autoplay` (P1c), and no
-/// more. An eleventh Profile row without a field (or a field without its row) fails here.
+/// install key, under the same name: the ten player settings and `trailer_autoplay` (P1c), and no
+/// more. A twelfth Profile row without a field (or a field without its row) fails here.
 #[test]
 fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
     let full = ProfilePrefs {
@@ -53,6 +53,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         subtitle_tone: Some(SubtitleTone::Silver),
         subtitle_size: Some(SubtitleSize::Large),
         subtitle_position: Some(SubtitlePosition::High),
+        hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
         deck_press: Some(DeckPress::Play),
@@ -65,7 +66,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 10, "the nine player settings and hero trailer autoplay fall back to a legacy key");
+    assert_eq!(rows.len(), 11, "the ten player settings and hero trailer autoplay fall back to a legacy key");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }
@@ -363,6 +364,41 @@ fn profile_choose_never_writes_the_legacy_key() {
     assert!(!ProfilePrefs { ..own.clone() }.is_empty());
 }
 
+/// **#741: a picked 50% is on disk and survives the default moving from 100% to 75%.** The pick is
+/// written as the profile's OWN value (`"half"`), so the build that reads it back, whichever
+/// default it carries, shows Half; and the write is also made for 100% (no longer the skipped
+/// default) so a chosen Full is not reinterpreted as the new 75% default.
+#[test]
+fn a_picked_hdr_rung_is_on_disk_and_survives_the_default_changing() {
+    let _g = plx_base::testlock::serial();
+    let session = TempSession::new("hdr-rung-on-disk");
+    let stamp = session.seated("kid", "account-token");
+    let w = ProfileWrite::capture().expect("a seated profile");
+    let seat = Seat::Seated { user: "kid".into(), stamp: stamp.clone() };
+
+    assert!(persist_profile_pref::<HdrOverlayBrightnessPref>(&w, HdrOverlayBrightness::Half));
+    // Read back from the file, as a relaunch does, not from the live cache.
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(session.path()).unwrap()).unwrap();
+    assert_eq!(raw["profile_prefs"][0]["prefs"]["hdr_overlay_brightness"], json!("half"));
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&stored(), &seat), HdrOverlayBrightness::Half);
+
+    assert!(persist_profile_pref::<HdrOverlayBrightnessPref>(&w, HdrOverlayBrightness::Full));
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(session.path()).unwrap()).unwrap();
+    assert_eq!(raw["profile_prefs"][0]["prefs"]["hdr_overlay_brightness"], json!("full"), "Full is written, not skipped as the default");
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&stored(), &seat), HdrOverlayBrightness::Full);
+
+    // A file an older build (default Full, key absent for a profile that never picked) wrote.
+    let old: Preferences = serde_json::from_value(json!({
+        "profile_prefs": [record("kid", STAMP, json!({ "hdr_overlay_brightness": "half" })), record("pal", STAMP, json!({}))]
+    })).unwrap();
+    let mut tv: Session = serde_json::from_value(json!({})).unwrap();
+    tv.prefs = old;
+    let kid = Seat::Seated { user: "kid".into(), stamp: STAMP.into() };
+    let pal = Seat::Seated { user: "pal".into(), stamp: STAMP.into() };
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&tv, &kid), HdrOverlayBrightness::Half);
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&tv, &pal), HdrOverlayBrightness::ThreeQuarters, "no own value: the new default");
+}
+
 /// An equal own value is no write (and is saved, nothing was refused); a different one is.
 #[test]
 fn an_unchanged_own_value_is_saved_without_a_write() {
@@ -447,4 +483,49 @@ fn nobody_seated_captures_no_write() {
     assert!(ProfileWrite::capture().is_none(), "an unstamped publication seats nobody");
     session.seated("kid", "account-token");
     assert!(ProfileWrite::capture().is_some());
+}
+
+/// **The HDR overlay brightness rides the same per-profile plumbing as every other rung**: it
+/// defaults to ThreeQuarters (75%, the dim on out of the box), a profile's own pick reads back and round-trips its
+/// stored spelling, a spelling this build does not know falls back to the install's value, and the
+/// factors are the plain 1.0 / 0.75 / 0.5 multipliers the picker's labels say.
+#[test]
+fn hdr_overlay_brightness_defaults_to_three_quarters_and_round_trips() {
+    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(HdrOverlayBrightnessPref::get(&Preferences::default()), HdrOverlayBrightness::ThreeQuarters);
+    assert!(
+        serde_json::to_value(Preferences::default()).unwrap().get("hdr_overlay_brightness").is_none(),
+        "the default is not written, so a session that never chose serializes as it always did"
+    );
+    let factors: Vec<f32> = HdrOverlayBrightness::LADDER.iter().map(|b| b.factor()).collect();
+    assert_eq!(factors, [1.0, 0.75, 0.5]);
+    let percents: Vec<i64> = HdrOverlayBrightness::LADDER.iter().map(|b| b.percent()).collect();
+    assert_eq!(percents, [100, 75, 50]);
+    for b in HdrOverlayBrightness::LADDER {
+        assert_eq!(HdrOverlayBrightness::from_index(b.index()), b);
+    }
+    assert_eq!(HdrOverlayBrightness::from_index(200), HdrOverlayBrightness::ThreeQuarters);
+
+    let legacy = Preferences::default();
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "half" }))]));
+    assert_eq!(
+        effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
+        HdrOverlayBrightness::Half
+    );
+    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "hdr_overlay_brightness": "half" }));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "full" }))]));
+    assert_eq!(
+        effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
+        HdrOverlayBrightness::Full,
+        "a profile that chose 100% keeps it (it is written: the default is 75%)"
+    );
+    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "hdr_overlay_brightness": "full" }));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "a_quarter" }))]));
+    assert_eq!(
+        effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
+        HdrOverlayBrightness::ThreeQuarters,
+        "an unknown spelling reads the install's value"
+    );
+    let install: Preferences = serde_json::from_value(json!({ "hdr_overlay_brightness": "half" })).unwrap();
+    assert_eq!(HdrOverlayBrightnessPref::get(&install), HdrOverlayBrightness::Half);
 }

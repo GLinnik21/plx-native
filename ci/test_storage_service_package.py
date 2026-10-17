@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 import mkipk
+from rust_toolchain import pinned
 
 
 class StorageServicePackage(unittest.TestCase):
@@ -65,7 +66,7 @@ class StorageServicePackage(unittest.TestCase):
                     self.assertEqual(len(helpers), 1)
                     # Execute the real Rust path validator, not a Python copy of its allowlist.
                     result = subprocess.run(
-                        ["cargo", "+" + (os.environ.get("RUST_NIGHTLY") or "nightly"), "test", "--manifest-path",
+                        ["cargo", "+" + pinned(), "test", "--manifest-path",
                          str(Path(__file__).resolve().parent.parent / "rust-modules/Cargo.toml"),
                          "-p", "plxnative-storage", "--bin", "plxnative-storage", "runtime::tests::packaged_app_identity",
                          "--", "--exact"],

@@ -556,7 +556,7 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
 
 - **The generated code is the layer's, and so is the build script that generates it.**
   `platform/build.rs` runs the catalog generator (`platform/build_support/catalog.rs`, reading
-  `locales/`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
+  `locales/` and the language registry `locales/languages.json`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
   which stays where it is because the storage helper's build script calls it too). It reads no
   `PLX_*` variable and emits no `rustc-link-*`, so it is never dirty on a second run:
   `ci/test_build_not_always_dirty.py` now fails on `plx_platform` as well as on the application
@@ -601,8 +601,8 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
   (the only files with C declarations in the layer; there is no `#[link]` and no `dynlib!` in it)
   differ from their old text in `pub(crate)` alone, and the new build script links nothing, so
   `LIBS_REAL` and `ci/expected-dt-needed.txt` are untouched. The host never compiles the ARM arms:
-  `cargo check --target arm-unknown-linux-gnueabi --lib -p plxnative-modules` (`.cargo/config.toml`'s
-  `build-std`, no NDK, no link step) does, and passes with and without default features; use it for
+  `cargo +$(make -s print-rust-toolchain) check --target armv7-unknown-linux-gnueabi --lib -p plxnative-modules` (the target's
+  prebuilt std since the move to stable; it was `.cargo/config.toml`'s `build-std` on nightly; no NDK, no link step) does, and passes with and without default features; use it for
   any split that moves FFI when no NDK is at hand.
 - **Gates scoped by the path of a moved file stopped seeing it, and some by its spelling.**
   `ci/check-deps.sh` reads `SRC_PLATFORM` where it read `SRC_MACHINE`; the `frame` and `uistorage`

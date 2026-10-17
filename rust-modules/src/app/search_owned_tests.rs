@@ -891,7 +891,7 @@ fn every_route_wearing_the_shared_bar_reaches_the_chrome_paint_guard() {
 /// Observed RED against the reintroduced bug: reverting only `draw_chrome`'s guard line to the
 /// literal `matches!(arg.route(), Some(Route::Home | Route::Library))` (leaving
 /// `draws_chrome_for` itself untouched) makes both assertions below fail, while
-/// `cargo +nightly test --lib` on that same mutation reports every OTHER test passing — which is
+/// `cargo test --lib` on that same mutation reports every OTHER test passing — which is
 /// the exact blind spot this test exists to close.
 #[test]
 fn draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal() {
@@ -950,7 +950,7 @@ fn draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal() {
 /// Observed RED: commenting out the `else if !host_frozen(&app.pages) && matches!(app.route(),
 /// AppArg::Search) { ... }` block in `run.rs` (leaving the Home/Library arms above it and the
 /// `search_osc` block below it untouched) makes this test fail with "update must still branch on
-/// AppArg::Search to step the shared strip", while `cargo +nightly test --lib` on that same
+/// AppArg::Search to step the shared strip", while `cargo test --lib` on that same
 /// mutation reports every other test passing — the disabled-arm-passes-every-test blind spot the
 /// finding named directly.
 #[test]

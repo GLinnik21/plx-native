@@ -477,9 +477,6 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
         plx_ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
-        // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
-        // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
-        app.pages.nav.modals.preload_underlay();
         let mut ph = plx_machine::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,
@@ -1317,6 +1314,17 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // 6/7/10): all three are owned screens or surfaces now, so their hover was already taken
         // by `owns_input()` above.
     } else if et == SDL_MOUSEBUTTONDOWN {
+        // OK on a set whose pointer the app can only make transparent: see `click_is_ok`. Pushed
+        // as an OK key-down, so it reaches the focused control by the key path.
+        if super::input::click_is_ok(
+            app.ptr.dpad_mode,
+            app.ptr.cur_hidden,
+            unsafe { super::boot::cursor_is_transparent() },
+        ) {
+            app.ptr.ok_from_click = true;
+            super::events::remote_synth_key_edge(SDLK_RETURN, 0, true);
+            return;
+        }
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
@@ -1397,6 +1405,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // both are owned screens now, so a click on either was already taken by
         // `owns_input()`'s click arm above and never reaches this chain.
     } else if et == SDL_MOUSEBUTTONUP {
+        if std::mem::take(&mut app.ptr.ok_from_click) {
+            super::events::remote_synth_key_edge(SDLK_RETURN, 0, false);
+            return;
+        }
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
@@ -1797,10 +1809,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // says so itself now, from its own `Tick` — `PlayerOverlayScreen::step` pushes
         // `PlayerReq::ExtendHud`.)
         // (The scrub gesture's per-frame block stood here: the continuous accelerating advance,
-        // the `SCRUB_LOST_MS` lost-keyup safety commit and the tap-release debounce, all three run
+        // the `SCRUB_LOST_MS` lost-keyup safety net and the tap-release debounce, all three run
         // against the mounted `PlayerScreen`'s own `scrub` from the loop. They are that screen's
-        // `Tick` now — `step_scrub_hold` and `step_tap_commit`, formula for formula — which is
-        // what makes the field have one owner. Phase 12, PX-PLAYER.)
+        // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
+        // click-to-confirm (a key target waits for OK) — which is what makes the field have one
+        // owner. Phase 12, PX-PLAYER.)
         // Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
         // rather than a "was something shown" bool, because the two edges have different jobs
         // and the previous bool implemented neither of the ones its comment promised.
@@ -1826,7 +1839,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the DISMISSAL and the ring in one act, because raising the timer alone left
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
-                player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
+                player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
             } else if plx_appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,
@@ -2635,7 +2648,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // never was: what is behind these panels is a hardware video plane GL
                         // cannot read back, so there is no host snapshot to take
                         // (`RenderStrategy::VideoPlane`).
-                        app.pages.draw(&mut app.bridge, true);
+                        //
+                        // During HDR playback the TV lifts the graphics plane, so the whole pass
+                        // draws under the viewer's HDR overlay brightness (`ui::output_gain`: RGB
+                        // only, alpha untouched). 1.0 for SDR, a re-encode, or the 100% default.
+                        let source_hdr = app.bridge.metadata_view().playing().is_some_and(|p| p.hdr);
+                        let gain = plx_media::route::overlay_gain(&app.player.session, source_hdr);
+                        plx_ui::output_gain(gain, || app.pages.draw(&mut app.bridge, true));
                         // Skipped rather than drawn while one of the player's own panels is
                         // up — `More` carries this very panel's own toggle, and the panel's
                         // content routinely spans wide enough to reach any of their bottom-right

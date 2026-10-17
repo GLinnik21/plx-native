@@ -363,7 +363,7 @@ pub(crate) struct Bridge {
     session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
     session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
-    /// The seat the ten per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
+    /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     stores: plx_data::stores::Stores,

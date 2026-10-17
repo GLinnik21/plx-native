@@ -246,7 +246,7 @@ fn dv_unusable_base_is_disabled_not_offered() {
     let carried = CarriedAudio::from_stream(&track(1, "ac3", 2, true), 0);
     let mut base = test_original_candidate(None);
     base.audio = Some(carried.clone());
-    let facts = |b| EnhancementFacts { pass: Subscription::Yes, base: Some(b), carried: Some(&carried), subtitle_effect: SubtitleEffect::None, refused: false };
+    let facts = |b| EnhancementFacts { pass: Subscription::Yes, base: Some(b), carried: Some(&carried), subtitle_effect: SubtitleEffect::None, refused: false, quality: Quality::Original, declined: None };
     assert!(enhancements_offered(&facts(&base), RouteFamily::Direct), "control: the clean base is offered");
     let mut unusable = base.clone();
     unusable.dovi = p5();

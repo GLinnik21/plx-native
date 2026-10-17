@@ -2685,12 +2685,11 @@ mod tests {
         let old_row_w = old_text_w + 30.0 + theme::space::SM;
         assert!(route.content.cx() + old_row_w * 0.5 > Rect::FULL.w,
             "the actual translated sentence reproduces the former off-canvas row");
-        for locale in [
-            LocaleContext::resolve(Preference::En, None, None, None, None),
-            LocaleContext::resolve(Preference::Es, None, None, None, None),
-            belarusian,
-            LocaleContext::pseudo_for_test(),
-        ] {
+        for locale in plx_platform::i18n::SHIPPED
+            .into_iter()
+            .map(|p| LocaleContext::resolve(p, None, None, None, None))
+            .chain([LocaleContext::pseudo_for_test()])
+        {
             for message in [
                 plx_platform::i18n::msg::settings_login_unreachable_c_in(&locale),
                 plx_platform::i18n::msg::browse_login_stalled_c_in(&locale),

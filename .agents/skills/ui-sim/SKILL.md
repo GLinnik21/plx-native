@@ -140,9 +140,9 @@ Three things, and notably no webOS NDK and no nightly:
    still needs them installed. The simulator also loads the bundled ASS renderer from its staged
    resources. Build on the machine rather than copying: `build.rs` asks `brew --prefix`, so it is
    also correct on an Intel Mac where Homebrew lives at `/usr/local`.
-2. **rustup + stable.** Not nightly. `rust-modules/.cargo/config.toml` carries `[unstable]
-   build-std`, which looks like it forces nightly, but that table is gated and stable cargo ignores
-   it — it only applies to the ARM cross-build, which passes `cargo +nightly` explicitly.
+2. **rustup + the pinned stable toolchain** (`rust-modules/rust-toolchain.toml`; `make setup-rust`).
+   No nightly: the ARM cross-build runs on the same stable release (prebuilt armv7 std, no
+   `-Z build-std`), and `rust-modules/.cargo/config.toml` no longer has an `[unstable]` table.
 3. `src/config.local.h` for the PMS host and token. Gitignored, so a fresh clone has none: pass
    `SIM_PMS=<ip>` and write the token into `$SIM_DIR/plxnative-token` by hand.
 

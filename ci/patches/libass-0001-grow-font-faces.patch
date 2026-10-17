@@ -1,0 +1,98 @@
+diff --git a/libass/ass_font.c b/libass/ass_font.c
+index aa12ca1..9f83ffd 100644
+--- a/libass/ass_font.c
++++ b/libass/ass_font.c
+@@ -439,9 +439,6 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
+     FT_Face face;
+     int ret = -1;
+ 
+-    if (font->n_faces == ASS_FONT_MAX_FACES)
+-        return -1;
+-
+     path = ass_font_select(fontsel, font, &index,
+             &postscript_name, &uid, &stream, ch);
+ 
+@@ -470,6 +467,33 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
+     ass_charmap_magic(font->library, face);
+     set_font_metrics(face);
+ 
++    if (font->n_faces == font->faces_cap) {
++        // Double the capacity, starting at 4. The three arrays grow together.
++        int cap = font->faces_cap ? font->faces_cap : 2;
++        if (cap > INT_MAX / 2 / (int) sizeof(FT_Face)) {
++            FT_Done_Face(face);
++            return -1;
++        }
++        cap *= 2;
++        int *uids = realloc(font->faces_uid, cap * sizeof(*uids));
++        if (uids)
++            font->faces_uid = uids;
++        FT_Face *faces = uids ? realloc(font->faces, cap * sizeof(*faces)) : NULL;
++        if (faces)
++            font->faces = faces;
++        struct hb_font_t **hb_fonts =
++            faces ? realloc(font->hb_fonts, cap * sizeof(*hb_fonts)) : NULL;
++        if (hb_fonts)
++            font->hb_fonts = hb_fonts;
++        if (!hb_fonts) {
++            // Whatever did grow stays owned by the font and is freed by
++            // ass_font_clear; the arrays keep their old, still valid, capacity.
++            FT_Done_Face(face);
++            return -1;
++        }
++        font->faces_cap = cap;
++    }
++
+     font->faces[font->n_faces] = face;
+     font->faces_uid[font->n_faces] = uid;
+     if (!ass_create_hb_font(font, font->n_faces)) {
+@@ -505,6 +529,10 @@ size_t ass_font_construct(void *key, void *value, void *priv)
+     font->library = render_priv->library;
+     font->ftlibrary = render_priv->ftlibrary;
+     font->n_faces = 0;
++    font->faces_cap = 0;
++    font->faces_uid = NULL;
++    font->faces = NULL;
++    font->hb_fonts = NULL;
+     font->desc.family = desc->family;
+     font->desc.bold = desc->bold;
+     font->desc.italic = desc->italic;
+@@ -758,6 +786,9 @@ void ass_font_clear(ASS_Font *font)
+         if (font->hb_fonts[i])
+             hb_font_destroy(font->hb_fonts[i]);
+     }
++    free(font->faces_uid);
++    free(font->faces);
++    free(font->hb_fonts);
+     free((char *) font->desc.family.str);
+ }
+ 
+diff --git a/libass/ass_font.h b/libass/ass_font.h
+index 2388249..ae9ed6b 100644
+--- a/libass/ass_font.h
++++ b/libass/ass_font.h
+@@ -34,7 +34,6 @@ typedef struct ass_font ASS_Font;
+ 
+ #define VERTICAL_LOWER_BOUND 0x02f1
+ 
+-#define ASS_FONT_MAX_FACES 10
+ #define DECO_UNDERLINE     1
+ #define DECO_STRIKETHROUGH 2
+ #define DECO_ROTATE        4
+@@ -43,10 +42,13 @@ struct ass_font {
+     ASS_FontDesc desc;
+     ASS_Library *library;
+     FT_Library ftlibrary;
+-    int faces_uid[ASS_FONT_MAX_FACES];
+-    FT_Face faces[ASS_FONT_MAX_FACES];
+-    struct hb_font_t *hb_fonts[ASS_FONT_MAX_FACES];
++    // PlxNative: grown on demand (ci/patches/libass-0001-grow-font-faces.patch);
++    // upstream fixes these at ASS_FONT_MAX_FACES == 10 entries.
++    int *faces_uid;
++    FT_Face *faces;
++    struct hb_font_t **hb_fonts;
+     int n_faces;
++    int faces_cap;
+ };
+ 
+ void ass_charmap_magic(ASS_Library *library, FT_Face face);

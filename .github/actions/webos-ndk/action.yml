@@ -1,10 +1,10 @@
 name: Provision webOS NDK
 description: >
-  Cache, download, checksum, extract and relocate the webosbrew buildroot SDK pinned by the
-  Makefile's NDK_REL, then prove its sysroot can satisfy LIBS_REAL before any build runs.
+  Cache, download, checksum, extract and relocate the webosbrew buildroot SDK pinned in
+  ci/dependencies.json (`webos-ndk`), then prove its sysroot can satisfy LIBS_REAL before any build runs.
 
 # WHY runs-on MUST be an arm64 Linux runner (ubuntu-24.04-arm):
-# webosbrew/native-toolchain publishes exactly three host builds for webos-d7ed7ee.6 —
+# webosbrew/native-toolchain publishes exactly three host builds for the pinned release —
 # darwin-arm64, darwin-x86_64 and linux-aarch64. There is NO linux-x86_64 asset in this release
 # or the one before it. On ubuntu-latest (x86_64) the old hardcoded `darwin-$(uname -m)` URL
 # resolved and quietly delivered a Mach-O toolchain; the Makefile now refuses that host outright.
@@ -26,15 +26,23 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Read the NDK pin
+      id: pin
+      shell: bash
+      # The release is declared once, in ci/dependencies.json (entry `webos-ndk`); the cache key
+      # below moves with it and ONLY with it. Hashing the whole manifest would re-download a 156 MB
+      # toolchain for every unrelated bump.
+      run: echo "release=$(python3 '${{ github.workspace }}/ci/deps.py' get webos-ndk version)" >> "$GITHUB_OUTPUT"
+
     - name: Restore webOS NDK
       id: ndk-cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ inputs.install-root }}
         # No restore-keys, deliberately. A prefix match would hand the build a DIFFERENT buildroot
         # revision, and this project's codegen is revision-sensitive (GCC 12 / glibc 2.12 /
         # armv7-a soft-float). Every on-device measurement in docs/ was taken against this one.
-        key: webos-ndk-${{ runner.os }}-${{ runner.arch }}-webos-d7ed7ee.6
+        key: webos-ndk-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.release }}
 
     - name: Download + relocate webOS NDK
       if: steps.ndk-cache.outputs.cache-hit != 'true'
@@ -42,8 +50,9 @@ runs:
       run: |
         set -euo pipefail
         mkdir -p '${{ inputs.install-root }}'
-        # The Makefile owns the URL, the pin and the sha256 — this step just points it at the
-        # right destination, so there is exactly one place to bump the toolchain.
+        # ci/dependencies.json owns the URL, the pin and the sha256 (the Makefile reads them through
+        # ci/deps.py) — this step just points it at the right destination, so there is exactly one
+        # place to bump the toolchain.
         make setup-env WEBOS_SDK='${{ inputs.install-root }}/arm-webos-linux-gnueabi_sdk-buildroot'
 
     - name: Verify the toolchain and the sysroot

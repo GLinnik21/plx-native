@@ -1,0 +1,448 @@
+{
+ "_comment": "Inputs of ci/gen-third-party-notices.py (THIRD-PARTY-NOTICES.md section 2.4). Versions are NOT here: they come from rust-modules/Cargo.lock and the std snapshot below.",
+ "toolchain": {
+  "pin": "1.99.1",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "backtrace": "0.3.76"
+ },
+ "std_lock": {
+  "addr2line": "0.27.1",
+  "adler2": "2.0.1",
+  "cfg-if": "1.0.4",
+  "compiler_builtins": "0.1.160",
+  "gimli": "0.34.0",
+  "hashbrown": "0.17.1",
+  "libc": "0.2.189",
+  "memchr": "2.8.3",
+  "miniz_oxide": "0.9.1",
+  "object": "0.39.1",
+  "rustc-demangle": "0.1.28"
+ },
+ "std_not_shipped": [
+  "cc",
+  "dlmalloc",
+  "foldhash",
+  "fortanix-sgx-abi",
+  "getopts",
+  "hermit-abi",
+  "moto-rt",
+  "r-efi",
+  "r-efi-alloc",
+  "rand",
+  "rand_core",
+  "rand_xorshift",
+  "rustc-literal-escaper",
+  "shlex",
+  "unwinding",
+  "vex-sdk",
+  "wasip1",
+  "wasip2",
+  "wasip3",
+  "wit-bindgen"
+ ],
+ "not_shipped": [
+  "asn1-rs",
+  "asn1-rs-derive",
+  "asn1-rs-impl",
+  "autocfg",
+  "base64",
+  "bit-vec",
+  "cc",
+  "core_detect",
+  "data-encoding",
+  "der-parser",
+  "deranged",
+  "displaydoc",
+  "find-msvc-tools",
+  "getrandom",
+  "lazy_static",
+  "minimal-lexical",
+  "multiversion_no_op",
+  "nom",
+  "num-bigint",
+  "num-conv",
+  "num-integer",
+  "oid-registry",
+  "once_cell",
+  "pem",
+  "powerfmt",
+  "proc-macro2",
+  "quote",
+  "rcgen",
+  "ring",
+  "rusticata-macros",
+  "rustls",
+  "rustls-pki-types",
+  "rustls-webpki",
+  "rustversion",
+  "serde_derive",
+  "shlex",
+  "simdutf8",
+  "subtle",
+  "syn",
+  "synstructure",
+  "thiserror",
+  "thiserror-impl",
+  "time",
+  "time-core",
+  "time-macros",
+  "unicode-ident",
+  "untrusted",
+  "wasi",
+  "windows-sys",
+  "windows-targets",
+  "windows_aarch64_gnullvm",
+  "windows_aarch64_msvc",
+  "windows_i686_gnu",
+  "windows_i686_gnullvm",
+  "windows_i686_msvc",
+  "windows_x86_64_gnu",
+  "windows_x86_64_gnullvm",
+  "windows_x86_64_msvc",
+  "x509-parser",
+  "xxhash-rust",
+  "yasna",
+  "yoke-derive",
+  "zerofrom-derive",
+  "zeroize",
+  "zerovec-derive"
+ ],
+ "groups": [
+  {
+   "id": "elected-mit",
+   "columns": [
+    "Package",
+    "Version(s)",
+    "Declared licence",
+    "Copyright"
+   ],
+   "crates": [
+    {
+     "name": "addr2line",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "The `addr2line` authors"
+    },
+    {
+     "name": "adler2",
+     "licence": "0BSD OR MIT OR Apache-2.0",
+     "copyright": "Jonas Schievink, oyvindln"
+    },
+    {
+     "name": "bitflags",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2014 The Rust Project Developers"
+    },
+    {
+     "name": "bytemuck",
+     "licence": "Zlib OR Apache-2.0 OR MIT",
+     "copyright": "2019 Daniel \"Lokathor\" Gee"
+    },
+    {
+     "name": "byteorder-lite",
+     "licence": "Unlicense OR MIT",
+     "copyright": "2015 Andrew Gallant"
+    },
+    {
+     "name": "cfg-if",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2014 Alex Crichton"
+    },
+    {
+     "name": "chardetng",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "Mozilla Foundation"
+    },
+    {
+     "name": "crc32fast",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2018 Sam Rijs, Alex Crichton and contributors"
+    },
+    {
+     "name": "either",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Copyright (c) 2015 (the upstream notice names no holder)"
+    },
+    {
+     "name": "encoding_rs",
+     "licence": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+     "copyright": "Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`)"
+    },
+    {
+     "name": "fdeflate",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "The image-rs Developers"
+    },
+    {
+     "name": "flate2",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2014-2026 Alex Crichton"
+    },
+    {
+     "name": "gimli",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "The `gimli` authors"
+    },
+    {
+     "name": "hashbrown",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Amanieu d'Antras"
+    },
+    {
+     "name": "image",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "The image-rs Developers"
+    },
+    {
+     "name": "itoa",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "David Tolnay"
+    },
+    {
+     "name": "libc",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "The Rust Project Developers"
+    },
+    {
+     "name": "memchr",
+     "licence": "Unlicense OR MIT",
+     "copyright": "2015 Andrew Gallant"
+    },
+    {
+     "name": "miniz_oxide",
+     "licence": "MIT OR Zlib OR Apache-2.0",
+     "copyright": "2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln"
+    },
+    {
+     "name": "num-traits",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2014 The Rust Project Developers"
+    },
+    {
+     "name": "object",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "The `object` authors"
+    },
+    {
+     "name": "png",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2015 nwin"
+    },
+    {
+     "name": "rustc-demangle",
+     "licence": "MIT/Apache-2.0",
+     "copyright": "Alex Crichton"
+    },
+    {
+     "name": "scopeguard",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2016-2019 Ulrik Sverdrup \"bluss\" and scopeguard developers"
+    },
+    {
+     "name": "serde",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Erick Tryzelaar, David Tolnay"
+    },
+    {
+     "name": "serde_core",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Erick Tryzelaar, David Tolnay"
+    },
+    {
+     "name": "serde_json",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Erick Tryzelaar, David Tolnay"
+    },
+    {
+     "name": "smallvec",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Copyright (c) 2018 The Servo Project Developers"
+    },
+    {
+     "name": "stable_deref_trait",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "Copyright (c) 2017 Robert Grosse"
+    },
+    {
+     "name": "zune-core",
+     "licence": "MIT OR Apache-2.0 OR Zlib",
+     "copyright": "The zune-image developers"
+    },
+    {
+     "name": "zune-jpeg",
+     "licence": "MIT OR Apache-2.0 OR Zlib",
+     "copyright": "The zune-image developers"
+    }
+   ],
+   "lead": [
+    [
+     "The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims)",
+     "{rustc}",
+     "MIT OR Apache-2.0",
+     "The Rust Project Developers"
+    ],
+    [
+     "— its in-tree backtrace support (`library/backtrace`)",
+     "{backtrace}",
+     "MIT OR Apache-2.0",
+     "2014 Alex Crichton"
+    ],
+    [
+     "— its in-tree mpmc channels (`library/std/src/sync/mpmc`)",
+     "in-tree",
+     "MIT OR Apache-2.0",
+     "2019 The Crossbeam Project Developers"
+    ]
+   ]
+  },
+  {
+   "id": "mit-only",
+   "columns": [
+    "Package",
+    "Version",
+    "Copyright"
+   ],
+   "crates": [
+    {
+     "name": "core_maths",
+     "copyright": "Copyright (c) 2024 Robert Bastian"
+    },
+    {
+     "name": "libm",
+     "copyright": "Copyright (c) 2018 Jorge Aparicio and the third-party copyright notices preserved verbatim in `licenses/libm.txt`"
+    },
+    {
+     "name": "qrcodegen",
+     "copyright": "Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt`"
+    },
+    {
+     "name": "simd-adler32",
+     "copyright": "(c) 2021 Marvin Countryman"
+    },
+    {
+     "name": "zmij",
+     "copyright": "David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`)"
+    }
+   ],
+   "trail": [
+    [
+     "rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target",
+     "as vendored in {rustc_release}",
+     "(c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited"
+    ]
+   ]
+  },
+  {
+   "id": "apache",
+   "columns": [
+    "Package",
+    "Version",
+    "Declared licence",
+    "Copyright"
+   ],
+   "crates": [
+    {
+     "name": "calendrical_calculations",
+     "licence": "Apache-2.0",
+     "copyright": "Copyright 2023 The Unicode Consortium"
+    },
+    {
+     "name": "moxcms",
+     "licence": "BSD-3-Clause OR Apache-2.0",
+     "copyright": "(c) Radzivon Bartoshyk"
+    },
+    {
+     "name": "pxfm",
+     "licence": "BSD-3-Clause OR Apache-2.0",
+     "copyright": "(c) Radzivon Bartoshyk"
+    }
+   ]
+  },
+  {
+   "id": "icu",
+   "columns": [
+    "Package",
+    "Version"
+   ],
+   "crates": [
+    {
+     "name": "fixed_decimal"
+    },
+    {
+     "name": "icu_calendar"
+    },
+    {
+     "name": "icu_calendar_data"
+    },
+    {
+     "name": "icu_collections"
+    },
+    {
+     "name": "icu_datetime"
+    },
+    {
+     "name": "icu_datetime_data"
+    },
+    {
+     "name": "icu_decimal"
+    },
+    {
+     "name": "icu_decimal_data"
+    },
+    {
+     "name": "icu_locale"
+    },
+    {
+     "name": "icu_locale_core"
+    },
+    {
+     "name": "icu_locale_data"
+    },
+    {
+     "name": "icu_pattern"
+    },
+    {
+     "name": "icu_plurals"
+    },
+    {
+     "name": "icu_plurals_data"
+    },
+    {
+     "name": "icu_provider"
+    },
+    {
+     "name": "icu_time"
+    },
+    {
+     "name": "icu_time_data"
+    },
+    {
+     "name": "ixdtf"
+    },
+    {
+     "name": "litemap"
+    },
+    {
+     "name": "potential_utf"
+    },
+    {
+     "name": "tinystr"
+    },
+    {
+     "name": "writeable"
+    },
+    {
+     "name": "yoke"
+    },
+    {
+     "name": "zerofrom"
+    },
+    {
+     "name": "zerotrie"
+    },
+    {
+     "name": "zerovec"
+    }
+   ]
+  }
+ ]
+}

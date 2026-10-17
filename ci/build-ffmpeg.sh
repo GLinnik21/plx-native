@@ -60,9 +60,22 @@
 # `lib*-plx.so.*` glob cannot pick it up.
 set -eu
 
-VERSION=9.0
-SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The pin (version, upstream URL, sha256) is declared once, in ci/dependencies.json; nothing here
+# carries a literal copy of it. ci/deps.py is also what downloads and verifies the tarball.
+DEPS="$ROOT/ci/deps.py"
+# FFMPEG_VERSION + FFMPEG_SHA256 (+ FFMPEG_TARBALL, an absolute or relative path to the tarball) replace the
+# manifest lookup: the copy of this script attached to a release is run from a source checkout or
+# the source bundle with the attached tarball, e.g.
+#   FFMPEG_VERSION=<version> FFMPEG_SHA256=<the sha256 of the tarball> FFMPEG_TARBALL=ffmpeg-<version>.tar.xz ci/build-ffmpeg.sh
+# and needs neither ci/deps.py nor a network. The sha256 is still checked against the tarball.
+if [ -n "${FFMPEG_VERSION-}" ] && [ -n "${FFMPEG_SHA256-}" ]; then
+  VERSION=$FFMPEG_VERSION
+  SHA256=$FFMPEG_SHA256
+else
+  VERSION=$(python3 "$DEPS" get ffmpeg version)
+  SHA256=$(python3 "$DEPS" get ffmpeg sha256)
+fi
 NDK=${WEBOS_SDK:-$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}
 SYSROOT="$NDK/arm-webos-linux-gnueabi/sysroot"
 HOST=${HOST:-}
@@ -93,7 +106,7 @@ HOST=${HOST:-}
 # to, because a runner is ephemeral and caches the prefix rather than the objects.
 #
 # The TARBALL is deliberately NOT in the cache. It is the LGPL corresponding source that
-# `release.yml` publishes beside each release (`ls vendor/ffmpeg-build/ffmpeg-*.tar.xz`), so it
+# `release.yml` publishes beside each release (`python3 ci/deps.py fetch ffmpeg` prints its path), so it
 # belongs with the checkout, it is 10 MB, and both the cross and host builds now share the one
 # copy instead of downloading it twice.
 if [ -n "$HOST" ]; then
@@ -101,7 +114,13 @@ if [ -n "$HOST" ]; then
 else
   PREFIX="$ROOT/vendor/ffmpeg-prefix"
 fi
-TARDIR="$ROOT/vendor/ffmpeg-build"
+if [ -n "${FFMPEG_TARBALL-}" ]; then
+  [ -f "$FFMPEG_TARBALL" ] || { echo "ffmpeg: FFMPEG_TARBALL=$FFMPEG_TARBALL does not exist" >&2; exit 1; }
+  FFMPEG_TARBALL=$(cd "$(dirname "$FFMPEG_TARBALL")" && pwd)/$(basename "$FFMPEG_TARBALL")
+  TARDIR=$(dirname "$FFMPEG_TARBALL")
+else
+  TARDIR=$(python3 "$DEPS" cache-dir)
+fi
 # `--prefix` is the LITERAL /plx, not $PREFIX, and the install is redirected with DESTDIR below.
 #
 # WHY: FFmpeg records its entire configure INVOCATION inside libavutil (`avutil_configuration()`),
@@ -353,7 +372,7 @@ fi
 SRC="$WORK/ffmpeg-$VERSION"
 mkdir -p "$WORK" "$TARDIR"
 
-TAR="$TARDIR/ffmpeg-$VERSION.tar.xz"
+TAR=${FFMPEG_TARBALL:-$TARDIR/ffmpeg-$VERSION.tar.xz}
 # The tarball stays in the checkout (release.yml publishes it as the LGPL corresponding source),
 # but it is FETCHED once per machine: a fresh worktree copies the cached one rather than pulling
 # 11 MB over the network again. The sha256 below is checked either way, so a corrupt or
@@ -380,13 +399,16 @@ CACHED_TAR="$CACHE_ROOT/ffmpeg/ffmpeg-$VERSION-$(printf '%s' "$SHA256" | cut -c1
 tarball_ok() { [ -f "$1" ] && [ "$(shasum -a 256 "$1" 2>/dev/null | cut -d' ' -f1)" = "$SHA256" ]; }
 ensure_tar() {
   tarball_ok "$TAR" && return 0
+  # A tarball the caller named is never replaced or downloaded over: the check below reports it.
+  [ -z "${FFMPEG_TARBALL-}" ] || return 0
   cand="$TAR.$$.part"
   rm -f "$cand"
   if [ -n "$CACHE_ROOT" ] && [ -f "$CACHED_TAR" ]; then cp "$CACHED_TAR" "$cand" 2>/dev/null || true; fi
   if ! tarball_ok "$cand"; then
     rm -f "$cand"
     echo "ffmpeg: fetching $VERSION"
-    curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$cand"
+    python3 "$DEPS" fetch ffmpeg --into "$TARDIR" >/dev/null
+    cp "$TAR" "$cand"
   fi
   mv "$cand" "$TAR"
 }

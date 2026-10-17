@@ -449,7 +449,7 @@ re-read cannot recover.
 - The host suite is **424** tests as of 2026-08-14 — it was recorded as 284, then as 396 in this
   note's own first draft, which was already stale when it was written. **Do not trust any number in
   any document, including this one.** Re-derive:
-  `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'`.
+  `cd rust-modules && cargo test --lib -- --list | grep -c ': test'`.
 
 ---
 

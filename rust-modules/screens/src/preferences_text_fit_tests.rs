@@ -189,6 +189,20 @@ fn direct_play_readout_fits_beside_its_label_in_every_language() {
 /// picker's own label. Pinned in every shipped language; the fit sweep above covers the width.
 #[test]
 fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
+    // Reviewed wording, one row per language; a language without a row fails instead of borrowing
+    // another language's expectation.
+    const WANT: &[(&str, &str)] = &[
+        ("en", "When audio isn't in the subtitle language"),
+        ("es", "Audio fuera del idioma de subtítulos"),
+        ("fr", "Audio hors langue des sous-titres"),
+        ("it", "Se audio e sottotitoli hanno lingue diverse"),
+        ("pt", "Áudio fora do idioma das legendas"),
+        ("de", "Ton nicht in Untertitelsprache"),
+        ("be", "Калі гук не на мове субцітраў"),
+    ];
+    for (tag, _) in WANT {
+        assert!(SHIPPED.iter().any(|p| p.tag() == *tag), "{tag} is pinned but no longer shipped");
+    }
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let mut prefs = AudioPreferences::default();
@@ -199,12 +213,8 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         assert_eq!(readouts[0], plx_platform::i18n::msg::settings_audio_manual(), "{}", language.tag());
         assert_eq!(readouts[1], plx_platform::i18n::msg::settings_audio_foreign_short(), "{}", language.tag());
         assert_eq!(readouts[2], plx_platform::i18n::msg::settings_audio_always(), "{}", language.tag());
-        let want = match language.tag() {
-            "en" => "When audio isn't in the subtitle language",
-            "es" => "Audio fuera del idioma de subtítulos",
-            "fr" => "Audio hors langue des sous-titres",
-            _ => "Калі гук не на мове субцітраў",
-        };
+        let want = WANT.iter().find(|(tag, _)| *tag == language.tag()).map(|(_, want)| *want)
+            .unwrap_or_else(|| panic!("{}: add its reviewed read-out to WANT", language.tag()));
         assert_eq!(readouts[1], want, "{}", language.tag());
     }
 }
