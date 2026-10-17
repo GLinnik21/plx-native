@@ -72,7 +72,11 @@ pub trait WatchlistIo: Reach + Send + Sync {
     fn capture_auth(&self) -> Option<WatchlistAuth>;
     /// MAIN THREAD: is `auth` still the seated profile?
     fn is_current(&self, auth: &WatchlistAuth) -> bool;
-    fn page(&self, auth: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError>;
+    /// One page of the list. `if_none_match` is the `ETag` of the last COMPLETE read, handed over
+    /// for page 0 only; an answer of `Err(WatchlistError::NotModified)` is the service saying the
+    /// list is unchanged.
+    fn page(&self, auth: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
+        -> Result<WatchPage, WatchlistError>;
     fn released(&self, auth: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError>;
     fn write(&self, auth: &WatchlistAuth, hex: &str, intent: Intent) -> Result<(), WatchlistError>;
     fn find(&self, server: ServerId, kind: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError>;
@@ -121,10 +125,12 @@ impl WatchlistIo for LiveIo {
     fn is_current(&self, auth: &WatchlistAuth) -> bool {
         auth.is_current()
     }
-    fn page(&self, auth: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError> {
+    fn page(&self, auth: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
+        -> Result<WatchPage, WatchlistError>
+    {
         let client = auth.client();
         let mut transport = client.watchlist_transport();
-        let answer = client.watchlist_page(start, size, &mut transport);
+        let answer = client.watchlist_page(start, size, if_none_match, &mut transport);
         answer
     }
     fn released(&self, auth: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
@@ -187,7 +193,18 @@ pub struct Tag {
 #[derive(Clone, Debug)]
 pub enum What {
     /// One page of the list, with the matches of its rows against every reachable server.
-    Page { start: u32, total: Option<u32>, rows: Vec<WatchRow>, answers: Vec<Answer>, roster_gen: u32 },
+    Page {
+        start: u32,
+        total: Option<u32>,
+        rows: Vec<WatchRow>,
+        answers: Vec<Answer>,
+        roster_gen: u32,
+        /// Page 0's `ETag` (the validator for the next read), when the service sent one.
+        etag: Option<String>,
+    },
+    /// Page 0 answered 304: the rows already held are the service's current list, so no page is
+    /// read and nothing is replaced.
+    NotModified,
     /// The page could not be read; the list stops here.
     PageFailed { start: u32, why: Failure },
     /// The released set as a guid set, or `None` when that read failed.
@@ -337,18 +354,28 @@ pub fn match_rows(io: &dyn WatchlistIo, rows: &[(String, Kind)]) -> Vec<Answer> 
 /// matched against the servers before it is posted so a tile arrives with its state. Stops at the first page that fails. Always ends with [`What::ListDone`].
 /// `known` is the guids already matched against every reachable server under roster generation
 /// `known.1`; they are skipped while the roster has not moved (a new roster is a full re-match).
+/// `etag` is the validator of the last complete read (`If-None-Match` on page 0 only): when the
+/// service answers 304 the list is not read at all and [`What::NotModified`] stands in for every
+/// page, but the released set is still read (a title's release moves it without moving the list).
 pub fn run_list(
     io: &dyn WatchlistIo,
     auth: &WatchlistAuth,
     tag: Tag,
     known: (&HashSet<String>, u32),
+    etag: Option<&str>,
     post: &mut dyn FnMut(Landed),
 ) {
     let mut start = 0u32;
     let mut page_no = 0u32;
     loop {
-        let page = match io.page(auth, start, MAX_PAGE) {
+        let page = match io.page(auth, start, MAX_PAGE, etag.filter(|_| start == 0)) {
             Ok(p) => p,
+            Err(WatchlistError::NotModified) if start == 0 && etag.is_some() => {
+                post(Landed { tag, what: What::NotModified });
+                let guids = io.released(auth).ok().map(|items| items.into_iter().map(|i| i.guid).collect());
+                post(Landed { tag, what: What::Released { guids } });
+                break;
+            }
             Err(e) => {
                 post(Landed { tag, what: What::PageFailed { start, why: Failure::of(&e) } });
                 break;
@@ -367,7 +394,8 @@ pub fn run_list(
             .collect();
         let answers = match_rows(io, &keys);
         let total = page.total;
-        post(Landed { tag, what: What::Page { start, total, rows, answers, roster_gen } });
+        let etag = page.etag;
+        post(Landed { tag, what: What::Page { start, total, rows, answers, roster_gen, etag } });
         if page_no == 0 {
             let guids = io.released(auth).ok().map(|items| items.into_iter().map(|i| i.guid).collect());
             post(Landed { tag, what: What::Released { guids } });

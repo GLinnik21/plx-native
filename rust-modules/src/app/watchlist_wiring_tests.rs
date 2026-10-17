@@ -81,14 +81,14 @@ impl WatchlistIo for Script {
     fn is_current(&self, auth: &WatchlistAuth) -> bool {
         auth.generation == 1
     }
-    fn page(&self, _: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError> {
+    fn page(&self, _: &WatchlistAuth, start: u32, size: u32, _: Option<&str>) -> Result<WatchPage, WatchlistError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if self.fail_reads.load(Ordering::SeqCst) {
             return Err(WatchlistError::Transport);
         }
         let items: Vec<WatchItem> = self.items.iter().skip(start as usize).take(size as usize).cloned().collect();
         let raw = items.len() as u32;
-        Ok(WatchPage { items, total: Some(self.items.len() as u32), start, raw })
+        Ok(WatchPage { items, total: Some(self.items.len() as u32), start, raw, etag: None })
     }
     fn released(&self, _: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
         Ok(self.items.clone())

@@ -146,7 +146,7 @@ Nothing names webOS. Screens never name a sibling screen or app.
   notifications not used for membership.
 - Detail before the list loads: one `GET discover /library/metadata/<hex>/userState` (array
   form), merged as a point fact stamped with its read sequence; a later list read supersedes.
-- ETag only with NET1; until then full reads. With NET1: page-0 If-None-Match; 304
+- ETag (NET1, shipped; see `docs/watchlist.md`): page-0 If-None-Match; 304
   short-circuits page 0 only (UNVERIFIED for later pages).
 
 ### 1.4 Writes — own store (decided)

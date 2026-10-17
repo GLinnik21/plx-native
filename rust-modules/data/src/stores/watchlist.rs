@@ -154,6 +154,19 @@ struct WatchlistState {
     wrote: bool,
     list_retry: u32,
     write_retry: u32,
+    /// Page 0's `ETag` from the last COMPLETE read of the list: sent as `If-None-Match` on the next
+    /// one. `None` whenever the rows might not be the service's whole current list (nothing read,
+    /// a write since, a cut-short read) and for the life of no epoch but this one.
+    list_etag: Option<String>,
+    /// Page 0's `ETag` of the read now arriving (or, on a 304, the validator it was answered for).
+    read_etag: Option<String>,
+    /// Writes spawned in this epoch. A read may store its validator only if no write was spawned
+    /// while it was out ([`Self::read_writes`]).
+    writes_seen: u32,
+    /// `Some(writes_seen)` at the moment the read now arriving was spawned with no write queued or
+    /// in flight, and still `Some` while no page of it has failed; `None` bars it from storing a
+    /// validator.
+    read_writes: Option<u32>,
 }
 
 impl WatchlistState {
@@ -187,6 +200,10 @@ impl WatchlistState {
             wrote: false,
             list_retry: 0,
             write_retry: 0,
+            list_etag: None,
+            read_etag: None,
+            writes_seen: 0,
+            read_writes: None,
         }
     }
 }
@@ -482,8 +499,11 @@ impl WatchlistStore {
             return false;
         }
         match landed.what {
-            What::Page { start, total, mut rows, answers, roster_gen } => {
+            What::Page { start, total, mut rows, answers, roster_gen, etag } => {
                 self.state.total = total;
+                if start == 0 {
+                    self.state.read_etag = etag;
+                }
                 self.settle_released(&mut rows);
                 self.merge(answers, roster_gen);
                 if start == 0 {
@@ -504,7 +524,18 @@ impl WatchlistStore {
                 self.rederive();
                 true
             }
+            What::NotModified => {
+                // The held rows ARE the service's list as of this read: the same commit a whole
+                // read makes at its end, with nothing to swap in.
+                self.state.truncated = false;
+                self.state.rows_stamp = self.state.read_stamp;
+                self.state.status = Status::Ready;
+                self.state.read_etag = self.state.list_etag.clone();
+                self.rederive();
+                true
+            }
             What::PageFailed { start, why } => {
+                self.state.read_writes = None;
                 let had_rows = self.state.incoming.take().is_some();
                 if start == 0 && self.state.rows.is_empty() {
                     self.state.status = Status::Failed(why);
@@ -528,6 +559,10 @@ impl WatchlistStore {
                 true
             }
             What::ListDone => {
+                if self.state.read_writes.take() == Some(self.state.writes_seen) {
+                    self.state.list_etag = self.state.read_etag.take();
+                }
+                self.state.read_etag = None;
                 if let Some(mut rows) = self.state.incoming.take() {
                     self.settle_released(&mut rows);
                     self.state.rows = rows;
@@ -619,6 +654,10 @@ impl WatchlistStore {
 
     fn spawn_write(&mut self, auth: &WatchlistAuth, write: PendingWrite) {
         self.state.req += 1;
+        // Whatever this write does, the service's list is no longer the one the validator names
+        // (even a failed request may have reached it): the next read must be whole.
+        self.state.writes_seen = self.state.writes_seen.wrapping_add(1);
+        self.state.list_etag = None;
         let tag = self.current_tag(auth);
         let (adapter, io, auth) = (Arc::clone(&self.adapter), Arc::clone(&self.io), auth.clone());
         adapter.write_busy.store(true, Ordering::SeqCst);
@@ -659,13 +698,18 @@ impl WatchlistStore {
         self.state.read_stamp = self.state.ledger.stamp();
         let known = self.matched_guids();
         let known_gen = self.state.table.roster_gen;
+        // The validator only stands for a complete list with no write in the air.
+        let quiet = !self.state.ledger.busy();
+        let etag = self.state.list_etag.clone().filter(|_| quiet && !self.state.rows.is_empty() && !self.state.truncated);
+        self.state.read_etag = None;
+        self.state.read_writes = quiet.then_some(self.state.writes_seen);
         let (adapter, io, auth) = (Arc::clone(&self.adapter), Arc::clone(&self.io), auth.clone());
         adapter.list_busy.store(true, Ordering::SeqCst);
         let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
         let spawned = (self.spawn)("wlist", Box::new(move || {
             let _guard = guard;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_list(&*io, &auth, tag, (&known, known_gen), &mut |l| adapter.post(l));
+                run_list(&*io, &auth, tag, (&known, known_gen), etag.as_deref(), &mut |l| adapter.post(l));
             }));
             if outcome.is_err() {
                 adapter.post(Landed { tag, what: What::PageFailed { start: 0, why: Failure::Other } });
@@ -962,9 +1006,22 @@ pub(super) mod tests {
         dropped: AtomicU32,
         /// Scripted `guid_of` answers, front first; empty = no answer.
         guid_answers: Mutex<Vec<Option<String>>>,
+        /// Does the service send an `ETag`? When it does, the validator names the list's content,
+        /// so any change to `items` is a new one.
+        etag_on: AtomicBool,
+        /// Every page request as `(start, If-None-Match)`, 304s included.
+        asked: Mutex<Vec<(u32, Option<String>)>>,
     }
 
     impl Mock {
+        /// The list validator as of now: a hash of the ids in order, weak-tagged like the service's.
+        fn tag(&self) -> Option<String> {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.items.lock().unwrap().iter().for_each(|i| i.hex.hash(&mut h));
+            self.etag_on.load(Ordering::SeqCst).then(|| format!("W/\"{:x}\"", h.finish()))
+        }
+
         fn new(items: Vec<WatchItem>) -> Arc<Mock> {
             let a = ServerId::from_raw(0);
             Arc::new(Mock {
@@ -986,6 +1043,8 @@ pub(super) mod tests {
                 starts: Mutex::new(Vec::new()),
                 dropped: AtomicU32::new(0),
                 guid_answers: Mutex::new(Vec::new()),
+                etag_on: AtomicBool::new(true),
+                asked: Mutex::new(Vec::new()),
             })
         }
     }
@@ -1014,8 +1073,15 @@ pub(super) mod tests {
         fn is_current(&self, a: &WatchlistAuth) -> bool {
             self.current.load(Ordering::SeqCst) && a.generation == self.generation.load(Ordering::SeqCst)
         }
-        fn page(&self, _: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError> {
+        fn page(&self, _: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
+            -> Result<WatchPage, WatchlistError>
+        {
             self.pages.fetch_add(1, Ordering::SeqCst);
+            self.asked.lock().unwrap().push((start, if_none_match.map(str::to_owned)));
+            let etag = self.tag();
+            if start == 0 && if_none_match.is_some() && if_none_match == etag.as_deref() {
+                return Err(WatchlistError::NotModified);
+            }
             if start >= self.fail_pages_from.load(Ordering::SeqCst) {
                 return Err(WatchlistError::Transport);
             }
@@ -1026,7 +1092,7 @@ pub(super) mod tests {
             let dropped = self.dropped.load(Ordering::SeqCst) as usize;
             let total = (dropped == 0).then_some(all.len() as u32);
             items.truncate(items.len().saturating_sub(dropped));
-            Ok(WatchPage { items, total, start, raw })
+            Ok(WatchPage { items, total, start, raw, etag: etag.filter(|_| start == 0) })
         }
         fn released(&self, _: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
             self.released.lock().unwrap().clone().ok_or(WatchlistError::Transport)
@@ -1126,6 +1192,7 @@ pub(super) mod tests {
             rows: vec![crate::watchlist::row_of(&item(9, "Ghost"), 0).unwrap()],
             answers: vec![],
             roster_gen: 1,
+            etag: None,
         }
     }
 
@@ -1566,7 +1633,7 @@ pub(super) mod tests {
         impl WatchlistIo for NoAuth {
             fn capture_auth(&self) -> Option<WatchlistAuth> { None }
             fn is_current(&self, a: &WatchlistAuth) -> bool { self.0.is_current(a) }
-            fn page(&self, a: &WatchlistAuth, s: u32, n: u32) -> Result<WatchPage, WatchlistError> { self.0.page(a, s, n) }
+            fn page(&self, a: &WatchlistAuth, s: u32, n: u32, t: Option<&str>) -> Result<WatchPage, WatchlistError> { self.0.page(a, s, n, t) }
             fn released(&self, a: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> { self.0.released(a) }
             fn write(&self, a: &WatchlistAuth, h: &str, i: Intent) -> Result<(), WatchlistError> { self.0.write(a, h, i) }
             fn find(&self, s: ServerId, k: GuidKind, g: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> { self.0.find(s, k, g) }
@@ -1672,5 +1739,190 @@ pub(super) mod tests {
         assert_eq!(s.view().state(1), Some(TileState::Available), "the committed state, not the live one");
         s.pump();
         assert_eq!(s.view().state(1), Some(TileState::ServerOffline), "the pump re-derives it");
+    }
+
+    // ---- NET1: the page-0 ETag ------------------------------------------------------------
+
+    /// 150 titles: two pages, so a 304 that skips the second page is visible in the request count.
+    fn long_list() -> Arc<Mock> {
+        Mock::new((1..=150u8).map(|n| item(n, "T")).collect())
+    }
+
+    fn asked(mock: &Mock) -> Vec<(u32, Option<String>)> {
+        mock.asked.lock().unwrap().clone()
+    }
+
+    /// Run one owed re-read to the end.
+    fn reread(s: &mut WatchlistStore) {
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..6 {
+            s.pump();
+        }
+    }
+
+    #[test]
+    fn the_first_read_sends_no_validator_and_a_complete_one_stores_the_page_zero_etag() {
+        let mock = long_list();
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(asked(&mock), [(0, None), (100, None)]);
+        assert_eq!(s.state.list_etag, mock.tag());
+    }
+
+    #[test]
+    fn a_304_keeps_the_rows_and_skips_every_page() {
+        let mock = long_list();
+        let mut s = store(&mock);
+        load(&mut s);
+        let before = titles(&s);
+        reread(&mut s);
+        assert_eq!(asked(&mock), [(0, None), (100, None), (0, mock.tag())], "page 0 only, with the validator");
+        assert!(mock.tag().is_some());
+        assert_eq!(s.view().status(), Status::Ready);
+        assert_eq!(titles(&s), before);
+        assert_eq!(s.view().list_len(), 150);
+        assert!(!s.view().truncated());
+        assert_eq!(s.state.list_etag, mock.tag(), "the validator still stands");
+    }
+
+    #[test]
+    fn a_304_still_refreshes_the_released_set() {
+        let mock = three();
+        *mock.released.lock().unwrap() = Some(vec![]);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.state.released.as_ref().map(HashSet::len), Some(0));
+        *mock.released.lock().unwrap() = Some(vec![item(1, "Alpha")]);
+        reread(&mut s);
+        assert_eq!(mock.asked.lock().unwrap().last().cloned(), Some((0, mock.tag())));
+        assert_eq!(s.state.released.as_ref().map(HashSet::len), Some(1), "released moves without the list moving");
+    }
+
+    #[test]
+    fn a_changed_etag_is_a_full_read_and_the_new_validator_is_kept() {
+        let mock = long_list();
+        let mut s = store(&mock);
+        load(&mut s);
+        let v1 = mock.tag();
+        mock.items.lock().unwrap().remove(0);
+        assert_ne!(mock.tag(), v1);
+        reread(&mut s);
+        assert_eq!(s.view().list_len(), 149);
+        assert_eq!(asked(&mock)[2..], [(0, v1), (100, None)]);
+        reread(&mut s);
+        assert_eq!(asked(&mock).last(), Some(&(0, mock.tag())));
+    }
+
+    #[test]
+    fn a_service_that_sends_no_etag_is_always_read_in_full() {
+        let mock = three();
+        mock.etag_on.store(false, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        reread(&mut s);
+        assert_eq!(asked(&mock), [(0, None), (0, None)]);
+        assert_eq!(s.state.list_etag, None);
+    }
+
+    #[test]
+    fn a_landed_write_invalidates_the_validator_so_the_re_read_is_whole() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
+        for _ in 0..3 {
+            s.pump();
+        }
+        assert_eq!(s.state.list_etag, None);
+        assert!(s.take_reread_owed());
+        // The service, not knowing better, would answer 304 to the stale validator: it must not be sent.
+        reread(&mut s);
+        assert_eq!(asked(&mock).last(), Some(&(0, None)));
+    }
+
+    #[test]
+    fn a_failed_write_invalidates_it_too() {
+        let mock = three();
+        mock.fail_writes.store(true, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
+        for _ in 0..3 {
+            s.pump();
+        }
+        assert_eq!(s.state.list_etag, None, "a request that may have reached the service changed what it holds");
+    }
+
+    #[test]
+    fn a_read_that_a_write_overtook_does_not_store_its_validator() {
+        thread_local! { static HELD: std::cell::RefCell<Vec<Box<dyn FnOnce() + Send>>> = Default::default(); }
+        fn hold(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
+            HELD.with(|h| h.borrow_mut().push(f));
+            true
+        }
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        // A re-read goes out and is held (the list changed, so it is a 200 with a new validator); a
+        // write is spawned while it is out; then both finish.
+        mock.items.lock().unwrap().remove(2);
+        s.spawn = hold;
+        s.run(WatchlistCmd::Reread);
+        s.pump();
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        s.pump();
+        s.spawn = inline;
+        let jobs: Vec<_> = HELD.with(|h| h.borrow_mut().drain(..).collect());
+        assert_eq!(jobs.len(), 2, "the list worker and the write worker");
+        for job in jobs {
+            job();
+        }
+        for _ in 0..4 {
+            s.pump();
+        }
+        assert_eq!(s.state.list_etag, None, "page 0 was read around the write; its validator may describe the old list");
+    }
+
+    #[test]
+    fn a_profile_switch_forgets_the_validator() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        assert!(s.state.list_etag.is_some());
+        mock.current.store(false, Ordering::SeqCst);
+        s.pump();
+        assert_eq!(s.state.list_etag, None);
+        mock.current.store(true, Ordering::SeqCst);
+        mock.generation.fetch_add(1, Ordering::SeqCst);
+        load(&mut s);
+        assert_eq!(asked(&mock).last(), Some(&(0, None)), "the new profile's first read is whole");
+        s.run(WatchlistCmd::Reset);
+        assert_eq!(s.state.list_etag, None);
+    }
+
+    #[test]
+    fn a_list_cut_short_stores_no_validator() {
+        let mock = long_list();
+        mock.fail_pages_from.store(100, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert!(s.view().truncated());
+        assert_eq!(s.state.list_etag, None, "the rows are not the whole list, so 304 must never keep them");
+        mock.fail_pages_from.store(u32::MAX, Ordering::SeqCst);
+        reread(&mut s);
+        assert_eq!(asked(&mock).last(), Some(&(100, None)));
+        assert_eq!(s.view().list_len(), 150);
+        assert_eq!(s.state.list_etag, mock.tag());
+    }
+
+    #[test]
+    fn a_failed_reread_keeps_the_old_validator_with_the_old_rows() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        mock.fail_pages_from.store(0, Ordering::SeqCst);
+        reread(&mut s);
+        assert_eq!(s.view().len(), 3);
+        assert_eq!(s.state.list_etag, mock.tag());
     }
 }

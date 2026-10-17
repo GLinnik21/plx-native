@@ -282,7 +282,7 @@ impl WatchlistIo for Wl {
     fn is_current(&self, a: &WatchlistAuth) -> bool {
         a.generation == 1
     }
-    fn page(&self, _: &WatchlistAuth, start: u32, _: u32) -> Result<WatchPage, WatchlistError> {
+    fn page(&self, _: &WatchlistAuth, start: u32, _: u32, _: Option<&str>) -> Result<WatchPage, WatchlistError> {
         if self.list_fails {
             return Err(WatchlistError::Transport);
         }
@@ -296,7 +296,7 @@ impl WatchlistIo for Wl {
             })
             .collect();
         let raw = items.len() as u32;
-        Ok(WatchPage { items, total: Some(self.members.len() as u32), start, raw })
+        Ok(WatchPage { items, total: Some(self.members.len() as u32), start, raw, etag: None })
     }
     fn released(&self, _: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
         Ok(Vec::new())
