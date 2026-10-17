@@ -25,7 +25,7 @@ use crate::{Painter, Rect, Spring};
 
 /// How far inside a card's corner radius a ground cut stops: the 1 px rim stroke, the antialiased
 /// edge and the physical rounding of the scissor box, with room to spare.
-const GROUND_CUT_MARGIN: f32 = 3.0;
+pub(super) const GROUND_CUT_MARGIN: f32 = 3.0;
 
 /// Who owns the grid's vertical scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

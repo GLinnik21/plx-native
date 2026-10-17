@@ -65,11 +65,15 @@ struct Cards {
     first: usize,
     /// The dive's sweep ([`CardSource::sweep`]).
     sweep: f32,
+    /// Cards from this index on answer a thumb at `/thumb/<i>` ([`CardSource::art`]); the
+    /// default `usize::MAX` keeps every card the placeholder poster.
+    thumbs_from: usize,
+    paths: Vec<String>,
 }
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, thumbs_from: usize::MAX, paths: Vec::new() }
     }
 }
 
@@ -86,8 +90,11 @@ impl CardSource<FixtureHost> for Cards {
     fn index_of(&self, e: &u32) -> Option<usize> {
         self.elems.iter().take(self.unindexed_from).position(|x| x == e)
     }
-    fn art(&self, _i: usize) -> Art<'_> {
-        Art::Poster(None)
+    fn art(&self, i: usize) -> Art<'_> {
+        match self.paths.get(i) {
+            Some(k) if i >= self.thumbs_from => Art::Thumb { sid: 1, key: k, res: (300, 450) },
+            _ => Art::Poster(None),
+        }
     }
     fn label(&self, _i: usize) -> TileLabel {
         TileLabel::default()
@@ -3862,4 +3869,114 @@ fn the_conformance_cases_and_the_removal_contract_pass_with_landings_animated() 
     for (screen, mount) in table {
         assert_eq!(conformance::removal_focuses_next(mount), Outcome::Pass, "{screen}");
     }
+}
+
+// ── Grid::ground_cuts: what the page's ground may skip ─────────────────────────────────────
+
+/// A poster source that holds every thumb but `/thumb/<n>` for the numbers it was told to miss.
+struct Resident;
+impl crate::tex::Source for Resident {
+    fn probe(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> Option<plx_machine::machine::PosterKey> {
+        None
+    }
+    fn peek(&self, _: u16, path: &str, _: i32, _: i32, _: bool) -> bool {
+        path != "/thumb/missing"
+    }
+    fn warm(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> crate::tex::Warm {
+        crate::tex::Warm::Known
+    }
+    fn warm_ahead(&self, _: u16, _: &str, _: i32, _: i32, _: bool) -> crate::tex::Warm {
+        crate::tex::Warm::Known
+    }
+    fn logo(&self, _: u16, _: &str) -> Option<plx_machine::machine::PosterKey> {
+        None
+    }
+    fn logo_warm(&self, _: u16, _: &str) -> crate::tex::Warm {
+        crate::tex::Warm::Known
+    }
+    fn unresident(&self, _: plx_machine::machine::PosterKey, _: bool) {}
+    fn idle(&self) -> bool {
+        true
+    }
+}
+static RESIDENT: Resident = Resident;
+
+fn thumb_grid(n: usize) -> Rig<Grid> {
+    crate::containers::transition::set_page_image_held(false);
+    crate::tex::install(&RESIDENT);
+    let mut r = Rig::<Grid>::new(n);
+    r.src.paths = (0..n).map(|i| format!("/thumb/{i}")).collect();
+    r.src.thumbs_from = 0;
+    r.run(2);
+    r
+}
+
+fn cuts_of(r: &Rig<Grid>) -> Vec<Rect> {
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::root());
+    r.sect.ground_cuts(&f, Painter::root(), &r.src)
+}
+
+/// Each resident card contributes its drawn rect inset by its corner radius and the margin, and
+/// the cuts of a known grid lie inside their cards and never overlap one another.
+#[test]
+fn the_cuts_of_a_grid_are_the_inset_interiors_of_its_resident_cards() {
+    let r = thumb_grid(8);
+    let cuts = cuts_of(&r);
+    assert!(cuts.len() >= 4, "a grid of resident posters yields cuts: {}", cuts.len());
+    for (i, c) in cuts.iter().enumerate() {
+        let card = (0..8u32)
+            .map(|k| settled_rect(&r, 100 + k))
+            .find(|cell| c.x >= cell.x && c.y >= cell.y && c.x + c.w <= cell.x + cell.w && c.y + c.h <= cell.y + cell.h)
+            .unwrap_or_else(|| panic!("cut {c:?} lies in no card"));
+        let want = card.inset(GRID.style.tile_radius(card, 1.0) + super::grid::GROUND_CUT_MARGIN);
+        assert_eq!((c.x, c.y, c.w, c.h), (want.x, want.y, want.w, want.h), "cut {i} is its card's inset interior");
+        for d in &cuts[i + 1..] {
+            assert!(c.x + c.w <= d.x || d.x + d.w <= c.x || c.y + c.h <= d.y || d.y + d.h <= c.y, "{c:?} overlaps {d:?}");
+        }
+    }
+}
+
+/// Cards that are not an opaque picture right now are never cut: the focused one, an unloaded
+/// page, a thumb that is not resident, and a poster with no art at all.
+#[test]
+fn a_cut_skips_the_focused_unloaded_and_unresident_cards() {
+    let mut r = thumb_grid(8);
+    let all = cuts_of(&r).len();
+    r.focus = Some(r.key(101));
+    r.run(1);
+    assert_eq!(cuts_of(&r).len(), all - 1, "the focused card keeps its ground");
+    r.focus = None;
+    r.src.unloaded = 2..4;
+    r.run(1);
+    assert_eq!(cuts_of(&r).len(), all - 2, "an unloaded card is a skeleton");
+    r.src.unloaded = 0..0;
+    r.src.paths[5] = "/thumb/missing".into();
+    r.run(1);
+    assert_eq!(cuts_of(&r).len(), all - 1, "a thumb that is not resident draws a placeholder");
+    r.src.thumbs_from = usize::MAX;
+    assert!(cuts_of(&r).is_empty(), "the placeholder poster is never cut");
+}
+
+/// While a landing plays, a ghost fades or a card slides, nothing is cut at all.
+#[test]
+fn nothing_is_cut_while_cards_ghost_slide_or_fade() {
+    let mut r = Rig::<Grid>::new(40);
+    crate::containers::transition::set_page_image_held(false);
+    crate::tex::install(&RESIDENT);
+    r.src.paths = (0..40).map(|i| format!("/thumb/{i}")).collect();
+    r.src.thumbs_from = 0;
+    r.sect = Grid::new(ENTRY, GRID.animate_landings(true));
+    r.run(2);
+    r.land_focus(108, By::Restore);
+    r.run(240);
+    assert!(!cuts_of(&r).is_empty(), "a settled grid is cut");
+    remove_focused_grid(&mut r, 8);
+    r.run(1);
+    assert!(!r.sect.ghost_probe().0.is_empty(), "premise: the removed card is a ghost");
+    assert!(cuts_of(&r).is_empty(), "a ghost remains and cards slide");
+    r.run(3);
+    assert!(cuts_of(&r).is_empty(), "mid-landing");
+    r.run(240);
+    assert!(!cuts_of(&r).is_empty(), "cut again once the landing is over");
 }
