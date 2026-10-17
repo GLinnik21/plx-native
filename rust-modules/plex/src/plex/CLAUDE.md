@@ -377,11 +377,13 @@ a dead source is **absent** from Home and states itself in its own library secti
 ## Gotchas that bite (all verified in code)
 
 - **`notify.rs` is the PMS server-sent-event feed, and it is not a playback signal.** It parses
-  `/:/eventsource/notifications?filters=playing` (`docs/pms-api.md` §9: the parameter is `filters`,
-  the spec's `filter` is wrong) into lenient `Notification`s over `http::stream`, dropping this
+  `/:/eventsource/notifications?filters=playing%2Ctimeline` (`docs/pms-api.md` §9: the parameter is
+  `filters`, the spec's `filter` is wrong; whether a server accepts the comma list is UNVERIFIED) into
+  lenient `Notification`s (`Play`, `Library` for finished movie/show timeline entries, `Ping`,
+  `Ignored`) over `http::stream`, dropping this
   device's own sessions at the source, and never mints a client id (`client_id` is the persisted
   one; a new id raises a new-device alert). Its policy lives in `plx_data::stores::notify`: shipped
-  OFF, owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
+  ON (`NOTIFY_ENABLED`), owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
   publish: a stranger's `stopped` session would otherwise scrobble our other servers.
 
 - **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
