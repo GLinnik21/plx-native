@@ -505,9 +505,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
 > **Watchlist live-update note (2026-10).** The Watchlist page is a held page: a session hint on a
 > title it shows (matched, reachable, inside its hold window) owes a quiet read-back, and a resume or
 > long cover re-reads it (`app/reread.rs`); the catalog page owes the same re-match for its title
-> (`Action::CatalogRead`). Two gaps remain: the PMS timeline feed that would announce a newly scanned or
-> deleted item is not subscribed (the optional W-notify), so a library change is seen on the next
-> re-match, and a watched toggle on another client emits nothing. `docs/watchlist.md`, *Live-update gaps*.
+> (`Action::CatalogRead`). One gap remains: a watched toggle on another
+> client emits nothing. A library add or delete on an owned server flips a tile live (W-notify, built;
+> the `timeline` frame shape is UNVERIFIED, not captured live); a shared server has no feed and is
+> re-matched on the next trigger. `docs/watchlist.md`, *Live-update gaps*.
 
 - **Watchlist add action absent (adjacent catalog: plex.tv Discover)** — `major` / `medium` — **closed 2026-10.**
   The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. Shipped: a plex.tv Discover client, `data::watchlist`, a Watchlist strip destination (the bookmark tab) and page, the add and remove actions on the Detail and Home heroes (a bookmark disc), the item hold menu and the catalog page, and the catalog page for titles no server holds.

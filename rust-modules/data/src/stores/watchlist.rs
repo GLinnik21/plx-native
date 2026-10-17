@@ -23,7 +23,7 @@ use crate::watchlist::ledger::{Intent, IntentLedger, PendingWrite, WriteOutcome}
 use crate::watchlist::model::{tile_state, Asked, Kind, MatchTable, ServerMatch, TileState, WatchRow};
 use crate::watchlist::order::{sorted_filtered, FilterSpec, SortSpec};
 use crate::watchlist::{
-    run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistIo,
+    run_delta, run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistIo,
 };
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use plx_plex::plex::ServerId;
@@ -479,6 +479,12 @@ impl WatchlistStore {
     }
 
     fn merge(&mut self, answers: Vec<crate::watchlist::Answer>, roster_gen: u32) {
+        self.merge_answers(answers);
+        self.state.table.roster_gen = roster_gen;
+    }
+
+    /// Lay answers over the table without saying anything about the roster they were asked under.
+    fn merge_answers(&mut self, answers: Vec<crate::watchlist::Answer>) {
         for (guid, sid, asked) in answers {
             let entry = self.state.table.by_guid.entry(guid).or_default();
             match entry.iter_mut().find(|(s, _)| *s == sid) {
@@ -486,7 +492,6 @@ impl WatchlistStore {
                 None => entry.push((sid, asked)),
             }
         }
-        self.state.table.roster_gen = roster_gen;
     }
 
     fn current_tag(&self, auth: &WatchlistAuth) -> Tag {
@@ -584,6 +589,11 @@ impl WatchlistStore {
             What::Rematch { answers, roster_gen } => {
                 self.state.table.by_guid.clear();
                 self.merge(answers, roster_gen);
+                self.rederive();
+                true
+            }
+            What::Delta { answers } => {
+                self.merge_answers(answers);
                 self.rederive();
                 true
             }
@@ -752,6 +762,89 @@ impl WatchlistStore {
             self.adapter.list_busy.store(false, Ordering::SeqCst);
             self.state.list_retry = RETRY_FRAMES;
         }
+    }
+
+    /// Has the list been read and shown? A library change is followed only once there are rows to
+    /// follow: before that, the first read matches every title against the library as it is then.
+    pub fn is_ready(&self) -> bool {
+        self.state.auth.is_some() && self.state.status == Status::Ready
+    }
+
+    /// Is a list read out on a worker right now? Its matching may have asked a server before a
+    /// library change that has just arrived, so a change must be kept for it; a read not yet
+    /// started will ask after the change and needs no note of it.
+    pub fn read_in_flight(&self) -> bool {
+        self.adapter.list_busy.load(Ordering::SeqCst)
+    }
+
+    /// The rows `sid` holds, by that server's ratingKey: what a library item deleted there is
+    /// looked up in (built once for a whole frame's worth of deletes).
+    pub fn held_by_rk(&self, sid: ServerId) -> HashMap<i64, (String, Kind)> {
+        let mut out = HashMap::new();
+        for r in &self.state.rows {
+            let Some(answers) = self.state.table.by_guid.get(&r.guid) else { continue };
+            for (s, asked) in answers {
+                if let (true, Asked::Held(m)) = (*s == sid, asked) {
+                    out.insert(m.rating_key, (r.guid.clone(), r.kind));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every row of `kind` that `sid` has not been seen to hold (absent, or never answered): what
+    /// a title added to its library might now satisfy.
+    pub fn unmatched_on(&self, sid: ServerId, kind: Kind) -> Vec<(String, Kind)> {
+        let held = |guid: &str| {
+            self.state.table.by_guid.get(guid).is_some_and(|answers| {
+                answers.iter().any(|(s, asked)| *s == sid && matches!(asked, Asked::Held(_)))
+            })
+        };
+        self.state.rows.iter().filter(|r| r.kind == kind && !held(&r.guid)).map(|r| (r.guid.clone(), r.kind)).collect()
+    }
+
+    /// Every row of `kind`, for a sweep when the exact change was not followed.
+    pub fn rows_of(&self, kind: Kind) -> Vec<(String, Kind)> {
+        self.state.rows.iter().filter(|r| r.kind == kind).map(|r| (r.guid.clone(), r.kind)).collect()
+    }
+
+    /// Ask `sid` again about `asks` on a worker; the answers land over the match table and the
+    /// tiles re-derive at that commit. `false` = not started (no list yet, a read or re-match
+    /// already out, or the worker was refused): the caller keeps the ask and tries a later frame.
+    /// Nothing to ask, or a server that is not reachable, is `true`: there is nothing to start.
+    pub fn rematch_on(&mut self, sid: ServerId, asks: Vec<(String, Kind)>) -> bool {
+        if !self.is_ready() {
+            return false;
+        }
+        if asks.is_empty() || !self.io.reachable(sid) {
+            return true;
+        }
+        let Some(auth) = self.state.auth.clone() else { return false };
+        if self.state.list_wanted
+            || self.adapter.list_busy.load(Ordering::SeqCst)
+            || self.state.list_retry > 0
+        {
+            return false;
+        }
+        self.state.req += 1;
+        let tag = self.current_tag(&auth);
+        let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
+        adapter.list_busy.store(true, Ordering::SeqCst);
+        let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
+        let spawned = (self.spawn)("wlist", Box::new(move || {
+            let _guard = guard;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_delta(&*io, sid, &asks, tag, &mut |l| adapter.post(l));
+            }));
+            if outcome.is_err() {
+                plx_base::eventlog::log("watchlist: library re-match worker panicked");
+            }
+        }));
+        if !spawned {
+            self.adapter.list_busy.store(false, Ordering::SeqCst);
+            self.state.list_retry = RETRY_FRAMES;
+        }
+        spawned
     }
 
     /// A card row carried no catalog id: ask for it to be read off the item's own server record
@@ -1001,6 +1094,8 @@ pub(super) mod tests {
         roster_gen: AtomicU32,
         facts_gen: AtomicU32,
         finds: AtomicUsize,
+        /// The guids of every `find`, in call order.
+        found: Mutex<Vec<Vec<String>>>,
         pages: AtomicUsize,
         /// Pages starting at or after this offset fail.
         fail_pages_from: AtomicU32,
@@ -1044,6 +1139,7 @@ pub(super) mod tests {
                 roster_gen: AtomicU32::new(1),
                 facts_gen: AtomicU32::new(1),
                 finds: AtomicUsize::new(0),
+                found: Mutex::new(Vec::new()),
                 pages: AtomicUsize::new(0),
                 fail_pages_from: AtomicU32::new(u32::MAX),
                 ranks: Mutex::new(HashMap::new()),
@@ -1110,6 +1206,7 @@ pub(super) mod tests {
         }
         fn find(&self, server: ServerId, _: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
             self.finds.fetch_add(1, Ordering::SeqCst);
+            self.found.lock().unwrap().push(guids.to_vec());
             let held = self.held.lock().unwrap();
             Ok(guids
                 .iter()
@@ -1160,6 +1257,16 @@ pub(super) mod tests {
         (0..v.len()).map(|i| v.row(i).unwrap().title.clone()).collect()
     }
 
+    /// A store whose first list read is out on a worker and has not landed (the claim is held).
+    pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> WatchlistStore {
+        let mock = Mock::new((1..=titles).map(|n| item(n, "T")).collect());
+        *mock.roster.lock().unwrap() = vec![sid];
+        *mock.up.lock().unwrap() = vec![sid];
+        let s = store(&mock);
+        s.adapter.list_busy.store(true, Ordering::SeqCst);
+        s
+    }
+
     /// A loaded store whose one title is matched on reachable server `sid` as numeric ratingKey `rk` and
     /// whose hold window covers it: what `Stores::holds` enumerates for the Watchlist page.
     pub(in crate::stores) fn holding_for_test(sid: ServerId, rk: &str) -> WatchlistStore {
@@ -1171,6 +1278,42 @@ pub(super) mod tests {
         load(&mut s);
         s.run(WatchlistCmd::Window { wanted: 0..1 });
         s
+    }
+
+    /// A scripted world a test outside this file drives: the server `sid`, `titles` movies on the list
+    /// (numbered from 1) and the `(title number, ratingKey)` pairs `sid` holds, with the list read.
+    pub(in crate::stores) fn scripted_for_test(sid: ServerId, titles: u8, held: &[(u8, &str)]) -> (WatchlistStore, Script) {
+        let mock = Mock::new((1..=titles).map(|n| item(n, "T")).collect());
+        *mock.roster.lock().unwrap() = vec![sid];
+        *mock.up.lock().unwrap() = vec![sid];
+        for (n, rk) in held {
+            mock.held.lock().unwrap().insert((sid, guid(*n)), (*rk).into());
+        }
+        let mut s = store(&mock);
+        load(&mut s);
+        (s, Script(mock))
+    }
+
+    /// The handle on [`scripted_for_test`]'s world: what the server holds now, and what it was asked.
+    pub(in crate::stores) struct Script(Arc<Mock>);
+
+    impl Script {
+        pub(in crate::stores) fn hold(&self, sid: ServerId, n: u8, rk: &str) {
+            self.0.held.lock().unwrap().insert((sid, guid(n)), rk.into());
+        }
+        pub(in crate::stores) fn drop_hold(&self, sid: ServerId, n: u8) {
+            self.0.held.lock().unwrap().remove(&(sid, guid(n)));
+        }
+        pub(in crate::stores) fn guid(n: u8) -> String {
+            guid(n)
+        }
+        /// The guids of every guid lookup since the list was read, per request.
+        pub(in crate::stores) fn asked(&self) -> Vec<Vec<String>> {
+            self.0.found.lock().unwrap().clone()
+        }
+        pub(in crate::stores) fn forget_asked(&self) {
+            self.0.found.lock().unwrap().clear();
+        }
     }
 
     fn three() -> Arc<Mock> {
@@ -1931,5 +2074,76 @@ pub(super) mod tests {
         reread(&mut s);
         assert_eq!(s.view().len(), 3);
         assert_eq!(s.state.list_etag, mock.tag());
+    }
+
+    // ---- a library change re-asks one server (W-notify) ----
+
+    fn sid0() -> ServerId {
+        ServerId::from_raw(0)
+    }
+
+    fn movie_state_of(s: &WatchlistStore, n: u8) -> Option<TileState> {
+        let v = s.view();
+        (0..v.len()).find(|&i| v.row(i).is_some_and(|r| r.guid == guid(n))).and_then(|i| v.state(i))
+    }
+
+    #[test]
+    fn a_re_match_asks_one_server_and_flips_only_the_tile_it_changed() {
+        let mock = three();
+        *mock.released.lock().unwrap() = Some(mock.items.lock().unwrap().clone());
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(movie_state_of(&s, 1), Some(TileState::NotOnAnyServer));
+        mock.found.lock().unwrap().clear();
+        mock.held.lock().unwrap().insert((sid0(), guid(1)), "11".into());
+        assert!(s.rematch_on(sid0(), s.unmatched_on(sid0(), Kind::Movie)));
+        assert_eq!(mock.found.lock().unwrap().len(), 1, "one chunk for three titles");
+        s.pump();
+        assert_eq!(movie_state_of(&s, 1), Some(TileState::Available), "the tile flips at the landing");
+        assert_eq!(movie_state_of(&s, 2), Some(TileState::NotOnAnyServer));
+        assert_eq!(s.state.table.roster_gen, mock.roster_gen.load(Ordering::SeqCst), "the roster mark is not touched");
+    }
+
+    #[test]
+    fn held_by_rk_and_unmatched_on_read_the_table() {
+        let mock = three();
+        mock.held.lock().unwrap().insert((sid0(), guid(2)), "12".into());
+        let mut s = store(&mock);
+        load(&mut s);
+        let held = s.held_by_rk(sid0());
+        assert_eq!(held.get(&12), Some(&(guid(2), Kind::Movie)));
+        assert_eq!(held.len(), 1);
+        assert!(s.held_by_rk(ServerId::from_raw(5)).is_empty());
+        let mut open: Vec<String> = s.unmatched_on(sid0(), Kind::Movie).into_iter().map(|(g, _)| g).collect();
+        open.sort();
+        assert_eq!(open, [guid(1), guid(3)], "a held title is not asked again");
+        assert!(s.unmatched_on(sid0(), Kind::Show).is_empty(), "no show rows");
+        assert_eq!(s.rows_of(Kind::Movie).len(), 3);
+    }
+
+    #[test]
+    fn a_re_match_does_not_start_before_the_list_is_read_or_while_a_worker_is_out() {
+        let mock = three();
+        let mut s = store(&mock);
+        assert!(!s.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "nothing read yet");
+        load(&mut s);
+        let mut ready = store(&mock);
+        load(&mut ready);
+        let mut ready = ready.with_spawn_for_test(refuse);
+        assert!(!ready.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "a refused worker is not started");
+        assert!(!ready.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "and waits out its retry");
+        assert!(s.rematch_on(sid0(), Vec::new()), "nothing to ask is nothing to start");
+        assert!(s.rematch_on(ServerId::from_raw(9), vec![(guid(1), Kind::Movie)]), "an unreachable server is not asked");
+    }
+
+    #[test]
+    fn a_re_match_is_one_request_per_forty_guids() {
+        let mock = Mock::new((1..=90u8).map(|n| item(n, "T")).collect());
+        let mut s = store(&mock);
+        load(&mut s);
+        mock.found.lock().unwrap().clear();
+        assert!(s.rematch_on(sid0(), s.unmatched_on(sid0(), Kind::Movie)));
+        let sizes: Vec<usize> = mock.found.lock().unwrap().iter().map(Vec::len).collect();
+        assert_eq!(sizes, [40, 40, 10]);
     }
 }

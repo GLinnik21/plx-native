@@ -1982,6 +1982,32 @@ class DiscoverFixture:
                 it["grandparentGuid"] = guid_of({"type": "show", "ratingKey": it["grandparentRatingKey"]})
 
 
+LIBRARY_IDENTIFIER = "com.plexapp.plugins.library"
+TIMELINE_STATES = {"created": 5, "deleted": 9}  # `TimelineEntry.state`: processed, deleted
+TIMELINE_TYPES = {"movie": 1, "show": 2}
+
+
+def timeline_frame(entries):
+    """The SSE `timeline` frames a library change sends, in the shape the owner's own server was
+    captured sending (docs/pms-api.md section 9): one `event: timeline` frame per entry, its data a
+    single `{"TimelineEntry": {...}}` object with no envelope. A create is the captured three-frame
+    sequence (state 5 + metadataState processing, state 4 + loading, then the finished state 5 with
+    no metadataState); a delete is one state 9 frame, whose real shape is NOT yet observed.
+    `entries` are `(itemID, kind, state)` with kind `movie|show` and state `created|deleted`."""
+    out = b""
+    for rk, kind, state in entries:
+        steps = ([(5, "processing"), (4, "loading"), (5, None)] if state == "created"
+                 else [(TIMELINE_STATES["deleted"], None)])
+        for code, meta in steps:
+            row = {"identifier": LIBRARY_IDENTIFIER, "sectionID": "1", "itemID": str(rk),
+                   "type": TIMELINE_TYPES[kind], "title": "", "state": code}
+            if meta:
+                row["metadataState"] = meta
+            row["updatedAt"] = int(time.time())
+            out += ("event: timeline\ndata: " + json.dumps({"TimelineEntry": row}) + "\n\n").encode()
+    return out
+
+
 class MockPms:
     def section_pad_hubs(self, key, kind, count, rows=12):
         """`count` synthetic hubs for `/hubs/sections/<key>` (#412), after the library's own.
@@ -2229,11 +2255,27 @@ class MockPms:
                 return j({"error": "method not allowed"}, 405)
             try:
                 req = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            if isinstance(req, dict) and req.get("type") == "timeline":
+                # `{"type": "timeline", "entries": [{"itemID": N, "kind": "movie|show", "state":
+                # "created|deleted"}]}`: a library scan's finished creates and deletes, as the feed
+                # would carry them. It changes no library data (see `POST /_mock/library` for that).
+                try:
+                    entries = [(int(e["itemID"]), e["kind"], e["state"]) for e in req["entries"]]
+                    frame = timeline_frame(entries)
+                except (KeyError, TypeError, ValueError):
+                    return j({"error": "need {type: timeline, entries: [{itemID, kind: movie|show, state: created|deleted}]}"}, 400)
+                with self.lock:
+                    for sub_q in self.subscribers:
+                        sub_q.put(frame)
+                    return j({"delivered": len(self.subscribers)})
+            try:
                 rk = int(req["ratingKey"])
                 state = str(req.get("state", "playing"))
                 offset = req.get("viewOffset")
                 offset = None if offset is None else int(offset)
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 return j({"error": "need {ratingKey, state?, viewOffset?}"}, 400)
             with self.lock:
                 it = lib.items.get(rk)
@@ -2251,6 +2293,44 @@ class MockPms:
                     sub_q.put(frame)
                 delivered = len(self.subscribers)
             return j({"delivered": delivered})
+        if p == "/_mock/library":
+            # TEST-ONLY library change plus the feed frame the server would send for it:
+            # `{"op": "add", "title": "<catalog title>"}` (or `"guid"`) gives the first library movie or
+            # show of that kind that carries no catalog guid the guid of that catalog title, so
+            # `GET /library/all?guid=` finds it, and pushes a `created` timeline entry; `{"op":
+            # "remove", "title"|"guid"}` takes the guid off again (the item itself stays listed) and
+            # pushes a `deleted` one. The catalog is the Discover fixture's (`DiscoverFixture.TITLES`).
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                req = json.loads(body or b"{}")
+                op = req["op"]
+                assert op in ("add", "remove")
+            except (json.JSONDecodeError, KeyError, TypeError, AssertionError):
+                return j({"error": "need {op: add|remove, title|guid}"}, 400)
+            cat = next((c for c in self.discover.catalog
+                        if c["title"] == req.get("title") or c["guid"] == req.get("guid")), None)
+            if cat is None:
+                return j({"error": "no such catalog title"}, 404)
+            with self.lock:
+                if op == "add":
+                    taken = {c["guid"] for c in self.discover.catalog}
+                    it = next((it for _, it in sorted(lib.items.items())
+                               if it.get("type") == cat["kind"] and it.get("guid") not in taken), None)
+                    if it is None:
+                        return j({"error": "no free library item to bind"}, 409)
+                    it["guid"] = cat["guid"]
+                else:
+                    it = next((it for it in lib.items.values() if it.get("guid") == cat["guid"]), None)
+                    if it is None:
+                        return j({"error": "the library does not hold it"}, 409)
+                    it["guid"] = "plex://%s/%s" % (cat["kind"], hashlib.md5(
+                        f"unbound-{it['ratingKey']}".encode()).hexdigest()[:24])
+                frame = timeline_frame([(int(it["ratingKey"]), cat["kind"],
+                                         "created" if op == "add" else "deleted")])
+                for sub_q in self.subscribers:
+                    sub_q.put(frame)
+                return j({"ratingKey": int(it["ratingKey"]), "delivered": len(self.subscribers)})
         if p == "/_mock/config":
             if method != "POST":
                 return j({"error": "method not allowed"}, 405)
@@ -3471,6 +3551,7 @@ def selftest():
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
     _selftest_notifications()
+    _selftest_library_feed()
     _selftest_paging()
     _selftest_link()
     print("mock_pms selftest: ok")
@@ -3516,6 +3597,66 @@ def _selftest_notifications():
             assert entry["clientIdentifier"] == "mock-other-client"
         assert pms.lib.items[rk]["viewOffset"] == 123000
         assert pms.sse_opened == 1
+    finally:
+        _teardown(srv)
+
+
+def _selftest_library_feed():
+    """`POST /_mock/notify {"type": "timeline"}` and `POST /_mock/library` push `timeline` frames in the
+    documented shape, and the library hook really moves the guid `GET /library/all?guid=` finds."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    srv, pms = serve(0, seed=7)
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def post(path, obj):
+            req = urllib.request.Request(base + path, method="POST", data=json.dumps(obj).encode())
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.load(r)
+
+        def held(guid):
+            q = urllib.parse.urlencode({"type": "1", "guid": guid})
+            with urllib.request.urlopen(base + "/library/all?" + q, timeout=5) as r:
+                return [m["ratingKey"] for m in json.load(r)["MediaContainer"]["Metadata"]]
+
+        req = urllib.request.Request(base + "/:/eventsource/notifications?filters=playing%2Ctimeline",
+                                     headers={"X-Plex-Token": "t", "Accept": "text/event-stream"})
+        with urllib.request.urlopen(req, timeout=5) as feed:
+            assert feed.readline() == b": ping\n" and feed.readline() == b"\n"
+
+            def frame():
+                assert feed.readline() == b"event: timeline\n"
+                data = json.loads(feed.readline().split(b"data: ", 1)[1])
+                feed.readline()
+                return data["TimelineEntry"]
+
+            assert post("/_mock/notify", {"type": "timeline", "entries": [
+                {"itemID": 5, "kind": "show", "state": "deleted"}]}) == {"delivered": 1}
+            e = frame()
+            assert (e["itemID"], e["type"], e["state"]) == ("5", 2, 9) and "metadataState" not in e, e
+            assert e["identifier"] == LIBRARY_IDENTIFIER
+            title = "Northbound Tide"  # a catalog movie no library item carries
+            guid = next(c_["guid"] for c_ in pms.discover.catalog if c_["title"] == title)
+            assert held(guid) == []
+            added = post("/_mock/library", {"op": "add", "title": title})
+            assert [str(x) for x in held(guid)] == [str(added["ratingKey"])], (held(guid), added)
+            steps = [frame() for _ in range(3)]
+            assert [(x["state"], x.get("metadataState")) for x in steps] == [
+                (5, "processing"), (4, "loading"), (5, None)], steps
+            e = steps[-1]
+            assert (e["itemID"], e["type"]) == (str(added["ratingKey"]), 1), e
+            post("/_mock/library", {"op": "remove", "title": title})
+            assert held(guid) == []
+            assert frame()["state"] == 9
+        for bad in ({"type": "timeline"}, {"type": "timeline", "entries": [{"itemID": 1}]}):
+            try:
+                post("/_mock/notify", bad)
+                raise AssertionError("a malformed timeline body must be refused")
+            except urllib.error.HTTPError as err:
+                assert err.code == 400, err.code
     finally:
         _teardown(srv)
 

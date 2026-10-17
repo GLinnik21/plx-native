@@ -315,6 +315,7 @@ fn stranger_stops(sid: ServerId, rks: &[&str]) -> crate::stores::notify::NotifyO
             }).collect(),
         }],
         resynced: Vec::new(),
+        ..Default::default()
     }
 }
 

@@ -12,13 +12,15 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      `plxnative-remote` (`hold` is okdown, 1.2 s, okup), then `shot`;
      A key `mock:<json>` POSTs <json> to /_mock/discover mid-walk (`{"pms":"fail"}` makes the PMS side
      answer 503: once a library read fails and the list is read again, a title matched there reads
-     ServerOffline); `sleep:<s>` waits <s> seconds; any other key, `ck:<x>,<y>` (a click at logical
+     ServerOffline); `lib:<json>` POSTs <json> to /_mock/library (a TEST-ONLY library add/remove plus the
+     `timeline` frame the feed carries for it: W-notify); `sleep:<s>` waits <s> seconds; any other key, `ck:<x>,<y>` (a click at logical
      1920x1080 pixels) included, goes to the FIFO as it is;
      A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
      AFTER the sign-in, so the stored mock session is the account but the service cannot answer
      (the "plex.tv unreachable" state);
   4. move the instance root's shot-N.png to `<out>/<file>`. A capture with `expect_write` fails
-     unless the mock logged that write.
+     unless the mock logged that write, and one with `expect_log` unless the app's event log holds
+     that text.
 
 Nothing leaves the machine: no plex.tv, no real server, no television. The PNGs are scratch
 output and are never committed.
@@ -131,6 +133,12 @@ def capture(sim, spec, scenario, out_dir):
                     # away after the Watchlist matched a title on it: the server-offline state).
                     post(port, "/_mock/discover", json.loads(key[5:]))
                     continue
+                elif key.startswith("lib:"):
+                    # `lib:{"op":"add","title":"Northbound Tide"}`: POST that body to /_mock/library, a
+                    # TEST-ONLY library change plus the `timeline` frame the feed would carry for it
+                    # (the W-notify scenario: the tile flips without leaving the tab).
+                    post(port, "/_mock/library", json.loads(key[4:]))
+                    continue
                 elif key.startswith("sleep:"):
                     time.sleep(float(key[6:]))
                     continue
@@ -158,6 +166,9 @@ def capture(sim, spec, scenario, out_dir):
             os.close(fd)
         (out_dir / spec["file"]).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(shot, out_dir / spec["file"])
+        want_log = spec.get("expect_log")
+        if want_log and want_log not in (runtime / "plxnative-events.log").read_text(errors="replace"):
+            raise Failure(f"{spec['file']}: the event log has no `{want_log}`")
         want = spec.get("expect_write")
         if want:
             method, _, path = want.partition(" ")
