@@ -992,18 +992,17 @@ pub(crate) unsafe fn construct(
         plx_plex::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
     SDL_SetMainReady();
-    // DEAD END, measured 2026-07-31 — do not re-try this. The obvious answer to "a parked TV
-    // should blank itself" is to stop inhibiting the platform screensaver here (and re-allow it
-    // per route, since webOS BACKGROUNDS the app to run one and `0x103` suspends the
-    // buffer-feed, so it could never be on during playback). It does not work, for a reason
-    // upstream of this app: the TV's SDL 2.0.4 fork carries the
+    // DEAD END through SDL, measured 2026-07-31 — do not re-try it. The obvious answer to "a
+    // parked TV should blank itself" is to stop inhibiting the platform screensaver here. It
+    // does not work, for a reason upstream of this app: the TV's SDL 2.0.4 fork carries the
     // `SDL_VIDEO_ALLOW_SCREENSAVER` hint STRING but implements no wayland idle-inhibit
     // (`strings libSDL2-2.0.so.0` finds no `idle_inhibit`/`suspend_screensaver` symbol), so
     // this call and `SDL_EnableScreenSaver` are both no-ops. Soaked 34 min on Home with the
-    // TV's own `screenSaverEnabled: on`: no screensaver, no `LIFECYCLE: background`, CPU flat,
-    // our UI still at full brightness on the panel. webOS does not blank a foreground native
-    // app, and nothing reachable from SDL changes that. The line stays because it costs
-    // nothing and states the intent; it is not what keeps the screensaver away.
+    // TV's own `screenSaverEnabled: on`: no screensaver, CPU flat, our UI still at full
+    // brightness on the panel. Nothing reachable from SDL lets webOS blank a foreground native
+    // app; the way that works is tvpower's `registerScreenSaverRequest`, answered by
+    // `plx_platform::tv::screensaver` (go ahead unless a video is playing). The line stays
+    // because it costs nothing and states the intent; it neither allows nor blocks anything.
     SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
     webos3_cursor_sleep_hint();
     if SDL_Init(SDL_INIT_VIDEO) != 0 {

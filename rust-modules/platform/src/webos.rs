@@ -526,7 +526,9 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
-/// One LS2 request/reply, on the calling thread.
+/// LS2 on the calling thread: one bounded request/reply ([`Registration::call_as_app`] and its
+/// twin), or a subscription ([`Registration::subscribe_as_app`] + [`Registration::wait`]) that a
+/// dedicated thread holds for the life of the process.
 ///
 /// **The one LS2 client this process has**, shared by every caller that speaks to the bus from
 /// this application: [`super::launch_home`] (one 600 ms call on the SDL main thread) and
@@ -552,8 +554,10 @@ pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// decides what such a client may CALL — the probe proves SAM's read-only method; `launch_home`
 /// grades the reply of the one that matters — and the hub's refusal, when there is one, travels
 /// in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous clients do not
-/// collide with each other, so nothing here is serialised; a registration lives for one caller's
-/// use and is unregistered on drop, as both copies always did.
+/// collide with each other, so nothing here is serialised; a one-shot registration lives for one
+/// caller's use and is unregistered on drop, as both copies always did. A subscription's
+/// registration never is, and its reply queue is leaked on purpose, because the hub can deliver
+/// into it at any time.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub mod ls2 {
     use std::ffi::{CStr, CString};
