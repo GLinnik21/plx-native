@@ -80,10 +80,21 @@ A landing stamped with a stale generation or another profile's identity is dropp
 rotates the epoch and resets the store (the catalog store re-opens under the new identity). Logs name
 the status and the endpoint SHAPE only: no token, and no id beyond what is scrubbed.
 
-**A debug build never writes.** In a `devtriggers` build a `PUT` is refused and logged
-(`WatchlistError::Refused`) unless the loopback stand-in named by `/tmp/plxnative-discover` is armed;
-the UI flips and then reverts. Release builds write. Host tests never reach curl: they drive the
-request closure.
+**A debug build does not write unless someone switched it on.** In a `devtriggers` build a `PUT` is
+refused and logged (`WatchlistError::Refused`) unless the loopback stand-in named by
+`/tmp/plxnative-discover` is armed (the stand-in then takes the write) or the owner's live switch is on;
+the UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
+goes out (`header::DEV_BLOCKED`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
+silence). Release builds write. Host tests never reach curl: they drive the request closure.
+
+**The live switch** is `plxnative-watchlist-live` in the install's runtime root (on the television
+`/tmp/com.beb.plxnative.debug/plxnative-watchlist-live`). It is read once at boot, which logs
+`watchlist: LIVE writes enabled by trigger`; each write that goes out then logs
+`watchlist: LIVE PUT <endpoint shape> -> HTTP <status>`. The owner creates it from their own terminal
+and relaunches the app; a reboot clears `/tmp`, and `tools/tv-session.sh up` and `tests/run.py` sweep
+every `plxnative-*` trigger, so any agent run turns it off again. **No agent creates it unless the owner
+asks in that session** (AGENTS.md); `.claude/hooks/watchlist-live-guard.py` refuses a Bash command that
+would, unless it carries the owner's `PLX_WATCHLIST_LIVE_OWNER=1` prefix.
 
 ## Matching a title to a server (guid matching)
 
@@ -226,7 +237,7 @@ drawn. An unreachable page has no Try again control: it reads again on resume, o
 - **Coming soon but matched keeps the clock and plays (Q6).**
 - **A press while plex.tv is unreachable flips then reverts with no toast (Q8).**
 - **Skeleton art when no PMS is reachable (Q9).**
-- **Debug builds refuse writes unless the stand-in is armed (Q11).**
+- **Debug builds refuse writes unless the stand-in or the owner's live switch is armed (Q11).**
 - The "Coming" line is drawn at the 32 px rung where the board says 36: the type ladder has no 36.
 - The Detail ribbon drop is a named constant (`RIBBON_DROP`, 3 px) because no theme token is 3 px.
 

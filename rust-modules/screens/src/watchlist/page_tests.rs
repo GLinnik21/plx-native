@@ -883,3 +883,32 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     assert!(moved, "the landing's start moved the caption to the new focus");
     set_veil(0.0);
 }
+
+#[test]
+fn a_refused_write_draws_the_debug_cue_under_the_title_until_a_write_goes_out() {
+    let cue = super::header::DEV_BLOCKED.to_str().unwrap();
+    let mut h = Harness::new(tiles(6));
+    assert!(!h.draw_texts().iter().any(|(t, _)| t == cue), "no cue before any refusal");
+    h.screen.input(WatchlistIn::DevBlocked(true));
+    let texts = h.draw_texts();
+    let (_, at) = texts.iter().find(|(t, _)| t == cue).expect("the cue is drawn once a write was refused");
+    let title = texts.iter().find(|(t, _)| t == msg::watchlist_page_title()).map(|(_, r)| *r).unwrap();
+    assert!(at.y > title.y + title.h - 1.0 && at.y + at.h < super::page::GRID_TOP, "between the title and the grid: {at:?}");
+    h.screen.input(WatchlistIn::DevBlocked(false));
+    assert!(!h.draw_texts().iter().any(|(t, _)| t == cue), "a write that went out clears it");
+}
+
+#[test]
+fn the_debug_cue_is_compiled_only_into_a_devtriggers_build() {
+    // The shipping feature set (nightly, stable) must not be able to draw or feed it (Q8).
+    for (file, src, anchor) in [
+        ("header.rs", include_str!("header.rs"), "pub const DEV_BLOCKED"),
+        ("header.rs", include_str!("header.rs"), "pub fn draw_dev_blocked"),
+        ("page.rs", include_str!("page.rs"), "if self.dev_blocked {"),
+    ] {
+        let at = src.find(anchor).unwrap_or_else(|| panic!("{file}: `{anchor}` moved"));
+        let before: Vec<&str> = src[..at].lines().rev().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).take(2).collect();
+        assert!(before.iter().any(|l| *l == "#[cfg(feature = \"devtriggers\")]"),
+            "{file}: `{anchor}` must sit under #[cfg(feature = \"devtriggers\")], saw {before:?}");
+    }
+}

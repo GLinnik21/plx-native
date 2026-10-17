@@ -563,3 +563,15 @@ fn ok_on_a_strip_pill_asks_to_leave_the_page() {
     let asked: Vec<WatchlistOut> = rig.take_watchlist_reqs().into_iter().map(|(_, out, _)| out).collect();
     assert_eq!(asked, vec![WatchlistOut::Tab(HomeTab::Home)], "OK on the Home pill asks for Home");
 }
+
+#[test]
+fn the_debug_write_cue_is_fed_only_in_a_devtriggers_build() {
+    // Nightly and stable never tell the page a write was refused (Q8: no notice for users).
+    let src = include_str!("watchlist.rs");
+    for anchor in ["let blocked = plx_plex::plex::watchlist::last_write_refused();", "dev_blocked: Option<bool>,"] {
+        let at = src.find(anchor).unwrap_or_else(|| panic!("`{anchor}` moved"));
+        let before: Vec<&str> = src[..at].lines().rev().map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//") && *l != "{").take(1).collect();
+        assert_eq!(before, ["#[cfg(feature = \"devtriggers\")]"], "`{anchor}` must sit under the devtriggers cfg");
+    }
+}

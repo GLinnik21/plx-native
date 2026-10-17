@@ -155,13 +155,63 @@ fn stand_in_armed() -> bool {
     discover() != DISCOVER
 }
 
-/// The dev-build failsafe: a `devtriggers` build must never write to the real service, so a `PUT`
-/// is refused unless the loopback stand-in is armed. Release builds always write.
-fn permit_write(method: &str, devtriggers_build: bool, armed: bool) -> Result<(), WatchlistError> {
-    if method == "PUT" && devtriggers_build && !armed {
+#[cfg(feature = "devtriggers")]
+plx_base::devtrig::latched_flag!(
+    /// **The owner's live switch** (`plxnative-watchlist-live` in the install's runtime root, on the
+    /// television `/tmp/com.beb.plxnative.debug/`): a `devtriggers` build writes to the real service
+    /// while it exists. Off by default, read ONCE at boot ([`announce_live_writes`]), so the owner
+    /// creates it and relaunches; `/tmp` does not survive a reboot, and `tools/tv-session.sh up` and
+    /// `tests/run.py` sweep every `plxnative-*` trigger, so any agent run turns it off again. **No agent
+    /// creates this file unless the owner asks for it in that session** (AGENTS.md;
+    /// `.claude/hooks/watchlist-live-guard.py` refuses a command that would).
+    fn live_armed = "watchlist-live";
+);
+#[cfg(not(feature = "devtriggers"))]
+fn live_armed() -> bool {
+    false
+}
+
+/// BOOT: log once that the live switch is on, so an event log always says whether a debug build
+/// could write to the real Watchlist. Silent without the trigger, and in a release build.
+/// The body is gated on its own so the trigger's name never ships in a release binary
+/// (`ci/check-package.py` grades a shipped `plxnative-*` name as dev triggers compiled in).
+pub fn announce_live_writes() {
+    #[cfg(feature = "devtriggers")]
+    if live_armed() {
+        plx_base::eventlog::log("watchlist: LIVE writes enabled by trigger (plxnative-watchlist-live)");
+    }
+}
+
+/// The dev-build failsafe: a `devtriggers` build must never write to the real service unasked, so
+/// a `PUT` is refused unless the loopback stand-in is armed (which then takes the write: it is
+/// [`discover`]'s base) or the owner's live switch is on ([`live_armed`]). Release builds always write.
+fn permit_write(method: &str, devtriggers_build: bool, armed: bool, live: bool) -> Result<(), WatchlistError> {
+    if method == "PUT" && devtriggers_build && !armed && !live {
         return Err(WatchlistError::Refused);
     }
     Ok(())
+}
+
+/// Was the LAST write this process tried refused by the dev-build failsafe? Set by a refusal,
+/// cleared by a write that went out. Only a `devtriggers` build refuses, so a release build always
+/// answers `false`; the Watchlist page's debug cue reads it (the app feed polls it under
+/// `cfg(feature = "devtriggers")`).
+static LAST_WRITE_REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// See [`LAST_WRITE_REFUSED`].
+pub fn last_write_refused() -> bool {
+    LAST_WRITE_REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The log line for a write that went out: endpoint SHAPE and status (or no answer), `LIVE` in
+/// front when the owner's switch let a dev build send it. Never the id, the query or a header.
+fn write_line(url: &str, outcome: Result<u16, ()>, live: bool) -> String {
+    let shape = endpoint_shape(url);
+    let tag = if live { "LIVE " } else { "" };
+    match outcome {
+        Ok(status) => format!("watchlist: {tag}PUT {shape} -> HTTP {status}"),
+        Err(()) => format!("watchlist: {tag}PUT {shape} -> no answer"),
+    }
 }
 
 /// The log line for a call that did not succeed: method, endpoint SHAPE (ids folded, query
@@ -305,17 +355,29 @@ impl AccountClient {
     /// discover stand-in is armed.
     pub fn watchlist_transport(&self) -> impl FnMut(&WatchRequest) -> Result<WatchResponse, WatchlistError> + '_ {
         move |req: &WatchRequest| -> Result<WatchResponse, WatchlistError> {
-            if let Err(e) = permit_write(req.method, cfg!(feature = "devtriggers"), stand_in_armed()) {
+            let dev = cfg!(feature = "devtriggers");
+            let (armed, live) = (stand_in_armed(), live_armed());
+            if let Err(e) = permit_write(req.method, dev, armed, live) {
                 plx_base::eventlog::log(&format!(
                     "watchlist: {} {} refused (dev build, discover stand-in not armed)",
                     req.method, endpoint_shape(&req.url)));
+                LAST_WRITE_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return Err(e);
             }
             let headers = request_headers(self, req);
-            let body = (req.method == "PUT").then_some(b"".as_slice());
+            let write = req.method == "PUT";
+            let body = write.then_some(b"".as_slice());
             let response = plx_net::net::request_evidence(&req.url, &headers, req.method, body,
                 plx_net::net::API, false, None, None);
             note_response_contact(&req.url, &response);
+            if write {
+                LAST_WRITE_REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
+                let status = match &response {
+                    Ok(r) => Ok(r.status),
+                    Err(f) => f.status.ok_or(()),
+                };
+                plx_base::eventlog::log(&write_line(&req.url, status, dev && live && !armed));
+            }
             match response {
                 Ok(r) => Ok(WatchResponse { status: r.status, body: r.body, etag: r.etag }),
                 // A refusal whose body did not finish is still an authoritative status; a 2xx
@@ -712,11 +774,13 @@ mod tests {
     }
 
     #[test]
-    fn a_dev_build_refuses_a_write_unless_the_stand_in_is_armed() {
-        assert_eq!(permit_write("PUT", true, false), Err(WatchlistError::Refused));
-        assert_eq!(permit_write("PUT", true, true), Ok(()));
-        assert_eq!(permit_write("PUT", false, false), Ok(()), "release builds write");
-        assert_eq!(permit_write("GET", true, false), Ok(()), "reads are never refused");
+    fn a_dev_build_refuses_a_write_unless_the_stand_in_or_the_live_switch_is_armed() {
+        assert_eq!(permit_write("PUT", true, false, false), Err(WatchlistError::Refused), "the switch is off by default");
+        assert_eq!(permit_write("PUT", true, true, false), Ok(()), "the stand-in takes the write");
+        assert_eq!(permit_write("PUT", true, false, true), Ok(()), "the owner's live switch lets it out");
+        assert_eq!(permit_write("PUT", true, true, true), Ok(()), "both armed: allowed, and the stand-in is the base");
+        assert_eq!(permit_write("PUT", false, false, false), Ok(()), "release builds write");
+        assert_eq!(permit_write("GET", true, false, false), Ok(()), "reads are never refused");
         // The refusal travels up as the write's own error.
         let (out, _) = run(vec![Err(WatchlistError::Refused)], |c, t| c.watchlist_add(HEX, t));
         assert_eq!(out, Err(WatchlistError::Refused));
@@ -727,6 +791,19 @@ mod tests {
         // No trigger exists in the test root, so the real base is in force and no write is armed.
         assert_eq!(discover(), DISCOVER);
         assert!(!stand_in_armed());
+        assert!(!live_armed(), "the live switch is off unless its file exists");
+    }
+
+    #[test]
+    fn a_write_line_names_the_shape_and_status_and_marks_a_live_write() {
+        let url = format!("{DISCOVER}/actions/removeFromWatchlist?ratingKey={HEX}&X-Plex-Token=abc");
+        let live = write_line(&url, Ok(200), true);
+        assert!(live.starts_with("watchlist: LIVE PUT "), "{live}");
+        assert!(live.ends_with("-> HTTP 200"), "{live}");
+        assert_eq!(write_line(&url, Err(()), false), live.replace("LIVE ", "").replace("HTTP 200", "no answer"));
+        for line in [live, write_line(&url, Ok(401), false)] {
+            assert!(!line.contains(HEX) && !line.contains("abc") && !line.contains('?'), "{line}");
+        }
     }
 
     #[test]

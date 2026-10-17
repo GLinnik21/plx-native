@@ -109,6 +109,23 @@ pub fn draw_title(p: Painter, frame: Rect, measure: &dyn Measure, face: &HeaderF
     w
 }
 
+/// **The debug build's "write blocked" cue** (Q11): one LABEL line in [`theme::TEXT_SECONDARY`] under
+/// the title, in the gap above the grid, while the last Watchlist write was refused by the dev-build
+/// failsafe. Compiled only into a `devtriggers` build, so nightly and stable cannot draw it (Q8: no
+/// toast, no notice for users). English only, like every other dev-only line.
+#[cfg(feature = "devtriggers")]
+pub const DEV_BLOCKED: &std::ffi::CStr = c"Debug: watchlist write blocked";
+
+/// Draw [`DEV_BLOCKED`] for the header `frame`: left on the title's edge, centred in the band
+/// between the title's foot and the grid's first row.
+#[cfg(feature = "devtriggers")]
+pub fn draw_dev_blocked(p: Painter, frame: Rect) {
+    let band = super::page::GRID_TOP - HEADER_TOP - frame.h;
+    let cy = frame.y + frame.h + band * 0.5;
+    let y = plx_gfx::text::text_vcenter_y(COUNT_SIZE, 0, cy);
+    p.text(DEV_BLOCKED.as_ptr(), MARGIN_X, y, COUNT_SIZE, theme::TEXT_SECONDARY, 0, 0);
+}
+
 /// The pill alone, at `rect` (from [`pill_rect`]).
 pub fn draw_pill(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
     pill_chip(rect, face, &pill_text(face.summary)).draw(&Env::inert(), p);

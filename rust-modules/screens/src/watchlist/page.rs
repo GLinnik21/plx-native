@@ -124,6 +124,10 @@ pub enum WatchlistIn {
     /// The reachable server whose photo proxy fetches the art of titles no server holds (plan §0,
     /// §3). `None`: no server is reachable, and those titles draw the skeleton (Q9).
     ArtServer(Option<ServerId>),
+    /// DEBUG BUILDS ONLY (the app feeds it under `cfg(feature = "devtriggers")`): whether the last
+    /// Watchlist write was refused by the dev-build failsafe, so the header says so instead of the
+    /// press looking like it did nothing. Never sent in nightly or stable (Q8: no toast for users).
+    DevBlocked(bool),
 }
 
 // ── Geometry: `Watchlist.dc.html`, a 1920 x 1080 stage.
@@ -258,6 +262,10 @@ struct Page {
     /// The count a Remove replaced, kept on the header until the grid's landing starts (so the
     /// number and the tiles move on one frame, after the hold menu is gone). Not logical state.
     count_hold: Option<CountHold>,
+    /// A debug build's cue (`WatchlistIn::DevBlocked`): the last write was refused by the dev-build
+    /// failsafe. Only a `devtriggers` build is ever told `true` and only it draws the line. Not
+    /// logical state (no recorded shape).
+    dev_blocked: bool,
     /// Test support: how many ghost posters the grid has drawn.
     #[cfg(test)]
     ghost_draws: std::cell::Cell<usize>,
@@ -624,6 +632,10 @@ impl<H: ContentLike> StackPage<H> for Page {
                 } else {
                     draw_header(p, head_frame(r.y), f.measure, &face);
                 }
+                #[cfg(feature = "devtriggers")]
+                if self.dev_blocked {
+                    header::draw_dev_blocked(p, head_frame(r.y));
+                }
             }
             Sec::Status => match self.readout() {
                 Some(readout) if readout.retries() => {
@@ -698,6 +710,7 @@ impl WatchlistScreen {
             art_server: None,
             ghosts: HashMap::new(),
             count_hold: None,
+            dev_blocked: false,
             #[cfg(test)]
             ghost_draws: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -818,6 +831,12 @@ impl WatchlistScreen {
                 if self.page.art_server != server {
                     self.page.art_server = server;
                     self.page.rebuild();
+                }
+            }
+            WatchlistIn::DevBlocked(on) => {
+                if self.page.dev_blocked != on {
+                    self.page.dev_blocked = on;
+                    self.page.touch();
                 }
             }
         }

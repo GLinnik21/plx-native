@@ -58,6 +58,10 @@ pub(crate) struct Feed {
     /// A tile the user just removed: the page plays its landing before the rows replace it.
     removed: Option<String>,
     reread_at: Option<u32>,
+    /// The debug cue as the page was last told (`WatchlistIn::DevBlocked`). Fed only in a
+    /// `devtriggers` build.
+    #[cfg(feature = "devtriggers")]
+    dev_blocked: Option<bool>,
 }
 
 /// The membership of `hex` in `view`: member (intents in flight counted), absent from a read list,
@@ -217,6 +221,16 @@ impl Bridge {
             feed.list = Some(list);
             screen.input(WatchlistIn::List(list));
             changed = true;
+        }
+        // DEBUG BUILDS ONLY: say on the page that the dev-build failsafe refused the last write.
+        #[cfg(feature = "devtriggers")]
+        {
+            let blocked = plx_plex::plex::watchlist::last_write_refused();
+            if feed.dev_blocked != Some(blocked) {
+                feed.dev_blocked = Some(blocked);
+                screen.input(WatchlistIn::DevBlocked(blocked));
+                changed = true;
+            }
         }
         if changed {
             plx_machine::idle::invalidate();
