@@ -1080,11 +1080,13 @@ pub fn layer(z: Z, shared: bool) -> Scope {
     });
     Scope(old)
 }
+/// One layer of the visible frame, timed as a span and selectable as a profiler phase under the
+/// same name (`gfx::profile::PHASES`).
 pub fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
     if discovering() {
         draw()
     } else {
-        plx_base::diag::spans::span(name, draw)
+        plx_base::diag::spans::span(name, || crate::gfx::profile::phase(name, draw))
     }
 }
 pub fn suppressed() -> bool {
