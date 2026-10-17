@@ -89,8 +89,8 @@ impl GridSpec {
     /// stood, in at its new cell) instead of flying over the row between. Cards with no end on
     /// screen cut. Focus is not this spring's: the engine's reconcile has already put it on the
     /// card that took the removed one's index (the next card), whose pop rises from rest as the
-    /// removed card's ghost sinks. Nothing starts while a menu veils the page, and a beat after
-    /// it cleared (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
+    /// removed card's ghost sinks. Nothing starts while a menu veils the page: the Remove lands on
+    /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
     /// the ghosts still gets the slide.
     pub const fn animate_landings(self, on: bool) -> Self {
         Self { landings: on, ..self }
@@ -253,7 +253,7 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
-        self.play_landing(src, sy0, lifted, dt, cx.tick.ms);
+        self.play_landing(src, sy0, lifted, dt);
         if focus.is_none() && !self.landing.has_takeover() {
             self.bands.focus(None, false);
         }
@@ -294,7 +294,7 @@ impl Grid {
     /// scroll before the landing rule moved it (own mode); an external owner's move is `self.shift`.
     /// Slots are DOCUMENT points under the caption bands as they stand now, so a card crossing a line
     /// breaks measures old and new cells under the same bands.
-    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32, ms: u32) {
+    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32) {
         let scroll_moved = match self.spec.scroll {
             ScrollMode::Own => self.scroll.pos - sy0,
             ScrollMode::External => self.shift,
@@ -307,7 +307,7 @@ impl Grid {
         };
         let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
         self.landing.observe(src, &Scene { shift: (0.0, scroll_moved), slot: &slot, on: &on, lifted });
-        self.landing.step(dt, ms, (self.spec.style.k_scroll, self.spec.style.k_scale));
+        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale));
     }
 
     /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
@@ -698,8 +698,8 @@ impl Grid {
         self.landing.pending()
     }
 
-    /// A landing is playing but has not stepped yet: a menu veils the page, its beat is counting,
-    /// or the page is a held image. An owner pairs its own change with the landing's first step.
+    /// A landing is playing but has not stepped yet: the menu's veil has not yet dropped below
+    /// `CLOSING_GONE`, or the page is a held image. An owner pairs its own change with the landing's first step.
     pub fn landing_waiting(&self) -> bool {
         self.landing.waiting()
     }

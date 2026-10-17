@@ -3639,12 +3639,12 @@ fn a_focused_card_that_changes_row_crossfades_on_top() {
 }
 
 /// **A landing a menu's choice started waits for the menu.** While a surface veils the page
-/// (opening, open, or closing above `VEIL_CLEAR`) nothing of the landing moves or reports motion:
-/// the ghost stands lifted at full alpha, the survivors where they were, the takeover at rest. Once
-/// the veil clears it waits a beat, asking for its frames, and then every spring starts on one frame.
+/// (opening, open, or closing above `CLOSING_GONE`) nothing of the landing moves or reports motion:
+/// the ghost stands lifted at full alpha, the survivors where they were, the takeover at rest. On the
+/// first frame after the menu has let go every spring starts on one frame: no beat.
 #[test]
-fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
-    use crate::containers::modal::{set_veil, VEIL_CLEAR};
+fn a_landing_waits_for_the_menu_to_leave_then_moves_at_once_on_the_first_frame_after() {
+    use crate::containers::modal::{set_veil, CLOSING_GONE};
     let mut r = animated_grid(40, 108, GRID);
     let stood = settled_rect(&r, 109);
     set_veil(1.0);
@@ -3657,7 +3657,7 @@ fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
     for frame in 0..40 {
         // the menu's fade-out, down to just above the veil's edge
         if frame >= 10 {
-            fade = (fade * 0.9).max(VEIL_CLEAR + 1e-3);
+            fade = (fade * 0.9).max(CLOSING_GONE + 1e-3);
             set_veil(fade);
         }
         let moved = r.run(1);
@@ -3668,19 +3668,13 @@ fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
         let drawn = <Rig<Grid> as CardHarness>::place(&r, 109, At::Drawn).unwrap().rect;
         assert!(rect_close(drawn, stood), "frame {frame}: 109 is not where it stood: {drawn:?} {stood:?}");
     }
-    set_veil(VEIL_CLEAR * 0.5);
-    let beat = super::landing::LANDING_BEAT_MS.div_ceil(MS);
-    for frame in 0..beat - 1 {
-        assert!(r.run(1), "beat frame {frame}: the beat asks for its frames");
-        assert_eq!(r.sect.landing_probe(n, 8), start, "beat frame {frame}: moved inside the beat");
-    }
+    set_veil(CLOSING_GONE * 0.5);
     r.run(1);
     let ((x, _), _) = r.sect.landing_probe(n, 8);
-    assert!(x < start.0 .0, "the slide starts once the beat is over");
+    assert!(x < start.0 .0, "the slide starts on the first frame after the menu let go");
     assert!(r.sect.ghost_probe().1 < 1.0, "the ghost fades on the same frame");
     let s = r.scale(109).unwrap();
     assert!(s > 1.0, "and the takeover rises on it: {s}");
-    eprintln!("frames from the veil clearing to the first move: {beat}");
     set_veil(0.0);
     r.run(600);
     assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4);

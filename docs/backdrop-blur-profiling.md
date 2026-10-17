@@ -85,7 +85,7 @@ to the correct cropped-texture UV offset.
 
 ## Cache and refresh policy
 
-(Historical: DS6 later put popover glass back, `popover_glass`, not re-measured here.) Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
+(Historical: DS6 later put popover glass back, `popover_glass`; since 2026-10-17 it stands on the frozen host and the latched field, not on this chain.) Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
 `widgets::panel_ground`); the cached popover preset `Glass::CACHED`, which reused the blurred `mid`
 texture until explicit page invalidation or a region containment miss, went with them.
 `Glass::DYNAMIC_BACKDROP` (the chrome) keeps drawing the glass material
@@ -1541,7 +1541,9 @@ instead of 1) and `a_glass_command_above_the_surfaces_band_trips_the_debug_asser
 layer, so a glass command in the band is legitimate: its entry is requested by `surface_with` and
 resolves against the page and scrim below, and only the unread command word is dropped. The
 assertion fired on every menu frame of a debug build; the pin is now
-`a_glass_command_in_the_surfaces_band_is_dropped_but_its_entry_resolves`.)
+`a_glass_command_in_the_surfaces_band_is_dropped_but_its_entry_resolves`. Since 2026-10-17 the
+menus' glass stands on frozen ground and declares no backdrop entry, so no shipped glass is in the
+band; the pin keeps the walk honest for one that would be.)
 
 Both fixes are inside the general mechanism: no special case for a screen, no ceiling change, no
 exemption from the "every changed source refreshes each present" rule, and the ambient wash still

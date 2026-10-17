@@ -367,16 +367,6 @@ pub struct Painter {
     /// later `translate` moves it with the content. Set only through the scoped
     /// [`text_lift::draw`]; `Zoom::NONE` for every ordinary painter.
     zoom: Zoom,
-    /// A popover panel's APPEAR slide still to go, in px (`Some(rise*(1-appear))`), set only by
-    /// `Popover::content_painter` for a sliding panel. A glass panel hands it to the backdrop as
-    /// `rest_dy` so its snapshot is grabbed around the rest rect; `None` for everything else.
-    lift: Option<f32>,
-    /// The envelope a MORPHING panel's glass moves inside for its whole life (the opener pill and
-    /// the settled panel, or the panel alone for the fade+scale fallback, which grows inside it),
-    /// set only by `Popover::panel` for a morph. The
-    /// glass asks for its retained source over this rect, so the growth does not re-take it per
-    /// frame ([`plx_gfx::gfx::backdrop::surface_spanning`]); `None` for everything else.
-    extent: Option<Rect>,
 }
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -465,13 +455,14 @@ impl Painter {
             //
             // A GLASS command lands here on both halves of that gate, and neither is a bug. Under
             // a frozen host boundary (the tab bar's glass on Home while an account or item menu
-            // holds Home as a snapshot) it is dead content. In the SURFACES band it is a menu's
-            // own glass (DS6, `popover_glass::draw`, drawn inside its surface's layer, above the
-            // scrim): its backdrop entry was already requested by `surface_with` before this
-            // call, and the entry's source is the page and scrim recorded below the band. What is
-            // skipped is only this command's own `Paint` — the word a glass ABOVE it would read,
-            // and nothing above the surfaces band is ever recorded or reads one. An assertion
-            // here once fired on every frame a menu was up (`popover_glass` tests).
+            // holds Home as a snapshot) it is dead content. In the SURFACES band it is a glass
+            // drawn inside a surface's layer, above the scrim: its backdrop entry was already
+            // requested by `surface_with` before this call, and the entry's source is the page
+            // and scrim recorded below the band. What is skipped is only this command's own
+            // `Paint` — the word a glass ABOVE it would read, and nothing above the surfaces band
+            // is ever recorded or reads one. An assertion here once fired on every frame a menu's
+            // glass, then such a surface glass, was up. (A menu's glass now stands on frozen
+            // ground, `popover_glass`, and requests no entry at all.)
             return true;
         }
         use frame::backdrop::Value;
@@ -506,8 +497,6 @@ impl Painter {
             clip: Rect::FULL,
             text_recorder: false,
             zoom: Zoom::NONE,
-            lift: None,
-            extent: None,
         }
     }
     pub const fn recording() -> Self {
@@ -566,19 +555,6 @@ impl Painter {
     /// on which the ground is invisible).
     pub fn opacity(self) -> f32 {
         self.a
-    }
-    /// Translate down by an appear slide of `dy` px and remember it ([`rest_lift`](Self::rest_lift)).
-    pub fn lifted(self, dy: f32) -> Self {
-        Self { lift: Some(dy), ..self.translate(0.0, dy) }
-    }
-    /// The popover appear slide this painter carries, if it was made by [`lifted`](Self::lifted).
-    pub fn rest_lift(self) -> Option<f32> {
-        self.lift
-    }
-    /// A painter whose glass backdrops take their retained source over `extent` (this painter's
-    /// space), the envelope a morphing panel stays inside ([`extent`](Self::extent)'s field doc).
-    pub fn spanning(self, extent: Rect) -> Self {
-        Self { extent: Some(extent), ..self }
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self {
@@ -1047,7 +1023,7 @@ impl Painter {
     ) -> bool {
         if self.records() { return false; }
         if frame::backdrop::discovering() {
-            frame::backdrop::surface_spanning(self.place(r), self.extent.map(|e| self.place(e)), rises);
+            frame::backdrop::surface_with(self.place(r), rises);
             self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
                 use frame::backdrop::Value;
                 (rim as u32).record(data);
@@ -1066,7 +1042,6 @@ impl Painter {
             m.w,
             m.h,
             [m.x, m.y - self.px(rest_dy), m.w, m.h],
-            self.extent.map(|e| self.place(e)),
             self.px(rad),
             t.as_ptr(),
             rim,
@@ -1402,6 +1377,10 @@ impl Painter {
             tint.record(data);
         }) { return; }
         if self.records() || frame::backdrop::dim_deferred() { return; }
+        // A menu's glass over this dim reads undimmed pictures and applies it at composite.
+        if !plx_gfx::gfx::blur_source_pass() {
+            crate::popover_glass::note_dim(ink);
+        }
         if tex != 0 {
             self.field(r, tex, tint);
         } else {
@@ -1462,6 +1441,39 @@ impl Painter {
             tex,
             t.as_ptr(),
         )
+    }
+    /// A menu's GLASS on frozen ground ([`plx_gfx::gfx::draw_glass_frozen`]): the glass composite
+    /// over `ground` (the latched underlay field) with `sharp` (the host snapshot, 0 for none) as
+    /// its rim's sharp source and the frame's modal `dim` applied to both. `false` when the glass
+    /// program or the ground is missing — the caller's cue for its field ground.
+    /// `crate::popover_glass::draw` is the component; reach for that.
+    #[allow(clippy::too_many_arguments)]
+    pub fn glass_frozen(
+        self,
+        r: Rect,
+        rad: f32,
+        ground: u32,
+        sharp: u32,
+        dim: Option<frame::backdrop::Dim>,
+        tint: [f32; 4],
+        rim: plx_gfx::gfx::GlassRim,
+        face: plx_gfx::gfx::GlassFace,
+    ) -> bool {
+        if self.declare(r, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            ground.record(data);
+            plx_gfx::gfx::tex_ledger::revision(ground).record(data);
+            sharp.record(data);
+            (rim as u32).record(data);
+            tint.record(data);
+            face.scrim_top.record(data); face.scrim_bot.record(data);
+            face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+        }) { return ground != 0; }
+        if self.records() { return false; }
+        let t = self.c(tint);
+        let m = self.place(r);
+        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face)
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
@@ -2102,12 +2114,12 @@ mod tests {
         assert!(skipped, "an occluded glass is consumed without recording");
     }
 
-    /// …and so is a glass declared IN the surfaces band — a menu's own glass (DS6), which the
-    /// dispatcher draws inside its surface's layer. Its entry is requested before the declare and
-    /// resolves against the page below (`popover_glass::tests::a_menu_glass_inside_a_surface_…`);
-    /// only its command word goes unrecorded, as everything at/above the band does. This was a
-    /// `should_panic` pin until the menus became glass, when it panicked every menu frame of a
-    /// debug build.
+    /// …and so is a glass declared IN the surfaces band — a glass the dispatcher draws inside a
+    /// surface's layer, as a menu's was until it moved onto frozen ground (`popover_glass`). Its
+    /// entry is requested before the declare and resolves against the page below
+    /// (`frame::backdrop_tests::a_glass_command_in_the_surfaces_band_…`); only its command word
+    /// goes unrecorded, as everything at/above the band does. This was a `should_panic` pin until
+    /// the menus became glass, when it panicked every menu frame of a debug build.
     #[test]
     fn a_glass_in_the_surfaces_band_is_consumed_without_recording() {
         use frame::backdrop::{self, Sources, Z};

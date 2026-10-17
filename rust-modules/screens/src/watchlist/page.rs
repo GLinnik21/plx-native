@@ -644,6 +644,8 @@ pub struct WatchlistScreen {
     stack: Stack<Sec>,
     ground: PageGround,
     ground_seeded: bool,
+    /// The target last handed to the wash: what a Remove's landing holds it at.
+    ground_applied: [[f32; 4]; 4],
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
@@ -685,6 +687,7 @@ impl WatchlistScreen {
             stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
             ground: PageGround::new(),
             ground_seeded: false,
+            ground_applied: [theme::SURFACE_APP; 4],
             focus: 0,
         }
     }
@@ -825,7 +828,15 @@ impl WatchlistScreen {
     /// The ground the focused title keys, as a target: its matched item's UltraBlur colours, else
     /// the flat app surface. A discover row carries no colours of its own (plan §1.6), so the
     /// matched PMS item's are the only source.
+    ///
+    /// **Held while a Remove's landing is in flight**: the wash eases one 8-bit step a frame, and
+    /// every step invalidates the tab strip's glass, so the page is drawn twice for each landing
+    /// frame. The target stays at what the wash was last given; once the landing ends it eases to
+    /// the newly focused title as usual.
     fn ground_target(&self) -> [[f32; 4]; 4] {
+        if self.ground_seeded && self.landing_in_flight() {
+            return self.ground_applied;
+        }
         self.page
             .cells
             .get(self.focus)
@@ -833,8 +844,15 @@ impl WatchlistScreen {
             .map_or([theme::SURFACE_APP; 4], |blur| AmbientWash::keyed(blur, PageGround::CARD_W))
     }
 
+    /// The Remove landing is in flight: the grid's landing is playing (or waiting for the menu's
+    /// veil to drop) or still fading the removed tile's ghost, or the page still holds the ghost.
+    pub(crate) fn landing_in_flight(&self) -> bool {
+        !self.page.ghosts.is_empty()
+            || self.stack.grid(Sec::Items).is_some_and(|g| g.landing_pending() || g.has_ghosts())
+    }
+
     /// The header's count follows a Remove when the grid's landing STARTS: not at the commit (the
-    /// hold menu is still up), not under the menu's veil or the landing's beat, but on the frame
+    /// hold menu is still up), not under the menu's veil, but on the frame
     /// the springs step. A removal the grid made no landing for releases on the next tick.
     fn release_count_hold(&mut self) {
         if self.page.count_hold.is_none() {
@@ -869,6 +887,7 @@ impl WatchlistScreen {
         }
         self.release_count_hold();
         let target = self.ground_target();
+        self.ground_applied = target;
         if self.ground_seeded {
             self.ground.key_target(target, t.dt());
         } else {

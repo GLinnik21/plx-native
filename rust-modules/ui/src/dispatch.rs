@@ -264,6 +264,7 @@ pub fn scrim_lift_read<'a, H: Host>(
     super::screen::ScrimLiftRead {
         chrome: rig.scrim_chrome_read(),
         bar_material: glass.and_then(super::frame::glass::GlassPlan::tab_face),
+        field: None,
     }
 }
 
@@ -1622,6 +1623,7 @@ where
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
             if z >= ceiling { break; }
+            if s.faded() { continue; }
             let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
@@ -1659,7 +1661,9 @@ where
                     face.underlay = Some(field);
                     backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {
-                    backdrop::draw_span("surf", || inst.screen.draw(&mut f));
+                    backdrop::draw_span("surf", || {
+                        crate::popover_glass::drawing_surface(index, || inst.screen.draw(&mut f));
+                    });
                 }
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());

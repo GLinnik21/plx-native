@@ -660,7 +660,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;
         let r = self.frame(f.measure);
-        let p = f.painter.alpha(appear).lifted(RISE * (1.0 - appear));
+        let p = f.painter.alpha(appear).translate(0.0, RISE * (1.0 - appear));
         let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.

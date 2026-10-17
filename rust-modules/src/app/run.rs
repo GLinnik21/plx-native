@@ -129,6 +129,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
         // unless `plxnative-rec` or `plxnative-recplay` is armed.
         app.rec.begin_frame(app.bridge.landgate());
+        // No modal dim has been drawn yet this frame, on any route (the player and a bound preview never
+        // reach `popover::host::begin_frame`, which used to be the only place this was cleared).
+        plx_ui::popover::host::clear_dims();
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -6627,6 +6630,29 @@ mod pump_wiring_tests {
     //! `app::words::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function` uses
     //! for the identical reason. Why `pump_season()` needs this pin at all: see
     //! `plx_data::stores::metadata`'s module doc, and the commit that added this test.
+    /// **A frame's modal-dim count is cleared at the head of EVERY iteration**, on the player path
+    /// and the preview-bound page too: neither calls `popover::host::begin_frame` (a hardware
+    /// plane has no host to snapshot), so a count left by the last popover frame survived into the
+    /// first one after the player. `App` has no host fixture, so this pins the source text: one
+    /// whole-line call at the loop body's depth, before the frame's draw.
+    #[test]
+    fn the_frame_head_clears_the_modal_dims_on_every_route() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        const CALL: &str = "        plx_ui::popover::host::clear_dims();";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`clear_dims` must be called exactly once, at the loop body's own depth — unnested, so \
+             no route skips it",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src.find("let (_vx, _vy, _vw, _vh) = draw(app, fr);").expect("the loop's draw");
+        assert!(call < draw, "the count is cleared before the frame is drawn");
+    }
+
     #[test]
     fn the_route_unconditional_frame_update_pumps_the_season_landing_after_detail() {
         let src = std::fs::read_to_string(

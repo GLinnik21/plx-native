@@ -410,8 +410,8 @@ pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
 /// The glass menu face's gradient, top stop (design board `WatchlistOptions`: `rgba(58,58,64,.78)`).
 /// A neutral a touch cooler and lighter than the opaque [`PANEL_TOP`] (no existing palette stop is
-/// near it: `NEUTRAL_650` is `#222224`), because it sits over a live blur rather than being its own
-/// ground. The primitive is private to this role; `popover_glass` names the role.
+/// near it: `NEUTRAL_650` is `#222224`), because it sits over the menu's frozen ground (the latched
+/// underlay field, `popover_glass`) rather than being its own ground. The primitive is private to this role; `popover_glass` names the role.
 pub const MENU_GLASS_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.78);
 /// The glass menu face's gradient, bottom stop: the board's `rgba(40,40,46,.86)`; see
 /// [`MENU_GLASS_TOP`].
@@ -421,8 +421,10 @@ pub const MENU_GLASS_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.86);
 pub const MENU_SHADOW: [f32; 4] = with_a(CARD_SHADOW, 0.45);
 /// The glass menu's shadow offset (board: 24 px); see [`MENU_SHADOW`].
 pub const MENU_SHADOW_DY: f32 = 24.0;
-/// The glass menu's shadow blur (board: 60 px); see [`MENU_SHADOW`].
-pub const MENU_SHADOW_BLUR: f32 = 60.0;
+/// The glass menu's shadow blur: 30 px, tighter than the board's 60 (owner decision). One value for
+/// every glass menu (hold, Sort & Filter, Options, account, library), all drawn by
+/// `popover_glass::draw_shadowed`; see [`MENU_SHADOW`].
+pub const MENU_SHADOW_BLUR: f32 = 30.0;
 /// **The material scale, named rather than numbered — SwiftUI's `Material` is the vocabulary.**
 ///
 /// Every glass surface in this app used to be described by two unrelated numbers written at its own
@@ -510,12 +512,12 @@ impl Material {
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
 ///
-/// **A menu spends both halves since DS6.** `widgets::panel_ground` with `Ground::Menu` draws
-/// `popover_glass` first, a live backdrop blur that re-samples at `deep()`, for the MENUS only
-/// (Sort & Filter, the account menu, the item hold menu); a `Ground::Sheet` (the centred alerts,
-/// About, Track information, the person bio, the decision alert) never does, and a menu on a frame
-/// with no live backdrop falls back to the latched underlay field, which spends the `frost()`
-/// half alone. A morphing menu's blur region grows with it, unmeasured: a TV-phase item.
+/// **A menu spends neither half since it moved onto frozen ground.** `widgets::panel_ground` with
+/// `Ground::Menu` draws `popover_glass`, whose body is the latched underlay field itself under the
+/// menu's gradient face (no blur, so no `deep()` sample, and no frost quad), for the MENUS only;
+/// a `Ground::Sheet` (the centred alerts, About, Track information, the person bio, the decision
+/// alert), and a menu with no latched field, takes the field ground, which spends the `frost()`
+/// half alone.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
 // The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
 // `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a

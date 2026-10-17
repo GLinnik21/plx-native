@@ -180,7 +180,7 @@ title. It reads "{n} titles" (plural forms in every shipped language) while no T
 narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
 beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
 absent until the list has landed and on the empty-list and unavailable read-outs, and follows a Remove
-when the grid's landing STARTS (after the hold menu has gone and the landing's beat), not at the
+when the grid's landing STARTS (on the first feed after the hold menu's veil drops below `CLOSING_GONE`), not at the
 commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
@@ -189,6 +189,13 @@ scales, the caption under the focused row, the count). Then, on one frame, the r
 fades, the survivors move, and focus transfers to the next title, whose pop RISES from rest into the
 focus pop as the ghost sinks. That rise is the intended look (the design Motion board's "takeover"
 spring), not a departure from the design.
+
+**The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
+(`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
+host snapshot taken once when the menu opened, with the frame's dim applied to both. Nothing behind
+a menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it does not
+move until it has let go (the Remove landing above). An opener lifted over the dim (the hold menu's
+card, the Sort & Filter pill) is not in the lens.
 
 ## The catalog page
 

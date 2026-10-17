@@ -181,6 +181,9 @@ impl PartialEq for Paint {
 }
 /// Reserved command tag shared by the painter and the source dependency walk.
 pub const GLASS_COMMAND: u64 = 999;
+/// The command tag of a menu's glass on frozen ground (`gfx::draw_glass_frozen`). An ordinary
+/// draw to the walk: it reads no framebuffer, so it requests no entry and owes no source.
+pub const GLASS_FROZEN_COMMAND: u64 = 25;
 impl Paint {
     /// The draw's kind, as a GLASSDIFF line names it (`rrect`, `shadow_outside`, …): what a frame
     /// test reads a declared list by.
@@ -361,11 +364,12 @@ fn paint_with(rect: Rect, values: Vec<u64>, dim: Option<Dim>) {
         };
         // Nothing at or above the surfaces band is recorded, because nothing ever reads a
         // `Paint` recorded there: a glass's source is the prefix of paints BELOW its own z, and
-        // the only glass in a surface is a menu's own panel (DS6, `ui::popover_glass::draw`),
-        // whose prefix is the page and the modal scrim under the band. Its entry is requested by
-        // `surface_with`, not here, so it resolves; dropping its command word only matters to a
-        // glass stacked above it in a higher surface, which would read nothing of the surface
-        // between: a menu presented over another surface (`ModalStack::present` stacks) may
+        // a glass in a surface (no shipped surface has one: a menu's glass stands on frozen
+        // ground, `ui::popover_glass`, and requests no entry) has the page and the modal scrim
+        // under the band as its prefix. Its entry is requested by `surface_with`, not here, so it
+        // resolves; dropping its command word only matters to a glass stacked above it in a
+        // higher surface, which would read nothing of the surface between: such a glass
+        // presented over another surface (`ModalStack::present` stacks) would
         // miss that surface's changes in its cached blur — a known limit, not ruled out by
         // any gate, and the reason a second glass surface band would need recording. The surfaces
         // loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's own content)
@@ -481,6 +485,7 @@ fn kind_name(tag: u64) -> String {
         101 => "text_fade".into(),
         102 => "text_fade_v".into(),
         24 => "dim".into(),
+        GLASS_FROZEN_COMMAND => "glass_frozen".into(),
         DIM_COMMAND => "dim(composite)".into(),
         GLASS_COMMAND => "glass".into(),
         u64::MAX => "layer".into(),
@@ -1080,11 +1085,13 @@ pub fn layer(z: Z, shared: bool) -> Scope {
     });
     Scope(old)
 }
+/// One layer of the visible frame, timed as a span and selectable as a profiler phase under the
+/// same name (`gfx::profile::PHASES`).
 pub fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
     if discovering() {
         draw()
     } else {
-        plx_base::diag::spans::span(name, draw)
+        plx_base::diag::spans::span(name, || crate::gfx::profile::phase(name, draw))
     }
 }
 pub fn suppressed() -> bool {
@@ -1107,16 +1114,6 @@ pub fn surface(rect: Rect) -> Option<Surface> {
 /// [`surface`] for a glass that says whether it RISES (slides from its rest rect, as the hold hint
 /// does). `false` sizes its region with [`BLUR_REACH`] alone — see [`crate::gfx::blur_region_for`].
 pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
-    surface_spanning(rect, None, rises)
-}
-/// [`surface_with`] for a glass whose rect moves inside a KNOWN envelope, `extent`, over its
-/// lifetime (a menu morphing out of its pill: the pill and the settled panel bound every frame of
-/// the growth). The source is asked for the envelope, not the frame's own rect, so the first
-/// capture already holds every pixel a later frame of the motion reads; asking for the growing
-/// rect re-takes the source on each frame it leaves the last one ("grow"). `None` is
-/// [`surface_with`]. The returned [`Surface::rect`] is still the frame's own rect.
-pub fn surface_spanning(rect: Rect, extent: Option<Rect>, rises: bool) -> Option<Surface> {
-    let reach = extent.map_or(rect, |e| union(e, rect));
     WALK.with(|slot| {
         let mut slot = slot.borrow_mut();
         let w = slot.as_mut()?;
@@ -1127,7 +1124,7 @@ pub fn surface_spanning(rect: Rect, extent: Option<Rect>, rises: bool) -> Option
         );
         let key = (w.layer, w.next);
         let z = if w.discovery {
-            let r = crate::gfx::blur_region_for(rises, reach.x, reach.y, reach.w, reach.h);
+            let r = crate::gfx::blur_region_for(rises, rect.x, rect.y, rect.w, rect.h);
             let footprint = Rect::new(r[0], r[1], r[2], r[3]);
             let overlaps = w.glasses.iter().any(|&old| {
                 intersects(
@@ -1140,7 +1137,7 @@ pub fn surface_spanning(rect: Rect, extent: Option<Rect>, rises: bool) -> Option
             } else {
                 Z(w.layer.0 + w.next)
             };
-            w.glasses.push(reach);
+            w.glasses.push(rect);
             w.sources.borrow_mut().assignments.insert(key, z);
             z
         } else {
@@ -1183,8 +1180,7 @@ pub fn surface_spanning(rect: Rect, extent: Option<Rect>, rises: bool) -> Option
                 refresh: false,
             });
         }
-        let reach = w.clip.map_or(Some(reach), |c| intersection(c, reach)).unwrap_or(rect);
-        let d = w.sources.borrow_mut().request(z, reach, rises);
+        let d = w.sources.borrow_mut().request(z, rect, rises);
         Some(Surface {
             z,
             rect,

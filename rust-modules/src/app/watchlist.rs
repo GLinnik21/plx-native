@@ -8,7 +8,10 @@
 //! * **Feed.** Once a frame, [`Bridge::watchlist_feed`] finds the mounted page and hands it
 //!   what the store holds ([`WatchlistIn`]): the list state, the options, the ordered and
 //!   filtered rows, and the matched copy's facts. It sends nothing when the store's generation has
-//!   not moved, so a settled page costs a comparison.
+//!   not moved, so a settled page costs a comparison. **While a menu holds the page it sends
+//!   nothing at all** ([`page_veiled`](plx_ui::containers::modal::page_veiled)): the page does not
+//!   move under a menu, so a Remove's tile, a Sort & Filter value or a re-read waits and lands
+//!   with the first frame after the menu has let go.
 //! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the credential is
 //!   captured, the list read starts, a populated list is never blanked.
 //! * **Window.** The titles near the focus are the store's hold window: the matched copies whose
@@ -158,6 +161,13 @@ impl Bridge {
         if feed.window.as_ref() != Some(&wanted) {
             feed.window = Some(wanted.clone());
             store.run(WatchlistCmd::Window { wanted });
+        }
+        // **The page does not move while a menu is up** (opening, open or closing: until the menu
+        // has let go of the host). What the store has landed, a Remove's tile and a Sort & Filter
+        // value included, waits here: the screen is told once the menu is gone, so the grid's
+        // commit and its landing start on the same frame and nothing under the menu is redrawn.
+        if plx_ui::containers::modal::page_veiled() {
+            return;
         }
         let generation = store.gen();
         let view = store.view();

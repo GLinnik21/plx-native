@@ -40,12 +40,13 @@
 //! **After the menu, not under it.** A landing that a menu's choice started (the Watchlist's
 //! Remove from the card's hold menu) does not step while a menu still veils the page
 //! ([`page_veiled`](crate::containers::modal::page_veiled): a surface opening, open, or not yet
-//! faded below [`VEIL_CLEAR`](crate::containers::modal::VEIL_CLEAR)), and once the veil clears
-//! it waits a further [`LANDING_BEAT_MS`] before every spring starts together. Run under the
+//! faded below [`CLOSING_GONE`](crate::containers::modal::CLOSING_GONE), where the menu has let
+//! go of the host), and every spring starts together on the first frame after. Run under the
 //! menu's fade, the tiles slid beneath its text, and their motion forced a page pass under the
-//! menu's cached host on every frame of the fade (`popover::host_refresh`). While the landing
-//! waits under the veil it reports no motion at all (the fading menu presents those frames); only
-//! the beat's frames are its own. A landing no menu ever veiled starts on its first frame.
+//! menu's cached host on every frame of the fade (`popover::host_refresh`), and a glass menu
+//! rebuilt its blur source from the moving page. While the landing waits under the veil it reports
+//! no motion at all (the fading menu presents those frames). A landing no menu ever veiled starts
+//! on its first frame.
 //!
 //! **Layout motion and the held page image.** These springs move layout, so they are not
 //! `idle::decorative`: while they run the dispatcher keeps a page image held. A landing that
@@ -55,8 +56,9 @@
 //! the first tick after the image is released.
 //!
 //! The springs step on the frame's own `dt` through [`Spring::step`](crate::Spring::step); the
-//! beat after the veil clears is counted on the tick clock (`Tick::ms`), never by summing `dt`.
-//! No wall clock is read. The state is transient render history: it is never written to the motion canon, and a
+//! Remove lands on the first feed after the menu's veil drops below `CLOSING_GONE`; no timer counts
+//! the wait. No wall clock is read.
+//! The state is transient render history: it is never written to the motion canon, and a
 //! replay reconstructs it by running the same ticks.
 //!
 //! A settled or disabled section pays nothing per tick when the source's length and
@@ -70,10 +72,6 @@ use plx_machine::machine::Host;
 use super::pool::key;
 use super::CardSource;
 use crate::Spring;
-
-/// The pause between a menu leaving the page and the landing it started, ms of the tick clock:
-/// long enough to read as "the menu went, then the grid answered", short enough not to read as lag.
-pub(crate) const LANDING_BEAT_MS: u32 = 120;
 
 /// A removed card still on screen.
 #[derive(Clone, Copy)]
@@ -169,17 +167,13 @@ pub(crate) struct Landing {
     /// (the sum of the landing shifts of the ticks that saw the change).
     shift: (f32, f32),
     anim: Option<Anim>,
-    /// The tick (`Tick::ms`) of the last frame a menu veiled the page while this landing waited:
-    /// its beat is owed, counted from there.
-    veiled: Option<u32>,
-    /// The last [`step`](Self::step) did not advance anything (veiled, in the beat, or under a
-    /// held page image).
+    /// The last [`step`](Self::step) did not advance anything (veiled, or under a held page image).
     paused: bool,
 }
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, veiled: None, paused: false }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
@@ -196,7 +190,6 @@ impl Landing {
         self.revision = src.revision();
         self.shift = (0.0, 0.0);
         self.anim = None;
-        self.veiled = None;
         self.paused = false;
     }
 
@@ -219,8 +212,8 @@ impl Landing {
         self.anim.is_some() && crate::containers::transition::page_image_held()
     }
 
-    /// A landing is playing but its last step did not run: a menu veils the page, its beat is
-    /// still counting, or the page is a held image. An owner holds the motion it pairs with the
+    /// A landing is playing but its last step did not run: the menu's veil has not yet dropped
+    /// below `CLOSING_GONE`, or the page is a held image. An owner holds the motion it pairs with the
     /// landing (the takeover's pop) while this is true, so everything starts together.
     pub(crate) fn waiting(&self) -> bool {
         self.anim.is_some() && self.paused
@@ -366,9 +359,8 @@ impl Landing {
                 next.ghosts.push(Ghost { key: k, was, shift, alpha: Spring::at(1.0), lift: Spring::at(s), focused: lifted.is_some() });
             }
         }
-        // a landing over one still waiting waits with it; a fresh one owes no beat yet
+        // a landing over one still waiting waits with it
         if !playing {
-            self.veiled = None;
             self.paused = false;
         }
         self.anim = (!next.empty()).then_some(next);
@@ -379,9 +371,8 @@ impl Landing {
     }
 
     /// One frame of the animation. Nothing steps while the page is a held image (the first live
-    /// frame after it shows the start state), nor while a menu veils the page and for
-    /// [`LANDING_BEAT_MS`] after it cleared (module doc). `now_ms` is the frame's `Tick::ms`.
-    pub(crate) fn step(&mut self, dt: f32, now_ms: u32, k: (f32, f32)) {
+    /// frame after it shows the start state), nor while a menu veils the page (module doc).
+    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32)) {
         let Some(a) = self.anim.as_mut() else { return };
         self.paused = true;
         if crate::containers::transition::page_image_held() {
@@ -389,16 +380,7 @@ impl Landing {
         }
         if crate::containers::modal::page_veiled() {
             // the menu's own fade presents these frames: nothing of the page moves under it
-            self.veiled = Some(now_ms);
             return;
-        }
-        if let Some(at) = self.veiled {
-            if now_ms.wrapping_sub(at) < LANDING_BEAT_MS {
-                // the beat's frames are this landing's own: ask for the next one
-                plx_machine::idle::note_motion();
-                return;
-            }
-            self.veiled = None;
         }
         self.paused = false;
         for s in a.off.values_mut() {
