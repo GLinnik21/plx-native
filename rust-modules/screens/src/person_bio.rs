@@ -23,8 +23,8 @@
 //! not hypothetical: `person.rs` draws the person's own name at `size::DISPLAY` (48) at x~474,
 //! y~96, *directly behind this panel's top-left corner*, where the eyebrow and the identity line
 //! sit. The field (a 15x8 box cannot carry lettering, and `theme::underlay::PANEL_LUMA_MAX` caps
-//! it) is the ground on every frame. The panel's painter still carries its slide as
-//! `Painter::lifted`, which only a glass ground reads. The page around the panel is still dimmed
+//! it) is the ground on every frame. The panel's slide is a plain `translate`; no
+//! ground reads it. The page around the panel is still dimmed
 //! at [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`],
 //! as the PROSE role's weight — because a panel of fine print over a headline should stand further
 //! forward than a menu does.

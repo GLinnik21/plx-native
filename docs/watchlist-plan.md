@@ -546,8 +546,8 @@ menus, 30% scrim, icon-tab pill, darker tick veil, bright-verdict rule, new icon
    an empty glass frame.
    Engine: today every popover opens with one shared fade-and-slide (`Popover`, `K_APPEAR`
    300, `ui/src/popover.rs`). Morph = second open style for glass openers (Sort & Filter pill,
-   profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect reuses
-   captured host page + fs_glass SDF (plus the sharp band copy of `GlassRim::Menu`, re-grabbed every frame while the rect moves). Menu TEXT blur is the Mali cost;
+   profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect stands
+   on frozen ground (`gfx::draw_glass_frozen`: the latched dim field as the body, the once-captured host snapshot as the rim's sharp source), so a moving rect re-grabs nothing. Menu TEXT blur is the Mali cost;
    fallback fade+scale; decide by TV measurement (profile-tv).
    Rejected: focus tilt, light sweep, release-day clock sweep, shrink-and-stagger remove.
 

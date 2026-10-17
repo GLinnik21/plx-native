@@ -410,8 +410,8 @@ pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
 /// The glass menu face's gradient, top stop (design board `WatchlistOptions`: `rgba(58,58,64,.78)`).
 /// A neutral a touch cooler and lighter than the opaque [`PANEL_TOP`] (no existing palette stop is
-/// near it: `NEUTRAL_650` is `#222224`), because it sits over a live blur rather than being its own
-/// ground. The primitive is private to this role; `popover_glass` names the role.
+/// near it: `NEUTRAL_650` is `#222224`), because it sits over the menu's frozen ground (the latched
+/// underlay field, `popover_glass`) rather than being its own ground. The primitive is private to this role; `popover_glass` names the role.
 pub const MENU_GLASS_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.78);
 /// The glass menu face's gradient, bottom stop: the board's `rgba(40,40,46,.86)`; see
 /// [`MENU_GLASS_TOP`].
