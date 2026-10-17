@@ -23,10 +23,6 @@ use crate::screen::{
 };
 use crate::{Painter, Rect, Spring};
 
-/// How far inside a card's corner radius a ground cut stops: the 1 px rim stroke, the antialiased
-/// edge and the physical rounding of the scissor box, with room to spare.
-pub(super) const GROUND_CUT_MARGIN: f32 = 3.0;
-
 /// Who owns the grid's vertical scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollMode {
@@ -571,51 +567,6 @@ impl Grid {
             self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), true, &bands);
         }
         self.record_stops(f, p, src);
-    }
-
-    /// **The interiors of the cards [`draw`](Self::draw) paints as opaque pictures, as rects in
-    /// `p`'s space** — where the page's ground is only ever painted over, so a screen may skip
-    /// them (`PageGround::draw_cut`). Each is a card's drawn rect inset by its corner radius and
-    /// the rim and antialiasing margin, so every pixel in it is the card's own.
-    ///
-    /// Built from the SAME predicates `draw` uses (the window, the row over the edge, `loaded`, the
-    /// lifted card, the drawn rect with pop and press, `paint_visible`) and conservative where they
-    /// cannot be shared: **nothing is cut while a landing plays or ghosts remain** (cards fade and
-    /// slide, a leaving copy fades over them), **the focused card is never cut** (pop, ring and
-    /// caption), a card in the middle of a landing's fade is skipped, and a card whose art is not
-    /// resident right now ([`crate::widgets::card_art_opaque`]: a skeleton, a placeholder, the
-    /// collection tile) is skipped. Pure, no GL: a host test calls it directly.
-    pub fn ground_cuts<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S) -> Vec<Rect> {
-        if self.landing.pending() || self.landing.has_ghosts() || self.landing.waiting() || p.is_recording() {
-            return Vec::new();
-        }
-        let focus = super::focused_index(&f.focus, self.entry, src);
-        let pressed = super::pressed_index(f.cx, self.entry, src);
-        let bands = self.bands.geometry();
-        let n = src.len();
-        let mut cuts = Vec::new();
-        for i in self.window(n) {
-            if focus == Some(i) || self.above_edge(i, &bands) || !src.loaded(i) {
-                continue;
-            }
-            if f.lifted.is_some_and(|k| k.entry == self.entry && k.elem == src.elem(i)) {
-                continue;
-            }
-            if self.landing.alpha(n, i) < 1.0 || self.landing.offset_xy(n, i) != (0.0, 0.0) {
-                continue;
-            }
-            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
-            let rect = super::to_local(p, self.slot(i, n, &bands)).scaled(s);
-            if !card_row::paint_visible(p, rect, s, false) || !crate::widgets::card_art_opaque(&src.art(i)) {
-                continue;
-            }
-            let inset = self.spec.style.tile_radius(rect, s) + GROUND_CUT_MARGIN;
-            let hole = rect.inset(inset);
-            if hole.w > 0.0 && hole.h > 0.0 {
-                cuts.push(hole);
-            }
-        }
-        cuts
     }
 
     /// Register the stops of the cards the scroll can show: each is the rect [`draw`](Self::draw) paints.

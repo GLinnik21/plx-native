@@ -85,15 +85,6 @@ pub trait Source {
     fn warm_ahead(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         self.warm(srv, path, w, h, png)
     }
-    /// Is this art resident and READY to draw this frame? A PURE peek for a pass that must know
-    /// before the draw that will resolve it (the ground cut under opaque cards): it starts no
-    /// fetch, claims no slot and consults no admission. A hit takes the same LRU stamp a draw's
-    /// [`probe`](Self::probe) hit takes, so a miss another card claims LATER IN THE SAME FRAME
-    /// cannot evict what this answered "yes" for. The default is "never": a source that cannot tell
-    /// keeps every pass that asks conservative.
-    fn peek(&self, _srv: u16, _path: &str, _w: i32, _h: i32, _png: bool) -> bool {
-        false
-    }
     /// An item's clearLogo, at the source's one logo request box.
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
@@ -262,12 +253,6 @@ fn with_source<T>(f: impl FnOnce(&dyn Source) -> T, absent: T) -> T {
 /// in flight or deferred by the card's placement admission).
 pub fn resolve_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> u32 {
     resolve_wh_on(srv, path, w, h, png).0
-}
-
-/// Would [`resolve_on`] answer a texture for this art right now, WITHOUT asking (no fetch, no
-/// admission, no counters)? See [`Source::peek`].
-pub fn ready_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
-    !path.is_empty() && with_source(|s| s.peek(srv, path, w, h, png), false)
 }
 
 /// [`resolve_on`] plus the decoded pixel size — `(0, 0.0, 0.0)` until resident. Same one probe.

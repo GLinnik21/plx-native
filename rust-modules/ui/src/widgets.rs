@@ -716,79 +716,6 @@ pub fn card_art_request<'a>(art: &Art<'a>) -> Option<(u16, &'a str, c_int, c_int
     })
 }
 
-/// Is this art a texture that is resident NOW, so its card draws as an opaque picture over its
-/// whole interior (`tex_carded` at a white tint, not the skeleton, a placeholder ground or the
-/// neutral collection tile)? Pure: [`crate::tex::ready_on`] starts and claims nothing. Only the
-/// plain poster and thumb cards answer yes; a still is composed with its scrim and a person is a
-/// circle, and neither is worth a cut.
-pub fn card_art_opaque(art: &Art<'_>) -> bool {
-    match art {
-        Art::Poster(m) => {
-            if neutral_collection_name(m.as_ref()).is_some() {
-                return false;
-            }
-        }
-        Art::Thumb { .. } => {}
-        Art::Still(_) | Art::Person { .. } => return false,
-    }
-    card_art_request(art).is_some_and(|(srv, path, w, h)| crate::tex::ready_on(srv, path, w, h, false))
-}
-
-/// **Is the ground cut on?** `/tmp/plxnative-groundcut` holding `0` turns it OFF (the page's
-/// coloured ground is then drawn whole under the cards, as before); the file absent, empty or
-/// anything but `0` leaves the cut on, and a shipping build, which reads no trigger, always has it
-/// on. The trigger lives in the runtime directory (the TV's instance dir, the simulator's
-/// `PLXNATIVE_RUNTIME_DIR`) and is latched at the first frame, so a toggle takes a relaunch.
-pub fn ground_cut_on() -> bool {
-    static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SEEN.get_or_init(|| plx_base::devtrig::read("groundcut").as_deref() != Some("0"))
-}
-
-/// `r` minus `holes`, as rects that do not overlap and cover exactly the rest: horizontal bands
-/// cut at every hole edge, each band's gaps between the holes it crosses, and consecutive bands
-/// with the same gaps merged. A grid of cards comes out as one full-width strip per gutter row and
-/// one rect per column gutter per card row.
-pub fn subtract_rects(r: Rect, holes: &[Rect]) -> Vec<Rect> {
-    let (x0, x1, y0, y1) = (r.x, r.x + r.w, r.y, r.y + r.h);
-    let holes: Vec<Rect> = holes
-        .iter()
-        .map(|h| Rect::new(h.x.max(x0), h.y.max(y0), (h.x + h.w).min(x1) - h.x.max(x0), (h.y + h.h).min(y1) - h.y.max(y0)))
-        .filter(|h| h.w > 0.0 && h.h > 0.0)
-        .collect();
-    let mut ys = vec![y0, y1];
-    for h in &holes {
-        ys.push(h.y);
-        ys.push(h.y + h.h);
-    }
-    ys.sort_by(f32::total_cmp);
-    ys.dedup();
-    let mut bands: Vec<(f32, f32, Vec<(f32, f32)>)> = Vec::new();
-    for w in ys.windows(2) {
-        let (ya, yb) = (w[0], w[1]);
-        let mut cross: Vec<&Rect> = holes.iter().filter(|h| h.y < yb && h.y + h.h > ya).collect();
-        cross.sort_by(|a, b| a.x.total_cmp(&b.x));
-        let mut gaps = Vec::new();
-        let mut x = x0;
-        for h in cross {
-            if h.x > x {
-                gaps.push((x, h.x));
-            }
-            x = x.max(h.x + h.w);
-        }
-        if x1 > x {
-            gaps.push((x, x1));
-        }
-        match bands.last_mut() {
-            Some(last) if last.2 == gaps => last.1 = yb,
-            _ => bands.push((ya, yb, gaps)),
-        }
-    }
-    bands
-        .into_iter()
-        .flat_map(|(ya, yb, gaps)| gaps.into_iter().map(move |(xa, xb)| Rect::new(xa, ya, xb - xa, yb - ya)))
-        .collect()
-}
-
 /// The name a poster card draws on the neutral collection tile, when it draws one: a collection
 /// row whose server sent no `thumb`. A composite or custom thumb is artwork and draws as a poster.
 fn neutral_collection_name<'a>(m: Option<&TileFacts<'a>>) -> Option<&'a str> {
@@ -3910,19 +3837,6 @@ impl PageGround {
             return;
         }
         self.wash.draw(p, r);
-    }
-
-    /// [`draw`](Self::draw) without the pixels in `holes` (rects in `p`'s space) — the interiors of
-    /// opaque cards the ground would only be painted over under. The picture is the same: the wash
-    /// is a function of screen position, so a scissored strip paints exactly the pixels the full
-    /// draw painted there, and a hole is only ever a place something opaque covers afterwards.
-    /// **The caller's contract** is that every hole is covered by an OPAQUE draw later in the
-    /// frame ([`crate::cards::Stack::ground_cuts`] builds such a list); an empty list is `draw`.
-    pub fn draw_cut(&self, p: Painter, r: Rect, holes: &[Rect]) {
-        if self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS) {
-            return;
-        }
-        p.ambient_cut(r, 1.0, self.wash.drawn_corners(), holes);
     }
 
     /// Has the ground resolved to the app's own surface? The screens' own tests ask this; the draw
