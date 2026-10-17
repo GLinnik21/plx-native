@@ -38,13 +38,18 @@ struct Script {
 
 impl Script {
     fn new(titles: &[(u8, &str)], token: bool) -> Arc<Script> {
+        Self::with_kinds(titles, token, |_| WatchKind::Movie)
+    }
+
+    /// `titles` with the kind `kind_of` names for each number.
+    fn with_kinds(titles: &[(u8, &str)], token: bool, kind_of: impl Fn(u8) -> WatchKind) -> Arc<Script> {
         Arc::new(Script {
             items: titles
                 .iter()
                 .map(|(n, title)| WatchItem {
                     hex: encode_hex(&[*n; 12]),
                     guid: guid(*n),
-                    kind: Some(WatchKind::Movie),
+                    kind: Some(kind_of(*n)),
                     title: Some((*title).into()),
                     added_at: Some(1_000 - i64::from(*n)),
                     ..Default::default()
@@ -574,4 +579,159 @@ fn the_debug_write_cue_is_fed_only_in_a_devtriggers_build() {
             .filter(|l| !l.is_empty() && !l.starts_with("//") && *l != "{").take(1).collect();
         assert_eq!(before, ["#[cfg(feature = \"devtriggers\")]"], "`{anchor}` must sit under the devtriggers cfg");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A change to the grid: when it shows, and what its first frame is.
+// ---------------------------------------------------------------------------------------------
+
+/// Fourteen titles, every third a show: a type filter drops four and shifts the rest, some across
+/// a row break.
+fn mixed() -> Arc<Script> {
+    let titles: Vec<(u8, &str)> = (1..=14).map(|n| (n, "Title")).collect();
+    Script::with_kinds(&titles, true, |n| if n % 3 == 0 { WatchKind::Show } else { WatchKind::Movie })
+}
+
+/// Frames with nothing happening, long enough for the first tile's caption band to finish opening.
+fn quiet(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
+    for i in 0..80 {
+        super::frame(d, rig, tick(from + i), vec![]);
+    }
+}
+
+/// What a viewer sees of the grid: `(guid, rect x100, alpha x1000)` of everything drawn at a
+/// visible alpha, sorted. A leaving copy is the card it was; a thing at alpha 0 is not there.
+fn seen(d: &Dispatcher<AppHost>) -> Vec<(String, [i32; 4], i32)> {
+    let mut v: Vec<_> = page(d)
+        .drawn_probe(d.focus().map(|k| k.elem))
+        .into_iter()
+        .filter(|x| x.alpha > 0.001 && x.rect.y < plx_ui::consts::SCR_H)
+        .map(|x| {
+            (x.guid, [x.rect.x, x.rect.y, x.rect.w, x.rect.h].map(|c| (c * 100.0).round() as i32), (x.alpha * 1000.0).round() as i32)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+const MOVIES: WatchlistOptionsState = WatchlistOptionsState {
+    type_: plx_screens::watchlist::options::TypeFilter::Movies,
+    sort: plx_screens::watchlist::options::SortKey::DateAdded,
+    descending: true,
+    show: ShowFilter::All,
+};
+
+/// **The first frame drawn after a change is the frame before it.** The loop's frame feeds the page
+/// BEFORE it ticks it (`frame_ingest`), so the tick that finds new cards starts the landing from the
+/// slots the old ones stood in; fed after the tick (the old order), the first frame drawn showed the
+/// new cards at their final slots, and the next tick started the landing from the OLD slots: a snap
+/// to the end and a jump back.
+#[test]
+fn a_sort_and_filter_change_first_draws_the_frame_before_it() {
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&mixed());
+    settle(&mut d, &mut rig, 2);
+    quiet(&mut d, &mut rig, 100);
+    assert_eq!(guids(&d).len(), 14, "premise: the whole list is on the page");
+    let before = seen(&d);
+    assert!(before.len() >= 12, "premise: the first rows are on show");
+    rig.watchlist_set_options(&MOVIES);
+    super::frame(&mut d, &mut rig, tick(200), vec![]);
+    assert_eq!(guids(&d).len(), 10, "the frame carried the filter's rows into the page");
+    assert_eq!(seen(&d), before, "the first frame drawn after the change is the frame before it");
+    // and the landing then plays: a few frames on, the cards have moved
+    for i in 201..210 {
+        super::frame(&mut d, &mut rig, tick(i), vec![]);
+    }
+    assert_ne!(seen(&d), before, "the landing plays on");
+}
+
+/// The same for a Remove: the first frame after the tile leaves shows it as the ghost it becomes, at
+/// the slot it held, at full alpha, and every other card where it stood.
+#[test]
+fn a_remove_first_draws_the_frame_before_it() {
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&mixed());
+    settle(&mut d, &mut rig, 2);
+    quiet(&mut d, &mut rig, 100);
+    let before = seen(&d);
+    assert!(rig.watchlist_remove(&guid(6), true));
+    super::frame(&mut d, &mut rig, tick(200), vec![]);
+    assert_eq!(guids(&d).len(), 13, "the frame carried the removal into the page");
+    assert_eq!(seen(&d), before, "the first frame drawn after a Remove is the frame before it");
+}
+
+/// **The loop's feed is part of the frame, ahead of the tick.** `run.rs` no longer feeds after the
+/// frame; `frame_ingest` does it before `Dispatcher::frame_with`. A source check: the order is a
+/// property of two files, and a test that drives `frame` cannot tell which loop called it.
+#[test]
+fn the_watchlist_is_fed_ahead_of_the_tick_not_after_it() {
+    let run = include_str!("run.rs");
+    assert!(!run.contains("watchlist_feed("), "run.rs feeds the Watchlist after the frame (the snap): it belongs in frame_ingest");
+    let bridge = include_str!("bridge.rs");
+    let ingest = bridge.find("fn frame_ingest(").expect("frame_ingest exists");
+    let body = &bridge[ingest..];
+    let feed = body.find("watchlist_feed(").expect("frame_ingest feeds the Watchlist");
+    let tick = body.find("d.frame_with").or_else(|| body.find(".frame_with(")).expect("frame_ingest runs the dispatcher's frame");
+    assert!(feed < tick, "the feed (at {feed}) must come before the dispatcher's frame (at {tick})");
+}
+
+/// Open the Sort & Filter surface over the mounted page and let it reach `Open`.
+fn open_options_menu(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) -> u32 {
+    let entry = d.nav.top_page().unwrap().id;
+    let arg = rig.watchlist_menu_arg(d, entry).expect("the page is mounted");
+    super::open_watchlist_menu(d, arg);
+    for i in 0..40 {
+        super::frame(d, rig, tick(from + i), vec![]);
+    }
+    assert!(d.surface_up(), "premise: the Sort & Filter menu is up");
+    from + 40
+}
+
+/// **A Sort & Filter change reaches the grid while the menu is open.** The menu stays up after a
+/// choice; the grid under it is the preview, and the reader sees the effect of each click.
+#[test]
+fn a_sort_and_filter_choice_changes_the_grid_while_the_menu_is_open() {
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&mixed());
+    settle(&mut d, &mut rig, 2);
+    let now = open_options_menu(&mut d, &mut rig, 20);
+    rig.watchlist_set_options(&MOVIES);
+    for i in 0..4 {
+        super::frame(&mut d, &mut rig, tick(now + i), vec![]);
+    }
+    assert!(d.surface_up(), "the menu is still up");
+    assert_eq!(guids(&d).len(), 10, "the filter reached the grid under the open menu");
+    assert_eq!(page(&d).options(), &MOVIES, "and the page knows the value");
+    // the landing plays under the menu, and the host follows it until it has stopped
+    assert!(d.host_reflow(), "the cards are moving under the open menu: the host follows the page");
+    let mut i = now + 4;
+    while d.host_reflow() && i < now + 600 {
+        super::frame(&mut d, &mut rig, tick(i), vec![]);
+        i += 1;
+    }
+    assert!(!d.host_reflow(), "the landing ended");
+    assert!(d.surface_up(), "and the menu is still up");
+}
+
+/// **The hold menu still holds the page still.** A Remove it chose waits for the menu to be gone.
+#[test]
+fn the_hold_menu_still_freezes_the_grid_under_it() {
+    use plx_data::watchlist::model::TileState;
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&mixed());
+    settle(&mut d, &mut rig, 2);
+    let entry = d.nav.top_page().unwrap().id;
+    let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::NotOnAnyServer, None).expect("on the page");
+    super::open_item_menu(&mut d, arg);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(20 + i), vec![]);
+    }
+    assert!(d.surface_up(), "premise: the hold menu is up");
+    assert!(rig.watchlist_remove(&guid(2), true));
+    for i in 0..4 {
+        super::frame(&mut d, &mut rig, tick(60 + i), vec![]);
+    }
+    assert!(d.surface_up(), "the menu is still up");
+    assert_eq!(guids(&d).len(), 14, "the grid under a hold menu does not move");
 }

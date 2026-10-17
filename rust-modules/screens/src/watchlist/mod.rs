@@ -21,3 +21,5 @@ pub mod tiles;
 pub(crate) mod cards_harness;
 #[cfg(test)]
 mod page_tests;
+#[cfg(test)]
+mod reflow_tests;

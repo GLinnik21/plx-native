@@ -204,8 +204,13 @@ spring), not a departure from the design.
 **The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
 (`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
 host snapshot taken once when the menu opened, with the frame's dim applied to both. Nothing behind
-a menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it does not
-move until it has let go (the Remove landing above). An opener lifted over the dim (the hold menu's
+the hold menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it
+does not move until it has let go (the Remove landing above). **The Sort & Filter menu shows each
+click**: its value reaches the grid at once and the cards reflow under the open panel (a card that
+changes slot in its row slides, one that changes row crossfades, the longest mover on top, a new
+card appearing once the survivors have left its cell). While they move the host is drawn live (no
+per-frame capture); when they stop it is taken once more and the old look crossfades into the new
+ground over about 150 ms. An opener lifted over the dim (the hold menu's
 card, the Sort & Filter pill) is not in the lens.
 
 ## The catalog page

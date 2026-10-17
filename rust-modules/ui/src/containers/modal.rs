@@ -274,7 +274,9 @@ pub fn set_veil(v: f32) {
 /// [`CLOSING_GONE`] opaque on its way out, which is to say the menu still holds the host. **The page
 /// does not move while this is true**: a layout motion that a menu's choice started (the
 /// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`), and so
-/// does the data that would change what the page shows (`app/watchlist.rs`'s feed).
+/// does the data that would change what the page shows (`app/watchlist.rs`'s feed). A surface
+/// whose body answers [`Screen::lets_host_reflow`] (the Watchlist's Sort & Filter menu) casts no veil:
+/// the page reflows under it.
 pub fn page_veiled() -> bool {
     VEIL.with(|c| c.get()) >= CLOSING_GONE
 }
@@ -285,6 +287,8 @@ pub(crate) fn veil_of<H: Host>(surfaces: &[Surface<H>]) -> f32 {
         .iter()
         .map(|s| match s.phase {
             Phase::Hidden => 0.0,
+            // a surface that lets the page reflow under it does not veil it, in any phase
+            _ if s.entry.inst.as_ref().is_some_and(|i| i.screen.lets_host_reflow()) => 0.0,
             Phase::Closing => s.motion.appear.clamp(0.0, 1.0),
             _ => 1.0,
         })
