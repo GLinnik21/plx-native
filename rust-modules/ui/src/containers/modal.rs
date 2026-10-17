@@ -249,12 +249,6 @@ pub fn style_caches_host(style: Style) -> bool {
     surface_policy(style, Phase::Opening, false).1 != HostRender::Live
 }
 
-/// **Below this a closing surface no longer veils the page**: its panel and text are faint enough
-/// that a page layout moving under it reads as the page's own motion, not as tiles sliding under a
-/// menu's text. About a sixth of the way into the fade-out tail (the appear spring at
-/// [`APPEAR_K`] is there ~170 ms after the dismiss, where waiting for the prune would cost ~500 ms).
-pub const VEIL_CLEAR: f32 = 0.15;
-
 /// **Below this a closing menu is gone**: not drawn, its glass source not rebuilt, and pruned
 /// the frame it is reached. The appear spring's own tail runs on to its 0.002 rest, which is
 /// ~0.2 s of frames nobody can see, each one a full panel (and, for a glass menu, the source
@@ -277,10 +271,12 @@ pub fn set_veil(v: f32) {
 }
 
 /// The page is under a menu this frame: a surface is opening, open, or still at least
-/// [`VEIL_CLEAR`] opaque on its way out. A page layout motion that a menu's choice started (the
-/// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`).
+/// [`CLOSING_GONE`] opaque on its way out, which is to say the menu still holds the host. **The page
+/// does not move while this is true**: a layout motion that a menu's choice started (the
+/// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`), and so
+/// does the data that would change what the page shows (`app/watchlist.rs`'s feed).
 pub fn page_veiled() -> bool {
-    VEIL.with(|c| c.get()) >= VEIL_CLEAR
+    VEIL.with(|c| c.get()) >= CLOSING_GONE
 }
 
 /// The veil a set of surfaces casts ([`set_veil`]).

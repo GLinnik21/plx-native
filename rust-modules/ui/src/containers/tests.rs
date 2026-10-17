@@ -1718,7 +1718,7 @@ fn a_held_surface_ticks_with_no_time_and_draws_its_held_face_live() {
 /// the same frame (`cards::landing`), so a Remove chosen in a menu moves the grid only after it.
 #[test]
 fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
-    use crate::containers::modal::{page_veiled, VEIL, VEIL_CLEAR};
+    use crate::containers::modal::{page_veiled, VEIL, CLOSING_GONE};
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
     let mut ms = 16;
@@ -1729,7 +1729,7 @@ fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
         assert!(page_veiled() && VEIL.with(|v| v.get()) == 1.0, "an opening or open surface veils the page");
     }
     d.request(MachineId::Nav, NavOp::Dismiss(id));
-    let (mut cleared_while_fading, mut frames) = (false, 0);
+    let mut frames = 0;
     while d.nav.modals.top().is_some() && frames < 200 {
         ms += 16;
         frames += 1;
@@ -1737,12 +1737,13 @@ fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
         let veil = VEIL.with(|v| v.get());
         if let Some(s) = d.nav.modals.top().filter(|s| s.phase == Phase::Closing) {
             assert_eq!(veil, s.motion.appear.clamp(0.0, 1.0), "a fading surface veils by its appear");
-            cleared_while_fading |= !page_veiled() && veil > 0.0;
-            assert_eq!(page_veiled(), veil >= VEIL_CLEAR);
+            assert_eq!(page_veiled(), veil >= CLOSING_GONE);
         }
         d.prune(&r.unmounted);
     }
-    assert!(cleared_while_fading, "the veil clears in the fade's tail, before the surface is gone");
+    // a menu holds the page until it is gone: the veil clears when the menu is pruned (its
+    // `CLOSING_GONE` frame), not in a tail the menu is still drawn through
+    assert!(frames < 200 && !page_veiled(), "the veil is clear by the time the surface is gone");
     ms += 16;
     d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
     assert!(!page_veiled() && VEIL.with(|v| v.get()) == 0.0, "no surface, no veil");

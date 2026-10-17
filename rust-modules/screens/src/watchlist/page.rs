@@ -834,7 +834,7 @@ impl WatchlistScreen {
     }
 
     /// The header's count follows a Remove when the grid's landing STARTS: not at the commit (the
-    /// hold menu is still up), not under the menu's veil or the landing's beat, but on the frame
+    /// hold menu is still up), not under the menu's veil, but on the frame
     /// the springs step. A removal the grid made no landing for releases on the next tick.
     fn release_count_hold(&mut self) {
         if self.page.count_hold.is_none() {
