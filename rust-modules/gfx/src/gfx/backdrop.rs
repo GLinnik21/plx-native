@@ -618,6 +618,95 @@ fn format_diff(frame: u64, job: Z, region: [f32; 4], prev: &[Rc<Paint>], now: &[
     )
 }
 
+/// **What a menu glass's sharp band reads, as the walk can vouch for it** — the draws below the
+/// glass that reach the band, in order, with their exact arguments. Unlike the glass's SOURCE
+/// signature, a dim this glass applies at composite is in it with its real alpha, ink and field
+/// revision: the band is copied off the finished framebuffer, which has the dim in it, so the
+/// dim's ramp changes the band even while the source stays valid.
+///
+/// Only the first surface's glass has one. A glass in a higher surface also sees that surface's
+/// lower neighbours, and nothing at or above the surfaces band is recorded (`paint_with`), so
+/// there is nothing to vouch with.
+pub struct RimView {
+    pub frame: u64,
+    regions: Vec<Rect>,
+    sig: Vec<Rc<Paint>>,
+}
+impl RimView {
+    /// Is `band` (authored px) inside a region the signature was filtered by?
+    pub fn describes(&self, band: Rect) -> bool {
+        self.regions.iter().any(|&r| covers(r, band))
+    }
+}
+
+/// The geometry a rim copy landed with: which texture, the chain it belongs to and the band.
+/// Two copies with equal geometry and equal pixels underneath are the same copy.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RimGeom {
+    pub grab: u32,
+    /// `gx, gy, gw, gh` of the chain's drawable rect.
+    pub chain: [i32; 4],
+    /// `px, py, dw, dh` of the copied band, in drawable px.
+    pub band: [i32; 4],
+}
+
+/// **The rim's band copy, remembered** so a frame whose copy would be identical skips it. ONE
+/// slot, because the copy lands in the one shared grab texture: any other write to it replaces
+/// what the slot describes, and the slot says so ([`written`](Self::written)).
+///
+/// A copy is skipped only when every input is known to be the same: the same glass, the same
+/// band, the same grab texture, nothing written to it since, and the draws beneath the band equal
+/// to the ones the held copy was taken under ([`RimView`]). Anything unknown copies.
+pub struct RimCache {
+    held: Option<(Z, RimGeom, Rc<RimView>)>,
+    /// Frame of the last `composited` and how many surface-band glasses it has drawn since: a
+    /// glass drawn over the band before this one's copy is on the framebuffer and in no signature.
+    drawn: (u64, u32),
+}
+impl RimCache {
+    pub const fn new() -> Self {
+        Self { held: None, drawn: (0, 0) }
+    }
+    fn earlier_glass(&mut self, frame: u64) -> bool {
+        if self.drawn.0 != frame {
+            self.drawn = (frame, 0);
+        }
+        self.drawn.1 > 0
+    }
+    /// Can the held copy stand in for this frame's? `band` is the copied band in authored px.
+    pub fn hit(&mut self, z: Z, geom: RimGeom, band: Rect, view: Option<&Rc<RimView>>) -> bool {
+        let Some(view) = view else { return false };
+        if self.earlier_glass(view.frame) {
+            return false;
+        }
+        match &self.held {
+            Some((hz, hg, held)) => {
+                *hz == z && *hg == geom && view.describes(band) && held.frame < view.frame
+                    && (Rc::ptr_eq(held, view) || held.sig == view.sig)
+            }
+            None => false,
+        }
+    }
+    /// A copy was just taken for glass `z`. Held only when the walk can vouch for what it read.
+    pub fn taken(&mut self, z: Z, geom: RimGeom, band: Rect, view: Option<&Rc<RimView>>) {
+        self.held = match view {
+            Some(v) if v.describes(band) && !self.earlier_glass(v.frame) => Some((z, geom, v.clone())),
+            _ => None,
+        };
+    }
+    /// Something other than the rim wrote the grab texture, or the copy source is unknown.
+    pub fn written(&mut self) {
+        self.held = None;
+    }
+    /// A glass at `z` just composited in `frame`.
+    pub fn composited(&mut self, z: Z, frame: u64) {
+        if z >= Z::surface(0) {
+            self.earlier_glass(frame);
+            self.drawn.1 += 1;
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Sources {
     pub entries: BTreeMap<Z, Entry>,
@@ -658,6 +747,9 @@ pub struct Entry {
     /// Armed probe only: why the non-compare paths (`begin`'s damage, `request`'s growth) cleared
     /// `valid`, so `resolve` can name it. Never set while the probe is off.
     cause: Option<&'static str>,
+    /// What the rim's sharp band reads this frame ([`RimView`]), for the first surface's glass
+    /// only; `None` everywhere else and until `resolve` has run this frame.
+    rim: Option<Rc<RimView>>,
 }
 impl Sources {
     /// The `GLASSDIFF` lines `resolve` recorded since the last call (empty unless the frame probe
@@ -668,6 +760,14 @@ impl Sources {
     /// The dim the band at `z` applies at composite this frame — [`deferred_dim`] without a walk.
     pub fn composite_dim(&self, z: Z) -> Option<Dim> {
         self.entries.get(&z)?.dim
+    }
+    /// What the sharp band of the glass at `z` reads this frame, when the walk can vouch for it.
+    pub fn rim_view(&self, z: Z) -> Option<Rc<RimView>> {
+        let e = self.entries.get(&z).filter(|e| e.seen == self.frame)?;
+        e.rim.clone()
+    }
+    pub fn frame(&self) -> u64 {
+        self.frame
     }
     pub fn damage(&mut self, z: Z, rect: Rect) {
         self.damage.push(Damage { z, rect });
@@ -690,6 +790,7 @@ impl Sources {
         for (&z, e) in &mut self.entries {
             e.wanted.clear();
             e.wanted_rises = false;
+            e.rim = None;
             if e.members.iter().any(|&rect| {
                 decide(
                     Request {
@@ -769,6 +870,19 @@ impl Sources {
                 })
                 .collect();
             let full = signature(&prefix, &e.members, e.rises, layers, z);
+            e.rim = (e.seen == frame && z >= Z::surface(0) && z < Z::surface(1)).then(|| {
+                Rc::new(RimView {
+                    frame,
+                    // The regions `signature` just filtered by: a band outside them is not described.
+                    regions: e.members.iter().map(|r| {
+                        let r = crate::gfx::blur_region_for(e.rises, r.x, r.y, r.w, r.h);
+                        Rect::new(r[0], r[1], r[2], r[3])
+                    }).collect(),
+                    // `full`, not `current`: a dim applied at composite is bare in `current`, but
+                    // the band is copied off the framebuffer, which carries this frame's dim.
+                    sig: full.clone(),
+                })
+            });
             // A dim this glass applies at composite: the last draw under the region, the only dim
             // there, covering all of it, on a band that replays directly. Anything drawn after it
             // (an opener lift, a lower glass) would be darkened by a composite-time dim, so it
@@ -916,6 +1030,7 @@ impl Sources {
             dim: None,
             captured_dim: false,
             cause: None,
+            rim: None,
         });
         if !covers(e.rect, rect) {
             e.rect = union(e.rect, rect);
@@ -1215,6 +1330,14 @@ pub fn rises(z: Z) -> bool {
             .and_then(|w| w.sources.borrow().entries.get(&z).map(|e| e.rises))
             .unwrap_or(true)
     })
+}
+/// [`Sources::rim_view`] through the walk.
+pub fn rim_view(z: Z) -> Option<Rc<RimView>> {
+    WALK.with(|w| w.borrow().as_ref()?.sources.borrow().rim_view(z))
+}
+/// The walk's frame number, for [`RimCache::composited`].
+pub fn frame() -> Option<u64> {
+    WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().frame()))
 }
 pub fn region(z: Z) -> Option<Rect> {
     WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.rect))
@@ -1733,5 +1856,182 @@ mod glassdiff_tests {
         s.resolve();
         assert!(!s.entries[&Z::CHROME].valid, "the compare still invalidates");
         assert!(s.take_diffs().is_empty());
+    }
+}
+
+/// The rim's band copy (`RimCache`), against a model of the shared grab texture: every frame the
+/// glass either copies or reuses, and what the texture then holds must be what a copy would have
+/// put there. The "scene" the model copies is an identity fed into the walk as a draw's arguments;
+/// the cache never sees it except through the walk's signature, which is the thing under test.
+#[cfg(test)]
+mod rim_cache_tests {
+    use super::*;
+
+    /// One glass over a page (carrying `scene`), a modal dim at `dim` and an optional extra draw
+    /// above the dim, in the first surface's band. Returns the glass's z.
+    fn frame(sources: &Rc<RefCell<Sources>>, scene: u64, dim: f32, glass: Rect, surface: usize) -> Z {
+        sources.borrow_mut().begin(vec![]);
+        let z = {
+            let _walk = discover(sources.clone());
+            paint(canvas(), vec![1, scene]);
+            {
+                let _dim = layer(Z::DIM, false);
+                let tint = [0.0, 0.0, 0.0, dim];
+                let mut words = vec![24, 0];
+                for t in tint {
+                    words.push(t.to_bits() as u64);
+                }
+                paint_dim(canvas(), words, Dim { tex: 0, tint });
+            }
+            let _surface = layer(Z::surface(surface), false);
+            surface_with(glass, false).unwrap().z
+        };
+        sources.borrow_mut().resolve();
+        commit(sources);
+        z
+    }
+
+    /// The pixels the band holds for a frame: the model's ground truth, built from the inputs
+    /// directly and NOT from the walk's signature.
+    fn pixels(scene: u64, dim: f32, glass: Rect) -> u64 {
+        let mut h = scene;
+        for v in [dim, glass.x, glass.y, glass.w, glass.h] {
+            h = h.wrapping_mul(0x100000001b3) ^ v.to_bits() as u64;
+        }
+        h
+    }
+
+    struct Rig {
+        sources: Rc<RefCell<Sources>>,
+        cache: RimCache,
+        /// What the shared grab texture holds.
+        grab: u64,
+        copies: u32,
+    }
+    impl Rig {
+        fn new() -> Self {
+            Self { sources: Rc::new(RefCell::new(Sources::default())), cache: RimCache::new(), grab: 0, copies: 0 }
+        }
+        /// One frame's glass draw, the sequence `gfx::draw_glass` runs: probe, copy on a miss,
+        /// record, composite. Asserts the texture then equals an uncached copy's.
+        fn glass(&mut self, scene: u64, dim: f32, glass: Rect) -> bool {
+            self.glass_in(scene, dim, glass, 0)
+        }
+        fn glass_in(&mut self, scene: u64, dim: f32, glass: Rect, surface: usize) -> bool {
+            let z = frame(&self.sources, scene, dim, glass, surface);
+            let view = self.sources.borrow().rim_view(z);
+            let geom = RimGeom { grab: 7, chain: [0, 0, 1920, 1080], band: [glass.x as i32, glass.y as i32, glass.w as i32, glass.h as i32] };
+            let band = Rect::new(glass.x - 41.0, glass.y - 41.0, glass.w + 82.0, glass.h + 82.0).intersect(canvas());
+            let hit = self.cache.hit(z, geom, band, view.as_ref());
+            if !hit {
+                self.grab = pixels(scene, dim, glass);
+                self.copies += 1;
+                self.cache.taken(z, geom, band, view.as_ref());
+            }
+            assert_eq!(self.grab, pixels(scene, dim, glass), "the rim must show what an uncached copy shows");
+            self.cache.composited(z, self.sources.borrow().frame());
+            hit
+        }
+    }
+    const MENU: Rect = Rect { x: 1200.0, y: 220.0, w: 320.0, h: 600.0 };
+
+    #[test]
+    fn an_unchanged_frame_reuses_the_copy() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        assert!(!rig.glass(1, 0.3, MENU), "the first frame copies");
+        for _ in 0..5 {
+            assert!(rig.glass(1, 0.3, MENU), "an identical frame does not");
+        }
+        assert_eq!(rig.copies, 1);
+    }
+
+    #[test]
+    fn a_moved_rect_a_changed_host_or_a_new_source_copies() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        rig.glass(1, 0.3, MENU);
+        assert!(!rig.glass(1, 0.3, Rect { x: 1210.0, ..MENU }), "the rect moved");
+        assert!(rig.glass(1, 0.3, Rect { x: 1210.0, ..MENU }));
+        assert!(!rig.glass(2, 0.3, Rect { x: 1210.0, ..MENU }), "the host page changed");
+        assert!(rig.glass(2, 0.3, Rect { x: 1210.0, ..MENU }));
+        // The same glass asking for another source: a different band z.
+        let z = frame(&rig.sources, 2, 0.3, Rect { x: 1210.0, ..MENU }, 0);
+        let view = rig.sources.borrow().rim_view(z);
+        let geom = RimGeom { grab: 7, chain: [0, 0, 1920, 1080], band: [1210, 220, 320, 600] };
+        let band = Rect::new(1169.0, 179.0, 402.0, 682.0);
+        assert!(!rig.cache.hit(Z(z.0 + 1), geom, band, view.as_ref()));
+        assert!(!rig.cache.hit(z, RimGeom { grab: 8, ..geom }, band, view.as_ref()), "another texture");
+        assert!(!rig.cache.hit(z, RimGeom { chain: [0, 0, 1280, 720], ..geom }, band, view.as_ref()), "another drawable");
+    }
+
+    #[test]
+    fn a_ramping_dim_copies_even_though_the_source_does_not_change() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        for i in 0..6 {
+            assert!(!rig.glass(1, 0.05 * i as f32, MENU), "the dim in the framebuffer moved on frame {i}");
+        }
+        // …and that really is a source the band's dim is not part of: it applied the dim at
+        // composite and kept its image.
+        let s = rig.sources.borrow();
+        let z = *s.entries.keys().next().unwrap();
+        assert!(s.composite_dim(z).is_some() && s.entries[&z].valid);
+    }
+
+    #[test]
+    fn another_writer_of_the_grab_texture_copies() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        rig.glass(1, 0.3, MENU);
+        // The cache cannot see a write on its own: `written` is what stands in for the sight.
+        rig.grab = 0xdead;
+        rig.cache.written();
+        assert!(!rig.glass(1, 0.3, MENU), "the snapshot's copy (or any other) forgets the held band");
+        assert!(rig.glass(1, 0.3, MENU));
+    }
+
+    #[test]
+    fn a_glass_drawn_over_the_band_first_is_not_reused_around() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        rig.glass(1, 0.3, MENU);
+        let z = frame(&rig.sources, 1, 0.3, MENU, 0);
+        let view = rig.sources.borrow().rim_view(z);
+        let geom = RimGeom { grab: 7, chain: [0, 0, 1920, 1080], band: [1200, 220, 320, 600] };
+        let band = Rect::new(1159.0, 179.0, 402.0, 682.0);
+        let frame_no = rig.sources.borrow().frame();
+        rig.cache.composited(Z::surface(0), frame_no);
+        assert!(!rig.cache.hit(z, geom, band, view.as_ref()), "its composite is on the framebuffer and in no signature");
+        rig.cache.taken(z, geom, band, view.as_ref());
+        let next = frame(&rig.sources, 1, 0.3, MENU, 0);
+        assert!(!rig.cache.hit(next, geom, band, rig.sources.borrow().rim_view(next).as_ref()), "and a copy taken under it is not held");
+    }
+
+    #[test]
+    fn a_copy_is_reused_across_frames_only() {
+        let _g = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        let z = frame(&rig.sources, 1, 0.3, MENU, 0);
+        let view = rig.sources.borrow().rim_view(z);
+        let geom = RimGeom { grab: 7, chain: [0, 0, 1920, 1080], band: [1200, 220, 320, 600] };
+        let band = Rect::new(1159.0, 179.0, 402.0, 682.0);
+        rig.cache.taken(z, geom, band, view.as_ref());
+        assert!(!rig.cache.hit(z, geom, band, view.as_ref()), "within the frame it was taken in, the framebuffer has moved on");
+    }
+
+    #[test]
+    fn only_the_first_surface_and_a_described_band_are_vouched_for() {
+        let _g = plx_base::testlock::serial();
+        let rig = Rig::new();
+        let z = frame(&rig.sources, 1, 0.3, MENU, 1);
+        assert!(rig.sources.borrow().rim_view(z).is_none(), "a higher surface sees lower surfaces nothing records");
+        let z = frame(&rig.sources, 1, 0.3, MENU, 0);
+        let view = rig.sources.borrow().rim_view(z).unwrap();
+        assert!(view.describes(Rect::new(1160.0, 180.0, 400.0, 680.0)));
+        assert!(!view.describes(Rect::new(0.0, 0.0, 1920.0, 1080.0)), "a band wider than the source's region");
+        // A glass nobody asked for this frame has no view: nothing resolved it.
+        rig.sources.borrow_mut().begin(vec![]);
+        assert!(rig.sources.borrow().rim_view(z).is_none());
     }
 }

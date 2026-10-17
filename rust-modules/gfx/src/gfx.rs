@@ -3562,6 +3562,29 @@ fn menu_sharp_sweep() -> Option<f32> {
 fn menu_sharp_sweep() -> Option<f32> {
     None
 }
+/// The rim's band copy, remembered across frames — see [`backdrop::RimCache`]. Main-thread only,
+/// like the chain whose grab texture it describes.
+static mut RIM_CACHE: backdrop::RimCache = backdrop::RimCache::new();
+fn rim_cache() -> &'static mut backdrop::RimCache {
+    unsafe { &mut *std::ptr::addr_of_mut!(RIM_CACHE) }
+}
+/// `/tmp/plxnative-rimcache=0` — copy the rim's band on every frame, as before the cache. It is
+/// what makes the saving an A/B on one binary.
+#[cfg(feature = "devtriggers")]
+fn rim_cache_off() -> bool {
+    static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let off = plx_base::devtrig::read("rimcache").is_some_and(|v| v.trim() == "0");
+        if off {
+            plx_base::eventlog::log("glass: rim band cache off");
+        }
+        off
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn rim_cache_off() -> bool {
+    false
+}
 /// `/tmp/plxnative-paneldeep=<px>` — the panel's extra sample radius, swept. `0` is the bar's own
 /// single-fetch material.
 #[cfg(feature = "devtriggers")]
@@ -3701,9 +3724,11 @@ pub enum GlassRim {
     /// source switched ON — the rim refracts the captured host page, unblurred, through the same
     /// rounded-rect SDF displacement. **It is not free:** a non-zero [`GlassRim::sharp`] turns on
     /// the sharp BAND COPY (the panel plus the lens margin, `glCopyTexSubImage2D` off the finished
-    /// page), ONE per menu glass draw, re-grabbed EVERY frame (it is taken from the live page, never
-    /// cached with the blur snapshot), and while a morph rect moves the band's rect changes each
-    /// frame too, so nothing is reused. `Standing` (sharp 0) takes no such copy. Measured on the
+    /// page), ONE per menu glass draw, taken from the live page and never cached with the blur
+    /// snapshot. It is skipped on a frame whose copy would be the held one's ([`backdrop::RimCache`]:
+    /// same band, nothing drawn under it differs, nothing else wrote the grab), so it still runs on
+    /// every frame the dim ramps, the host changes or a morph rect moves the band. `Standing`
+    /// (sharp 0) takes no such copy. Measured on the
     /// standing container: the band copy is +2.7% GPU_ACTIVE; the menu's own figure is a TV-phase
     /// item. Numbers: `tokens::MENU_*`.
     Menu,
@@ -4385,6 +4410,8 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
         let win = |uw: c_int, uh: c_int, tw: c_int, th: c_int| {
             (uw as f32 / tw as f32, uh as f32 / th as f32)
         };
+        // The snapshot's copy lands in the same texture the rim's band does.
+        rim_cache().written();
         let e = phase("blur.copy", || {
             glBindTexture(GL_TEXTURE_2D, c.grab);
             // `glCopyTexSubImage2D` reads the framebuffer bottom-left-origin while the region is
@@ -5899,18 +5926,38 @@ pub fn draw_blur_backdrop(
             // exactly like the backdrop being flipped and is not that at all.
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.grab);
-            profile::phase("glass.sharp", || {
-                glCopyTexSubImage2D(
-                    GL_TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    c.gx + px,
-                    c.gy + c.gh - (py + dh),
-                    dw,
-                    dh,
-                );
-            });
+            // **Skipped when it would copy what the grab already holds.** The band is off the
+            // finished framebuffer, so "the same" is a claim about everything drawn under it:
+            // `backdrop::RimCache` makes it only for the first surface's glass, only when the walk
+            // vouches for the draws beneath the band, and only if nothing else has written the
+            // grab since. The band is widened by a pixel to take in the integer rounding above.
+            let geom = backdrop::RimGeom {
+                grab: c.grab,
+                chain: [c.gx, c.gy, c.gw, c.gh],
+                band: [px, py, dw, dh],
+            };
+            let band = Rect::new(sx0 - 1.0, sy0 - 1.0, sx1 - sx0 + 2.0, sy1 - sy0 + 2.0)
+                .intersect(backdrop::canvas());
+            let rim = rim_cache();
+            let cached = live.filter(|_| !rim_cache_off()).map(|r| (r.z, backdrop::rim_view(r.z)));
+            if !cached.as_ref().is_some_and(|(z, view)| rim.hit(*z, geom, band, view.as_ref())) {
+                profile::phase("glass.sharp", || {
+                    glCopyTexSubImage2D(
+                        GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        c.gx + px,
+                        c.gy + c.gh - (py + dh),
+                        dw,
+                        dh,
+                    );
+                });
+                match cached {
+                    Some((z, view)) => rim.taken(z, geom, band, view.as_ref()),
+                    None => rim.written(),
+                }
+            }
             glActiveTexture(GL_TEXTURE0);
         }
         let suv = blur_uv_rect(x, y, w, h, sreg, sspan, true);
@@ -5962,6 +6009,9 @@ pub fn draw_blur_backdrop(
         profile::phase("glass.composite", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
+        if let (Some(request), Some(frame)) = (live, backdrop::frame()) {
+            rim_cache().composited(request.z, frame);
+        }
         true
     }
 }

@@ -515,11 +515,13 @@ tried first. None of it is reconstructable from the code without repeating the m
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha and a
   sliding panel passes its rest lift (`Painter::rest_lift`) so the open slide re-grabs nothing.
   **Menu glass is not free: `GlassRim::Menu` turns on the sharp band copy** (the panel plus the
-  lens margin, off the finished page, `MENU_SHARP` > 0), **one per menu glass draw, re-grabbed
-  EVERY frame** — it is taken from the live page, never cached with the blur snapshot — and while
-  a morph rect moves its band changes every frame too, so nothing is reused (the standing
-  container, sharp 0, takes none). Measured on the standing container the band copy is +2.7%
-  GPU_ACTIVE; the menu's figure is unmeasured, a TV-phase item. The BLUR source of a morphing
+  lens margin, off the finished page, `MENU_SHARP` > 0), **one per menu glass draw**, taken from
+  the live page, never cached with the blur snapshot. A frame skips it only when its copy would be
+  the held one's (`backdrop::RimCache`): the first surface's glass, the same band, every draw under
+  the band equal — the dim INCLUDED, at its real alpha, though the glass's SOURCE ignores it — and
+  nothing else written to the shared grab since. A ramping dim, a moving morph rect or a changed
+  host copies every frame (the standing container, sharp 0, takes none). Measured on the
+  standing container the band copy is +2.7% GPU_ACTIVE; the menu's figure is unmeasured, a TV-phase item. The BLUR source of a morphing
   menu is not re-taken as it grows: `Popover::panel` hands the glass the morph's whole envelope
   (pill plus settled panel, `Painter::spanning` → `backdrop::surface_spanning`), and the source
   is requested over that from the first frame.

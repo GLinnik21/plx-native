@@ -280,6 +280,38 @@ pub(crate) mod tests {
         }
     }
 
+    /// **A menu's rim band is reused only while the dim in the framebuffer is the same.** The
+    /// source above ignores the dim's alpha (it is applied at composite), but the sharp band is
+    /// copied off the finished framebuffer, dim included: a still menu under a still dim reuses
+    /// its band, a ramping dim does not.
+    #[test]
+    fn a_menus_rim_band_follows_its_dim_though_its_source_does_not() {
+        use crate::frame::backdrop::{RimCache, RimGeom, Z};
+        let _g = plx_base::testlock::serial();
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+        let flat = crate::underlay::UnderlayField::new();
+        let mut cache = RimCache::new();
+        let geom = RimGeom { grab: 1, chain: [0, 0, 1920, 1080], band: [1160, 180, 400, 680] };
+        let band = Rect::new(1160.0, 180.0, 400.0, 680.0);
+        let mut probe = |alpha: f32| {
+            menu_frame(&sources, &flat, alpha, false);
+            let s = sources.borrow();
+            let z = *s.entries.keys().find(|&&z| z >= Z::surface(0)).unwrap();
+            let view = s.rim_view(z);
+            assert!(view.is_some(), "the first surface's glass is vouched for");
+            let hit = cache.hit(z, geom, band, view.as_ref());
+            if !hit {
+                cache.taken(z, geom, band, view.as_ref());
+            }
+            cache.composited(z, s.frame());
+            hit
+        };
+        assert!(!probe(0.3));
+        assert!(probe(0.3), "a still menu under a still dim");
+        assert!(!probe(0.31), "the dim moved; the source did not");
+        assert!(probe(0.31));
+    }
+
     /// **Nor does the dim's FIELD being re-latched** under a standing menu. Every host re-capture
     /// re-reads the page's light into the field (`ModalUnderlay::sync` on a new `page_epoch`),
     /// which re-specifies its texture; the composite reads the field live, so the source does not
