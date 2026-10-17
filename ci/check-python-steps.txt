@@ -142,7 +142,7 @@ tools/plxnative-sample selftest
 # that `up` requires after launch. No SSH or television access occurs in this self-test.
 python3 tools/mock-guest.py --selftest
 tools/tv-session.sh selftest
-# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
+# The PreToolUse/PostToolUse hooks' own suites (~0.8s together). They were not in this
 # target until 2026-08-26, which meant the guard that decides whether a private value may
 # leave this machine was covered by a test nobody ran on a normal check -- the same shape as
 # the bug that produced the leak it exists to prevent, where the check computed its answer and

@@ -352,14 +352,15 @@ fn list_from(response: &WatchResponse, start: u32) -> Result<(WatchPage, usize),
 impl AccountClient {
     /// The live transport for this client: libcurl HTTPS with the account headers and token.
     /// A `devtriggers` build REFUSES a `PUT` with [`WatchlistError::Refused`] unless the
-    /// discover stand-in is armed.
+    /// discover stand-in or the owner's live switch is armed ([`permit_write`]); a write that goes
+    /// out logs its status ([`write_line`]).
     pub fn watchlist_transport(&self) -> impl FnMut(&WatchRequest) -> Result<WatchResponse, WatchlistError> + '_ {
         move |req: &WatchRequest| -> Result<WatchResponse, WatchlistError> {
             let dev = cfg!(feature = "devtriggers");
             let (armed, live) = (stand_in_armed(), live_armed());
             if let Err(e) = permit_write(req.method, dev, armed, live) {
                 plx_base::eventlog::log(&format!(
-                    "watchlist: {} {} refused (dev build, discover stand-in not armed)",
+                    "watchlist: {} {} refused (dev build: neither the discover stand-in nor the live switch is armed)",
                     req.method, endpoint_shape(&req.url)));
                 LAST_WRITE_REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return Err(e);

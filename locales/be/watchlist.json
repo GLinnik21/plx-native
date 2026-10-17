@@ -41,5 +41,6 @@
   "watchlist.empty.list_body": "Назвы, якія вы дадаяце ў спіс для прагляду на любой прыладзе, з’явяцца тут.",
   "watchlist.empty.filtered_body": "Змяніце «Сартаванне і фільтр», каб убачыць астатнюю частку спісу для прагляду.",
   "watchlist.empty.unreachable": "Не ўдалося атрымаць доступ да спісу для прагляду",
-  "watchlist.detail.trailer": "Трэйлер"
+  "watchlist.detail.trailer": "Трэйлер",
+  "watchlist.page.debug_write_blocked": "Наладка: запіс у спіс заблакіраваны"
 }

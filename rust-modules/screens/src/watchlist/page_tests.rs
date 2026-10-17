@@ -886,7 +886,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
 
 #[test]
 fn a_refused_write_draws_the_debug_cue_under_the_title_until_a_write_goes_out() {
-    let cue = super::header::DEV_BLOCKED.to_str().unwrap();
+    let cue = super::header::dev_blocked_text().to_str().unwrap();
     let mut h = Harness::new(tiles(6));
     assert!(!h.draw_texts().iter().any(|(t, _)| t == cue), "no cue before any refusal");
     h.screen.input(WatchlistIn::DevBlocked(true));
@@ -902,7 +902,7 @@ fn a_refused_write_draws_the_debug_cue_under_the_title_until_a_write_goes_out() 
 fn the_debug_cue_is_compiled_only_into_a_devtriggers_build() {
     // The shipping feature set (nightly, stable) must not be able to draw or feed it (Q8).
     for (file, src, anchor) in [
-        ("header.rs", include_str!("header.rs"), "pub const DEV_BLOCKED"),
+        ("header.rs", include_str!("header.rs"), "pub fn dev_blocked_text"),
         ("header.rs", include_str!("header.rs"), "pub fn draw_dev_blocked"),
         ("page.rs", include_str!("page.rs"), "if self.dev_blocked {"),
     ] {

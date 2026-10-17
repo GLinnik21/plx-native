@@ -40,5 +40,6 @@
   "watchlist.empty.list_body": "Los títulos que añadas a tu lista de seguimiento desde cualquier dispositivo aparecen aquí.",
   "watchlist.empty.filtered_body": "Cambia Ordenar y filtrar para ver el resto de tu lista de seguimiento.",
   "watchlist.empty.unreachable": "No se puede acceder a tu lista de seguimiento",
-  "watchlist.detail.trailer": "Tráiler"
+  "watchlist.detail.trailer": "Tráiler",
+  "watchlist.page.debug_write_blocked": "Depuración: escritura en la lista bloqueada"
 }

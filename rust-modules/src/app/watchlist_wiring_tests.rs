@@ -323,9 +323,9 @@ fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
     set_veil(0.0);
 }
 
-/// Q8 and Q11: the write fails (plex.tv unreachable, or a debug build whose discover stand-in is not
-/// armed refusing it). The tile went at the press and comes back when the write answers; nothing
-/// else is drawn.
+/// Q8: the write fails (plex.tv unreachable; this script's io refuses it). The tile went at the press
+/// and comes back when the write answers; nothing else is drawn. (A debug build's own failsafe
+/// refusal also draws the header's debug cue, `the_debug_write_cue_is_fed_only_in_a_devtriggers_build`.)
 #[test]
 fn a_write_that_fails_puts_the_tile_back_with_nothing_said() {
     let _serial = plx_base::testlock::serial();

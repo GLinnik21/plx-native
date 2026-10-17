@@ -84,7 +84,7 @@ the status and the endpoint SHAPE only: no token, and no id beyond what is scrub
 refused and logged (`WatchlistError::Refused`) unless the loopback stand-in named by
 `/tmp/plxnative-discover` is armed (the stand-in then takes the write) or the owner's live switch is on;
 the UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
-goes out (`header::DEV_BLOCKED`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
+goes out (`header::dev_blocked_text`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
 silence). Release builds write. Host tests never reach curl: they drive the request closure.
 
 **The live switch** is `plxnative-watchlist-live` in the install's runtime root (on the television
