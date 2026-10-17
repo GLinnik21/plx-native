@@ -189,6 +189,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_base::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
         clock_and_press(app, fr);
         plx_base::diag::spans::span("land", || unsafe { land_results(app, fr) });
+        note_video_playing(app);
         app.instr.mark(plx_base::diag::heartbeat::Phase::Results); // results
         // **Was the player the page on top going INTO this frame?** The container's own commit
         // may take it off during `bridge::frame_with_tap` below, and the detail page it uncovers
@@ -1539,6 +1540,23 @@ fn park_playback(app: &mut App) {
     // Also retire the resolve generation: its worker may finish after backgrounding,
     // including before the accepted start's Player page has ever mounted.
     plx_media::route::cancel_play(&mut app.player.session);
+}
+
+/// **What the television's screensaver is told** (`plx_platform::tv::screensaver`): a video, or a
+/// detail page's trailer, PLAYING says not now; a paused one, and every other screen, lets it come
+/// on. One relaxed store a frame; the port's agent reads it whenever the television asks.
+fn note_video_playing(app: &App) {
+    plx_platform::tv::screensaver::set_video_playing(video_playing(app));
+}
+
+/// Is a picture moving on screen: the player route not paused, or a live, unpaused trailer preview.
+fn video_playing(app: &App) -> bool {
+    if matches!(app.route(), AppArg::Player) {
+        return !plx_media::player::lifecycle::paused();
+    }
+    plx_media::route::is_preview(&app.player.session)
+        && app.adapters.player.is_live()
+        && !plx_media::player::preview::paused()
 }
 
 /// **The pipeline took the video decoder back** (`player::take_decoder_revoked`): park the session
@@ -4612,6 +4630,17 @@ mod lifecycle_regression_tests {
         assert!(!rig.app.player.lifecycle.awaiting_load(), "the press claimed the restore");
         assert!(rig.app.inputs.is_empty(), "…and was spent on it, not handed to the page");
         assert!(!claim_press_after_decoder_release(&mut rig.app), "the next press is ordinary");
+    }
+
+    /// **Home with nothing playing lets the television's screensaver come on**, and the frame
+    /// loop says so to the port's agent every frame.
+    #[test]
+    fn home_tells_the_screensaver_nothing_is_playing() {
+        let _serial = plx_base::testlock::serial();
+        let app = app();
+        plx_platform::tv::screensaver::set_video_playing(true);
+        note_video_playing(&app);
+        assert!(!plx_platform::tv::screensaver::video_playing());
     }
 
     /// **A surface open over the parked player gets its own press, not the restore.**

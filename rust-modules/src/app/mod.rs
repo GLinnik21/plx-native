@@ -496,6 +496,10 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
     // Last: the worker must observe every boot-time environment/trigger mutation above, while a
     // controlled replay which deliberately skips this preflight keeps the conservative Unknown.
     plx_platform::tv::start_capability_probe();
+    // The television's own screensaver asks before it starts; the app answers from the playback
+    // state the frame loop keeps (`run::note_video_playing`). Like the probe above, a controlled
+    // replay skips this preflight, so a replay never answers the set.
+    plx_platform::tv::screensaver::start();
     telemetry_guard
 }
 

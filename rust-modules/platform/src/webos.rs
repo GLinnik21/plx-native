@@ -39,6 +39,7 @@ use crate::tv::device::{Hardware, Info, NyxFile};
 pub mod jail_repair;
 pub mod caps;
 pub mod toast;
+pub mod screensaver;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
@@ -622,6 +623,19 @@ pub mod ls2 {
             token: *mut libc::c_ulong,
             error: *mut LSError,
         ) -> bool;
+        /// `LSCallFromApplicationOneReply`'s many-reply twin: a SUBSCRIPTION, every reply
+        /// dispatched to `callback` for as long as the handle lives. `luna-service2/lunaservice.h`;
+        /// exported by the same `libluna-service2.so.3` as the one-reply calls above.
+        fn LSCallFromApplication(
+            handle: *mut c_void,
+            uri: *const c_char,
+            payload: *const c_char,
+            application_id: *const c_char,
+            callback: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+            context: *mut c_void,
+            token: *mut libc::c_ulong,
+            error: *mut LSError,
+        ) -> bool;
         fn LSCallCancel(handle: *mut c_void, token: libc::c_ulong, error: *mut LSError) -> bool;
         fn LSMessageGetPayload(message: *mut c_void) -> *const c_char;
         fn LSUnregister(handle: *mut c_void, error: *mut LSError) -> bool;
@@ -640,6 +654,30 @@ pub mod ls2 {
                 *(context as *mut Option<String>) =
                     Some(CStr::from_ptr(payload).to_string_lossy().into_owned());
             }
+        }
+        true
+    }
+
+    /// A subscription's reply queue: every payload [`Registration::subscribe_as_app`]'s handle
+    /// dispatches, in order, until [`Feed::take`] collects them.
+    pub struct Feed(&'static std::sync::Mutex<Vec<String>>);
+
+    impl Feed {
+        /// The payloads delivered since the last take.
+        pub fn take(&self) -> Vec<String> {
+            std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+    }
+
+    extern "C" fn on_each(_h: *mut c_void, message: *mut c_void, context: *mut c_void) -> bool {
+        if context.is_null() || message.is_null() {
+            return true;
+        }
+        let payload = unsafe { LSMessageGetPayload(message) };
+        if !payload.is_null() {
+            let queue = unsafe { &*(context as *const std::sync::Mutex<Vec<String>>) };
+            let text = unsafe { CStr::from_ptr(payload) }.to_string_lossy().into_owned();
+            queue.lock().unwrap_or_else(|e| e.into_inner()).push(text);
         }
         true
     }
@@ -809,6 +847,50 @@ pub mod ls2 {
             budget: Duration,
         ) -> Result<String, Fail> {
             self.call_with(uri, payload, Some(app_id), budget)
+        }
+
+        /// **A subscription**, sent with `app_id` attached as its application id: every reply the
+        /// service sends lands in the returned [`Feed`] as [`wait`](Self::wait) dispatches it.
+        ///
+        /// The queue is leaked, once per subscription, on purpose: the hub may dispatch into it for
+        /// as long as this handle is registered, and a subscription is held for the life of the
+        /// process, so there is no point at which freeing it would be safe and useful.
+        pub fn subscribe_as_app(&self, uri: &str, payload: &str, app_id: &str) -> Result<Feed, Fail> {
+            let setup = |stage| Fail::Setup { stage, detail: String::new(), code: None };
+            let uri = CString::new(uri).map_err(|_| setup("uri"))?;
+            let payload = CString::new(payload).map_err(|_| setup("payload"))?;
+            let app_id = CString::new(app_id).map_err(|_| setup("app-id"))?;
+            let queue: &'static std::sync::Mutex<Vec<String>> = Box::leak(Box::default());
+            let mut error: LSError = unsafe { std::mem::zeroed() };
+            unsafe { LSErrorInit(&mut error) };
+            let mut token = 0;
+            let called = unsafe {
+                LSCallFromApplication(
+                    self.handle,
+                    uri.as_ptr(),
+                    payload.as_ptr(),
+                    app_id.as_ptr(),
+                    on_each,
+                    queue as *const _ as *mut c_void,
+                    &mut token,
+                    &mut error,
+                )
+            };
+            if !called {
+                let code = Some(error.error_code);
+                let detail = error_text(&error);
+                unsafe { LSErrorFree(&mut error) };
+                return Err(Fail::Setup { stage: "call", detail, code });
+            }
+            unsafe { LSErrorFree(&mut error) };
+            Ok(Feed(queue))
+        }
+
+        /// Block until this registration's context has something to dispatch, and dispatch it.
+        /// For a thread that does nothing but hold a subscription.
+        pub fn wait(&self) {
+            let _block = plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("LS2 subscription wait") });
+            unsafe { g_main_context_iteration(self.context, 1) };
         }
 
         /// The one reply-slot / timeout / cancel path both public calls share.

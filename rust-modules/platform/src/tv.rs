@@ -2,6 +2,7 @@
 pub mod device;
 pub mod home;
 pub mod sandbox;
+pub mod screensaver;
 pub mod secure;
 pub mod sink;
 pub mod toast;
@@ -39,6 +40,8 @@ pub struct Port {
     pub frame_probe_waiting: fn(),
     pub frame_probe_acquired: fn(),
     pub frame_probe_fields: fn() -> String,
+    /// Start answering the television's own screensaver requests (`screensaver`).
+    pub start_screensaver: fn(),
     /// The Starfish-shaped verb sink (see `sink::VideoSink`); the OS-neutral sink is step L15b.
     /// Read only by [`sink::installed`], the one way out of `tv` for it.
     pub sink: &'static dyn sink::VideoSink,
@@ -73,6 +76,7 @@ static ABSENT: Port = Port {
     frame_probe_waiting: nothing,
     frame_probe_acquired: nothing,
     frame_probe_fields: String::new,
+    start_screensaver: nothing,
     sink: &sink::NoSink,
 };
 

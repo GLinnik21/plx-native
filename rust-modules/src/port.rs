@@ -37,6 +37,7 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     frame_probe_waiting: crate::system::frame_probe_waiting,
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,
+    start_screensaver: plx_platform::webos::screensaver::start,
     sink: SINK,
 };
 
