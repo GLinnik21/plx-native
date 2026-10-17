@@ -949,6 +949,29 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
         }
     }
 
+    /// The interiors of every grid section's opaque cards ([`Grid::ground_cuts`]), in the page
+    /// painter's space: what a screen's ground may skip. Empty when the page is not fully opaque
+    /// (`f.page_alpha < 1`), whatever else holds.
+    pub fn ground_cuts<H: Host>(&self, f: &DrawFrame<'_, '_, H>) -> Vec<Rect>
+    where
+        P: StackPage<H, Key = K>,
+    {
+        let (s, page) = (self.stack, self.page);
+        if f.page_alpha < 1.0 {
+            return Vec::new();
+        }
+        let p = f.painter.alpha(f.page_alpha);
+        let mut cuts = Vec::new();
+        for i in 0..s.specs.len() {
+            if let (Kind::Grid { .. }, Body::Grid(g)) = (&s.specs[i].kind, &s.bodies[i]) {
+                if let Some(src) = page.cards(f.cx, s.specs[i].key) {
+                    cuts.extend(g.ground_cuts(f, p, &src));
+                }
+            }
+        }
+        cuts
+    }
+
     pub fn paint<H: Host>(&self, f: &mut DrawFrame<'_, '_, H>)
     where
         P: StackPage<H, Key = K>,

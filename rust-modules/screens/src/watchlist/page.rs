@@ -638,6 +638,14 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 }
 
+/// The wash's rate for the ease that follows a Remove's landing: eight times the shared
+/// `AmbientWash::K` (80). The cost is the frames on which a drawn 8-bit code changes (each
+/// re-blurs the tab strip's glass, so the page is drawn twice), and that count falls with `ln k`,
+/// not `1/sqrt(k)`: measured in the sim, 4x left 0.63 of the frames and 8x leaves 0.45 (35-37
+/// down to 16 double-drawn frames). Only this screen's post-landing ease uses it; focus moves and
+/// every other page keep the shared rate.
+const POST_REMOVE_EASE_K: f32 = 8.0 * AmbientWash::K;
+
 pub struct WatchlistScreen {
     page: Page,
     /// The page's layout, one scroll, groups, reconcile and the grid (`ui::cards::Stack`).
@@ -646,6 +654,9 @@ pub struct WatchlistScreen {
     ground_seeded: bool,
     /// The target last handed to the wash: what a Remove's landing holds it at.
     ground_applied: [[f32; 4]; 4],
+    /// A landing held the wash, so the ease that follows it runs at [`POST_REMOVE_EASE_K`] until it
+    /// has reached its target.
+    ground_catching_up: bool,
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
@@ -688,6 +699,7 @@ impl WatchlistScreen {
             ground: PageGround::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
+            ground_catching_up: false,
             focus: 0,
         }
     }
@@ -832,7 +844,7 @@ impl WatchlistScreen {
     /// **Held while a Remove's landing is in flight**: the wash eases one 8-bit step a frame, and
     /// every step invalidates the tab strip's glass, so the page is drawn twice for each landing
     /// frame. The target stays at what the wash was last given; once the landing ends it eases to
-    /// the newly focused title as usual.
+    /// the newly focused title at [`POST_REMOVE_EASE_K`] (until it is at rest, then the shared rate).
     fn ground_target(&self) -> [[f32; 4]; 4] {
         if self.ground_seeded && self.landing_in_flight() {
             return self.ground_applied;
@@ -886,10 +898,21 @@ impl WatchlistScreen {
             self.page.ghosts.clear();
         }
         self.release_count_hold();
+        let held = self.ground_seeded && self.landing_in_flight();
         let target = self.ground_target();
         self.ground_applied = target;
+        if held {
+            self.ground_catching_up = true;
+        }
         if self.ground_seeded {
-            self.ground.key_target(target, t.dt());
+            if self.ground_catching_up {
+                self.ground.key_target_k(target, POST_REMOVE_EASE_K, t.dt());
+                if !held && self.ground.at_rest_on(target) {
+                    self.ground_catching_up = false;
+                }
+            } else {
+                self.ground.key_target(target, t.dt());
+            }
         } else {
             self.ground.jump_target(target);
             self.ground_seeded = true;
@@ -952,6 +975,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn ground_goal(&self) -> [[f32; 4]; 4] {
         self.ground_target()
+    }
+
+    /// Test support: the wash's corners as the 8-bit codes the GPU is sent.
+    #[cfg(test)]
+    pub(crate) fn ground_codes(&self) -> Vec<i32> {
+        self.ground.corners().iter().flatten().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as i32).collect()
     }
 
     /// Test support: the leaving copies the grid draws, `(index, rect, alpha)`.
@@ -1136,7 +1165,14 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
         // resolved to the flat app surface (the read-outs) because this clear already painted it.
         plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter.alpha(f.page_alpha);
-        self.ground.draw(p, Rect::FULL);
+        // The ground skips the interiors of the cards that draw opaque over it (a scissor cut; the
+        // picture is identical, `PageGround::draw_cut`). `/tmp/plxnative-groundcut` = `0` turns it off.
+        if plx_ui::widgets::ground_cut_on() {
+            let cuts = self.stack.view(&self.page).ground_cuts(f);
+            self.ground.draw_cut(p, Rect::FULL, &cuts);
+        } else {
+            self.ground.draw(p, Rect::FULL);
+        }
         self.stack.view(&self.page).paint(f);
     }
     fn render(&self) -> RenderStrategy {

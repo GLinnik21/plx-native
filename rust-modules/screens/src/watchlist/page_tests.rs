@@ -663,7 +663,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
 }
 
 /// **A Remove holds the colour wash until the grid's landing ends.** The wash eases one 8-bit step
-/// a frame toward the newly focused title, which invalidates the tab strip's glass on every
+/// a frame (at the shared rate) toward the newly focused title, which invalidates the tab strip's glass on every
 /// landing frame (the page is drawn twice for it); during the landing the target stays at the
 /// pre-Remove colours, and afterwards eases to the title that took the removed one's place.
 #[test]
@@ -698,6 +698,74 @@ fn a_remove_holds_the_wash_target_until_the_landing_ends() {
     let after = h.screen.ground_goal();
     assert_ne!(after, before, "after the landing the wash goes to the new title");
     assert_ne!(after, [theme::SURFACE_APP; 4]);
+}
+
+/// **The ease after a Remove's landing changes the drawn wash on about half the frames of an
+/// ordinary dissolve.** Each frame the drawn 8-bit code changes re-blurs the tab strip's glass (the page is drawn twice), so
+/// the wash that was held through the landing catches up at a faster, Watchlist-only rate; every
+/// other ground keeps `AmbientWash::K`.
+#[test]
+fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::containers::modal::set_veil;
+    use plx_ui::widgets::PageGround;
+    set_veil(0.0);
+    let mut rows = tiles(12);
+    for (i, t) in rows.iter_mut().enumerate() {
+        let c = if i % 2 == 0 { 10 } else { 245 };
+        t.copy.as_mut().unwrap().blur = Some([[c, 255 - c, 128]; 4]);
+    }
+    let mut h = Harness::new(rows);
+    h.focus_index(2);
+    h.run(5);
+    let before = h.screen.ground_goal();
+    h.landing(Landing::RemoveFocused).unwrap();
+    for _ in 0..200 {
+        h.run(1);
+        h.reconcile();
+        if !h.screen.landing_in_flight() {
+            break;
+        }
+    }
+    // The frames after the landing's end on which a drawn code changes: each is a double-drawn one.
+    let (mut last, mut frames, mut quiet) = (h.screen.ground_codes(), 0, 0);
+    for _ in 1..400 {
+        h.run(1);
+        let now = h.screen.ground_codes();
+        if now != last {
+            frames += 1;
+            quiet = 0;
+            last = now;
+        } else {
+            quiet += 1;
+            if quiet > 30 {
+                break;
+            }
+        }
+    }
+    let after = h.screen.ground_goal();
+    // The ordinary dissolve over the same colours.
+    let code = |g: &PageGround| g.corners().iter().flatten().map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as i32).collect::<Vec<_>>();
+    let mut g = PageGround::new();
+    g.jump_target(before);
+    let (mut glast, mut gframes, mut gquiet) = (code(&g), 0, 0);
+    for _ in 1..400 {
+        g.key_target(after, 16_667e-6);
+        let now = code(&g);
+        if now != glast {
+            gframes += 1;
+            gquiet = 0;
+            glast = now;
+        } else {
+            gquiet += 1;
+            if gquiet > 30 {
+                break;
+            }
+        }
+    }
+    assert!(gframes >= 10, "premise: the ordinary dissolve is long ({gframes})");
+    assert!(frames * 10 <= gframes * 6, "the post-Remove ease changed the drawn wash on {frames} frames against the ordinary {gframes}");
+    assert!(frames * 10 >= gframes * 2, "and not a snap: {frames} against {gframes}");
 }
 
 /// A Remove no menu veiled starts its landing at once, so the count follows on the first frame.
