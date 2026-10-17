@@ -2579,11 +2579,37 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// The tab band publishes the shared face on `GlassPlan`; both surfaces automatically declare
 /// their current rectangles in the same chrome layer. The planner captures their union once,
 /// and separates their z bands automatically if their sampling regions overlap.
-fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) -> bool {
+///
+/// **`frozen` is the opener lift's ground** (`redraw_profile_chip`, the account menu up): the
+/// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
+/// the host snapshot behind its rim and no dim (it is drawn above the dim), and requests no
+/// backdrop entry and no blur source pass. A field that has not latched yet answers `false`, the
+/// flat capsule's cue. The chip on the tab strip passes `None` and keeps the live glass.
+fn chip_capsule(
+    p: Painter,
+    cap: Rect,
+    e: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    frozen: Option<&crate::underlay::UnderlayField>,
+) -> bool {
     let face = match bar_material {
         None => return false,
         Some(f) => chip_face(f, e),
     };
+    if let Some(field) = frozen {
+        let Some(ground) = field.ground_tex() else { return false };
+        let sharp = crate::popover::host::page_tex().unwrap_or(0);
+        return p.glass_frozen(
+            cap,
+            cap.h * 0.5,
+            ground,
+            sharp,
+            None,
+            [1.0, 1.0, 1.0, e],
+            plx_gfx::gfx::GlassRim::Standing,
+            face,
+        );
+    }
     Glass::DYNAMIC_BACKDROP.backdrop(
         p,
         cap,
@@ -2679,6 +2705,19 @@ pub fn profile_chip_text(
 /// its bare-`fn` lift receive those same owner publications rather than recovering either through
 /// a static.
 pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) {
+    profile_chip_on(p, data, chip_expand, bar_material, None);
+}
+
+/// [`profile_chip_with`] on a chosen ground for its capsule: `frozen` is the latched underlay field
+/// of the modal stack the chip is lifted over ([`redraw_profile_chip`]), `None` the live tab-strip
+/// glass.
+fn profile_chip_on(
+    p: Painter,
+    data: ProfileChipRead<'_>,
+    chip_expand: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    frozen: Option<&crate::underlay::UnderlayField>,
+) {
     let r = CHIP_FRAME;
     let expand = chip_expand;
     let d = r.w;
@@ -2701,7 +2740,7 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !chip_capsule(p, cap, 1.0, bar_material) {
+        if !chip_capsule(p, cap, 1.0, bar_material, frozen) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -2790,6 +2829,12 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 /// top band holds still while pages swap under it. A lift on the wrong alpha would make the chip
 /// flicker through a route change that nothing else on the bar reacts to.
 ///
+/// **The lift's capsule stands on FROZEN ground** (owner rule, 2026-10-17: no live-refracting glass
+/// over a page): while the menu is up the capsule is `Painter::glass_frozen` over the stack's
+/// latched underlay field (`ScrimLiftRead::field`), its rim bending the host snapshot, and it
+/// requests no backdrop entry or blur source pass. Before the field has latched it is the flat
+/// capsule. The chip on the tab strip, with no menu up, stays live glass.
+///
 /// [`crate::screen::ScrimLiftRead`] is `Scrim::lift`'s own argument (spec phase 12,
 /// PX-WIDGETS). Its `ChromeRead` borrows the captured profile, labels and unfurl from
 /// `Rig::scrim_chrome_read`; its material is the face the same frame's `GlassPlan` received from
@@ -2799,11 +2844,12 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 /// [`Opener`]: crate::popover::Opener
 pub fn redraw_profile_chip(read: crate::screen::ScrimLiftRead<'_>) {
     let Some(chrome) = read.chrome else { return };
-    crate::guard(|| profile_chip_with(
+    crate::guard(|| profile_chip_on(
         Painter::root().alpha(crate::nav::chrome_alpha()),
         chrome.profile,
         chrome.chip_expand,
         read.bar_material,
+        read.field,
     ));
 }
 

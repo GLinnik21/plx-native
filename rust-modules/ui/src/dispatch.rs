@@ -264,6 +264,7 @@ pub fn scrim_lift_read<'a, H: Host>(
     super::screen::ScrimLiftRead {
         chrome: rig.scrim_chrome_read(),
         bar_material: glass.and_then(super::frame::glass::GlassPlan::tab_face),
+        field: None,
     }
 }
 

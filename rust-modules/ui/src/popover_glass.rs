@@ -376,6 +376,66 @@ pub(crate) mod tests {
         unlatch(tex);
     }
 
+    /// **The profile chip's opener lift stands on frozen ground too.** The account menu lifts the
+    /// chip back out of its dim (`Scrim::lifting`, drawn in `Z::DIM`); that capsule was a live
+    /// `Glass::DYNAMIC_BACKDROP` whose source was the re-rendered page (the `src` job, three
+    /// frames per open and per close). With the stack's latched field handed through
+    /// `ScrimLiftRead::field` it requests no backdrop entry and no job, on every frame of an open,
+    /// a stay and a close, and declares one `glass_frozen` for the capsule. Red on the live lift.
+    #[test]
+    fn the_chip_lift_stands_on_frozen_ground_and_asks_for_nothing() {
+        use crate::frame::backdrop::{commit, discover, layer, Sources, Z};
+        let _g = plx_base::testlock::serial();
+        let tex = 9_745;
+        let field = latched(tex);
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
+        let profile = crate::widgets::ProfileChipRead { src: 0, thumb: "", initial: c"G", name: c"Guest", name_w: 60.0 };
+        let face = crate::widgets::chip_face(FACE, 1.0);
+        let read = crate::screen::ScrimLiftRead {
+            chrome: Some(crate::widgets::ChromeRead {
+                profile,
+                labels: crate::widgets::TabLabels { generation: 0, faces: &[] },
+                chip_expand: 0.0,
+            }),
+            bar_material: Some(face),
+            field: Some(&field),
+        };
+        let lift = |read| layer_dim(|| crate::widgets::redraw_profile_chip(read));
+        fn layer_dim(f: impl FnOnce()) {
+            let _dim = layer(Z::DIM, false);
+            f();
+        }
+        // open (ramping dim), stay (page re-rendering), close (dim ramping down)
+        for (i, alpha) in [0.05_f32, 0.15, 0.3, 0.3, 0.3, 0.2, 0.1, 0.0].into_iter().enumerate() {
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = Painter::root();
+                p.rect(Rect::FULL, 0.0, [(i % 3) as f32 * 0.2, 0.3, 0.4, 1.0], [0.1, 0.3, 0.4, 1.0], 0.0);
+                {
+                    let _dim = layer(Z::DIM, false);
+                    field.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, alpha);
+                }
+                lift(read);
+            }
+            let live = {
+                let mut s = sources.borrow_mut();
+                s.resolve();
+                !s.entries.is_empty() || !s.jobs().is_empty()
+            };
+            commit(&sources);
+            assert!(!live, "frame {i}: the chip lift asks for no backdrop entry and no job");
+            let glass = declared_glass(|| lift(read));
+            assert_eq!(glass.len(), 1, "frame {i}: the capsule is one frozen glass");
+        }
+        // The field not latched yet: the flat capsule, still no live glass.
+        let unlatched = crate::underlay::UnderlayField::new();
+        let none = crate::screen::ScrimLiftRead { field: Some(&unlatched), ..read };
+        let all = declared_all(|| lift(none));
+        assert!(all.iter().all(|p| p.kind() != "glass_frozen" && p.kind() != "backdrop"), "flat fallback");
+        unlatch(tex);
+    }
+
     /// **The rim's sharp source is the host snapshot**: `draw` hands the glass whatever
     /// `popover::host::page_tex` holds (0 when it holds no undimmed page), and nothing else — the
     /// glass takes no picture of its own.
