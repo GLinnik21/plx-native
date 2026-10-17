@@ -24,7 +24,7 @@ pub enum Membership {
     Unknown,
 }
 
-/// What the status line says, and so which icon it wears (clock / server-slash / none).
+/// What the status line says, and so which icon it wears (clock / circle-slash / server-slash / none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CatalogStatus {
     /// Nothing to say: no icon.
@@ -32,7 +32,7 @@ pub enum CatalogStatus {
     None,
     /// Not released yet: the clock icon (and the 'Coming <date>' line when `release_date` is set).
     ComingSoon,
-    /// Released, and no reachable server holds a copy: the server-slash icon.
+    /// Released, and no reachable server holds a copy: the circle-slash icon.
     NotOnAnyServer,
     /// A copy was matched, and every server holding it is unreachable now: the server-slash icon
     /// and "Server offline" (the date says nothing of this; the Watchlist's tile state does).

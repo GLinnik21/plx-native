@@ -46,7 +46,19 @@
 //! menu's cached host on every frame of the fade (`popover::host_refresh`), and a glass menu
 //! rebuilt its blur source from the moving page. While the landing waits under the veil it reports
 //! no motion at all (the fading menu presents those frames). A landing no menu ever veiled starts
-//! on its first frame.
+//! at once: the frame it begins in draws the start state (`fresh`: a grid does not step on it, so
+//! the first drawn frame is the frame before the change), and the next one moves.
+//!
+//! **A menu may let the page reflow.** A surface whose body answers
+//! `Screen::lets_host_reflow` (the Watchlist's Sort & Filter menu) casts no veil, so its choices'
+//! landings play under it, with the host cache following the page live
+//! (`popover::host::set_reflow`) and recaptured once when the cards stop.
+//!
+//! **Where cards stand while they move.** A card drawn over another is a bug at rest and in flight:
+//! the grid paints the leaving copies and ghosts, then the still cards, then the movers by the
+//! length of their way (old slot to new, fixed when the landing began, the longest on top), then the
+//! focused card; a new card stays at alpha 0 while a moving survivor's straight path crosses its cell
+//! ([`Occupancy`]).
 //!
 //! **Layout motion and the held page image.** These springs move layout, so they are not
 //! `idle::decorative`: while they run the dispatcher keeps a page image held. A landing that
@@ -56,7 +68,7 @@
 //! the first tick after the image is released.
 //!
 //! The springs step on the frame's own `dt` through [`Spring::step`](crate::Spring::step); the
-//! Remove lands on the first feed after the menu's veil drops below `CLOSING_GONE`; no timer counts
+//! Remove lands on the first feed after the hold menu's veil drops below `CLOSING_GONE`; no timer counts
 //! the wait. No wall clock is read.
 //! The state is transient render history: it is never written to the motion canon, and a
 //! replay reconstructs it by running the same ticks.
@@ -111,6 +123,10 @@ pub(crate) struct Scene<'a> {
 struct Slide {
     x: Spring,
     y: Spring,
+    /// How far the card travels in all, px squared (only the order matters): the length of its path from where it stood on screen
+    /// to its new slot, fixed when the landing begins. The longer path draws on top
+    /// ([`Landing::travel`]), and the rank never changes mid-flight.
+    travel: f32,
 }
 
 impl Slide {
@@ -169,15 +185,26 @@ pub(crate) struct Landing {
     anim: Option<Anim>,
     /// The last [`step`](Self::step) did not advance anything (veiled, or under a held page image).
     paused: bool,
+    /// The landing began in the tick that is now drawing and has not yet been stepped: its first
+    /// step is skipped, so the first drawn frame is exactly the start state.
+    fresh: bool,
+    /// The owner draws the frame a landing begins in as the start state ([`fresh`](Self::fresh)):
+    /// a grid does, a shelf steps on it.
+    hold_first: bool,
 }
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false, fresh: false, hold_first: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
         self.on = on;
+    }
+
+    /// The frame a landing begins in only draws the start state; the springs step from the next.
+    pub(crate) const fn hold_first_frame(&mut self, on: bool) {
+        self.hold_first = on;
     }
 
     /// Take the cards as they are, with nothing to play (a first load, a dormant section, a slid window).
@@ -191,6 +218,7 @@ impl Landing {
         self.shift = (0.0, 0.0);
         self.anim = None;
         self.paused = false;
+        self.fresh = false;
     }
 
     /// Take the cards as they are and drop whatever is playing (a dormant section).
@@ -264,6 +292,14 @@ impl Landing {
             .and_then(|a| a.off.get(self.keys.get(i)?)).map_or((0.0, 0.0), |s| (s.x.pos, s.y.pos))
     }
 
+    /// How far card `i` of `n` travels from where it stood to its slot, px squared, while it is moving
+    /// (a survivor that slides): fixed when the landing began, so a draw order keyed on it holds
+    /// still all flight. `None` for a card that is not moving.
+    pub(crate) fn travel(&self, n: usize, i: usize) -> Option<f32> {
+        self.anim.as_ref().filter(|a| a.n == n && !a.off.is_empty())
+            .and_then(|a| a.off.get(self.keys.get(i)?)).map(|s| s.travel)
+    }
+
     /// Card `i`'s alpha of `n` cards: 1 unless it is arriving.
     pub(crate) fn alpha(&self, n: usize, i: usize) -> f32 {
         self.anim.as_ref().filter(|a| a.n == n && !a.fade.is_empty())
@@ -335,7 +371,7 @@ impl Landing {
                 continue;
             }
             if seen && (start.0.abs() >= 0.5 || start.1.abs() >= 0.5) {
-                next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1) });
+                next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1), travel: start.0 * start.0 + start.1 * start.1 });
             }
             if let Some(s) = prev.fade.get(&k) {
                 next.fade.insert(k, *s);
@@ -364,6 +400,7 @@ impl Landing {
             self.paused = false;
         }
         self.anim = (!next.empty()).then_some(next);
+        self.fresh = self.hold_first && self.anim.is_some();
         self.keys = new;
         self.loaded = (0..n).any(|i| src.loaded(i));
         self.window = (src.global(0), src.page_epoch());
@@ -371,24 +408,56 @@ impl Landing {
     }
 
     /// One frame of the animation. Nothing steps while the page is a held image (the first live
-    /// frame after it shows the start state), nor while a menu veils the page (module doc).
-    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32)) {
+    /// frame after it shows the start state), nor while a menu veils the page (module doc). The
+    /// frame a landing begins in only draws the start state (`fresh`), so a change that landed
+    /// after the previous tick never shows its end before it moves. `occupy` is the grid's
+    /// cells: an arriving card waits at alpha 0 until no moving survivor's straight path crosses
+    /// its cell.
+    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32), occupy: Option<&Occupancy<'_>>) {
         let Some(a) = self.anim.as_mut() else { return };
         self.paused = true;
-        if crate::containers::transition::page_image_held() {
-            return;
-        }
-        if crate::containers::modal::page_veiled() {
-            // the menu's own fade presents these frames: nothing of the page moves under it
+        if crate::containers::transition::page_image_held() || crate::containers::modal::page_veiled() {
+            // a held image, or the menu's own fade presenting these frames: nothing of the page
+            // moves, and what is drawn meanwhile IS the start state, so the first live step is
+            // not skipped
+            self.fresh = false;
             return;
         }
         self.paused = false;
+        if std::mem::take(&mut self.fresh) {
+            return;
+        }
         for s in a.off.values_mut() {
             s.x.step(0.0, k.0, dt);
             s.y.step(0.0, k.0, dt);
         }
-        for s in a.fade.values_mut() {
-            s.step(1.0, k.1, dt);
+        // a card that has not begun to appear waits while a survivor is, or will be, in its cell
+        let blocked: Vec<u64> = occupy.map_or_else(Vec::new, |o| {
+            let sweeps: Vec<(f32, f32, f32, f32)> = a
+                .off
+                .iter()
+                .filter_map(|(k, s)| {
+                    let at = o.slot_of(self.keys.iter().position(|x| x == k)?);
+                    let (x0, x1) = (at.0.min(at.0 + s.x.pos), at.0.max(at.0 + s.x.pos));
+                    let (y0, y1) = (at.1.min(at.1 + s.y.pos), at.1.max(at.1 + s.y.pos));
+                    Some((x0, y0, x1 + o.size.0, y1 + o.size.1))
+                })
+                .collect();
+            // (a card that changed row crossfades from where it stood: it is not new)
+            a.fade
+                .iter()
+                .filter(|(k, s)| s.pos <= 0.0 && !a.wrap.contains_key(*k))
+                .filter_map(|(k, _)| {
+                    let at = o.slot_of(self.keys.iter().position(|x| x == k)?);
+                    let (cx1, cy1) = (at.0 + o.size.0, at.1 + o.size.1);
+                    sweeps.iter().any(|&(x0, y0, x1, y1)| x0 < cx1 - 1.0 && x1 > at.0 + 1.0 && y0 < cy1 - 1.0 && y1 > at.1 + 1.0).then_some(*k)
+                })
+                .collect()
+        });
+        for (key, s) in a.fade.iter_mut() {
+            if !blocked.contains(key) {
+                s.step(1.0, k.1, dt);
+            }
         }
         for g in a.ghosts.iter_mut() {
             g.alpha.step(0.0, k.1, dt);
@@ -398,5 +467,18 @@ impl Landing {
         if a.empty() {
             self.anim = None;
         }
+    }
+}
+
+/// The grid's cells, for [`Landing::step`]'s new-card hold: where card `i` stands (document
+/// px) and how large a card is.
+pub(crate) struct Occupancy<'a> {
+    pub slot: &'a dyn Fn(usize) -> (f32, f32),
+    pub size: (f32, f32),
+}
+
+impl Occupancy<'_> {
+    fn slot_of(&self, i: usize) -> (f32, f32) {
+        (self.slot)(i)
     }
 }

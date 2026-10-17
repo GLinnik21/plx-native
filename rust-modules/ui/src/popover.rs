@@ -5,6 +5,13 @@
 //!
 //! ## The host page is part of the choreography, and since 2026-09-02 it is part of THIS module
 //!
+//! **One exception: a menu that lets its page reflow** (`Screen::lets_host_reflow`, the Watchlist's
+//! Sort & Filter menu). The page is then drawn live under the glass while its cards move
+//! ([`host::set_reflow`]: none of the snapshot's doors run, nothing is captured per frame and
+//! `page_epoch` stands still), the host is retaken once when they stop, and the old look
+//! (copied on the last live frame) fades out over the new ground in [`host::CROSSFADE_S`]. The
+//! rest of this document is the non-reflowing case.
+//!
 //! A modal stands on a page that is not moving, and on a tile-based GPU redrawing that page is the
 //! whole cost of having the modal up. Measured on the television at commit `c75d50ae`: the detail
 //! page under an open track panel presented every frame at `draw≈75 ms` — `loop=30` while paging —
@@ -1010,6 +1017,99 @@ pub mod host {
         GROUND_DEFERRED.store(defer, Relaxed);
     }
 
+    /// **Reflow mode: the page moves under a glass menu that lets it** (the Watchlist's Sort & Filter
+    /// menu, [`Screen::lets_host_reflow`](crate::screen::Screen::lets_host_reflow)). The held
+    /// snapshot would show the page as it was, so while the cards reflow the page is drawn LIVE
+    /// under the menu and none of the snapshot's doors run: no refresh on page damage
+    /// ([`begin_frame`]), no frozen quad or capture redirect ([`page_pass`]), no ground quad
+    /// ([`live`]), no ground capture ([`ground_drawn`]). The stale `HELD`/`CACHE` are left alone,
+    /// so [`page_epoch`], [`page_tex`] and the dim field's latch keep their open-time values and
+    /// nothing is captured per frame. When the reflow ends, ONE [`invalidate`] makes the next frame
+    /// take the page (epoch + 1, the field is read again) and then the ground, once.
+    static REFLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The reflow ended: `1` the next drawn frame is its EXIT frame (still drawn live, with the
+    /// old look; it takes the copy the crossfade fades away from), `2` that frame is being drawn,
+    /// `0` neither. [`begin_frame`] moves it on and, after the exit frame, makes the ONE invalidate.
+    static REFLOW_EXIT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+    /// Seconds the old look takes to give way to the new ground.
+    pub const CROSSFADE_S: f32 = 0.15;
+
+    /// The retained copy of the old look is there to fade (its slot in [`CACHE`] holds it), and how
+    /// far the fade has got: `f32` bits of `b`, 0 (all old) to 1 (all new, the copy is released).
+    static FADE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static FADE_B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// The page is being drawn live under the surface this frame (a reflow, or its exit frame).
+    fn reflow_draws() -> bool {
+        REFLOW.load(Relaxed) || REFLOW_EXIT.load(Relaxed) != 0
+    }
+
+    /// The host is following a reflowing page ([`set_reflow`]).
+    pub fn reflowing() -> bool {
+        reflow_draws()
+    }
+
+    /// How far the crossfade from the old look to the new ground has got, 0 to 1; `None` when no
+    /// old look is kept.
+    pub fn crossfade() -> Option<f32> {
+        FADE_ON.load(Relaxed).then(|| f32::from_bits(FADE_B.load(Relaxed)))
+    }
+
+    /// The app's statement, once per frame after the screens have ticked, of whether the page is
+    /// reflowing under a surface that lets it (`Dispatcher::host_reflow`), and the frame's `dt`
+    /// in seconds. The reflow's end is the host's one recapture; the crossfade of the old look
+    /// into the new ground runs on `dt`, never a wall clock.
+    pub fn set_reflow(on: bool, dt: f32) {
+        if FADE_ON.load(Relaxed) && matches!(held(), Held::Ground(_)) {
+            // the new ground exists: the old look gives way to it
+            let b = (f32::from_bits(FADE_B.load(Relaxed)) + dt / CROSSFADE_S).min(1.0);
+            FADE_B.store(b.to_bits(), Relaxed);
+            if b >= 1.0 {
+                end_fade();
+            }
+        }
+        if on {
+            if !REFLOW.swap(true, Relaxed) {
+                // reflowing again before the last fade ended: that fade is moot
+                REFLOW_EXIT.store(0, Relaxed);
+                end_fade();
+            }
+        } else if REFLOW.swap(false, Relaxed) {
+            REFLOW_EXIT.store(1, Relaxed);
+        }
+    }
+
+    /// Forget reflow mode and any old look kept (the last surface went, or the app is torn down).
+    pub fn reset_reflow() {
+        REFLOW.store(false, Relaxed);
+        REFLOW_EXIT.store(0, Relaxed);
+        end_fade();
+    }
+
+    fn end_fade() {
+        FADE_ON.store(false, Relaxed);
+        FADE_B.store(0, Relaxed);
+        unsafe { (*std::ptr::addr_of_mut!(CACHE)).release_prev() };
+    }
+
+    /// Draw the old look over what is on the frame, at `1 - b`: the crossfade's one extra quad.
+    /// Held to the visible pass; asks for the next frame while it runs.
+    fn overlay_prev() {
+        if !FADE_ON.load(Relaxed)
+            || plx_gfx::gfx::blur_source_pass()
+            || crate::frame::backdrop::discovering()
+        {
+            return;
+        }
+        let b = f32::from_bits(FADE_B.load(Relaxed));
+        if unsafe { (*std::ptr::addr_of!(CACHE)).draw_prev(1.0 - b) } {
+            let _own = plx_machine::idle::OwnScope::open();
+            plx_machine::idle::invalidate();
+        }
+    }
+
     /// How many open popovers want a frozen host.
     fn users() -> u32 {
         HOST_USERS.load(Relaxed)
@@ -1158,14 +1258,33 @@ pub mod host {
         GROUND_DRAWN.store(false, Relaxed);
         GROUND_DEFERRED.store(false, Relaxed);
         if users() == 0 {
+            reset_reflow();
             if !TRANSITION_OWNS.load(Relaxed) { invalidate(); }
             return;
+        }
+        match REFLOW_EXIT.load(Relaxed) {
+            1 => REFLOW_EXIT.store(2, Relaxed),
+            2 => {
+                // the exit frame is drawn: take the page and the ground again, ONCE, and fade the
+                // old look (copied on the exit frame) into them
+                REFLOW_EXIT.store(0, Relaxed);
+                if unsafe { (*std::ptr::addr_of!(CACHE)).has_prev() } {
+                    FADE_B.store(0, Relaxed);
+                    FADE_ON.store(true, Relaxed);
+                }
+                invalidate();
+            }
+            _ => {}
         }
         // Modal snapshots contain chrome and possibly a dim. A page-only transition image
         // must never be mistaken for that prefix when a surface interrupts navigation.
         if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
         let moving = plx_machine::idle::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
+        // a reflowing page is drawn live: its damage is not a reason to retake the snapshot
+        if reflow_draws() {
+            return;
+        }
         if super::host_refresh(fading_only(), page_dirty, moving) {
             invalidate();
         }
@@ -1195,6 +1314,9 @@ pub mod host {
                 was_frozen: plx_gfx::gfx::page_frozen(),
                 own: None,
             };
+        }
+        if reflow_draws() {
+            return PagePass { was_frozen: plx_gfx::gfx::page_frozen(), own: None };
         }
         let served = match held() {
             // The ground quad is one draw for the whole frame and belongs to the first `live`,
@@ -1277,10 +1399,17 @@ pub mod host {
             };
         }
         if plx_gfx::gfx::blur_source_pass() {
-            let ground = matches!(held(), Held::Ground(_));
+            let ground = matches!(held(), Held::Ground(_)) && !reflow_draws();
             if ground && held_ceiling().is_some_and(crate::frame::backdrop::claim_snapshot) { draw_held(); }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(ground && freezes_current_layer()),
+                own: plx_machine::idle::OwnScope::open(),
+            };
+        }
+        if reflow_draws() {
+            // the page is live under the surface; nothing of the snapshot is drawn or taken
+            return Live {
+                was_frozen: plx_gfx::gfx::set_page_frozen(false),
                 own: plx_machine::idle::OwnScope::open(),
             };
         }
@@ -1289,6 +1418,8 @@ pub mod host {
             // one quad. Stay FROZEN through them — `Popover::panel` lifts for the foreground.
             if !GROUND_DRAWN.swap(true, Relaxed) {
                 draw_held();
+                // the old look fades out over the new ground
+                overlay_prev();
             }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(freezes_current_layer()),
@@ -1329,6 +1460,14 @@ pub mod host {
             plx_gfx::gfx::set_page_frozen(false);
             return;
         }
+        if reflow_draws() {
+            // The exit frame: the page has stopped, the glass still wears the look it had while
+            // it moved. Keep this frame as the look the new ground fades in from.
+            if REFLOW_EXIT.load(Relaxed) == 2 && !plx_gfx::gfx::blur_source_pass() {
+                unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture_prev() };
+            }
+            return;
+        }
         if settled
             && held() == Held::Page
             && !plx_gfx::gfx::blur_source_pass()
@@ -1338,6 +1477,9 @@ pub mod host {
                 hold_ground();
             }
         }
+        // Until the new ground exists (and on the frame it is taken) the old look covers the new
+        // look; after, the ground quad is served in `live` and carries it.
+        overlay_prev();
     }
 
     impl Drop for Live {

@@ -13,7 +13,7 @@ impl Reset {
         let users = HOST_USERS.swap(1, Relaxed);
         let frozen = plx_gfx::gfx::set_page_frozen(false);
         unsafe {
-            CACHE = FrameCache { snapshot: None, off: cache_off };
+            CACHE = FrameCache { snapshot: None, off: cache_off, prev: None };
             HELD = Held::Nothing;
         }
         CAPTURE_OWED.store(false, Relaxed);
@@ -484,4 +484,110 @@ fn the_opener_face_starts_and_ends_as_the_pill_and_crosses_to_the_glass() {
     pop.close();
     let plain = crate::popover::Popover::new();
     assert!(plate(&plain).0.is_empty(), "a popover that does not morph has no face");
+}
+
+/// One frame of a surface over a page, as `embedded_alert_frame` draws it, with the page's ink
+/// named so a test sees WHICH page was drawn. The page raises damage (it is moving).
+fn reflow_frame(page: &'static str, moving: bool) -> Vec<&'static str> {
+    if moving {
+        plx_machine::idle::invalidate();
+    }
+    begin_frame(false);
+    PIXELS.with(|p| p.borrow_mut().clear());
+    {
+        let _page = page_pass();
+        ink(page);
+        {
+            let _scrim = live();
+            ink("scrim");
+        }
+        {
+            let _panel = live();
+            ink("glass");
+            ground_drawn(true);
+            ink("foreground");
+        }
+    }
+    PIXELS.with(|p| p.borrow().clone())
+}
+
+fn counts() -> (u32, u32, u32, u32, usize) {
+    (
+        page_epoch(),
+        mock::CAPTURES.with(|c| c.get()),
+        mock::PREV_COPIES.with(|c| c.get()),
+        mock::PREV_RELEASES.with(|c| c.get()),
+        mock::PREV_DRAWS.with(|d| d.borrow().len()),
+    )
+}
+
+/// **A page that reflows under a glass menu is drawn live, and the host is retaken ONCE when it
+/// stops.** Open and settle (one page capture, one ground capture), then ten frames of a moving
+/// page: each shows its own page ink (live, not the held picture), `page_epoch` does not move and
+/// nothing is captured per frame. The reflow's end costs the one old-look copy on its exit frame
+/// (still drawn live), then on the next frame exactly one page capture (epoch + 1) and one
+/// ground capture. What this counts: `page_epoch` (the page stage), `CAPTURES` (every snapshot
+/// into the main slot, page or ground), `PREV_COPIES` (the old-side copy, counted apart),
+/// `PREV_RELEASES` (the old copy given back).
+#[test]
+fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    reset_reflow();
+    mock::CAPTURES.with(|c| c.set(0));
+    mock::PREV_COPIES.with(|c| c.set(0));
+    mock::PREV_RELEASES.with(|c| c.set(0));
+    mock::PREV_DRAWS.with(|d| d.borrow_mut().clear());
+    let dt = 1.0 / 60.0;
+    // open: the page stage, then the settled ground
+    for _ in 0..3 {
+        reflow_frame("page-open", false);
+    }
+    assert!(matches!(held(), Held::Ground(_)), "premise: the ground is held");
+    let (epoch, caps, ..) = counts();
+    assert_eq!(caps, 2, "premise: one page capture and one ground capture to open");
+
+    set_reflow(true, dt);
+    for k in 0..10 {
+        let name: &'static str = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"][k];
+        assert_eq!(reflow_frame(name, true), vec![name, "scrim", "glass", "foreground"], "frame {k}: the live page, under the glass");
+        set_reflow(true, dt);
+        let (e, c, ..) = counts();
+        assert_eq!((e, c), (epoch, caps), "frame {k}: nothing is captured while the page moves");
+    }
+
+    // it stops: the exit frame is still live and keeps the old look
+    set_reflow(false, dt);
+    assert_eq!(reflow_frame("r-final", false), vec!["r-final", "scrim", "glass", "foreground"], "the exit frame is live");
+    let (e, c, copies, released, _) = counts();
+    assert_eq!((e, c, copies, released), (epoch, caps, 1, 0), "the exit frame copies the old look, once, and captures nothing");
+
+    // the next frame takes the host once: page (epoch + 1) and ground (one more snapshot)
+    set_reflow(false, dt);
+    reflow_frame("r-final", false);
+    let (e, c, copies, released, draws) = counts();
+    assert_eq!(e, epoch + 1, "page_epoch moved exactly once for the whole reflow");
+    assert_eq!(c, caps + 2, "one page capture and one ground capture, nothing per frame");
+    assert_eq!((copies, released, draws), (1, 0, 1), "the old look is kept and drawn over the new ground");
+    assert_eq!(crossfade(), Some(0.0), "the blend starts at 0: all old look");
+
+    // the blend runs to 1 over about 150 ms of ticks, drawing the old look at 1 - b
+    let mut frames = 0;
+    while crossfade().is_some() && frames < 30 {
+        set_reflow(false, dt);
+        reflow_frame("r-final", false);
+        frames += 1;
+    }
+    assert!(crossfade().is_none(), "the blend finished");
+    assert!((8..=11).contains(&frames), "about 150 ms at 60 fps, got {frames} frames");
+    let drawn: Vec<f32> = mock::PREV_DRAWS.with(|d| d.borrow().clone());
+    assert!(drawn.windows(2).all(|w| w[1] < w[0]), "the old look fades monotonically: {drawn:?}");
+    assert_eq!(drawn[0], 1.0);
+    let (e, c, copies, released, _) = counts();
+    assert_eq!((e, c, copies, released), (epoch + 1, caps + 2, 1, 1), "still one retake in all; the old texture is released at b = 1");
+    assert!(!unsafe { (*std::ptr::addr_of!(CACHE)).has_prev() }, "and the cache keeps no second slot");
+    let after = counts().4;
+    set_reflow(false, dt);
+    reflow_frame("r-final", false);
+    assert_eq!(counts().4, after, "no old-look quad once it is released");
 }

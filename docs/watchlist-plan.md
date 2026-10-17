@@ -193,7 +193,7 @@ if present — probe P3 — else lazily from that item's metadata, focused tile 
 - `CatalogScreen`, `ContentArg::Catalog{hex}`, SHAPE string, conformance mount, scenario,
   manifest row. Never touches `metadata::current()` (no MORE, no Tracks; summary line-clamped).
 - Draws: art ground (proxied, else neutral), title, meta, summary, genres, status line with icon
-  (clock / server-slash / none), 36 px "Coming 12 March" line, primary pill "Add to Watchlist"
+  (clock / circle-slash / server-slash / none), 36 px "Coming 12 March" line, primary pill "Add to Watchlist"
   (outline) / "On Watchlist" (filled). Suppressed: Play, Restart, Also available, Mark watched,
   extras, seasons, episodes, cast, Related, Trailer (Q4). One focus group. A match landing while
   open re-derives only the status line.
@@ -221,7 +221,7 @@ if present — probe P3 — else lazily from that item's metadata, focused tile 
 | playable | PMS tick/progress | Detail{sid,rk} of chosen copy | Card kind (sid,rk) + Remove |
 | coming soon, unmatched | clock, "Releasing 12 Mar" | Catalog{hex} | Catalog: Go to … — Remove |
 | coming soon, matched Reachable (Q6) | clock kept (proposal) | Detail{sid,rk} | Card kind + Remove |
-| on no server | no mark; 30% wash rest / 10% focus | Catalog{hex} | Catalog |
+| on no server | circle-slash; 55% wash rest / 25% focus | Catalog{hex} | Catalog |
 | server offline | server-slash, cached progress | Catalog{hex} (server-slash status + progress caption) | Catalog (no Play/Mark-watched) |
 | unknown | none | Catalog{hex} | Catalog |
 

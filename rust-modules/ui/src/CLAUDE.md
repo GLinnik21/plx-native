@@ -530,13 +530,18 @@ tried first. None of it is reconstructable from the code without repeating the m
   names the blur path — and pins the scope: the menu files name `Ground::Menu`, the sheet files
   `Ground::Sheet`, and none names the other.
 
-- **Glass over a page stands on the frozen host; the page does not move while a menu is up.**
+- **Glass over a page stands on the frozen host; the page does not move while a menu is up, except
+  under a menu that lets it reflow.**
   A menu (opening, open or closing, until it has let go of the host at `CLOSING_GONE`) stands on
   the page as the host snapshot holds it (`popover.rs` module doc, "A modal stands on a page that is
   not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
   choice starts (the Watchlist's Remove) and the data that would change the page (the app's
   `watchlist_feed`) wait until the menu is gone and start on the first frame after
-  (`containers::modal::page_veiled`). The menu's glass samples only that frozen ground (above), so
+  (`containers::modal::page_veiled`). **The one exception is a surface whose body answers
+  `Screen::lets_host_reflow` (the Watchlist's Sort & Filter menu):** it casts no veil, the grid
+  reflows under it, the host is drawn live while the cards move (`popover::host::set_reflow`: no
+  per-frame capture, `page_epoch` does not move) and is retaken ONCE when they stop, the old look
+  fading into the new ground over `host::CROSSFADE_S` from a second retained copy. The menu's glass samples only that frozen ground (above), so
   even a page that did move under it would rebuild nothing for the glass. **Do not add new
   live-refracting glass over a page unless the owner asks.** Live glass measured about 2 to 2.6M
   Mali GPU cycles per frame more than frozen ground (2026-10-17, release build, mock, panel off),

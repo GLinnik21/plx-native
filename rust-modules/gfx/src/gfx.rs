@@ -2760,6 +2760,13 @@ pub struct FrameCache {
     /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
     /// on and the capture falls back to [`capture`](Self::capture)'s copy.
     fbo_off: bool,
+    /// **The retained second slot**: a copy of an earlier frame that [`draw_prev`](Self::draw_prev)
+    /// fades away over the new capture (a glass menu's look before and after its page reflowed).
+    /// A texture of its own, made on [`capture_prev`](Self::capture_prev) and deleted on
+    /// [`release_prev`](Self::release_prev): it costs 8.3 MB only for the length of the fade.
+    prev: c_uint,
+    prev_w: c_int,
+    prev_h: c_int,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -2774,7 +2781,61 @@ impl FrameCache {
             off: false,
             fbo: 0,
             fbo_off: false,
+            prev: 0,
+            prev_w: 0,
+            prev_h: 0,
         }
+    }
+
+    /// Copy the framebuffer into the retained second slot. `false` (nothing retained) in a blur
+    /// source pass, on a video-plane frame and when the cache is off.
+    pub fn capture_prev(&mut self) -> bool {
+        if self.off || blur_source_pass() || video_plane_refuses("FrameCache::capture_prev") {
+            return false;
+        }
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        if vw <= 0 || vh <= 0 {
+            return false;
+        }
+        unsafe {
+            if self.prev == 0 || self.prev_w != vw || self.prev_h != vh {
+                delete_tex(self.prev);
+                self.prev = cap_tex(vw, vh);
+                self.prev_w = vw;
+                self.prev_h = vh;
+            }
+            glBindTexture(GL_TEXTURE_2D, self.prev);
+            plx_base::diag::spans::span("capprev", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
+        }
+        true
+    }
+
+    /// Whether the second slot holds a copy.
+    pub fn has_prev(&self) -> bool {
+        self.prev != 0
+    }
+
+    /// Give the second slot's texture back.
+    pub fn release_prev(&mut self) {
+        if self.prev != 0 {
+            delete_tex(self.prev);
+            self.prev = 0;
+        }
+    }
+
+    /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
+    pub fn draw_prev(&self, alpha: f32) -> bool {
+        if self.prev == 0 {
+            return false;
+        }
+        let was = set_page_frozen(false);
+        let tint = tokens::with_a(CAP_TINT, alpha);
+        draw_tex_core(
+            Class::Image, self.prev, 0.0, 0.0, SCR_W, SCR_H, frame_cache_uv(), 0.0, tint.as_ptr(), 0.0,
+            NO_RIM.as_ptr(), SCR_W * 0.5, SCR_H * 0.5, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, None,
+        );
+        set_page_frozen(was);
+        true
     }
 
     /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
@@ -2914,7 +2975,8 @@ impl FrameCache {
     }
 
     pub fn resident_bytes(&self) -> usize {
-        if self.tex == 0 { 0 } else { self.w as usize * self.h as usize * 4 }
+        let one = |t: c_uint, w: c_int, h: c_int| if t == 0 { 0 } else { w as usize * h as usize * 4 };
+        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h)
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;

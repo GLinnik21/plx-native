@@ -252,6 +252,21 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener_departing(&self, _key: FocusKey<H::Elem>) -> bool {
         false
     }
+    /// **A surface body answering `true` lets the page under it REFLOW while it is up**: the page
+    /// is not veiled by it ([`page_veiled`](crate::containers::modal::page_veiled) stays false), so
+    /// the data the surface's choices change reaches the page, and its landing plays, under the
+    /// open surface. The host the glass samples then follows the page live (`popover::host::set_reflow`)
+    /// and is captured again once, when the page has settled. `false` (the default) for every
+    /// other surface: a menu holds the page still under it.
+    fn lets_host_reflow(&self) -> bool {
+        false
+    }
+    /// A page: its cards are moving this frame (a landing is playing), so the host a surface
+    /// over it samples is stale until it stops. Read only for a surface that
+    /// [`lets_host_reflow`](Self::lets_host_reflow).
+    fn reflowing(&self) -> bool {
+        false
+    }
     /// **What a HELD surface still shows.** A surface is held (`PopoverMotion::held`) on its
     /// capture frame and while its text warms: at appear 0, its `draw` walked through the text
     /// recorder, which paints nothing. For a surface that redraws its own [`opener`](Self::opener)

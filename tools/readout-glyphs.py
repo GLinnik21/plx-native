@@ -143,7 +143,7 @@ def server_slash():
     return unary_union([base.difference(slash.buffer(HW_INLINE + 1.0, cap_style='round')),
                         slash.buffer(HW_INLINE, cap_style='round')])
 
-INLINE = {  # the Watchlist's marks: Icon::{Bookmark, BookmarkFill, Clock, ServerSlash} in ui/src/icons.rs
+INLINE = {  # the Watchlist's marks: Icon::{Bookmark, BookmarkFill, Clock, ServerSlash, CircleSlash} in ui/src/icons.rs
   # Not on the watchlist / the tab: an outline ribbon with the inline weight.
   "bookmark":      lambda: stroke(BOOKMARK, HW_INLINE),
   # On the watchlist: the outline's own silhouette filled, so the state flip never moves an edge.
@@ -152,6 +152,8 @@ INLINE = {  # the Watchlist's marks: Icon::{Bookmark, BookmarkFill, Clock, Serve
   "clock":         lambda: stroke(circ(12, 12, 9) + "M12 7.2V12l3.1 1.9", HW_INLINE),
   # Its server is offline: the read-out's server base, slashed the way wifi-slash is.
   "server-slash":  server_slash,
+  # Not on any of your servers: the universal "unavailable" ring-and-bar, at the inline weight.
+  "circle-slash":  lambda: stroke(circ(12, 12, 9) + "M5.64 5.64 18.36 18.36", HW_INLINE),
 }
 
 def fmt(v): s = f"{v:.2f}".rstrip('0').rstrip('.'); return "0" if s in ("-0", "") else s

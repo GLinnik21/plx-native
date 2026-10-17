@@ -3452,6 +3452,9 @@ fn a_grid_ghost_fades_in_its_cell_on_k_scale() {
     let was = <Rig<Grid> as CardHarness>::place(&r, 108, At::Drawn).unwrap().rect;
     remove_focused_grid(&mut r, 8);
     r.run(1);
+    // the frame the landing begins in draws the start state: the ghost at full alpha, no step
+    assert!((r.sect.ghost_probe().1 - 1.0).abs() < 1e-6, "the first frame is the frame before");
+    r.run(1);
     let (ghosts, a) = r.sect.ghost_probe();
     assert_eq!(ghosts, vec![8], "the card's index in the previous source");
     assert!((a - critical(1.0, K_SCALE, 1)).abs() < 2e-3, "fades on K_SCALE: {a}");
@@ -3548,6 +3551,8 @@ fn a_card_that_changes_row_crossfades_and_the_rest_slide_along_their_rows() {
     remove_focused_grid(&mut r, 8);
     let mut series = Vec::new();
     let mut paints = Vec::new();
+    // the frame the landing begins in draws the start state (a grid does not step on it)
+    r.run(1);
     for _ in 1..=40 {
         r.run(1);
         series.push(watch.iter().map(|&e| settled_rect(&r, e)).collect::<Vec<_>>());
@@ -3705,7 +3710,8 @@ fn a_takeover_reconciled_a_frame_late_still_rises_from_rest_with_the_landing() {
     assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4, "and it ends lifted");
 }
 
-/// A landing no menu veiled starts on its first frame: no beat.
+/// A landing no menu veiled starts at once: the frame it begins in draws the start state and the
+/// next one moves, with no beat between.
 #[test]
 fn a_landing_with_no_menu_starts_at_once() {
     crate::containers::modal::set_veil(0.0);
@@ -3713,6 +3719,8 @@ fn a_landing_with_no_menu_starts_at_once() {
     let n0 = r.src.elems.len();
     let before = r.sect.landing_probe(n0, 9);
     remove_focused_grid(&mut r, 8);
+    r.run(1);
+    assert!(r.sect.ghost_probe().1 == 1.0, "the first frame draws the start state");
     r.run(1);
     let ((x, _), _) = r.sect.landing_probe(r.src.elems.len(), 8);
     assert!(before.0 == (0.0, 0.0) && x > 0.0 && x < settled_rect(&r, 110).x - settled_rect(&r, 109).x, "moved on frame 1: {x}");
@@ -3783,7 +3791,17 @@ fn an_inserted_card_fades_in_on_the_grid_and_an_unanimated_grid_cuts() {
     r.src.elems.insert(10, 900);
     r.run(1);
     let n = r.src.elems.len();
-    let a = r.sect.landing_probe(n, 10).1;
+    assert_eq!(r.sect.landing_probe(n, 10).1, 0.0, "the first frame is the frame before: nothing yet");
+    // the cards that were at 10.. slide right through the new card's cell: it appears when they
+    // have left it
+    let mut a = 0.0;
+    for _ in 0..120 {
+        r.run(1);
+        a = r.sect.landing_probe(n, 10).1;
+        if a > 0.0 {
+            break;
+        }
+    }
     assert!(a > 0.0 && a < 0.5, "fades in from nothing: {a}");
     assert_eq!(r.sect.landing_probe(n, 9).1, 1.0);
     r.run(600);

@@ -131,7 +131,7 @@ PMS guids are hex; the mock's default placeholder guids are not, which is why `m
 | Available | released, matched on a Reachable server | PMS tick / progress | Detail of the chosen copy | card kind plus Remove |
 | ComingSoon | not released, unmatched | clock | Catalog | Catalog rows plus Remove |
 | ComingSoonMatched | not released, but a Reachable server has it | clock kept | Detail | card kind plus Remove |
-| NotOnAnyServer | released, every server on the roster answered "absent" | none; a 30% wash at rest, 10% on focus | Catalog | Catalog |
+| NotOnAnyServer | released, every server on the roster answered "absent" | circle-slash; a 55% wash at rest, 25% on focus | Catalog | Catalog |
 | ServerOffline | matched earlier, every matching server now Unreachable | server-slash, cached progress | Catalog | Catalog (no Play or Mark watched) |
 | Unknown | no match and some server has not answered | none | Catalog | Catalog; excluded from "On your servers" |
 
@@ -203,9 +203,15 @@ spring), not a departure from the design.
 
 **The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
 (`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
-host snapshot taken once when the menu opened, with the frame's dim applied to both. Nothing behind
-a menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it does not
-move until it has let go (the Remove landing above). An opener lifted over the dim (the hold menu's
+host snapshot taken once when the hold menu opened (the Sort & Filter panel's is retaken once when the
+reflow a click started has stopped, below), with the frame's dim applied to both. Nothing behind
+the hold menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it
+does not move until it has let go (the Remove landing above). **The Sort & Filter menu shows each
+click**: its value reaches the grid at once and the cards reflow under the open panel (a card that
+changes slot in its row slides, one that changes row crossfades, the longest mover on top, a new
+card appearing once the survivors have left its cell). While they move the host is drawn live (no
+per-frame capture); when they stop it is taken once more and the old look crossfades into the new
+ground over about 150 ms. An opener lifted over the dim (the hold menu's
 card, the Sort & Filter pill) is not in the lens.
 
 ## The catalog page
@@ -216,8 +222,8 @@ watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET disc
 /library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
-a line-clamped summary, genres, a status line (clock for coming soon, server-slash for not on your servers or
-server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
+a line-clamped summary, genres, a status line (clock for coming soon, circle-slash for not on your servers,
+server-slash for server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
 
 Status: when the title is a row of the list read, its tile state dictates the line (coming soon, not on your
 servers, server offline; an Unknown tile and an Available one say nothing, so a silent server never

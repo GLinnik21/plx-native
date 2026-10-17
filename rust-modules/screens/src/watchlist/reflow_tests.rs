@@ -1,0 +1,279 @@
+//! What the Watchlist grid DRAWS while its cards reflow (a Sort & Filter change, a reorder, a count
+//! change, a Remove): the first frame of a change is the frame before it, no two cards share a cell
+//! at rest or in flight, and the back-to-front order is ghosts, still cards, moving survivors (the
+//! longest path on top), the focused card.
+//!
+//! These read `WatchlistScreen::drawn_probe`, which is `Grid::draw`'s own plan with the rects it
+//! paints; the Harness feeds the page BEFORE it ticks it, the order the app's frame now keeps
+//! (`app::bridge::frame_ingest`).
+use plx_ui::cards::DrawRole;
+use plx_ui::Rect;
+
+use super::cards_harness::{tile, tiles, Harness};
+use super::page::{Drawn, WatchTile, WatchlistIn};
+
+/// What a viewer sees: each visible thing as `(guid, rect x100, alpha x1000)`, sorted. The role is
+/// not part of it (a leaving copy IS the card it was), and a thing at alpha 0 is not there, nor one
+/// below the screen's bottom edge (the landing animates only what can be seen).
+fn visible(h: &Harness) -> Vec<(String, [i32; 4], i32)> {
+    let mut v: Vec<_> = h
+        .screen
+        .drawn_probe(h.focus.map(|k| k.elem))
+        .into_iter()
+        .filter(|d| d.alpha > 0.001 && d.rect.y < plx_ui::consts::SCR_H)
+        .map(|d| (d.guid, rect_key(d.rect), (d.alpha * 1000.0).round() as i32))
+        .collect();
+    v.sort();
+    v
+}
+
+fn rect_key(r: Rect) -> [i32; 4] {
+    [(r.x * 100.0).round() as i32, (r.y * 100.0).round() as i32, (r.w * 100.0).round() as i32, (r.h * 100.0).round() as i32]
+}
+
+fn cards(h: &Harness) -> Vec<Drawn> {
+    h.screen
+        .drawn_probe(h.focus.map(|k| k.elem))
+        .into_iter()
+        .filter(|d| matches!(d.role, Some(DrawRole::Still | DrawRole::Moving | DrawRole::Focus)))
+        .collect()
+}
+
+fn overlap(a: Rect, b: Rect) -> f32 {
+    let w = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
+    let h = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
+    if w > 1.0 && h > 1.0 { w * h } else { 0.0 }
+}
+
+/// Two drawn cards sharing a cell: `(a, b)` of the first pair whose rects overlap while both can be
+/// seen.
+fn sharing(h: &Harness) -> Option<(String, String)> {
+    let cs: Vec<Drawn> = cards(h).into_iter().filter(|d| d.alpha > 0.01).collect();
+    for (i, a) in cs.iter().enumerate() {
+        for b in &cs[i + 1..] {
+            if overlap(a.rect, b.rect) > 0.0 {
+                return Some((format!("{} {:?} a={:.2}", a.guid, a.rect, a.alpha), format!("{} {:?} a={:.2}", b.guid, b.rect, b.alpha)));
+            }
+        }
+    }
+    None
+}
+
+fn reversed(rows: &[WatchTile]) -> Vec<WatchTile> {
+    rows.iter().rev().cloned().collect()
+}
+
+/// Run until nothing moves, asserting `check` on every frame.
+fn play(h: &mut Harness, frames: u32, mut check: impl FnMut(&Harness, u32)) {
+    for f in 0..frames {
+        h.run(1);
+        h.reconcile();
+        check(h, f);
+    }
+}
+
+/// **A change shows the frame before it first.** The page is fed, then ticked: the tick starts the
+/// landing and the frame drawn from that tick is exactly the previous one (survivors where they
+/// stood, the leaving copies and the ghost at full alpha, the arrivals not yet there). A step on the
+/// tick that began the landing moved everything a frame's worth, which read as a snap.
+#[test]
+fn the_first_frame_of_a_reorder_is_the_frame_before_it() {
+    let mut h = Harness::new(tiles(14));
+    h.run(60);
+    let before = visible(&h);
+    assert!(before.len() >= 12, "premise: the first rows are on show");
+    h.screen.input(WatchlistIn::Rows(reversed(h.screen.tiles())));
+    h.run(1);
+    assert_eq!(visible(&h), before, "the first frame of a reorder is the frame before it");
+}
+
+#[test]
+fn the_first_frame_of_a_filter_is_the_frame_before_it() {
+    let mut h = Harness::new(tiles(14));
+    h.run(60);
+    let before = visible(&h);
+    let kept: Vec<WatchTile> = h.screen.tiles().iter().enumerate().filter(|(i, _)| i % 3 != 1).map(|(_, t)| t.clone()).collect();
+    h.screen.input(WatchlistIn::Rows(kept));
+    h.run(1);
+    // the survivors stand where they stood, the filtered-out cards are ghosts at full alpha where
+    // they stood: the multiset of what is seen is the one before
+    assert_eq!(visible(&h), before, "the first frame of a filter is the frame before it");
+}
+
+#[test]
+fn the_first_frame_of_a_remove_is_the_frame_before_it() {
+    let mut h = Harness::new(tiles(14));
+    h.run(60);
+    let before = visible(&h);
+    let gone = h.screen.tiles()[5].row.guid.clone();
+    h.screen.input(WatchlistIn::Removed(gone));
+    h.run(1);
+    assert_eq!(visible(&h), before, "the first frame of a Remove is the frame before it");
+}
+
+/// **No two cards share a cell at rest, whatever the change was.**
+#[test]
+fn no_two_cards_share_a_cell_at_rest() {
+    for (what, make) in [
+        ("two to four", Box::new(|_: &[WatchTile]| tiles(4)) as Box<dyn Fn(&[WatchTile]) -> Vec<WatchTile>>),
+        ("reversed", Box::new(reversed)),
+        ("filtered", Box::new(|r: &[WatchTile]| r.iter().step_by(2).cloned().collect())),
+    ] {
+        let start = if what == "two to four" { 2 } else { 14 };
+        let mut h = Harness::new(tiles(start));
+        h.focus_index(0);
+        h.run(60);
+        let next = make(h.screen.tiles());
+        h.screen.input(WatchlistIn::Rows(next));
+        play(&mut h, 400, |_, _| {});
+        assert_eq!(sharing(&h), None, "{what}: two cards share a cell at rest");
+        assert!(cards(&h).iter().all(|d| d.alpha > 0.999), "{what}: every card is whole at rest");
+    }
+}
+
+/// **A card that arrives waits for the survivors to leave its cell.** Two titles become four, the
+/// two new ones in front: the old two slide from cells 0 and 1 to 2 and 3, and the new two fade in
+/// at 0 and 1. A new card visible while a survivor still stands in its cell is two posters in one
+/// cell.
+#[test]
+fn a_new_card_stays_transparent_while_a_survivor_is_in_its_cell() {
+    let mut h = Harness::new(tiles(2));
+    h.focus_index(0);
+    h.run(60);
+    let mut four: Vec<WatchTile> = vec![tile(100), tile(101)];
+    four.extend(h.screen.tiles().iter().cloned());
+    h.screen.input(WatchlistIn::Rows(four));
+    let mut released = None;
+    play(&mut h, 300, |h, f| {
+        if let Some((a, b)) = sharing(h) {
+            panic!("frame {f}: two cards share a cell: {a} | {b}");
+        }
+        let new = cards(h).into_iter().filter(|d| d.guid.ends_with("g100") || d.guid.ends_with("g101")).collect::<Vec<_>>();
+        if released.is_none() && new.iter().any(|d| d.alpha > 0.01) {
+            released = Some(f);
+        }
+    });
+    assert!(released.is_some(), "the new cards do arrive");
+    assert!(cards(&h).iter().all(|d| d.alpha > 0.999), "and are whole at rest");
+}
+
+/// **Back to front: ghosts, still cards, moving survivors (the longest path last), the focused
+/// card.** The movers are stacked by how far each had to go, and the stacking does not change
+/// mid-flight.
+#[test]
+fn the_draw_order_is_ghost_still_moving_by_path_length_focus() {
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(0);
+    h.run(60);
+    let mut rows = h.screen.tiles().to_vec();
+    // a swap that crosses, and a card removed so there is a ghost
+    rows.swap(1, 4);
+    rows.remove(8);
+    h.screen.input(WatchlistIn::Rows(rows));
+    let mut start: std::collections::HashMap<String, Rect> = Default::default();
+    let mut orders: Vec<(u32, Vec<String>)> = Vec::new();
+    play(&mut h, 40, |h, f| {
+        let probe = h.screen.drawn_probe(h.focus.map(|k| k.elem));
+        let roles: Vec<Option<DrawRole>> = probe.iter().map(|d| d.role).collect();
+        let rank = |r: &Option<DrawRole>| match r {
+            None => 0,
+            Some(DrawRole::Leaving) => 1,
+            Some(DrawRole::Still) => 2,
+            Some(DrawRole::Moving) => 3,
+            Some(DrawRole::Focus) => 4,
+        };
+        assert!(roles.windows(2).all(|w| rank(&w[0]) <= rank(&w[1])), "frame {f}: roles out of order: {roles:?}");
+        assert_eq!(roles.last(), Some(&Some(DrawRole::Focus)), "frame {f}: the focused card is drawn last: {roles:?}");
+        let moving: Vec<&Drawn> = probe.iter().filter(|d| d.role == Some(DrawRole::Moving)).collect();
+        if f == 0 {
+            start = moving.iter().map(|d| (d.guid.clone(), d.rect)).collect();
+        }
+        orders.push((f, moving.iter().map(|d| d.guid.clone()).collect()));
+    });
+    assert!(start.len() >= 2, "premise: at least two cards were moving at once ({} did)", start.len());
+    let end: std::collections::HashMap<String, Rect> =
+        h.screen.drawn_probe(None).into_iter().filter(|d| d.role.is_some()).map(|d| (d.guid, d.rect)).collect();
+    let travel = |g: &String| {
+        let (a, b) = (start[g], end[g]);
+        (a.x - b.x).hypot(a.y - b.y)
+    };
+    for (f, order) in &orders {
+        let known: Vec<&String> = order.iter().filter(|g| start.contains_key(*g)).collect();
+        assert!(known.windows(2).all(|w| travel(w[0]) <= travel(w[1]) + 0.01),
+            "frame {f}: the movers are not stacked by path length (longest last): {:?}",
+            known.iter().map(|g| (g.as_str(), travel(g))).collect::<Vec<_>>());
+    }
+    let first = &orders[0].1;
+    for (f, order) in &orders {
+        let now: Vec<&String> = order.iter().filter(|g| first.contains(*g)).collect();
+        let was: Vec<&String> = first.iter().filter(|g| order.contains(*g)).collect();
+        assert_eq!(now, was, "frame {f}: the stacking of the movers changed mid-flight");
+    }
+}
+
+/// **The mover with the longest path draws on top of the others.** A swap of cards 0 and 5 makes
+/// their paths cross the four between; each of the four travels one cell, the swapped two five.
+#[test]
+fn the_longest_path_draws_last_among_the_movers() {
+    let mut h = Harness::new(tiles(6));
+    h.focus_index(2);
+    h.run(60);
+    let mut rows = h.screen.tiles().to_vec();
+    rows.swap(0, 5);
+    let swapped = [rows[0].row.guid.clone(), rows[5].row.guid.clone()];
+    h.screen.input(WatchlistIn::Rows(rows));
+    let mut checked = false;
+    play(&mut h, 30, |h, f| {
+        let probe = h.screen.drawn_probe(h.focus.map(|k| k.elem));
+        let moving: Vec<&Drawn> = probe.iter().filter(|d| d.role == Some(DrawRole::Moving)).collect();
+        if moving.len() == 2 {
+            let last_two: Vec<&String> = moving.iter().map(|d| &d.guid).collect();
+            assert!(last_two.iter().all(|g| swapped.contains(g)), "frame {f}: the two with the longest paths are drawn last: {last_two:?}");
+            checked = true;
+        }
+    });
+    assert!(checked, "premise: a frame with exactly the two long movers (the focused card keeps its place)");
+}
+
+/// **The back-to-front order is what the grid really asks for.** The posters the grid asks for in a
+/// frame arrive ghosts first, and the focused card's last.
+#[test]
+fn the_grid_asks_for_ghosts_first_and_the_focused_card_last() {
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(3);
+    h.run(60);
+    let gone = h.screen.tiles()[6].row.guid.clone();
+    h.screen.input(WatchlistIn::Removed(gone));
+    h.run(3);
+    h.screen.take_art_log();
+    h.draw();
+    let log = h.screen.take_art_log();
+    assert!(log.iter().any(|(ghost, _)| *ghost), "premise: a ghost was asked for");
+    let first_card = log.iter().position(|(ghost, _)| !ghost).expect("cards were asked for");
+    assert!(log[first_card..].iter().all(|(ghost, _)| !ghost), "a ghost was asked for after a card: {log:?}");
+    let focus = h.screen.index_of(h.focus.unwrap().elem).unwrap();
+    assert_eq!(log.last(), Some(&(false, focus)), "the focused card is the last poster asked for: {log:?}");
+}
+
+/// **A card that keeps its row moves; a card that changes row crossfades.** A reorder follows the
+/// same rule as a filter.
+#[test]
+fn a_reorder_moves_within_a_row_and_crossfades_across_rows() {
+    let mut h = Harness::new(tiles(14));
+    h.run(60);
+    let rest: std::collections::HashMap<String, Rect> = h.screen.drawn_probe(None).into_iter().map(|d| (d.guid, d.rect)).collect();
+    h.screen.input(WatchlistIn::Rows(reversed(h.screen.tiles())));
+    h.run(1);
+    let probe = h.screen.drawn_probe(h.focus.map(|k| k.elem));
+    let mut moved = 0;
+    let mut crossed = 0;
+    for d in probe.iter().filter(|d| d.role == Some(DrawRole::Moving)) {
+        assert!((rest[&d.guid].y - d.rect.y).abs() < 0.5, "{} is moving but changes rows", d.guid);
+        moved += 1;
+    }
+    for d in probe.iter().filter(|d| d.role == Some(DrawRole::Leaving)) {
+        assert!((rest[&d.guid].y - d.rect.y).abs() < 0.5, "a leaving copy stands where the card stood");
+        crossed += 1;
+    }
+    assert!(moved > 0 && crossed > 0, "premise: a reversal of three rows has both kinds ({moved} moving, {crossed} crossfading)");
+}

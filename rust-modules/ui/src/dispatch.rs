@@ -626,6 +626,16 @@ where
     }
 
     /// The top page's screen, for a test to read.
+    /// **The host a surface samples is being reflowed**: a surface that lets the page reflow
+    /// ([`Screen::lets_host_reflow`](super::screen::Screen::lets_host_reflow)) is up and the top
+    /// page's cards are moving. The host cache follows the page live while this is true.
+    pub fn host_reflow(&self) -> bool {
+        use super::containers::modal::Phase;
+        self.nav.modals.surfaces.iter().any(|s| {
+            s.phase != Phase::Hidden && s.entry.inst.as_ref().is_some_and(|i| i.screen.lets_host_reflow())
+        }) && self.top_screen().is_some_and(|s| s.reflowing())
+    }
+
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }

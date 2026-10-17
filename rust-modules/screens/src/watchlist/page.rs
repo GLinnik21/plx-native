@@ -272,6 +272,9 @@ struct Page {
     /// Test support: the reserved cells the grid has drawn, by index.
     #[cfg(test)]
     skeleton_draws: std::cell::RefCell<Vec<usize>>,
+    /// Test support: every poster the grid asked for, in the order it asked: `(is a ghost, index)`.
+    #[cfg(test)]
+    art_log: std::cell::RefCell<Vec<(bool, usize)>>,
     /// Moves whenever anything the sections read moves (`StackPage::revision`).
     rev: u64,
 }
@@ -441,6 +444,8 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
         self.page.cell_of(*e)
     }
     fn art(&self, i: usize) -> Art<'_> {
+        #[cfg(test)]
+        self.page.art_log.borrow_mut().push((false, i));
         match (self.page.tiles.get(i), self.page.cells.get(i)) {
             (Some(t), Some(c)) => Art::Poster(Some(tile_facts(t, c))),
             _ => {
@@ -476,6 +481,17 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     }
 }
 
+/// One thing the grid draws (`WatchlistScreen::drawn_probe`).
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drawn {
+    pub guid: String,
+    /// `None`: a ghost, a removed card fading out.
+    pub role: Option<ui_cards::DrawRole>,
+    pub rect: Rect,
+    pub alpha: f32,
+}
+
 /// The count a Remove replaced and the header still shows (`Page::count_hold`).
 #[derive(Clone, Copy)]
 struct CountHold {
@@ -489,6 +505,8 @@ struct GhostTitles<'a> {
     /// Test support: the ghost posters actually asked for (`Page::ghost_draws`).
     #[cfg(test)]
     drawn: &'a std::cell::Cell<usize>,
+    #[cfg(test)]
+    log: &'a std::cell::RefCell<Vec<(bool, usize)>>,
 }
 
 impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
@@ -504,7 +522,10 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
     }
     fn art(&self, i: usize) -> Art<'_> {
         #[cfg(test)]
-        self.drawn.set(self.drawn.get() + 1);
+        {
+            self.drawn.set(self.drawn.get() + 1);
+            self.log.borrow_mut().push((true, i));
+        }
         Art::Poster(self.tiles.get(i).copied().flatten().map(|(t, c)| tile_facts(t, c)))
     }
     /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
@@ -593,6 +614,8 @@ impl<H: ContentLike> StackPage<H> for Page {
             tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(),
             #[cfg(test)]
             drawn: &self.ghost_draws,
+            #[cfg(test)]
+            log: &self.art_log,
         };
         grid.paint_ghosts(f, p, &ghosts);
     }
@@ -655,7 +678,7 @@ impl<H: ContentLike> StackPage<H> for Page {
 /// re-blurs the tab strip's glass, so the page is drawn twice), and that count falls with `ln k`,
 /// not `1/sqrt(k)`: measured in the sim, 4x left 0.63 of the frames and 8x leaves 0.45 (35-37
 /// down to 16 double-drawn frames). Only this screen's post-landing ease uses it; focus moves and
-/// every other page keep the shared rate.
+/// every other page, and a sort or filter's landing, keep the shared rate.
 const POST_REMOVE_EASE_K: f32 = 8.0 * AmbientWash::K;
 
 pub struct WatchlistScreen {
@@ -669,6 +692,10 @@ pub struct WatchlistScreen {
     /// A landing held the wash, so the ease that follows it runs at [`POST_REMOVE_EASE_K`] until it
     /// has reached its target.
     ground_catching_up: bool,
+    /// A Remove's tile left and its landing has not yet run its course: only then does the ease
+    /// after the landing run at [`POST_REMOVE_EASE_K`]. A sort or filter landing holds the wash
+    /// the same way (`landing_in_flight`) and eases back at the shared rate, as a focus move does.
+    removal_owed: bool,
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
@@ -715,6 +742,8 @@ impl WatchlistScreen {
             ghost_draws: std::cell::Cell::new(0),
             #[cfg(test)]
             skeleton_draws: Default::default(),
+            #[cfg(test)]
+            art_log: Default::default(),
             rev: 0,
         };
         page.rebuild();
@@ -726,6 +755,7 @@ impl WatchlistScreen {
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
             ground_catching_up: false,
+            removal_owed: false,
             focus: 0,
             seat: None,
             own_enters: 0,
@@ -810,6 +840,7 @@ impl WatchlistScreen {
             WatchlistIn::Removed(guid) => {
                 let rows: Vec<WatchTile> = self.page.tiles.iter().filter(|t| t.row.guid != guid).cloned().collect();
                 let gone = rows.len() < self.page.tiles.len();
+                self.removal_owed |= gone;
                 if gone && self.page.count_hold.is_none() {
                     self.page.count_hold = self.page.count().map(|count| CountHold { count });
                 }
@@ -891,7 +922,7 @@ impl WatchlistScreen {
             .map_or([theme::SURFACE_APP; 4], |blur| AmbientWash::keyed(blur, PageGround::CARD_W))
     }
 
-    /// The Remove landing is in flight: the grid's landing is playing (or waiting for the menu's
+    /// A landing is in flight (a Remove, a sort or a filter): the grid's landing is playing (or waiting for the menu's
     /// veil to drop) or still fading the removed tile's ghost, or the page still holds the ghost.
     pub(crate) fn landing_in_flight(&self) -> bool {
         !self.page.ghosts.is_empty()
@@ -936,14 +967,19 @@ impl WatchlistScreen {
         let held = self.ground_seeded && self.landing_in_flight();
         let target = self.ground_target();
         self.ground_applied = target;
-        if held {
+        if held && self.removal_owed {
             self.ground_catching_up = true;
+        }
+        if !held && !self.ground_catching_up {
+            // a Remove that played no landing owes no ease
+            self.removal_owed = false;
         }
         if self.ground_seeded {
             if self.ground_catching_up {
                 self.ground.key_target_k(target, POST_REMOVE_EASE_K, t.dt());
                 if !held && self.ground.at_rest_on(target) {
                     self.ground_catching_up = false;
+                    self.removal_owed = false;
                 }
             } else {
                 self.ground.key_target(target, t.dt());
@@ -1090,6 +1126,37 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn ghost_draws(&self) -> usize {
         self.page.ghost_draws.get()
+    }
+
+    /// Test support: the posters the grid asked for since the last call, in the order it asked:
+    /// `(is a ghost, index)`. That is the draw order itself.
+    #[cfg(test)]
+    pub(crate) fn take_art_log(&self) -> Vec<(bool, usize)> {
+        std::mem::take(&mut *self.page.art_log.borrow_mut())
+    }
+
+    /// Test support: everything the grid draws now, back to front, as the guid it shows, the
+    /// card's role (`None` for a ghost), its rect and its alpha. `focus` is the element focus is
+    /// on. Ghosts first (the page paints them before the grid), then the leaving copies, then the
+    /// cards.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn drawn_probe(&self, focus: Option<u32>) -> Vec<Drawn> {
+        let Some(grid) = self.stack.grid(Sec::Items) else { return Vec::new() };
+        let n = self.page.len();
+        let guid_of = |i: usize| self.page.tiles.get(i).map(|t| t.row.guid.clone());
+        let mut out: Vec<Drawn> = grid
+            .ghost_slots()
+            .into_iter()
+            .filter_map(|(key, rect, alpha)| {
+                let guid = self.page.ghosts.get(&key)?.0.row.guid.clone();
+                Some(Drawn { guid, role: None, rect, alpha })
+            })
+            .collect();
+        let focus = focus.and_then(|e| self.page.cell_of(e));
+        out.extend(grid.plan_probe(n, focus).into_iter().filter_map(|(role, i, rect, alpha)| {
+            Some(Drawn { guid: guid_of(i)?, role: Some(role), rect, alpha })
+        }));
+        out
     }
 
     /// The poster path and server the tile at `i` asks the poster store for (empty path: the
@@ -1240,6 +1307,10 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
 }
 
 impl<H: ContentLike> Screen<H> for WatchlistScreen {
+    /// The cards are moving (a landing plays): the host a Sort & Filter menu stands on follows it.
+    fn reflowing(&self) -> bool {
+        self.landing_in_flight()
+    }
     /// Where the focused tile sits, for the hold menu's anchor. A title is not carried by it: the
     /// hold request names the guid, so the menu never re-reads the list.
     fn focused_card_rect(&self, cx: &Cx<'_, H>, focus: Option<FocusKey<u32>>, at: plx_ui::screen::At) -> Option<Rect> {

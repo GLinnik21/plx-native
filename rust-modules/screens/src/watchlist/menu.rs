@@ -180,6 +180,11 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     /// [`draw_pill`](Self::draw_pill) is its only copy. Left on the page, the pill sat under the
     /// scrim for the whole menu, and the settled panel — slid up over it, being taller than the
     /// room below — refracted its label into the glass rim.
+    /// Sort & Filter shows the effect of each click: the page reflows under the open menu, and
+    /// the glass stands on a host that follows it (`popover::host::set_reflow`).
+    fn lets_host_reflow(&self) -> bool {
+        true
+    }
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
     }

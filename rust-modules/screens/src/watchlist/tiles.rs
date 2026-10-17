@@ -1,8 +1,8 @@
 //! A Watchlist tile's marks and washes (boards TileStates and Watchlist).
 //!
 //! One bare mark in the watched tick's slot over the shared corner veil: a clock for an upcoming
-//! title, a struck-through server for one whose server is offline. A released title that no server
-//! holds carries no mark and a flat wash instead (30% at rest, 10% when focused). The veil, the
+//! title, a struck-through server for one whose server is offline, a ring with a bar for one no server holds. A released title that no server
+//! holds wears a ring-and-bar over a heavier wash (55% at rest, 25% when focused). The veil, the
 //! slot, the size and the ink are the watched tick's own (`widgets::corner_mark`,
 //! `theme::TILE_MARK_VEIL`); only the glyph differs.
 use plx_data::watchlist::model::TileState;
@@ -12,11 +12,11 @@ use plx_ui::theme;
 use plx_ui::widgets;
 use plx_ui::Painter;
 
-/// The no-server wash at rest: `rgba(0,0,0,.3)` over the whole tile (Watchlist, TileStates).
-pub const NO_SERVER_WASH: f32 = 0.30;
-/// The same wash on the focused tile: `rgba(0,0,0,.1)`, so the title being looked at reads nearly
-/// whole while its neighbours stay quiet.
-pub const NO_SERVER_WASH_FOCUSED: f32 = 0.10;
+/// The no-server wash at rest: `rgba(0,0,0,.55)` over the whole tile (Watchlist, TileStates).
+pub const NO_SERVER_WASH: f32 = 0.55;
+/// The same wash on the focused tile: `rgba(0,0,0,.25)`, so the title being looked at reads whole
+/// enough while its neighbours stay quiet.
+pub const NO_SERVER_WASH_FOCUSED: f32 = 0.25;
 
 /// The corner glyph of a state, `None` when it wears none.
 pub fn mark(state: TileState) -> Option<Icon> {
@@ -24,7 +24,8 @@ pub fn mark(state: TileState) -> Option<Icon> {
         // Q6 (default, awaiting the owner): matched AND upcoming keeps the clock and stays playable.
         TileState::ComingSoon | TileState::ComingSoonMatched => Some(Icon::Clock),
         TileState::ServerOffline => Some(Icon::ServerSlash),
-        TileState::Available | TileState::NotOnAnyServer | TileState::Unknown => None,
+        TileState::NotOnAnyServer => Some(Icon::CircleSlash),
+        TileState::Available | TileState::Unknown => None,
     }
 }
 

@@ -95,7 +95,7 @@ pub enum TileState {
     ComingSoon,
     /// Not released but matched on a Reachable server (Q6): clock kept, opens Detail.
     ComingSoonMatched,
-    /// Released and every server answered "absent": no mark, washed, opens the catalog page.
+    /// Released and every server answered "absent": circle-slash mark, washed, opens the catalog page.
     NotOnAnyServer,
     /// Matched earlier this session, every matching server now Unreachable: server-slash mark.
     ServerOffline,

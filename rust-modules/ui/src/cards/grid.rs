@@ -10,7 +10,7 @@
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
-use super::landing::{Landing, Scene};
+use super::landing::{Landing, Occupancy, Scene};
 use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
@@ -22,6 +22,19 @@ use crate::screen::{
     Stop,
 };
 use crate::{Painter, Rect, Spring};
+
+/// Where a card stands in [`Grid::draw`]'s back-to-front order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawRole {
+    /// The copy a card that changed row leaves where it stood (fading out).
+    Leaving,
+    /// A card at rest in its slot.
+    Still,
+    /// A survivor sliding to its slot.
+    Moving,
+    /// The focused card.
+    Focus,
+}
 
 /// Who owns the grid's vertical scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +103,10 @@ impl GridSpec {
     /// screen cut. Focus is not this spring's: the engine's reconcile has already put it on the
     /// card that took the removed one's index (the next card), whose pop rises from rest as the
     /// removed card's ghost sinks. Nothing starts while a menu veils the page: the Remove lands on
-    /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
+    /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`); a menu that lets the
+    /// page reflow (`Screen::lets_host_reflow`) veils nothing. The frame a landing begins in draws
+    /// the start state, and the draw order is leaving copies, still cards, movers by the length of
+    /// their way, the focused card. Off by default: a grid whose owner keeps no removed cards for
     /// the ghosts still gets the slide.
     pub const fn animate_landings(self, on: bool) -> Self {
         Self { landings: on, ..self }
@@ -154,6 +170,7 @@ impl Grid {
             landing: {
                 let mut l = Landing::new();
                 l.set_enabled(spec.landings);
+                l.hold_first_frame(true);
                 l
             },
         }
@@ -307,7 +324,12 @@ impl Grid {
         };
         let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
         self.landing.observe(src, &Scene { shift: (0.0, scroll_moved), slot: &slot, on: &on, lifted });
-        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale));
+        let size = {
+            let r = poster_grid::cell_in(&geom, 0, top, 0.0, &bands);
+            (r.w, r.h)
+        };
+        let occupy = Occupancy { slot: &slot, size };
+        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale), Some(&occupy));
     }
 
     /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
@@ -557,16 +579,57 @@ impl Grid {
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
         self.draw_leaving(f, p, src, &bands);
-        for i in self.window(src.len()) {
-            if focus == Some(i) || self.above_edge(i, &bands) {
-                continue;
-            }
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), false, &bands);
-        }
-        if let Some(i) = focus.filter(|&i| i < src.len()) {
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), true, &bands);
+        for (role, i) in self.draw_plan(src.len(), focus, &bands) {
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), role == DrawRole::Focus, &bands);
         }
         self.record_stops(f, p, src);
+    }
+
+    /// The cards [`draw`](Self::draw) paints after the leaving copies, back to front.
+    fn draw_plan(&self, n: usize, focus: Option<usize>, bands: &[GridBand]) -> Vec<(DrawRole, usize)> {
+        let mut plan = Vec::new();
+        let mut moving: Vec<(f32, usize)> = Vec::new();
+        for i in self.window(n) {
+            if focus == Some(i) || self.above_edge(i, bands) {
+                continue;
+            }
+            match self.landing.travel(n, i) {
+                Some(t) => moving.push((t, i)),
+                None => plan.push((DrawRole::Still, i)),
+            }
+        }
+        // the longest way (old slot to new, fixed when the landing began) draws on top of the shorter
+        moving.sort_by(|a, b| a.0.total_cmp(&b.0));
+        plan.extend(moving.into_iter().map(|(_, i)| (DrawRole::Moving, i)));
+        if let Some(i) = focus.filter(|&i| i < n) {
+            plan.push((DrawRole::Focus, i));
+        }
+        plan
+    }
+
+    /// Test support: what [`draw`](Self::draw) paints, back to front, as `(role, index, rect,
+    /// alpha)`: the leaving copies first, then the cards in the plan's order. The rect is the
+    /// card's cell with a landing's slide folded in (no pop), the alpha its arrival fade (a
+    /// leaving copy's, its fade-out).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn plan_probe(&self, n: usize, focus: Option<usize>) -> Vec<(DrawRole, usize, Rect, f32)> {
+        let bands = self.bands.geometry();
+        let mut out: Vec<_> = self.leaving_rects(n).into_iter().map(|(i, r, a)| (DrawRole::Leaving, i, r, a)).collect();
+        out.extend(self.draw_plan(n, focus, &bands).into_iter().map(|(role, i)| {
+            (role, i, self.slot(i, n, &bands), self.landing.alpha(n, i))
+        }));
+        out
+    }
+
+    /// Test support: the ghosts a landing is fading out, `(key, rect, alpha)`: the cell each stood
+    /// in, held where it stood on screen, at its pop scale.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_slots(&self) -> Vec<(u64, Rect, f32)> {
+        let bands = self.bands.geometry();
+        self.landing.ghosts().iter().map(|g| {
+            let c = self.cell(g.was, &bands);
+            (g.key, Rect::new(c.x + g.shift.0, c.y + g.shift.1, c.w, c.h).scaled(g.lift.pos), g.alpha.pos.clamp(0.0, 1.0))
+        }).collect()
     }
 
     /// Register the stops of the cards the scroll can show: each is the rect [`draw`](Self::draw) paints.

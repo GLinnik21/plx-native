@@ -89,7 +89,7 @@ pub use crate::poster_grid::{
     growth_before as grid_growth_before, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
     STYLE as GRID_STYLE,
 };
-pub use grid::{Grid, GridSpec, ScrollMode};
+pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};
 pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 

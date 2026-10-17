@@ -1104,7 +1104,8 @@ impl Bridge {
     }
 
     /// Drive `popover`'s host-user counters from the surface phases (module doc).
-    fn sync_host(&mut self, d: &Dispatcher<AppHost>) {
+    fn sync_host(&mut self, d: &Dispatcher<AppHost>, dt: f32) {
+        plx_ui::popover::host::set_reflow(d.host_reflow(), dt);
         let live: Vec<(EntryId, bool, bool)> = d
             .nav
             .modals
@@ -1167,6 +1168,7 @@ impl Bridge {
 /// whoever took it, which is this type.
 impl Drop for Bridge {
     fn drop(&mut self) {
+        plx_ui::popover::host::reset_reflow();
         self.session_adapter.cancel_all();
         for (_, cached, closing) in self.held.drain(..) {
             plx_ui::popover::surface_released(cached, closing);
@@ -2206,6 +2208,11 @@ fn frame_ingest(
     let _frame_scope = plx_base::task::FrameScope::enter();
     #[cfg(test)]
     plx_base::testlock::assert_held("the store pump behind an app::bridge frame");
+    // The Watchlist's answers land AHEAD of the page's tick, never after it: a feed that landed
+    // after the tick would draw the new cards at their final slots for one frame before the
+    // landing began from the old ones (a snap, then a jump back).
+    rig.watchlist_pump();
+    rig.watchlist_feed(d);
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
     // owner work from its Tick, but Tick runs after views are captured; land the roster first so
     // a discovery result and the directory publication are observed in one frame. Controlled
@@ -2261,7 +2268,7 @@ fn frame_ingest(
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
     let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
     d.prune(&report.unmounted);
-    plx_base::diag::spans::span("dsync", || rig.sync_host(d));
+    plx_base::diag::spans::span("dsync", || rig.sync_host(d, tick.dt()));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
     // loop's gate presents it on its own video-plane term anyway, and the report would keep the
     // settled-capture clock (`plx_machine::idle::last_change_ms`) from ever seeing a paused player at rest
