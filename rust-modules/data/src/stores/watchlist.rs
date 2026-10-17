@@ -502,6 +502,12 @@ impl WatchlistStore {
             What::Page { start, total, mut rows, answers, roster_gen, etag } => {
                 self.state.total = total;
                 if start == 0 {
+                    // One line per list read, never the URL or a title: the only on-device
+                    // evidence of whether the page-0 validator saved a read (see the 304 arm).
+                    plx_base::eventlog::log(&format!(
+                        "watchlist: list page 0 -> full read (etag={})",
+                        if etag.is_some() { "yes" } else { "no" }
+                    ));
                     self.state.read_etag = etag;
                 }
                 self.settle_released(&mut rows);
@@ -527,6 +533,7 @@ impl WatchlistStore {
             What::NotModified => {
                 // The held rows ARE the service's list as of this read: the same commit a whole
                 // read makes at its end, with nothing to swap in.
+                plx_base::eventlog::log("watchlist: list page 0 -> 304 not modified (held rows kept)");
                 self.state.truncated = false;
                 self.state.rows_stamp = self.state.read_stamp;
                 self.state.status = Status::Ready;
