@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T22:35:01Z",
+ "generated": "2026-10-17T00:03:06Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": -48.0,
-   "change7_pct": 33.3,
+   "change7_pct": 33.1,
    "d30": 920,
-   "delta30": -441.5,
-   "delta7": 119.5,
+   "delta30": -442,
+   "delta7": 119,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 272,
+   "n_now": 273,
    "n_prev": 221,
-   "now": 478.5,
+   "now": 478,
    "prev7": 359,
    "shown": true,
    "state": "worse",
@@ -86,10 +86,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -56.9,
+   "change30_pct": -44.7,
    "change7_pct": 24.6,
-   "d30": 998,
-   "delta30": -568.0,
+   "d30": 778,
+   "delta30": -348.0,
    "delta7": 85.0,
    "group": "ci",
    "id": "push_wait",
@@ -224,10 +224,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 57.2,
+   "change30_pct": 70.4,
    "change7_pct": 3.9,
-   "d30": 1380,
-   "delta30": 789,
+   "d30": 1273.0,
+   "delta30": 896.0,
    "delta7": 81.5,
    "group": "ci",
    "id": "minutes",
@@ -287,10 +287,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 83.5,
+   "change30_pct": 82.5,
    "change7_pct": 9.1,
-   "d30": 176,
-   "delta30": 147,
+   "d30": 177.0,
+   "delta30": 146.0,
    "delta7": 27.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.2,
    "change7_pct": 0.0,
-   "d30": 365,
-   "delta30": -362,
+   "d30": 375.0,
+   "delta30": -372.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -789,7 +789,7 @@
    "to": 425
   },
   {
-   "change_pct": 33.3,
+   "change_pct": 33.1,
    "commits": [
     {
      "pr": 804,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-16",
    "threshold_pct": 25.0,
-   "to": 478.5
+   "to": 478
   },
   {
    "change_pct": 24.6,
