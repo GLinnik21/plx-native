@@ -330,11 +330,17 @@ Discover trailer playable?
   (Search +3, chip +4 unchanged); reword widgets.rs docs (~5575-5585, ~6405) and docs/search.md
   §1. Pin untouched; overscan_rects test (no scroll at 5 stops). Host + ui-sim + check-replay.
 - **DS6 Glass menus + 30% scrim** (boards: WatchlistOptions, HoldMenu, WatchlistHold): gradient panel, rims, shadow; fs_glass rim refraction from the
-  captured host, same SDF; menus only (owner decision, wave 2 review), and `GlassRim::Menu` turns on the sharp band copy (one per menu glass draw, re-grabbed every frame); amend ui CLAUDE.md Glass section + grep test.
+  captured host, same SDF; menus only (owner decision, wave 2 review); amend ui CLAUDE.md Glass section + grep test. Landed as a
+  live `Glass::DYNAMIC_BACKDROP` surface with a per-frame sharp band copy (`backdrop::RimCache` skipped repeats); the
+  2026-10-17 owner decision moved it onto frozen ground (`gfx::draw_glass_frozen`: the latched dim field as the body, the
+  once-captured host snapshot as the rim's sharp source, the dim applied at composite), so a menu requests no backdrop
+  entry, runs no source pass and copies no band.
   ui-sim + TV (profile-tv, LG pixels).
 - **DS7 Morph open style** (board: Motion's Sort & Filter card; end state WatchlistOptions): pill→panel rect (w k≈620, h k≈950, critically damped), radius
   pill→22 with bulge, rows 0.82→1 (zeta 0.6, k≈720), ~190/150 ms, cross-dissolve, never empty
-  glass; fade+scale fallback const. TV mandatory (profile-tv).
+  glass; fade+scale fallback const. TV mandatory (profile-tv). The growing glass rect re-took a live
+  blur source on each frame (fixed first by requesting the morph's whole envelope); on frozen ground
+  (DS6 note) the morph moves one quad over pictures that do not change and that machinery is gone.
 - **DS8 Text tracking** (board: Watchlist header title): −0.5 px in gfx text (Q10). Host + TV LG raster.
 
 ### 2.4 Feature PRs
@@ -386,7 +392,9 @@ DS7, DS8 before or alongside → W6a → W6 → W7.
 - Glass morph on Mali: clipped rounded rect + text blur per frame; blur only in flight, fade+scale
   fallback, profile-tv measurement.
 - DS6 reverses the popover glass policy for every menu; re-measure popover frame numbers
-  (popover.rs:8-14).
+  (popover.rs:8-14). Live menu glass measured about 2 to 2.6M Mali cycles a frame over the field
+  ground (2026-10-17); the frozen-ground glass is expected near main's menu frame, unmeasured on
+  the TV.
 - Grid reflow row-change crossfade and the post-menu beat (`LANDING_BEAT_MS`) need a TV feel check.
 - Tab bar: vocabulary + positional maps only; two pin bumps re-record fixtures twice.
 - Icon-only tab accessibility UNVERIFIED (Q3). i18n: Be genitive, four languages, size delta
@@ -538,8 +546,8 @@ menus, 30% scrim, icon-tab pill, darker tick veil, bright-verdict rule, new icon
    an empty glass frame.
    Engine: today every popover opens with one shared fade-and-slide (`Popover`, `K_APPEAR`
    300, `ui/src/popover.rs`). Morph = second open style for glass openers (Sort & Filter pill,
-   profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect reuses
-   captured host page + fs_glass SDF (plus the sharp band copy of `GlassRim::Menu`, re-grabbed every frame while the rect moves). Menu TEXT blur is the Mali cost;
+   profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect stands
+   on frozen ground (`gfx::draw_glass_frozen`: the latched dim field as the body, the once-captured host snapshot as the rim's sharp source), so a moving rect re-grabs nothing. Menu TEXT blur is the Mali cost;
    fallback fade+scale; decide by TV measurement (profile-tv).
    Rejected: focus tilt, light sweep, release-day clock sweep, shrink-and-stagger remove.
 

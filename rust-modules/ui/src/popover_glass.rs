@@ -1,27 +1,41 @@
 //! The popover panel's GLASS — the look every menu shares (design boards `WatchlistOptions`,
-//! `HoldMenu`, `WatchlistHold`): a gradient face over the captured host page, a 1 px rim, a top
-//! highlight on the rim, and a soft shadow. The 30% scrim behind it is the compact-menu dim role
-//! (`theme::underlay::DIM_COMPACT`), not a number stated here.
+//! `HoldMenu`, `WatchlistHold`): a gradient face over the page the menu stands on, a 1 px rim, a
+//! top highlight on the rim, and a soft shadow. The 30% scrim behind it is the compact-menu dim
+//! role (`theme::underlay::DIM_COMPACT`), not a number stated here.
 //!
 //! **One entry point.** [`draw`] is called by [`widgets::panel_ground`](crate::widgets::panel_ground)
 //! for a [`Ground::Menu`](crate::widgets::Ground) only (menus, not sheets or alerts), so no screen
-//! restates any of this. It
-//! reports `false` — and the caller draws the latched-underlay ground it always did — whenever no
-//! live backdrop exists: a unit test with no frame, a surface over the hardware video plane, a
-//! frozen page outside [`host::live`](crate::popover::host::live).
+//! restates any of this. It reports `false` — and the caller draws the latched-underlay ground it
+//! always did — when there is nothing frozen to stand on: the field is not latched yet (a unit test
+//! with no frame, the first frame of a modal), a surface over the hardware video plane, or a menu
+//! stacked over another surface's dim.
 //!
-//! **The refraction is the shader's, not this module's.** The panel asks for [`GlassRim::Menu`]:
-//! `fs_glass.frag` already bends the captured page around the rim using the SAME rounded-rect SDF
-//! it rounds the panel with, and mixes in the unblurred grab at `tokens::MENU_SHARP`. That sharp
-//! source is NOT free: `GlassRim::Menu` turns on the sharp band copy, one per menu glass draw,
-//! re-grabbed every frame (and with a new rect every frame while a morph moves). This module adds
-//! no pass of its own; it only names the material.
+//! **The glass stands on FROZEN ground and reads no framebuffer** (owner decision, 2026-10-17). A
+//! menu stands on a page that is not moving (`popover.rs`'s module doc), so its glass is fed the two
+//! pictures of that page the frame already holds, through `gfx::draw_glass_frozen`: the body shows
+//! the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim draws), and
+//! the rim's lens bends the host snapshot (`popover::host::page_tex`, the one capture of the
+//! undimmed page) at `tokens::MENU_SHARP` — `fs_glass.frag`'s refraction with the SAME rounded-rect
+//! SDF it rounds the panel with. Both are undimmed, and the frame's one modal dim ([`note_dim`]) is
+//! applied to both at composite. No backdrop entry is requested, no blur source pass runs and no
+//! band is copied off the framebuffer, so the menu's glass costs one panel quad (and its shadow) on every frame of
+//! its open, its stay and its close, and a morph or a slide moves that quad over pictures that do
+//! not change. It replaced a live `Glass::DYNAMIC_BACKDROP` surface that re-ran the page at quarter
+//! resolution as its blur source whenever the draws beneath it changed (the `src` and `pagex2`
+//! spans) and composited a 5-tap blur plus a band copy every frame: about 2 to 2.6M Mali GPU
+//! cycles a frame over the field ground (television, 2026-10-17).
+//!
+//! **What it does not see**: anything drawn live above the host after its capture — an opener
+//! lifted over the dim (the item menu's card, the account chip) — is not in the snapshot, so the
+//! rim refracts the page as captured without it, which is also why the Sort & Filter pill (lifted
+//! out of the page, `Screen::opener`) leaves no ghost in the lens.
 //!
 //! **Board against shipped code** (shipped code wins, recorded): the board's panel radius is 26 and
 //! the design system's `--radius-panel` is 24, while the shipped panels state their own
 //! (`theme::ALERT_PANEL_RAD` 32 and the menus' `PANEL_RAD`) — the radius is the caller's, as it
 //! always was. The board's top highlight is white .24; the shipped `theme::GLASS_RIM_LIGHT` is .28
-//! and stays. The board's `saturate(1.6)` has no counterpart in the blur chain and is not drawn.
+//! and stays. The board's `saturate(1.6)` has no counterpart in the composite and is not drawn.
+use crate::frame::backdrop::Dim;
 use crate::{theme, Painter, Rect};
 use plx_gfx::gfx::{GlassFace, GlassRim};
 
@@ -49,33 +63,58 @@ pub(crate) fn face_at(a: f32) -> GlassFace {
     crate::widgets::chip_face(FACE, a.clamp(0.0, 1.0))
 }
 
-/// Draw the glass panel at `r` with corner `radius`, at the opacity and appear-slide the painter
-/// carries ([`Painter::opacity`], [`Painter::rest_lift`]). `false` = no live backdrop, nothing drawn.
+thread_local! {
+    /// The modal dims drawn on this frame's visible pass so far, and the last of them: `Painter::dim`
+    /// notes each ([`note_dim`]), `popover::host::begin_frame` clears. Per thread, like the walk.
+    static DIMS: std::cell::Cell<(u32, Option<Dim>)> = const { std::cell::Cell::new((0, None)) };
+}
+
+/// A modal dim was just drawn on the visible frame, under whatever surface draws next. The glass's
+/// two pictures are undimmed, so it applies this at composite.
+pub(crate) fn note_dim(d: Dim) {
+    DIMS.with(|c| c.set((c.get().0 + 1, Some(d))));
+}
+
+/// A new frame: no dim drawn yet. Called by `popover::host::begin_frame`, before anything draws.
+pub(crate) fn clear_dims() {
+    DIMS.with(|c| c.set((0, None)));
+}
+
+/// Draw the glass panel at `r` with corner `radius`, at the opacity the painter carries
+/// ([`Painter::opacity`]), standing on `field` (the latched underlay field, `DrawFrame::underlay`).
+/// `false` = nothing frozen to stand on, nothing drawn.
 #[must_use]
-pub fn draw(p: Painter, r: Rect, radius: f32) -> bool {
-    draw_shadowed(p, r, radius, 1.0)
+pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::UnderlayField>) -> bool {
+    draw_shadowed(p, r, radius, field, 1.0)
 }
 
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph lays its glass at
 /// full strength under the opener's fading plate, and its shadow arrives with the fill.
 #[must_use]
-pub fn draw_shadowed(p: Painter, r: Rect, radius: f32, shadow: f32) -> bool {
-    let a = p.opacity();
-    let glass = crate::widgets::Glass::DYNAMIC_BACKDROP;
-    let (tint, rim, face, mat) =
-        ([1.0, 1.0, 1.0, 1.0], GlassRim::Menu, face_at(a), theme::PANEL_MATERIAL);
-    // A sliding panel's region keeps the slide margin and its snapshot is grabbed around the REST
-    // rect (`backdrop_rising`), so the open/close slide does not re-run the blur chain per frame.
-    let drew = match p.rest_lift() {
-        Some(dy) => glass.backdrop_rising(p, r, dy, radius, tint, rim, face, mat),
-        None => glass.backdrop(p, r, 0.0, radius, tint, rim, face, mat),
+pub fn draw_shadowed(
+    p: Painter,
+    r: Rect,
+    radius: f32,
+    field: Option<&crate::underlay::UnderlayField>,
+    shadow: f32,
+) -> bool {
+    let Some(ground) = field.and_then(crate::underlay::UnderlayField::ground_tex) else {
+        return false;
     };
-    if !drew {
+    // The host snapshot is the page under the FIRST surface's dim. A menu over another surface
+    // stands on that surface too, which neither picture holds: it keeps the field ground.
+    let (dims, dim) = DIMS.with(|c| c.get());
+    if dims > 1 {
+        return false;
+    }
+    let sharp = crate::popover::host::page_tex().unwrap_or(0);
+    let face = face_at(p.opacity());
+    if !p.glass_frozen(r, radius, ground, sharp, dim, [1.0; 4], GlassRim::Menu, face) {
         return false;
     }
     // After the glass, not before: `shadow_outside` cuts the panel's own rounded shape out of the
-    // penumbra, so a translucent face has no ink under it, and the grab the rim refracts is taken
-    // before the shadow is down. The shadow rides the painter's cascade (alpha and slide) itself.
+    // penumbra, so a translucent face has no ink under it. The shadow rides the painter's cascade
+    // (alpha and slide) itself.
     if shadow > 0.0 {
         p.alpha(shadow).shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
     }
@@ -100,21 +139,6 @@ pub(crate) mod tests {
         assert_eq!(FACE.rim_w, 1.0, "the board's 1 px");
     }
 
-    /// Run `f` inside a backdrop DISCOVERY pass and return the glass commands it declared, in the
-    /// order declared. `None` if the pass could not run live (then the test would prove nothing).
-    pub(crate) fn declared_glass(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
-        use crate::frame::backdrop::{discover, Sources};
-        use std::{cell::RefCell, rc::Rc};
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            f();
-        }
-        let glass = sources.borrow().paints.iter().filter(|p| p.glass.is_some()).cloned().collect();
-        glass
-    }
-
     /// Every paint `f` declares inside a backdrop DISCOVERY pass, in order.
     pub(crate) fn declared_all(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
         use crate::frame::backdrop::{discover, Sources};
@@ -129,254 +153,181 @@ pub(crate) mod tests {
         paints
     }
 
-    /// The glass the board's panel should declare at `r`, built straight from the pieces (no
-    /// `draw`): the shared `Glass` door, the menu rim, the face at opacity `a`.
-    pub(crate) fn expected(p: Painter, r: Rect, rad: f32, face: GlassFace) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+    /// The menu glasses `f` declares inside a discovery pass, in order.
+    pub(crate) fn declared_glass(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+        declared_all(f).into_iter().filter(|p| p.kind() == "glass_frozen").collect()
+    }
+
+    /// A field latched on a stand-in texture, as `ModalUnderlay` holds one once its read lands.
+    /// Drop it with [`unlatch`].
+    pub(crate) fn latched(tex: u32) -> crate::underlay::UnderlayField {
+        plx_gfx::gfx::tex_ledger::specified(tex, 60, 32);
+        crate::underlay::UnderlayField::latched_for_test(tex)
+    }
+    pub(crate) fn unlatch(tex: u32) {
+        plx_gfx::gfx::tex_ledger::deleted(tex);
+    }
+
+    /// The glass the board's panel should declare at `r` over `field`, built straight from the
+    /// pieces (no `draw`): the frozen composite, the menu rim, the face at opacity `face`.
+    pub(crate) fn expected(
+        p: Painter,
+        r: Rect,
+        rad: f32,
+        ground: u32,
+        sharp: u32,
+        face: GlassFace,
+    ) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
         declared_glass(|| {
-            let g = crate::widgets::Glass::DYNAMIC_BACKDROP;
-            let t = [1.0, 1.0, 1.0, 1.0];
-            let _ = match p.rest_lift() {
-                Some(dy) => g.backdrop_rising(p, r, dy, rad, t, GlassRim::Menu, face, theme::PANEL_MATERIAL),
-                None => g.backdrop(p, r, 0.0, rad, t, GlassRim::Menu, face, theme::PANEL_MATERIAL),
-            };
+            assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face));
         })
     }
 
-    /// The face fades with the panel, through `draw` itself: the declared glass command at opacity
-    /// `a` equals the one built from `face_at(a)` and differs from the unfaded `FACE` one. Red if
+    /// The face fades with the panel, through `draw` itself: the declared glass at opacity `a`
+    /// equals the one built from `face_at(a)` and differs from the unfaded `FACE` one. Red if
     /// `draw` hands `FACE` as is (the finding: a ~.8-opaque face over rows still near 0).
     #[test]
     fn draw_declares_the_face_at_the_panels_opacity() {
         let _g = plx_base::testlock::serial();
+        let tex = 9_741;
+        let field = latched(tex);
         let r = Rect::new(100.0, 100.0, 300.0, 200.0);
         for a in [0.1_f32, 0.5] {
             let p = Painter::root().alpha(a);
-            let drawn = declared_glass(|| assert!(draw(p, r, 24.0), "a live discovery pass takes the glass"));
-            assert_eq!(drawn.len(), 1, "one glass command per panel");
-            assert!(drawn[0] == expected(p, r, 24.0, face_at(a))[0], "the face rides the opacity {a}");
-            assert!(drawn[0] != expected(p, r, 24.0, FACE)[0], "an unfaded face is a different command");
+            let drawn = declared_glass(|| assert!(draw(p, r, 24.0, Some(&field)), "a latched field takes the glass"));
+            assert_eq!(drawn.len(), 1, "one glass per panel");
+            assert!(drawn[0] == expected(p, r, 24.0, tex, 0, face_at(a))[0], "the face rides the opacity {a}");
+            assert!(drawn[0] != expected(p, r, 24.0, tex, 0, FACE)[0], "an unfaded face is a different draw");
         }
         let p = Painter::root();
-        let full = declared_glass(|| assert!(draw(p, r, 24.0)));
-        assert!(full[0] == expected(p, r, 24.0, FACE)[0], "at full opacity the face is FACE");
+        let full = declared_glass(|| assert!(draw(p, r, 24.0, Some(&field))));
+        assert!(full[0] == expected(p, r, 24.0, tex, 0, FACE)[0], "at full opacity the face is FACE");
+        unlatch(tex);
     }
 
-    /// A menu's glass is declared where the dispatcher draws a menu: INSIDE a surface's layer
-    /// (`dispatch.rs`'s surfaces loop, `backdrop::layer(Z::surface(index), ..)`), above the page
-    /// and the modal scrim. That is the DS6 design, and the glass resolves there: `surface_with`
-    /// requests its entry before the declare, and the entry's prefix is the page and the scrim
-    /// beneath it. `declared_glass` above walks at the default `Z::PAGE`, which is why it never
-    /// saw this. Red on the build that asserted "a glass command was declared at/above the
-    /// surfaces band … would never resolve" on every frame a menu was up (a debug build's frame
-    /// guard caught the panic and the menu never drew).
+    /// **Nothing frozen to stand on, no glass**: no field, or one not latched yet (the first frames
+    /// of a modal, before its read lands), or a menu stacked over another surface's dim (neither
+    /// picture holds that surface). The caller then draws the field ground it always did.
     #[test]
-    fn a_menu_glass_inside_a_surface_resolves_against_the_page_and_the_scrim() {
-        use crate::frame::backdrop::{discover, layer, Sources, Z};
-        use std::{cell::RefCell, rc::Rc};
+    fn without_frozen_ground_the_glass_draws_nothing() {
         let _g = plx_base::testlock::serial();
-        let r = Rect::new(1200.0, 220.0, 320.0, 600.0);
-        let sources = Rc::new(RefCell::new(Sources::default()));
-        sources.borrow_mut().begin(vec![]);
-        {
-            let _walk = discover(sources.clone());
-            let p = Painter::root();
-            // The page under the menu, then the modal scrim in the DIM band, as `draw_with` orders them.
-            p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0], 0.0);
-            {
-                let _dim = layer(Z::DIM, false);
-                p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.0, 0.0, 0.0, 0.3], [0.0, 0.0, 0.0, 0.3], 0.0);
-            }
-            let _surface = layer(Z::surface(0), false);
-            assert!(draw(p, r, 24.0), "a live discovery pass takes the menu's glass");
-        }
-        let mut s = sources.borrow_mut();
-        s.resolve();
-        let (&z, entry) = s
-            .entries
-            .iter()
-            .find(|(&z, _)| z >= Z::surface(0))
-            .expect("the menu glass requested a backdrop entry in its surface's band");
-        assert!(z < Z::surface(1), "the entry belongs to the menu's own surface");
-        assert_eq!(entry.underlay.len(), 2, "its source is the page and the scrim under it");
-        assert!(s.jobs().iter().any(|&(jz, _)| jz == z), "the entry is captured: it resolves");
+        let r = Rect::new(100.0, 100.0, 300.0, 200.0);
+        let p = Painter::root();
+        assert!(declared_glass(|| assert!(!draw(p, r, 24.0, None))).is_empty());
+        let unlatched = crate::underlay::UnderlayField::new();
+        assert!(declared_glass(|| assert!(!draw(p, r, 24.0, Some(&unlatched)))).is_empty());
+        let tex = 9_742;
+        let field = latched(tex);
+        let ink = Dim { tex, tint: [0.0, 0.0, 0.0, 0.3] };
+        clear_dims();
+        note_dim(ink);
+        assert!(!declared_glass(|| assert!(draw(p, r, 24.0, Some(&field)))).is_empty(), "one dim: the menu's own");
+        note_dim(ink);
+        assert!(declared_glass(|| assert!(!draw(p, r, 24.0, Some(&field)))).is_empty(), "a second surface's dim");
+        clear_dims();
+        unlatch(tex);
     }
 
     /// One frame of a menu over a page and its modal dim, the order `dispatch.rs::draw_with` walks
-    /// them in: the page, the dim (`ModalStack::draw_scrims` → `UnderlayField::draw` as
-    /// `Role::Dim`) and, when `lift` is set, an opener lift drawn ABOVE the dim under the menu's
-    /// footprint, then the menu's own glass in its surface band. Returns whether the menu's source
-    /// owes a capture this frame (a job), and marks it captured, as a successful GPU job does.
+    /// them in: the page (`page`, a colour that changes when the page re-renders), the dim at
+    /// `alpha` (`ModalStack::draw_scrims` → `UnderlayField::draw` as `Role::Dim`), then the menu
+    /// in its surface band, drawn by `menu`. Returns whether ANY backdrop entry or capture job
+    /// exists. (Nothing in the surfaces band is recorded, so the glass itself is read off a
+    /// separate discovery pass, [`declared_glass`].)
     fn menu_frame(
         sources: &std::rc::Rc<std::cell::RefCell<crate::frame::backdrop::Sources>>,
         field: &crate::underlay::UnderlayField,
+        page: f32,
         alpha: f32,
-        lift: bool,
+        menu: impl FnOnce(Painter),
     ) -> bool {
         use crate::frame::backdrop::{commit, discover, layer, Z};
-        let r = Rect::new(1200.0, 220.0, 320.0, 600.0);
         sources.borrow_mut().begin(vec![]);
         {
             let _walk = discover(sources.clone());
             let p = Painter::root();
-            p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.2, 0.3, 0.4, 1.0], [0.2, 0.3, 0.4, 1.0], 0.0);
+            p.rect(Rect::FULL, 0.0, [page, 0.3, 0.4, 1.0], [page, 0.3, 0.4, 1.0], 0.0);
             {
                 let _dim = layer(Z::DIM, false);
                 field.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, alpha);
-                if lift {
-                    p.rect(Rect::new(1180.0, 200.0, 80.0, 80.0), 8.0, [0.9; 4], [0.9; 4], 0.0);
-                }
             }
             let _surface = layer(Z::surface(0), false);
-            assert!(draw(p, r, 24.0));
+            menu(p);
         }
-        let owed = {
+        let live = {
             let mut s = sources.borrow_mut();
             s.resolve();
-            s.jobs().iter().any(|&(z, _)| z >= Z::surface(0))
+            !s.entries.is_empty() || !s.jobs().is_empty()
         };
         commit(sources);
-        owed
+        live
     }
 
-    /// **A menu's dim ramping in front of a still page re-blurs nothing.** The dim is linear in its
-    /// alpha (`mix(page, ink, a)`) and its ink is the page's own smooth light, so the menu's glass
-    /// filters the page ONCE and applies this frame's dim at composite — the PageDip precedent
-    /// (`Layer::composite_alpha`), with the dim's ink as the ground. Red on the build that keyed
-    /// the source on the dim's alpha: every frame of an appear (and of a close) re-ran the whole
-    /// direct source pass, `blur.scene` replaying the page plus both taps — the Sort & Filter and
-    /// account menus' GLASSDIFF on the television named `field` arg 15 (the tint's alpha) on 18
-    /// of SFopen's 24 frames.
+    /// **A menu's glass asks the backdrop for nothing, through its whole life.** Over every frame
+    /// of an open, a stay and a close — with the page under it re-rendering on each frame and the
+    /// dim ramping with the appear — the walk holds no backdrop entry and owes no capture job, so
+    /// no blur source pass (`src`), no second page draw (`pagex2`) and no band copy can run for it.
+    /// The morph (Sort & Filter, the account menu) and the slide (the item hold menu) both. Red
+    /// on the build whose menu glass was a `Glass::DYNAMIC_BACKDROP` surface: its entry's source
+    /// was the page and the dim, and every frame either of them changed was a job (the test it
+    /// replaces, `a_menu_glass_inside_a_surface_resolves_against_the_page_and_the_scrim`, asserted
+    /// exactly that entry).
     #[test]
-    fn a_ramping_dim_under_a_menu_captures_its_source_once() {
+    fn a_menu_glass_requests_no_backdrop_entry_while_opening_open_or_closing() {
+        use crate::popover::Popover;
         let _g = plx_base::testlock::serial();
+        let tex = 9_743;
+        let field = latched(tex);
         let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
-        let flat = crate::underlay::UnderlayField::new();
-        let mut composite = Vec::new();
-        let owed: Vec<bool> = (0..12)
-            .map(|i| {
-                let a = 0.025 * i as f32;
-                let o = menu_frame(&sources, &flat, a, false);
-                let s = sources.borrow();
-                let z = *s.entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
-                composite.push((a, s.composite_dim(z).map(|d| d.tint[3])));
-                o
-            })
-            .collect();
-        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole ramp: {owed:?}");
-        assert!(owed[0], "and it is the first frame's");
-        // …and what the composite applies is THIS frame's dim, the scrim ink at this alpha.
-        for (a, applied) in composite {
-            assert_eq!(applied, Some(a), "the composite takes the frame's own alpha");
-        }
-        // The band's direct replay skips the dim it applies; the visible walk always draws it.
-        let z = *sources.borrow().entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
-        {
-            let _job = crate::frame::backdrop::enter(sources.clone(), z);
-            assert!(crate::frame::backdrop::dim_deferred(), "the job's replay leaves the dim out");
-        }
-        {
-            let _visible = crate::frame::backdrop::enter(sources.clone(), crate::frame::backdrop::Z::ALL);
-            assert!(!crate::frame::backdrop::dim_deferred(), "the visible frame draws it");
-        }
-    }
-
-    /// **Nor does the dim's FIELD being re-latched** under a standing menu. Every host re-capture
-    /// re-reads the page's light into the field (`ModalUnderlay::sync` on a new `page_epoch`),
-    /// which re-specifies its texture; the composite reads the field live, so the source does not
-    /// have to be re-taken for it. Red on the build that recorded the texture's revision in the
-    /// dim's arguments: the tab pulse after "Add to Watchlist" re-captured the host on each of its
-    /// frames, and each one re-ran the menu's source pass (GLASSDIFF `field` arg 10, HWCNT 19.4M a
-    /// frame for the pulse's 0.55 s against 9.2M after it).
-    #[test]
-    fn a_relatched_dim_field_under_a_menu_captures_its_source_once() {
-        let _g = plx_base::testlock::serial();
-        let tex = 9_731;
-        plx_gfx::gfx::tex_ledger::specified(tex, 60, 32);
-        let field = crate::underlay::UnderlayField::latched_for_test(tex);
-        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
-        let owed: Vec<bool> = (0..8)
-            .map(|_| {
-                let o = menu_frame(&sources, &field, theme::underlay::DIM_COMPACT, false);
-                plx_gfx::gfx::tex_ledger::specified(tex, 60, 32); // the next frame's re-latch
-                o
-            })
-            .collect();
-        plx_gfx::gfx::tex_ledger::deleted(tex);
-        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture: {owed:?}");
-    }
-
-    /// **The guard: anything drawn ABOVE the dim under the menu keeps the dim in the source.** A
-    /// composite-time dim would darken that content too (an opener lift is drawn over the dim so
-    /// that it does NOT recede), so such a menu keys on the dim's real arguments, as before, and
-    /// re-captures when its alpha moves.
-    #[test]
-    fn content_above_the_dim_keeps_the_dim_in_the_menus_source() {
-        let _g = plx_base::testlock::serial();
-        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
-        let flat = crate::underlay::UnderlayField::new();
-        let owed: Vec<bool> = (0..6).map(|i| menu_frame(&sources, &flat, 0.05 * i as f32, true)).collect();
-        assert_eq!(owed, vec![true; 6], "every alpha step is a new source");
-        let s = sources.borrow();
-        let z = *s.entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
-        assert_eq!(s.composite_dim(z), None, "and the composite applies no second dim");
-    }
-
-    /// **A menu morphing out of its pill captures its source once, not once per frame of growth.**
-    /// The glass rect grows from the pill to the panel over the morph; a source sized by the rect
-    /// it was first asked for has to be re-taken every frame the rect leaves it. The morph knows
-    /// its whole envelope (the pill and the settled panel) from the first frame, so the glass asks
-    /// for that. Red on the build that requested only the frame's own rect: Sort & Filter's
-    /// GLASSDIFF on the television named `grow` on 8 consecutive frames of every open. The
-    /// fade+scale fallback (no opener rect) grows inside the panel and is held to the same.
-    #[test]
-    fn a_morphing_menu_captures_its_source_once_for_the_whole_growth() {
-        use crate::frame::backdrop::{commit, discover, layer, Sources, Z};
-        let _g = plx_base::testlock::serial();
-        let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
-        let flat = crate::underlay::UnderlayField::new();
         let pill = Rect::new(1700.0, 150.0, 180.0, 56.0);
         let panel = Rect::new(1420.0, 220.0, 472.0, 600.0);
-        for from in [Some(pill), None] {
-        let mut pop = crate::popover::Popover::new().morphing();
-        pop.open_from(from);
-        let mut owed = Vec::new();
-        for _ in 0..90 {
-            pop.update(1.0 / 60.0);
-            sources.borrow_mut().begin(vec![]);
-            {
-                let _walk = discover(sources.clone());
-                let p = Painter::root();
-                p.rect(Rect::FULL, 0.0, [0.2, 0.3, 0.4, 1.0], [0.2, 0.3, 0.4, 1.0], 0.0);
-                {
-                    let _dim = layer(Z::DIM, false);
-                    flat.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, 0.3);
+        for morph in [true, false] {
+            let mut pop = if morph { Popover::new().morphing() } else { Popover::new() };
+            pop.open_from(Some(pill));
+            let (mut frames, mut painted, mut closing) = (0, 0, false);
+            while pop.visible() {
+                pop.update(1.0 / 60.0);
+                let a = pop.appear();
+                let menu = |p: Painter| pop.panel(pop.content_painter_on(p, Popover::RISE), panel, 24.0, Some(&field), crate::widgets::Ground::Menu);
+                let live = menu_frame(&sources, &field, (frames % 7) as f32 * 0.1, theme::underlay::DIM_COMPACT * a, menu);
+                let glass = declared_glass(|| menu(Painter::root()));
+                assert!(!live, "frame {frames} (morph {morph}, closing {closing}): no backdrop entry, no job");
+                assert!(glass.len() <= 1);
+                painted += glass.len();
+                frames += 1;
+                if !closing && pop.appear_settled() {
+                    // The stay: the page keeps re-rendering under the settled menu.
+                    for i in 0..10 {
+                        let live = menu_frame(&sources, &field, i as f32 * 0.1, theme::underlay::DIM_COMPACT, menu);
+                        assert!(!live, "settled frame {i}: the glass stands, asking for nothing");
+                        assert_eq!(declared_glass(|| menu(Painter::root())).len(), 1, "settled frame {i}: the glass stands");
+                    }
+                    let _input = crate::popover::host::input_scope();
+                    pop.dismiss();
+                    closing = true;
                 }
-                let _surface = layer(Z::surface(0), false);
-                let p = pop.content_painter(0.0);
-                pop.panel(p, panel, 24.0, None, crate::widgets::Ground::Menu);
-                // The opener's face and the rows are drawn over the glass (`OptionsMenu::draw`), so
-                // their changing alpha is in no source.
-                pop.morph_face(p, panel, 24.0, [0.9, 0.9, 0.9, 1.0], |p| p.rrect(pill, 4.0, 4.0, [0.1, 0.1, 0.1, 1.0]));
-                pop.morph_rows(p, panel, 24.0, |p| p.rrect(Rect::new(1440.0, 260.0, 400.0, 60.0), 8.0, 8.0, [1.0; 4]));
+                assert!(frames < 600, "the menu opens and closes");
             }
-            let o = {
-                let mut s = sources.borrow_mut();
-                s.resolve();
-                s.jobs().iter().any(|&(z, _)| z >= Z::surface(0))
-            };
-            commit(&sources);
-            if sources.borrow().entries.keys().any(|&z| z >= Z::surface(0)) {
-                owed.push(o);
-            }
-            if pop.appear_settled() {
-                break;
-            }
+            assert!(closing && painted > 8, "the glass drew over the open and the close (morph {morph}): {painted}");
+            sources.borrow_mut().clear();
         }
-        pop.close();
-        assert!(owed.len() > 8, "the morph ran over several frames with a glass: {owed:?}");
-        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole morph from {from:?}: {owed:?}");
-        sources.borrow_mut().clear();
-        }
+        unlatch(tex);
+    }
+
+    /// **The rim's sharp source is the host snapshot**: `draw` hands the glass whatever
+    /// `popover::host::page_tex` holds (0 when it holds no undimmed page), and nothing else — the
+    /// glass takes no picture of its own.
+    #[test]
+    fn the_rims_sharp_source_is_the_host_snapshot() {
+        let _g = plx_base::testlock::serial();
+        let tex = 9_744;
+        let field = latched(tex);
+        let r = Rect::new(100.0, 100.0, 300.0, 200.0);
+        let p = Painter::root();
+        let sharp = crate::popover::host::page_tex().unwrap_or(0);
+        let drawn = declared_glass(|| assert!(draw(p, r, 24.0, Some(&field))));
+        assert!(drawn[0] == expected(p, r, 24.0, tex, sharp, FACE)[0]);
+        unlatch(tex);
     }
 
     /// The tint arithmetic itself: scrim and rim alphas scale by the opacity.

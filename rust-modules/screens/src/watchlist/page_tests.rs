@@ -630,12 +630,12 @@ fn the_count_is_all_or_shown_of_total_and_absent_off_the_landed_list() {
 }
 
 /// **A Remove updates the count when the grid's landing STARTS**, narrowed or not: not at the commit
-/// (the hold menu is still up), not under the menu's veil nor the landing's beat, but on the frame
+/// (the hold menu is still up), not under the menu's veil, but on the frame
 /// the tiles begin to move, so the number and the grid change together.
 #[test]
 fn a_remove_lowers_the_count_when_the_landing_starts() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::{set_veil, VEIL_CLEAR};
+    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     assert_eq!(h.screen.count(), Some(Count::All(12)));
@@ -646,7 +646,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
         h.run(1);
         assert_eq!(h.screen.count(), Some(Count::All(12)), "frame {frame}: the menu is still up");
     }
-    set_veil(VEIL_CLEAR * 0.5);
+    set_veil(CLOSING_GONE * 0.5);
     let mut lowered_at_start = false;
     for frame in 0..40 {
         h.run(1);
@@ -683,13 +683,13 @@ fn the_shape_follows_the_write_order() {
 }
 
 /// **Nothing on the grid changes between a Remove's commit and the landing's start**: under the
-/// hold menu's veil (and the landing's beat) every survivor keeps the slot and the scale it was
+/// hold menu's veil every survivor keeps the slot and the scale it was
 /// drawn at, the new focus rests (no pop, no caption move), and the first frame of the landing is
 /// the only frame anything moves on.
 #[test]
 fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     use plx_ui::cards::conformance::CardHarness;
-    use plx_ui::containers::modal::{set_veil, VEIL_CLEAR};
+    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
     let mut h = Harness::new(tiles(14));
     h.focus_index(2);
     h.run(60);
@@ -729,7 +729,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
             assert!((s - want).abs() < 1e-3, "frame {frame}: card {e} rescaled under the menu: {want} -> {s}");
         }
     }
-    set_veil(VEIL_CLEAR * 0.5);
+    set_veil(CLOSING_GONE * 0.5);
     let now = h.focused().unwrap();
     let mut last = 1.0f32;
     let mut rose = false;

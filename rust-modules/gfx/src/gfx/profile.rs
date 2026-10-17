@@ -103,6 +103,8 @@ mod imp {
         "blur.up",
         "glass.composite",
         "glass.sharp",
+        // A menu's glass on frozen ground (`gfx::draw_glass_frozen`): the panel quad alone.
+        "glass.frozen",
         "glass.frost",
         "glass.foreground",
         "panel.glass",

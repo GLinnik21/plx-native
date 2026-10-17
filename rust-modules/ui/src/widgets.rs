@@ -135,8 +135,9 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 /// Which ground a popover panel stands on — the caller's explicit, per-call choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ground {
-    /// A MENU (Sort & Filter, the account menu, the item hold menu): glass over the live backdrop
-    /// (`popover_glass`), the latched-field ground only when no live backdrop exists.
+    /// A MENU (Sort & Filter, the account menu, the item hold menu): glass on the frozen ground
+    /// (`popover_glass`: the latched field and the host snapshot), the latched-field ground only
+    /// when there is nothing frozen to stand on.
     Menu,
     /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
     /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
@@ -168,11 +169,12 @@ pub enum Ground {
 ///
 /// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
 /// states which ground it wants with a [`Ground`], per call, and there is no global switch.
-/// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever a live backdrop exists;
-/// everything described above is the ground of [`Ground::Sheet`] (alerts, About, Tracks, the person
-/// bio, the decision alert) and the FALLBACK ground of a menu on a frame without a live backdrop.
-/// The chrome (the top bar's track, the profile chip's capsule, the hold hint) is the other
-/// live-blur user.
+/// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever the field is latched; that
+/// glass stands on the same frozen pictures (this field, and the host snapshot for its rim) and
+/// reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
+/// (alerts, About, Tracks, the person bio, the decision alert) and the FALLBACK ground of a menu
+/// with nothing frozen to stand on. The chrome (the top bar's track, the profile chip's capsule,
+/// the hold hint) is the only live-blur user.
 pub fn panel_ground(
     p: Painter,
     r: Rect,
@@ -193,10 +195,10 @@ pub fn panel_ground_shadowed(
     ground: Ground,
     shadow: f32,
 ) {
-    // DS6: a menu is glass whenever a live backdrop exists (`popover_glass`); the field ground below
-    // is the fallback for a frame without one. A sheet never takes this branch.
+    // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
+    // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, shadow))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow))
     {
         return;
     }

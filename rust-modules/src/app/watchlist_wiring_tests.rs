@@ -208,6 +208,34 @@ fn the_hold_menus_remove_flips_the_tile_and_writes_the_remove() {
     assert_eq!(page(&d).list(), ListState::Ready { total: 2 });
 }
 
+/// **The page does not move while a menu is up.** A Remove the hold menu chose is in the store at
+/// once, but the page is handed nothing (no tile gone, no count, no invalidation to redraw the host
+/// snapshot) for as long as the menu veils it, closing tail included; the first feed after the
+/// menu has let go commits the Remove.
+#[test]
+fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
+    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    assert!(rig.watchlist_remove(&guid(2), true));
+    for veil in [1.0, 0.5, CLOSING_GONE * 1.5] {
+        set_veil(veil);
+        rig.watchlist_for_test().pump();
+        let _ = plx_machine::idle::take_local_damage();
+        rig.watchlist_feed(&mut d);
+        assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "veil {veil}: the page is as the menu found it");
+        assert_eq!(page(&d).count(), Some(Count::All(3)), "veil {veil}: and so is its count");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "veil {veil}: nothing invalidated the host");
+    }
+    set_veil(CLOSING_GONE * 0.5);
+    rig.watchlist_for_test().pump();
+    rig.watchlist_feed(&mut d);
+    assert_eq!(guids(&d), vec![guid(1), guid(3)], "the first feed after the menu let go commits the Remove");
+    set_veil(0.0);
+}
+
 /// Q8 and Q11: the write fails (plex.tv unreachable, or a debug build whose discover stand-in is not
 /// armed refusing it). The tile went at the press and comes back when the write answers; nothing
 /// else is drawn.

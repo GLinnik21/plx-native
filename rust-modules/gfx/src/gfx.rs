@@ -3547,8 +3547,9 @@ fn sharp_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     None
 }
-/// `/tmp/plxnative-menusharp=<w>` — a MENU glass's sharp-source weight, swept. `0` also drops the
-/// per-frame band copy it costs (`GlassRim::Menu`), which is what makes it an A/B on one binary.
+/// `/tmp/plxnative-menusharp=<w>` — a MENU glass's sharp-source weight, swept. On frozen ground
+/// (`draw_glass_frozen`) the sharp source is the host snapshot and costs no copy; over the live
+/// path `0` also drops the band copy `GlassRim::Menu` costs there.
 #[cfg(feature = "devtriggers")]
 fn menu_sharp_sweep() -> Option<f32> {
     static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
@@ -3561,6 +3562,29 @@ fn menu_sharp_sweep() -> Option<f32> {
 #[cfg(not(feature = "devtriggers"))]
 fn menu_sharp_sweep() -> Option<f32> {
     None
+}
+/// The rim's band copy, remembered across frames — see [`backdrop::RimCache`]. Main-thread only,
+/// like the chain whose grab texture it describes.
+static mut RIM_CACHE: backdrop::RimCache = backdrop::RimCache::new();
+fn rim_cache() -> &'static mut backdrop::RimCache {
+    unsafe { &mut *std::ptr::addr_of_mut!(RIM_CACHE) }
+}
+/// `/tmp/plxnative-rimcache=0` — copy the rim's band on every frame, as before the cache. It is
+/// what makes the saving an A/B on one binary.
+#[cfg(feature = "devtriggers")]
+fn rim_cache_off() -> bool {
+    static SEEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let off = plx_base::devtrig::read("rimcache").is_some_and(|v| v.trim() == "0");
+        if off {
+            plx_base::eventlog::log("glass: rim band cache off");
+        }
+        off
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn rim_cache_off() -> bool {
+    false
 }
 /// `/tmp/plxnative-paneldeep=<px>` — the panel's extra sample radius, swept. `0` is the bar's own
 /// single-fetch material.
@@ -3699,13 +3723,14 @@ pub enum GlassRim {
     Standing,
     /// A popover's panel (DS6): the standing container's chamfer and lens, plus the sharp second
     /// source switched ON — the rim refracts the captured host page, unblurred, through the same
-    /// rounded-rect SDF displacement. **It is not free:** a non-zero [`GlassRim::sharp`] turns on
-    /// the sharp BAND COPY (the panel plus the lens margin, `glCopyTexSubImage2D` off the finished
-    /// page), ONE per menu glass draw, re-grabbed EVERY frame (it is taken from the live page, never
-    /// cached with the blur snapshot), and while a morph rect moves the band's rect changes each
-    /// frame too, so nothing is reused. `Standing` (sharp 0) takes no such copy. Measured on the
-    /// standing container: the band copy is +2.7% GPU_ACTIVE; the menu's own figure is a TV-phase
-    /// item. Numbers: `tokens::MENU_*`.
+    /// rounded-rect SDF displacement. A menu draws it on frozen ground ([`draw_glass_frozen`]),
+    /// where that source is the host snapshot and costs nothing per frame. Over the LIVE path
+    /// ([`draw_blur_backdrop`], which no menu takes any more) a non-zero [`GlassRim::sharp`] turns
+    /// on the sharp BAND COPY (the panel plus the lens margin, `glCopyTexSubImage2D` off the
+    /// finished page), one per draw, skipped on a frame whose copy would be the held one's
+    /// ([`backdrop::RimCache`]: same band, nothing drawn under it differs, nothing else wrote the
+    /// grab). `Standing` (sharp 0) takes no such copy; measured on the standing container, the
+    /// band copy is +2.7% GPU_ACTIVE. Numbers: `tokens::MENU_*`.
     Menu,
 }
 
@@ -3872,6 +3897,7 @@ static mut GL_DIM: c_int = 0;
 static mut GL_DIM_UV: c_int = 0;
 static mut GL_DIM_FIELD: c_int = 0;
 static mut GL_DIM_TEX: c_int = 0;
+static mut GL_DIM_SHARP: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -4203,6 +4229,7 @@ fn blur_lazy_init() -> bool {
         GL_DIM_UV = glGetUniformLocation(GPROG, c"u_dim_uv".as_ptr());
         GL_DIM_FIELD = glGetUniformLocation(GPROG, c"u_dim_field".as_ptr());
         GL_DIM_TEX = glGetUniformLocation(GPROG, c"u_dim_tex".as_ptr());
+        GL_DIM_SHARP = glGetUniformLocation(GPROG, c"u_dim_sharp".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -4385,6 +4412,8 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
         let win = |uw: c_int, uh: c_int, tw: c_int, th: c_int| {
             (uw as f32 / tw as f32, uh as f32 / th as f32)
         };
+        // The snapshot's copy lands in the same texture the rim's band does.
+        rim_cache().written();
         let e = phase("blur.copy", || {
             glBindTexture(GL_TEXTURE_2D, c.grab);
             // `glCopyTexSubImage2D` reads the framebuffer bottom-left-origin while the region is
@@ -5683,16 +5712,12 @@ impl GlassFace {
     };
 }
 
-/// `extent` is the envelope a MORPHING glass moves inside over its whole life (its retained source
-/// is requested for that, [`backdrop::surface_spanning`]); `None` for every glass whose rect only
-/// slides, which `rest` already carries.
 pub fn draw_blur_backdrop(
     x: f32,
     y: f32,
     w: f32,
     h: f32,
     rest: [f32; 4],
-    extent: Option<Rect>,
     radius: f32,
     tint: *const f32,
     rim: GlassRim,
@@ -5700,7 +5725,7 @@ pub fn draw_blur_backdrop(
     deep: f32,
     rises: bool,
 ) -> bool {
-    let live = backdrop::surface_spanning(Rect::new(x,y,w,h), extent, rises);
+    let live = backdrop::surface_with(Rect::new(x,y,w,h), rises);
     if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
         // Direct jobs never intersect a lower glass: those bands capture the visible prefix
@@ -5824,6 +5849,8 @@ pub fn draw_blur_backdrop(
             }
             _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
         }
+        // The sharp grab below is off the finished framebuffer: the dim is in it already.
+        glUniform1f(GL_DIM_SHARP, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -5899,18 +5926,38 @@ pub fn draw_blur_backdrop(
             // exactly like the backdrop being flipped and is not that at all.
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.grab);
-            profile::phase("glass.sharp", || {
-                glCopyTexSubImage2D(
-                    GL_TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    c.gx + px,
-                    c.gy + c.gh - (py + dh),
-                    dw,
-                    dh,
-                );
-            });
+            // **Skipped when it would copy what the grab already holds.** The band is off the
+            // finished framebuffer, so "the same" is a claim about everything drawn under it:
+            // `backdrop::RimCache` makes it only for the first surface's glass, only when the walk
+            // vouches for the draws beneath the band, and only if nothing else has written the
+            // grab since. The band is widened by a pixel to take in the integer rounding above.
+            let geom = backdrop::RimGeom {
+                grab: c.grab,
+                chain: [c.gx, c.gy, c.gw, c.gh],
+                band: [px, py, dw, dh],
+            };
+            let band = Rect::new(sx0 - 1.0, sy0 - 1.0, sx1 - sx0 + 2.0, sy1 - sy0 + 2.0)
+                .intersect(backdrop::canvas());
+            let rim = rim_cache();
+            let cached = live.filter(|_| !rim_cache_off()).map(|r| (r.z, backdrop::rim_view(r.z)));
+            if !cached.as_ref().is_some_and(|(z, view)| rim.hit(*z, geom, band, view.as_ref())) {
+                profile::phase("glass.sharp", || {
+                    glCopyTexSubImage2D(
+                        GL_TEXTURE_2D,
+                        0,
+                        0,
+                        0,
+                        c.gx + px,
+                        c.gy + c.gh - (py + dh),
+                        dw,
+                        dh,
+                    );
+                });
+                match cached {
+                    Some((z, view)) => rim.taken(z, geom, band, view.as_ref()),
+                    None => rim.written(),
+                }
+            }
             glActiveTexture(GL_TEXTURE0);
         }
         let suv = blur_uv_rect(x, y, w, h, sreg, sspan, true);
@@ -5962,8 +6009,115 @@ pub fn draw_blur_backdrop(
         profile::phase("glass.composite", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         });
+        if let (Some(request), Some(frame)) = (live, backdrop::frame()) {
+            rim_cache().composited(request.z, frame);
+        }
         true
     }
+}
+
+/// **A menu's glass on FROZEN ground** — the same `fs_glass.frag` composite as
+/// [`draw_blur_backdrop`] (the face gradient, the rim, the lit edge, the lens), fed two pictures
+/// the frame already holds instead of a blur chain: `ground`, the latched underlay field
+/// (`ui::underlay`'s 60x32 reconstruction of the undimmed host page, mapped over the whole screen
+/// top-down), as the backdrop the panel's body shows, and `sharp`, the host snapshot
+/// (`ui::popover::host`'s one page-sized capture, bottom-up as [`FrameCache`] holds it), as the
+/// rim's sharp source. Neither is taken here and neither is a function of this frame's page:
+/// nothing is copied off the framebuffer, no source pass runs and no backdrop entry is requested,
+/// so a menu standing over its host costs one panel quad however long it stands, and its morph or
+/// slide moves that quad over pictures that do not change.
+///
+/// Both pictures are UNDIMMED, so the modal dim the frame drew under the panel is applied to both
+/// at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies the same way):
+/// blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed page it
+/// stands on. `sharp` 0 draws the single-source material (the host holds no undimmed page this
+/// frame).
+///
+/// Returns whether the material was handled, a culled or `drawmask`ed quad included (as
+/// [`draw_field_panel`] answers). `false` — no glass program, no ground, a video-plane frame —
+/// asks the caller for its field ground.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_glass_frozen(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    ground: c_uint,
+    sharp: c_uint,
+    dim: Option<backdrop::Dim>,
+    tint: *const f32,
+    rim: GlassRim,
+    face: GlassFace,
+) -> bool {
+    if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
+        return false;
+    }
+    // §9, as for every glass: a menu over the hardware video plane has no page behind it in our
+    // framebuffer, and the host snapshot of that frame would be a photograph of the hole.
+    if video_plane_refuses("Glass::frozen") {
+        return false;
+    }
+    if culled(x, y, w, h) || gate(Class::Glass, x, y, w, h) {
+        return true;
+    }
+    unsafe {
+        use_prog(GPROG);
+        glUniform1f(GL_SOURCE_ALPHA, 1.0);
+        let g = tokens::CLEAR_RGB;
+        glUniform3f(GL_SOURCE_GROUND, g.0, g.1, g.2);
+        // `v_cuv` IS the screen point over the screen, top-down (the field's own mapping), so the
+        // dim's field is read at `v_cuv` itself.
+        match dim {
+            Some(d) if d.tint[3] > 0.0 => {
+                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
+                if d.tex != 0 {
+                    glUniform4f(GL_DIM_UV, 1.0, 1.0, 0.0, 0.0);
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, d.tex);
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
+            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+        }
+        glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
+        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
+        glBindTexture(GL_TEXTURE_2D, ground);
+        glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
+        let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
+        // The snapshot is the whole drawable, bottom-up: its window is the screen rect over the
+        // screen, with the row order flipped (`frame_cache_uv`).
+        let full = [0.0, 0.0, SCR_W, SCR_H];
+        let suv = blur_uv_rect(x, y, w, h, full, [1.0, 1.0], true);
+        glUniform4f(GL_SHARP_RECT, suv[0], suv[1], suv[2], suv[3]);
+        glUniform2f(GL_SHARP_PX, 1.0 / SCR_W, -1.0 / SCR_H);
+        glUniform1f(GL_SHARPW, sharpw);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, if sharp != 0 { sharp } else { ground });
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        // The field is already the softest picture of the page there is: no deep cross.
+        glUniform2f(GL_DEEP, 0.0, 0.0);
+        let (bevel, lens, spec) = rim.params();
+        glUniform1f(GL_BEVEL, bevel);
+        glUniform1f(GL_LENS, lens);
+        glUniform4fv(GL_SPEC, 1, spec.as_ptr());
+        glUniform4fv(GL_TINT, 1, tint);
+        glUniform4fv(GL_SCRIM_TOP, 1, face.scrim_top.as_ptr());
+        glUniform4fv(GL_SCRIM_BOT, 1, face.scrim_bot.as_ptr());
+        glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
+        glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
+        glUniform1f(GL_RIMW_G, face.rim_w);
+        glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
+        glUniform1f(GL_RADIUS, radius);
+        glUniform2f(GL_CH, w * 0.5, h * 0.5);
+        glUniform4f(GL_RECT, x, y, w, h);
+        profile::phase("glass.frozen", || {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        });
+    }
+    true
 }
 
 // ============================== UI self-capture ==============================

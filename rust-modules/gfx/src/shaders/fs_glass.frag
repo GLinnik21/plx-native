@@ -149,6 +149,10 @@ uniform vec4 u_dim;
 uniform highp vec4 u_dim_uv;
 uniform float u_dim_field;
 uniform sampler2D u_dim_tex;
+// The SHARP source takes the same dim when it is an undimmed picture of the page: a menu's glass
+// reads the frozen host snapshot there (`gfx::draw_glass_frozen`), which holds no scrim. 0 for a
+// live glass, whose sharp grab is off the finished framebuffer and carries the dim already.
+uniform float u_dim_sharp;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -157,6 +161,21 @@ uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // rather than as light. Carried as one weight on one colour, the light material's top edge came out
 // the darkest thing on the bar, which is a lamp underneath the floor.
 uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (alpha 0 = none)
+
+// The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`).
+vec3 dimRGB(vec3 c, highp vec2 uv){
+  if (u_dim.a > 0.0) {
+    vec3 ink = u_dim.rgb;
+    float a = u_dim.a;
+    if (u_dim_field > 0.0) {
+      vec4 f = texture2D(u_dim_tex, uv * u_dim_uv.xy + u_dim_uv.zw);
+      ink *= f.rgb;
+      a *= f.a;
+    }
+    c = mix(c, ink, a);
+  }
+  return c;
+}
 
 // The snapshot fetch every path here goes through, so the two exits of this shader cannot disagree
 // about how soft the backdrop is — which is the defect its interior early-out already produced once
@@ -172,17 +191,7 @@ vec3 srcRGB(highp vec2 uv){
     c *= 0.2;
   }
   c = mix(u_source_ground, c, u_source_alpha);
-  if (u_dim.a > 0.0) {
-    vec3 ink = u_dim.rgb;
-    float a = u_dim.a;
-    if (u_dim_field > 0.0) {
-      vec4 f = texture2D(u_dim_tex, uv * u_dim_uv.xy + u_dim_uv.zw);
-      ink *= f.rgb;
-      a *= f.a;
-    }
-    c = mix(c, ink, a);
-  }
-  return c;
+  return dimRGB(c, uv);
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
@@ -225,6 +234,7 @@ void main(){
     highp vec2 f = v_p / (2.0 * u_ch) + 0.5;
     highp vec2 suv = u_sharp_rect.xy + f * u_sharp_rect.zw;
     vec3 sharp = texture2D(u_sharp, suv + push * u_sharp_px).rgb;
+    if (u_dim_sharp > 0.0) sharp = dimRGB(sharp, v_cuv + push * u_uvpx);
     rgb = mix(rgb, sharp, smoothstep(0.0, 1.0, t) * u_sharpw);
   }
   rgb *= u_tint.rgb;

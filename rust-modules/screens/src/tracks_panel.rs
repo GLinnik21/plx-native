@@ -1298,23 +1298,14 @@ fn rule(p: Painter, x: f32, y: f32, w: f32) {
 /// spring; this is only the distance it drives.
 const RISE: f32 = Popover::RISE;
 
-/// The painter every frame of the sheet draws through: the appear fade and the rise, with the rise
-/// REMEMBERED (`Painter::lifted`); only a glass ground reads it, and a sheet's is the field.
+/// The painter every frame of the sheet draws through: the appear fade and the rise.
 fn sheet_painter(appear: f32) -> Painter {
-    Painter::root().alpha(appear).lifted(RISE * (1.0 - appear))
+    Painter::root().alpha(appear).translate(0.0, RISE * (1.0 - appear))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The sheet's painter carries its rise as `rest_lift` (read only by a glass ground, which a
-    /// sheet does not wear). A hand-made `translate` leaves it `None`.
-    #[test]
-    fn the_sheet_painter_remembers_its_rise() {
-        assert_eq!(sheet_painter(0.25).rest_lift(), Some(RISE * 0.75));
-        assert_eq!(sheet_painter(1.0).rest_lift(), Some(0.0));
-    }
 
     fn audio(lang: &str, codec: &str, layout: &str, ch: i64, kbps: i64) -> Stream {
         Stream {

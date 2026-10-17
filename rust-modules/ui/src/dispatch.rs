@@ -1622,6 +1622,7 @@ where
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
             if z >= ceiling { break; }
+            if s.faded() { continue; }
             let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
