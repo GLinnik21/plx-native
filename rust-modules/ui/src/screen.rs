@@ -39,6 +39,10 @@ pub enum RenderStrategy {
 pub struct ScrimLiftRead<'a> {
     pub chrome: Option<crate::widgets::ChromeRead<'a>>,
     pub bar_material: Option<plx_gfx::gfx::GlassFace>,
+    /// The stack's latched underlay field, set by `ModalStack::draw_scrims*` (the dispatcher cannot
+    /// know it): the frozen ground a lifted element's glass stands on instead of the live page.
+    /// `None` outside a stack, and before the field has latched.
+    pub field: Option<&'a crate::underlay::UnderlayField>,
 }
 
 pub type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);

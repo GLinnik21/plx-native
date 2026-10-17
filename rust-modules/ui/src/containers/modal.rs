@@ -983,7 +983,7 @@ impl<H: Host> ModalStack<H> {
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
             for (_, alpha, lift) in self.scrims(nav_page_alpha) {
                 GlDims.dim(self.underlay.field(), alpha);
-                (lift)(read);
+                (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
             }
             return;
         }
@@ -1020,7 +1020,7 @@ impl<H: Host> ModalStack<H> {
             plx_base::diag::spans::span("udim", || {
                 crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
             });
-            (lift)(read);
+            (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
         }
     }
 

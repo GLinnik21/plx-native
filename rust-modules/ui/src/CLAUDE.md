@@ -517,7 +517,11 @@ tried first. None of it is reconstructable from the code without repeating the m
   (the item menu's card, the account chip) is absent from the lens, and a menu stacked over
   another surface's dim, or drawn before the field has latched (the first frames of a modal), or
   over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
-  panel's rect and graded under `PANEL_LUMA_MAX`. The scrim behind a compact menu is
+  panel's rect and graded under `PANEL_LUMA_MAX`. The opener lift is frozen too: the account
+  menu's profile chip, lifted back over the dim (`redraw_profile_chip`), is a `glass_frozen`
+  capsule on the stack's latched field (`ScrimLiftRead::field`, no dim, the host snapshot behind its
+  rim) and requests no backdrop entry or `src` pass; before the field latches it is the flat
+  capsule. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) still turns on the sharp band copy
