@@ -3980,10 +3980,14 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
     }
     // The one login that is not a sign-out: the stored session is still on disk, so no `ClearTenure`
     // ran. A different account must not open on the previous one's library views, which carry no
-    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears).
+    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears),
+    // nor on its Home pins and search history: those are keyed by profile `uuid` with `""` for the
+    // owner of EVERY account, and sign-out drops them with the file.
     if !cur.account_token.is_empty() && cur.account_token != next.account_token {
         next.prefs.last_library.clear();
         next.prefs.library_views.clear();
+        next.home_pins.clear();
+        next.recent_searches.clear();
     }
     if !may_write() { return Err(()); }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))

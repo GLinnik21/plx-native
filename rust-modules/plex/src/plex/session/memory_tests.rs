@@ -384,3 +384,37 @@ fn a_login_over_another_accounts_session_does_not_inherit_its_library_views() {
     login_as("acct-2");
     assert_eq!(views(&load()), (0, 0), "another account does not inherit them");
 }
+
+/// **The same login does not inherit the previous account's Home pins or search history either.**
+/// Both are keyed by profile `uuid` with `""` for the account owner, carry no account stamp, and go
+/// with the file at sign-out; a login over another account's stored session replaces the credentials
+/// in place, so the next account's owner (key `""` again) opened on the previous owner's favourite
+/// libraries and was offered back what they had searched for. Same rule as the library views: a
+/// different account clears them, the same one keeps them.
+#[test]
+fn a_login_over_another_accounts_session_does_not_inherit_its_pins_or_searches() {
+    let _serial = plx_base::testlock::serial();
+    let _root = TempSession::new("relogin-pins-searches");
+    let first = Session {
+        client_id: "cid-1".into(),
+        account_token: "acct-1".into(),
+        home_pins: vec![HomePins { user: String::new(), asked: true, ..Default::default() }],
+        recent_searches: vec![RecentSearches { user: String::new(), terms: vec!["synthetic term".into()],
+            ..Default::default() }],
+        ..Default::default()
+    };
+    save(&first);
+    let personal = |s: &Session| (s.home_pins.len(), s.recent_searches.len());
+    assert_eq!(personal(&load()), (1, 1), "control: both lists are stored");
+
+    let login_as = |token: &str| {
+        let token = token.to_string();
+        replace_after_reauthentication_with_outcome(|_| true, move |cur| Session { account_token: token, ..cur.clone() })
+            .expect("not fenced")
+            .expect("written");
+    };
+    login_as("acct-1");
+    assert_eq!(personal(&load()), (1, 1), "the same account logging in again keeps them");
+    login_as("acct-2");
+    assert_eq!(personal(&load()), (0, 0), "another account does not inherit them");
+}
