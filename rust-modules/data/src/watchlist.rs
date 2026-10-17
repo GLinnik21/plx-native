@@ -211,6 +211,9 @@ pub enum What {
     Released { guids: Option<HashSet<String>> },
     /// A full re-match of the rows handed over (the roster moved).
     Rematch { answers: Vec<Answer>, roster_gen: u32 },
+    /// Fresh answers from ONE server for some guids (a library change its feed reported): merged
+    /// over the table, which is otherwise kept as it is.
+    Delta { answers: Vec<Answer> },
     /// The list worker is finished (every page read or the cap reached).
     ListDone,
     /// The write worker's verdict.
@@ -317,31 +320,38 @@ fn guid_kind(kind: Kind) -> GuidKind {
 pub fn match_rows(io: &dyn WatchlistIo, rows: &[(String, Kind)]) -> Vec<Answer> {
     let mut out = Vec::new();
     for sid in io.roster().into_iter().filter(|s| io.reachable(*s)) {
-        for kind in [Kind::Movie, Kind::Show] {
-            let mut seen = HashSet::new();
-            let guids: Vec<String> = rows
-                .iter()
-                .filter(|(g, k)| *k == kind && g.starts_with("plex://") && seen.insert(g.clone()))
-                .map(|(g, _)| g.clone())
-                .collect();
-            for chunk in guids.chunks(GUIDS_PER_REQUEST) {
-                let Ok(found) = io.find(sid, guid_kind(kind), chunk) else { continue };
-                for g in chunk {
-                    let hit = found.iter().find(|m| &m.guid == g);
-                    let held = hit.and_then(|m| m.rating_key.parse::<i64>().ok());
-                    match (hit.is_some(), held) {
-                        (true, Some(rating_key)) => out.push((
-                            g.clone(),
-                            sid,
-                            Asked::Held(ServerMatch {
-                                server_id: sid,
-                                rating_key,
-                                blur: hit.and_then(|m| m.blur).map(quantize_blur),
-                            }),
-                        )),
-                        (true, None) => {} // a key we cannot use: neither held nor absent
-                        (false, _) => out.push((g.clone(), sid, Asked::Absent)),
-                    }
+        out.extend(match_on(io, sid, rows));
+    }
+    out
+}
+
+/// [`match_rows`] against ONE server (it is not asked whether the server is reachable).
+pub fn match_on(io: &dyn WatchlistIo, sid: ServerId, rows: &[(String, Kind)]) -> Vec<Answer> {
+    let mut out = Vec::new();
+    for kind in [Kind::Movie, Kind::Show] {
+        let mut seen = HashSet::new();
+        let guids: Vec<String> = rows
+            .iter()
+            .filter(|(g, k)| *k == kind && g.starts_with("plex://") && seen.insert(g.clone()))
+            .map(|(g, _)| g.clone())
+            .collect();
+        for chunk in guids.chunks(GUIDS_PER_REQUEST) {
+            let Ok(found) = io.find(sid, guid_kind(kind), chunk) else { continue };
+            for g in chunk {
+                let hit = found.iter().find(|m| &m.guid == g);
+                let held = hit.and_then(|m| m.rating_key.parse::<i64>().ok());
+                match (hit.is_some(), held) {
+                    (true, Some(rating_key)) => out.push((
+                        g.clone(),
+                        sid,
+                        Asked::Held(ServerMatch {
+                            server_id: sid,
+                            rating_key,
+                            blur: hit.and_then(|m| m.blur).map(quantize_blur),
+                        }),
+                    )),
+                    (true, None) => {} // a key we cannot use: neither held nor absent
+                    (false, _) => out.push((g.clone(), sid, Asked::Absent)),
                 }
             }
         }
@@ -421,6 +431,11 @@ pub fn run_rematch(io: &dyn WatchlistIo, rows: &[(String, Kind)], tag: Tag, post
     let roster_gen = io.roster_gen();
     let answers = match_rows(io, rows);
     post(Landed { tag, what: What::Rematch { answers, roster_gen } });
+}
+
+/// WORKER THREAD: ask ONE server again about `rows` after its library changed.
+pub fn run_delta(io: &dyn WatchlistIo, sid: ServerId, rows: &[(String, Kind)], tag: Tag, post: &mut dyn FnMut(Landed)) {
+    post(Landed { tag, what: What::Delta { answers: match_on(io, sid, rows) } });
 }
 
 /// WORKER THREAD: one write. A failure of any kind is `Failed`; the ledger reverts the flip.
