@@ -152,6 +152,8 @@ INLINE = {  # the Watchlist's marks (docs/watchlist-plan.md once it lands)
   "clock":         lambda: stroke(circ(12, 12, 9) + "M12 7.2V12l3.1 1.9", HW_INLINE),
   # Its server is offline: the read-out's server base, slashed the way wifi-slash is.
   "server-slash":  server_slash,
+  # Not on any of your servers: the universal "unavailable" ring-and-bar, at the inline weight.
+  "circle-slash":  lambda: stroke(circ(12, 12, 9) + "M5.64 5.64 18.36 18.36", HW_INLINE),
 }
 
 def fmt(v): s = f"{v:.2f}".rstrip('0').rstrip('.'); return "0" if s in ("-0", "") else s
