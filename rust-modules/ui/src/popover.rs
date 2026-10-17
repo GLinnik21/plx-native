@@ -29,13 +29,13 @@
 //!   scrim included. The scrim and the [`Opener`] lift stay LIVE above the quad, which they must:
 //!   the scrim ramps with the appear spring, and a lift baked into the snapshot would then be
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
-//! - **A MENU's ground is glass over the captured host page (DS6), and falls back to a field that
-//!   reads no framebuffer; a sheet's ground never is glass.** [`crate::widgets::panel_ground`]
-//!   draws `popover_glass` for a [`Ground::Menu`](crate::widgets::Ground) when a live
-//!   backdrop exists, which samples the page this snapshot holds, so the snapshot must be the
-//!   undimmed page (above). With no live backdrop it uses the latched underlay field (the one the
-//!   modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost, which
-//!   constrains nothing.
+//! - **A MENU's ground is glass on the frozen host (DS6), a sheet's ground never is glass, and
+//!   neither reads the framebuffer.** [`crate::widgets::panel_ground`] draws `popover_glass` for a
+//!   [`Ground::Menu`](crate::widgets::Ground): its body shows the latched underlay field (the one
+//!   the modal dim draws, `ui::underlay`) and its rim refracts the page this snapshot holds, so the
+//!   snapshot must be the undimmed page (above); the frame's dim is applied to both at composite.
+//!   With no latched field it falls back to the sheet's ground — that same field sampled at the
+//!   panel's own rect under the frost, which constrains nothing.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
@@ -566,8 +566,7 @@ impl Popover {
         if rise == 0.0 {
             return p;
         }
-        // `lifted` remembers the slide so a glass ground can grab its snapshot around the REST rect.
-        p.lifted(rise * (1.0 - a))
+        p.translate(0.0, rise * (1.0 - a))
     }
     /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
     /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
@@ -660,12 +659,6 @@ impl Popover {
     ///
     /// `ground` is the caller's explicit choice of material ([`widgets::Ground`](crate::widgets::Ground)):
     /// glass for a MENU, the pre-DS6 field ground for a sheet or an alert.
-    ///
-    /// A MORPH hands its glass the whole envelope it moves inside, the opener pill and `r` (`r`
-    /// alone for the fade+scale fallback, which grows inside it) ([`Painter::spanning`]), for as
-    /// long as it is visible: the retained source is taken
-    /// once for the growth, the settled panel and the shrink back, rather than re-taken on every
-    /// frame the growing rect leaves the last one.
     pub fn panel(
         &self,
         p: Painter,
@@ -674,14 +667,6 @@ impl Popover {
         field: Option<&crate::underlay::UnderlayField>,
         ground: crate::widgets::Ground,
     ) {
-        let p = if self.style == OpenStyle::Morph {
-            let f = self.from.unwrap_or(r);
-            let (x0, y0) = (f.x.min(r.x), f.y.min(r.y));
-            let (x1, y1) = ((f.x + f.w).max(r.x + r.w), (f.y + f.h).max(r.y + r.h));
-            p.spanning(Rect::new(x0, y0, x1 - x0, y1 - y0))
-        } else {
-            p
-        };
         if let Some(g) = self.ground(r, rad) {
             crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow);
         }
@@ -1138,6 +1123,9 @@ pub mod host {
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
     pub fn begin_frame(page_moving: bool) {
+        // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's one dim to
+        // its frozen pictures). First, so a video-plane frame clears it too.
+        crate::popover_glass::clear_dims();
         // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
         // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through
         // hole. The player path already did not call this (`app/run.rs`'s player branch says so);

@@ -341,11 +341,11 @@ fn live_glass_carries_no_private_source_policy() {
     );
 }
 
-/// **Glass is chrome plus ONE popover door; no screen names the blur path.** Every panel's ground
-/// goes through `panel_ground`, which draws `popover_glass` (DS6) for a `Ground::Menu` ONLY and
-/// stands a `Ground::Sheet` on the latched underlay field (directly, or through `Popover::panel`),
-/// as a menu does too on a frame without a live backdrop. The
-/// blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
+/// **Glass over the blur chain is chrome only; no popover or screen names the blur path.** Every
+/// panel's ground goes through `panel_ground`, which draws `popover_glass` (DS6) for a
+/// `Ground::Menu` ONLY — glass on the frozen ground, which reads no framebuffer — and stands a
+/// `Ground::Sheet` on the latched underlay field (directly, or through `Popover::panel`), as a menu
+/// does too with no latched field. The blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
 /// band — all in `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
 /// standing note, the track's own material, budgeted by
 /// `hold_hint::tests::the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band`),
@@ -364,9 +364,6 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
         "ui/src/widgets.rs",
         // the standing hold hint: one `Glass::DYNAMIC_BACKDROP.backdrop` call, region-budgeted
         "ui/src/hold_hint.rs",
-        // DS6: the popover panel's glass — the ONE popover-side blur user, reached only through
-        // `widgets::panel_ground`, so no screen names `Glass` itself
-        "ui/src/popover_glass.rs",
         "ui/src/frame/glass.rs",
         "ui/src/frame/backdrop_tests.rs",
         "ui/src/glassload.rs",

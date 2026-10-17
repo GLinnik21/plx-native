@@ -211,27 +211,30 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
 /// there carried a part-faded face over the rows (frame dump, n181: rows outside a faint glass).
 #[test]
 fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down() {
-    use crate::popover_glass::{face_at, tests::{declared_glass, expected}};
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected, latched, unlatch}};
     let _g = plx_base::testlock::serial();
     let _reset = Reset::new(false);
+    let tex = 9_751;
+    let field = latched(tex);
+    let sharp = page_tex().unwrap_or(0);
     let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(pill));
     let root = crate::Painter::root();
     // Frame 0: the opener only, no glass yet.
-    assert!(declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu)).is_empty());
+    assert!(declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu)).is_empty());
     let (mut grew, mut painted) = (false, 0);
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        let declared = declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu));
+        let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
         if f.ground_alpha <= 0.0 {
             assert!(declared.is_empty(), "no glass before the fill begins to cross");
             continue;
         }
         assert_eq!(declared.len(), 1);
         painted += 1;
-        let want = |r, rad| expected(root, r, rad, face_at(1.0));
+        let want = |r, rad| expected(root, r, rad, tex, sharp, face_at(1.0));
         if declared[0] == want(panel, RAD)[0] {
             // The hand-over to the settled ground: no visible jump in rect OR radius.
             assert!((f.radius - RAD).abs() < 0.5 && (f.rect.h - panel.h).abs() < 1.0, "a snap at settle: {f:?}");
@@ -242,28 +245,70 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
     }
     assert!(painted > 0 && grew, "mid-open the ground is the morphing rect, not the settled one");
-    let settled = declared_glass(|| pop.panel(root, panel, RAD, None, crate::widgets::Ground::Menu));
+    let settled = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
     assert_eq!(settled.len(), 1, "settled: the glass stands");
     pop.close();
+    unlatch(tex);
 }
 
-/// The appear slide is carried on the content painter so a glass ground can use `backdrop_rising`.
+/// **A menu's glass stands on ONE capture of its host while it opens and stays, and one more for
+/// its whole close.** Frames of a menu over a still page, through the real host protocol: the
+/// snapshot is taken once ([`page_epoch`] moves once) for the open and the stay, however its own
+/// springs move; the dismiss drops it (`Popover::release`) and the close's first frame takes it
+/// again, after which the fade re-takes nothing. The glass's rim reads the snapshot's texture
+/// (the CPU stand-in's).
 #[test]
-fn a_sliding_panel_carries_its_rest_lift_and_a_morph_does_not() {
+fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
+    use crate::popover_glass::tests::{declared_glass, expected, latched, unlatch};
     let _g = plx_base::testlock::serial();
-    let mut pop = crate::popover::Popover::new();
-    pop.open();
-    pop.update(1.0 / 60.0);
-    let a = pop.appear();
-    let lift = pop.content_painter(crate::popover::Popover::RISE).rest_lift().expect("sliding");
-    assert!((lift - crate::popover::Popover::RISE * (1.0 - a)).abs() < 1e-4);
-    assert!(pop.content_painter(0.0).rest_lift().is_none());
-    pop.close();
-    let mut m = crate::popover::Popover::new().morphing();
-    m.open();
-    m.update(1.0 / 60.0);
-    assert!(m.content_painter(crate::popover::Popover::RISE).rest_lift().is_none());
-    m.close();
+    let _reset = Reset::new(false);
+    let tex = 9_752;
+    let field = latched(tex);
+    let panel = crate::Rect::new(1380.0, 40.0, 316.0, 400.0);
+    let epoch = page_epoch();
+    let mut pop = crate::popover::Popover::new().morphing();
+    pop.open_from(Some(crate::Rect::new(1500.0, 40.0, 196.0, 38.0)));
+    let (mut frames, mut drawn, mut closing, mut closed_at) = (0, 0, false, 0);
+    while pop.visible() {
+        pop.update(1.0 / 60.0);
+        begin_frame(false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        {
+            let _page = page_pass();
+            ink("page");
+            let _scrim = live();
+            ink("scrim");
+        }
+        let sharp = page_tex().expect("the host holds its undimmed page");
+        let glass = declared_glass(|| pop.panel(crate::Painter::root(), panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+        assert!(glass.len() <= 1);
+        drawn += glass.len();
+        frames += 1;
+        // Each frame of the close after the first re-takes nothing (the first: below).
+        if closing && frames > closed_at + 1 {
+            assert_eq!(page_epoch().wrapping_sub(epoch), 2, "frame {frames} of the close re-took the host");
+        }
+        if !closing && pop.appear_settled() {
+            assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one host capture for the open and the stay");
+            closed_at = frames;
+            // The settled panel's glass, against one built with this capture's texture as its
+            // rim's source and against one with none.
+            let want = |sharp| expected(crate::Painter::root(), panel, RAD, tex, sharp, crate::popover_glass::FACE);
+            assert!(sharp != 0 && glass[0] == want(sharp)[0], "the rim reads the host snapshot");
+            assert!(glass[0] != want(0)[0]);
+            // The close key, as `app.rs` delivers it: inside the panel's input scope, so its
+            // invalidate is the panel's damage, not the page's.
+            let _input = input_scope();
+            pop.dismiss();
+            closing = true;
+        }
+        assert!(frames < 600);
+    }
+    assert!(closing && drawn > 0, "the glass drew: {drawn}");
+    // `Popover::release` drops the snapshot on the dismiss itself (a ground-stage snapshot holds
+    // the panel), so the close's first frame takes the page once more; its fade takes nothing.
+    assert_eq!(page_epoch().wrapping_sub(epoch), 2, "one capture for open and stay, one at the dismiss, over {frames} frames");
+    unlatch(tex);
 }
 
 /// Finding 1: the ground's radius is the caller's through the whole life of the panel. The old

@@ -493,48 +493,39 @@ tried first. None of it is reconstructable from the code without repeating the m
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 
-- **A MENU is glass whenever a live backdrop exists (DS6); nothing else is.** The scope is
-  MENUS ONLY (owner decision, wave 2 review): Sort & Filter, the account menu, the item hold menu
-  (the player's "…" menu stands over the video plane and has no live backdrop to read). Every
-  other `panel_ground` user — the alerts, About, Track information, the person bio, the
+- **A MENU is glass on the frozen ground (DS6); nothing else is glass.** The scope is
+  MENUS ONLY (owner decision, wave 2 review): Sort & Filter, the account menu, the item hold menu,
+  the Library menu (the player's "…" menu stands over the video plane and keeps its own ground).
+  Every other `panel_ground` user — the alerts, About, Track information, the person bio, the
   Also-available sheet, the decision alert — keeps the pre-DS6 ground, the latched underlay field
   under the frost. The choice is explicit at each call, `widgets::Ground::Menu` or
   `Ground::Sheet` (`panel_ground`'s last argument, `Popover::panel`'s too); there is no global
-  switch. A `Menu` ground's first act is `popover_glass::draw`: a `Glass::DYNAMIC_BACKDROP`
-  surface wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px `theme::GLASS_RIM`, the lit top
-  edge `GLASS_RIM_LIGHT` and `GlassRim::Menu` — the shader (`fs_glass.frag`) refracts the rim from
-  the captured host page with the SAME rounded-rect SDF that rounds the panel — and then a soft
-  shadow cut out around the panel's rounded shape. **A menu's glass lives in the SURFACES band**:
-  the dispatcher draws a menu inside its surface's layer (`Z::surface(index)`, above the scrim's
-  `Z::DIM`), so it is the one glass declared at or above that band. Its entry is requested there
-  and resolves against the page and scrim below; the band records no `Paint` (nothing reads one),
-  so `Painter::declare` drops the glass's command word silently — it once asserted there, and every
-  menu frame of a debug build panicked. A glass stacked in a HIGHER surface would see nothing of
-  the surface between in its source, a known limit. The scrim behind a compact menu is
+  switch. A `Menu` ground's first act is `popover_glass::draw`: `fs_glass.frag`'s composite through
+  `gfx::draw_glass_frozen`, wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px
+  `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`, then a soft shadow
+  cut out around the panel's rounded shape. **It reads no framebuffer** (owner decision,
+  2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered page). Its
+  body shows the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim
+  draws, reaching a surface as `DrawFrame::underlay`); its rim's lens refracts the host snapshot
+  (`popover::host::page_tex`, the one capture of the undimmed page) with the SAME rounded-rect SDF
+  that rounds the panel, at `tokens::MENU_SHARP`; the frame's one modal dim (noted by
+  `Painter::dim`) is applied to both at composite (`u_dim`, and `u_dim_sharp` for the snapshot).
+  So a menu requests no backdrop entry, runs no blur source pass (`src`, `pagex2`) and copies no
+  band (`glass.sharp`): its open, stay and close cost one panel quad (profiler phase
+  `glass.frozen`) and its shadow, and a morph or a slide moves that quad over pictures that do not
+  change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
+  (the item menu's card, the account chip) is absent from the lens, and a menu stacked over
+  another surface's dim, or drawn before the field has latched (the first frames of a modal), or
+  over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
+  panel's rect and graded under `PANEL_LUMA_MAX`. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
-  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha and a
-  sliding panel passes its rest lift (`Painter::rest_lift`) so the open slide re-grabs nothing.
-  **Menu glass is not free: `GlassRim::Menu` turns on the sharp band copy** (the panel plus the
-  lens margin, off the finished page, `MENU_SHARP` > 0), **one per menu glass draw**, taken from
-  the live page, never cached with the blur snapshot. A frame skips it only when its copy would be
-  the held one's (`backdrop::RimCache`): the first surface's glass, the same band, every draw under
-  the band equal — the dim INCLUDED, at its real alpha, though the glass's SOURCE ignores it — and
-  nothing else written to the shared grab since. A ramping dim, a moving morph rect or a changed
-  host copies every frame (the standing container, sharp 0, takes none). Measured on the
-  standing container the band copy is +2.7% GPU_ACTIVE; the menu's figure is unmeasured, a TV-phase item. The BLUR source of a morphing
-  menu is not re-taken as it grows: `Popover::panel` hands the glass the morph's whole envelope
-  (pill plus settled panel, `Painter::spanning` → `backdrop::surface_spanning`), and the source
-  is requested over that from the first frame.
-  Only when no live backdrop exists (a unit test, a surface over the video plane, a frozen page
-  outside `host::live`) does `draw` return `false` and the menu fall back to the 15×8 underlay
-  field the modal dim latched (`ui::underlay`, reaching a surface as `DrawFrame::underlay`),
-  windowed to the panel's rect and graded under `PANEL_LUMA_MAX`. This reverses the 2026-09-19
-  "popovers are not glass" policy for menus only: the cost of the menu's blur on the television
-  (`docs/liquid-glass.md`) is NOT yet re-measured, and `MENU_SHARP` is a guess for the TV feel
-  check to settle. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` out of every
-  file except the chrome list, `popover_glass.rs` being the ONE popover-side entry — no screen
-  names `Glass` itself — and pins the scope: the three menu files name `Ground::Menu`, the five
-  sheet files `Ground::Sheet`, and none names the other.
+  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
+  `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) still turns on the sharp band copy
+  and its `backdrop::RimCache`; no menu takes that path any more, and the cache stays for any glass
+  that does. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
+  `Painter::backdrop_blur` out of every file except the chrome list — no popover and no screen
+  names the blur path — and pins the scope: the menu files name `Ground::Menu`, the sheet files
+  `Ground::Sheet`, and none names the other.
 
 - **Glass over a page stands on the frozen host; the page does not move while a menu is up.**
   A menu (opening, open or closing, until it has let go of the host at `CLOSING_GONE`) stands on
@@ -542,11 +533,12 @@ tried first. None of it is reconstructable from the code without repeating the m
   not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
   choice starts (the Watchlist's Remove) and the data that would change the page (the app's
   `watchlist_feed`) wait until the menu is gone and start on the first frame after
-  (`containers::modal::page_veiled`). A page that stands still never rebuilds the glass's blur
-  source, which is what makes the menu's glass cheap; a moving one re-draws the page at quarter
-  resolution on every frame (the `src` and `pagex2` spans). **Do not add new live-refracting glass
-  over a moving page unless the owner asks.** Live glass measured about 2 to 2.6M Mali GPU cycles
-  per frame more than frozen ground (2026-10-17, release build, mock, panel off).
+  (`containers::modal::page_veiled`). The menu's glass samples only that frozen ground (above), so
+  even a page that did move under it would rebuild nothing for the glass. **Do not add new
+  live-refracting glass over a page unless the owner asks.** Live glass measured about 2 to 2.6M
+  Mali GPU cycles per frame more than frozen ground (2026-10-17, release build, mock, panel off),
+  with the page re-drawn at quarter resolution on each frame its draws changed (the `src` and
+  `pagex2` spans).
 
 - **A modal's dim is DRAWN, never applied to the source.** The variant that multiplied the host
   page's RGB going into the backdrop was measured and removed: dimming the source destroys the

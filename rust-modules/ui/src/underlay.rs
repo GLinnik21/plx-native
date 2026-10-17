@@ -306,6 +306,12 @@ impl UnderlayField {
         self.latched
     }
 
+    /// The field's texture once it is latched — the frozen ground a menu's glass shows through its
+    /// body (`popover_glass::draw`) — and `None` before, when there is no picture of the page yet.
+    pub fn ground_tex(&self) -> Option<u32> {
+        (self.latched && self.tex != 0).then_some(self.tex)
+    }
+
     /// **The field's own colour at one screen point**, display-encoded — the same contract as
     /// `RouteGround::sample` and `AmbientWash::sample`, and for the same caller: an edge fade that
     /// has to paint the exact colour of the ground it is cutting across.

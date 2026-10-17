@@ -158,8 +158,7 @@ impl PersonBioScreen {
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
-        // `lifted`, not `translate`: the slide is remembered as `rest_lift` (read by a glass ground only).
-        let p = Painter::root().alpha(appear).lifted(slide);
+        let p = Painter::root().alpha(appear).translate(0.0, slide);
         let panel = panel_rect();
         plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 

@@ -190,6 +190,13 @@ fades, the survivors move, and focus transfers to the next title, whose pop RISE
 focus pop as the ghost sinks. That rise is the intended look (the design Motion board's "takeover"
 spring), not a departure from the design.
 
+**The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
+(`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
+host snapshot taken once when the menu opened, with the frame's dim applied to both. Nothing behind
+a menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it does not
+move until it has let go (the Remove landing above). An opener lifted over the dim (the hold menu's
+card, the Sort & Filter pill) is not in the lens.
+
 ## The catalog page
 
 `CatalogScreen` (`ContentArg::Catalog { hex }`) is the page for a Discover-only title. It is not a
