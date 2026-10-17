@@ -203,7 +203,8 @@ spring), not a departure from the design.
 
 **The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
 (`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
-host snapshot taken once when the menu opened, with the frame's dim applied to both. Nothing behind
+host snapshot taken once when the hold menu opened (the Sort & Filter panel's is retaken once when the
+reflow a click started has stopped, below), with the frame's dim applied to both. Nothing behind
 the hold menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it
 does not move until it has let go (the Remove landing above). **The Sort & Filter menu shows each
 click**: its value reaches the grid at once and the cards reflow under the open panel (a card that
