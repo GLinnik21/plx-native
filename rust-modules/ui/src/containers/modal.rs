@@ -1015,8 +1015,11 @@ impl<H: Host> ModalStack<H> {
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() || self.underlay.is_dormant() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
-        for (_, a, lift) in dims {
-            plx_base::diag::spans::span("udim", || sink.dim(self.underlay.field(), a));
+        for (id, a, lift) in dims {
+            let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
+            plx_base::diag::spans::span("udim", || {
+                crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
+            });
             (lift)(read);
         }
     }

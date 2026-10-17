@@ -64,20 +64,57 @@ pub(crate) fn face_at(a: f32) -> GlassFace {
 }
 
 thread_local! {
-    /// The modal dims drawn on this frame's visible pass so far, and the last of them: `Painter::dim`
-    /// notes each ([`note_dim`]), `popover::host::begin_frame` clears. Per thread, like the walk.
-    static DIMS: std::cell::Cell<(u32, Option<Dim>)> = const { std::cell::Cell::new((0, None)) };
+    /// The modal dims drawn on this frame's visible pass so far, each with the index of the surface
+    /// that owns it: `Painter::dim` notes each ([`note_dim`]), `popover::host::begin_frame` and
+    /// `app/run.rs`'s frame head clear. Per thread, like the walk.
+    static DIMS: std::cell::RefCell<Vec<(usize, Dim)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The surface whose dim is being painted ([`dim_owner`]); `note_dim` stamps it on the dim.
+    static DIM_OWNER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The surface being drawn ([`drawing_surface`]); `usize::MAX` outside the surface walk, where
+    /// every dim noted so far counts.
+    static SURFACE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
 }
 
 /// A modal dim was just drawn on the visible frame, under whatever surface draws next. The glass's
 /// two pictures are undimmed, so it applies this at composite.
 pub(crate) fn note_dim(d: Dim) {
-    DIMS.with(|c| c.set((c.get().0 + 1, Some(d))));
+    let owner = DIM_OWNER.with(std::cell::Cell::get);
+    DIMS.with(|c| c.borrow_mut().push((owner, d)));
 }
 
-/// A new frame: no dim drawn yet. Called by `popover::host::begin_frame`, before anything draws.
+/// Run `f` (a dim's paint) as the dim of surface `index` (its position in the stack, bottom = 0).
+/// `ModalStack::draw_scrims_on` records EVERY surface's dim before any surface draws, so the
+/// frame's count alone cannot say how many lie below a given surface.
+pub(crate) fn dim_owner<R>(index: usize, f: impl FnOnce() -> R) -> R {
+    let prev = DIM_OWNER.with(|c| c.replace(index));
+    let r = f();
+    DIM_OWNER.with(|c| c.set(prev));
+    r
+}
+
+/// Run `f` (one surface's draw) as surface `index`: its glass counts only the dims at or below it.
+pub(crate) fn drawing_surface<R>(index: usize, f: impl FnOnce() -> R) -> R {
+    let prev = SURFACE.with(|c| c.replace(index));
+    let r = f();
+    SURFACE.with(|c| c.set(prev));
+    r
+}
+
+/// A new frame: no dim drawn yet. Called at the head of EVERY frame (`app/run.rs`, whatever the
+/// route) and by `popover::host::begin_frame`, before anything draws.
 pub(crate) fn clear_dims() {
-    DIMS.with(|c| c.set((0, None)));
+    DIMS.with(|c| c.borrow_mut().clear());
+}
+
+/// How many dims the current surface stands under, and the last of them.
+fn dims_under_surface() -> (usize, Option<Dim>) {
+    let own = SURFACE.with(std::cell::Cell::get);
+    DIMS.with(|c| {
+        let c = c.borrow();
+        let mut under = c.iter().filter(|(owner, _)| *owner <= own);
+        let n = under.clone().count();
+        (n, under.next_back().map(|(_, d)| *d))
+    })
 }
 
 /// Draw the glass panel at `r` with corner `radius`, at the opacity the painter carries
@@ -102,8 +139,10 @@ pub fn draw_shadowed(
         return false;
     };
     // The host snapshot is the page under the FIRST surface's dim. A menu over another surface
-    // stands on that surface too, which neither picture holds: it keeps the field ground.
-    let (dims, dim) = DIMS.with(|c| c.get());
+    // stands on that surface too, which neither picture holds: it keeps the field ground. Only the
+    // dims at or BELOW this surface count: the whole frame's dims are recorded before any surface
+    // draws, so a closing lower menu must not read the dim of a surface opened above it.
+    let (dims, dim) = dims_under_surface();
     if dims > 1 {
         return false;
     }
@@ -224,6 +263,29 @@ pub(crate) mod tests {
         assert!(!declared_glass(|| assert!(draw(p, r, 24.0, Some(&field)))).is_empty(), "one dim: the menu's own");
         note_dim(ink);
         assert!(declared_glass(|| assert!(!draw(p, r, 24.0, Some(&field)))).is_empty(), "a second surface's dim");
+        clear_dims();
+        unlatch(tex);
+    }
+
+    /// **Every surface's dim is recorded before any surface draws** (`draw_scrims_on`), so a closing
+    /// lower menu drawn in a frame that also holds a newer surface's dim must still count ONE dim:
+    /// it keeps its frozen glass instead of flipping to the plain field mid-fade. The upper surface
+    /// stands on the lower one, which neither picture holds, and keeps the fallback.
+    #[test]
+    fn a_lower_menu_counts_only_the_dims_below_its_own_surface() {
+        let _g = plx_base::testlock::serial();
+        let r = Rect::new(100.0, 100.0, 300.0, 200.0);
+        let p = Painter::root();
+        let tex = 9_744;
+        let field = latched(tex);
+        let ink = Dim { tex, tint: [0.0, 0.0, 0.0, 0.3] };
+        clear_dims();
+        dim_owner(0, || note_dim(ink));
+        dim_owner(1, || note_dim(ink));
+        let lower = declared_glass(|| drawing_surface(0, || assert!(draw(p, r, 24.0, Some(&field)))));
+        assert!(!lower.is_empty(), "the lower, closing menu keeps frozen glass");
+        let upper = declared_glass(|| drawing_surface(1, || assert!(!draw(p, r, 24.0, Some(&field)))));
+        assert!(upper.is_empty(), "the stacked upper menu keeps the field ground");
         clear_dims();
         unlatch(tex);
     }

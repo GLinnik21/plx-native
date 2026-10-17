@@ -89,8 +89,8 @@ impl GridSpec {
     /// stood, in at its new cell) instead of flying over the row between. Cards with no end on
     /// screen cut. Focus is not this spring's: the engine's reconcile has already put it on the
     /// card that took the removed one's index (the next card), whose pop rises from rest as the
-    /// removed card's ghost sinks. Nothing starts while a menu veils the page, and a beat after
-    /// it cleared (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
+    /// removed card's ghost sinks. Nothing starts while a menu veils the page: the Remove lands on
+    /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`). Off by default: a grid whose owner keeps no removed cards for
     /// the ghosts still gets the slide.
     pub const fn animate_landings(self, on: bool) -> Self {
         Self { landings: on, ..self }
@@ -698,8 +698,8 @@ impl Grid {
         self.landing.pending()
     }
 
-    /// A landing is playing but has not stepped yet: a menu veils the page, its beat is counting,
-    /// or the page is a held image. An owner pairs its own change with the landing's first step.
+    /// A landing is playing but has not stepped yet: the menu's veil has not yet dropped below
+    /// `CLOSING_GONE`, or the page is a held image. An owner pairs its own change with the landing's first step.
     pub fn landing_waiting(&self) -> bool {
         self.landing.waiting()
     }

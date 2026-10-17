@@ -1110,6 +1110,14 @@ pub mod host {
         GROUND_DRAWN.store(true,Relaxed);
     }
 
+    /// The head of EVERY frame, whatever the route: forget the modal dims the last frame drew.
+    /// [`begin_frame`] cannot carry this alone, because the player and a preview-bound page never
+    /// call it (a hardware plane has no host to snapshot), so a stale count would survive into the
+    /// first popover frame after them. `app/run.rs` calls this at the top of each iteration.
+    pub fn clear_dims() {
+        crate::popover_glass::clear_dims();
+    }
+
     /// Open the frame: take the page's damage count and decide whether the snapshot survives them.
     ///
     /// **The host-damage test is route-agnostic on purpose.** It is `idle::take_page_damage` —
@@ -1123,8 +1131,10 @@ pub mod host {
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
     pub fn begin_frame(page_moving: bool) {
-        // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's one dim to
-        // its frozen pictures). First, so a video-plane frame clears it too.
+        // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's dims to its
+        // frozen pictures). `app/run.rs` already cleared it at the head of the iteration through
+        // [`clear_dims`], which the player and preview routes need because they never get here;
+        // this clears it again for any other caller that opens a popover frame.
         crate::popover_glass::clear_dims();
         // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
         // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through

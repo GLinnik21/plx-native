@@ -180,7 +180,7 @@ title. It reads "{n} titles" (plural forms in every shipped language) while no T
 narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
 beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
 absent until the list has landed and on the empty-list and unavailable read-outs, and follows a Remove
-when the grid's landing STARTS (after the hold menu has gone and the landing's beat), not at the
+when the grid's landing STARTS (on the first feed after the hold menu's veil drops below `CLOSING_GONE`), not at the
 commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the

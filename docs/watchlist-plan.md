@@ -395,7 +395,7 @@ DS7, DS8 before or alongside → W6a → W6 → W7.
   (popover.rs:8-14). Live menu glass measured about 2 to 2.6M Mali cycles a frame over the field
   ground (2026-10-17); the frozen-ground glass is expected near main's menu frame, unmeasured on
   the TV.
-- Grid reflow row-change crossfade and the post-menu beat (`LANDING_BEAT_MS`) need a TV feel check.
+- Grid reflow row-change crossfade and the Remove landing on the first feed after the menu's veil drops below `CLOSING_GONE` need a TV feel check.
 - Tab bar: vocabulary + positional maps only; two pin bumps re-record fixtures twice.
 - Icon-only tab accessibility UNVERIFIED (Q3). i18n: Be genitive, four languages, size delta
   UNVERIFIED. No reachable PMS → skeleton Discover posters (Q9). plex.tv offline → flip+revert
@@ -527,7 +527,7 @@ menus, 30% scrim, icon-tab pill, darker tick veil, bright-verdict rule, new icon
 2. Add from hold menu: menu closes as today; tab bar bookmark pulses once (~1.35× + soft glow,
    back). Only confirmation.
 3. Remove from Watchlist grid: the #737 landing (`ui/src/cards/landing.rs`), run AFTER the menu
-   (it waits for the veil to clear, then `LANDING_BEAT_MS`): ghost fades in place on `K_SCALE`
+   (the Remove lands on the first feed after the menu's veil drops below `CLOSING_GONE`): ghost fades in place on `K_SCALE`
    320 easing off its focus pop, carried above the dim by the opener lift; same-row survivors
    slide home together on `K_SCROLL` 170, no stagger; a card that changes row crossfades; the
    next card rises from rest once focus reconciles. GAP: landings only on `Shelf`

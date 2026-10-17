@@ -1660,7 +1660,9 @@ where
                     face.underlay = Some(field);
                     backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {
-                    backdrop::draw_span("surf", || inst.screen.draw(&mut f));
+                    backdrop::draw_span("surf", || {
+                        crate::popover_glass::drawing_surface(index, || inst.screen.draw(&mut f));
+                    });
                 }
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
