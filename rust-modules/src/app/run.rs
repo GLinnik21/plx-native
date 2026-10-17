@@ -3537,6 +3537,56 @@ mod lifecycle_regression_tests {
         assert!(app.route() == AppArg::Content(ContentArg::Catalog { hex }));
     }
 
+    /// **The Watchlist is left through the strip, the way it was entered** (owner, on the TV: "I
+    /// can't leave Watchlist"). The whole loop: Home's strip opens the page, and OK on the Home pill
+    /// takes the route back to Home through `content::watchlist_requests`. Every strip press used to
+    /// die in the page, so the route stayed `watchlist` whatever was pressed but BACK.
+    #[test]
+    fn the_strip_leaves_the_watchlist_it_opened() {
+        use plx_machine::machine::{InputEvent, Key, Tick};
+        use plx_ui::widgets::{TAB_KEY_HOME, TAB_KEY_WATCHLIST};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        let mut t = 0u32;
+        let step = |app: &mut App, keys: Vec<InputEvent<u32>>, t: &mut u32| {
+            for n in 0..20 {
+                *t += 16;
+                let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+                fr.now = *t;
+                let inputs = if n == 0 { keys.clone() } else { vec![] };
+                super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
+                content_requests(app, &fr);
+                loop_requests(app);
+            }
+        };
+        let press = |app: &mut App, key: Key, t: &mut u32| {
+            let keys = super::super::bridge::script_key(key, Tick { ms: *t, dt_us: 16_000 });
+            step(app, keys, t);
+        };
+        let focus = |app: &App| app.pages.focus().map(|k| k.elem);
+        // Walk the strip to `want`: UP onto it, then RIGHT from its left end.
+        let walk_to = |app: &mut App, want: u32, t: &mut u32| {
+            for _ in 0..4 {
+                if focus(app).is_some_and(|e| e >= plx_ui::dispatch::STRIP_BASE) { break; }
+                press(app, Key::Up, t);
+            }
+            for _ in 0..app.pages.nav.tabs.strip.len() { press(app, Key::Left, t); }
+            while focus(app) != Some(want) {
+                let before = focus(app);
+                press(app, Key::Right, t);
+                assert_ne!(focus(app), before, "{want:#x} is on the strip");
+            }
+        };
+        step(&mut app, vec![], &mut t);
+        walk_to(&mut app, TAB_KEY_WATCHLIST, &mut t);
+        press(&mut app, Key::Ok, &mut t);
+        assert!(app.route() == AppArg::Watchlist, "the strip opens the Watchlist");
+        walk_to(&mut app, TAB_KEY_HOME, &mut t);
+        press(&mut app, Key::Ok, &mut t);
+        assert_eq!(super::super::words::route_word(&app.route()), "home", "OK on the Home pill leaves the Watchlist");
+    }
+
     #[test]
     fn controlled_content_boot_waits_for_the_queued_home_root() {
         use plx_machine::machine::{Fx, MachineId, NavOp};

@@ -178,6 +178,37 @@ fn a_strip_press_is_a_tab_request() {
     }
 }
 
+/// **OK on the strip is a request too.** The strip is a `Control` group, so the remote's OK arms a
+/// press and the page hears `PressCommit` with the strip key focused — never `Activate`. A page that
+/// answered only a card's commit swallowed every strip press, and the Watchlist could only be left
+/// with BACK (owner, on the TV: "I can't leave Watchlist").
+#[test]
+fn a_committed_press_on_the_strip_is_a_tab_request() {
+    use crate::registry::HomeTab;
+    use plx_machine::machine::PressId;
+    use plx_ui::screen::By;
+    use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+    let mut h = Harness::new(tiles(3));
+    for (key, want) in [
+        (TAB_KEY_HOME, vec![WatchlistOut::Tab(HomeTab::Home)]),
+        (TAB_KEY_MOVIES, vec![WatchlistOut::Tab(HomeTab::Movies)]),
+        (TAB_KEY_SHOWS, vec![WatchlistOut::Tab(HomeTab::Shows)]),
+        (TAB_KEY_SEARCH, vec![WatchlistOut::Tab(HomeTab::Search)]),
+        (TAB_KEY_CHIP, vec![WatchlistOut::Account]),
+        (TAB_KEY_WATCHLIST, vec![]),
+    ] {
+        h.focus_elem(key, By::Dir);
+        let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::PressCommit(PressId(1)));
+        assert_eq!(requests(fx), want, "{key:#x}");
+    }
+    // A tile's commit is still the tile's, once: the card path, not the focus fallback as well.
+    h.focus_index(0);
+    let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::PressCommit(PressId(2)));
+    let pushes = fx.iter().filter(|e| matches!(&e.fx,
+        plx_machine::machine::Fx::App(crate::registry::AppFx::Content(crate::registry::ContentReq::Push(_))))).count();
+    assert_eq!((pushes, requests(fx)), (1, vec![]), "the matched tile opens its Detail once, and nothing else");
+}
+
 /// **BACK leaves the page as a request** (the application takes it to Home), not a content pop.
 #[test]
 fn back_is_a_request() {

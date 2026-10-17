@@ -933,6 +933,22 @@ impl WatchlistScreen {
         }
     }
 
+    /// A non-card element activated, by an `Activate` (a `Bare` element, a pointer) or by a committed
+    /// press on it (the strip's `Control` elements): Try again, the Sort & Filter pill, the strip.
+    fn activate<H: ContentLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) -> Handled {
+        match elem {
+            RETRY_ELEM => self.route(WatchlistOut::Retry, fx),
+            PILL_ELEM => self.route(WatchlistOut::OpenOptions, fx),
+            elem if elem >= plx_ui::dispatch::STRIP_BASE => match Self::strip_press(elem) {
+                Some(Some(out)) => self.route(out, fx),
+                Some(None) => {}
+                None => return Handled::No,
+            },
+            _ => return Handled::No,
+        }
+        Handled::Yes
+    }
+
     /// A press on the shared strip (the container composes it above the page): the other tabs and
     /// the chip are requests; the Watchlist mark is the page the user is already on.
     fn strip_press(elem: u32) -> Option<Option<WatchlistOut>> {
@@ -1091,30 +1107,17 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }
-            ScreenEvent::Activate(elem) if *elem == RETRY_ELEM => {
-                self.route(WatchlistOut::Retry, fx);
-                Handled::Yes
-            }
-            ScreenEvent::Activate(elem) if *elem == PILL_ELEM => {
-                self.route(WatchlistOut::OpenOptions, fx);
-                Handled::Yes
-            }
-            ScreenEvent::Activate(elem) if *elem >= plx_ui::dispatch::STRIP_BASE => {
-                match Self::strip_press(*elem) {
-                    Some(out) => {
-                        if let Some(out) = out {
-                            self.route(out, fx);
-                        }
-                        Handled::Yes
-                    }
-                    None => Handled::No,
-                }
-            }
+            ScreenEvent::Activate(elem) => self.activate(*elem, fx),
+            // A card's commit is the card's. Anything else focused here committed a press too: the
+            // strip is a `Control` group (`TabContainer::strip_group`), so the remote's OK on a
+            // pill or the chip arms a press and arrives HERE, never as `Activate`.
             ScreenEvent::PressCommit(_) => {
                 if let Some(CardEvent::Activate(elem)) = card {
                     if let Some(out) = self.index_of(elem).and_then(|i| self.press_at(i)) {
                         self.route(out, fx);
                     }
+                } else if let Some(key) = cx.focus.current.filter(|key| key.entry == self.page.entry) {
+                    self.activate(key.elem, fx);
                 }
                 Handled::Yes
             }

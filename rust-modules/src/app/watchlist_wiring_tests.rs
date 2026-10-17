@@ -441,3 +441,38 @@ fn a_catalog_hold_carries_no_pms_identity_even_with_a_cached_copy() {
     let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::Available, Some(copy)).unwrap();
     assert_eq!((arg.sid, arg.rk.as_str()), (ServerId::from_raw(1), "42"), "a card keeps its copy");
 }
+
+/// **The remote's OK on a strip pill leaves the Watchlist** (owner, on the TV: "I can't leave
+/// Watchlist"). Real key edges through the dispatcher: the strip is a `Control` group, so OK arms a
+/// press and the page hears `PressCommit` with the pill focused. The page used to answer only a
+/// card's commit, so every strip press died in it and only BACK left.
+#[test]
+fn ok_on_a_strip_pill_asks_to_leave_the_page() {
+    use plx_machine::machine::Key;
+    use plx_screens::watchlist::page::WatchlistOut;
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let mut i = 40;
+    let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
+        super::frame(d, rig, tick(i), super::script_key(key, tick(i)));
+        // Long enough for the press to commit (its dip plays first).
+        for n in 1..30 { super::frame(d, rig, tick(i + n), vec![]); }
+        i += 30;
+    };
+    let on_strip = |d: &Dispatcher<AppHost>| d.focus().is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE);
+    for _ in 0..4 { if !on_strip(&d) { press(&mut d, &mut rig, Key::Up); } }
+    assert!(on_strip(&d), "UP reaches the strip: {:?}", d.focus());
+    let strip = d.nav.tabs.strip.len();
+    for _ in 0..strip { press(&mut d, &mut rig, Key::Left); }
+    while d.focus().is_some_and(|k| k.elem != plx_ui::widgets::TAB_KEY_HOME) {
+        let before = d.focus();
+        press(&mut d, &mut rig, Key::Right);
+        assert_ne!(d.focus(), before, "the Home pill is on the strip");
+    }
+    rig.take_watchlist_reqs();
+    press(&mut d, &mut rig, Key::Ok);
+    let asked: Vec<WatchlistOut> = rig.take_watchlist_reqs().into_iter().map(|(_, out, _)| out).collect();
+    assert_eq!(asked, vec![WatchlistOut::Tab(HomeTab::Home)], "OK on the Home pill asks for Home");
+}
