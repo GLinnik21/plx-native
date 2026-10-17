@@ -1165,7 +1165,14 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
         // resolved to the flat app surface (the read-outs) because this clear already painted it.
         plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter.alpha(f.page_alpha);
-        self.ground.draw(p, Rect::FULL);
+        // The ground skips the interiors of the cards that draw opaque over it (a scissor cut; the
+        // picture is identical, `PageGround::draw_cut`). `/tmp/plxnative-groundcut` = `0` turns it off.
+        if plx_ui::widgets::ground_cut_on() {
+            let cuts = self.stack.view(&self.page).ground_cuts(f);
+            self.ground.draw_cut(p, Rect::FULL, &cuts);
+        } else {
+            self.ground.draw(p, Rect::FULL);
+        }
         self.stack.view(&self.page).paint(f);
     }
     fn render(&self) -> RenderStrategy {

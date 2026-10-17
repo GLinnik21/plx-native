@@ -1354,6 +1354,35 @@ impl tex::Source for PosterSource {
         trace::set_current(0);
         hit
     }
+    /// The pure peek behind the ground cut: the hit loop of [`lookup`] and nothing else. A
+    /// `P_READY` slot whose texture is resident answers `true` and takes the stamp a draw hit
+    /// takes (`use_`, `frame`), so a card drawn LATER in this frame cannot evict it; every other
+    /// state, and every miss, answers `false` and changes nothing.
+    fn peek(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
+        let sid = ServerId::from_raw(srv);
+        let Some(key) = built_key(sid, path, w, h, png) else { return false };
+        if !is_fetchable(key) {
+            return false;
+        }
+        let mut g = store();
+        let cache_gen = plx_platform::imgcache::generation();
+        let grant_epoch = plx_plex::plex::client_for(sid).map_or(0, |c| c.grant_epoch());
+        for i in 0..PT_CAP {
+            if g.slots[i].cache_gen == cache_gen && g.slots[i].grant_epoch == grant_epoch && same_art(&g.slots[i], sid, key.as_bytes()) {
+                if g.slots[i].state != P_READY || !tex::resident(PosterKey(i as u32)) {
+                    return false;
+                }
+                g.clock = g.clock.wrapping_add(1);
+                let (c, f) = (g.clock, g.frame);
+                g.slots[i].use_ = c;
+                g.slots[i].frame = f;
+                g.slots[i].visible = true;
+                g.slots[i].ahead = false;
+                return true;
+            }
+        }
+        false
+    }
     /// The prefetch: start the fetch, take no key, take no LRU protection. Two deliberate
     /// differences from a draw's probe, and together they are why a prefetch can share a 64-slot
     /// store with everything on screen: it never stamps `frame` (no evict-protection) and never

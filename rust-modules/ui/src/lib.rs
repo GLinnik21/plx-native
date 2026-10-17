@@ -1216,6 +1216,37 @@ impl Painter {
             k[3].as_ptr(),
         );
     }
+    /// [`ambient`](Self::ambient) minus `holes` (rects in this painter's space): the wash is drawn
+    /// once per rect of `r` less the holes, each under a scissor, with the FULL rect's uniforms, so
+    /// every pixel it does paint is the pixel the whole draw would have. It DECLARES the whole `r`
+    /// exactly as `ambient` does (the recorded layer, and so the glass above, cannot tell), and it
+    /// is `ambient` itself whenever a scissor cut cannot be taken: no holes, a cascade that is not
+    /// opaque, or a clip already in force (`clip_clear` restores nothing).
+    pub fn ambient_cut(self, r: Rect, dim: f32, k: [[f32; 3]; 4], holes: &[Rect]) {
+        if holes.is_empty() || self.a < 1.0 || self.clip != Rect::FULL {
+            return self.ambient(r, dim, k);
+        }
+        if self.declare(r, 16, |data| {
+            use frame::backdrop::Value;
+            dim.record(data);
+            k.record(data);
+        }) { return; }
+        if self.records() { return; }
+        let k = self.wash_corners(k);
+        let m = self.place(r);
+        for strip in widgets::subtract_rects(r, holes) {
+            self.clip(strip);
+            plx_gfx::gfx::draw_ambient(
+                m.x, m.y, m.w, m.h,
+                dim,
+                k[0].as_ptr(),
+                k[1].as_ptr(),
+                k[2].as_ptr(),
+                k[3].as_ptr(),
+            );
+            self.clip_clear();
+        }
+    }
     /// [`ambient`](Self::ambient) over `r` with the texture `tex` dissolved INTO it — the pixels
     /// [`tex_uv`](Self::tex_uv)`(tex, uv, art, 0.0, tint)` would have blended over the wash, in the
     /// same pass as the wash itself. `r` must lie inside `art`; [`AmbientWash::draw_ground`] is the
