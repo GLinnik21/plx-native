@@ -123,7 +123,7 @@ pub(crate) struct Scene<'a> {
 struct Slide {
     x: Spring,
     y: Spring,
-    /// How far the card travels in all, px: the length of its path from where it stood on screen
+    /// How far the card travels in all, px squared (only the order matters): the length of its path from where it stood on screen
     /// to its new slot, fixed when the landing begins. The longer path draws on top
     /// ([`Landing::travel`]), and the rank never changes mid-flight.
     travel: f32,
@@ -292,7 +292,7 @@ impl Landing {
             .and_then(|a| a.off.get(self.keys.get(i)?)).map_or((0.0, 0.0), |s| (s.x.pos, s.y.pos))
     }
 
-    /// How far card `i` of `n` travels from where it stood to its slot, px, while it is moving
+    /// How far card `i` of `n` travels from where it stood to its slot, px squared, while it is moving
     /// (a survivor that slides): fixed when the landing began, so a draw order keyed on it holds
     /// still all flight. `None` for a card that is not moving.
     pub(crate) fn travel(&self, n: usize, i: usize) -> Option<f32> {
@@ -371,7 +371,7 @@ impl Landing {
                 continue;
             }
             if seen && (start.0.abs() >= 0.5 || start.1.abs() >= 0.5) {
-                next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1), travel: start.0.hypot(start.1) });
+                next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1), travel: start.0 * start.0 + start.1 * start.1 });
             }
             if let Some(s) = prev.fade.get(&k) {
                 next.fade.insert(k, *s);
