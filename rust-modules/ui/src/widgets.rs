@@ -3795,7 +3795,8 @@ impl PageGround {
 
     /// [`key_target`](Self::key_target) at a rate the screen chooses, for ONE ease that must catch up
     /// faster than the shared [`AmbientWash::K`] (the Watchlist's, after a Remove's landing held
-    /// the wash). Every other call keeps `key_target`; a dissolve time goes as `1/sqrt(k)`.
+    /// the wash). Every other call keeps `key_target`. A larger `k` shortens the dissolve, but the frames on which
+    /// a drawn 8-bit code still changes fall only with `ln k` (the Watchlist's doc has the figures).
     pub fn key_target_k(&mut self, target: [[f32; 4]; 4], k: f32, dt: f32) {
         self.target = target;
         self.wash.step(self.target, k, dt);

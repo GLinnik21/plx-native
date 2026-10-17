@@ -663,7 +663,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
 }
 
 /// **A Remove holds the colour wash until the grid's landing ends.** The wash eases one 8-bit step
-/// a frame toward the newly focused title, which invalidates the tab strip's glass on every
+/// a frame (at the shared rate) toward the newly focused title, which invalidates the tab strip's glass on every
 /// landing frame (the page is drawn twice for it); during the landing the target stays at the
 /// pre-Remove colours, and afterwards eases to the title that took the removed one's place.
 #[test]

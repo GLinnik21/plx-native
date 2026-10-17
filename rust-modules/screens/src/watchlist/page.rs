@@ -844,7 +844,7 @@ impl WatchlistScreen {
     /// **Held while a Remove's landing is in flight**: the wash eases one 8-bit step a frame, and
     /// every step invalidates the tab strip's glass, so the page is drawn twice for each landing
     /// frame. The target stays at what the wash was last given; once the landing ends it eases to
-    /// the newly focused title as usual.
+    /// the newly focused title at [`POST_REMOVE_EASE_K`] (until it is at rest, then the shared rate).
     fn ground_target(&self) -> [[f32; 4]; 4] {
         if self.ground_seeded && self.landing_in_flight() {
             return self.ground_applied;
