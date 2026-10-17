@@ -145,6 +145,10 @@ impl PopoverMotion {
     pub fn to(&mut self, target: f32) {
         self.target = target;
     }
+    /// Fading out and already below [`CLOSING_GONE`]: the surface is treated as gone.
+    pub fn gone(&self) -> bool {
+        !self.holding && self.target <= 0.0 && self.appear < CLOSING_GONE
+    }
     pub fn settled(&self) -> bool {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
@@ -176,6 +180,14 @@ impl PopoverMotion {
                 present.note(plx_machine::present::PresentEvent::Motion);
             }
         }
+    }
+}
+
+impl<H: Host> Surface<H> {
+    /// A menu (`Compact`) dismissed and faded past [`CLOSING_GONE`]: draws nothing, owes its host
+    /// no dim. Only menus: a sheet's or an opaque surface's close is decided by the spring's rest.
+    pub fn faded(&self) -> bool {
+        self.phase == Phase::Closing && self.style == Style::Compact && self.motion.gone()
     }
 }
 
@@ -242,6 +254,13 @@ pub fn style_caches_host(style: Style) -> bool {
 /// menu's text. About a sixth of the way into the fade-out tail (the appear spring at
 /// [`APPEAR_K`] is there ~170 ms after the dismiss, where waiting for the prune would cost ~500 ms).
 pub const VEIL_CLEAR: f32 = 0.15;
+
+/// **Below this a closing menu is gone**: not drawn, its glass source not rebuilt, and pruned
+/// the frame it is reached. The appear spring's own tail runs on to its 0.002 rest, which is
+/// ~0.2 s of frames nobody can see, each one a full panel (and, for a glass menu, the source
+/// pass behind it, which a page reflowing under a Remove re-takes every frame). 2% of a panel and
+/// of a 30% dim is below what the panel can show.
+pub const CLOSING_GONE: f32 = 0.02;
 
 thread_local! {
     /// The most opaque surface over the page after this frame's surface step ([`set_veil`]).
@@ -870,7 +889,7 @@ impl<H: Host> ModalStack<H> {
         let mut i = 0;
         while i < self.surfaces.len() {
             let s = &self.surfaces[i];
-            if s.phase == Phase::Closing && s.motion.settled() {
+            if s.phase == Phase::Closing && (s.motion.settled() || s.faded()) {
                 let s = self.surfaces.remove(i);
                 out.push(Life::Ev(s.entry.id, ScreenEvent::WillLeave(Leave::ForGood)));
                 out.push(Life::Unmount(s.entry.id));
@@ -1031,7 +1050,7 @@ impl<H: Host> ModalStack<H> {
     pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, crate::screen::ScrimLift)> {
         let mut out = Vec::new();
         for s in &self.surfaces {
-            if s.phase == Phase::Hidden || matches!(s.style, Style::Opaque { .. }) {
+            if s.phase == Phase::Hidden || s.faded() || matches!(s.style, Style::Opaque { .. }) {
                 continue;
             }
             let Some(inst) = s.entry.inst.as_ref() else { continue };
@@ -1075,9 +1094,12 @@ mod hide_tests {
     /// motion at 1. Everything below starts here, because a JUST-presented surface is at 0 and
     /// `dismiss` would look instant for the wrong reason.
     fn opened() -> (ModalStack<FixtureHost>, EntryId) {
+        opened_as(Style::Sheet)
+    }
+    fn opened_as(style: Style) -> (ModalStack<FixtureHost>, EntryId) {
         let mut ms: ModalStack<FixtureHost> = ModalStack::new();
         let mut ids = Minter::default();
-        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, Style::Sheet);
+        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, style);
         let mut present = Present::new();
         for i in 0..200u32 {
             let mut ph = PresentHandle::of(&mut present);
@@ -1279,6 +1301,41 @@ mod hide_tests {
         assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0, "…but it is gone NOW");
         assert_eq!(ms.prune().len(), 2);
         assert!(ms.is_empty());
+    }
+
+    /// **A closing menu's fade is over at `CLOSING_GONE`, not at the spring's 0.2% rest.** From that frame
+    /// the surface owes no dim, draws nothing (`Surface::faded`, which the dispatcher's surface
+    /// loop skips, so its glass is never asked for a source) and is pruned.
+    #[test]
+    fn a_closing_menu_below_the_threshold_is_gone() {
+        let (mut sheet, sid) = opened();
+        assert!(sheet.dismiss(sid));
+        for frame in 0..30u32 {
+            step(&mut sheet, 4096 + 16 * frame, 1);
+        }
+        let s = sheet.surface(sid).unwrap();
+        assert!(s.motion.appear < CLOSING_GONE && !s.faded(), "a sheet's close is the spring's rest");
+        let (mut ms, id) = opened_as(Style::Compact);
+        assert!(ms.dismiss(id));
+        let mut seen_visible = false;
+        for frame in 0..400u32 {
+            step(&mut ms, 4096 + 16 * frame, 1);
+            let Some(s) = ms.surface(id) else { break };
+            let a = s.motion.appear;
+            if a >= CLOSING_GONE {
+                seen_visible = true;
+                assert!(!s.faded(), "at {a} it is still fading");
+                assert!(ms.prune().is_empty());
+                continue;
+            }
+            assert!(s.faded(), "at {a} it is below the threshold");
+            assert!(ms.scrims(1.0).is_empty(), "and owes the host no dim");
+            assert_eq!(ms.prune().len(), 2, "and the first prune retires it");
+            assert!(ms.is_empty());
+            assert!(seen_visible, "the fade was seen on the way");
+            return;
+        }
+        panic!("the fade never reached the threshold");
     }
 
     /// An id that names no surface is a no-op, exactly as `dismiss`'s is.
