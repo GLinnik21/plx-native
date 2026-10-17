@@ -1733,7 +1733,7 @@ pub fn draw_shadow(
         // **Draw the bands around the part the shader certainly discards, not the whole quad.** A
         // glass menu's shadow is a 30 px blur under a panel hundreds of px across: most of the quad
         // is the panel interior, where every fragment was rasterized and shaded only to be
-        // discarded (measured ~0.74M GPU cycles/frame on the T820 for that one shadow). The skip
+        // discarded (~0.74M GPU cycles/frame on the T820 for that one shadow, measured at 60 px). The skip
         // rect lies strictly inside the discard region, so the pixels are identical. Its edges sit
         // on the drawable's pixel grid so a seam never splits a pixel (a pixel drawn twice would
         // blend twice) and `u_map` keeps `p` relative to the FULL quad. The ledger above books the
@@ -6953,6 +6953,65 @@ mod tests {
         let pow = code.find("pow(abs(dot(nrm, u_spec.xy))").expect("the lobe");
         let hair = code.find("float hair").expect("the hairline");
         assert!(guard < hair && guard < pow, "the guard must precede the hairline and lobe");
+    }
+
+    /// **The glass interior's box pre-test only skips work, never a decision.** `fs_glass.frag`
+    /// takes its interior exit without evaluating `sdBox` for a fragment inside the panel's box
+    /// inset by `max(radius, bevel) + 1`: there both components of `q` are below -1, so the
+    /// `length` term is 0 and `d = max(|p| - ch) < -bevel - 1`, and the exit (`d < -bevel`) is
+    /// certain. Graded on a replica over a dense grid of each case — the hold menu's panel, a chip,
+    /// a radius above the half-size, a bevel plus radius above it, a zero and a negative radius —
+    /// and the shader must run the test BEFORE the `sdBox` it skips, with a stand-in `d` that is
+    /// itself an interior value. Red on the build that ran `sdBox` on every fragment.
+    #[test]
+    fn the_glass_interior_box_pretest_is_exact_and_runs_first() {
+        fn sd_box(p: [f32; 2], b: [f32; 2], r: f32) -> f32 {
+            let q = [p[0].abs() - b[0] + r, p[1].abs() - b[1] + r];
+            let len = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+            len + q[0].max(q[1]).min(0.0) - r
+        }
+        fn pretest(p: [f32; 2], ch: [f32; 2], r: f32, bevel: f32) -> bool {
+            let k = r.max(bevel) + 1.0;
+            p[0].abs() < ch[0] - k && p[1].abs() < ch[1] - k
+        }
+        let code = shader_code(FS_GLASS);
+        let main = &code[code.find("void main(){").expect("main")..];
+        let guard = main.find("if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
+        let sdf = main.find("d = sdBox(v_p, u_ch, u_iradius);").expect("the guarded sdBox");
+        let exit = main.find("if (d < -u_bevel)").expect("the interior exit");
+        assert!(guard < sdf && sdf < exit, "the pre-test guards the sdBox, and both precede the exit");
+        assert!(main.starts_with("void main(){\n  highp float d = -u_bevel - 1.0;"), "the skipped d is an interior value");
+        assert_eq!(main.matches("sdBox(").count(), 1, "main evaluates sdBox once, behind the pre-test");
+        assert_eq!(GlassRim::Menu.params().0, tokens::MENU_BEVEL);
+        for (case, &(w, h, r, bevel)) in [
+            (382.0f32, 339.0f32, 20.0f32, tokens::MENU_BEVEL),
+            (80.0, 40.0, 20.0, 12.0),
+            (60.0, 60.0, 40.0, 12.0),
+            (60.0, 50.0, 20.0, 12.0),
+            (500.0, 400.0, 0.0, 12.0),
+            (300.0, 200.0, -4.0, 6.0),
+            (900.0, 120.0, 30.0, 28.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let ch = [w * 0.5, h * 0.5];
+            let (mut taken, mut n) = (0u32, 0u32);
+            for i in 0..=400 {
+                for j in 0..=400 {
+                    let p = [-ch[0] + w * i as f32 / 400.0 + 0.25, -ch[1] + h * j as f32 / 400.0 + 0.25];
+                    n += 1;
+                    if pretest(p, ch, r, bevel) {
+                        taken += 1;
+                        let d = sd_box(p, ch, r);
+                        assert!(d < -bevel - 0.99, "{w}x{h} r{r} bevel{bevel}: {p:?} pre-tested in, d {d}");
+                    }
+                }
+            }
+            if case == 0 {
+                assert!(taken * 4 > n * 3, "the hold menu's panel is mostly pre-tested ({taken} of {n})");
+            }
+        }
     }
 
     /// The ambient program is drawn over more pixels than any other in the app — the hero's

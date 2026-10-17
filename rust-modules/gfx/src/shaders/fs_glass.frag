@@ -217,7 +217,17 @@ highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
   return s * (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
 }
 void main(){
-  highp float d = sdBox(v_p, u_ch, u_iradius);
+  // THE INTERIOR'S BOX PRE-TEST, the shadow cut's twin (`fs_shadow.frag`): inside the box inset by
+  // `max(radius, bevel) + 1` on each axis, both components of sdBox's `q` are below -1, so its
+  // `length` term is 0 and `d = max(|p| - ch)` < -bevel - 1. Such a fragment is certain to take
+  // the interior exit below, and it gets there without the highp `length` and the rest of
+  // `sdBox`, which is most of a menu panel. Only work is skipped, never a decision: a fragment the
+  // pre-test leaves out still takes the exit when its `d` says so (`gfx` test
+  // `the_glass_interior_box_pretest_is_exact_and_runs_first`).
+  highp float d = -u_bevel - 1.0;
+  if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0)))) {
+    d = sdBox(v_p, u_ch, u_iradius);
+  }
   // INTERIOR EARLY-OUT, the same shape as fs_src.frag's and for the same reason: past the bevel
   // there is no lens, no edge light and full coverage, so a panel's large flat middle pays one
   // fetch and nothing else. The branch is coherent across a tile, which is what makes it pay here.
