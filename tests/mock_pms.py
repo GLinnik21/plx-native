@@ -1211,6 +1211,10 @@ DEMO_PIN_CODE = "DEMO"
 # The account token `--authorize-after` links the demo code with: synthetic, in the harness's own
 # token alphabet (`ALPHABET_TOKEN`), and accepted — never checked — by every endpoint here.
 DEMO_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-demo-account").hexdigest()[:8]
+# `--second-account`: a different plex.tv account (its own token, owner id, uuid and name), so a
+# sign-in over a stored Demo session can be shown to publish the new account, not the old one.
+SECOND_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-second-account").hexdigest()[:8]
+SECOND_ACCOUNT = {"id": 2001, "uuid": "second-user", "username": "second", "title": "Alex Example"}
 # What the demo sign-in QR encodes: the page a person types a code into. A scan of a screenshot
 # lands on plex.tv's own link page, which asks for a code this server invented — harmless.
 DEMO_QR_TEXT = b"https://plex.tv/link"
@@ -2044,6 +2048,11 @@ class MockPms:
                              "more": True, "totalSize": len(lib.recent(kind, 1000)), "Metadata": recent})
         return hubs
 
+
+    def account_token(self):
+        """The plex.tv token the sign-in hands out: Demo's, or SECOND_ACCOUNT's under `--second-account`."""
+        return SECOND_ACCOUNT_TOKEN if self.second_account else DEMO_ACCOUNT_TOKEN
+
     def __init__(self, lib):
         self.lib = lib
         # The plex.tv Watchlist's Discover stand-in (see its class); held titles take library guids.
@@ -2076,6 +2085,8 @@ class MockPms:
         self.authorize_after = None
         # `--home-users N`: how many profiles the Home roster lists (the first is the Demo owner).
         self.home_users = 1
+        # `--second-account`: plex.tv answers as SECOND_ACCOUNT instead of Demo.
+        self.second_account = False
         self.pin_polls = 0
         self.user_profile = {"autoSelectAudio": True, "defaultAudioLanguage": "en",
                              "defaultSubtitleLanguage": "en", "autoSelectSubtitle": 1,
@@ -2401,15 +2412,17 @@ class MockPms:
                 self.pin_polls += 1
                 linked = self.authorize_after is not None and self.pin_polls >= self.authorize_after
             return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800,
-                      "authToken": DEMO_ACCOUNT_TOKEN if linked else None})
+                      "authToken": self.account_token() if linked else None})
         if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
         if p == "/api/v2/user":
             with self.lock:
                 profile = dict(self.user_profile)
-            return j({"id": 1, "uuid": "demo-user", "username": "demo", "title": "Demo",
-                      "friendlyName": "Demo", "email": "demo@example.invalid", "thumb": "",
+            owner = home_roster(1, self.second_account)[0]
+            return j({"id": owner["id"], "uuid": owner["uuid"], "username": owner["username"],
+                      "title": owner["title"], "friendlyName": owner["title"],
+                      "email": f"{owner['username']}@example.invalid", "thumb": "",
                       "profile": profile,
                       "subscription": {"active": True, "status": "Active", "plan": "lifetime"}})
         if p == "/api/v2/user/profile":
@@ -2437,13 +2450,13 @@ class MockPms:
             with self.lock:
                 return j(dict(self.user_profile))
         if p == "/api/v2/home/users":
-            return j({"users": home_roster(self.home_users)})
+            return j({"users": home_roster(self.home_users, self.second_account)})
         if method == "POST" and p.startswith("/api/v2/home/users/") and p.endswith("/switch"):
-            who = next((u for u in home_roster(self.home_users)
+            who = next((u for u in home_roster(self.home_users, self.second_account)
                         if p == f"/api/v2/home/users/{u['uuid']}/switch"), None)
             if who is not None:
                 return j({"id": who["id"], "uuid": who["uuid"], "title": who["title"],
-                          "authToken": DEMO_ACCOUNT_TOKEN})
+                          "authToken": self.account_token()})
         if p == "/api/v2/resources":
             if self.plaintext_only_lan is not None:
                 cfg = self.plaintext_only_lan
@@ -3111,13 +3124,20 @@ class Server(ThreadingHTTPServer):
 HOME_USER_NAMES = ("Demo", "Alex", "Sam", "Kid", "Guest", "Family", "Pat", "Robin")
 
 
-def home_roster(n):
+def home_roster(n, second=False):
     """The synthetic Home roster plex.tv's `/api/v2/home/users` answers: the Demo owner first
-    (uuid `demo-user`, what the sign-in and `/api/v2/user` name), then `n - 1` more profiles."""
-    return [{"id": i + 1, "uuid": "demo-user" if i == 0 else f"demo-user-{i + 1}",
-             "title": HOME_USER_NAMES[i % len(HOME_USER_NAMES)] + ("" if i < len(HOME_USER_NAMES) else str(i)),
-             "thumb": "", "admin": i == 0, "restricted": i > 0, "protected": False}
-            for i in range(n)]
+    (uuid `demo-user`, what the sign-in and `/api/v2/user` name), then `n - 1` more profiles.
+    `second` answers as SECOND_ACCOUNT's household instead (`--second-account`)."""
+    users = [{"id": i + 1, "uuid": "demo-user" if i == 0 else f"demo-user-{i + 1}", "username": "demo",
+              "title": HOME_USER_NAMES[i % len(HOME_USER_NAMES)] + ("" if i < len(HOME_USER_NAMES) else str(i)),
+              "thumb": "", "admin": i == 0, "restricted": i > 0, "protected": False}
+             for i in range(n)]
+    if second:
+        users[0] = dict(users[0], **SECOND_ACCOUNT)
+        for u in users[1:]:
+            u["id"] += SECOND_ACCOUNT["id"]
+            u["uuid"] = u["uuid"].replace("demo-user", "second-user")
+    return users
 
 
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
@@ -3126,7 +3146,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
-          home_users=1, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
+          home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
@@ -3190,6 +3210,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
         authorize_after = 2
     pms.authorize_after = authorize_after
     pms.home_users = home_users
+    pms.second_account = second_account
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
@@ -3268,6 +3289,14 @@ def selftest():
     with urllib.request.urlopen(other, timeout=5) as reply:
         assert json.load(reply)["uuid"] == "demo-user-3"
     pms.home_users = 1
+    pms.second_account = True
+    with urllib.request.urlopen(base + "/api/v2/user") as reply:
+        second = json.load(reply)
+    with urllib.request.urlopen(base + "/api/v2/home/users") as reply:
+        owner = json.load(reply)["users"][0]
+    assert (second["uuid"], second["title"]) == (owner["uuid"], owner["title"]) == ("second-user", "Alex Example")
+    assert owner["id"] != 1 and pms.account_token() == SECOND_ACCOUNT_TOKEN != DEMO_ACCOUNT_TOKEN
+    pms.second_account = False
 
     # Account preferences live only in this mock. Empty-body PUT changes just named keys,
     # including an empty language, and /user serves the same state to the playback cache.
@@ -3987,6 +4016,9 @@ def main():
     ap.add_argument("--home-users", type=int, default=1, metavar="N",
                     help="how many profiles the plex.tv Home roster lists, 1-16 (default 1: the "
                          "Demo owner only; more make a stored-session boot open the picker)")
+    ap.add_argument("--second-account", action="store_true",
+                    help="plex.tv answers as a second synthetic account (its own token, owner id and "
+                         "name, 'Alex Example') instead of Demo: a sign-in over a stored Demo session")
     ap.add_argument("--no-plex-pass", action="store_true",
                     help="#266: / and /identity answer myPlexSubscription=false (the version "
                          "string is untouched — tools/mock-guest.py depends on it)")
@@ -4089,7 +4121,7 @@ def main():
                          transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
-                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users,
+                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users, second_account=a.second_account,
                          link=link, link_faults=a.link_fault, shows=a.shows, seasons=a.seasons, episodes=a.episodes,
                          resume_fixture=a.resume_fixture,
                          media_next_episode=a.media_next_episode,
