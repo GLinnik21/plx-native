@@ -56,8 +56,9 @@
 //! the first tick after the image is released.
 //!
 //! The springs step on the frame's own `dt` through [`Spring::step`](crate::Spring::step); the
-//! beat after the veil clears is counted on the tick clock (`Tick::ms`), never by summing `dt`.
-//! No wall clock is read. The state is transient render history: it is never written to the motion canon, and a
+//! Remove lands on the first feed after the menu's veil drops below `CLOSING_GONE`; no timer counts
+//! the wait. No wall clock is read.
+//! The state is transient render history: it is never written to the motion canon, and a
 //! replay reconstructs it by running the same ticks.
 //!
 //! A settled or disabled section pays nothing per tick when the source's length and
@@ -211,8 +212,8 @@ impl Landing {
         self.anim.is_some() && crate::containers::transition::page_image_held()
     }
 
-    /// A landing is playing but its last step did not run: a menu veils the page, its beat is
-    /// still counting, or the page is a held image. An owner holds the motion it pairs with the
+    /// A landing is playing but its last step did not run: the menu's veil has not yet dropped
+    /// below `CLOSING_GONE`, or the page is a held image. An owner holds the motion it pairs with the
     /// landing (the takeover's pop) while this is true, so everything starts together.
     pub(crate) fn waiting(&self) -> bool {
         self.anim.is_some() && self.paused
