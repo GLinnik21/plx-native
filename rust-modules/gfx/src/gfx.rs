@@ -1731,7 +1731,7 @@ pub fn draw_shadow(
         glUniform1f(SL_CUT, cut); // <0 = the opaque tile's box cut; >=0 = cut the occluder's rounded shape
         glUniform4fv(SL_COL, 1, col);
         // **Draw the bands around the part the shader certainly discards, not the whole quad.** A
-        // glass menu's shadow is a 60 px blur under a panel hundreds of px across: most of the quad
+        // glass menu's shadow is a 30 px blur under a panel hundreds of px across: most of the quad
         // is the panel interior, where every fragment was rasterized and shaded only to be
         // discarded (measured ~0.74M GPU cycles/frame on the T820 for that one shadow). The skip
         // rect lies strictly inside the discard region, so the pixels are identical. Its edges sit
