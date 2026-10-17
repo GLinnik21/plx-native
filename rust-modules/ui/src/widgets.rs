@@ -3480,8 +3480,10 @@ fn code(v: f32) -> f32 {
 impl AmbientWash {
     /// The dissolve rate every page wash shares — deliberately slower than any focus spring (the
     /// person mock's `.5s ease`): the wash is atmosphere, and snapping it with the focus pop reads
-    /// as the SCREEN changing rather than the subject. One rate, because two pages dissolving at two
-    /// speeds are two different products.
+    /// as the SCREEN changing rather than the subject. One rate for every focus move, because two
+    /// pages dissolving at two speeds are two different products. The one sanctioned exception is
+    /// the Watchlist's catch-up after a Remove's landing held the wash (`POST_REMOVE_EASE_K`,
+    /// through [`PageGround::key_target_k`]); it returns to this rate once `at_rest_on` holds.
     pub const K: f32 = 80.0;
 
     /// How far a GROUND leans from the app surface toward an item's own colour — the strength every

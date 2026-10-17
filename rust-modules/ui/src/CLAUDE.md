@@ -692,8 +692,11 @@ Its docstring states what it cannot see.
 - **Clipping: prefer culling; use a scissor clip only for a hard-bounded panel.** Two spellings
   today. The legacy one is `Painter::clip(rect)` / `clip_clear()` (backed by `gfx::clip_set`/
   `clip_clear`) — **global GL state**, so you MUST pair set/clear inside the same frame (the panels,
-  the document reader, the glass cut in `home`/`library`/`filmography`, the card underline are its
-  users). A screen drawing through a `DrawFrame` uses `f.clip(p, rect)` instead: an RAII scope that
+  the document reader, the glass cut in `home`/`library`/`filmography`, the card underline, and
+  `Painter::ambient_cut` are its users). `ambient_cut` is the Watchlist's ground skipping opaque card
+  interiors: one scissor per strip per frame. It falls back to the uncut `ambient` whenever a clip
+  is already in force, because its `clip_clear` restores nothing. The cull rule below still holds
+  for a flow's children; the ground is one quad per strip, not per child. A screen drawing through a `DrawFrame` uses `f.clip(p, rect)` instead: an RAII scope that
   restores the previous scissor when dropped AND narrows the painter's `clip` cascade value, so a
   `stop` registered inside it is intersected with the visible part (spec §7.6). Do NOT reach for either in
   the big scroll flow: `ScrollColumn`/the shelves deliberately **cull** off-frame children by index
