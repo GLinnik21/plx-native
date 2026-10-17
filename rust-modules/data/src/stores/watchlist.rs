@@ -763,6 +763,13 @@ impl WatchlistStore {
         self.state.auth.is_some() && self.state.status == Status::Ready
     }
 
+    /// Is a list read out on a worker right now? Its matching may have asked a server before a
+    /// library change that has just arrived, so a change must be kept for it; a read not yet
+    /// started will ask after the change and needs no note of it.
+    pub fn read_in_flight(&self) -> bool {
+        self.adapter.list_busy.load(Ordering::SeqCst)
+    }
+
     /// The rows `sid` holds, by that server's ratingKey: what a library item deleted there is
     /// looked up in (built once for a whole frame's worth of deletes).
     pub fn held_by_rk(&self, sid: ServerId) -> HashMap<i64, (String, Kind)> {
@@ -1241,6 +1248,16 @@ pub(super) mod tests {
     fn titles(s: &WatchlistStore) -> Vec<String> {
         let v = s.view();
         (0..v.len()).map(|i| v.row(i).unwrap().title.clone()).collect()
+    }
+
+    /// A store whose first list read is out on a worker and has not landed (the claim is held).
+    pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> WatchlistStore {
+        let mock = Mock::new((1..=titles).map(|n| item(n, "T")).collect());
+        *mock.roster.lock().unwrap() = vec![sid];
+        *mock.up.lock().unwrap() = vec![sid];
+        let s = store(&mock);
+        s.adapter.list_busy.store(true, Ordering::SeqCst);
+        s
     }
 
     /// A loaded store whose one title is matched on reachable server `sid` as numeric ratingKey `rk` and

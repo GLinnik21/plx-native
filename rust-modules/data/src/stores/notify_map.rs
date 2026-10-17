@@ -29,7 +29,9 @@
 //! titles of that kind the server was not seen to hold, in chunks of `GUIDS_PER_REQUEST`. The owe is
 //! one per `(server, kind)` however many entries arrive, is made at most once per
 //! [`LIBRARY_SPACING_FRAMES`] (the quiet-refetch spacing), waits for the Watchlist to have loaded
-//! (the first read matches the library as it is then) and is made through the store's own
+//! (the first read matches the library as it is then: a change that arrives while the list is not
+//! ready and no read is out is dropped, since the read that follows asks after it; one that arrives
+//! while the first read is out is kept, since that read's matching may already have asked) and is made through the store's own
 //! worker; the tile flips when the answer lands, through the same §1.5 derivation as any
 //! re-match. Home, Library and Search are not touched.
 //!
@@ -373,6 +375,11 @@ impl Stores {
     fn owe_library(&mut self, library: &NotifyLibrary) {
         let sid = library.sid;
         let ready = self.watchlist.is_ready();
+        // Before the first load the read to come matches the library as it is then, which already
+        // holds this change: owing a re-match for it would only ask the whole list again right after
+        // boot. A read already out may have asked before the change landed on the server, so that
+        // one keeps its owe (and is spent once the list is ready).
+        let follow = ready || self.watchlist.read_in_flight();
         // A delete is followed to the tile it was matched to; one lookup table per server and frame.
         let held = (ready && library.entries.iter().any(|e| e.state == LibraryState::Deleted))
             .then(|| self.watchlist.held_by_rk(sid));
@@ -380,6 +387,8 @@ impl Stores {
         for e in &library.entries {
             let kind = watch_kind(e.kind);
             match e.state {
+                LibraryState::Created if !follow => created += 1,
+                LibraryState::Deleted if !follow => deleted += 1,
                 LibraryState::Created => {
                     created += 1;
                     self.notify_map.library_owe(sid, kind).added = true;

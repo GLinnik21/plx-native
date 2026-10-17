@@ -641,21 +641,35 @@ fn a_re_match_waits_for_the_network_like_every_owed_read() {
 }
 
 #[test]
-fn nothing_is_asked_before_the_watchlist_has_loaded_and_it_is_then() {
+fn a_change_noted_before_the_first_load_is_not_asked_again_after_it() {
     let _g = plx_base::testlock::serial();
     let mut stores = Stores::default();
     let sid = ServerId::from_raw(0);
-    // A create and a delete arrive while the page has never been read.
+    // A create and a delete arrive while the page has never been read and no read is out.
     map(&mut stores, &library(sid, vec![created("20"), deleted("11")]), &[]);
     quiet_frames(&mut stores, 5);
-    assert!(!stores.notify_owed_for_test().is_empty(), "queued until the list is read");
+    assert!(stores.notify_owed_for_test().is_empty(), "the read to come already reflects both");
     let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
     stores.watchlist = watchlist;
     script.forget_asked();
     quiet_frames(&mut stores, 1);
-    let asked = script.asked();
-    assert_eq!(asked.len(), 1, "{asked:?}");
-    assert_eq!(asked[0].len(), 3, "the delete was not followed to a tile, so every title is asked again");
+    assert!(script.asked().is_empty(), "no redundant re-match right after the first load: {:?}", script.asked());
+}
+
+#[test]
+fn a_change_that_arrives_while_the_first_read_is_out_is_kept_and_asked_after_it() {
+    let _g = plx_base::testlock::serial();
+    let sid = ServerId::from_raw(0);
+    let mut stores = Stores::default();
+    stores.watchlist = super::watchlist::tests::reading_for_test(sid, 3);
+    map(&mut stores, &library(sid, vec![created("20")]), &[]);
+    quiet_frames(&mut stores, 5);
+    assert!(!stores.notify_owed_for_test().is_empty(), "that read's matching may have asked before the create");
+    let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    quiet_frames(&mut stores, 1);
+    assert_eq!(script.asked().len(), 1, "{:?}", script.asked());
     assert!(stores.notify_owed_for_test().is_empty());
 }
 

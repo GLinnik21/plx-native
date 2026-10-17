@@ -248,7 +248,10 @@ What the PMS notification feed (`docs/pms-api.md` section 9) does and does not c
   is allowed, and the tile flips when the answer lands, with the page open or not. A feed that came back
   after a gap re-asks the server's titles whole. **The `timeline` frame shape is community-documented and
   has not been captured from a live server** (`docs/pms-api.md` section 9); until it is, this path is
-  tested against synthetic frames only, and the scan rate is not measured. Shared servers have no feed (d).
+  tested against synthetic frames only, and the scan rate is not measured. A delete re-match also
+  assumes the PMS guid search no longer returns the item once the delete timeline event fires; that
+  is unverified until the real capture. A change that arrives before the first load is not owed
+  (the read to come reflects it); one that arrives while that read is out is kept. Shared servers have no feed (d).
 - **(b) Watched and progress on a matched tile ride the existing path.** `WatchlistStore::held_keys()`
   is the page's hold window; `Shown.watchlist` adds it to what notify_map holds, so a session on a
   matched item owes a quiet read-back and the tile updates in place. A watched toggle on another client
