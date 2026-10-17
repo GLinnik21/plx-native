@@ -237,7 +237,7 @@ stripping only marks that are not letters in any shipped language (é→e, à→
 missing field last in both directions.
 
 ### 1.11 PMS live updates (amendment; critic: no blocking objections)
-**A. What the stack receives today.** The feed subscribes to `filters=playing` only
+**A. What the stack received before W-notify** (the feed now subscribes `filters=playing,timeline`, B(a)). The feed subscribes to `filters=playing` only
 (plex/src/plex/notify.rs:294); `classify` (:160-185) ignores every type but "playing"
 (`Notification = Play | Ping | Ignored`, :149-156). Timeline (library add/update/delete),
 activity/scanner and status events are NOT received. Reachability comes from probes
@@ -263,7 +263,7 @@ gaps: watched toggles on another client emit nothing (§9); shared servers have 
 carry the episode rk, so a matched SHOW tile's progress refreshes only on re-read (as Home show
 cards today).
 
-**B(a) Library add/remove → tile flips live: NOT on main; optional PR W-notify (Q12).**
+**B(a) Library add/remove → tile flips live: BUILT in PR W-notify (Q12 answered yes); the timeline frame shape is community-documented and NOT yet captured live, so the capture below is still owed.**
 Gated on a passive capture: a read-only GET stream on the owner's own PMS while the owner changes
 the library out of band (the app never triggers a scan); token kept out of capture/log/commit,
 only scrubbed frame shapes committed; frame rate during a scan measured. Subscribe
@@ -364,9 +364,11 @@ Discover trailer playable?
   patch test (its docs name `facts_gen`). W45 adds `Shown.watchlist`, the run.rs fold, the
   `held()` arm, reread.rs `Watchlist` + `Catalog` arms, the notify sim scenario, pms-api.md §9
   "What a hint does" listing the Watchlist page, parity-gaps.md notes on the (b)/(d) gaps.
-- **W-notify (optional, after W45, gated on Q12 + capture):** timeline subscription, parser,
+- **W-notify (Q12 answered yes; BUILT, capture still owed):** timeline subscription, parser,
   itemID→re-match mapping, mock + sim; pms-api.md §9 gains the measured timeline frames and scan
-  rate; doc-claim audit.
+  rate; doc-claim audit. Built against the community-documented frame shape: the fixtures
+  (`rust-modules/plex/src/plex/notify/fixtures.rs`) and pms-api.md §9 are marked UNVERIFIED and the owner's
+  passive capture replaces them; the scan rate stays unmeasured until then.
 - **W6a appkit::hero_layout extraction** (boards: Detail for reference; no visual change): behaviour-neutral; host geometry test, Detail
   conformance row, unchanged pin.
 - **W6 Detail + catalog + menus (Bump B)** (boards: Detail, DetailOnList, DetailAdded, DetailNotOnServer, DetailOffline, HoldMenu, WatchlistHold, WatchlistHoldUnplayable): P4 first; `PmsMovie` guid/show_guid; Detail disc;
@@ -415,7 +417,7 @@ DS7, DS8 before or alongside → W6a → W6 → W7.
     added to / removed from the library flips its tile live? Cost: extra frames on EVERY owned
     feed during scans, even with the Watchlist closed (cheaply dropped); the capture gives the
     measured frames-per-minute during a scan. If declined: re-match on tab entry, resume, and
-    re-show after being covered.
+    re-show after being covered. **Answered YES (owner); built as W-notify.**
 
 Settled by measurement: morph frame cost (DS7, TV); UltraBlur on Discover (P3). ICU month names
 settled in W3.

@@ -1292,7 +1292,7 @@ only to a server the account OWNS. Notifications are hints about a stranger's pl
 reach a timeline, a stop, an end-of-stream candidate or a resume point.
 
 ```
-GET /:/eventsource/notifications?filters=playing        (Accept: text/event-stream; X-Plex-Token in the query)
+GET /:/eventsource/notifications?filters=playing%2Ctimeline   (Accept: text/event-stream; X-Plex-Token in the query)
 ```
 
 Measured against a local server with a Guest token:
@@ -1302,7 +1302,10 @@ Measured against a local server with a Guest token:
   twin is `/:/websockets/notifications` on the server and `/:/websocket/notifications` in the spec.
   The measurements win.
 - **A Guest token receives only `playing` events** (session key, the playing client's
-  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). `filters=playing` is requested anyway.
+  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). The app requests `filters=playing,timeline`
+  (the comma sent percent-encoded); the measurements below were taken with `filters=playing` alone,
+  so **whether a server accepts the comma list, and whether it then sends `timeline`, is UNVERIFIED**
+  (the fallback, no `filters`, is not wired).
 - **An owner token, watched read-only from the host over loopback HTTP** (one stream at a time, the
   app's identity headers' client identifier, token in a header, no other request): with
   `filters=playing`, 601 s: HTTP 200 `text/event-stream`, 60 frames, every one an SSE `ping`
@@ -1324,12 +1327,26 @@ Measured against a local server with a Guest token:
   client is not a controllable player.
 
 What the parser accepts, leniently: a `data` JSON whose `NotificationContainer.type` is `playing`
-(or absent) and whose `PlaySessionStateNotification` array lists the sessions; every field optional,
+(or absent) and whose `PlaySessionStateNotification` array lists the sessions, or whose type is
+`timeline` (below); every field optional,
 ids as strings or numbers, unknown fields and unknown types ignored. A session whose
 `clientIdentifier` is this device's own is dropped before anything else sees it. The envelope's field
 names are the parser's reading and are not yet confirmed by a capture committed here: a verbatim
 frame would carry the session's key, client id and rating key, so it stays out of the repository
 (scrubbed captures hold only the ping cadence).
+
+**`timeline` frames: UNVERIFIED, community-documented, not captured live.** The parser reads the shape
+python-plexapi's `AlertListener` consumers document:
+`{"NotificationContainer":{"type":"timeline","size":N,"TimelineEntry":[{"identifier":"com.plexapp.plugins.library",
+"sectionID":"1","itemID":"123","type":1,"title":"…","state":5,"metadataState":"created","mediaState":"analyzing",
+"updatedAt":…}]}}`. It keeps an entry only when `itemID`, `type` and `state` are present (numbers as
+numbers or numeric strings), `type` is 1 (movie) or 2 (show), `state` is 5 (processed: a finished
+create) or 9 (deleted) and `identifier`, when present, is the library plugin's; progress states and every
+other type are dropped, as is a frame left with no entry. An `itemID` is the item's `ratingKey` on that
+server, not a guid. Whether state 5 can also be a metadata update, what a real scan emits and **the
+frames-per-minute during a scan are not measured**: the owner's passive capture (a read-only stream on the
+owner's own server while the library changes out of band) replaces the fixtures in
+`rust-modules/plex/src/plex/notify/fixtures.rs` and fills this paragraph in.
 
 What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
 HOLDS owes that item a read-back of OUR state. A page holds what its store enumerates while the page
@@ -1351,7 +1368,15 @@ seen and owes the covered pages their re-read. A hint is never a playback event:
 stop, an end-of-stream candidate or a resume point, so a stranger's `stopped` cannot scrobble our
 other servers.
 
-What a hint does NOT do for the Watchlist: the feed subscribes to `filters=playing` and the parser drops every other type, so a library scan's timeline events are not received, and a title that a server gains or loses flips its Watchlist tile (playable, on no server) only at the next re-match (tab entry, resume, a cover re-read, a roster change); a watched toggle on another client emits nothing either. The plex.tv membership itself has no PMS signal at all (`docs/watchlist.md`, *Live-update gaps*).
+What a hint does for the Watchlist: a session on a matched title that the page holds owes a read-back like
+any held card. A `timeline` create or delete does not read the item: it owes the Watchlist store ONE re-match
+of that server and kind (a delete of the item a tile is matched to asks again about that guid, a create asks
+again about the kind's titles the server was not seen to hold, `/library/all?type=T&guid=…` at 40 guids to a
+request), deduplicated per pump, at most once per quiet-refetch spacing (5 s) per server and kind, only once
+the Watchlist has loaded and only when `reread_allowed`; it stays queued otherwise. A feed that came back
+after a gap re-asks the server's titles whole. The tile flips when the answer lands (`docs/watchlist.md`,
+*Live-update gaps*); Home, Library and Search are not touched. A watched toggle on another client emits
+nothing, and the plex.tv membership itself has no PMS signal at all.
 
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
 5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
