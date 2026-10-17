@@ -662,6 +662,44 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
     set_veil(0.0);
 }
 
+/// **A Remove holds the colour wash until the grid's landing ends.** The wash eases one 8-bit step
+/// a frame toward the newly focused title, which invalidates the tab strip's glass on every
+/// landing frame (the page is drawn twice for it); during the landing the target stays at the
+/// pre-Remove colours, and afterwards eases to the title that took the removed one's place.
+#[test]
+fn a_remove_holds_the_wash_target_until_the_landing_ends() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::containers::modal::set_veil;
+    set_veil(0.0);
+    let mut rows = tiles(12);
+    for (i, t) in rows.iter_mut().enumerate() {
+        let c = 20 + 15 * i as u8;
+        t.copy.as_mut().unwrap().blur = Some([[c, 255 - c, c / 2]; 4]);
+    }
+    let mut h = Harness::new(rows);
+    h.focus_index(2);
+    h.run(5);
+    let before = h.screen.ground_goal();
+    assert_ne!(before, [theme::SURFACE_APP; 4], "premise: the removed title keys a colour");
+    h.landing(Landing::RemoveFocused).unwrap();
+    let mut held = 0;
+    for frame in 0..200 {
+        h.run(1);
+        h.reconcile();
+        if !h.screen.landing_in_flight() {
+            break;
+        }
+        assert_eq!(h.screen.ground_goal(), before, "frame {frame}: the landing is in flight");
+        held += 1;
+    }
+    assert!(held > 0, "premise: the landing ran for at least a frame");
+    assert!(!h.screen.landing_in_flight(), "premise: the landing ended");
+    h.run(2);
+    let after = h.screen.ground_goal();
+    assert_ne!(after, before, "after the landing the wash goes to the new title");
+    assert_ne!(after, [theme::SURFACE_APP; 4]);
+}
+
 /// A Remove no menu veiled starts its landing at once, so the count follows on the first frame.
 #[test]
 fn an_unveiled_remove_lowers_the_count_on_its_first_frame() {

@@ -172,6 +172,11 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_menu_shadow_blur_is_30px_for_every_glass_menu() {
+        assert_eq!(theme::MENU_SHADOW_BLUR, 30.0);
+    }
+
+    #[test]
     fn the_rim_and_highlight_are_the_shipped_glass_tokens() {
         assert_eq!(FACE.rim, theme::GLASS_RIM);
         assert_eq!(FACE.rim_lit, theme::GLASS_RIM_LIGHT);

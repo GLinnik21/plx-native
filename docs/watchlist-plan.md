@@ -331,7 +331,7 @@ Discover trailer playable?
   §1. Pin untouched; overscan_rects test (no scroll at 5 stops). Host + ui-sim + check-replay.
 - **DS6 Glass menus + 30% scrim** (boards: WatchlistOptions, HoldMenu, WatchlistHold): gradient panel, rims, shadow; fs_glass rim refraction from the
   captured host, same SDF; menus only (owner decision, wave 2 review); amend ui CLAUDE.md Glass section + grep test. Landed as a
-  live `Glass::DYNAMIC_BACKDROP` surface with a per-frame sharp band copy (`backdrop::RimCache` skipped repeats); the
+  live `Glass::DYNAMIC_BACKDROP` surface with a per-frame sharp band copy; the
   2026-10-17 owner decision moved it onto frozen ground (`gfx::draw_glass_frozen`: the latched dim field as the body, the
   once-captured host snapshot as the rim's sharp source, the dim applied at composite), so a menu requests no backdrop
   entry, runs no source pass and copies no band.

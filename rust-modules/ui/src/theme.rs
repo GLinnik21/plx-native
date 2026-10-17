@@ -421,8 +421,10 @@ pub const MENU_GLASS_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.86);
 pub const MENU_SHADOW: [f32; 4] = with_a(CARD_SHADOW, 0.45);
 /// The glass menu's shadow offset (board: 24 px); see [`MENU_SHADOW`].
 pub const MENU_SHADOW_DY: f32 = 24.0;
-/// The glass menu's shadow blur (board: 60 px); see [`MENU_SHADOW`].
-pub const MENU_SHADOW_BLUR: f32 = 60.0;
+/// The glass menu's shadow blur: 30 px, tighter than the board's 60 (owner decision). One value for
+/// every glass menu (hold, Sort & Filter, Options, account, library), all drawn by
+/// `popover_glass::draw_shadowed`; see [`MENU_SHADOW`].
+pub const MENU_SHADOW_BLUR: f32 = 30.0;
 /// **The material scale, named rather than numbered — SwiftUI's `Material` is the vocabulary.**
 ///
 /// Every glass surface in this app used to be described by two unrelated numbers written at its own
