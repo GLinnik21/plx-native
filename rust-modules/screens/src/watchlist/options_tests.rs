@@ -243,20 +243,21 @@ fn the_count_hangs_24px_left_of_the_pill_on_its_line() {
 #[test]
 fn the_count_reads_in_every_language_with_its_plural_forms() {
     let want = [
-        (Preference::En, [(1, "1 title"), (2, "2 titles"), (21, "21 titles")], "6 of 14"),
-        (Preference::Es, [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
-        (Preference::Fr, [(1, "1 titre"), (2, "2 titres"), (21, "21 titres")], "6 sur 14"),
-        (Preference::Be, [(1, "1 назва"), (2, "2 назвы"), (21, "21 назва")], "6 з 14"),
-        (Preference::It, [(1, "1 titolo"), (2, "2 titoli"), (21, "21 titoli")], "6 di 14"),
-        (Preference::Pt, [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
-        (Preference::De, [(1, "1 Titel"), (2, "2 Titel"), (21, "21 Titel")], "6 von 14"),
+        ("en", [(1, "1 title"), (2, "2 titles"), (21, "21 titles")], "6 of 14"),
+        ("es", [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
+        ("fr", [(1, "1 titre"), (2, "2 titres"), (21, "21 titres")], "6 sur 14"),
+        ("be", [(1, "1 назва"), (2, "2 назвы"), (21, "21 назва")], "6 з 14"),
+        ("it", [(1, "1 titolo"), (2, "2 titoli"), (21, "21 titoli")], "6 di 14"),
+        ("pt", [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
+        ("de", [(1, "1 Titel"), (2, "2 Titel"), (21, "21 Titel")], "6 von 14"),
     ];
-    for (lang, all, of) in want {
+    for lang in SHIPPED {
+        let (_, all, of) = want.iter().find(|row| row.0 == lang.tag()).unwrap_or_else(|| panic!("{lang:?}: no reviewed count row"));
         let _g = language_on_this_thread_for_test(lang);
         for (n, text) in all {
-            assert_eq!(Count::All(n).text(), text, "{lang:?} {n}");
+            assert_eq!(Count::All(*n).text(), *text, "{lang:?} {n}");
         }
-        assert_eq!(Count::Of { shown: 6, total: 14 }.text(), of);
+        assert_eq!(Count::Of { shown: 6, total: 14 }.text(), *of);
     }
     let _g = language_on_this_thread_for_test(Preference::Be);
     assert_eq!(Count::All(3).text(), "3 назвы");
