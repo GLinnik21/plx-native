@@ -3,14 +3,14 @@ use super::super::header::{self, Count, HeaderFace};
 use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::table::MENU_MAX_W;
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use std::ffi::CString;
 
-const LANGUAGES: [Preference; 4] = [Preference::En, Preference::Es, Preference::Be, Preference::Fr];
+const LANGUAGES: [Preference; SHIPPED.len()] = SHIPPED;
 
 fn default_state() -> WatchlistOptionsState {
     WatchlistOptionsState::default()
@@ -247,6 +247,9 @@ fn the_count_reads_in_every_language_with_its_plural_forms() {
         (Preference::Es, [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
         (Preference::Fr, [(1, "1 titre"), (2, "2 titres"), (21, "21 titres")], "6 sur 14"),
         (Preference::Be, [(1, "1 назва"), (2, "2 назвы"), (21, "21 назва")], "6 з 14"),
+        (Preference::It, [(1, "1 titolo"), (2, "2 titoli"), (21, "21 titoli")], "6 di 14"),
+        (Preference::Pt, [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
+        (Preference::De, [(1, "1 Titel"), (2, "2 Titel"), (21, "21 Titel")], "6 von 14"),
     ];
     for (lang, all, of) in want {
         let _g = language_on_this_thread_for_test(lang);

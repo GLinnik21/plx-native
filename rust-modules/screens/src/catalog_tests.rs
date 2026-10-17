@@ -7,7 +7,7 @@ use plx_machine::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, FocusRead, Fx, Host, InputEvent, InputKind, InputOwner, Key, LogicalState,
     Machine, Measure, PressId, PressRead, Source, Stamped, Tick,
 };
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::icons::Icon;
@@ -17,7 +17,7 @@ use plx_ui::{detail_layout, theme};
 use super::*;
 use crate::registry::{AppMsg, PageMemory};
 
-const LANGUAGES: [Preference; 4] = [Preference::En, Preference::Es, Preference::Be, Preference::Fr];
+const LANGUAGES: [Preference; SHIPPED.len()] = SHIPPED;
 const ENTRY: EntryId = EntryId(9);
 const HEX: [u8; 12] = [7; 12];
 

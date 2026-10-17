@@ -4,7 +4,7 @@
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::watchlist::model::TileState;
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::theme;
 
@@ -16,7 +16,7 @@ use super::page::{ListState, MatchedFacts, WatchlistIn, WatchlistOut, WatchlistS
 use super::readout::Readout;
 use super::tiles as marks;
 
-const LANGUAGES: [Preference; 4] = [Preference::En, Preference::Es, Preference::Be, Preference::Fr];
+const LANGUAGES: [Preference; SHIPPED.len()] = SHIPPED;
 
 const UNPLAYABLE: [TileState; 5] = [
     TileState::ComingSoon,
