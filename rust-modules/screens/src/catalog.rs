@@ -229,7 +229,7 @@ pub fn status_icon(status: Status, release: Option<&str>) -> Option<Icon> {
     }
 }
 
-/// The read-out of a page with no record to show. A discover 404 reuses "On no server": the service
+/// The read-out of a page with no record to show. A discover 404 reuses "Not on your servers": the service
 /// knows no such title, so no library of the household's can hold it, and the shipped locales carry
 /// no separate not-found string (docs/watchlist.md, "A record the service does not know").
 pub fn verdict_text(load: &Load) -> Option<&'static str> {

@@ -2,7 +2,7 @@
 //!
 //! A playable title reads its year, as every poster does. An unplayable title carries its state as
 //! a SENTENCE, because the tile itself says nothing in words (TileStates: "No text on the tile; the
-//! focused caption carries the words"): the release date for an upcoming title, "On no server", or
+//! focused caption carries the words"): the release date for an upcoming title, "Not on your servers", or
 //! "Server offline". The sentences are catalog strings (`watchlist.state.*`) and the date comes from
 //! the locale's own month-and-day tables (`LocaleContext::month_day`, W3), medium width as the
 //! board's "Releasing 12 Mar".

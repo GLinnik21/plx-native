@@ -135,7 +135,7 @@
     "description": "Status line on a catalogue title that has no release date on a server yet and is not on any server."
   },
   "watchlist.state.on_no_server": {
-    "value": "On no server",
+    "value": "Not on your servers",
     "description": "Status line on a released Watchlist title that none of the account's servers has."
   },
   "watchlist.state.server_offline": {

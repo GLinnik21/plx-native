@@ -33,7 +33,7 @@
   "watchlist.state.coming_on": "Выйдзе {date}",
   "watchlist.state.releasing_on": "Выходзіць {date}",
   "watchlist.state.coming_soon": "Хутка",
-  "watchlist.state.on_no_server": "Ні на адным серверы",
+  "watchlist.state.on_no_server": "Няма на вашых серверах",
   "watchlist.state.server_offline": "Сервер адключаны",
   "watchlist.empty.list": "Спіс для прагляду пусты",
   "watchlist.empty.filtered": "Нічога не адпавядае гэтым фільтрам",

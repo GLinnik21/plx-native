@@ -90,7 +90,7 @@ fn captions_carry_the_state_sentence_with_the_month_date() {
     assert_eq!(caption::caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
     // Q6: coming soon AND matched keeps the clock, so it keeps the date.
     assert_eq!(caption::caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
-    assert_eq!(caption::caption(&row, TileState::NotOnAnyServer), "On no server");
+    assert_eq!(caption::caption(&row, TileState::NotOnAnyServer), "Not on your servers");
     assert_eq!(caption::caption(&row, TileState::ServerOffline), "Server offline");
     assert_eq!(caption::caption(&row, TileState::Available), "2001");
     assert_eq!(caption::caption(&row, TileState::Unknown), "2001");

@@ -257,7 +257,7 @@ Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
   servers x kinds x ceil(N/40) requests (about 10 to 12 for 200 titles on two servers).
 - **Absence is only proof when the server answered.** `Client::find_by_guids` returns `Err` when any
   chunk got no readable answer, and the caller must not read that as "absent": a silent share would
-  otherwise turn a playable title into "On no server".
+  otherwise turn a playable title into "Not on your servers".
 - The same guid in two libraries is reported once, with the first row's key.
 - A single-guid form `GET /library/all?guid=plex://movie/<hex>[&type=1]` also works and is what
   "Also available" uses one guid at a time.

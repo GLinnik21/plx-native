@@ -161,7 +161,7 @@ fn the_status_line_icon_table() {
     assert_eq!(status_icon(Status::NotOnAnyServer, None), Some(Icon::ServerSlash));
     assert_eq!(status_icon(Status::None, dated), None);
     assert_eq!(status_text(Status::ComingSoon, None), Some("Coming soon"));
-    assert_eq!(status_text(Status::NotOnAnyServer, None), Some("On no server"));
+    assert_eq!(status_text(Status::NotOnAnyServer, None), Some("Not on your servers"));
     assert_eq!(status_text(Status::ComingSoon, dated), None);
     assert_eq!(status_text(Status::None, None), None);
     assert_eq!(status_icon(Status::ServerOffline, dated), Some(Icon::ServerSlash));

@@ -137,7 +137,7 @@ PMS guids are hex; the mock's default placeholder guids are not, which is why `m
 
 OK and hold read the drawn, committed `row.state`. An open Detail whose server dies keeps today's
 failure path. "Absent" needs the whole roster to have answered, so a silent server never produces
-"On no server".
+"Not on your servers".
 
 ## The write ledger
 
@@ -216,14 +216,14 @@ watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET disc
 /library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
-a line-clamped summary, genres, a status line (clock for coming soon, server-slash for on no server or
+a line-clamped summary, genres, a status line (clock for coming soon, server-slash for not on your servers or
 server offline, nothing otherwise), the `Coming 12 March` line and the primary pill.
 
-Status: when the title is a row of the list read, its tile state dictates the line (coming soon, on
-no server, server offline; an Unknown tile and an Available one say nothing, so a silent server never
-reads "On no server"), re-derived while the page is open when a match lands or a server goes away.
+Status: when the title is a row of the list read, its tile state dictates the line (coming soon, not on your
+servers, server offline; an Unknown tile and an Available one say nothing, so a silent server never
+reads "Not on your servers"), re-derived while the page is open when a match lands or a server goes away.
 Only a title not on the list read falls back to the date rule: a dated title whose date is after today
-is coming soon; one already out is on no server; an undated title has none; with the clock unknown a
+is coming soon; one already out is not on your servers; an undated title has none; with the clock unknown a
 dated title is never called coming. The plan's "progress caption" on a server-offline title is not
 drawn. An unreachable page has no Try again control: it reads again on resume, or after being covered for about two seconds.
 
@@ -243,7 +243,7 @@ drawn. An unreachable page has no Try again control: it reads again on resume, o
 
 ### A record the service does not know
 
-A discover 404 (`Load::NotFound`) draws the "On no server" verdict (`catalog::verdict_text`). The shipped
+A discover 404 (`Load::NotFound`) draws the "Not on your servers" verdict (`catalog::verdict_text`). The shipped
 locales have no separate not-found string; the words are accurate, since a title the service has never
 heard of is on none of the household's servers. The page has no focus stop, so BACK is the way out.
 

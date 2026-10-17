@@ -32,7 +32,7 @@
   "watchlist.state.coming_on": "Estreia a {date}",
   "watchlist.state.releasing_on": "Estreia a {date}",
   "watchlist.state.coming_soon": "Brevemente",
-  "watchlist.state.on_no_server": "Em nenhum servidor",
+  "watchlist.state.on_no_server": "Não está nos seus servidores",
   "watchlist.state.server_offline": "Servidor offline",
   "watchlist.empty.list": "A sua lista para ver está vazia",
   "watchlist.empty.filtered": "Nenhum resultado para estes filtros",
