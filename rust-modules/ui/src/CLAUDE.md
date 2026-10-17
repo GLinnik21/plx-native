@@ -524,9 +524,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   capsule. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
-  `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) still turns on the sharp band copy
-  and its `backdrop::RimCache`; no menu takes that path any more, and the cache stays for any glass
-  that does. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
+  `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
+  copy; no menu takes that path any more. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
   `Painter::backdrop_blur` out of every file except the chrome list — no popover and no screen
   names the blur path — and pins the scope: the menu files name `Ground::Menu`, the sheet files
   `Ground::Sheet`, and none names the other.
