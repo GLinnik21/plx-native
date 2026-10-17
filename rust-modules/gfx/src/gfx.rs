@@ -6036,6 +6036,18 @@ pub fn draw_blur_backdrop(
 /// Returns whether the material was handled, a culled or `drawmask`ed quad included (as
 /// [`draw_field_panel`] answers). `false` — no glass program, no ground, a video-plane frame —
 /// asks the caller for its field ground.
+/// `u_dim_field` for a frozen glass whose body samples `ground` and whose dim's ink is `dim_tex`
+/// times its tint (`0` = a flat ink). A menu's dim is the latched underlay field
+/// (`underlay::Role::Dim`) and its ground is the same field, both read at the screen point
+/// `v_cuv`, so the dim's texel is the body's: mode 2 reuses it instead of fetching it again.
+fn frozen_dim_field(ground: c_uint, dim_tex: c_uint) -> f32 {
+    match dim_tex {
+        0 => 0.0,
+        t if t == ground => 2.0,
+        _ => 1.0,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw_glass_frozen(
     x: f32,
@@ -6071,8 +6083,9 @@ pub fn draw_glass_frozen(
         match dim {
             Some(d) if d.tint[3] > 0.0 => {
                 glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
-                glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
-                if d.tex != 0 {
+                let mode = frozen_dim_field(ground, d.tex);
+                glUniform1f(GL_DIM_FIELD, mode);
+                if mode == 1.0 {
                     glUniform4f(GL_DIM_UV, 1.0, 1.0, 0.0, 0.0);
                     glActiveTexture(GL_TEXTURE3);
                     glBindTexture(GL_TEXTURE_2D, d.tex);
@@ -6973,6 +6986,41 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// **A frozen menu glass reads its ground ONCE per fragment, dim included.** The modal dim's
+    /// ink on a menu is the latched underlay field times a weight (`underlay::Role::Dim`), and the
+    /// glass's body is that same field (`UnderlayField::ground_tex`), both read at the screen point
+    /// `v_cuv` — so the dim's texel IS the ground's texel and a second `texture2D` of the same
+    /// texture at the same UV is pure cost (~144k interior fragments of a hold menu, plus the rim's
+    /// two). Mode 2 says so; another field keeps its own fetch (mode 1); a flat ink none (0). Red on
+    /// the build that set 1 for every field ink.
+    #[test]
+    fn a_frozen_glass_reuses_its_ground_texel_for_a_dim_of_the_same_field() {
+        assert_eq!(frozen_dim_field(5, 5), 2.0, "dim on the ground's own field: reuse the texel");
+        assert_eq!(frozen_dim_field(5, 7), 1.0, "a different field keeps its own fetch");
+        assert_eq!(frozen_dim_field(5, 0), 0.0, "a flat ink fetches nothing");
+        let code = shader_code(FS_GLASS);
+        assert!(code.contains("u_dim_field > 1.5"), "the shader must carry the reuse mode");
+        let fetches = code.matches("texture2D(u_dim_tex").count();
+        assert_eq!(fetches, 1, "one dim-field fetch site, behind mode 1");
+        let sharp = code.lines().find(|l| l.contains("u_dim_sharp > 0.0")).expect("the sharp dim");
+        assert!(sharp.contains("dimRGB(sharp") && sharp.contains(", g)"), "the sharp dim reuses the body's texel: {sharp}");
+    }
+
+    /// **The hairline specular costs nothing where it is off.** `u_spec.w` is its strength and both
+    /// shipped glass rims that reach the edge path most (`Menu`, `Standing`) set it to 0, yet the
+    /// band ran `pow` and two `smoothstep`s per rim fragment to multiply by that 0. A uniform branch
+    /// is coherent across every fragment, so the guard is exact and free. Red on the unguarded
+    /// shader.
+    #[test]
+    fn the_glass_hairline_specular_is_skipped_when_its_strength_is_zero() {
+        assert_eq!(GlassRim::Menu.params().2[3], 0.0);
+        let code = shader_code(FS_GLASS);
+        let guard = code.find("if (u_spec.w > 0.0)").expect("the spec guard");
+        let pow = code.find("pow(abs(dot(nrm, u_spec.xy))").expect("the lobe");
+        let hair = code.find("float hair").expect("the hairline");
+        assert!(guard < hair && guard < pow, "the guard must precede the hairline and lobe");
     }
 
     /// The ambient program is drawn over more pixels than any other in the app — the hero's
@@ -8443,6 +8491,42 @@ mod shadow_band_tests {
 
     /// Blur larger than the box, tiny boxes, and an occluder pushed off the quad all fall back to
     /// the whole quad or to well-formed bands.
+    /// **The cut's box pre-test only skips work, never a decision.** `fs_shadow.frag` evaluates the
+    /// occluder's rounded `sdBox` only for a fragment inside the occluder's bounding box: outside it,
+    /// a component of `q` is >= the corner radius, so `sdBox >= 0` and the fragment is kept anyway.
+    /// Graded on the replica over every case and a dense grid, and the shader must run the box test
+    /// BEFORE the SDF it skips. Red on the build whose cut ran `sdBox` on every band fragment (most
+    /// of them far outside the panel).
+    #[test]
+    fn the_cuts_box_pretest_is_exact_and_runs_first() {
+        let code: String = super::FS_SHADOW
+            .to_str()
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cut = code.find("if (u_cut >= 0.0)").expect("the cut branch");
+        let tail = &code[cut..];
+        let sdf = tail.find("sdBox(pq").expect("the cut's SDF");
+        let boxed = tail.find("all(lessThan(abs(pq), hsz))");
+        assert!(boxed.is_some_and(|b| b < sdf), "the bounding-box test must guard the cut's sdBox");
+        for (w, h, r, blur, off, cut) in cases().into_iter().filter(|c| c.5 >= 0.0) {
+            let quad = quad_of(w, h, blur);
+            let hsz = [(quad[2] * 0.5 - blur).max(0.0), (quad[3] * 0.5 - blur).max(0.0)];
+            let (cx, cy) = (quad[0] + quad[2] * 0.5, quad[1] + quad[3] * 0.5);
+            for i in 0..=96 {
+                for j in 0..=96 {
+                    let pos = [quad[0] + quad[2] * i as f32 / 96.0, quad[1] + quad[3] * j as f32 / 96.0];
+                    let pq = [pos[0] - cx, pos[1] - cy + off];
+                    if !(pq[0].abs() < hsz[0] && pq[1].abs() < hsz[1]) {
+                        assert!(!discards(quad, blur, r, off, cut, pos), "{w}x{h} r{r} cut{cut}: {pos:?} outside the box is discarded");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn shadow_bands_degenerate_inputs_fall_back() {
         let q = [10.0, 10.0, 40.0, 30.0];

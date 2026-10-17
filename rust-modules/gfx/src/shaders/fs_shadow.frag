@@ -32,7 +32,12 @@ void main(){
   highp vec2 hsz = max(u_size*0.5 - vec2(u_blur), vec2(0.0));
   highp vec2 pq = p - vec2(0.0, -u_off);
   if (u_cut >= 0.0) {
-    if (sdBox(pq, hsz, min(u_cut, min(hsz.x, hsz.y))) < 0.0) discard;
+    // The rounded SDF only inside the occluder's bounding box: outside it a component of `q` is
+    // >= the corner radius, so `sdBox >= 0` and the fragment is kept anyway. Most band fragments
+    // lie there, and skip one highp `length` each (`gfx::shadow_band_tests` grades the exactness).
+    if (all(lessThan(abs(pq), hsz))) {
+      if (sdBox(pq, hsz, min(u_cut, min(hsz.x, hsz.y))) < 0.0) discard;
+    }
   } else if (all(lessThan(abs(pq), hsz - vec2(u_radius + 1.0)))) {
     discard;
   }
