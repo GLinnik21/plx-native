@@ -166,6 +166,51 @@ fn the_strip_press_mounts_the_page_and_the_strip_carries_the_bookmark() {
         "the bookmark sits before Search");
 }
 
+/// **The tab's arrival seats in the page, not on the strip.** The page mounts empty (its rows are
+/// fed after it), so the mint's group 0 has nothing to seat; the fallback must take the page's own
+/// header, never the strip's left end (the account chip, where it used to land).
+#[test]
+fn the_tab_arrival_seats_in_the_page_not_on_the_strip() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let page = d.nav.top_page().map(|e| e.id);
+    let seat = d.focus();
+    assert!(seat.is_some_and(|k| Some(k.entry) == page && k.elem < plx_ui::dispatch::STRIP_BASE),
+        "the arrival seats in the page: {seat:?}");
+}
+
+/// **The arrival seat follows the tiles in, while it is still the page's.** Before the rows land the
+/// header's pill holds it; the first landing moves it to the first tile, as the tab mint asked.
+#[test]
+fn the_arrival_seat_moves_to_the_first_tile_when_the_rows_land() {
+    use plx_screens::watchlist::page::PILL_ELEM;
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    assert_eq!(d.focus().map(|k| k.elem), Some(PILL_ELEM), "nothing landed yet: the pill holds the seat");
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(d.focus().map(|k| k.elem), page(&d).elem_at(0), "the rows landed: the first tile holds it");
+}
+
+/// **A move made before the rows land is the reader's.** The landing that follows does not take
+/// focus back to the grid.
+#[test]
+fn a_key_before_the_rows_land_keeps_the_readers_choice() {
+    use plx_machine::machine::Key;
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    super::frame(&mut d, &mut rig, tick(2), super::script_key(Key::Up, tick(2)));
+    super::frame(&mut d, &mut rig, tick(3), vec![]);
+    let chosen = d.focus();
+    assert!(chosen.is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE), "UP from the pill reaches the strip: {chosen:?}");
+    settle(&mut d, &mut rig, 4);
+    assert!(!guids(&d).is_empty(), "the rows landed");
+    assert_eq!(d.focus(), chosen, "the landing left the reader's choice alone");
+}
+
 #[test]
 fn a_mounted_page_opens_the_store_and_is_fed_the_ordered_list() {
     let _serial = plx_base::testlock::serial();

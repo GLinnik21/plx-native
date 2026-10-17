@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use plx_data::watchlist::model::{Kind as WatchKind, ServerMatch, TileState, WatchRow};
 use plx_machine::machine::{
-    Canon, Cx, Edge, Effects, EntryId, FocusKey, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
-    Machine, Tick,
+    Canon, Cx, Delivery, Edge, Effects, Enter, EntryId, FocusKey, FocusTarget, Fx, GroupId, Handled, InputEvent,
+    InputKind, Key, LogicalState, Machine, Tick,
 };
 use plx_machine::present::Provenance;
 use plx_ui::cards::{
@@ -660,6 +660,13 @@ pub struct WatchlistScreen {
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
+    /// The page's own arrival seat, while nobody has chosen another (the screens guide's "a seat
+    /// nobody chose follows the head"): the group it last seated, `None` once the reader acts, the
+    /// page is restored, or the first tile holds it. See [`follow_seat`](Self::follow_seat).
+    seat: Option<Option<GroupId>>,
+    /// Seats this page asked the engine for whose `Enter` has not come back yet: those are the
+    /// page's own, not a new arrival.
+    own_enters: u8,
 }
 
 impl WatchlistScreen {
@@ -701,6 +708,8 @@ impl WatchlistScreen {
             ground_applied: [theme::SURFACE_APP; 4],
             ground_catching_up: false,
             focus: 0,
+            seat: None,
+            own_enters: 0,
         }
     }
 
@@ -933,6 +942,26 @@ impl WatchlistScreen {
         }
     }
 
+    /// **Seat the arrival in the page, and follow it to the grid when the tiles land.** A strip
+    /// tab's mint asks for group 0, the grid, but the page mounts before its rows are fed: with the
+    /// grid empty the engine fell back to the first group it was given, the strip, at its left end
+    /// (the account chip). Search seats its field and the Library its head the same way, through a
+    /// fresh `Enter` addressed to themselves. While the seat is still the page's own, the header's
+    /// pill holds it until the first tiles land, and then the first tile does.
+    fn follow_seat<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let Some(seated) = self.seat else { return };
+        let want = if !self.page.cells.is_empty() { GRID_GROUP } else { HEADER_GROUP };
+        if seated == Some(want) {
+            return;
+        }
+        // The first tile is where the arrival ends: nothing lands above it to follow.
+        self.seat = (want != GRID_GROUP).then_some(Some(want));
+        self.own_enters = self.own_enters.saturating_add(1);
+        fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+            focus: FocusTarget::FirstInGroupAnimated(want),
+        }))));
+    }
+
     /// A non-card element activated, by an `Activate` (a `Bare` element, a pointer) or by a committed
     /// press on it (the strip's `Control` elements): Try again, the Sort & Filter pill, the strip.
     fn activate<H: ContentLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) -> Handled {
@@ -1094,12 +1123,36 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
             Some(StackEvent::Card(_, card)) => Some(card),
             _ => None,
         };
+        // The reader acting at the seat makes it theirs. It must be claimed HERE, on the event: an
+        // OK-down arms a press the dispatcher commits only if focus is still on its key, and this
+        // page's next Tick may run before that commit.
+        if let ScreenEvent::Input(InputEvent { kind, .. }) = ev {
+            if matches!(kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Pointer { .. }
+                | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
+                self.seat = None;
+            }
+        }
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(*t, cx);
+                self.follow_seat(fx);
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
+            ScreenEvent::Enter(enter) => {
+                match enter {
+                    Enter::Fresh { .. } if self.own_enters > 0 => self.own_enters -= 1,
+                    // The container's mint: a page shown for the first time in this visit.
+                    Enter::Fresh { .. } => {
+                        self.seat = Some(None);
+                        self.follow_seat(fx);
+                    }
+                    // Restored (an evicted page coming back): the seat is the reader's.
+                    Enter::Restored => self.seat = None,
+                }
+                fx.invalidate(Provenance::Nav);
+                Handled::Yes
+            }
+            ScreenEvent::Uncover => {
                 fx.invalidate(Provenance::Nav);
                 Handled::Yes
             }

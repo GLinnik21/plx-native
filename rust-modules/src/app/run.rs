@@ -3587,6 +3587,56 @@ mod lifecycle_regression_tests {
         assert_eq!(super::super::words::route_word(&app.route()), "home", "OK on the Home pill leaves the Watchlist");
     }
 
+    /// **A strip tab's arrival seats in the page it opened, on every tab** (the Watchlist seated on
+    /// the account chip). The mint asks for the page's group 0; a page whose content is still
+    /// landing has none yet, and the fallback used to take the first non-empty group in the
+    /// composed order — the strip, which the container lists first — at its left end, the chip.
+    /// Search (its field) and the Library (its content) seat in the page; so must the Watchlist.
+    #[test]
+    fn a_strip_tab_arrival_seats_in_the_page_it_opened() {
+        use plx_machine::machine::{InputEvent, Key, Tick};
+        use plx_ui::widgets::{TAB_KEY_SEARCH, TAB_KEY_WATCHLIST};
+        let _serial = plx_base::testlock::serial();
+        for (tab, route) in [(TAB_KEY_SEARCH, "search"), (TAB_KEY_WATCHLIST, "watchlist")] {
+            let mut app = app();
+            super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+            let mut t = 0u32;
+            let step = |app: &mut App, keys: Vec<InputEvent<u32>>, t: &mut u32| {
+                for n in 0..20 {
+                    *t += 16;
+                    let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+                    fr.now = *t;
+                    let inputs = if n == 0 { keys.clone() } else { vec![] };
+                    super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
+                    content_requests(app, &fr);
+                    loop_requests(app);
+                }
+            };
+            let press = |app: &mut App, key: Key, t: &mut u32| {
+                let keys = super::super::bridge::script_key(key, Tick { ms: *t, dt_us: 16_000 });
+                step(app, keys, t);
+            };
+            let focus = |app: &App| app.pages.focus().map(|k| k.elem);
+            step(&mut app, vec![], &mut t);
+            for _ in 0..4 {
+                if focus(&app).is_some_and(|e| e >= plx_ui::dispatch::STRIP_BASE) { break; }
+                press(&mut app, Key::Up, &mut t);
+            }
+            for _ in 0..app.pages.nav.tabs.strip.len() { press(&mut app, Key::Left, &mut t); }
+            while focus(&app) != Some(tab) {
+                let before = focus(&app);
+                press(&mut app, Key::Right, &mut t);
+                assert_ne!(focus(&app), before, "{tab:#x} is on the strip");
+            }
+            press(&mut app, Key::Ok, &mut t);
+            assert_eq!(super::super::words::route_word(&app.route()), route);
+            let page = app.pages.nav.top_page().map(|e| e.id);
+            let seat = app.pages.focus();
+            assert!(seat.is_some_and(|k| Some(k.entry) == page && k.elem < plx_ui::dispatch::STRIP_BASE),
+                "{route}: the arrival seats in the page, not on the strip: {seat:?}");
+        }
+    }
+
     #[test]
     fn controlled_content_boot_waits_for_the_queued_home_root() {
         use plx_machine::machine::{Fx, MachineId, NavOp};
