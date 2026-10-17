@@ -211,6 +211,48 @@ fn a_key_before_the_rows_land_keeps_the_readers_choice() {
     assert_eq!(d.focus(), chosen, "the landing left the reader's choice alone");
 }
 
+/// **A key that gets in before the page's own seat `Enter` keeps its move.** The page seats its
+/// arrival with a fresh `Enter` addressed to itself (`follow_seat`), queued at the FIFO tail when a
+/// Tick finds the rows landed. When the drain's budget carries that Tick over a frame, the reader's
+/// key of the next frame is queued behind the Tick but AHEAD of the Enter the Tick emits: the key
+/// claims the seat, and the Enter that follows used to seat the first tile anyway, taking the
+/// reader's move back.
+#[test]
+fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
+    use plx_machine::machine::{Delivery, Fx, Key, MachineId, Stamped};
+    use plx_ui::dispatch::{MAX_STEPS_POST, MAX_STEPS_PRE};
+    use plx_ui::screen::ScreenEvent;
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    assert_eq!(d.focus().map(|k| k.elem), Some(plx_screens::watchlist::page::PILL_ELEM),
+        "control: nothing landed yet, the pill holds the page's seat");
+    let inst = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
+    // Land the rows (the page's cells are fed), then spend both budgets of the next frame on
+    // no-op deliveries queued AHEAD of its Tick, so that Tick is carried to the frame after.
+    for _ in 0..3 {
+        rig.watchlist_feed(&mut d);
+        rig.watchlist_for_test().pump();
+    }
+    rig.watchlist_feed(&mut d);
+    assert!(!guids(&d).is_empty(), "control: the rows are in the page before its next Tick");
+    d.absorb((0..MAX_STEPS_PRE + MAX_STEPS_POST + 10).map(|_| Stamped {
+        from: MachineId::Nav,
+        fx: Fx::Deliver(MachineId::Instance(inst), Delivery::Screen(ScreenEvent::Uncover)),
+    }).collect());
+    let (_, r) = super::frame(&mut d, &mut rig, tick(2), vec![]);
+    assert!(r.carried > 0, "control: the frame's Tick is carried over");
+    // The reader's key meets the carried Tick, which now emits the seat Enter behind the key.
+    super::frame(&mut d, &mut rig, tick(3), super::script_key(Key::Up, tick(3)));
+    for i in 4..8 {
+        super::frame(&mut d, &mut rig, tick(i), vec![]);
+    }
+    assert!(!guids(&d).is_empty(), "the rows landed");
+    let held = d.focus();
+    assert!(held.is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE),
+        "UP from the pill reached the strip and the page's late seat Enter left it there: {held:?}");
+}
+
 #[test]
 fn a_mounted_page_opens_the_store_and_is_fed_the_ordered_list() {
     let _serial = plx_base::testlock::serial();

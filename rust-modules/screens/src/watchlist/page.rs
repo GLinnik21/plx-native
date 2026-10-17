@@ -667,6 +667,12 @@ pub struct WatchlistScreen {
     /// Seats this page asked the engine for whose `Enter` has not come back yet: those are the
     /// page's own, not a new arrival.
     own_enters: u8,
+    /// How many of the [`own_enters`](Self::own_enters) still in flight were queued BEFORE the
+    /// reader acted (the oldest ones: the dispatcher's queue is FIFO). A drain budget can carry a
+    /// seat `Enter` past the reader's next key, and the engine seats an `Enter` whatever the page
+    /// answers, so the page cannot refuse it: it puts the reader's focus back when it arrives
+    /// (see [`step`](Machine::step)).
+    stale_enters: u8,
 }
 
 impl WatchlistScreen {
@@ -710,6 +716,7 @@ impl WatchlistScreen {
             focus: 0,
             seat: None,
             own_enters: 0,
+            stale_enters: 0,
         }
     }
 
@@ -1130,6 +1137,8 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
             if matches!(kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Pointer { .. }
                 | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
                 self.seat = None;
+                // Whatever seat Enters are still queued were asked for before this act.
+                self.stale_enters = self.own_enters;
             }
         }
         match ev {
@@ -1140,14 +1149,32 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
             }
             ScreenEvent::Enter(enter) => {
                 match enter {
-                    Enter::Fresh { .. } if self.own_enters > 0 => self.own_enters -= 1,
+                    Enter::Fresh { .. } if self.own_enters > 0 => {
+                        self.own_enters -= 1;
+                        if self.stale_enters > 0 {
+                            // The reader acted after this seat was asked for and before it came
+                            // back: the engine is about to seat it over their move. Ask for their
+                            // focus back, as an Enter of the page's own like the seat itself (so a
+                            // key before THAT one is stale in the same way).
+                            self.stale_enters -= 1;
+                            if let Some(held) = cx.focus.current.filter(|key| key.entry == self.page.entry) {
+                                self.own_enters = self.own_enters.saturating_add(1);
+                                fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                                    focus: FocusTarget::Elem(held),
+                                }))));
+                            }
+                        }
+                    }
                     // The container's mint: a page shown for the first time in this visit.
                     Enter::Fresh { .. } => {
                         self.seat = Some(None);
                         self.follow_seat(fx);
                     }
                     // Restored (an evicted page coming back): the seat is the reader's.
-                    Enter::Restored => self.seat = None,
+                    Enter::Restored => {
+                        self.seat = None;
+                        self.stale_enters = self.own_enters;
+                    }
                 }
                 fx.invalidate(Provenance::Nav);
                 Handled::Yes
