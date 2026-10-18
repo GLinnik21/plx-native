@@ -14,7 +14,7 @@
   "settings.trailers.title": "Riproduci i trailer automaticamente",
   "settings.trailers.detail": "Soffermati su un titolo per avviarne il trailer con audio.",
   "settings.resolution.title": "Risoluzione dell’interfaccia",
-  "settings.resolution.detail": "Più bassa è più fluida. Si applica al riavvio.",
+  "settings.resolution.detail": "Più bassa, più fluida. Si applica al riavvio.",
   "settings.resolution.auto": "Automatica",
   "settings.about.title": "Informazioni su PlxNative",
   "settings.about.section": "Informazioni",

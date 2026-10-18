@@ -1302,7 +1302,7 @@ fn is_default_deck_press(mode: &DeckPress) -> bool {
 }
 
 /// The interface resolution is a preference too: a spelling this build does not know is Automatic.
-fn de_soft_ui_resolution<'de, D>(d: D) -> Result<UiResolution, D::Error>
+pub(super) fn de_soft_ui_resolution<'de, D>(d: D) -> Result<UiResolution, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -1313,7 +1313,7 @@ where
 }
 
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_ui_resolution(mode: &UiResolution) -> bool {
+pub(super) fn is_default_ui_resolution(mode: &UiResolution) -> bool {
     *mode == UiResolution::default()
 }
 

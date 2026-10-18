@@ -417,13 +417,12 @@ mod seam_order_tests {
         assert!(load < request && request < window, "session read, then request, then SDL_CreateWindow");
     }
 
-    /// Automatic is the native canvas on every set, and an explicit 1920x1080 is the same canvas:
-    /// neither asks for a smaller window. The other options ask for exactly their size.
+    /// Automatic is the native canvas on every set and asks for no smaller window. The other
+    /// options ask for exactly their size.
     #[test]
     fn the_setting_maps_to_the_requested_window() {
         use plx_plex::plex::session::UiResolution as R;
         assert_eq!(super::drawable_for_setting(R::Auto), None);
-        assert_eq!(super::drawable_for_setting(R::Full1080), None);
         assert_eq!(super::drawable_for_setting(R::Hd900), Some((1600, 900)));
         assert_eq!(super::drawable_for_setting(R::Hd720), Some((1280, 720)));
         assert_eq!(super::drawable_for_setting(R::Sd540), Some((960, 540)));
@@ -433,6 +432,32 @@ mod seam_order_tests {
         let unknown: plx_plex::plex::session::Session =
             serde_json::from_str(r#"{"client_id":"c","ui_resolution":"4320p"}"#).unwrap();
         assert_eq!(super::drawable_for_setting(unknown.ui_resolution()), None);
+        // the retired explicit 1080p reads as Automatic
+        let retired: plx_plex::plex::session::Session =
+            serde_json::from_str(r#"{"client_id":"c","ui_resolution":"1080p"}"#).unwrap();
+        assert_eq!(super::drawable_for_setting(retired.ui_resolution()), None);
+    }
+
+    /// A persisted size the set will not give must never brick launch: a refused smaller window is
+    /// retried ONCE at the native canvas, and a refused native window has nowhere left to fall.
+    #[test]
+    fn a_refused_smaller_window_retries_once_at_the_native_canvas() {
+        assert_eq!(super::window_fallback((1600, 900)), Some((super::SCR_W, super::SCR_H)));
+        assert_eq!(super::window_fallback((960, 540)), Some((super::SCR_W, super::SCR_H)));
+        assert_eq!(super::window_fallback((super::SCR_W, super::SCR_H)), None, "the native canvas has no fallback");
+    }
+
+    /// `construct` frees a half-made window before it retries (a leaked one would keep the display).
+    #[test]
+    fn construct_destroys_a_half_made_window_before_the_retry() {
+        let source = include_str!("boot.rs");
+        let body = source.split_once(concat!("pub(crate) unsafe fn ", "construct(")).expect("construct").1;
+        let create = body.find(concat!("SDL_CreateWindow(", "title")).expect("creates the window");
+        let destroy = body.find(concat!("SDL_DestroyWindow(", "win)")).expect("destroys a half-made window");
+        let retry = body.find(concat!("window_fallback(", "(ww_req")).expect("asks for the fallback size");
+        assert!(create < destroy && destroy < body[create..].find("probe(win)").map(|i| i + create).unwrap(),
+            "the half-made window is destroyed inside the creation loop, before `surface::probe`");
+        assert!(retry < create, "the retry is armed before the first attempt");
     }
 }
 
@@ -552,11 +577,17 @@ fn requested_drawable(session: &plx_plex::plex::session::Session) -> Option<(c_i
     size
 }
 
-/// The window an Interface resolution choice asks for: `None` for Automatic and for an explicit
-/// 1920x1080, which are the same native canvas.
+/// Where to retry when the set refuses a window of size `asked`: the native canvas, unless that is
+/// what was asked, which has nowhere left to fall back to.
+#[cfg(any(not(feature = "hostsim"), test))]
+fn window_fallback(asked: (c_int, c_int)) -> Option<(c_int, c_int)> {
+    (asked != (SCR_W, SCR_H)).then_some((SCR_W, SCR_H))
+}
+
+/// The window an Interface resolution choice asks for: `None` for Automatic, the native canvas.
 #[cfg(any(not(feature = "hostsim"), test))]
 fn drawable_for_setting(chosen: plx_plex::plex::session::UiResolution) -> Option<(c_int, c_int)> {
-    chosen.size().filter(|&(w, h)| (w, h) != (SCR_W, SCR_H))
+    chosen.size()
 }
 
 
@@ -1167,16 +1198,31 @@ pub(crate) unsafe fn construct(
     let window_flags = if crate::dev::framedump::requested() { SDL_WINDOW_FLAGS & !0x2000 } else { SDL_WINDOW_FLAGS };
     #[cfg(not(all(feature = "hostsim", feature = "devtriggers")))]
     let window_flags = SDL_WINDOW_FLAGS;
-    let win = SDL_CreateWindow(title.as_ptr(), wx, wy, ww_req, wh_req, window_flags);
-    if win.is_null() {
-        log("CreateWindow failed");
-        return Err(1);
-    }
-    let ctx = SDL_GL_CreateContext(win);
-    if ctx.is_null() {
-        log("GL ctx failed");
-        return Err(1);
-    }
+    // **A stored size the set will not give must never brick launch.** If the window or its GL
+    // context is refused at a smaller size the owner chose, free whatever was made and retry ONCE
+    // at the native canvas; only a refused native window is fatal. On a desktop the request is the
+    // desktop's own size, not a setting, so there is no retry there.
+    #[cfg(not(feature = "hostsim"))]
+    let mut fallback = window_fallback((ww_req, wh_req));
+    #[cfg(feature = "hostsim")]
+    let mut fallback: Option<(c_int, c_int)> = None;
+    let (mut ww_try, mut wh_try) = (ww_req, wh_req);
+    let win = loop {
+        let win = SDL_CreateWindow(title.as_ptr(), wx, wy, ww_try, wh_try, window_flags);
+        if win.is_null() {
+            log(&format!("CreateWindow failed at {ww_try}x{wh_try}"));
+        } else {
+            let ctx = SDL_GL_CreateContext(win);
+            if !ctx.is_null() {
+                break win;
+            }
+            log(&format!("GL ctx failed at {ww_try}x{wh_try}"));
+            SDL_DestroyWindow(win);
+        }
+        let Some((w, h)) = fallback.take() else { return Err(1); };
+        log(&format!("surface: retrying the window at the native {w}x{h}"));
+        (ww_try, wh_try) = (w, h);
+    };
     plx_base::surface::probe(win);
     // vsync on → the frame rate locks to the panel refresh. `/tmp/plxnative-novsync` uncaps it so
     // `fps=` reports the true GPU render rate. WSLg's X11/GLX swap accepts interval 1 without

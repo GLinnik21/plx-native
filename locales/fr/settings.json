@@ -14,7 +14,7 @@
   "settings.trailers.title": "Lire les bandes-annonces automatiquement",
   "settings.trailers.detail": "Lance la bande-annonce avec le son après quelques instants.",
   "settings.resolution.title": "Résolution de l’interface",
-  "settings.resolution.detail": "Plus basse, plus fluide. S’applique au redémarrage.",
+  "settings.resolution.detail": "Plus basse, plus fluide. Après redémarrage.",
   "settings.resolution.auto": "Automatique",
   "settings.about.title": "À propos de PlxNative",
   "settings.about.section": "À propos",

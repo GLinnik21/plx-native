@@ -51,7 +51,7 @@ use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{theme, Painter, Rect};
 
-use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, SettingsPage, ALERT_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, PickerKind, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -990,8 +990,6 @@ enum Action {
     Door,
     AutoSignIn,
     TrailerAutoplay,
-    /// The Interface resolution: one press selects the next option, applied at the next launch.
-    Resolution,
     /// A server's "connect without encryption" switch.
     Plaintext(ServerMachineId),
 }
@@ -1008,8 +1006,6 @@ pub struct RootPage {
     /// and the receipt of its `route::choose` (Confirm) write. A `false` (or dropped) receipt means
     /// the pick was not saved, and the row goes back to the stored value.
     pending_trailer: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
-    /// The Interface resolution picked here and not yet answered: the value the row shows meanwhile.
-    pending_resolution: Option<(UiResolution, plx_base::storage_worker::TypedTicket<bool>)>,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1092,15 +1088,6 @@ struct RootInputs {
 /// [`RootInputs`]. `RootPage::rebuild` gathers the inputs and calls this; the text-fit tests
 /// (`settings_text_fit_tests.rs`) call it directly, over every `RootInputs` combination worth
 /// checking, without a real signed-in session. Reordering the page is moving a line here.
-/// What the Interface resolution row reads. The sizes are numbers, not words, so only Automatic
-/// (the native 1920x1080 canvas on every set) is translated.
-fn resolution_label(mode: UiResolution) -> String {
-    match mode.size() {
-        None => plx_platform::i18n::msg::settings_resolution_auto().to_string(),
-        Some((w, h)) => format!("{w}x{h}"),
-    }
-}
-
 fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
     let signed_in = inputs.signed_in;
     // Order: Libraries, Playback (player experience only), System (Language, Automatically Sign
@@ -1167,14 +1154,16 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         )
         // Signed in only, like the switches above: the signed-out root is the sign-in path's own
         // short list. The value is install-wide and survives sign-out; signing in again shows the row.
+        // It opens its picker like every other multi-value setting; the pick applies at the next launch.
         .item_if(
             signed_in,
             RootId::Resolution,
-            RowKind::Button,
-            Action::Resolution,
+            RowKind::Nav(SettingsPage::Picker(PickerKind::UiResolution)),
+            Action::Door,
             Row::new(plx_platform::i18n::msg::settings_resolution_title())
                 .detail(plx_platform::i18n::msg::settings_resolution_detail())
-                .value(resolution_label(inputs.resolution)),
+                .value(super::preferences::resolution_label(inputs.resolution))
+                .chevron(true),
         );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
@@ -1234,7 +1223,7 @@ impl RootPage {
             form: FormTable::new(super::registry::BAND),
             session_watch: Default::default(),
             session_snapshot: Default::default(),
-            pending_auto: None, pending_trailer: None, pending_resolution: None,
+            pending_auto: None, pending_trailer: None,
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
             alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
@@ -1265,7 +1254,7 @@ impl RootPage {
             plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
                 sess, &plx_plex::plex::session::current_seat())
         }, |(value, _)| *value);
-        let resolution = self.pending_resolution.as_ref().map_or_else(|| sess.ui_resolution(), |(value, _)| *value);
+        let resolution = sess.ui_resolution();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
@@ -1380,16 +1369,6 @@ impl RootPage {
                 self.pending_trailer = Some((on, receipt));
                 self.rebuild(directory);
             }
-            Action::Resolution => {
-                let next = self.pending_resolution.as_ref()
-                    .map_or_else(|| self.session_snapshot.ui_resolution(), |(value, _)| *value)
-                    .next();
-                if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
-                    (current.ui_resolution() != next).then(|| current.with_ui_resolution(next))) {
-                    self.pending_resolution = Some((next, ticket));
-                }
-                self.rebuild(directory);
-            }
             Action::Plaintext(ServerMachineId(machine)) => {
                 use plx_plex::plex::session::PlaintextChoice;
                 let Some(on) = self.plaintext_rows.iter().find(|(m, _)| *m == machine).map(|(_, on)| *on) else {
@@ -1477,14 +1456,6 @@ impl Machine<InnerHost> for RootPage {
                     if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
                         self.session_snapshot = snapshot;
                         self.pending_trailer = None;
-                        landed = true;
-                    }
-                }
-                if self.pending_resolution.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty))) {
-                    if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
-                        self.session_snapshot = snapshot;
-                        self.pending_resolution = None;
                         landed = true;
                     }
                 }

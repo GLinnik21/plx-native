@@ -14,7 +14,7 @@
   "settings.trailers.title": "Tráileres automáticos",
   "settings.trailers.detail": "Reproduce el tráiler con sonido tras un momento.",
   "settings.resolution.title": "Resolución de la interfaz",
-  "settings.resolution.detail": "Menor es más fluida. Se aplica al reiniciar.",
+  "settings.resolution.detail": "Más baja, más fluida. Se aplica al reiniciar.",
   "settings.resolution.auto": "Automática",
   "settings.about.title": "Acerca de PlxNative",
   "settings.about.section": "Acerca de",

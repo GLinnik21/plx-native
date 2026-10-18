@@ -194,7 +194,7 @@ fn every_field_reports_the_page_whose_list_shows_it() {
         let inputs = FieldListInputs { kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
             prefs: Some(&prefs), busy: false, show_retry: false, read_only: false };
         for &field in fields_of(&inputs) {
-            assert_eq!(field.kind(), kind, "{field:?} is listed by {kind:?}");
+            assert_eq!(field.kind(), Some(kind), "{field:?} is listed by {kind:?}");
         }
     }
     let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
