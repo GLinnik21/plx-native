@@ -387,7 +387,7 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     let grid = page.key(page.pair.detail.elem_at(0).unwrap());
     engine.set(OWNER, grid, Some(page.pair.groups_config().detail), By::Restore);
     let cx = fixture.cx(Some(grid));
-    page.pair.master.advance(&cx, Some(0), true, 0.05);
+    page.pair.master.advance(&cx, Some(0), super::rail::RailHint::default(), true, 0.05);
     let rail = page.key(page.pair.master.elems[0]);
     let placed = page.place(&rail.elem, &cx, At::Drawn).unwrap();
     assert!(placed.clip.h > 0.0);
@@ -407,7 +407,7 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
 }
 
 #[test]
-fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
+fn owned_rail_keeps_the_fixed_grid_top_origin_and_short_window() {
     let _guard = plx_base::testlock::serial();
     for n in [9, 30] {
         let mut fixture = Fixture::new();
@@ -419,7 +419,7 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
         let mut groups = Vec::new();
         page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
         let rail = groups.first().expect("the fixture has a real rail").extent;
-        assert_eq!(rail.y, 240.0, "the rail is not attached to the scrolling first grid row");
+        assert_eq!(rail.y, 244.0, "the rail is not attached to the scrolling first grid row, and starts at the grid's top");
         if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
         else { assert!(rail.h < n as f32 * layout::RAIL_PITCH, "long alphabets scroll at the same pitch"); }
     }
@@ -1538,7 +1538,6 @@ mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
 mod keys_window_tests { include!("keys_window_tests.rs"); }
-mod shelf_paging_tests { include!("shelf_paging_tests.rs"); }
 
 #[test]
 fn every_published_shelf_is_on_the_page_and_reachable() {

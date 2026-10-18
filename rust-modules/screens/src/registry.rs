@@ -2070,16 +2070,18 @@ where
                 Box::new(page)
             }
             // CONTRACT FREEZE: the same screen in another `Listing`; P5 / P6 build what they list.
-            AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => {
+            AppArg::LibraryRecommended { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
-                let listing = match arg {
-                    AppArg::LibraryCollections { .. } => crate::library::Listing::Collections,
-                    _ => crate::library::Listing::Recommended,
-                };
-                // P5: Collections builds its grid here; P6: Recommended builds its hubs (both mount the
-                // library's grid under their header until then).
-                Box::new(crate::library::LibraryScreen::new(entry, id, kind).without_shelves().with_listing(listing))
+                let mut page = crate::library::RecommendedScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            // CONTRACT FREEZE: P5 builds the Collections grid here (it mounts the library's grid under its header until then).
+            AppArg::LibraryCollections { .. } => {
+                let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
+                    .unwrap_or(plx_data::stores::browse::SecKind::Movie);
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).without_shelves().with_listing(crate::library::Listing::Collections))
             }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);

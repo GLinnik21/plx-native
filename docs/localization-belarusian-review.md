@@ -145,3 +145,17 @@ existing catalog wording.
 | `sort_filter` | Сартаванне і фільтр |
 | `filtered_of` | {shown} з {total} |
 | `show` | Паказваць |
+
+`locales/be/collections_page.json` and `locales/be/recommended_page.json` (unchecked in skarnik.by / verbum.by):
+
+| Key | String |
+| --- | --- |
+| `collections_page.empty` | У бібліятэцы {library} няма калекцый |
+| `collections_page.smart` | Разумная калекцыя |
+| `recommended_page.empty` | Для гэтай бібліятэкі пакуль няма рэкамендацый |
+
+`locales/be/scroll_chrome.json`:
+
+| Key | String |
+| --- | --- |
+| `scroll_chrome.capsule` | {name} {count} |

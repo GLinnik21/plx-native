@@ -256,7 +256,9 @@ impl Layout {
         let top = if row == 0 {
             if self.shelf_run == 0.0 { 0.0 } else { self.grid_block_top() }
         } else { self.row_top(row) };
-        top.clamp(0.0, self.max_scroll())
+        let scroll = top.clamp(0.0, self.max_scroll());
+        // P7: a row never rests above the capsule's clearance.
+        super::scroll_chrome::settle_scroll(scroll, CONTENT_TOP + top - scroll)
     }
 
     pub(super) fn shelf_reveal(&self, run: &ShelfRun, shelf: usize) -> f32 {
@@ -331,7 +333,10 @@ impl Layout {
 
 /// The original fixed rail band: it never follows the scrolling first grid row.
 pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
-    const TOP: f32 = 232.0 + 8.0;
+    // The rail's top follows the grid's top (the first tile row). The board draws the track at
+    // x 1822..1866; that leaves the 5% safe area (`inside_safe`, right edge 1824), which the shipped
+    // layout keeps, so the track stays flush with the safe edge.
+    const TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
     let visible = ((SCR_H - MARGIN_Y - TOP - RAIL_CAP_PAD) / RAIL_PITCH).floor().max(1.0);
     let height = visible.min(n as f32) * RAIL_PITCH;
     (TOP, SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5, height, (n as f32 * RAIL_PITCH - height).max(0.0))

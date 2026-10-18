@@ -3839,6 +3839,13 @@ impl PageGround {
         self.wash.draw(p, r);
     }
 
+    /// The ground's exact colour at (`x`, `y`) of `r`: what an edge fade or a floating chrome's
+    /// tint lays over the page so it joins the ground instead of cutting it (the flat ground
+    /// answers the app surface, which is also what the frame clears to).
+    pub fn sample(&self, r: Rect, x: f32, y: f32) -> [f32; 3] {
+        self.wash.sample(r, x, y)
+    }
+
     /// Has the ground resolved to the app's own surface? The screens' own tests ask this; the draw
     /// path asks it for itself.
     #[cfg(any(test, feature = "test-support"))]

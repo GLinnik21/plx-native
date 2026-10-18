@@ -112,6 +112,7 @@ impl LibraryScreen {
             self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         });
         let layout = self.pair.layout();
+        let layout_pitch = self.layout.grid_pitch();
         let alpha = self.page_fade.alpha() * self.grid_fade.alpha();
         layers(|layer| match layer {
             Layer::Grid => plx_ui::profile::phase("lb.grid", || {
@@ -128,6 +129,18 @@ impl LibraryScreen {
                 f.page_alpha = parent;
             }),
         });
+        // P7: the page's own top edge once the chrome has tucked away.
+        let tuck = super::scroll_chrome::tuck(self.scroll.pos, layout_pitch);
+        if tuck > 0.0 {
+            let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
+            let p = f.painter.alpha(f.page_alpha);
+            plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
+            if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
+                let text = super::scroll_chrome::capsule_text(&name, H::listing(f.cx).total(),
+                    plx_ui::scroll_capsule::label_budget(), |s| f.measure.width_str(s, theme::size::BODY, true));
+                plx_ui::scroll_capsule::draw(p, &text, ground, f.underlay, tuck);
+            }
+        }
         // A standing note, never a target: over the page, records no stop and no hit rect.
         self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);
         self.plaintext_alert.draw(f, self.entry);

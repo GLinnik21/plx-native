@@ -1564,6 +1564,7 @@ where
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
                         let _chrome_layer = backdrop::layer(Z::CHROME, true);
+                        let navigation = navigation.tucked(inst.screen.chrome_tuck());
                         backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
                     }
                 }

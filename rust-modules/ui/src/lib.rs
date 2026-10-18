@@ -75,10 +75,12 @@ pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/ret
 pub mod page_stack; // the drill-in page stack Tracks and More share
 pub mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
+pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod page_header; // the library/collections page header row (CONTRACT FREEZE: P1 refines)
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
+pub mod scroll_capsule; // TMP
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
