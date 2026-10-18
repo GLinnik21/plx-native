@@ -166,8 +166,8 @@ mod tests {
 
         assert!(state.set_library_type(LibraryType::Primary));
         assert_eq!(state.states[0].query_filters(SecKind::Movie),
-            vec![("unwatched".into(), "1".into())],
-            "the films' Unwatched switch comes back with them");
+            vec![("unwatched".into(), "1".into()), ("genre".into(), "7".into())],
+            "the films' Unwatched switch and genre come back with them (the Collections loan gives the grid's view back)");
     }
 
     #[test]
