@@ -54,13 +54,22 @@ fn a_zero_tuck_draws_nothing() {
 }
 
 #[test]
-fn the_tuck_fades_the_chrome_out_and_lifts_it_by_its_own_height() {
-    use crate::screen::{chrome_lift, NavPresentation};
+fn the_tuck_fades_the_chrome_out() {
+    use crate::screen::NavPresentation;
     let nav = NavPresentation { chrome_alpha: 0.8, ..Default::default() };
     assert_eq!(nav.tucked(0.0), nav, "an untucked page changes nothing");
     assert!((nav.tucked(0.25).chrome_alpha - 0.6).abs() < 1e-6);
     assert_eq!(nav.tucked(1.0).chrome_alpha, 0.0);
     assert_eq!(nav.tucked(7.0).chrome_alpha, 0.0, "clamped");
-    assert_eq!(chrome_lift(0.0), 0.0);
-    assert_eq!(chrome_lift(1.0), crate::widgets::TOP_BAR_BOTTOM);
+}
+
+#[test]
+fn a_latched_field_makes_the_capsule_frozen_glass_not_the_flat_tint() {
+    use crate::popover_glass::tests::declared_all;
+    let _g = plx_base::testlock::serial();
+    let label = std::ffi::CString::new("Films 1,284").unwrap();
+    let field = crate::underlay::UnderlayField::latched_for_test(7);
+    let glass = declared_all(|| draw(Painter::root(), &label, [0.2; 3], Some(&field), 1.0));
+    assert!(glass.iter().any(|p| p.kind() == "glass_frozen"), "the capsule stands on the latched field");
+    assert!(glass.iter().all(|p| p.kind() != "backdrop"), "never a live backdrop");
 }

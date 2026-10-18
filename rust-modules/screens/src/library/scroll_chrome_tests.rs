@@ -90,3 +90,17 @@ fn every_grid_row_rests_clear_of_the_capsule() {
         assert!(rest >= SETTLE_MIN_Y - 0.01 || lay.row_reveal(row) == 0.0, "row {row} rests at {rest}");
     }
 }
+
+#[test]
+fn the_capsule_field_latches_only_when_tucked() {
+    let mut screen = crate::library::LibraryScreen::new(
+        crate::library::EntryId(1),
+        crate::library::InstanceId(1),
+        plx_data::stores::browse::SecKind::Movie,
+    );
+    assert!(!screen.capsule_field.is_latched());
+    screen.latch_capsule_field(0.0);
+    assert!(!screen.capsule_field.is_latched(), "an untucked page latches nothing");
+    screen.latch_capsule_field(1.0);
+    assert!(screen.capsule_field.is_latched(), "a tucked page stands the capsule on its own frozen ground");
+}

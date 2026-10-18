@@ -244,6 +244,10 @@ pub struct LibraryScreen {
     // Paint-only state: ambient colours choose neither focus nor activation.
     ground: plx_ui::widgets::PageGround,
     ground_seeded: bool,
+    /// The scroll capsule's FROZEN ground: the page ground latched once per scrolled stay, the
+    /// field `popover_glass::draw` stands on (a page's own frame carries no `DrawFrame::underlay`).
+    /// A GL texture, not logical state.
+    capsule_field: plx_ui::underlay::UnderlayField,
     /// The failed source's server, when discovery offers the question for it
     /// (`plex::grant::offers`) — the grant table's, not logical state.
     plaintext: super::plaintext_question::OfferWatch,
@@ -303,6 +307,7 @@ impl LibraryScreen {
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false,
+            capsule_field: plx_ui::underlay::UnderlayField::new(),
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),

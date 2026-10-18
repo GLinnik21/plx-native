@@ -6,8 +6,10 @@
 //! **Frozen ground, never live blur** (owner policy, 2026-10-17; the build spec's "live blur 24 px"
 //! is NOT built). The capsule wears the same glass every menu wears
 //! ([`popover_glass::draw`]: the latched underlay field plus the host snapshot, no backdrop entry,
-//! no blur pass) whenever the frame carries a latched field. A page's own frame carries none
-//! (`DrawFrame::underlay` is `None` outside a modal stack), so on that frame the capsule is the
+//! no blur pass) whenever it is handed a latched field. A page's own frame carries none
+//! (`DrawFrame::underlay` is `None` outside a modal stack), so the Library hands the capsule its
+//! OWN field, latched once per scrolled stay from the page ground
+//! (`LibraryScreen::latch_capsule_field`). With no field at all the capsule is the
 //! flat form of the same material: the page's ground colour at [`GROUND_TINT`] opacity with the
 //! menu glass's rim. Either way it declares no live-glass surface and costs one quad.
 //!
