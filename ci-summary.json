@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T01:05:21Z",
+ "generated": "2026-10-18T01:08:37Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -142,17 +142,17 @@
   },
   {
    "change30_pct": -56.8,
-   "change7_pct": 33.0,
+   "change7_pct": 32.8,
    "d30": 1007.0,
-   "delta30": -571.5,
-   "delta7": 108.0,
+   "delta30": -572.0,
+   "delta7": 107.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 120,
-   "now": 435.5,
+   "now": 435,
    "prev7": 327.5,
    "shown": true,
    "state": "worse",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 123.1,
-   "change7_pct": 0.9,
+   "change30_pct": 124.0,
+   "change7_pct": 1.3,
    "d30": 104,
-   "delta30": 128.0,
-   "delta7": 2.0,
+   "delta30": 129,
+   "delta7": 3,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 107,
-   "now": 232.0,
+   "now": 233,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -375,15 +375,15 @@
    "change30_pct": 151.4,
    "change7_pct": -45.5,
    "d30": 74,
-   "delta30": 112.0,
-   "delta7": -155.0,
+   "delta30": 112,
+   "delta7": -155,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 107,
-   "now": 186.0,
+   "now": 186,
    "prev7": 341,
    "shown": true,
    "state": "better",
@@ -439,14 +439,14 @@
    "change7_pct": 4.8,
    "d30": null,
    "delta30": null,
-   "delta7": 7.0,
+   "delta7": 7,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 89,
-   "now": 153.0,
+   "now": 153,
    "prev7": 146,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 6.2,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 1.0,
-   "delta7": 0.0,
+   "delta30": 1,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 107,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 215.2,
    "commits": [
     {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
-    {
      "pr": 795,
      "sha": "559d5a698",
      "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
@@ -657,6 +652,11 @@
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
+    },
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 54.7,
@@ -670,11 +670,6 @@
    "change_pct": 97.6,
    "commits": [
     {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
-    {
      "pr": 795,
      "sha": "559d5a698",
      "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
@@ -718,6 +713,11 @@
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
+    },
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 209.0,
@@ -731,11 +731,6 @@
    "change_pct": 73.1,
    "commits": [
     {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
-    {
      "pr": 795,
      "sha": "559d5a698",
      "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
@@ -779,6 +774,11 @@
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
+    },
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 266.0,
@@ -790,7 +790,13 @@
   },
   {
    "change_pct": 40.1,
-   "commits": [],
+   "commits": [
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
+    }
+   ],
    "from": 345,
    "id": "pr_wait",
    "label": "PR CI wait",
@@ -801,11 +807,6 @@
   {
    "change_pct": 38.2,
    "commits": [
-    {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
     {
      "pr": 795,
      "sha": "559d5a698",
@@ -850,6 +851,11 @@
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
+    },
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 1026.6,
@@ -863,11 +869,6 @@
    "change_pct": 38.2,
    "commits": [
     {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
-    {
      "pr": 795,
      "sha": "559d5a698",
      "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
@@ -911,6 +912,11 @@
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
+    },
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 1025.0,
@@ -921,65 +927,20 @@
    "to": 1417.0
   },
   {
-   "change_pct": 33.0,
+   "change_pct": 32.8,
    "commits": [
     {
-     "pr": 804,
-     "sha": "a3e2dc6a5",
-     "title": "Draw emoji in titles and library names"
-    },
-    {
-     "pr": 795,
-     "sha": "559d5a698",
-     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
-    },
-    {
-     "pr": 801,
-     "sha": "646859f9c",
-     "title": "i18n: language registry \u2014 a locales/ directory is a language or a build error"
-    },
-    {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
-     "pr": 802,
-     "sha": "635b51a2c",
-     "title": "Add European Portuguese (pt-PT) language"
-    },
-    {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
-    {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
-     "pr": 820,
-     "sha": "0b0b22092",
-     "title": "Add German (de) as a UI language"
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
     }
    ],
    "from": 327.5,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-10-16",
+   "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 435.5
+   "to": 435
   }
  ],
  "schema": 2,
