@@ -1195,7 +1195,21 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
+    /// How many collections `section` holds, from the `type=18` `Size:0` probe of
+    /// `/library/sections/{id}/all` (`totalSize`). `None` = not known yet; `Some(Err(Forbidden))` =
+    /// the server answered HTTP 403 (the Collections control is then hidden); `Some(Ok(0))` = none.
+    ///
+    /// CONTRACT FREEZE: a provided method so every existing host compiles; P2 implements it on
+    /// `AppHost` (`src/app/bridge.rs`) over the probe, and P4 reads it.
+    fn collections_count(_cx: &Cx<'_, Self>, _section: u32) -> Option<Result<u32, Forbidden>> {
+        None
+    }
 }
+
+/// The server refused the collections listing (HTTP 403): the answer is final for this session, so
+/// it is kept distinct from "none yet" and from a count of zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Forbidden;
 
 /// A host carrying the retained Browse directory needed by Chrome and the Settings family.
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
@@ -1696,6 +1710,15 @@ pub enum AppArg {
     /// WHICH library is the `browse` store's business, not this argument's, which is why it
     /// carries nothing (the grid is re-ENTERED, never re-queried).
     Library,
+    /// The library's COLLECTIONS page ("Films > Collections"), pushed over [`Self::Library`] by the
+    /// header's Collections control: the same `LibraryScreen` in `Listing::Collections` mode (type
+    /// 18). CONTRACT FREEZE: P4 declares and routes it; P5 builds the page. Dev boot target
+    /// `library-collections`.
+    LibraryCollections { section: u32 },
+    /// The library's RECOMMENDED page: its server hubs in admin order, pushed over
+    /// [`Self::Library`] by the header's Recommended control (`Listing::Recommended`). P6 builds it.
+    /// Dev boot target `library-recommended`.
+    LibraryRecommended { section: u32 },
     /// The Search screen. A PEER of Home and the Library, not a stacking page: it is reached from
     /// the strip's last pill and BACK from it returns to Home. What it OPENS stacks; it does not.
     Search,
@@ -1759,6 +1782,10 @@ impl LogicalState for AppArg {
             // 11, after Player's 10: a page tag is a screen's identity in a recording, allocated forward.
             Self::Watchlist => { c.u32(0).u32(11); }
             Self::Player => { c.u32(0).u32(10); }
+            // 12 and 13, forward of Watchlist's 11. CONTRACT FREEZE: not in `ARG_SHAPE` yet; P4
+            // adds both to the shape string and re-records the fixtures it moves.
+            Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
+            Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -1776,6 +1803,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
     fn chrome(&self) -> Chrome {
         match self {
             AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
+            // The two sub-pages of a library keep the bar, as the Library they are pushed over.
+            AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
             | AppArg::Profiles
             | AppArg::Onboard
@@ -1830,6 +1859,9 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Onboard => 3,
             AppArg::Home => 4,
             AppArg::Library => 7,
+            // 28 and 29, forward of the catalog page's 27.
+            AppArg::LibraryCollections { .. } => 28,
+            AppArg::LibraryRecommended { .. } => 29,
             AppArg::Search => 10,
             AppArg::Player => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
@@ -2024,6 +2056,17 @@ where
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            // CONTRACT FREEZE: the same screen in another `Listing`; P4 gives each its own state
+            // (a section, a restored memory) and P5 / P6 build what they list.
+            AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => {
+                let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
+                    .unwrap_or(plx_data::stores::browse::SecKind::Movie);
+                let listing = match arg {
+                    AppArg::LibraryCollections { .. } => crate::library::Listing::Collections,
+                    _ => crate::library::Listing::Recommended,
+                };
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).with_listing(listing))
+            }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);
                 if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
@@ -2152,6 +2195,8 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::Onboard
             | AppArg::Home
             | AppArg::Library
+            | AppArg::LibraryCollections { .. }
+            | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
             | AppArg::Player

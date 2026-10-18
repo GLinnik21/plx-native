@@ -51,6 +51,15 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         // flag, so the path is parsed for those alone rather than for every tile every frame.
         composite_thumb: m.kind == KIND_COLLECTION && is_composite_thumb(&m.thumb),
         blur: m.has_blur.then_some(m.blur),
+        subtype: m.subtype.as_deref(),
+        smart: m.smart,
+        genre: m.genre.as_deref(),
+        video_resolution: m.video_resolution.as_deref(),
+        hdr: m.hdr,
+        audience_rating: m.audience_rating,
+        leaf_count: m.leaf_count,
+        viewed_leaf_count: m.viewed_leaf_count,
+        added_at: m.added_at,
     }
 }
 

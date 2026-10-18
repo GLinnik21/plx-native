@@ -150,8 +150,22 @@ fn shelves_settled(hubs: plx_data::stores::browse::HubsView<'_>) -> bool {
     hubs.id().is_none() || hubs.publication() == plx_data::browse::section_hubs::Publication::Committed
 }
 
+/// **What this `LibraryScreen` lists** (CONTRACT FREEZE: the enum is final, P4 wires it).
+/// `All` is the library's full grid, the page the header sits on; `Collections` (type 18) and
+/// `Recommended` (the server's hubs) are the two pages the header's controls push over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Listing {
+    #[default]
+    All,
+    Collections,
+    Recommended,
+}
+
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub struct LibraryScreen {
+    /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
+    /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
+    listing: Listing,
     entry: EntryId,
     instance: InstanceId,
     kind: SecKind,
@@ -229,9 +243,20 @@ pub struct LibraryScreen {
 }
 
 impl LibraryScreen {
+    /// This page listing `listing` instead of the full grid (see [`Listing`]).
+    pub fn with_listing(mut self, listing: Listing) -> Self {
+        self.listing = listing;
+        self
+    }
+
+    pub fn listing(&self) -> Listing {
+        self.listing
+    }
+
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         let layout = Layout::new(false, &[], 0, false);
         Self {
+            listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), keys: KeyRegistry::default(),
             pair: MasterDetail::new(
                 RailPart::new(entry, RAIL_GROUP), GridPart::new(entry, GRID_GROUP),

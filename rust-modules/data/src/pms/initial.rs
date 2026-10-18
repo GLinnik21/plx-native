@@ -194,7 +194,11 @@ fn movies(items: &[Arc<PmsMovie>], w: &mut impl Sink) {
 fn movie(m: &PmsMovie, w: &mut impl Sink) {
     let PmsMovie { sid, sec, title, year, rating, dur_ns, part, thumb, still, art, summary, rk,
         vcodec, acodec, blur, has_blur, kind, resume_ms, show_rk, season_index, show_title,
-        ep_index, unwatched, watched, aired, child_count, guid, show_guid } = m;
+        ep_index, unwatched, watched, aired, child_count, guid, show_guid,
+        // CONTRACT FREEZE: the caption facts are not in the canonical encoding yet, so every
+        // recorded hash stays what it was. P2 decides whether to hash them (which re-records).
+        subtype: _, smart: _, genre: _, video_resolution: _, hdr: _, audience_rating: _,
+        leaf_count: _, viewed_leaf_count: _, added_at: _ } = m;
     w.u32(sid.raw().into()); w.u64(*sec as u64); w.text(title); w.u32(*year as u32);
     w.text(rating); w.u64(*dur_ns as u64);
     for text in [part, thumb, still, art, summary, rk, vcodec, acodec] { w.text(text); }

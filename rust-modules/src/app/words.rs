@@ -28,7 +28,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Login => "login",
         AppArg::Profiles => "profiles",
         AppArg::Onboard => "onboard",
-        AppArg::Library => "library",
+        AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => "library",
         AppArg::Content(ContentArg::Detail { .. }) => "detail",
         // The filmography sheet answers `word::PERSON` too (`FilmographyScreen::name`): the test
         // manifest intentionally records that opaque modal as `route=person`.

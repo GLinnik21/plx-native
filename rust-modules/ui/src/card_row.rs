@@ -183,12 +183,22 @@ pub struct CardRow {
     /// reserving. See [`label_band`]; the screens turn it into a row pitch.
     band: Spring,
     pub base_y: f32,
+    /// What the focused caption band shows (CONTRACT FREEZE: P3 makes `focused_caption` and the
+    /// band height read it). A pref input, not motion: it is not in the canon.
+    caption_policy: crate::caption_policy::CaptionPolicy,
 }
 impl CardRow {
+    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
+        self.caption_policy = policy;
+    }
+    pub fn caption_policy(&self) -> crate::caption_policy::CaptionPolicy {
+        self.caption_policy
+    }
+
     /// Motion read by placement/reveal is behavioral state for an owned, replayable screen.
     /// Destructure exhaustively so adding a field requires revisiting the census.
     pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { scale, overflow, focus, scroll_x, lift, band, base_y } = self;
+        let Self { scale, overflow, focus, scroll_x, lift, band, base_y, caption_policy: _ } = self;
         c.seq(scale.len());
         for spring in scale { c.f32(spring.pos).f32(spring.vel); }
         for spring in [overflow, scroll_x, lift, band] { c.f32(spring.pos).f32(spring.vel); }
@@ -204,6 +214,7 @@ impl CardRow {
             lift: Spring::at(0.0),
             band: Spring::at(0.0),
             base_y: 0.0,
+            caption_policy: crate::caption_policy::CaptionPolicy::DEFAULT,
         }
     }
     /// Whether every spring sits bit-exactly at its target with no velocity and nothing holds

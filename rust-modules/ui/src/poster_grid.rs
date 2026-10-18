@@ -40,11 +40,26 @@ impl GridBand {
 pub struct GridBands {
     focus: Option<usize>,
     slots: [(Option<usize>, Spring); MAX_GRID_BANDS],
+    /// What the focused caption band shows (CONTRACT FREEZE: P3 sizes the band from it). A pref
+    /// input, not motion: it is not in [`write`](Self::write).
+    caption_policy: crate::caption_policy::CaptionPolicy,
 }
 
 impl GridBands {
     pub fn new() -> Self {
-        Self { focus: None, slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS] }
+        Self {
+            focus: None,
+            slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS],
+            caption_policy: crate::caption_policy::CaptionPolicy::DEFAULT,
+        }
+    }
+
+    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
+        self.caption_policy = policy;
+    }
+
+    pub fn caption_policy(&self) -> crate::caption_policy::CaptionPolicy {
+        self.caption_policy
     }
 
     /// The row whose band is open (or opening).

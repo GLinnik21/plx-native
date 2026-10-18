@@ -2882,7 +2882,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 // SURFACE since phase 10: the page under it is the top page, which this line
                 // already names as `route=`, and the panel's own fields ride on `content` like
                 // every other surface's — `bridge::content_probe`.)
-                AppArg::Library => crate::focusprobe::Screen::Library,
+                AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => crate::focusprobe::Screen::Library,
                 AppArg::Content(plx_screens::registry::ContentArg::Detail { .. }) =>
                     crate::focusprobe::Screen::Detail,
                 AppArg::Content(plx_screens::registry::ContentArg::Person { .. }

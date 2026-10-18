@@ -143,7 +143,40 @@ pub struct PmsMovie {
     /// A collection's member count (`childCount`) — its tile's caption, "12 items". 0 on every
     /// other kind, where the listing's count fields mean leaves rather than members.
     pub child_count: i64,
+    // ---- CONTRACT FREEZE (library/collections redesign, P2 fills the parse in `parse_item`) ----
+    // The facts the "Under posters" caption reads (`plx_ui::caption_policy`) and the collection
+    // tile's caption. All default to "unknown"; `child_count` above is generalised by P2 to a
+    // show's season count as well (a season-count reader checks `kind`).
+    /// `subtype` verbatim (a collection's `movie` / `show` / `episode` …), or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<String>,
+    /// A SMART collection (`smart="1"`): a saved filter, not a hand-picked set.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub smart: bool,
+    /// The first `Genre` tag, or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    /// The first media's `videoResolution` (`4k`, `1080`, `720`, `sd` …), or `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_resolution: Option<String>,
+    /// The first video stream is HDR (HDR10 / HLG / Dolby Vision).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hdr: bool,
+    /// `audienceRating` (0..10), or `None` when the server sent none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience_rating: Option<f32>,
+    /// `leafCount` — a show/season's episode count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaf_count: Option<u32>,
+    /// `viewedLeafCount` — episodes watched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewed_leaf_count: Option<u32>,
+    /// `addedAt`, seconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<i64>,
 }
+
+fn is_false(b: &bool) -> bool { !*b }
 
 impl PmsMovie {
     /// **The Watchlist title this row stands for**, as `(kind, catalog id, from_episode)`: a movie or
