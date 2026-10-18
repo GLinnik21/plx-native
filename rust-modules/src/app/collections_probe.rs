@@ -61,6 +61,22 @@ fn shown(answer: Option<CollectionsCount>) -> Option<Result<u32, Forbidden>> {
     }
 }
 
+/// Record what a finished probe learned, then ask for a frame: a resting page runs no ticks, so
+/// without the wake the header would keep showing "Collections" with no number (or a control the
+/// answer says to hide) until the next input.
+fn land(key: Key, learned: CollectionsCount) {
+    {
+        let mut cache = lock();
+        if let Some((_, entry)) = cache.iter_mut().find(|(seen, _)| *seen == key) {
+            // An answer that said nothing never replaces one that did.
+            if learned != CollectionsCount::Unknown || entry.answer.is_none() { entry.answer = Some(learned); }
+            entry.settled = true;
+            entry.probing = false;
+        }
+    }
+    plx_machine::idle::invalidate();
+}
+
 /// The count for library section `section` of the directory's current section, starting its
 /// probe the first time it is asked for. `now` is the frame clock in milliseconds. `None` for any other section: only the page's own
 /// section is ever asked about, and a section key alone does not name a server.
@@ -96,13 +112,7 @@ pub(crate) fn count(
         let spawned = plx_base::task::spawn_small("collections-count", move || {
             let learned = std::panic::catch_unwind(|| client.collections_count(key.2))
                 .unwrap_or(CollectionsCount::Unknown);
-            let mut cache = lock();
-            if let Some((_, entry)) = cache.iter_mut().find(|(seen, _)| *seen == key) {
-                // An answer that said nothing never replaces one that did.
-                if learned != CollectionsCount::Unknown || entry.answer.is_none() { entry.answer = Some(learned); }
-                entry.settled = true;
-                entry.probing = false;
-            }
+            land(key, learned);
         });
         if !spawned {
             if let Some((_, entry)) = lock().iter_mut().find(|(seen, _)| *seen == key) {
@@ -135,6 +145,20 @@ mod tests {
         assert!(!wants_probe(&entry(Some(CollectionsCount::Forbidden), 9_000, false, now), now), "a refusal is final");
         assert!(!wants_probe(&entry(None, 5, false, now), now), "an empty answer waits before a retry");
         assert!(wants_probe(&entry(None, 21, false, now), now));
+    }
+
+    #[test]
+    fn a_landed_answer_wakes_a_frame() {
+        let key: Key = (u16::MAX, u32::MAX, -7);
+        lock().push((key, Entry { answer: None, at: None, settled: false, probing: true }));
+        let _ = plx_machine::idle::take_local_damage();
+        land(key, CollectionsCount::Count(4));
+        assert!(plx_machine::idle::take_local_damage() > 0, "the landing must request a frame");
+        let mut cache = lock();
+        let at = cache.iter().position(|(k, _)| *k == key).unwrap();
+        let entry = cache.remove(at).1;
+        assert_eq!(entry.answer, Some(CollectionsCount::Count(4)));
+        assert!(entry.settled && !entry.probing);
     }
 
     #[test]
