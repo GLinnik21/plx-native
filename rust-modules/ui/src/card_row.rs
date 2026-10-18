@@ -426,6 +426,18 @@ impl CardRow {
     pub fn under_band(&self) -> f32 {
         under_band(self.band.pos)
     }
+    /// The focused band's height under this row's [`CaptionPolicy`](crate::caption_policy::CaptionPolicy).
+    pub fn policy_band_h(&self) -> f32 {
+        crate::caption_policy::band_h(&self.caption_policy)
+    }
+    /// [`CardRow::under_band`] for the row's caption policy (80 / 112 / nothing, not the legacy 92).
+    pub fn policy_under_band(&self) -> f32 {
+        under_band_for(self.policy_band_h(), self.band.pos)
+    }
+    /// [`CardRow::band_reveal`] for the row's caption policy.
+    pub fn policy_band_reveal(&self) -> f32 {
+        band_reveal_for(self.policy_band_h(), self.band.pos)
+    }
     /// How much of the focused label block this shelf may show right now — [`band_reveal`] of
     /// [`CardRow::band_expand`]. Chain it onto the `TileLabel` with [`TileLabel::revealed`].
     #[inline]
@@ -783,6 +795,10 @@ pub struct TileLabel {
     /// block's alignment and width at the tile's SETTLED screen position, so a glide does not
     /// re-decide them on every frame.
     pub settle_lag: f32,
+    /// Set the lines with the Under-posters text shadow (`0 1px 8px` black 35%,
+    /// [`crate::caption_policy::CAPTION_SHADOW`]): the caption is then set on the page itself, not
+    /// on a scrim.
+    pub shadowed: bool,
 }
 
 /// **Hand-written, not derived, for one field**: `reveal` defaults to 1 (fully on screen), where a
@@ -796,6 +812,7 @@ impl Default for TileLabel {
             glyph: false,
             reveal: 1.0,
             settle_lag: 0.0,
+            shadowed: false,
         }
     }
 }
@@ -813,6 +830,17 @@ impl TileLabel {
     pub fn settling(mut self, lag: f32) -> Self {
         self.settle_lag = lag;
         self
+    }
+    /// A block from [`crate::caption_policy::caption_lines`]: the title line (if the policy shows
+    /// one) over the details line, centred and shadowed. A line the policy leaves out is absent.
+    pub fn from_lines(lines: [Option<String>; 2]) -> Self {
+        let [title, details] = lines;
+        TileLabel {
+            title: title.and_then(|t| std::ffi::CString::new(t).ok()),
+            caption: details.and_then(|d| std::ffi::CString::new(d).ok()),
+            shadowed: true,
+            ..Default::default()
+        }
     }
     /// Title only — the plain poster shelf.
     pub fn title(t: &str) -> Self {
@@ -1057,7 +1085,28 @@ pub const LABEL_BAND_COLLAPSED: f32 =
 /// `consts::ROW_PITCH - UNDER_LABEL_H`, and `under_band(1.0)` is `UNDER_LABEL_H` exactly, so a
 /// focused shelf is byte-identical to the geometry that existed before the band could close.
 pub fn under_band(e: f32) -> f32 {
-    LABEL_BAND_COLLAPSED + (UNDER_LABEL_H - LABEL_BAND_COLLAPSED) * e.clamp(0.0, 1.0)
+    under_band_for(LEGACY_BAND_H, e)
+}
+
+/// The whole gap under a focused poster before the next row (the label block and the air below
+/// it) with the legacy 92 px caption block: what Home, Search and every other shelf still open to.
+/// The Libraries' "Under posters" setting replaces it with [`crate::caption_policy::band_h`].
+pub const LEGACY_BAND_H: f32 = UNDER_LABEL_H + crate::consts::UNDER_LABEL_AIR;
+
+/// The gap a collapsed row keeps under its posters: [`LABEL_BAND_COLLAPSED`] plus the air, the
+/// design system's `space::LG` (40 px).
+const COLLAPSED_GAP: f32 = LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+
+/// The gap a FOCUSED row opens to for a band of `band_h` ([`crate::caption_policy::band_h`]): the
+/// band itself, never less than the collapsed gap, so a policy showing nothing opens nothing.
+pub fn open_gap(band_h: f32) -> f32 {
+    band_h.max(COLLAPSED_GAP)
+}
+
+/// [`under_band`] for a band of `band_h`: the label band at expansion `e` (0 collapsed → 1 open).
+/// Only the focused row opens it; non-focused rows stay [`COLLAPSED_GAP`] apart.
+pub fn under_band_for(band_h: f32, e: f32) -> f32 {
+    LABEL_BAND_COLLAPSED + (open_gap(band_h) - COLLAPSED_GAP) * e.clamp(0.0, 1.0)
 }
 
 /// **How much of the focused label block may be on screen at expansion `e`** — and this is solved
@@ -1079,9 +1128,15 @@ pub fn under_band(e: f32) -> f32 {
 /// title fading up. On the way out it is the reverse and it is FAST — the block is gone inside the
 /// first third of the collapse, well before the shelf below arrives where it was.
 pub fn band_reveal(e: f32) -> f32 {
-    let room = crate::consts::UNDER_LABEL_AIR + under_band(e);
-    let holds = UNDER_LABEL_H; // the room at which the block is fully clear of the next heading
-    let settled = crate::consts::UNDER_LABEL_AIR + UNDER_LABEL_H;
+    band_reveal_for(LEGACY_BAND_H, e)
+}
+
+/// [`band_reveal`] for a band of `band_h`: the same collision-free curve, solved against that
+/// band's own settled room (the room the next heading leaves, less the air under the block).
+pub fn band_reveal_for(band_h: f32, e: f32) -> f32 {
+    let room = crate::consts::UNDER_LABEL_AIR + under_band_for(band_h, e);
+    let settled = open_gap(band_h);
+    let holds = settled - crate::consts::UNDER_LABEL_AIR; // fully clear of the next heading
     let t = ((room - holds) / (settled - holds)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -1094,6 +1149,11 @@ pub const ROW_PITCH_FIXED: f32 = crate::consts::ROW_PITCH - UNDER_LABEL_H;
 /// move costs (or reclaims) in document height.
 pub const BAND_OPEN: f32 = UNDER_LABEL_H - LABEL_BAND_COLLAPSED;
 
+/// [`BAND_OPEN`] for a band of `band_h`: 40 px for a one-line band (80), 72 for two (112), 0 for none.
+pub fn band_open_for(band_h: f32) -> f32 {
+    open_gap(band_h) - COLLAPSED_GAP
+}
+
 /// **The SETTLED top of shelf `r`** in a column of uniform shelves whose fixed pitch is
 /// `pitch_fixed`, with `focus` (if any) holding the open band and every other shelf collapsed.
 ///
@@ -1105,9 +1165,14 @@ pub const BAND_OPEN: f32 = UNDER_LABEL_H - LABEL_BAND_COLLAPSED;
 /// GOING and both springs run one fixed distance, so their difference (which is what the eye sees:
 /// the row's screen y) is itself a single critically-damped move.
 pub fn settled_top(r: usize, focus: Option<usize>, pitch_fixed: f32) -> f32 {
+    settled_top_for(r, focus, pitch_fixed, BAND_OPEN)
+}
+
+/// [`settled_top`] for a focused row that opens by `band_open` ([`band_open_for`]).
+pub fn settled_top_for(r: usize, focus: Option<usize>, pitch_fixed: f32, band_open: f32) -> f32 {
     r as f32 * (pitch_fixed + LABEL_BAND_COLLAPSED)
         + if focus.is_some_and(|f| f < r) {
-            BAND_OPEN
+            band_open
         } else {
             0.0
         }
@@ -1318,6 +1383,7 @@ fn title_marquee(
     glyph: bool,
     w: f32,
     block: Option<&marquee::Block>,
+    shadowed: bool,
 ) {
     let (sz, bold) = (theme::size::LABEL, 1);
     let isz = play_icon_size(sz);
@@ -1338,6 +1404,9 @@ fn title_marquee(
         let gx = at.run_x(lead + w);
         if glyph {
             draw_glyph(gx);
+        }
+        if shadowed {
+            p.text(text, gx + lead, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
         }
         p.text(text, gx + lead, y, sz, theme::TEXT_PRIMARY, 0, bold);
         return;
@@ -1360,6 +1429,9 @@ fn title_marquee(
             block.cycle_w,
             Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
             |dx| {
+                if shadowed {
+                    p.text(text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
+                }
                 p.text(text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, 0, bold);
             },
         )
@@ -1448,7 +1520,7 @@ fn draw_label_block(
         TITLE_CLOCK.with(|c| c.release());
     }
     if let Some(t) = &label.title {
-        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0), block.as_ref());
+        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0), block.as_ref(), label.shadowed);
         y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
     if let Some(s) = &caption_str {
@@ -1462,10 +1534,20 @@ fn draw_label_block(
                     caption_w,
                     block.cycle_w,
                     Rect::new(at.x, y - MARQUEE_AIR, at.w, UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
-                    |dx| { p.text(tc.as_ptr(), at.x + dx, y, csz, theme::TEXT_SECONDARY, 0, 0); },
+                    |dx| {
+                        if label.shadowed {
+                            p.text(tc.as_ptr(), at.x + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
+                                crate::caption_policy::CAPTION_SHADOW, 0, 0);
+                        }
+                        p.text(tc.as_ptr(), at.x + dx, y, csz, theme::TEXT_SECONDARY, 0, 0);
+                    },
                 )
             });
         } else {
+            if label.shadowed {
+                p.text(tc.as_ptr(), at.run_x(caption_w), y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
+                    crate::caption_policy::CAPTION_SHADOW, 0, 0);
+            }
             p.text(tc.as_ptr(), at.run_x(caption_w), y, csz, theme::TEXT_SECONDARY, 0, 0);
         }
     }
