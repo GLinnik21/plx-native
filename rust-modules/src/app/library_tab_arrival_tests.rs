@@ -1,9 +1,9 @@
 //! A Library page reached from a strip pill: how its first focused tile arrives.
 //!
-//! The pill press mounts the page's fade at 0 and reveals it once its shelves land. The head
-//! tile is seated while the page is still dark, so a pop that starts with the seat plays out
-//! under the dissolve: the tile is most of the way up by the time anything is opaque and the
-//! viewer sees a tile that was simply there. The selection has to play out where it can be seen.
+//! The pill press mounts the page's fade at 0. Since the header restructure the page leads with
+//! its header row, so the arrival seats focus THERE: no tile is selected, so no pop can play out
+//! under the dissolve (the old head-tile arrival did, and the viewer saw a tile that was simply
+//! there). Late-landing shelves must not steal that seat or start a pop either.
 
 use super::*;
 #[allow(unused_imports)]
@@ -11,8 +11,7 @@ use super::test_support::*;
 use super::test_support::{frame};
 
 #[test]
-#[ignore = "P5: a pill arrival now seats the header row, not a head tile; the arrival pop is re-specified with the page"]
-fn a_pill_arrival_pops_its_head_tile_after_the_page_is_opaque_not_under_the_dissolve() {
+fn a_pill_arrival_seats_the_header_row_and_never_pops_a_tile_under_the_dissolve() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-tab-arrival");
     session.watching("u-library-tab-arrival");
@@ -35,12 +34,12 @@ fn a_pill_arrival_pops_its_head_tile_after_the_page_is_opaque_not_under_the_diss
     rig.stores.browse.borrow_mut().seed_items_for_test(12);
     // What `nav_tab` queues for a Movies press, before the page exists.
     rig.enter_library(plx_data::browse::SecKind::Movie);
-    let arrival = |d: &Dispatcher<AppHost>| {
-        d.top_screen().unwrap().as_any().unwrap()
-            .downcast_ref::<plx_screens::library::LibraryScreen>().unwrap()
-            .probe_arrival(d.focus())
+    let probe = |d: &Dispatcher<AppHost>| {
+        let page = d.top_screen().unwrap().as_any().unwrap()
+            .downcast_ref::<plx_screens::library::LibraryScreen>().unwrap();
+        (page.probe_viewport(d.focus()).0, page.probe_arrival(d.focus()))
     };
-    // The shelves are a separate fetch: the page waits dark for them, as it does on the set.
+    // The shelves are a separate fetch: they land while the page is already up.
     let mut timeline = Vec::new();
     for i in 0..90 {
         if i == 20 {
@@ -48,17 +47,14 @@ fn a_pill_arrival_pops_its_head_tile_after_the_page_is_opaque_not_under_the_diss
                 .seed_shelves_for_test(0, &["movie.inprogress.1", "tv.recentlyreleased.1"], 3);
         }
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
-        if let (alpha, Some(pop)) = arrival(&d) { timeline.push((i, alpha, pop)); }
+        timeline.push((i, probe(&d)));
     }
-    assert!(!timeline.is_empty(), "the head tile never took focus");
-    let seen_growing = timeline.iter().filter(|(_, alpha, pop)| *alpha < 1.0 && *pop > 1.0).count();
-    assert_eq!(seen_growing, 0,
-        "the tile grew while the page was still dissolving in, so the selection played under the fade: {timeline:?}");
-    let opaque = timeline.iter().position(|(_, alpha, _)| *alpha >= 1.0).expect("the page never became opaque");
-    let after = &timeline[opaque..];
-    assert!(after[0].2 < 1.01, "the tile was already up when the page turned opaque: {:?}", after[0]);
-    assert!(after.iter().any(|(_, _, pop)| *pop > 1.05),
-        "the tile never grew after the page turned opaque: {after:?}");
-    let ramp: Vec<f32> = after.iter().map(|(_, _, pop)| *pop).collect();
-    assert!(ramp.windows(2).all(|w| w[1] >= w[0] - 1.0e-4), "the pop must grow monotonically: {ramp:?}");
+    // Frame 0 still shows the pill that was pressed ("strip"); from the first seat on it is the header.
+    let seated: Vec<_> = timeline.iter().filter(|(_, (region, _))| !matches!(*region, "none" | "strip")).collect();
+    assert!(!seated.is_empty(), "nothing took focus");
+    assert!(seated.iter().all(|(_, (region, _))| *region == "toolbar"),
+        "the arrival must seat the header row, never a tile: {seated:?}");
+    assert!(timeline.iter().all(|(_, (_, (_, pop)))| pop.is_none()),
+        "a tile popped on a header-seated arrival: {timeline:?}");
+    assert!(timeline.iter().any(|(_, (_, (alpha, _)))| *alpha >= 1.0), "the page never became opaque");
 }

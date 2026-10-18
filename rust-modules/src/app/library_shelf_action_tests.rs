@@ -6,8 +6,31 @@ use plx_ui::screen::Focusable;
 use super::test_support::*;
 use super::test_support::{frame};
 
+/// The page the Library header's Recommended control pushes; the hubs are its rows.
+const RECOMMENDED: AppArg = AppArg::LibraryRecommended { section: 0 };
+
+/// `Bridge::library_selection` for the Recommended page (that one answers only the full grid).
+fn recommended_selection(
+    rig: &Bridge,
+    d: &Dispatcher<AppHost>,
+    entry: EntryId,
+    focus: Option<FocusKey<u32>>,
+) -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
+    let e = d.nav.entry(entry).filter(|e| e.arg == RECOMMENDED)?;
+    let screen = &e.inst.as_ref()?.screen;
+    let parts = CxParts {
+        tick: Tick::default(),
+        press: Default::default(),
+        focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() },
+        owner: InputOwner::Entry(entry),
+    };
+    let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
+    let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
+    let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>()?.clone();
+    Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
+}
+
 #[test]
-#[ignore = "P6: the production library page mounts without shelves; P6 deletes the shelf code and this test"]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-shelf-hold");
@@ -42,14 +65,14 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             browse.seed_landscape_for_test(0, "Synthetic show");
         }
         for i in 0..80 {
-            frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
+            frame(&mut d, &mut rig, RECOMMENDED, tick(i), vec![]);
         }
         let position = |d: &Dispatcher<AppHost>| {
             d.top_screen()
                 .unwrap()
                 .as_any()
                 .unwrap()
-                .downcast_ref::<plx_screens::library::LibraryScreen>()
+                .downcast_ref::<plx_screens::library::RecommendedScreen>()
                 .unwrap()
                 .probe_viewport(d.focus())
         };
@@ -64,7 +87,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             frame(
                 &mut d,
                 &mut rig,
-                AppArg::Library,
+                RECOMMENDED,
                 tick(i),
                 script_key(Key::Down, tick(i)),
             );
@@ -73,13 +96,13 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         frame(
             &mut d,
             &mut rig,
-            AppArg::Library,
+            RECOMMENDED,
             tick(i),
             script_key(Key::Right, tick(i)),
         );
         i += 1;
         for n in i..i + 80 {
-            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, RECOMMENDED, tick(n), vec![]);
         }
         i += 80;
         assert_eq!(
@@ -87,7 +110,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             ("shelf", row, 1)
         );
         let key = d.focus().unwrap();
-        let (item, _) = rig.library_selection(&d, key.entry, Some(key)).unwrap();
+        let (item, _) = recommended_selection(&rig, &d, key.entry, Some(key)).unwrap();
         assert_eq!(item.kind, 3);
         assert!(item.rk.ends_with("-1"), "not the first card: {}", item.rk);
         let key_input = |edge, n| {
@@ -107,7 +130,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         frame(
             &mut d,
             &mut rig,
-            AppArg::Library,
+            RECOMMENDED,
             tick(i),
             key_input(Edge::Down, i),
         );
@@ -117,7 +140,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         let mut saw_scaled_press = false;
         let rect = |r: plx_ui::Rect| [r.x, r.y, r.w, r.h];
         for n in i + 1..i + 80 {
-            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, RECOMMENDED, tick(n), vec![]);
             assert_eq!(d.focus(), Some(key));
             let page = d
                 .nav
@@ -129,7 +152,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 .screen
                 .as_any()
                 .unwrap()
-                .downcast_ref::<plx_screens::library::LibraryScreen>()
+                .downcast_ref::<plx_screens::library::RecommendedScreen>()
                 .unwrap();
             let parts = CxParts {
                 tick: tick(n),
@@ -147,7 +170,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 &rig.measure,
             );
             let placed = page.place(&key.elem, &cx, At::Drawn).unwrap();
-            let (selected, opener) = rig.library_selection(&d, key.entry, Some(key)).unwrap();
+            let (selected, opener) = recommended_selection(&rig, &d, key.entry, Some(key)).unwrap();
             assert_eq!(
                 (selected.sid, selected.rk.as_str()),
                 (item.sid, item.rk.as_str())
@@ -187,20 +210,19 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             }
         );
         assert_eq!(requests[0].2.focus, Some(key));
-        let (selected, opener) = rig
-            .library_selection(&d, key.entry, requests[0].2.focus)
-            .unwrap();
+        let (selected, opener) =
+            recommended_selection(&rig, &d, key.entry, requests[0].2.focus).unwrap();
         assert_eq!((selected.sid, selected.rk), (item.sid, item.rk));
         assert!(opener.rect.is_some());
         frame(
             &mut d,
             &mut rig,
-            AppArg::Library,
+            RECOMMENDED,
             tick(i + 80),
             key_input(Edge::Up, i + 80),
         );
         for n in i + 81..i + 120 {
-            frame(&mut d, &mut rig, AppArg::Library, tick(n), vec![]);
+            frame(&mut d, &mut rig, RECOMMENDED, tick(n), vec![]);
         }
         assert!(
             !rig.take_library_reqs().iter().any(|(_, req, _)| matches!(
