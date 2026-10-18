@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T19:40:09Z",
+ "generated": "2026-10-18T20:10:57Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -44.3,
-   "change7_pct": 35.3,
+   "change30_pct": -44.4,
+   "change7_pct": 35.2,
    "d30": 778,
-   "delta30": -345,
-   "delta7": 113,
+   "delta30": -345.5,
+   "delta7": 112.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 107,
-   "now": 433,
+   "now": 432.5,
    "prev7": 320,
    "shown": true,
    "state": "worse",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 119.2,
-   "change7_pct": 2.0,
+   "change30_pct": 119.6,
+   "change7_pct": 2.2,
    "d30": 107,
-   "delta30": 127.5,
-   "delta7": 4.5,
+   "delta30": 128,
+   "delta7": 5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 99,
-   "now": 234.5,
+   "now": 235,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -375,15 +375,15 @@
    "change30_pct": 151.4,
    "change7_pct": -42.1,
    "d30": 74,
-   "delta30": 112.0,
-   "delta7": -135.0,
+   "delta30": 112,
+   "delta7": -135,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 99,
-   "now": 186.0,
+   "now": 186,
    "prev7": 321,
    "shown": true,
    "state": "better",
@@ -439,14 +439,14 @@
    "change7_pct": 5.5,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 8,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 95,
-   "now": 153.0,
+   "now": 153,
    "prev7": 145,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 6.2,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 1.0,
-   "delta7": 0.0,
+   "delta30": 1,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 99,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 210.0,
    "commits": [
     {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
      "pr": 820,
      "sha": "0b0b22092",
      "title": "Add German (de) as a UI language"
@@ -657,6 +652,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 55.7,
@@ -708,6 +708,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 208.0,
@@ -759,6 +764,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 263.5,
@@ -810,6 +820,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 333,
@@ -820,7 +835,7 @@
    "to": 485
   },
   {
-   "change_pct": 35.3,
+   "change_pct": 35.2,
    "commits": [
     {
      "pr": 831,
@@ -861,6 +876,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 320,
@@ -868,7 +888,7 @@
    "label": "Wait after merge",
    "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 433
+   "to": 432.5
   },
   {
    "change_pct": 30.9,
@@ -912,6 +932,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 1026.6,
@@ -963,6 +988,11 @@
      "pr": 817,
      "sha": "d28ab6473",
      "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
    "from": 1025.0,
