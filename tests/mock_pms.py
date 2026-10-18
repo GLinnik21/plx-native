@@ -2906,12 +2906,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # _do logs a redacted request path; BaseHTTPRequestHandler would log tokens.
 
-    def _serve_file_ranged(self, method, path, content_type, cut_after=None, range_as_200=False):
+    def _serve_file_ranged(self, method, path, content_type, cut_after=None, range_as_200=False,
+                           claim_cut=None):
         """A byte range GET/HEAD of `path`, real `Range`/206 handling included — the same helper
         `/library/parts/<id>` verification bytes and `--transcode-fixture` both serve through, so
         the start.mkv fixture gets exactly the Range semantics the part-probe path already
         proved. Returns the status actually sent. `cut_after` closes the response after that many
-        body bytes (the `--cut-part-after` fault); `range_as_200` answers a ranged request that
+        body bytes (the `--cut-part-after` fault) — only a GET whose body really extends past that
+        point, and only once `claim_cut()` (if given) grants the one-shot slot, so a HEAD or a short
+        ranged read does not spend the cut; `range_as_200` answers a ranged request that
         starts past byte 0 as a whole-file 200 (`--part-range-answers-200`)."""
         size = path.stat().st_size
         start, end, status = 0, max(0, size - 1), 200
@@ -2952,7 +2955,8 @@ class Handler(BaseHTTPRequestHandler):
             with path.open("rb") as src:
                 src.seek(start)
                 left = length
-                if cut_after is not None and cut_after < length:
+                if (cut_after is not None and cut_after < length
+                        and (claim_cut is None or claim_cut())):
                     left = cut_after
                     # The head promised `length`; the connection ends after `cut_after`.
                     self.close_connection = True
@@ -2982,12 +2986,16 @@ class Handler(BaseHTTPRequestHandler):
         content_type = getattr(self.server.pms.lib, "media_content_type", {}).get(
             part_id, "video/x-matroska")
         pms = self.server.pms
-        with pms.lock:
-            cut_after = None
-            if pms.cut_part_after is not None and part_id not in pms.parts_cut:
+        def claim_cut():
+            # One cut per part, spent only by a response that is really cut.
+            with pms.lock:
+                if part_id in pms.parts_cut:
+                    return False
                 pms.parts_cut.add(part_id)
-                cut_after = pms.cut_part_after
-        status = self._serve_file_ranged(method, path, content_type, cut_after=cut_after,
+                return True
+
+        status = self._serve_file_ranged(method, path, content_type,
+                                         cut_after=pms.cut_part_after, claim_cut=claim_cut,
                                          range_as_200=pms.part_range_answers_200)
         with pms.lock:
             pms.requests.append((self.path, status))

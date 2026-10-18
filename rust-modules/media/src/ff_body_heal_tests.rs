@@ -306,3 +306,67 @@ fn an_unsized_body_that_dies_is_not_reopened() {
     assert!(end < 0 || end == AVERROR_EOF, "{end}");
     assert_eq!(srv.heads().len(), 1, "no reopen: {:?}", srv.heads());
 }
+
+/// Read the cut the way the demux loop does while the AU queues are full: through `drain_wire`,
+/// which parks the failure in `io_failed` and leaves the bytes it did receive in the bounce.
+fn drain_until_failed(op: *mut c_void) {
+    let s = unsafe { &mut *(op as *mut AvioState) };
+    let began = std::time::Instant::now();
+    while !s.io_failed {
+        s.drain_wire();
+        assert!(began.elapsed() < std::time::Duration::from_secs(5), "the drain never saw the cut");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(s.bounce_remaining(), "the bytes sent before the cut are in the bounce");
+}
+
+/// The usual mid-playback case: the demuxer sits in `aq_push_with_drain`, so it is `drain_wire`,
+/// not `read_cb`, that meets the reset or early close. `io_failed` was then answered with EIO
+/// before any reopen was considered, and the session ended.
+#[test]
+fn a_cut_seen_by_the_drain_is_reopened_at_the_byte_reached() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start(SHORT_HEAD, false, false);
+    let got = with_source(srv.port, |op| {
+        drain_until_failed(op);
+        read_to_end(op).0
+    });
+    assert_eq!(got, BODY, "the rest of the body must come from a ranged reopen");
+    let heads = srv.heads();
+    assert!(heads.len() == 2 && heads[1].contains("Range: bytes=4-"), "{heads:?}");
+}
+
+/// The reopen a drained cut asks for is bounded and checked like any other: a server that
+/// answers it with the whole body ends the read, once, with nothing from the wrong offset.
+#[test]
+fn a_cut_seen_by_the_drain_whose_reopen_is_refused_fails_without_looping() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start_with(SHORT_HEAD, false, Reopen::Full200);
+    with_source(srv.port, |op| {
+        drain_until_failed(op);
+        let (got, end) = read_to_end(op);
+        assert_eq!(got, b"ABCD", "nothing from the wrong offset may be delivered");
+        assert_eq!(end, AVERROR_IO);
+        assert!(unsafe { (*(op as *mut AvioState)).io_failed }, "the failure is published");
+        let mut buf = [0u8; 16];
+        for _ in 0..8 {
+            assert_eq!(read_cb(op, buf.as_mut_ptr(), buf.len() as c_int), AVERROR_IO);
+        }
+        let reopens = srv.heads().len() - 1;
+        assert!(reopens <= BODY_HEAL_ATTEMPTS as usize, "unbounded reopens: {:?}", srv.heads());
+    });
+}
+
+/// An unsized body is not reopened by a drained cut either.
+#[test]
+fn an_unsized_body_whose_cut_the_drain_saw_is_not_reopened() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start(SHORT_HEAD, false, false);
+    with_sized_source(srv.port, -1, |op| {
+        drain_until_failed(op);
+        let (got, end) = read_to_end(op);
+        assert_eq!(got, b"ABCD");
+        assert_eq!(end, AVERROR_IO);
+    });
+    assert_eq!(srv.heads().len(), 1, "no reopen: {:?}", srv.heads());
+}

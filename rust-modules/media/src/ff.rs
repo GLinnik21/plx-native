@@ -2289,6 +2289,19 @@ impl AvioState {
         }
     }
 
+    /// Whether a cut at the byte reached may be healed by reopening there: a direct-play
+    /// (no acquisition, so not an HLS segment) plaintext socket with a known length and `off`
+    /// still inside it. Unsized transcodes cannot be reopened at a byte, curl heals on its own
+    /// terms, and a position at or past the end is a position, not a cut. One predicate for every
+    /// heal site, so the drain path cannot drift from the read path.
+    fn may_heal_at_offset(&self) -> bool {
+        self.acquisition.is_none()
+            && self.size > 0
+            && self.off >= 0
+            && self.off < self.size
+            && matches!(self.src, Src::Socket { .. })
+    }
+
     /// Drain the live media socket into [`Self::bounce`] without blocking. Called from
     /// [`crate::aq::aq_push_with_drain`] so Original's TCP window stays open while the AU
     /// queues are full. Recv time is network work; the park wait around it is not.
@@ -2480,6 +2493,15 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 return bounced as c_int;
             }
             if park_read_fails_closed(s.bounce_remaining(), s.io_failed) {
+                // The failure was parked by `drain_wire` (the demuxer waits in
+                // `aq_push_with_drain` almost all the time, so it is the drain that meets a LAN
+                // reset or an early close), not by this read. The bounce is empty, so `s.off` is
+                // the first byte not yet delivered: reopen there as a cut read would. `seek_cb`
+                // clears `io_failed` on success and refuses a reopen that is not a 206 from the
+                // byte; the per-offset budget bounds a server that keeps cutting.
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
                 return AVERROR_IO;
             }
             // The abort rule, evaluated where the numbers are — through the same runtime check
@@ -2512,12 +2534,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             // silent that long while the PMS catches up, and cannot be reopened at a byte (its
             // restart would answer 200 from the head). It keeps the pre-heal behaviour.
             let direct_play = s.acquisition.is_none();
-            let sized_body = s.size > 0 && s.off < s.size;
-            let silence_deadline = (direct_play
-                && sized_body
-                && blocking_deadline.is_none()
-                && matches!(s.src, Src::Socket { .. }))
-            .then(|| std::time::Instant::now() + BODY_SILENCE);
+            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + BODY_SILENCE);
             let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
@@ -2615,15 +2632,8 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
                 // The plaintext socket heals sized bodies only (see the silence deadline above).
-                if direct_play
-                    && sized_body
-                    && s.off >= 0
-                    && matches!(s.src, Src::Socket { .. })
-                    && s.heal.take(s.off)
-                {
-                    if heal_at_offset(s) {
-                        continue;
-                    }
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
                 }
                 if let Src::Curl(cs) = &mut s.src {
                     let cut = cs

@@ -501,6 +501,18 @@ class PartFaults(unittest.TestCase):
         # cut once per part, not once per request
         self.assertEqual(self._get(url, 0)[2], self.BODY)
 
+    def test_a_head_or_a_short_read_does_not_spend_the_cut(self):
+        url = self._serve(cut_part_after=500)
+        head = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(head, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        # a ranged read that ends before the cut point carries no more than BYTES bytes
+        short = urllib.request.Request(url, headers={"Range": "bytes=0-99"})
+        with urllib.request.urlopen(short, timeout=5) as response:
+            self.assertEqual(response.read(), self.BODY[:100])
+        status, _, body = self._get(url, 0)
+        self.assertEqual((status, body), (206, self.BODY[:500]))
+
     def test_a_cut_past_the_end_of_the_body_cuts_nothing(self):
         url = self._serve(cut_part_after=5000)
         self.assertEqual(self._get(url, 0)[2], self.BODY)
