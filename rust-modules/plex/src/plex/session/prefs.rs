@@ -38,7 +38,7 @@
 use super::{
     DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
     PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
-    SubtitleSize, SubtitleTone, UiResolution,
+    SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -129,6 +129,12 @@ pub struct Preferences {
     /// committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
     pub deck_press: DeckPress,
+    /// **What sits under the focused poster** — see [`UnderPosters`]. A frozen fallback like
+    /// [`Preferences::deck_press`]: each profile keeps its own pick in `profile_prefs`. Absence is no
+    /// title and the year and length. Skipped at the default so a session predating this field —
+    /// committed replay fixtures included — serializes exactly as it did before.
+    #[serde(default, deserialize_with = "de_soft_under_posters", skip_serializing_if = "is_default_under_posters")]
+    pub under_posters: UnderPosters,
     /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
     /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
     /// persisted before the field existed — and every viewer who never opted in — round-trips
@@ -480,6 +486,8 @@ setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profil
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(UnderPostersPref: UnderPosters = under_posters, "under_posters", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Profile fallback LegacyInstallKey,
@@ -585,6 +593,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<DeckPressPref>(),
+    Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
     // A5: the remaining keys.
     Descriptor::of::<AutoSignInPref>(),
@@ -1299,6 +1308,23 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_deck_press(mode: &DeckPress) -> bool {
     *mode == DeckPress::default()
+}
+
+/// The under-posters record is a preference too: a value that is not a record is the default, and
+/// each field inside softens on its own (`UnderPosters`' own deserializer).
+fn de_soft_under_posters<'de, D>(d: D) -> Result<UnderPosters, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(UnderPosters::default());
+    };
+    Ok(serde_json::from_value::<UnderPosters>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_under_posters(v: &UnderPosters) -> bool {
+    *v == UnderPosters::default()
 }
 
 /// The interface resolution is a preference too: a spelling this build does not know is Automatic.

@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Unter den Postern",
+  "under_posters.detail": "Was unter einem Poster steht.",
+  "under_posters.copy": "Wähle, was das fokussierte Poster darunter zeigt. Nur das fokussierte Poster öffnet eine Zeile; die anderen bleiben frei.",
+  "under_posters.title_row": "Titel",
+  "under_posters.title_detail": "Titel über den Details anzeigen.",
+  "under_posters.details_section": "Details",
+  "under_posters.year_length": "Jahr · Länge",
+  "under_posters.genre": "Genre",
+  "under_posters.video": "Video",
+  "under_posters.age_rating_score": "Altersfreigabe · Wertung",
+  "under_posters.none": "Keine",
+  "under_posters.reset": "Zurücksetzen",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drama"
+}

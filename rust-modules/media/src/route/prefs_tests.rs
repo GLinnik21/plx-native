@@ -6,7 +6,7 @@
 //! row (the partition by `SCOPE`): a live setting that stayed `Install` would be restored from
 //! nobody's seat.
 use super::*;
-use plx_plex::plex::session::{self as session, prefs::DESCRIPTORS, stored_effective};
+use plx_plex::plex::session::{self as session, prefs::DESCRIPTORS, stored_effective, UnderPostersDetails};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn declared_by_plex() -> BTreeMap<&'static str, bool> {
@@ -604,4 +604,49 @@ fn the_default_pick_dims_an_hdr_picture_to_75_percent_and_never_an_sdr_one() {
     assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::default()), 0.75);
     assert_eq!(overlay_gain_for(false, false, false, HdrOverlayBrightness::default()), 1.0);
     assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::Full), 1.0, "a chosen 100% stays off");
+}
+
+// ---- Under posters (Settings > Libraries) ------------------------------------------------------
+
+/// Puts the Under posters cell back to the default on drop (before the test lock is released).
+struct UnderPostersBack;
+impl Drop for UnderPostersBack {
+    fn drop(&mut self) {
+        restore_under_posters(UnderPosters::DEFAULT);
+    }
+}
+
+/// **The Under posters cell follows the seat, and a Confirm pick lands in the profile's record.**
+/// Nothing picked reads the default (no title, year and length); a pick is the seated profile's
+/// own and never a legacy key; another profile keeps reading the default; the cell holds the pick.
+#[test]
+fn under_posters_is_picked_into_the_seated_profiles_record_and_follows_the_seat() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("under-posters");
+    let _restore = Put::back(cells());
+    let _back = UnderPostersBack;
+    session.seated("u1", TOKEN);
+    let mut legacy = record(Preferences::default(), vec![]);
+    legacy.client_id = "cid-test".into();
+    session::save(&legacy);
+    seed_profile_prefs_for_test(&session::peek());
+    restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
+    assert_eq!(under_posters(), UnderPosters::DEFAULT, "nothing picked: the default");
+
+    let pick = UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore };
+    assert!(confirm::<UnderPostersPref>(pick));
+    assert_eq!(under_posters(), pick, "the cell holds the pick");
+    let after = session::load();
+    assert_eq!(after.prefs.under_posters, UnderPosters::DEFAULT, "the TV's key is untouched");
+    assert_eq!(own_of::<UnderPostersPref>(&after.prefs.profile_prefs, "u1"), Some(pick));
+    assert!(confirm::<UnderPostersPref>(pick), "the same pick again is a no-op that still reports saved");
+
+    session.seated("u2", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("u2"), Overrides::default());
+    assert_eq!(under_posters(), UnderPosters::DEFAULT, "another profile reads the default");
+    session.seated("u1", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
+    assert_eq!(under_posters(), pick, "and u1, seated again, finds its pick");
+    assert!(Choice::KEYS.contains(&"under_posters"), "a Settings row saves it through the door");
+    assert!(matches!(How::settings::<UnderPostersPref>(std::sync::mpsc::channel().0), How::Confirm(_)));
 }

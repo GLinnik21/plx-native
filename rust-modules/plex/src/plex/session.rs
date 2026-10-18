@@ -52,7 +52,7 @@ use super::probe::Location;
 pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref};
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -1227,6 +1227,90 @@ impl DeckPress {
     }
 }
 
+/// Which fact the details line under a focused poster carries (Settings > Libraries > Under
+/// posters > Details). plex's own enum, because plex does not name `ui`: `screens` maps it to the
+/// caption policy's `DetailsKind`. Absence, and any spelling this build does not know, is
+/// `YearLength`.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnderPostersDetails {
+    /// "2019 · 2h 14m" (the default).
+    #[default]
+    #[serde(rename = "year_length")]
+    YearLength,
+    #[serde(rename = "genre")]
+    Genre,
+    /// "4K · HDR".
+    #[serde(rename = "video")]
+    Video,
+    /// "PG-13 · 7.8".
+    #[serde(rename = "age_rating_score")]
+    AgeRatingScore,
+    /// No details line.
+    #[serde(rename = "none")]
+    None,
+}
+
+impl UnderPostersDetails {
+    /// Every option, the order the picker lists them in.
+    pub const LADDER: [UnderPostersDetails; 5] = [
+        UnderPostersDetails::YearLength,
+        UnderPostersDetails::Genre,
+        UnderPostersDetails::Video,
+        UnderPostersDetails::AgeRatingScore,
+        UnderPostersDetails::None,
+    ];
+
+    /// An in-memory index back to an option — out of range is the default, for the reason
+    /// [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> UnderPostersDetails {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+}
+
+/// **What sits under the focused poster** — one setting for every poster grid and row (Library,
+/// Collections, Home, Search, Watchlist): whether the title shows, and which fact the details
+/// line carries. Per profile, like [`DeckPress`]. The default is no title and the year and length.
+///
+/// Each field is soft-parsed on its own, so a spelling a later build wrote for `details` costs the
+/// details alone and never the title.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct UnderPosters {
+    #[serde(deserialize_with = "de_soft_under_posters_title")]
+    pub title: bool,
+    #[serde(deserialize_with = "de_soft_under_posters_details")]
+    pub details: UnderPostersDetails,
+}
+
+fn de_soft_under_posters_title<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(false) };
+    Ok(v.as_bool().unwrap_or(false))
+}
+
+fn de_soft_under_posters_details<'de, D: Deserializer<'de>>(d: D) -> Result<UnderPostersDetails, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(UnderPostersDetails::default()) };
+    Ok(serde_json::from_value::<UnderPostersDetails>(v).unwrap_or_default())
+}
+
+impl UnderPosters {
+    /// The defaults, as a `const` for callers that compare against them.
+    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength };
+
+    /// One byte for the media layer's live cell: the title in bit 0, the details' index in bits 1-3.
+    pub fn pack(self) -> u8 {
+        u8::from(self.title) | (self.details.index() << 1)
+    }
+
+    /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default.
+    pub fn unpack(b: u8) -> UnderPosters {
+        UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111) }
+    }
+}
+
 /// **The window the interface asks for at launch** (Settings > System > Interface resolution).
 ///
 /// The UI is authored at 1920x1080 and `plx_base::surface` fits that canvas into whatever drawable
@@ -2334,6 +2418,10 @@ impl Session {
 
     pub fn deck_press(&self) -> DeckPress {
         self.prefs.deck_press
+    }
+
+    pub fn under_posters(&self) -> UnderPosters {
+        self.prefs.under_posters
     }
 
     pub fn hdr_overlay_brightness(&self) -> HdrOverlayBrightness {

@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Sob os cartazes",
+  "under_posters.detail": "O que aparece sob um cartaz.",
+  "under_posters.copy": "Escolha o que o cartaz em foco mostra por baixo. Só o cartaz em foco abre uma legenda; os outros ficam limpos.",
+  "under_posters.title_row": "Título",
+  "under_posters.title_detail": "Mostrar o título acima dos detalhes.",
+  "under_posters.details_section": "Detalhes",
+  "under_posters.year_length": "Ano · Duração",
+  "under_posters.genre": "Género",
+  "under_posters.video": "Vídeo",
+  "under_posters.age_rating_score": "Classificação · Nota",
+  "under_posters.none": "Nenhum",
+  "under_posters.reset": "Repor predefinição",
+  "under_posters.sample_title": "Filme",
+  "under_posters.sample_genre": "Drama"
+}

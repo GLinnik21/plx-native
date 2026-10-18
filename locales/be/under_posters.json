@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Пад пастарамі",
+  "under_posters.detail": "Што паказана пад пастарам.",
+  "under_posters.copy": "Выберыце, што паказвае пад сабой выбраны пастар. Подпіс адкрываецца толькі пад выбраным пастарам, астатнія застаюцца чыстымі.",
+  "under_posters.title_row": "Назва",
+  "under_posters.title_detail": "Паказваць назву над звесткамі.",
+  "under_posters.details_section": "Звесткі",
+  "under_posters.year_length": "Год · Працягласць",
+  "under_posters.genre": "Жанр",
+  "under_posters.video": "Відэа",
+  "under_posters.age_rating_score": "Узроставы рэйтынг · Ацэнка",
+  "under_posters.none": "Няма",
+  "under_posters.reset": "Скінуць па змаўчанні",
+  "under_posters.sample_title": "Фільм",
+  "under_posters.sample_genre": "Драма"
+}

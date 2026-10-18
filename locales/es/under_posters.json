@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Bajo los carteles",
+  "under_posters.detail": "Lo que se ve bajo un cartel.",
+  "under_posters.copy": "Elige qué muestra el cartel enfocado debajo. Solo el cartel enfocado abre un pie; los demás quedan limpios.",
+  "under_posters.title_row": "Título",
+  "under_posters.title_detail": "Mostrar el título sobre los detalles.",
+  "under_posters.details_section": "Detalles",
+  "under_posters.year_length": "Año · Duración",
+  "under_posters.genre": "Género",
+  "under_posters.video": "Vídeo",
+  "under_posters.age_rating_score": "Clasificación · Nota",
+  "under_posters.none": "Ninguno",
+  "under_posters.reset": "Restablecer",
+  "under_posters.sample_title": "Película",
+  "under_posters.sample_genre": "Drama"
+}

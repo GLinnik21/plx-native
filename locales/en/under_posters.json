@@ -1,0 +1,58 @@
+{
+  "under_posters.title": {
+    "value": "Under posters",
+    "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
+  },
+  "under_posters.detail": {
+    "value": "What shows under a poster.",
+    "description": "Detail line under the Under posters row on the Settings root. One short sentence."
+  },
+  "under_posters.copy": {
+    "value": "Choose what the focused poster shows beneath it. Only the focused poster opens a caption; the others stay clean.",
+    "description": "Narrative copy beside the Under posters page: what the setting does. Two short sentences."
+  },
+  "under_posters.title_row": {
+    "value": "Title",
+    "description": "Switch row label on the Under posters page: show the item title under the focused poster."
+  },
+  "under_posters.title_detail": {
+    "value": "Show the title above the details.",
+    "description": "Detail line under the Title switch on the Under posters page."
+  },
+  "under_posters.details_section": {
+    "value": "Details",
+    "description": "Section heading above the details choices on the Under posters page."
+  },
+  "under_posters.year_length": {
+    "value": "Year · Length",
+    "description": "Under posters details choice: the release year and the running time, e.g. 2019 · 2h 14m. Keep the middle dot."
+  },
+  "under_posters.genre": {
+    "value": "Genre",
+    "description": "Under posters details choice: the genre."
+  },
+  "under_posters.video": {
+    "value": "Video",
+    "description": "Under posters details choice: video quality marks such as 4K · HDR."
+  },
+  "under_posters.age_rating_score": {
+    "value": "Age rating · Score",
+    "description": "Under posters details choice: age rating and audience score, e.g. PG-13 · 7.8. Keep the middle dot."
+  },
+  "under_posters.none": {
+    "value": "None",
+    "description": "Under posters details choice: show no details line."
+  },
+  "under_posters.reset": {
+    "value": "Reset to default",
+    "description": "Button on the Under posters page that restores the default (no title, year and length)."
+  },
+  "under_posters.sample_title": {
+    "value": "Movie",
+    "description": "Placeholder title of the sample poster in the Under posters preview. One short word that fits inside a small poster tile, e.g. Movie."
+  },
+  "under_posters.sample_genre": {
+    "value": "Drama",
+    "description": "Sample genre shown in the Under posters preview, one word."
+  }
+}

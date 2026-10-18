@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Sotto le locandine",
+  "under_posters.detail": "Cosa appare sotto una locandina.",
+  "under_posters.copy": "Scegli cosa mostra sotto di sé la locandina selezionata. Solo quella selezionata apre una didascalia; le altre restano pulite.",
+  "under_posters.title_row": "Titolo",
+  "under_posters.title_detail": "Mostra il titolo sopra i dettagli.",
+  "under_posters.details_section": "Dettagli",
+  "under_posters.year_length": "Anno · Durata",
+  "under_posters.genre": "Genere",
+  "under_posters.video": "Video",
+  "under_posters.age_rating_score": "Classificazione · Voto",
+  "under_posters.none": "Nessuno",
+  "under_posters.reset": "Ripristina predefinito",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drammatico"
+}

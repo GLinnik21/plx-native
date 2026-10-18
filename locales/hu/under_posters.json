@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Plakátok alatt",
+  "under_posters.detail": "Mi látszik a plakát alatt.",
+  "under_posters.copy": "Válaszd ki, mit mutasson alatta a kijelölt plakát. Csak a kijelölt plakát nyit feliratot; a többi tiszta marad.",
+  "under_posters.title_row": "Cím",
+  "under_posters.title_detail": "A cím megjelenítése a részletek felett.",
+  "under_posters.details_section": "Részletek",
+  "under_posters.year_length": "Év · Hossz",
+  "under_posters.genre": "Műfaj",
+  "under_posters.video": "Videó",
+  "under_posters.age_rating_score": "Korhatár · Értékelés",
+  "under_posters.none": "Nincs",
+  "under_posters.reset": "Alapértelmezés",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Dráma"
+}

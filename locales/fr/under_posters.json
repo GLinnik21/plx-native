@@ -1,0 +1,16 @@
+{
+  "under_posters.title": "Sous les affiches",
+  "under_posters.detail": "Ce qui s’affiche sous une affiche.",
+  "under_posters.copy": "Choisissez ce que l’affiche sélectionnée montre en dessous. Seule l’affiche sélectionnée ouvre une légende ; les autres restent nettes.",
+  "under_posters.title_row": "Titre",
+  "under_posters.title_detail": "Afficher le titre au-dessus des détails.",
+  "under_posters.details_section": "Détails",
+  "under_posters.year_length": "Année · Durée",
+  "under_posters.genre": "Genre",
+  "under_posters.video": "Vidéo",
+  "under_posters.age_rating_score": "Classification · Note",
+  "under_posters.none": "Aucun",
+  "under_posters.reset": "Rétablir par défaut",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drame"
+}

@@ -9,12 +9,12 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     TrailerAutoplayPref, UiResolutionPref};
 use super::{
-    CanonicalSessionPreferences, DeckPress, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
+    CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
     HdrOverlayBrightness, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
@@ -111,19 +111,20 @@ fn every_marker_names_its_own_field() {
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<DeckPressPref>(DeckPress::Play);
+    check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre });
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
     // A5: the remaining `Copy` rows.
     check_row::<AutoSignInPref>(true);
     check_row::<TrailerAutoplayPref>(true);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
     check_row::<UiResolutionPref>(UiResolution::Hd720);
-    // The table lists exactly these fourteen `Setting` rows, the four list rows below, the two
+    // The table lists exactly these fifteen `Setting` rows, the four list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 14 + 4 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 15 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -216,6 +217,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         ("next_episode_mode", Some(Confirm)),
         ("skip_interval", Some(Confirm)),
         ("deck_press", Some(Confirm)),
+        ("under_posters", Some(Confirm)),
         ("subtitle_size", Some(Optimistic)),
         ("subtitle_position", Some(Optimistic)),
         ("hdr_overlay_brightness", Some(Optimistic)),
@@ -225,7 +227,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     ] {
         let d = row(key);
         assert_eq!(d.settings, settings, "{key}");
-        assert!(d.live, "{key}: every one of the eleven has a live cell in media");
+        assert!(d.live, "{key}: every one of the twelve has a live cell in media");
         assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a, and P1c for trailer_autoplay, where live and settings flipped too): it was Install on main");
         assert_eq!(d.fallback, Fallback::LegacyInstallKey, "{key}: a profile with no value of its own reads the TV's");
         assert!(!d.account_bound, "{key}: the top-level key is the TV's, the profile's own value is `profile_prefs`");
@@ -292,6 +294,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("next_episode_mode", generic()),
         ("skip_interval", generic()),
         ("deck_press", generic()),
+        ("under_posters", generic()),
         ("audio_enhancements", generic()),
         // A5. A switch's garbage excludes the booleans, which are VALID values for it.
         ("auto_sign_in", not_a_bool()),
@@ -423,4 +426,47 @@ fn modelled_keys_never_reach_extensions_and_future_keys_still_do() {
     assert!(legacy.extensions.0.contains_key("a_future_key"));
     assert!(!legacy.extensions.0.contains_key("deck_press"));
     assert!(!legacy.extensions.0.contains_key("audio_enhancements"));
+}
+
+// ---- Under posters (Settings > Libraries) ------------------------------------------------------
+
+fn under_posters_session(value: Value) -> Session {
+    serde_json::from_value(json!({ "under_posters": value })).expect("a session with the key parses")
+}
+
+/// Soft parse, omit-at-default, and a field's garbage costing only that field.
+#[test]
+fn under_posters_is_soft_per_field_and_omitted_at_the_default() {
+    for garbage in [Value::Null, json!("zzz"), json!(3), json!(true), json!([1, "x"])] {
+        assert_eq!(under_posters_session(garbage.clone()).under_posters(), UnderPosters::default(), "{garbage}");
+    }
+    // A later build's spelling of `details` keeps the title the viewer chose.
+    let kept = under_posters_session(json!({ "title": true, "details": "future_kind" }));
+    assert_eq!(kept.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::YearLength });
+    // And a bad title keeps the details.
+    let kept = under_posters_session(json!({ "title": "yes", "details": "genre" }));
+    assert_eq!(kept.under_posters(), UnderPosters { title: false, details: UnderPostersDetails::Genre });
+    // The default is not written, so a session predating the field serializes as it did.
+    let json = serde_json::to_string(&Session::default()).unwrap();
+    assert!(!json.contains("under_posters"), "{json}");
+    assert_eq!(UnderPosters::default(), UnderPosters::DEFAULT);
+}
+
+#[test]
+fn under_posters_round_trips_and_packs_into_one_byte() {
+    for details in UnderPostersDetails::LADDER {
+        for title in [false, true] {
+            let v = UnderPosters { title, details };
+            let session = Session::default().with_pref::<UnderPostersPref>(v);
+            assert_eq!(serde_json::to_string(&session).unwrap().contains("under_posters"), v != UnderPosters::DEFAULT);
+            let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+            assert_eq!(back.under_posters(), v);
+            assert_eq!(UnderPosters::unpack(v.pack()), v, "{v:?}");
+        }
+    }
+    assert_eq!(UnderPosters::DEFAULT.pack(), 0, "the live cell's seed is the default");
+    assert_eq!(UnderPosters::unpack(0xFE).details, UnderPostersDetails::YearLength, "out of range reads the default");
+    for d in UnderPostersDetails::LADDER {
+        assert_eq!(UnderPostersDetails::from_index(d.index()), d);
+    }
 }

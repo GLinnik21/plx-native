@@ -3,7 +3,7 @@
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
 use super::super::{
-    current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
+    current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, UnderPostersDetails, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
@@ -57,6 +57,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
         deck_press: Some(DeckPress::Play),
+        under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
         trailer_autoplay: Some(false),
     };
@@ -66,7 +67,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 11, "the ten player settings and hero trailer autoplay fall back to a legacy key");
+    assert_eq!(rows.len(), 12, "the ten player settings, hero trailer autoplay and Under posters fall back to a legacy key");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }

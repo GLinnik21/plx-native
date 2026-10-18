@@ -444,6 +444,7 @@ fn mount_page(
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
+        SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
@@ -946,6 +947,7 @@ struct ServerMachineId(String);
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum RootId {
     Favourites,
+    UnderPosters,
     Playback,
     AudioSubtitles,
     Language,
@@ -976,6 +978,7 @@ impl FormId for RootId {
             RootId::Legal => 8,
             RootId::About => 9,
             RootId::Resolution => 10,
+            RootId::UnderPosters => 11,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1108,6 +1111,14 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Row::new(plx_platform::i18n::msg::settings_libraries_title())
                 .detail(plx_platform::i18n::msg::settings_libraries_detail())
                 .value(plx_platform::i18n::msg::settings_libraries_count(inputs.library_count))
+                .chevron(true),
+        )
+        .item(
+            RootId::UnderPosters,
+            RowKind::Nav(SettingsPage::UnderPosters),
+            Action::Door,
+            Row::new(plx_platform::i18n::msg::under_posters_title())
+                .detail(plx_platform::i18n::msg::under_posters_detail())
                 .chevron(true),
         );
     let playback = FormSection::new(plx_platform::i18n::msg::settings_playback_section())
@@ -1584,6 +1595,10 @@ impl Screen<InnerHost> for RootPage {
         HitSource::Engine
     }
 }
+
+#[path = "settings_under_posters.rs"]
+mod under_posters;
+pub use under_posters::caption_policy_of;
 
 #[cfg(test)]
 #[path = "settings_test_support.rs"]
