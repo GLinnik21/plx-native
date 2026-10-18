@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T23:26:01Z",
+ "generated": "2026-10-18T23:40:01Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -75,9 +75,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 262,
-   "n_prev": 201,
+   "n_prev": 202,
    "now": 485.0,
-   "prev7": 334,
+   "prev7": 334.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -842,7 +842,7 @@
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
     }
    ],
-   "from": 334,
+   "from": 334.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-18",
