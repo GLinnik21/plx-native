@@ -25,6 +25,9 @@
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
 pub use crate::family::SettingsPage;
+/// The stored Under posters setting as the ui caption policy: the shared door a screen outside
+/// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
+pub use crate::settings::caption_policy_of;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};

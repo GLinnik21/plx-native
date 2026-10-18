@@ -488,7 +488,7 @@ pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::Tile
     let facts = super::collections_page::TileFacts {
         title: &item.title, subtype: item.subtype.as_deref(), child_count: item.child_count,
     };
-    let stored = crate::settings::caption_policy_of(plx_media::route::under_posters());
+    let stored = crate::registry::caption_policy_of(plx_media::route::under_posters());
     let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
     if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
     ui_cards::TileLabel::from_lines(lines)
