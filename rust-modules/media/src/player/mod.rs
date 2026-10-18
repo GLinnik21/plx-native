@@ -350,6 +350,13 @@ pub fn note_decoder_revoked_for_test() {
     SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
 }
 
+/// Whether the session's native clock is held for the viewer's pause, for a test with no native
+/// session to observe the fenced first Play on.
+#[cfg(any(test, feature = "test-support"))]
+pub fn clock_user_held_for_test() -> bool {
+    SHARED.clock_user_held_for_test()
+}
+
 pub use engine::{
     acb_init, begin_resume, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
     suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,

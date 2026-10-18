@@ -1812,6 +1812,13 @@ impl Shared {
         self.reset_hls_clock();
     }
 
+    /// Whether the native clock is held for the VIEWER's pause, which fences the start's first
+    /// Play behind a prime (`reserve_hls_prime_play`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn clock_user_held_for_test(&self) -> bool {
+        self.hls_clock.lock().unwrap_or_else(|e| e.into_inner()).user_held
+    }
+
     #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
     pub fn ensure_initial_clock_hold_for_test(&self) {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());

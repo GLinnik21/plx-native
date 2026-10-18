@@ -70,10 +70,19 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
-        if matches!(clock, ForegroundClock::Paused) {
-            *self.repause_at = resume_ns;
-            set_resume_pend(true);
-            plx_media::player::TX.begin_paused_seek();
+        match clock {
+            ForegroundClock::Paused => {
+                *self.repause_at = resume_ns;
+                set_resume_pend(true);
+                plx_media::player::TX.begin_paused_seek();
+            }
+            // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
+            // decoder-release park): the park left the viewer's pause standing, and the Load is
+            // about to arm its clock hold from it.
+            ForegroundClock::Playing if paused() => {
+                plx_media::player::lifecycle::commit_viewer_resume_for_load();
+            }
+            ForegroundClock::Playing => {}
         }
     }
 

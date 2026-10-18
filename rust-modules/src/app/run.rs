@@ -1042,7 +1042,15 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         }
         // From here down this IS a fresh press, whatever the driver stamped on it.
         app.last_input = clock::now();
-        if claim_press_after_decoder_release(app) {
+        // The press that pays for a decoder-release restore also says which clock it restores
+        // (`wake_input`): PLAY plays, the PLAYPAUSE toggle plays a park saved Paused, and every
+        // other key — OK included — is only a wake and keeps the saved clock.
+        let wake = match key {
+            Key::Play => WakePress::Play,
+            Key::PlayPause => WakePress::Toggle,
+            _ => WakePress::Wake,
+        };
+        if claim_press_after_decoder_release(app, wake) {
             // `down_sym` is unconditional for every fresh press (`begin_fresh_press`'s own
             // doc), and this press never reaches that function: skipping it here left a key
             // still physically held after the restore read as a FRESH press on its next
@@ -1359,7 +1367,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.input.press.cancel();
             app.ok_armed = false;
         }
-        if claim_press_after_decoder_release(app) {
+        // A click on the player is its play/pause toggle, so it wakes a paused park Playing
+        // (`wake_input`). The OK key a set delivers as a click never gets here: `click_is_ok`
+        // above re-sent it as OK, which is only a wake.
+        if claim_press_after_decoder_release(app, WakePress::Toggle) {
             return;
         }
         // Rule 11's click half, and the same one arm the hover path takes. The three it
@@ -1576,10 +1587,46 @@ fn park_on_decoder_release(app: &mut App) {
     plx_machine::idle::invalidate();
 }
 
-/// The first key or click after [`park_on_decoder_release`] rebuilds the picture at the saved spot
-/// in its saved clock (a paused session comes back paused), through the same claim the DID
-/// foreground edge makes. The press is spent on that, like a press that finds the HUD hidden: the
-/// viewer cannot see what it would have acted on. `false` when nothing is parked this way.
+/// What the press that wakes a decoder-release park asks of the transport, as far as the restore
+/// is concerned ([`wake_input`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WakePress {
+    /// The remote's PLAY key.
+    Play,
+    /// A play/pause toggle: the PLAYPAUSE key, or a pointer click (on the player a click that hits
+    /// no control is the toggle, `PlayerScreen`'s pointer arm).
+    Toggle,
+    /// Any other press, OK included: OK is also how a viewer dismisses the screensaver, and
+    /// whether that press reaches the app is unmeasured, so it never starts the video.
+    Wake,
+}
+
+/// The claim a decoder-release wake press makes, given the clock the park saved
+/// ([`ForegroundLifecycle::claimable_clock`]):
+///
+/// | press  | saved Paused             | saved Playing            |
+/// |--------|--------------------------|--------------------------|
+/// | Play   | `PlayKey`: Playing       | `PlayKey`: Playing       |
+/// | Toggle | `PlayKey`: Playing       | `DidForeground`: Playing |
+/// | Wake   | `DidForeground`: Paused  | `DidForeground`: Playing |
+///
+/// `PlayKey` restores a paused save at its exact offset (no resume rewind). A toggle on a playing
+/// save means pause, but the machine has no claim that restores a playing save Paused: that press
+/// is spent as a wake, and the viewer's next one pauses.
+fn wake_input(press: WakePress, saved: Option<ForegroundClock>) -> ForegroundInput {
+    match (press, saved) {
+        (WakePress::Play, _) | (WakePress::Toggle, Some(ForegroundClock::Paused)) => {
+            ForegroundInput::PlayKey
+        }
+        _ => ForegroundInput::DidForeground,
+    }
+}
+
+/// The first key or click after [`park_on_decoder_release`] rebuilds the picture at the saved spot,
+/// through the same claim the DID foreground edge makes. The press is spent on that, like a press
+/// that finds the HUD hidden: the viewer cannot see what it would have acted on — except for the
+/// clock, which [`wake_input`] reads off `press`: a press that asks to play brings a paused save
+/// back Playing, any other keeps the saved clock. `false` when nothing is parked this way.
 ///
 /// **A surface gets first refusal.** `park_on_decoder_release` parks without asking whether
 /// something other than the player owns input, because the dead pipeline has to be dropped either
@@ -1587,7 +1634,7 @@ fn park_on_decoder_release(app: &mut App) {
 /// menu, …) is open over the parked player, its press is its own — stealing it for the restore
 /// would answer a key the viewer aimed at the surface. The park stays pending (not stale: only a
 /// superseded session below clears it) for a later press with nothing in front of it.
-fn claim_press_after_decoder_release(app: &mut App) -> bool {
+fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     if !app.decoder_parked {
         return false;
     }
@@ -1599,10 +1646,11 @@ fn claim_press_after_decoder_release(app: &mut App) -> bool {
         return false;
     }
     app.decoder_parked = false;
+    let input = wake_input(press, app.player.lifecycle.claimable_clock());
     let activation = drive_foreground(
         &mut app.player.lifecycle,
         &mut app.player.session,
-        ForegroundInput::DidForeground,
+        input,
         &mut PlayerForegroundActuator {
             pa: &mut app.adapters.player,
             repause_at: &mut app.repause_at,
@@ -3302,6 +3350,23 @@ mod lifecycle_regression_tests {
         panic!("{reason}");
     }
 
+    /// `TX.paused` is a process-global and these lifecycle tests are serialized, so restore the
+    /// previous value even when an assertion panics. The decoder-release park reads the clock
+    /// through `viewer_paused()`, which is `TX.paused` minus a claim hold's loan.
+    struct TransportPaused(bool);
+    impl TransportPaused {
+        fn set(value: bool) -> Self {
+            let previous = paused();
+            set_paused(value);
+            Self(previous)
+        }
+    }
+    impl Drop for TransportPaused {
+        fn drop(&mut self) {
+            set_paused(self.0);
+        }
+    }
+
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
     fn app() -> App {
         plx_media::player::SHARED.reset_session();
@@ -4732,7 +4797,9 @@ mod lifecycle_regression_tests {
     /// with no app-switch edge, and every Play after it was refused until the app was closed. The
     /// release now parks exactly as an app switch does (session and page kept, Engine dropped),
     /// and the first press is spent on the foreground claim that rebuilds it; the press after
-    /// that is an ordinary one again.
+    /// that is an ordinary one again. This test pins a press that does not ask to play: DOWN is
+    /// only a wake press, so the saved Paused clock is kept and the paused-seek preroll shows the
+    /// resume frame. PLAY, PLAYPAUSE and a click are pinned by their own tests below.
     #[test]
     fn a_decoder_released_by_the_pipeline_parks_until_the_next_press_restores_it() {
         let _serial = plx_base::testlock::serial();
@@ -4747,6 +4814,8 @@ mod lifecycle_regression_tests {
         rig.resolve();
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
+        // The measured decoder-release case: a paused video behind the screensaver.
+        let _paused = TransportPaused::set(true);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
         plx_media::player::note_decoder_revoked_for_test();
@@ -4762,7 +4831,191 @@ mod lifecycle_regression_tests {
         event(&mut rig.app, &mut fr, SDL_KEYDOWN);
         assert!(!rig.app.player.lifecycle.awaiting_load(), "the press claimed the restore");
         assert!(rig.app.inputs.is_empty(), "…and was spent on it, not handed to the page");
-        assert!(!claim_press_after_decoder_release(&mut rig.app), "the next press is ordinary");
+        assert!(
+            matches!(
+                rig.app.player.lifecycle.state,
+                ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
+            ),
+            "a non-PLAY wake press keeps the saved pause, got {:?}",
+            rig.app.player.lifecycle.state
+        );
+        assert!(
+            plx_media::player::seek_preroll_active(),
+            "…and rebuilds through the paused-seek preroll"
+        );
+        assert!(
+            !claim_press_after_decoder_release(&mut rig.app, WakePress::Wake),
+            "the next press is ordinary"
+        );
+    }
+
+    /// The press that wakes a decoder-release park in [`wake_a_decoder_park`].
+    #[derive(Clone, Copy, Debug)]
+    enum WakeWith {
+        Key { sym: c_uint, wcode: c_uint },
+        Click,
+    }
+
+    /// A started direct play, parked by a decoder release with the viewer's clock `paused`, then
+    /// woken by `press`. Returns the rig with the foreground Load the press claimed still pending,
+    /// or `None` when the fixture worker could not be spawned. The rig drops first (its stop
+    /// resets the transport), then the guard puts the previous `TX.paused` back.
+    fn wake_a_decoder_park(paused: bool, press: WakeWith) -> Option<(Rig, Frame, TransportPaused)> {
+        let mut rig = Rig::new()?;
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
+        let guard = TransportPaused::set(paused);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+
+        plx_media::player::note_decoder_revoked_for_test();
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(rig.app.player.lifecycle.awaiting_load(), "{press:?}: the session parked");
+
+        match press {
+            WakeWith::Key { sym, wcode } => {
+                rig.app.ev = encode_key(sym, wcode, true);
+                event(&mut rig.app, &mut fr, SDL_KEYDOWN);
+            }
+            WakeWith::Click => {
+                rig.app.ev[20..24].copy_from_slice(&960i32.to_ne_bytes());
+                rig.app.ev[24..28].copy_from_slice(&540i32.to_ne_bytes());
+                event(&mut rig.app, &mut fr, SDL_MOUSEBUTTONDOWN);
+            }
+        }
+        assert!(!rig.app.player.lifecycle.awaiting_load(), "{press:?}: the press claimed the restore");
+        assert!(rig.app.inputs.is_empty(), "{press:?}: …and was spent on it, not handed to the page");
+        Some((rig, fr, guard))
+    }
+
+    /// Land the foreground Load a wake press launched, as the pump would on `loadCompleted`, and
+    /// run the frame that applies its clock.
+    fn land_the_wake_load(rig: &mut Rig, fr: &mut Frame) {
+        let attempt = rig
+            .app
+            .player
+            .lifecycle
+            .pending_load_attempt()
+            .expect("the wake press launched a tracked Load");
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session,
+            attempt,
+            plx_media::route::RouteStartResult::Started,
+        ));
+        unsafe { playback_tick(&mut rig.app, fr); }
+    }
+
+    /// **A press that asks to play wakes a PAUSED decoder-release park Playing, on the first
+    /// press.** The park saves the viewer's clock — Paused in the measured screensaver case. PLAY
+    /// always asks to play; PLAYPAUSE and a pointer click are the player's play/pause toggle
+    /// (`PlayerScreen`'s click on no control), which on a paused picture means play. Each claims
+    /// the restore with `ForegroundInput::PlayKey`: the exact saved offset, the clock Playing.
+    ///
+    /// The Load must also START unpaused. The park keeps `TX.paused` (a reload reset), and the
+    /// Load arms its initial clock hold from it: under the stale pause the hold was the
+    /// viewer's, which fenced the Load's first Play behind a prime and left the actual Play to a
+    /// later `PlayClock`. `clock_user_held_for_test` is that fence.
+    #[test]
+    fn a_press_that_asks_to_play_wakes_a_paused_decoder_park_playing() {
+        let _serial = plx_base::testlock::serial();
+        for press in [
+            WakeWith::Key { sym: 0, wcode: plx_ui::consts::WCODE_PLAY },
+            WakeWith::Key { sym: 0, wcode: plx_ui::consts::WCODE_PLAYPAUSE },
+            WakeWith::Click,
+        ] {
+            let Some((mut rig, mut fr, _paused)) = wake_a_decoder_park(true, press) else {
+                eprintln!(
+                    "SKIPPED a_press_that_asks_to_play_wakes_a_paused_decoder_park_playing: \
+                     lifecycle fixture worker thread could not be spawned"
+                );
+                return;
+            };
+            assert!(
+                matches!(
+                    rig.app.player.lifecycle.state,
+                    ForegroundState::LoadPending { clock: ForegroundClock::Playing, .. }
+                ),
+                "{press:?} must restore the paused snapshot Playing, got {:?}",
+                rig.app.player.lifecycle.state
+            );
+            assert!(!paused(), "{press:?}: the viewer's resume is published before the Load");
+            assert!(
+                !plx_media::player::clock_user_held_for_test(),
+                "{press:?}: the Load's first Play must not be fenced behind the viewer's pause"
+            );
+            assert!(
+                !plx_media::player::seek_preroll_active(),
+                "{press:?}: a Playing restore must not open the paused-seek preroll"
+            );
+
+            land_the_wake_load(&mut rig, &mut fr);
+            assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle, "{press:?}");
+            assert!(!paused(), "{press:?}: the started restore plays");
+            assert!(!plx_media::player::seek_preroll_active(), "{press:?}: and shows no preroll");
+            assert!(
+                !claim_press_after_decoder_release(&mut rig.app, WakePress::Wake),
+                "{press:?}: the next press is ordinary"
+            );
+        }
+    }
+
+    /// **OK only wakes a paused decoder-release park; it comes back paused.** OK is the player's
+    /// toggle too, but it is also the key a viewer presses to get rid of the screensaver, and
+    /// whether the press that dismisses it reaches the app is unmeasured, so it keeps the saved
+    /// clock rather than starting the video. On a set where the OK key arrives as a click
+    /// (`input::click_is_ok`), the click is re-sent as this same key.
+    #[test]
+    fn an_ok_press_wakes_a_paused_decoder_park_paused() {
+        let _serial = plx_base::testlock::serial();
+        let ok = WakeWith::Key { sym: plx_ui::consts::SDLK_RETURN, wcode: 0 };
+        let Some((rig, _fr, _paused)) = wake_a_decoder_park(true, ok) else {
+            eprintln!(
+                "SKIPPED an_ok_press_wakes_a_paused_decoder_park_paused: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        assert!(
+            matches!(
+                rig.app.player.lifecycle.state,
+                ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
+            ),
+            "OK keeps the saved pause, got {:?}",
+            rig.app.player.lifecycle.state
+        );
+        assert!(paused(), "the viewer's pause stands");
+        assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
+    }
+
+    /// **A toggle that wakes a PLAYING decoder-release park is spent as a wake.** PLAYPAUSE (or
+    /// a click) on a playing picture means pause, but the foreground machine restores a snapshot
+    /// in its saved clock or Playing, never Paused over a Playing save: the restore plays as it
+    /// was, and the viewer's next press pauses it. Pinned so the table in
+    /// `claim_press_after_decoder_release`'s doc stays what the code does.
+    #[test]
+    fn a_toggle_on_a_playing_decoder_park_restores_it_playing() {
+        let _serial = plx_base::testlock::serial();
+        for press in [WakeWith::Key { sym: 0, wcode: plx_ui::consts::WCODE_PLAYPAUSE }, WakeWith::Click] {
+            let Some((mut rig, mut fr, _paused)) = wake_a_decoder_park(false, press) else {
+                eprintln!(
+                    "SKIPPED a_toggle_on_a_playing_decoder_park_restores_it_playing: \
+                     lifecycle fixture worker thread could not be spawned"
+                );
+                return;
+            };
+            assert!(
+                matches!(
+                    rig.app.player.lifecycle.state,
+                    ForegroundState::LoadPending { clock: ForegroundClock::Playing, .. }
+                ),
+                "{press:?} restores a playing save Playing, got {:?}",
+                rig.app.player.lifecycle.state
+            );
+            land_the_wake_load(&mut rig, &mut fr);
+            assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle, "{press:?}");
+            assert!(!paused(), "{press:?}: the restore plays");
+        }
     }
 
     /// **A surface open over the parked player gets its own press, not the restore.**
@@ -6834,5 +7087,32 @@ mod pump_wiring_tests {
             "pump_detail() and pump_season() must be pumped from the same function — found what \
              looks like an intervening function boundary between them"
         );
+    }
+}
+
+#[cfg(test)]
+mod wake_input_tests {
+    use super::{wake_input, ForegroundClock, ForegroundInput, WakePress};
+
+    /// **`wake_input`'s doc table, cell for cell.** Only a press that asks to play claims with
+    /// `PlayKey`, and a toggle asks to play only over a paused save; with nothing claimable (no
+    /// saved clock) only PLAY still asks.
+    #[test]
+    fn only_a_press_that_asks_to_play_claims_playing() {
+        use ForegroundClock::{Paused, Playing};
+        use ForegroundInput::{DidForeground, PlayKey};
+        for (press, saved, want) in [
+            (WakePress::Play, Some(Paused), PlayKey),
+            (WakePress::Play, Some(Playing), PlayKey),
+            (WakePress::Play, None, PlayKey),
+            (WakePress::Toggle, Some(Paused), PlayKey),
+            (WakePress::Toggle, Some(Playing), DidForeground),
+            (WakePress::Toggle, None, DidForeground),
+            (WakePress::Wake, Some(Paused), DidForeground),
+            (WakePress::Wake, Some(Playing), DidForeground),
+            (WakePress::Wake, None, DidForeground),
+        ] {
+            assert_eq!(wake_input(press, saved), want, "{press:?} over {saved:?}");
+        }
     }
 }

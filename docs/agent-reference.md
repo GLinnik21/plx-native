@@ -1464,7 +1464,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   puts it back rather than resuming a session with nothing on screen. It then
   tracks one exact Load attempt at a time,
   follows reducer-approved superseding or rollback attempts, retries an exact failure without
-  repeating route preparation, and applies the saved clock only after `Started`. In-app
+  repeating route preparation, and issues the clock's native Play only after `Started` (a Playing
+  restore over a standing pause publishes the viewer's resume BEFORE the Load, so the Load is not
+  armed under it). In-app
   Home/Settings are *overlays* and do **not** fire these — only a real OS app-switch does. Preserve
   the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,
