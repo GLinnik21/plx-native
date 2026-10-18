@@ -8,8 +8,8 @@ use plx_machine::machine::{EntryId, InstanceId};
 use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 use plx_data::stores::browse::SecKind;
-use super::draw::shelf_label;
-use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT,
+use super::recommended::shelf_label;
+use super::layout::{self, Layout, COLS, CONTENT_TOP, GRID_RIGHT,
     RAIL_CAP_PAD, RAIL_TRACK_W};
 
 /// Title over the default year line: the shape the legacy grid caption had.
@@ -57,13 +57,13 @@ fn a_focused_grid_caption_stays_inside_the_rail_reserved_band() {
     let card = |col: usize| {
         Rect::new(
             MARGIN_X + col as f32 * (CARD_W + layout::GRID_GAP),
-            CONTENT_TOP + Layout::new(false, &[], 40, true).grid_top(),
+            CONTENT_TOP + Layout::new(false, 40).grid_top(),
             CARD_W,
             CARD_H,
         )
     };
 
-    let style = Layout::new(false, &[], 40, true).style();
+    let style = Layout::new(false, 40).style();
     let (x, w) = ui_cards::label_band(p, card(COLS - 1), &style);
     assert!(
         x + w <= GRID_RIGHT + 0.01,
@@ -88,7 +88,7 @@ fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
         panic!("episodes must use their own still, not the show poster");
     };
     assert_eq!(plx_ui::widgets::still_key(&art), "/episode/still");
-    let layout = Layout::new(false, &[], 40, true).with_episodes(true);
+    let layout = Layout::new(false, 40).with_episodes(true);
     let rect = Rect::new(layout.cell_x(layout.cols() - 1), layout.row_y(0, 0.0),
         layout.card_w(), layout.card_h());
     let (x, width) = ui_cards::label_band(Painter::root(), rect, &layout.style());
@@ -107,9 +107,7 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
         RAIL_TRACK_W,
         rail.2 + 2.0 * RAIL_CAP_PAD,
     );
-    let bare = Layout::new(false, &[], 40, true);
-    let head = Layout::new(true, &[plx_ui::consts::ROW_PITCH], 40, true);
-    let head_run = ShelfRun::of(&[plx_ui::consts::ROW_PITCH]);
+    let bare = Layout::new(false, 40);
     let screen = crate::library::LibraryScreen::new(
         EntryId(1),
         InstanceId(1),
@@ -131,12 +129,6 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
         CONTENT_TOP,
         plx_ui::widgets::StatusOverlay::CTRL_H,
     );
-    let control_width = plx_ui::value_chip::ValueChip::width(
-        &measure,
-        c"Sort",
-        c" · Title",
-        None,
-    );
     let rects = [
         (
             "library A–Z rail track",
@@ -154,47 +146,9 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             "library pill strip (document head)",
             pill_rect,
         ),
-        (
-            "library shelf heading (first)",
-            Rect::new(
-                MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(&head_run, 0) - plx_ui::consts::TITLE_DY,
-                CARD_W,
-                plx_ui::consts::TITLE_DY,
-            ),
-        ),
-        (
-            "library shelf tile (first)",
-            Rect::new(
-                MARGIN_X,
-                CONTENT_TOP + head.shelf_origin(&head_run, 0) + plx_ui::consts::CARD_DY,
-                CARD_W,
-                CARD_H,
-            ),
-        ),
-        (
-            "library grid heading (no chip, no shelves)",
-            Rect::new(
-                MARGIN_X,
-                CONTENT_TOP + bare.grid_block_top(),
-                CARD_W,
-                plx_ui::consts::TITLE_DY,
-            ),
-        ),
-        (
-            "library grid control row (no chip, no shelves)",
-            Rect::new(
-                MARGIN_X,
-                CONTENT_TOP + bare.grid_block_top()
-                    + plx_ui::consts::TITLE_DY
-                    + plx_ui::consts::CARD_DY,
-                control_width,
-                plx_ui::widgets::StatusOverlay::CTRL_H,
-            ),
-        ),
         ("library failure read-out band", screen.status_frame()),
     ];
-    assert_eq!(rects.len(), 9, "the complete legacy Library probe must contribute nine bounds");
+    assert_eq!(rects.len(), 5, "the Library probe must contribute five bounds");
     for (name, rect) in rects {
         assert!(
             consts::inside_safe(rect),
@@ -255,7 +209,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     fn home_and_library_leave_the_same_air_under_a_focused_label() {
         use plx_ui::consts::{CARD_DY, ROW_PITCH, TITLE_DY, UNDER_LABEL_AIR};
         let home_air = ROW_PITCH - TITLE_DY - CARD_DY - CARD_H - ui_cards::UNDER_LABEL_H;
-        let focused = Layout::new(false, &[], 2, true).with_grid_focus(Some(0));
+        let focused = Layout::new(false, 2).with_grid_focus(Some(0));
         let library_air = focused.row_y(1, 0.0) - focused.row_y(0, 0.0)
             - CARD_H - ui_cards::UNDER_LABEL_H;
         assert_eq!(home_air, UNDER_LABEL_AIR);
@@ -356,33 +310,6 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         let mut poster = shelf(vec![dated(ep(3, 4, "Violet", "The Bear"))]);
         poster.landscape = false;
         assert_eq!(title(&shelf_label(&poster, 0)), "Violet");
-    }
-
-    #[test]
-    fn an_episode_shelf_takes_a_shorter_band_than_a_poster_shelf() {
-        use plx_ui::consts::ROW_PITCH;
-        // graded at the FOCUSED band, where the two shapes' difference is the tile height alone
-        let open = 1.0; // owned layout uses the shared under-band expansion ratio
-        let poster = shelf_pitch(false, open);
-        let landscape = shelf_pitch(true, open);
-        assert_eq!(poster, ROW_PITCH);
-        assert!(landscape < poster, "a landscape row is shorter");
-        assert_eq!(poster - landscape, CARD_H - RowStyle::EPISODE.h);
-
-        // …and the document sums the ACTUAL pitches, so a mixed page puts the grid where the
-        // shelves above it really end
-        let mixed = Layout::new(true, &[landscape, poster, landscape], 40, true);
-        let run = ShelfRun::of(&[landscape, poster, landscape]);
-        assert_eq!(mixed.shelf_origin(&run, 0), mixed.library_h());
-        assert_eq!(mixed.shelf_origin(&run, 1), mixed.library_h() + landscape);
-        assert_eq!(mixed.shelf_origin(&run, 2), mixed.library_h() + landscape + poster);
-        assert_eq!(
-            mixed.grid_block_top(),
-            mixed.library_h() + 2.0 * landscape + poster
-        );
-        // the uniform case is unchanged, which is what every other geometry test asserts
-        let uniform = Layout::new(true, &[poster; 3], 40, true);
-        assert_eq!(uniform.grid_block_top(), uniform.library_h() + 3.0 * poster);
     }
 
 /// The artwork FALLBACK CHAIN: the episode's own still, then the show's POSTER, and its

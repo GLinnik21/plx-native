@@ -174,3 +174,38 @@ fn the_empty_read_out_fits_in_every_shipped_language() {
             "{}: {text:?} is {width:.0} px wide, past what the read-out wraps in two lines", language.tag());
     }
 }
+
+/// Mixed, non-representable pitches: the run's prefix sums must be the very bits a straight
+/// `pitches[..i].iter().sum()` gives, or every shelf origin would drift a ulp from before.
+#[test]
+fn shelf_run_origins_are_bit_identical_to_the_straight_sum() {
+    let pitches: Vec<f32> = (0..170).map(|i| 301.37 + (i % 7) as f32 * 0.113 + (i % 3) as f32 * 59.9).collect();
+    let run = ShelfRun::of(&pitches);
+    for i in 0..=pitches.len() + 2 {
+        let straight = pitches[..i.min(pitches.len())].iter().sum::<f32>();
+        // (an empty prefix sums to -0.0 in std and starts at 0.0 here: equal)
+        assert_eq!(run.origin(i), straight, "origin {i}");
+        if i > 0 { assert_eq!(run.origin(i).to_bits(), straight.to_bits(), "origin {i}"); }
+    }
+    assert_eq!(run.height().to_bits(), pitches.iter().sum::<f32>().to_bits());
+    assert_eq!(run.pitch(5), pitches[5]);
+    assert_eq!(run.pitch(999), plx_ui::consts::ROW_PITCH);
+}
+
+#[test]
+fn shelf_run_window_holds_exactly_the_shelves_meeting_the_span() {
+    let pitches: Vec<f32> = (0..50).map(|i| 300.0 + (i % 4) as f32 * 40.0).collect();
+    let run = ShelfRun::of(&pitches);
+    assert_eq!(ShelfRun::default().window(0.0, 1.0e6), 0..0);
+    assert_eq!(run.window(-1.0e6, -500.0), 0..0, "above the run");
+    assert_eq!(run.window(1.0e9, 2.0e9), 50..50, "below the run");
+    for (top, bottom) in [(0.0, 1080.0), (5000.0, 6080.0), (123.4, 456.7), (14000.0, 20000.0)] {
+        let window = run.window(top, bottom);
+        for i in 0..50 {
+            let meets = run.origin(i) < bottom && run.origin(i) + pitches[i] > top;
+            if meets { assert!(window.contains(&i), "{i} meets {top}..{bottom} but is outside {window:?}"); }
+            if !window.contains(&i) { assert!(!meets); }
+        }
+        assert!(bottom - top > 2000.0 || window.len() < 8, "{window:?}");
+    }
+}

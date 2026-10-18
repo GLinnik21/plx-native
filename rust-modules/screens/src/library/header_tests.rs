@@ -15,7 +15,7 @@ fn key_press(key: Key) -> ScreenEvent<TestHost> {
 /// A settled grid page (no hub shelves) of `libraries` libraries with the first row focused.
 fn grid_page(libraries: usize) -> (Fixture, LibraryScreen, FocusEngine<u32>) {
     let fixture = Fixture::new(libraries, 36, 0);
-    let mut page = fixture.screen().without_shelves();
+    let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
     page.sync(&fixture.cx(&engine));

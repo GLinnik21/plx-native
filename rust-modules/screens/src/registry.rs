@@ -2068,7 +2068,7 @@ where
             AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
-                let mut page = crate::library::LibraryScreen::new(entry, id, kind).without_shelves();
+                let mut page = crate::library::LibraryScreen::new(entry, id, kind);
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
@@ -2085,7 +2085,7 @@ where
             AppArg::LibraryCollections { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
-                Box::new(crate::library::LibraryScreen::new(entry, id, kind).without_shelves().with_listing(crate::library::Listing::Collections))
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).with_listing(crate::library::Listing::Collections))
             }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);
@@ -2429,7 +2429,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `Library`, so `ARG_SHAPE`, the first entry, moves) and `LibraryMenuKind` gains `SortFilter`. One
 // bump; the replay fixtures that open the Library were re-recorded against it; the previous pin
 // was 0x07c8_d161_c006_f959.
-const SCREEN_SHAPES_PIN: u64 = 0xff36_edc2_57ab_505a;
+// Library shelf removal: `LibraryScreen` and its `Layout` drop the hub-shelf fields (the shelves are
+// `RecommendedScreen`'s alone), so both shape strings move. The replay fixtures that open the
+// Library need re-recording against it; the previous pin was 0xff36_edc2_57ab_505a.
+const SCREEN_SHAPES_PIN: u64 = 0x2560_8275_1136_934c;
 
 #[cfg(test)]
 mod arg_tests {

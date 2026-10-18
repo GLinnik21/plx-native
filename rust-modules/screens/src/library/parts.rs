@@ -203,7 +203,7 @@ impl GridPart {
     }
 
     pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
-        let layout = Layout::new(false, &[], 0, false);
+        let layout = Layout::new(false, 0);
         Self {
             entry, group,
             total: 0,

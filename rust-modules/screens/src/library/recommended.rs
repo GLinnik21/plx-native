@@ -39,7 +39,6 @@ use plx_ui::widgets::Art;
 use plx_ui::{on_axis, Env, Rect, Spring, View};
 
 use super::identity::{KeyRegion, KeyRegistry};
-use super::layout::ShelfRun;
 use crate::registry::{
     tile_facts, AppFx, AppMsg, ContentArg, ContentReq, LibraryCmd, LibraryIdentity, LibraryLike,
     LibraryMemory, LibraryReq, LibrarySectionIdentity, LibraryViewport, PageMemory,
@@ -122,6 +121,64 @@ pub struct RecommendedScreen {
 }
 
 // ---- geometry -------------------------------------------------------------------------------
+
+/// The shelves stacked down the document: one pitch each, however many the server
+/// published. `tops` holds the prefix sums (`tops[i]` is shelf `i`'s offset from the run's start,
+/// `tops[len]` the run's height), accumulated left to right in the order a straight
+/// `pitches[..i].iter().sum()` adds them, so every origin is bit-identical to that sum. Origin
+/// lookups are O(1) and the visible window is two binary searches, so a page of hundreds of
+/// shelves costs what its on-screen shelves cost. The page keeps two (live and spring target) and
+/// refills both into their existing capacity on every relayout.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ShelfRun {
+    tops: Vec<f32>,
+    pitches: Vec<f32>,
+}
+
+impl ShelfRun {
+    #[cfg(test)]
+    pub(super) fn of(pitches: &[f32]) -> Self {
+        let mut run = Self::default();
+        run.set(pitches.iter().copied());
+        run
+    }
+
+    /// Replace the run with these pitches, reusing the allocated capacity.
+    pub(super) fn set(&mut self, pitches: impl Iterator<Item = f32>) {
+        self.tops.clear();
+        self.pitches.clear();
+        let mut top = 0.0f32;
+        for pitch in pitches {
+            self.tops.push(top);
+            self.pitches.push(pitch);
+            top += pitch;
+        }
+        self.tops.push(top);
+    }
+
+    pub(super) fn len(&self) -> usize { self.pitches.len() }
+
+    /// Offset of shelf `index` from the run's start; past the end, the run's height.
+    pub(super) fn origin(&self, index: usize) -> f32 {
+        self.tops.get(index).copied().unwrap_or_else(|| self.height())
+    }
+
+    pub(super) fn pitch(&self, index: usize) -> f32 {
+        self.pitches.get(index).copied().unwrap_or(plx_ui::consts::ROW_PITCH)
+    }
+
+    pub(super) fn height(&self) -> f32 { self.tops.last().copied().unwrap_or(0.0) }
+
+    /// The shelves whose band `[origin, origin + pitch)` meets `top..bottom` (run coordinates),
+    /// widened by one pixel each side so the caller's exact on-screen test owns the edge.
+    pub(super) fn window(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        let n = self.len();
+        if n == 0 { return 0..0; }
+        let first = self.tops[1..].partition_point(|&end| end <= top - 1.0);
+        let end = self.tops[..n].partition_point(|&origin| origin < bottom + 1.0);
+        first..end.max(first)
+    }
+}
 
 /// The height of a row of `landscape` cards whose caption band is `expanded` (0..1) open.
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
@@ -687,7 +744,7 @@ impl RecommendedScreen {
     }
 
     /// Row `index`'s content, read off the published hub (borrows only).
-    fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> HubSrc<'a> {
+    pub(super) fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> HubSrc<'a> {
         HubSrc { elems: &self.shelves[index].elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false }
     }
 

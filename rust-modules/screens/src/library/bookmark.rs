@@ -25,7 +25,7 @@ impl LibraryScreen {
                     query: id.query,
                     cursor: plx_data::browse::Cursor {
                         at: plx_data::browse::CursorAt::SlotIndex(0),
-                        scroll: self.target_layout.grid_block_top(),
+                        scroll: self.target_layout.grid_top(),
                     },
                 },
                 fx,

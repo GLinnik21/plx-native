@@ -84,7 +84,7 @@ fn the_right_edge_is_the_last_column_of_whatever_the_grid_has() {
 #[test]
 fn every_grid_row_rests_clear_of_the_capsule() {
     use super::layout::Layout;
-    let lay = Layout::new(false, &[], 400, true);
+    let lay = Layout::new(false, 400);
     for row in 0..lay.rows {
         let rest = lay.row_y(row, lay.row_reveal(row));
         assert!(rest >= SETTLE_MIN_Y - 0.01 || lay.row_reveal(row) == 0.0, "row {row} rests at {rest}");

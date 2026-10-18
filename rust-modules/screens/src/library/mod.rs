@@ -7,8 +7,8 @@ pub use recommended::RecommendedScreen;
 mod lookahead;
 mod parts;
 mod rail;
-mod scroll_chrome; // TMP
-#[cfg(test)] mod scroll_chrome_tests; // TMP
+mod scroll_chrome;
+#[cfg(test)] mod scroll_chrome_tests;
 #[cfg(test)]
 mod rail_tests;
 mod transactions;
@@ -34,7 +34,6 @@ mod foreign_replacement_tests;
 #[cfg(test)]
 mod selector_matrix_tests;
 
-use std::collections::HashSet;
 use std::ops::Range;
 use std::borrow::Cow;
 use plx_data::browse::{SecFetch, SecKind};
@@ -44,9 +43,7 @@ use crate::registry::{
 };
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
-use plx_ui::cards::RowStyle;
-use plx_ui::cards::SectionFrame;
-use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL, CARD_DY};
+use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
@@ -64,7 +61,7 @@ use plx_ui::screen::{
 use plx_ui::{Rect, Spring};
 use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
-use layout::{Layout, Block, ShelfRun, CONTENT_TOP};
+use layout::{Layout, Block, CONTENT_TOP};
 use header::Header;
 use toolbar::{CollectionsControl, COLLECTIONS, CRUMB_ROOT, RECOMMENDED, SORTFILTER};
 #[cfg(test)]
@@ -83,10 +80,8 @@ const PLAINTEXT_CANCEL: u32 = 5;
 const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
-// The shelves' `motion` bytes are `cards::Shelf::write`, the L0 row's write unchanged; the type's name
-// is split in the text only so the `cards` gate does not read a shape string as a use of the primitive.
 pub const SHAPE: [&str; 8] = [
-    concat!("LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:Card", "Row}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}"),
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
     "LibraryHeader{switched:bool}",
@@ -107,20 +102,6 @@ impl<H: LibraryLike> plx_ui::master_detail::KeyRegion<H> for Regions {
     }
 }
 
-/// One hub shelf above the grid: the published hub's identities and its `cards::Shelf`, which
-/// owns the pop, the scroll, the caption band, the draw, the stops and the placement.
-struct HubShelf {
-    id: String,
-    group: GroupId,
-    /// A promoted collection shelf's linked heading (`ui::linked_heading`): its one-element group
-    /// and element, registered by the hub's identity like the shelf's own group. `None` for every
-    /// other hub, which keeps its plain heading.
-    heading: Option<(GroupId, u32)>,
-    elems: Vec<u32>,
-    landscape: bool,
-    cards: plx_ui::cards::Shelf,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Readout { Loading, Empty, Failed, Grid }
 
@@ -139,14 +120,6 @@ fn readout(table: SecFetch, sections: usize, fetch: SecFetch, total: i64) -> Rea
         SecFetch::Ready if total == 0 => Readout::Empty,
         SecFetch::Ready => Readout::Grid,
     }
-}
-
-/// Is the shelf run above the grid final? `Fetching` (the first answer is still inside its
-/// bounded first-paint window) and `Staged` (an answer held until the page may move — which a
-/// hidden page always may, so it commits on the next frame) both mean the grid's offset is about
-/// to change. A publication with no identity has no section behind it and nothing to wait for.
-fn shelves_settled(hubs: plx_data::stores::browse::HubsView<'_>) -> bool {
-    hubs.id().is_none() || hubs.publication() == plx_data::browse::section_hubs::Publication::Committed
 }
 
 /// **What this `LibraryScreen` lists** (CONTRACT FREEZE: the enum is final, P4 wires it).
@@ -196,25 +169,15 @@ pub struct LibraryScreen {
     /// The total of the library's unfiltered listing the page last saw, keyed by the listing it
     /// belongs to: the "312 of 1,284" read-out's denominator. A projection, not canon.
     unfiltered: Option<((LibrarySectionIdentity, u32, plx_data::browse::LibraryType), i64)>,
-    /// The hub shelves above the grid: compiled and working, but off for the page as it ships
-    /// (the library is always the full grid). // P6: the shelves go and this flag with them.
-    shelf_mode: bool,
     /// A library was just chosen with OK: the page seats the name the reader pressed and shows the
     /// top of the page, where the header is, instead of restoring the new library's scroll.
     switched: bool,
-    shelves: Vec<HubShelf>,
     section: Option<LibrarySectionIdentity>,
     epoch: Option<u32>,
     query: Option<u32>,
     grid_reset_pending: bool,
-    shelf_publication: Option<(plx_data::browse::section_hubs::HubsId, u64)>,
     layout: Layout,
     target_layout: Layout,
-    /// The shelves stacked for `layout` (live pitches) and `target_layout` (the pitches the
-    /// springs are heading to). Derived from `shelves` and refilled by every `relayout`; not
-    /// canon, since each `Layout` already writes the run's height.
-    run: ShelfRun,
-    target_run: ShelfRun,
     scroll: Spring,
     scroll_target: f32,
     restore_scroll: Option<f32>,
@@ -259,12 +222,6 @@ pub struct LibraryScreen {
     /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, the rarer
     /// cadence of a non-Home card screen). Paint-only: not hashed, not in the shape.
     hold_hint: plx_ui::hold_hint::HoldHint,
-    /// The held range last sent to the store, with the section it was for, so the command goes out
-    /// only when it changes. Derived from what is on screen; not canon.
-    hold_sent: Option<(SectionAddress, (usize, usize))>,
-    /// Shelf rows the document draw and the stop recorder looked at, for the windowing test.
-    #[cfg(test)]
-    shelf_visits: std::cell::Cell<usize>,
 }
 
 impl LibraryScreen {
@@ -278,16 +235,8 @@ impl LibraryScreen {
         self.listing
     }
 
-    /// The page as it ships: the full grid under the header, no hub shelves. `new` keeps the shelves
-    /// (their tests and the app-level shelf scenarios mount it that way) until they are removed.
-    /// // P6: the shelves go; this builder and the flag with them.
-    pub fn without_shelves(mut self) -> Self {
-        self.shelf_mode = false;
-        self
-    }
-
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
-        let layout = Layout::new(false, &[], 0, false);
+        let layout = Layout::new(false, 0);
         Self {
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), keys: KeyRegistry::default(),
@@ -299,9 +248,8 @@ impl LibraryScreen {
             ),
             libraries: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
-            shelf_mode: true, switched: false, shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
-            shelf_publication: None, layout, target_layout: layout,
-            run: ShelfRun::default(), target_run: ShelfRun::default(),
+            switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
+            layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
@@ -312,8 +260,6 @@ impl LibraryScreen {
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
             hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
-            hold_sent: None,
-            #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
         }
     }
 
@@ -342,19 +288,6 @@ impl LibraryScreen {
     /// The header row's group: the library names, "+N" and the controls.
     #[cfg(any(test, feature = "test-support"))]
     pub fn toolbar_group(&self) -> GroupId { LIBRARY_GROUP }
-
-    /// `(page alpha, focused shelf tile's pop scale)` — what a viewer sees of a focus arrival.
-    /// The scale is `None` when focus is not on a shelf tile; it is the pop the draw paints, so a
-    /// stale dormant frame shows.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn probe_arrival(&self, focus: Option<FocusKey<u32>>) -> (f32, Option<f32>) {
-        let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let scale = self.shelves.iter().find_map(|shelf| {
-            let col = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem))?;
-            Some(shelf.cards.drawn_pop(col, elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem))))
-        });
-        (self.page_fade.alpha(), scale)
-    }
 
     /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
     /// draw of the page would put on screen now.
@@ -450,8 +383,6 @@ impl LibraryScreen {
             // Viewports of an epoch that is no longer current can never be looked up again.
             if self.epoch != epoch { self.viewports.retain(|old| Some(old.epoch) == epoch); }
             self.ground_seeded = false;
-            self.shelves.clear();
-            self.shelf_publication = None;
             self.section = identity.clone();
             self.epoch = epoch;
             let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && Some(&view.section) == identity.as_ref());
@@ -477,8 +408,6 @@ impl LibraryScreen {
         self.refresh_header(cx);
         if let Some(kind) = self.wanted_kind.filter(|kind|
             directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
-            self.shelves.clear();
-            self.shelf_publication = None;
             self.pair.detail.clear_projection();
             self.pair.master.clear_projection();
             self.grid_fade = Xfade::new();
@@ -486,58 +415,6 @@ impl LibraryScreen {
                 else { readout(directory.kind_fetch(kind), 0, directory.kind_fetch(kind), -1) };
             self.relayout(cx.focus.current);
             return;
-        }
-        let hubs = H::section_hubs(cx);
-        let publication = hubs.id().zip(hubs.revision()).filter(|_| self.shelf_mode);
-        if self.shelf_publication != publication {
-            let mut old = std::mem::take(&mut self.shelves);
-            let previous: HashSet<u32> = old.iter().flat_map(|row| row.elems.iter().copied()).collect();
-            if let Some(section) = &identity {
-                for (index, shelf) in hubs.shelves().iter().enumerate() {
-                    let group = GroupId(self.keys.register(
-                        LibraryIdentity::Control { section: section.clone(), kind: "shelf-group".into(), key: shelf.id.clone() },
-                        GroupId(0), index));
-                    // A row the store gave its cards up to is its card count in placeholder slots, so it
-                    // keeps its length, its scroll and its focusability.
-                    let elems = (0..shelf.slots()).map(|col| {
-                        let identity = match shelf.items.get(col).filter(|item| !item.rk.is_empty()) {
-                            Some(item) => LibraryIdentity::Shelf { section: section.clone(), hub: shelf.id.clone(), sid: item.sid, rk: item.rk.clone() },
-                            None => LibraryIdentity::ShelfSlot { section: section.clone(), hub: shelf.id.clone(), publication: self.query.unwrap_or(0), slot: col as u32 },
-                        };
-                        self.keys.register(identity, group, col)
-                    }).collect();
-                    let cards = old.iter().position(|row| row.id == shelf.id && row.landscape == shelf.landscape)
-                        .map(|i| old.remove(i).cards).unwrap_or_else(|| {
-                            let mut cards = hub_cards(self.entry, shelf.landscape);
-                            let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && view.section == *section)
-                                .and_then(|view| view.shelves.iter().find(|(id, _)| *id == shelf.id));
-                            if let Some((_, x)) = saved {
-                                cards.restore_scroll(*x, shelf.slots());
-                            }
-                            cards
-                        });
-                    let heading = shelf.link.as_ref()
-                        .map(|_| {
-                            let control = |kind: &str| LibraryIdentity::Control {
-                                section: section.clone(), kind: kind.into(), key: shelf.id.clone() };
-                            let heading_group = GroupId(self.keys.register(control("shelf-heading-group"), GroupId(0), index));
-                            let elem = self.keys.register(control("shelf-heading"), heading_group, 0);
-                            (heading_group, elem)
-                        });
-                    // A page that landed (or a refresh) answers the ask the row's latch was holding.
-                    let mut cards = cards;
-                    cards.reset_page_requests();
-                    self.shelves.push(HubShelf { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, cards });
-                }
-            }
-            self.shelf_publication = publication;
-            // Rotating refetches mint a key per new item: keep the current shelves, the previous
-            // publication's (a focus on one recovers through it) and the focus; above twice that
-            // plus 256 the oldest others go.
-            let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
-            let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-            let cap = crate::registry::key_cap(current.len() + previous.len());
-            self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
         }
         self.project_grid(cx);
         self.relayout(cx.focus.current);
@@ -580,106 +457,26 @@ impl LibraryScreen {
         (ranges, pins)
     }
 
-    /// Feed an event to every hub shelf's card section: focus moves and the tick that steps them.
-    /// A page still dissolving in holds its sections dormant (`cards::Shelf::dormant`). The Library keeps its
-    /// own press, hold and paging handling, so the sections' `Activate` / `Hold` / `Want` are not
-    /// used: `CardSource::more` is `false`.
-    fn shelves_on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        let held = self.page_fade.is_arriving();
-        let hubs = H::section_hubs(cx);
-        let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let ticking = matches!(ev, ScreenEvent::Tick(_));
-        let mut asks = Vec::new();
-        let mut withdrawn = Vec::new();
-        let seen = hubs.revision().unwrap_or_default();
-        for (index, row) in self.shelves.iter_mut().enumerate() {
-            let shelf = hubs.shelves().get(index);
-            let at = focus.and_then(|elem| row.elems.iter().position(|key| *key == elem));
-            let paging = at.is_some_and(|col| col.saturating_add(plx_ui::cards::PAGE_EDGE_CARDS) >= row.elems.len());
-            let src = draw::HubSrc { elems: &row.elems, shelf, paging };
-            row.cards.dormant(held);
-            let want = row.cards.on(ev, cx, &src, fx);
-            if !ticking && at.is_none() { row.cards.reset_page_requests(); }
-            // An ask whose edge focus has left is withdrawn before the landing can slide the window
-            // from under it.
-            if ticking {
-                if let (Some(shelf), Some(_)) = (shelf, row.cards.page_cancel(cx, &src, shelf.map_or(0, |s| s.offset), true)) {
-                    withdrawn.push((shelf.id.clone(), shelf.key.clone()));
-                }
-            }
-            // The row asks for its next page at an edge, as Home's rows do; the shelf repeats an
-            // unanswered ask on its ladder (the store takes the same ask idempotently) and
-            // `cancel_page` drops it when focus leaves. The store moves the window and the page follows the card focus is on.
-            if ticking && at.is_some() {
-                let wanted = matches!(want, Some(plx_ui::cards::CardEvent::Want(_)));
-                if let (Some(shelf), Some(edge)) = (shelf, row.cards.page_ask(cx, &src, wanted, shelf.map_or(0, |s| s.offset), true)) {
-                    asks.push((shelf.id.clone(), shelf.key.clone(), edge == plx_ui::cards::PageEdge::Before));
-                }
-            }
-        }
-        if let Some(target) = self.address(cx).filter(|_| !asks.is_empty() || !withdrawn.is_empty()) {
-            for (id, key) in withdrawn { self.store(target, LibraryWork::HubPageCancel { id, key }, fx); }
-            for (id, key, before) in asks { self.store(target, LibraryWork::HubPage { id, key, before, seen }, fx); }
-        }
-    }
-
-    /// The shelf rows with a card on screen, plus two each side and the focused row, as the range the
-    /// store holds cards for. Sent only when it changes.
-    ///
-    /// The focused row is found by the focus key's PLACE ([`focused_shelf`]), not only by looking
-    /// for the key among the row's current ones. A row the store gave its cards up to is keyed by
-    /// slot, and the same row holding its cards is keyed by item, so the hold this function sends
-    /// changes the very keys it would otherwise read: BACK from deep in the grid seats focus on the
-    /// first shelf, far off screen, whose cards are released; the row is held because it is
-    /// focused, its cards come back under their item keys, the focus key (still the slot's, until
-    /// the engine reconciles it) is then in no row, the row reads as unfocused and is released, and
-    /// the engine reconciles focus onto a key that has just gone again. Measured on the frame dump:
-    /// focus changed key on every loop iteration for as long as the glide to the top took, the
-    /// store published and withdrew the row each time, and the row's caption band opened on
-    /// whichever iterations happened to find the key present (so the film's frames depended on
-    /// how many iterations a frame took: 76 of 732 differed under `hold-gate`).
-    fn send_hold<H: LibraryLike>(&mut self, target: SectionAddress, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        if self.shelves.is_empty() { return; }
-        let origin = self.layout.shelf_y(&self.run, 0, self.scroll.pos) - self.run.origin(0);
-        let seen = self.run.window(-origin, SCR_H - origin);
-        let focused = cx.focus.current.filter(|key| key.entry == self.entry)
-            .and_then(|key| focused_shelf(&self.shelves, key.elem, self.keys.last_place(key.elem)));
-        let (mut lo, mut hi) = (seen.start, seen.end.saturating_sub(1).max(seen.start));
-        if let Some(row) = focused { (lo, hi) = (lo.min(row), hi.max(row)); }
-        let hold = plx_ui::cards::hold_band((lo, hi), self.shelves.len());
-        if self.hold_sent != Some((target, hold)) {
-            self.hold_sent = Some((target, hold));
-            self.store(target, LibraryWork::HubHold { lo: hold.0, hi: hold.1 }, fx);
-        }
-    }
-
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
         let grid_focus = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.pair.detail.index_of(key.elem));
         self.pair.detail.settle_band(grid_focus.map(|index| index / self.layout.cols()));
-        self.run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape, row.cards.band_expand())));
-        self.target_run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
-            f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
         let rows = self.pair.detail.total().div_ceil(self.layout.cols());
         // A grid transaction's commit empties the store (`browse::requery`) while the grid is
-        // dark and its answer is in flight. The shelves, heading and TYPE chip around it are
-        // NOT dark: sizing the document from the empty interim would shrink `max_scroll` and
+        // dark and its answer is in flight. The header around it is NOT dark: sizing the document
+        // from the empty interim would shrink `max_scroll` and
         // slide the whole page to the clamp and back when the answer lands. Until the answer
         // says otherwise, the dark grid keeps reserving the extent it had.
         let rows = if rows == 0 && self.grid_fade.is_swapping() && self.readout == Readout::Loading {
             self.layout.rows
         } else { rows };
-        // The "All" heading band above the grid exists only with the hub shelves (the library as it
-        // ships is the header row and the grid). // P6: the band goes with the shelves.
-        let grid_head = self.shelf_mode && (rows > 0 || self.grid_fade.is_swapping()
-            || (self.section.is_some() && self.wanted_kind.is_none() && self.readout == Readout::Empty));
         let episodes = self.layout.is_episodes();
         let band_h = plx_ui::caption_policy::band_h(&parts::caption_policy());
         self.layout = if self.readout == Readout::Failed {
-            Layout::failed(true, self.run.pitches())
-        } else { Layout::new(true, self.run.pitches(), rows, grid_head) }.with_episodes(episodes).with_band_h(band_h)
+            Layout::failed(true)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, self.target_run.pitches(), rows, grid_head).with_episodes(episodes).with_band_h(band_h)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -687,8 +484,6 @@ impl LibraryScreen {
         }
         self.layout.status = self.readout == Readout::Failed;
         self.target_layout.status = self.layout.status;
-        self.layout.empty = self.readout == Readout::Empty;
-        self.target_layout.empty = self.layout.empty;
         self.pair.detail.set_geometry(self.layout, self.scroll.pos, self.target_layout, self.scroll_target);
     }
 
@@ -705,27 +500,19 @@ impl LibraryScreen {
     fn first_group(&self) -> GroupId {
         match self.layout.first() {
             Some(Block::LibraryRow) => LIBRARY_GROUP,
-            Some(Block::Shelf(index)) => self.shelves[index].entry_group(),
             Some(Block::Status) => STATUS_GROUP,
-            Some(Block::Toolbar | Block::Grid(_)) => LIBRARY_GROUP,
+            Some(Block::Grid(_)) => LIBRARY_GROUP,
             None => STRIP,
         }
     }
 
     fn current_viewport(&self) -> Option<LibraryViewport> {
-        let shelves = if self.shelf_publication.is_some() {
-            self.shelves.iter().map(|row| (row.id.clone(), row.cards.scroll())).collect()
-        } else {
-            self.viewports.iter().find(|view| Some(view.epoch) == self.epoch && Some(&view.section) == self.section.as_ref())
-                .map(|view| view.shelves.clone()).unwrap_or_default()
-        };
         Some(LibraryViewport { epoch: self.epoch?, section: self.section.clone()?, scroll: self.scroll.pos,
-            shelves })
+            shelves: Vec::new() })
     }
 
     fn page_memory(&self) -> LibraryMemory {
-        let mut memory = self.keys.remember(self.section.clone(), self.scroll.pos,
-            self.shelves.iter().map(|row| (row.id.clone(), row.cards.scroll())).collect());
+        let mut memory = self.keys.remember(self.section.clone(), self.scroll.pos, Vec::new());
         memory.epoch = self.epoch;
         memory.query = self.query;
         memory.grid_reset_pending = self.grid_reset_pending;
@@ -749,9 +536,6 @@ impl LibraryScreen {
         let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
-        } else if let Some(index) = self.shelves.iter().position(|row|
-            row.elems.contains(&key.elem) || row.heading_elem() == Some(key.elem)) {
-            Some(self.target_layout.shelf_reveal(&self.target_run, index))
         } else if self.is_header_elem(key.elem) || key.elem == RETRY {
             Some(0.0)
         } else { None };
@@ -784,9 +568,7 @@ impl LibraryScreen {
     pub fn focused_item<'a, H: LibraryLike>(&self, focus: Option<FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a plx_data::pms::PmsMovie> {
         let key = focus.filter(|key| key.entry == self.entry)?;
         if let Some(index) = self.pair.detail.index_of(key.elem) { return H::listing(cx).item(index); }
-        let (row, col) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
-            shelf.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))?;
-        H::section_hubs(cx).shelves().get(row)?.items.get(col)
+        None
     }
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
@@ -823,21 +605,9 @@ impl LibraryScreen {
         (self.layout.rows > 0).then(|| (self.layout.rows, self.layout.rows_per_screen()))
     }
 
-    /// The focused hub-shelf card, `(shelf, col)`, if focus is on a shelf above the grid.
-    pub fn shelf_position(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
-        let key = focus.filter(|key| key.entry == self.entry)?;
-        self.shelves.iter().enumerate()
-            .find_map(|(row, shelf)| shelf.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))
-    }
-
     pub fn probe_viewport(&self, focus: Option<FocusKey<u32>>) -> (&'static str, i32, i32, f32, f32) {
         if let Some((row, col)) = self.grid_position(focus) { return ("grid", row as i32, col as i32, 0.0, self.scroll.pos); }
         let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        for (row, shelf) in self.shelves.iter().enumerate() {
-            if let Some(col) = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem)) {
-                return ("shelf", row as i32, col as i32, shelf.cards.scroll(), self.scroll.pos);
-            }
-        }
         let region = match elem {
             Some(elem) if self.toolbar_elems().contains(&elem) => "toolbar", Some(RETRY) => "status",
             Some(elem) if region_of_elem(elem) == Some(KeyRegion::Rail) => "rail",
@@ -845,11 +615,6 @@ impl LibraryScreen {
             Some(_) => "library", None => "none",
         };
         (region, -1, -1, 0.0, self.scroll.pos)
-    }
-
-    fn from_deck<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>) -> bool {
-        self.shelves.iter().position(|row| row.elems.contains(&elem))
-            .and_then(|row| H::section_hubs(cx).shelves().get(row)).is_some_and(|row| row.is_continue)
     }
 
     /// Choose a library: ONLY the grid fades out and back in, under a header that does not move;
@@ -976,22 +741,11 @@ impl LibraryScreen {
             return Handled::Yes;
         }
         if region_of_elem(elem) == Some(KeyRegion::Rail) { self.follow(elem, cx, fx); return Handled::Yes; }
-        if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(elem)) {
-            // OK on a linked heading opens the collection its shelf lists.
-            let hubs = H::section_hubs(cx);
-            if let Some(link) = hubs.shelves().get(index).and_then(|shelf| shelf.link.as_ref()) {
-                fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Push(
-                    crate::registry::ContentArg::Collection(link.clone())))));
-            }
-            return Handled::Yes;
-        }
         if let Some(item) = self.focused_item(Some(self.key(elem)), cx).filter(|item| !item.rk.is_empty()) {
-            let from_deck = self.from_deck(elem, cx);
+            // A grid poster is never a Continue Watching deck card.
             let req = if held {
-                LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck }
-            } else if from_deck && plx_media::route::deck_press().press_plays() {
-                LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
-            } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone(), from_deck } };
+                LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck: false }
+            } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone(), from_deck: false } };
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
@@ -1072,12 +826,8 @@ impl LibraryScreen {
                 self.provisional = None;
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
-            LibraryCmd::FocusShelf { shelf, col } => {
-                let Some(&elem) = self.shelves.get(shelf).and_then(|s| s.elems.get(col)) else { return Handled::No };
-                self.initial = false; // As FocusGrid: an explicit owned command supersedes the boot seat.
-                self.provisional = None;
-                self.reseat(FocusTarget::Elem(self.key(elem)), fx);
-            }
+            // The hubs' cards live on the Recommended page.
+            LibraryCmd::FocusShelf { .. } => return Handled::No,
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
             // The TYPE menu's own edit, delivered the way its row delivers it.
             LibraryCmd::SetType(kind) => {
@@ -1172,20 +922,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let handled = self.step_event(ev, cx, fx);
-        // The page's fade can change on any event (and tick on while the page is covered), and the
-        // draw reads the shelves' dormancy between events: re-sample it once, after all of them.
-        self.hold_shelves();
         handled
     }
 }
 
 impl LibraryScreen {
-    /// Hold every hub shelf's cards at rest while the page is still dissolving in.
-    fn hold_shelves(&mut self) {
-        let held = self.page_fade.is_arriving();
-        for row in &mut self.shelves { row.cards.dormant(held); }
-    }
-
     /// BACK walks up the page one stop at a time and never changes the library: deep in the grid
     /// to the top of the page, the top of the page to the header, the header to the nav, the nav
     /// to Home.
@@ -1213,7 +954,7 @@ impl LibraryScreen {
         } else if self.scroll_target > 0.5 {
             // Deep in the page: back to its top, on the first row when focus is in the grid.
             self.scroll_target = 0.0;
-            let first_row = self.grid_position(Some(focus)).filter(|_| self.shelves.is_empty()).and_then(|(_, col)|
+            let first_row = self.grid_position(Some(focus)).and_then(|(_, col)|
                 self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
             match first_row {
                 Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
@@ -1306,7 +1047,6 @@ impl LibraryScreen {
                 // reconcile is adopted whole by its next tick so a page returning from a Detail
                 // push lands as it was left.
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
-                self.shelves_on(ev, cx, fx);
                 if matches!(by, By::Dir | By::Pointer) {
                     self.initial = false;
                     self.provisional = None;
@@ -1369,13 +1109,7 @@ impl LibraryScreen {
                     directory.preferred(kind).is_some() || directory.kind_fetch(kind) == SecFetch::Loading
                 });
                 let ready = self.readout != Readout::Loading && !waiting_for_kind;
-                // A section's reveal also waits for the document ABOVE its grid. Its shelves are
-                // a separate fetch that sets the grid's absolute offset, so revealing on the
-                // listing alone drew the grid at the top and then dropped it by the shelves'
-                // height when they landed (owner report item 9, the section half). A grid-only
-                // swap keeps its own `ready`: its shelves are already the document it fades inside.
-                let shelves = !self.shelf_mode || shelves_settled(H::section_hubs(cx));
-                let page_commit = self.page_fade.tick(tick.dt(), ready && shelves);
+                let page_commit = self.page_fade.tick(tick.dt(), ready);
                 let grid_commit = self.grid_fade.tick(tick.dt(), ready);
                 if page_commit || (grid_commit && (self.switched || self.pending.section().is_none())) { self.flush(fx); }
                 if self.live {
@@ -1387,9 +1121,6 @@ impl LibraryScreen {
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
                     // A page still dissolving in shows its seat unpopped: the pop starts when the
                     // page is opaque, where it can be seen, instead of playing out under the fade.
-                    // A shelf at exact rest is a fixed point of its tick, so a page of hundreds of
-                    // them costs a lookup each, not a spring step.
-                    self.shelves_on(ev, cx, fx);
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
@@ -1409,19 +1140,12 @@ impl LibraryScreen {
                     if self.wanted_kind.is_none() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
-                    // A first seat that applies a bookmarked scroll clamps it to the document, so
-                    // behind a section reveal it waits for the same shelves the reveal does:
-                    // seated on the shelfless interim, a bookmark deep in the grid landed short of
-                    // where the reader left. A head seat needs no wait — `provisional` follows the
-                    // head when the shelves land — and a page already on screen seats as it did.
-                    let settled = shelves || !self.page_fade.is_swapping() || self.restore_scroll.is_none();
-                    if self.initial && settled && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
+                    if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
                         self.initial = false;
-                        let group = match self.layout.seat_for_scroll(&self.run, self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
+                        let group = match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
                             // A library chosen with OK leaves focus on the header, where the name is.
                             _ if self.switched => LIBRARY_GROUP,
                             Some(Block::Grid(_)) => self.pair.groups_config().detail,
-                            Some(Block::Shelf(index)) => self.shelves[index].group,
                             _ => self.first_group(),
                         };
                         // Only the page's OWN head seat is provisional. Any restore is the reader's:
@@ -1434,9 +1158,8 @@ impl LibraryScreen {
                         self.seat_on(group, cx, fx);
                         self.switched = false;
                     } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
-                        // A landing moved the head out from under the page's own seat (field report
-                        // on a788b27a: the shelves committed above a seat on the grid's heading, and
-                        // the first DOWN went on into the grid). Follow it, as a first paint would.
+                        // A landing moved the head out from under the page's own seat. Follow it, as a
+                        // first paint would.
                         let head = self.first_group();
                         let at = focused.filter(|key| key.entry == self.entry)
                             .and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
@@ -1454,13 +1177,6 @@ impl LibraryScreen {
                         .and_then(|key| self.pair.detail.index_of(key.elem));
                     self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * self.layout.cols(), hi: (hi + 1) * self.layout.cols(), focus }, fx);
                     self.store(target, LibraryWork::Letters, fx);
-                    self.send_hold(target, cx, fx);
-                    let at_head = self.scroll.pos.abs() < 1.0 && self.scroll.vel.abs() < 1.0 && self.scroll_target.abs() < 0.5;
-                    if self.shelf_mode {
-                        fx.push(Fx::App(AppFx::Library(LibraryReq::PublishShelves {
-                            target, at_head, hidden_page: self.page_fade.is_swapping() && self.page_fade.alpha() <= 0.01,
-                        })));
-                    }
                 }
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }
@@ -1520,17 +1236,6 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             plx_ui::page_header::TEXT_X0 - plx_ui::page_header::OVERHANG, CONTENT_TOP - self.scroll.pos,
             plx_ui::page_header::TEXT_X1 - plx_ui::page_header::TEXT_X0 + 2.0 * plx_ui::page_header::OVERHANG,
             plx_ui::page_header::HEIGHT), ElemKind::Control));
-        for (index, row) in self.shelves.iter().enumerate() {
-            let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X, self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
-            if let Some((group, elem)) = row.heading {
-                if let Some(rect) = self.heading_rect(index, cx, At::SpringTarget) {
-                    out.push(plx_ui::linked_heading::group_spec(group, rect));
-                }
-                // DOWN from the heading returns to the card this shelf remembered.
-                shelf.seat = plx_ui::linked_heading::shelf_seat(&cx.focus, elem, row.group, shelf.seat);
-            }
-            out.push(shelf);
-        }
         if self.readout == Readout::Failed {
             if let Some(rect) = self.status_rect(cx) {
                 out.push(GroupSpec { edge: [EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
@@ -1546,8 +1251,6 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn group_of(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         if let Some(answer) = self.plaintext_alert.group_of(*elem) { return answer; }
         if self.is_header_elem(*elem) { return Some(LIBRARY_GROUP); }
-        if let Some(row) = self.shelves.iter().find(|row| row.elems.contains(elem)) { return Some(row.group); }
-        if let Some((group, _)) = self.shelves.iter().find_map(|row| row.heading.filter(|(_, e)| e == elem)) { return Some(group); }
         if self.readout == Readout::Failed && *elem == RETRY { return Some(STATUS_GROUP); }
         self.pair.group_of(elem, cx)
     }
@@ -1568,12 +1271,6 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         }
         let rect = if let Some(rect) = self.header_rect(*elem, at) {
             rect
-        } else if let Some((row, col)) = self.shelves.iter().enumerate().find_map(|(row, shelf)|
-            shelf.elems.iter().position(|key| key == elem).map(|col| (row, col))) {
-            if at == At::Drawn { return self.shelf_placed(row, elem, cx); }
-            self.shelf_rect_at(row, col, cx)
-        } else if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(*elem)) {
-            self.heading_rect(index, cx, at)?
         } else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect(cx)? }
         else { return None };
         Some(Placed { rect, rest_rect: rect, clip: content_clip(), index: None })
@@ -1618,84 +1315,11 @@ impl LibraryScreen {
         match group {
             Some(LIBRARY_GROUP) => self.header_elems(),
             Some(STATUS_GROUP) => vec![RETRY],
-            Some(group) => self.shelves.iter().find_map(|row| {
-                if row.group == group { return Some(row.elems.clone()); }
-                row.heading.filter(|(heading, _)| *heading == group).map(|(_, elem)| vec![elem])
-            }).unwrap_or_default(),
-            None => Vec::new(),
+            Some(_) | None => Vec::new(),
         }
     }
-    /// Where shelf `index` sits for the component, in screen space: the top of its tiles.
-    fn shelf_frame(&self, index: usize) -> SectionFrame {
-        SectionFrame { y: self.layout.shelf_y(&self.run, index, self.scroll.pos) + CARD_DY, clip: content_clip() }
-    }
-    /// Shelf `index`'s content, read off the published hub (borrows only).
-    fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> draw::HubSrc<'a> {
-        draw::HubSrc { elems: &self.shelves[index].elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false }
-    }
-    /// The card `elem` of shelf `index` as drawn now: the component's placement (pop and press
-    /// folded in, `rest_rect` the settled focus-scaled rect). `index` stays unset: nothing here
-    /// reads a shelf cell's position as a slot of another container.
-    fn shelf_placed<H: LibraryLike>(&self, index: usize, elem: &u32, cx: &Cx<'_, H>) -> Option<Placed> {
-        let src = self.hub_src(index, cx);
-        self.shelves[index].cards.place(cx, &src, elem, self.shelf_frame(index), At::Drawn)
-            .map(|placed| Placed { index: None, ..placed })
-    }
-    /// Where card `col` of shelf `index` is GOING: the settled rect at the scroll target, with the
-    /// row scrolled to bring the focused card into view. The component, holding the live page,
-    /// cannot say it.
-    fn shelf_rect_at<H: LibraryLike>(&self, index: usize, col: usize, cx: &Cx<'_, H>) -> Rect {
-        let row = &self.shelves[index];
-        let style = row_style(row);
-        let focused = cx.focus.current.filter(|key| key.entry == self.entry)
-            .and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
-        let x = focused.map(|col| plx_ui::cards::scroll_into_view(row.cards.scroll(), col,
-            row.elems.len(), style.w, style.gap, SCR_W - 2.0 * MARGIN_X)).unwrap_or(row.cards.scroll());
-        plx_ui::cards::tile_rect(col, MARGIN_X, style.w + style.gap, x,
-            self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, (style.w, style.h))
-            .scaled(if focused == Some(col) { style.focus_scale } else { 1.0 })
-    }
-    /// The linked heading of shelf `index`, over the published hub's own title.
-    fn heading_widget<'a, H: LibraryLike>(&self, index: usize, cx: &Cx<'a, H>) -> Option<plx_ui::linked_heading::LinkedHeading<'a>> {
-        self.shelves.get(index)?.heading?;
-        let shelf = H::section_hubs(cx).shelves().get(index)?;
-        Some(plx_ui::linked_heading::LinkedHeading::heading(&shelf.title, "").total(shelf.total)
-            .bounded(layout::GRID_RIGHT - MARGIN_X))
-    }
-    /// The linked heading's face, cap top where an unlinked heading's would be.
-    fn heading_rect<H: LibraryLike>(&self, index: usize, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
-        let heading = self.heading_widget(index, cx)?;
-        let row = &self.shelves[index];
-        let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && Some(key.elem) == row.heading_elem());
-        let y = match at {
-            At::Drawn => self.layout.shelf_y(&self.run, index, self.scroll.pos) - plx_ui::consts::TITLE_DY - row.cards.heading_lift(),
-            At::SpringTarget => self.target_layout.shelf_y(&self.target_run, index, self.scroll_target) - plx_ui::consts::TITLE_DY,
-        };
-        Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &heading.measure(cx.measure)))
-    }
 }
-impl HubShelf {
-    fn heading_elem(&self) -> Option<u32> { self.heading.map(|(_, elem)| elem) }
-    /// The group a door INTO this shelf from above lands in: its linked heading when it has one.
-    fn entry_group(&self) -> GroupId { self.heading.map_or(self.group, |(group, _)| group) }
-}
-/// The shelf focus stands on: the row that holds the focus key now, else the row the key was last
-/// placed in (`last_place`, the key registry's record). The second half is what keeps a row focused
-/// across the publication that re-keys it, slot keys to item keys or back (see `send_hold`); a key
-/// placed in the grid, the toolbar or a heading names no shelf's card group and answers `None`.
-fn focused_shelf(shelves: &[HubShelf], elem: u32, last_place: Option<(GroupId, usize)>) -> Option<usize> {
-    shelves.iter().position(|row| row.elems.contains(&elem))
-        .or_else(|| last_place.and_then(|(group, _)| shelves.iter().position(|row| row.group == group)))
-}
-
-fn row_style(row: &HubShelf) -> &'static RowStyle { hub_style(row.landscape) }
-fn hub_style(landscape: bool) -> &'static RowStyle { if landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }
-/// A hub shelf's card section. Cards a screen's width off to either side still paint: a popped
-/// card's shadow reaches onto the screen from beyond its edge.
-fn hub_cards(entry: EntryId, landscape: bool) -> plx_ui::cards::Shelf {
-    plx_ui::cards::Shelf::new(entry, hub_style(landscape)).cull_margin(32.0)
-}
-/// The panel the shelves' cards are placed and hit-tested in: everything under the top bar.
+/// The panel the page's content is placed and hit-tested in: everything under the top bar.
 fn content_clip() -> Rect {
     Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM)
 }
@@ -1729,12 +1353,6 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         // A continuous document has adjacent blocks even while its offscreen geometry
         // passes the floating strip. Geometric ranking must not skip an intervening block.
         let mut document = vec![LIBRARY_GROUP];
-        // A collection shelf's linked heading is its own block, directly above its cards: UP from
-        // any card reaches it, DOWN returns to the remembered card (`groups`' seat).
-        for row in &self.shelves {
-            if let Some((heading, _)) = row.heading { document.push(heading); }
-            document.push(row.group);
-        }
         if self.readout == Readout::Failed { document.push(STATUS_GROUP); }
         if self.pair.detail.total() > 0 { document.push(self.pair.groups_config().detail); }
         for pair in document.windows(2) {
@@ -1761,9 +1379,6 @@ impl LogicalState for LibraryScreen {
         c.option(self.epoch, |c, value| { c.u32(value); });
         c.option(self.query, |c, value| { c.u32(value); });
         c.bool(self.grid_reset_pending);
-        c.option(self.shelf_publication, |c, (id, revision)| {
-            c.u32(id.epoch).u32(u32::from(id.sid.raw())).u64(id.section as u64).u64(revision);
-        });
         self.page_fade.write(c);
         self.grid_fade.write(c);
         self.pair.state().write(c);
@@ -1777,15 +1392,6 @@ impl LogicalState for LibraryScreen {
         PageMemory::Library(self.page_memory()).write(c);
         c.seq(self.viewports.len());
         for viewport in &self.viewports { viewport.write(c); }
-        c.seq(self.shelves.len());
-        for row in &self.shelves {
-            let HubShelf { id, group, heading, elems, landscape, cards } = row;
-            c.str(id).u32(group.0);
-            c.option(*heading, |c, (group, elem)| { c.u32(group.0).u32(elem); });
-            c.bool(*landscape).seq(elems.len());
-            for elem in elems { c.u32(*elem); }
-            cards.write(c);
-        }
         c.seq(self.libraries.len());
         for (elem, section) in &self.libraries { c.u32(*elem).u32(*section as u32); }
         c.u32(match self.readout { Readout::Loading => 0, Readout::Empty => 1, Readout::Failed => 2, Readout::Grid => 3 });

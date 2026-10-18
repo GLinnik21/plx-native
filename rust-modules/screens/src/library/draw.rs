@@ -1,12 +1,7 @@
 //! Library paint consumes the same placement queries as keyboard and pointer navigation.
 use super::*;
-use crate::registry::tile_facts;
-use plx_ui::cards as ui_cards;
-use plx_ui::cards::{CardSource, Tile};
-use plx_machine::machine::{Host, Measure};
 use plx_ui::screen::{Activate, Hover, Stop};
 use plx_ui::theme;
-use plx_ui::widgets::Art;
 use plx_ui::{Env, View, on_axis};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,10 +10,6 @@ enum Layer { Grid, Document, Rail }
 /// Paint and stop registration share one back-to-front order.
 fn layers(mut visit: impl FnMut(Layer)) {
     for layer in [Layer::Grid, Layer::Document, Layer::Rail] { visit(layer); }
-}
-
-fn shelf_on_screen(origin: f32, pitch: f32) -> bool {
-    on_axis(origin - plx_ui::consts::TITLE_DY, pitch, SCR_H, 0.0)
 }
 
 /// Reject a whole control band before creating labels or measuring individual pills. The
@@ -55,7 +46,7 @@ mod layer_tests {
             "the focused capsule's growth belongs in the paint envelope");
         assert!(super::document_band_visible(p.translate(0.0, 300.0), above, height, 1.0));
         assert!(!super::document_band_visible(p, super::SCR_H + pad + 1.0, height, 1.0));
-        assert!(!super::document_band_visible(p, -2000.0, super::layout::GRID_HEAD_H, 1.0));
+        assert!(!super::document_band_visible(p, -2000.0, plx_ui::page_header::HEIGHT, 1.0));
     }
 
     #[test]
@@ -66,17 +57,7 @@ mod layer_tests {
         assert!(plx_gfx::gfx::culled(0.0, 0.0, 100.0, 100.0),
             "discovery suppresses GL draws without suppressing paint declarations");
         assert!(super::document_band_visible(plx_ui::Painter::root(),
-            super::CONTENT_TOP, super::layout::GRID_HEAD_H, 1.0));
-    }
-
-    #[test]
-    fn shelf_culling_keeps_the_visible_band_above_the_centered_tab_track() {
-        use plx_ui::consts::{CARD_H, ROW_PITCH, SCR_H, TITLE_DY};
-        let y = plx_ui::widgets::TOP_BAR_BOTTOM - CARD_H - 8.0;
-        assert!(y + CARD_H > 0.0);
-        assert!(super::shelf_on_screen(y, ROW_PITCH));
-        assert!(!super::shelf_on_screen(TITLE_DY - ROW_PITCH - 1.0, ROW_PITCH));
-        assert!(!super::shelf_on_screen(SCR_H + TITLE_DY + 1.0, ROW_PITCH));
+            super::CONTENT_TOP, plx_ui::page_header::HEIGHT, 1.0));
     }
 
     #[test]
@@ -129,7 +110,7 @@ impl LibraryScreen {
                 f.page_alpha = parent;
             }),
         });
-        // P7: the page's own top edge once the chrome has tucked away.
+        // The page's own top edge once the chrome has tucked away.
         let tuck = super::scroll_chrome::tuck(self.scroll.pos, layout_pitch);
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
@@ -163,39 +144,9 @@ impl LibraryScreen {
         self.capsule_field.latch_from_corners(corners, plx_ui::underlay::Grade::Dim);
     }
 
-    /// The shelves whose band can meet the panel at the drawn scroll. Everything above and below
-    /// is skipped without being looked at; `shelf_on_screen` stays the exact test for the edge
-    /// shelves the window keeps. A shelf outside this window is outside that test too, so the
-    /// focused row needs no separate visit.
-    pub(super) fn shelf_window(&self) -> std::ops::Range<usize> {
-        let base = CONTENT_TOP + self.layout.shelf_origin(&self.run, 0) - self.scroll.pos
-            - plx_ui::consts::TITLE_DY;
-        self.run.window(-base, SCR_H - base)
-    }
-
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
-        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
         self.draw_header(f);
-        plx_ui::profile::phase("lb.shelves", || {
-            for index in self.shelf_window() {
-                #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
-                let Some(row) = self.shelves.get(index) else { continue };
-                let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
-                let origin = self.layout.shelf_y(&self.run, index, self.scroll.pos);
-                if !shelf_on_screen(origin, self.layout.shelf_pitch(&self.run, index)) { continue; }
-                let heading_y = origin - plx_ui::consts::TITLE_DY - row.cards.heading_lift();
-                if let Some(heading) = self.heading_widget(index, f.cx) {
-                    let focused = f.focus.current.is_some_and(|key| key.entry == self.entry
-                        && Some(key.elem) == row.heading_elem());
-                    heading.draw(p, MARGIN_X, heading_y, f32::from(focused), &heading.measure(f.measure), f.measure);
-                } else {
-                    ui_cards::draw_heading(p, &shelf.title, "", MARGIN_X,
-                        heading_y, layout::GRID_RIGHT - MARGIN_X, f.measure);
-                }
-                row.cards.paint(f, self.shelf_painter(f), &self.hub_src(index, f.cx), self.shelf_frame(index));
-            }
-        });
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
             plx_ui::placeholder::note(f.painter, plx_ui::placeholder::Reason::LibrarySpinner, "");
@@ -220,19 +171,6 @@ impl LibraryScreen {
                 self.stop(elem, f);
             }
         }
-        for index in self.shelf_window() {
-            #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
-            let Some(row) = self.shelves.get(index) else { continue };
-            let origin = self.layout.shelf_y(&self.run, index, self.scroll.pos);
-            if !shelf_on_screen(origin, self.layout.shelf_pitch(&self.run, index)) { continue; }
-            let cx = f.cx;
-            row.cards.record_stops(f, f.painter, &self.hub_src(index, cx), self.shelf_frame(index));
-            // After the row's cards, so the heading wins where a popped card's glow overlaps it.
-            if let (Some(elem), Some(heading), Some(rect)) = (row.heading_elem(),
-                self.heading_widget(index, f.cx), self.heading_rect(index, f.cx, At::Drawn)) {
-                heading.stop(f, rect, self.key(elem));
-            }
-        }
         if self.readout == Readout::Failed { self.stop(RETRY, f); }
     }
 
@@ -254,11 +192,6 @@ impl LibraryScreen {
         });
     }
 
-    /// The painter the shelves' cards are drawn through: the page's alpha, both fades.
-    fn shelf_painter<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) -> plx_ui::Painter {
-        f.painter.alpha(f.page_alpha * self.page_fade.alpha())
-    }
-
     pub fn redraw_focused<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         let Some(key) = focus.filter(|key| key.entry == self.entry) else { return };
         let Some(placed) = <Self as Focusable<H>>::place(self, &key.elem, f.cx, At::Drawn) else { return };
@@ -268,66 +201,6 @@ impl LibraryScreen {
             f.page_alpha *= self.page_fade.alpha() * self.grid_fade.alpha();
             self.pair.detail.draw_focused(f, Some(key));
             f.page_alpha = parent;
-            return;
-        }
-        if let Some(index) = self.shelves.iter().position(|row| row.elems.contains(&key.elem)) {
-            let p = self.shelf_painter(f);
-            let cx = f.cx;
-            self.shelves[index].cards.redraw_focused(f, p, &self.hub_src(index, cx), self.shelf_frame(index), Some(key));
-        }
-    }
-}
-
-/// One hub shelf's cards for the shared section component: the published hub's items read through
-/// the page's element ids. Built from borrows (no copy), so a call can hold it while the shelf's
-/// own state is borrowed mutably.
-pub(super) struct HubSrc<'a> {
-    pub(super) elems: &'a [u32],
-    /// `None` while the page still names a shelf the store has not published (a frame between a
-    /// store change and the next `sync`): its cards draw nothing.
-    pub(super) shelf: Option<&'a plx_data::browse::section_hubs::Shelf>,
-    /// Focus is near the row's trailing edge on a visible row: only then does the row ask for more.
-    pub(super) paging: bool,
-}
-
-impl HubSrc<'_> {
-    fn item(&self, i: usize) -> Option<&plx_data::pms::PmsMovie> { self.shelf?.items.get(i) }
-}
-
-impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
-    fn len(&self) -> usize { self.elems.len() }
-    /// The card's place in the hub's listing (`positions` can skip what the window drops).
-    fn global(&self, i: usize) -> usize {
-        self.shelf.map_or(i, |shelf| shelf.positions.get(i).copied().unwrap_or(shelf.offset + i))
-    }
-    fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
-    fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
-    /// A card whose item the hub has not published draws nothing (its stop still registers).
-    fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
-    fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
-    fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }
-    fn more_after(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.more) }
-    fn more_before(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.offset > 0) }
-    fn art(&self, i: usize) -> Art<'_> {
-        match (self.item(i), self.shelf) {
-            (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),
-            (Some(item), _) => Art::Poster(Some(tile_facts::of(item))),
-            _ => Art::Poster(None),
-        }
-    }
-    fn label(&self, i: usize) -> ui_cards::TileLabel {
-        self.shelf.map_or_else(|| ui_cards::TileLabel::title(""), |shelf| shelf_label(shelf, i))
-    }
-    fn progress(&self, i: usize) -> Option<f32> {
-        self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
-    }
-    /// A landscape shelf's episode still carries its show line, and the Continue Watching deck its
-    /// play mark when a press plays.
-    fn overlay(&self, p: plx_ui::Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
-        let (Some(shelf), Some(item)) = (self.shelf, self.item(i)) else { return };
-        if shelf.landscape {
-            plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius,
-                shelf.is_continue && plx_media::route::deck_press().press_plays(), measure);
         }
     }
 }
@@ -337,23 +210,4 @@ fn draw_faded_part_at<H: LibraryLike>(part: &mut impl Part<H>, f: &mut DrawFrame
     f.page_alpha = parent * alpha;
     part.draw(f, rect);
     f.page_alpha = parent;
-}
-
-pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
-    let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::title("") };
-    if shelf.landscape {
-        let name = if item.title.is_empty() || item.title == item.show_title {
-            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
-        } else { item.title.clone() };
-        let fact = if shelf.is_continue && item.resume_frac().is_some() {
-            plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
-        } else if item.aired.is_empty() && item.year <= 0 { String::new() }
-        else { plx_ui::fmt::pretty_date(&item.aired, item.year as i64) };
-        return if fact.is_empty() { ui_cards::TileLabel::title(&name) }
-        else { ui_cards::TileLabel::titled(&name, &fact) };
-    }
-    let mut label = if shelf.is_continue && plx_media::route::deck_press().press_plays() { ui_cards::TileLabel::played(&item.title) }
-        else { ui_cards::TileLabel::title(&item.title) };
-    label.caption = ui_cards::focused_caption(&tile_facts::of(item), shelf.is_continue);
-    label
 }

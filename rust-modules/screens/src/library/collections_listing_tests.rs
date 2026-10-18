@@ -7,7 +7,7 @@ use plx_machine::machine::{Edge, InputEvent, InputKind, Key, Source, Tick};
 
 /// What `AppArg::LibraryCollections` mounts (`registry.rs`).
 fn collections_page() -> LibraryScreen {
-    LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie).without_shelves().with_listing(Listing::Collections)
+    LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie).with_listing(Listing::Collections)
 }
 
 fn run(page: &mut LibraryScreen, fixture: &Fixture, event: ScreenEvent<HostFixture>) -> Vec<Fx<HostFixture>> {

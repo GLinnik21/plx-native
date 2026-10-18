@@ -90,7 +90,6 @@ fn empty_episode_results_keep_type_selector_available() {
     page.page_fade = Xfade::new();
     page.relayout(None);
     assert_eq!(page.readout, Readout::Empty);
-    assert!(page.layout.grid_head);
     assert!(<LibraryScreen as Focusable<HostFixture>>::place(&page, &SORTFILTER, &fixture.cx(None), At::Drawn).is_some());
 }
 
@@ -151,7 +150,6 @@ fn an_empty_collections_listing_says_so_and_keeps_the_type_selector() {
     page.page_fade = Xfade::new();
     page.relayout(None);
     assert_eq!(page.readout, Readout::Empty);
-    assert!(page.layout.grid_head);
     assert!(<LibraryScreen as Focusable<HostFixture>>::place(&page, &SORTFILTER, &fixture.cx(None), At::Drawn).is_some());
     let (caption, reason) = page.status_text(&fixture.cx(None));
     assert_eq!(caption.to_str().unwrap(), "No collections in Cinema");
@@ -217,27 +215,4 @@ fn the_set_type_command_is_the_menu_rows_edit() {
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)), Handled::Yes);
     assert!(matches!(page.pending.grid(), Some((_, GridAction::LibraryType(LibraryType::Collections)))),
         "the command stages the same grid transaction the TYPE menu's row does");
-}
-
-/// **An empty answer under shelves stands below its heading, not on a shelf.** The fixed status
-/// region sits a third of the way down the panel, which with shelves above the grid is the middle
-/// of a shelf: the read-out drew over the posters. The document reserves one grid pitch under the
-/// heading row instead, and the read-out stands in it and scrolls with the page.
-#[test]
-fn an_empty_answer_under_shelves_stands_below_its_heading() {
-    let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::shelves(&["Recently Added"], 6);
-    fixture.listing = fixture.listing.clone().with_library_type(LibraryType::Collections).with_fetch(SecFetch::Ready, 0);
-    let mut page = fixture.screen();
-    page.grid_fade = Xfade::new();
-    page.page_fade = Xfade::new();
-    page.relayout(None);
-    assert_eq!(page.readout, Readout::Empty);
-    assert_eq!(page.shelves.len(), 1);
-    let (top, h) = page.layout.empty_band().expect("an empty answer reserves its band");
-    assert_eq!(top, page.layout.grid_top(), "directly under the heading row");
-    assert!(page.layout.doc_h() >= top + h, "the band is part of the document, so it can scroll into view");
-    let frame = page.status_frame();
-    let shelf_bottom = page.layout.shelf_y(&page.run, 0, page.scroll.pos) + page.layout.shelf_pitch(&page.run, 0);
-    assert!(frame.y >= shelf_bottom, "the read-out ({}) must not overlap the shelf above ({shelf_bottom})", frame.y);
 }
