@@ -37,7 +37,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 
 /// The Under posters setting as the caption policy every Library grid card and band follows.
 pub(super) fn caption_policy() -> CaptionPolicy {
-    crate::settings::caption_policy_of(plx_media::route::under_posters())
+    crate::registry::caption_policy_of(plx_media::route::under_posters())
 }
 
 /// The facts of a catalog row a caption policy words its lines from.
