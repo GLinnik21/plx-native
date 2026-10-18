@@ -78,8 +78,11 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             }
             // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
             // decoder-release park): the park left the viewer's pause standing, and the Load is
-            // about to arm its clock hold from it.
-            ForegroundClock::Playing if paused() => {
+            // about to arm its clock hold from it. Only a Load that will BUILD the Engine arms
+            // from `TX.paused`: a live Engine (a replacement the pump launched after a refused
+            // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
+            // only while `TX.paused` still reads Paused.
+            ForegroundClock::Playing if paused() && !self.pa.is_live() => {
                 plx_media::player::lifecycle::commit_viewer_resume_for_load();
             }
             ForegroundClock::Playing => {}

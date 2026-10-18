@@ -1367,10 +1367,13 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.input.press.cancel();
             app.ok_armed = false;
         }
-        // A click on the player is its play/pause toggle, so it wakes a paused park Playing
-        // (`wake_input`). The OK key a set delivers as a click never gets here: `click_is_ok`
-        // above re-sent it as OK, which is only a wake.
-        if claim_press_after_decoder_release(app, WakePress::Toggle) {
+        // A click on NO control is the player's play/pause toggle, so it wakes a paused park
+        // Playing (`wake_input`); a click on a control (the scrub bar, a disc, a tab) is that
+        // control's, which a paused park keeps drawn, so it is only a wake. The OK key a set
+        // delivers as a click never gets here: `click_is_ok` above re-sent it as OK, which is
+        // only a wake too.
+        let press = if on_control { WakePress::Wake } else { WakePress::Toggle };
+        if claim_press_after_decoder_release(app, press) {
             return;
         }
         // Rule 11's click half, and the same one arm the hover path takes. The three it
@@ -1593,11 +1596,12 @@ fn park_on_decoder_release(app: &mut App) {
 enum WakePress {
     /// The remote's PLAY key.
     Play,
-    /// A play/pause toggle: the PLAYPAUSE key, or a pointer click (on the player a click that hits
-    /// no control is the toggle, `PlayerScreen`'s pointer arm).
+    /// A play/pause toggle: the PLAYPAUSE key, or a pointer click that hits no control (on the
+    /// player only that click is the toggle, `PlayerScreen`'s pointer arm).
     Toggle,
-    /// Any other press, OK included: OK is also how a viewer dismisses the screensaver, and
-    /// whether that press reaches the app is unmeasured, so it never starts the video.
+    /// Any other press, PAUSE, OK and a click on a control included: OK is also how a viewer
+    /// dismisses the screensaver, and whether that press reaches the app is unmeasured, so it
+    /// never starts the video.
     Wake,
 }
 
@@ -1612,7 +1616,8 @@ enum WakePress {
 ///
 /// `PlayKey` restores a paused save at its exact offset (no resume rewind). A toggle on a playing
 /// save means pause, but the machine has no claim that restores a playing save Paused: that press
-/// is spent as a wake, and the viewer's next one pauses.
+/// is spent as a wake, and the viewer's next one pauses. The `Wake` row is every other press: PAUSE
+/// too, which over a playing save is spent the same way, and a click on a control.
 fn wake_input(press: WakePress, saved: Option<ForegroundClock>) -> ForegroundInput {
     match (press, saved) {
         (WakePress::Play, _) | (WakePress::Toggle, Some(ForegroundClock::Paused)) => {
@@ -3355,6 +3360,11 @@ mod lifecycle_regression_tests {
     /// through `viewer_paused()`, which is `TX.paused` minus a claim hold's loan.
     struct TransportPaused(bool);
     impl TransportPaused {
+        /// Capture the current value without changing it: declare it BEFORE the rig, so it drops
+        /// AFTER the rig's stop has reset the transport.
+        fn keep() -> Self {
+            Self(paused())
+        }
         fn set(value: bool) -> Self {
             let previous = paused();
             set_paused(value);
@@ -4803,6 +4813,7 @@ mod lifecycle_regression_tests {
     #[test]
     fn a_decoder_released_by_the_pipeline_parks_until_the_next_press_restores_it() {
         let _serial = plx_base::testlock::serial();
+        let _paused = TransportPaused::keep();
         let Some(mut rig) = Rig::new() else {
             eprintln!(
                 "SKIPPED a_decoder_released_by_the_pipeline_parks_until_the_next_press_restores_it: \
@@ -4815,7 +4826,7 @@ mod lifecycle_regression_tests {
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
         // The measured decoder-release case: a paused video behind the screensaver.
-        let _paused = TransportPaused::set(true);
+        set_paused(true);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
         plx_media::player::note_decoder_revoked_for_test();
@@ -4853,20 +4864,25 @@ mod lifecycle_regression_tests {
     #[derive(Clone, Copy, Debug)]
     enum WakeWith {
         Key { sym: c_uint, wcode: c_uint },
+        /// A click on no control (the hit map is empty: the rig never presents a frame).
         Click,
+        /// A click with a scrub-bar stop registered over the whole screen.
+        ClickOnControl,
     }
 
     /// A started direct play, parked by a decoder release with the viewer's clock `paused`, then
     /// woken by `press`. Returns the rig with the foreground Load the press claimed still pending,
-    /// or `None` when the fixture worker could not be spawned. The rig drops first (its stop
-    /// resets the transport), then the guard puts the previous `TX.paused` back.
-    fn wake_a_decoder_park(paused: bool, press: WakeWith) -> Option<(Rig, Frame, TransportPaused)> {
+    /// or `None` when the fixture worker could not be spawned. The guard is the FIRST field and the
+    /// caller binds the tuple, so the rig drops first (its stop resets the transport), then the
+    /// guard puts the previous `TX.paused` back.
+    fn wake_a_decoder_park(paused: bool, press: WakeWith) -> Option<(TransportPaused, Rig, Frame)> {
+        let guard = TransportPaused::keep();
         let mut rig = Rig::new()?;
         rig.request();
         rig.resolve();
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
-        let guard = TransportPaused::set(paused);
+        set_paused(paused);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
         plx_media::player::note_decoder_revoked_for_test();
@@ -4878,7 +4894,21 @@ mod lifecycle_regression_tests {
                 rig.app.ev = encode_key(sym, wcode, true);
                 event(&mut rig.app, &mut fr, SDL_KEYDOWN);
             }
-            WakeWith::Click => {
+            WakeWith::Click | WakeWith::ClickOnControl => {
+                if matches!(press, WakeWith::ClickOnControl) {
+                    // The stop `top_at` finds, registered the way the scrub test above does,
+                    // over the whole screen so no coordinate mapping can miss it.
+                    use plx_ui::{screen::{Activate, Hover, Stop}, Rect};
+                    use plx_machine::machine::{EntryId, FocusKey};
+                    // `top_at` reads only the rect, so any entry will do.
+                    let key = FocusKey { entry: EntryId(0), elem: plx_appkit::player_hud::ELEM_SCRUB };
+                    let rect = Rect::FULL;
+                    rig.app.pages.input.hit.fill(vec![Stop {
+                        key, rect, rest_rect: rect, clip: Rect::FULL,
+                        hover: Hover::Ignore, activate: Activate::Direct,
+                    }]);
+                    rig.app.pages.input.hit.swap();
+                }
                 rig.app.ev[20..24].copy_from_slice(&960i32.to_ne_bytes());
                 rig.app.ev[24..28].copy_from_slice(&540i32.to_ne_bytes());
                 event(&mut rig.app, &mut fr, SDL_MOUSEBUTTONDOWN);
@@ -4886,7 +4916,7 @@ mod lifecycle_regression_tests {
         }
         assert!(!rig.app.player.lifecycle.awaiting_load(), "{press:?}: the press claimed the restore");
         assert!(rig.app.inputs.is_empty(), "{press:?}: …and was spent on it, not handed to the page");
-        Some((rig, fr, guard))
+        Some((guard, rig, fr))
     }
 
     /// Land the foreground Load a wake press launched, as the pump would on `loadCompleted`, and
@@ -4924,7 +4954,7 @@ mod lifecycle_regression_tests {
             WakeWith::Key { sym: 0, wcode: plx_ui::consts::WCODE_PLAYPAUSE },
             WakeWith::Click,
         ] {
-            let Some((mut rig, mut fr, _paused)) = wake_a_decoder_park(true, press) else {
+            let Some((_paused, mut rig, mut fr)) = wake_a_decoder_park(true, press) else {
                 eprintln!(
                     "SKIPPED a_press_that_asks_to_play_wakes_a_paused_decoder_park_playing: \
                      lifecycle fixture worker thread could not be spawned"
@@ -4969,7 +4999,7 @@ mod lifecycle_regression_tests {
     fn an_ok_press_wakes_a_paused_decoder_park_paused() {
         let _serial = plx_base::testlock::serial();
         let ok = WakeWith::Key { sym: plx_ui::consts::SDLK_RETURN, wcode: 0 };
-        let Some((rig, _fr, _paused)) = wake_a_decoder_park(true, ok) else {
+        let Some((_paused, rig, _fr)) = wake_a_decoder_park(true, ok) else {
             eprintln!(
                 "SKIPPED an_ok_press_wakes_a_paused_decoder_park_paused: \
                  lifecycle fixture worker thread could not be spawned"
@@ -4997,7 +5027,7 @@ mod lifecycle_regression_tests {
     fn a_toggle_on_a_playing_decoder_park_restores_it_playing() {
         let _serial = plx_base::testlock::serial();
         for press in [WakeWith::Key { sym: 0, wcode: plx_ui::consts::WCODE_PLAYPAUSE }, WakeWith::Click] {
-            let Some((mut rig, mut fr, _paused)) = wake_a_decoder_park(false, press) else {
+            let Some((_paused, mut rig, mut fr)) = wake_a_decoder_park(false, press) else {
                 eprintln!(
                     "SKIPPED a_toggle_on_a_playing_decoder_park_restores_it_playing: \
                      lifecycle fixture worker thread could not be spawned"
@@ -5016,6 +5046,103 @@ mod lifecycle_regression_tests {
             assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle, "{press:?}");
             assert!(!paused(), "{press:?}: the restore plays");
         }
+    }
+
+    /// **A click on a drawn control is only a wake.** The paused park keeps its transport drawn
+    /// (`hud_visible` holds while paused), and the player's pointer arm turns only a click on NO
+    /// control into the play/pause toggle: the scrub bar seeks, a disc arms the row, a tab opens
+    /// Info or Chapters. A click on one of those must not bring the video back Playing; it keeps
+    /// the saved pause, like OK.
+    #[test]
+    fn a_click_on_a_control_wakes_a_paused_decoder_park_paused() {
+        let _serial = plx_base::testlock::serial();
+        let Some((_paused, rig, _fr)) = wake_a_decoder_park(true, WakeWith::ClickOnControl) else {
+            eprintln!(
+                "SKIPPED a_click_on_a_control_wakes_a_paused_decoder_park_paused: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        assert!(
+            matches!(
+                rig.app.player.lifecycle.state,
+                ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
+            ),
+            "a click on a control keeps the saved pause, got {:?}",
+            rig.app.player.lifecycle.state
+        );
+        assert!(paused(), "the viewer's pause stands");
+        assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
+        assert!(!rig.app.ptr.ok_from_click, "the click was not re-sent as OK, so this is the wake path");
+    }
+
+    /// **A Playing Load over a LIVE Engine must not publish the viewer's resume.** `before_load`
+    /// commits the resume so a Load that BUILDS the Engine does not arm its clock hold under the
+    /// stale pause. `start_load` over an Engine the pump already launched (a replacement after a
+    /// refused restore) builds nothing: the Engine keeps the viewer's pause and `PlayClock` has to
+    /// resume it for real, which it only does while `TX.paused` still reads Paused.
+    #[test]
+    fn a_playing_load_over_a_live_engine_does_not_publish_the_viewers_resume() {
+        let _serial = plx_base::testlock::serial();
+        let _paused = TransportPaused::keep();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED a_playing_load_over_a_live_engine_does_not_publish_the_viewers_resume: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
+        // The viewer pauses the live Engine through the real transport, so it owns a user hold
+        // that only a real resume releases.
+        assert!(
+            plx_media::player::lifecycle::set_transport_paused(&mut rig.app.adapters.player, true),
+            "the fixture's pause is accepted"
+        );
+        assert!(paused(), "the Engine is under the viewer's pause");
+        // Prepared after a refused foreground Load, with the pump's replacement Engine live. (The
+        // `PlayClock` that follows a CurrentAttempt landing is not driven here: the host rig arms
+        // the Engine's initial hold from the pause at its START, so a pause pressed afterwards
+        // leaves `resume` no hold to release.)
+        rig.app.player.lifecycle.state =
+            ForegroundState::Prepared { id: 1, resume_ns: 0, clock: ForegroundClock::Paused };
+        drive_foreground(
+            &mut rig.app.player.lifecycle,
+            &mut rig.app.player.session,
+            ForegroundInput::PlayKey,
+            &mut PlayerForegroundActuator {
+                pa: &mut rig.app.adapters.player,
+                repause_at: &mut rig.app.repause_at,
+            },
+        );
+        assert!(
+            paused(),
+            "a Load that builds no Engine must not publish the viewer's resume over the live Engine's pause"
+        );
+    }
+
+    /// **The transport guard restores AFTER the rig stops.** The rig's stop resets `TX.paused`,
+    /// so a guard that drops first has its restore overwritten.
+    #[test]
+    fn the_transport_guard_restores_after_the_rig_stops() {
+        let _serial = plx_base::testlock::serial();
+        let _outer = TransportPaused::set(true);
+        {
+            let Some((_guard, _rig, _fr)) = wake_a_decoder_park(
+                true,
+                WakeWith::Key { sym: plx_ui::consts::SDLK_DOWN, wcode: 0 },
+            ) else {
+                eprintln!(
+                    "SKIPPED the_transport_guard_restores_after_the_rig_stops: \
+                     lifecycle fixture worker thread could not be spawned"
+                );
+                return;
+            };
+        }
+        assert!(paused(), "the guard's restore must outlive the rig's reset");
     }
 
     /// **A surface open over the parked player gets its own press, not the restore.**

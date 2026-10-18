@@ -118,15 +118,15 @@ something.
   `decoder_revoked`; the app loop parks the session exactly as an app switch does
   (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
   claim that rebuilds it at the saved spot. The claiming press chooses the clock (`run::wake_input`,
-  whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click — on the
-  player a click is the toggle) over a save that was Paused, claim with `ForegroundInput::PlayKey`
-  and come back Playing at the exact saved offset; every other key claims with `DidForeground`
+  whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click on no control — on the
+  player only that click is the toggle; a click on the scrub bar, a disc or a tab is a plain wake) over a save that was Paused, claim with `ForegroundInput::PlayKey`
+  and come back Playing at the exact saved offset; every other press, PAUSE included, claims with `DidForeground`
   and keeps the saved clock. OK is deliberately one of those: it is also how a viewer dismisses
   the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
   (`PlayerForegroundActuator::before_load` → `lifecycle::commit_viewer_resume_for_load`):
-  `ClockStartGuard` arms the Load's initial hold from `TX.paused`, and under the stale pause that
+  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
   order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY

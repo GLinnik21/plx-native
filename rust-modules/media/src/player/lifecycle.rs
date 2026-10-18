@@ -34,7 +34,9 @@ pub fn set_paused(v: bool) {
 /// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
 /// under the viewer's pause, whose hold fences the Load's first Play behind a prime and leaves the
 /// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
-/// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half.
+/// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
+/// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
+/// `is_live`): over a live one this would leave its pause standing while `TX` reads Playing.
 pub fn commit_viewer_resume_for_load() {
     crate::player::claim_hold::note_user_transport();
     crate::player::TX.commit_paused(false);
@@ -116,8 +118,8 @@ pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
 /// The only two inputs which may claim a parked playback session — one an OS suspend parked, or
 /// one the pipeline's decoder release did (`app::run::park_on_decoder_release`). `DidForeground`
 /// restores the saved clock; `PlayKey` is a press that asks to play, which restores it Playing at
-/// the exact saved offset: the remote's PLAY key, or a toggle press (PLAYPAUSE, a click) that
-/// wakes a decoder-release park saved Paused.
+/// the exact saved offset: the remote's PLAY key, or a toggle press (PLAYPAUSE, a click on no
+/// control) that wakes a decoder-release park saved Paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundInput {
     DidForeground,
