@@ -371,3 +371,31 @@ fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_after_
     let _guard = plx_base::testlock::serial();
     a_membership_refresh_under_a_page_push(false, false);
 }
+
+/// The Under posters setting reaches the grid: a policy that shows nothing opens no caption band, so
+/// focusing a tile moves no row below it, while the default opens one and pushes them down.
+#[test]
+fn the_under_posters_policy_sizes_the_focused_rows_band() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    let _guard = plx_base::testlock::serial();
+    let below_focus = |setting: UnderPosters| {
+        plx_media::route::restore_under_posters(setting);
+        let fixture = Fixture::new();
+        let mut page = fixture.screen();
+        page.initial = false;
+        let mut engine = FocusEngine::new();
+        let rest = page.layout.row_y(4, 0.0);
+        let start = page.key(page.pair.detail.elem_at(12).unwrap());
+        engine.set(OWNER, start, Some(page.pair.groups_config().detail), By::Restore);
+        deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: start, by: By::Restore });
+        settle(&mut page, &mut engine, &fixture, 0);
+        page.layout.row_y(4, 0.0) - rest
+    };
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    plx_media::route::restore_under_posters(UnderPosters::DEFAULT);
+    assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
+    assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
+    assert!((two_lines - 72.0).abs() < 0.01, "two lines open 112 - 40 px: {two_lines}");
+}

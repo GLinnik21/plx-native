@@ -669,11 +669,12 @@ impl LibraryScreen {
         let grid_head = self.shelf_mode && (rows > 0 || self.grid_fade.is_swapping()
             || (self.section.is_some() && self.wanted_kind.is_none() && self.readout == Readout::Empty));
         let episodes = self.layout.is_episodes();
+        let band_h = plx_ui::caption_policy::band_h(&parts::caption_policy());
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true, self.run.pitches())
-        } else { Layout::new(true, self.run.pitches(), rows, grid_head) }.with_episodes(episodes)
+        } else { Layout::new(true, self.run.pitches(), rows, grid_head) }.with_episodes(episodes).with_band_h(band_h)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, self.target_run.pitches(), rows, grid_head).with_episodes(episodes)
+        self.target_layout = Layout::new(true, self.target_run.pitches(), rows, grid_head).with_episodes(episodes).with_band_h(band_h)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);

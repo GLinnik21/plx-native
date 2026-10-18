@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy};
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
@@ -34,8 +35,35 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
-/// One label construction for the normal and modal-lifted focused grid card.
-pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
+/// The Under posters setting as the caption policy every Library grid card and band follows.
+pub(super) fn caption_policy() -> CaptionPolicy {
+    crate::settings::caption_policy_of(plx_media::route::under_posters())
+}
+
+/// The facts of a catalog row a caption policy words its lines from.
+fn caption_facts(item: &plx_data::pms::PmsMovie) -> CaptionFacts {
+    CaptionFacts {
+        title: Some(item.title.clone()),
+        year: Some(item.year),
+        duration_min: u32::try_from(item.dur_ns / 60_000_000_000).ok(),
+        genre: item.genre.clone(),
+        video_resolution: item.video_resolution.clone(),
+        hdr: item.hdr,
+        content_rating: Some(item.rating.clone()),
+        audience_rating: item.audience_rating,
+        leaf_count: item.leaf_count,
+        viewed_leaf_count: item.viewed_leaf_count,
+        child_count: u32::try_from(item.child_count).ok().filter(|n| *n > 0),
+        subtype: (item.kind == plx_data::pms::KIND_COLLECTION).then(|| item.subtype.clone().unwrap_or_default()),
+        is_show: item.kind == 1,
+        ..Default::default()
+    }
+}
+
+/// A grid poster card's label under `policy`: the focused caption band shows exactly what the
+/// Under posters setting chose. An episode and a season keep their own wording (an episode names
+/// its address and release date, a season the show it belongs to) and ride the same band.
+pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
     if item.kind == 3 {
         let name = if item.title.is_empty() || item.title == item.show_title {
             plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
@@ -46,7 +74,11 @@ pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel 
         else { ui_cards::TileLabel::titled(&name,
             &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
     }
-    ui_cards::poster_label(&tile_facts::of(item))
+    if item.kind == 2 && !item.show_title.is_empty() {
+        return ui_cards::poster_label(&tile_facts::of(item));
+    }
+    ui_cards::TileLabel::from_lines(plx_ui::caption_policy::caption_lines(policy, &caption_facts(item),
+        plx_platform::i18n::current()))
 }
 
 #[derive(Default)]
@@ -204,7 +236,7 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
@@ -228,6 +260,7 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
+        self.grid.set_caption_policy(caption_policy());
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
 
@@ -410,7 +443,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -473,6 +506,7 @@ struct GridSrc<'a, 'v> {
     windows: &'a [Window],
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
+    policy: CaptionPolicy,
 }
 
 impl GridSrc<'_, '_> {
@@ -504,7 +538,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn label(&self, i: usize) -> ui_cards::TileLabel {
         let Some(item) = self.view.item(i) else { return Default::default() };
         if self.collections() { return collection_label(item); }
-        grid_label(item)
+        grid_label(item, &self.policy)
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())

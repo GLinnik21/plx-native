@@ -83,10 +83,10 @@ pub use avatars::AvatarRow;
 pub use crate::card_row::{
     column_near_x, draw_credit_label, draw_heading, draw_label, focused_caption, heading_flow, heading_lift_max, label_band, paint_visible,
     poster_label, resume_bar, reveal, scroll_into_view, settled_top, tile_rect, under_band, RowStyle, TileLabel,
-    BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
+    BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
 };
 pub use crate::poster_grid::{
-    growth_before as grid_growth_before, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
+    growth_before as grid_growth_before, growth_before_for as grid_growth_before_for, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
     STYLE as GRID_STYLE,
 };
 pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};

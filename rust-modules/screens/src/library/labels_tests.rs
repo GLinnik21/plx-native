@@ -12,15 +12,21 @@ use super::draw::shelf_label;
 use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT,
     RAIL_CAP_PAD, RAIL_TRACK_W};
 
+/// Title over the default year line: the shape the legacy grid caption had.
+const POLICY: plx_ui::caption_policy::CaptionPolicy = plx_ui::caption_policy::CaptionPolicy {
+    title: true,
+    details: plx_ui::caption_policy::DetailsKind::YearLength,
+};
+
 #[test]
 fn grid_labels_identify_episodes_and_seasons() {
     let episode = PmsMovie { kind: 3, title: "The Bear".into(), show_title: "The Bear".into(),
         season_index: 3, ep_index: 4, ..Default::default() };
-    assert_eq!(super::parts::grid_label(&episode).title.unwrap().to_str().unwrap(), "S3 · E4",
+    assert_eq!(super::parts::grid_label(&episode, &POLICY).title.unwrap().to_str().unwrap(), "S3 · E4",
         "an episode without its own title must identify the episode, not repeat the show");
     let season = PmsMovie { kind: 2, title: "Season 3".into(), show_title: "The Bear".into(),
         season_index: 3, year: 2024, ..Default::default() };
-    let label = super::parts::grid_label(&season);
+    let label = super::parts::grid_label(&season, &POLICY);
     assert_eq!(label.title.unwrap().to_str().unwrap(), "Season 3");
     assert_eq!(label.caption.unwrap().to_str().unwrap(), "The Bear",
         "a mixed library of seasons must name the show each season belongs to");
@@ -28,20 +34,20 @@ fn grid_labels_identify_episodes_and_seasons() {
 
 #[test]
 fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
-    for (kind, year) in [(0, 1994), (1, 2022)] {
+    for (kind, year, line) in [(0, 1994, "1994 · 1h 0m"), (1, 2022, "2022")] {
         let item = PmsMovie { kind, year, title: "Synthetic title".into(),
             dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
             ..Default::default() };
-        let label = super::parts::grid_label(&item);
+        let label = super::parts::grid_label(&item, &POLICY);
         assert_eq!(label.title.unwrap().to_str().unwrap(), "Synthetic title");
-        assert_eq!(label.caption.unwrap().to_str().unwrap(), year.to_string(),
-            "grid cards use the shared non-deck caption, not remaining playback time");
+        assert_eq!(label.caption.unwrap().to_str().unwrap(), line,
+            "grid cards word the policy's year line, not remaining playback time (year {year})");
     }
     let item = PmsMovie { title: "Undated".into(), ..Default::default() };
-    assert!(super::parts::grid_label(&item).caption.is_none());
+    assert!(super::parts::grid_label(&item, &POLICY).caption.is_none());
     let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
         ..Default::default() };
-    assert_eq!(super::parts::grid_label(&episode).caption.unwrap().to_str().unwrap(), "2020",
+    assert_eq!(super::parts::grid_label(&episode, &POLICY).caption.unwrap().to_str().unwrap(), "2020",
         "the still overlay carries the episode address; the focus caption adds its release date");
 }
 

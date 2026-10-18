@@ -121,13 +121,16 @@ pub(super) struct Layout {
     /// Total height of the shelf run: the sequential sum of every shelf pitch.
     shelf_run: f32,
     grid_bands: [GridBand; MAX_GRID_BANDS],
+    /// The focused grid row's band height under the Under posters setting (0 / 80 / 112; the
+    /// legacy 92 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
+    band_h: f32,
 }
 
 impl Layout {
     pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,empty:bool,episodes:bool,shelf_run:f32,grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { libraries, shelves, rows, grid_head, status, empty, episodes, shelf_run, grid_bands } = self;
+        let Self { libraries, shelves, rows, grid_head, status, empty, episodes, shelf_run, grid_bands, band_h: _ } = self;
         c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*empty).bool(*episodes);
         c.f32(*shelf_run);
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
@@ -147,6 +150,7 @@ impl Layout {
             episodes: false,
             shelf_run: shelf_pitches.iter().sum::<f32>(),
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
+            band_h: plx_ui::cards::LEGACY_BAND_H,
         }
     }
 
@@ -155,6 +159,8 @@ impl Layout {
     }
 
     pub(super) fn with_episodes(self, episodes: bool) -> Self { Self { episodes, ..self } }
+
+    pub(super) fn with_band_h(self, band_h: f32) -> Self { Self { band_h, ..self } }
 
     pub(super) fn with_grid_bands(mut self, bands: [GridBand; MAX_GRID_BANDS]) -> Self {
         self.grid_bands = bands;
@@ -173,7 +179,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        plx_ui::cards::grid_growth_before(row.min(self.rows), &self.grid_bands)
+        plx_ui::cards::grid_growth_before_for(self.band_h, row.min(self.rows), &self.grid_bands)
     }
 
     fn row_top(&self, row: usize) -> f32 {

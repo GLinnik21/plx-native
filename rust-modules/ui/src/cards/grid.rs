@@ -149,6 +149,9 @@ pub struct Grid {
     epoch: u32,
     /// The animated landing of inserted and removed cards (`landing.rs`); off unless the spec asks.
     landing: Landing,
+    /// What the focused caption band shows (the Library's Under posters setting); `None` keeps the
+    /// legacy 92 px band every grid without the setting opens to.
+    caption_policy: Option<crate::caption_policy::CaptionPolicy>,
 }
 
 impl Grid {
@@ -179,7 +182,20 @@ impl Grid {
                 l.hold_first_frame(true);
                 l
             },
+            caption_policy: None,
         }
+    }
+
+    /// Size and caption the focused band by `policy` (the Library's Under posters setting). A grid
+    /// never given one keeps the legacy band.
+    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
+        self.caption_policy = Some(policy);
+        self.bands.set_caption_policy(policy);
+    }
+
+    /// The focused band's height: the policy's (0 / 80 / 112), else the legacy band.
+    pub fn band_h(&self) -> f32 {
+        self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)
     }
 
     /// The one entry: feed it every event the screen receives.
@@ -294,7 +310,7 @@ impl Grid {
         }
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
-            poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
+            poster_grid::snap_row_in_for(self.band_h(), &self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
         });
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
@@ -334,17 +350,17 @@ impl Grid {
             ScrollMode::Own => self.scroll.pos - sy0,
             ScrollMode::External => self.shift,
         };
-        let (geom, top, scroll, h) = (self.spec.geom(), self.spec.top, self.scroll.pos, self.spec.style.h);
+        let (geom, top, scroll, h, band_h) = (self.spec.geom(), self.spec.top, self.scroll.pos, self.spec.style.h, self.band_h());
         let bands = self.bands.geometry();
         let slot = |i: usize| {
-            let r = poster_grid::cell_in(&geom, i, top, 0.0, &bands);
+            let r = poster_grid::cell_in_for(band_h, &geom, i, top, 0.0, &bands);
             (r.x, r.y)
         };
         let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
         // the layout the last frame drew: the caption band may have settled on another row since
         let drawn = self.bands_was.take();
         let was = |i: usize| {
-            let r = poster_grid::cell_in(&geom, i, top, 0.0, drawn.as_ref().unwrap_or(&bands));
+            let r = poster_grid::cell_in_for(band_h, &geom, i, top, 0.0, drawn.as_ref().unwrap_or(&bands));
             (r.x, r.y)
         };
         let scene = Scene { shift: (0.0, scroll_moved), slot: &slot, was: &was, on: &on, lifted };
@@ -353,7 +369,7 @@ impl Grid {
             self.landing.rebase(src.len(), &scene);
         }
         let size = {
-            let r = poster_grid::cell_in(&geom, 0, top, 0.0, &bands);
+            let r = poster_grid::cell_in_for(band_h, &geom, 0, top, 0.0, &bands);
             (r.w, r.h)
         };
         let occupy = Occupancy { slot: &slot, size };
@@ -507,18 +523,19 @@ impl Grid {
     /// The caption bands closed and settled: a fresh content set whose old rows mean nothing.
     pub fn reset_bands(&mut self) {
         self.bands = GridBands::new();
+        if let Some(policy) = self.caption_policy { self.bands.set_caption_policy(policy); }
     }
 
     /// The grid's height for `len` cards with its caption bands as they are now: the span from the
     /// first row's top to the end of the last row's band, the pitch's air included, as `poster_grid::max_scroll_in` counts it (what a `Stack` lays the next section
     /// after, and bounds its scroll by).
     pub fn height(&self, len: usize) -> f32 {
-        poster_grid::row_top_in(&self.spec.geom(), len.div_ceil(self.spec.cols), 0.0, &self.bands.geometry())
+        poster_grid::row_top_in_for(self.band_h(), &self.spec.geom(), len.div_ceil(self.spec.cols), 0.0, &self.bands.geometry())
     }
 
     /// The cards the scroll can show out of `len`: what `draw` and `record_stops` touch.
     pub fn window(&self, len: usize) -> std::ops::Range<usize> {
-        poster_grid::visible_in(&self.spec.geom(), len, self.spec.top, self.scroll.pos)
+        poster_grid::visible_in_for(self.band_h(), &self.spec.geom(), len, self.spec.top, self.scroll.pos)
     }
 
     /// The run of cards [`draw`](Self::draw) actually paints out of `len`: [`window`](Self::window)
@@ -567,7 +584,7 @@ impl Grid {
     }
 
     fn cell(&self, i: usize, bands: &[GridBand]) -> Rect {
-        poster_grid::cell_in(&self.spec.geom(), i, self.spec.top, self.scroll.pos, bands)
+        poster_grid::cell_in_for(self.band_h(), &self.spec.geom(), i, self.spec.top, self.scroll.pos, bands)
     }
 
     /// Card `i`'s settled (unpopped) cell of `n` cards with a landing's slide folded in: where the
@@ -735,7 +752,7 @@ impl Grid {
             // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
             // focus reconciled to takes it up with the landing's first step.
             let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            let label = label.revealed(card_row::band_reveal(open));
+            let label = label.revealed(card_row::band_reveal_for(self.band_h(), open));
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
@@ -888,7 +905,7 @@ impl Grid {
             // the new focus card's, which moves with the focus.
             if g.focused && self.landing_waiting() {
                 let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
-                let label = ghosts.label(j).revealed(card_row::band_reveal(open));
+                let label = ghosts.label(j).revealed(card_row::band_reveal_for(self.band_h(), open));
                 if label.reveal > 0.0 {
                     card_row::draw_label(pr.alpha(label.reveal), rect, s, &self.spec.style, &label, f.measure);
                 }
