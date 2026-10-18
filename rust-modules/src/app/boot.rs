@@ -422,17 +422,17 @@ mod seam_order_tests {
     #[test]
     fn the_setting_maps_to_the_requested_window() {
         use plx_plex::plex::session::UiResolution as R;
-        assert_eq!(drawable_for_setting(R::Auto), None);
-        assert_eq!(drawable_for_setting(R::Full1080), None);
-        assert_eq!(drawable_for_setting(R::Hd900), Some((1600, 900)));
-        assert_eq!(drawable_for_setting(R::Hd720), Some((1280, 720)));
-        assert_eq!(drawable_for_setting(R::Sd540), Some((960, 540)));
+        assert_eq!(super::drawable_for_setting(R::Auto), None);
+        assert_eq!(super::drawable_for_setting(R::Full1080), None);
+        assert_eq!(super::drawable_for_setting(R::Hd900), Some((1600, 900)));
+        assert_eq!(super::drawable_for_setting(R::Hd720), Some((1280, 720)));
+        assert_eq!(super::drawable_for_setting(R::Sd540), Some((960, 540)));
         // a record that predates the setting, or holds a spelling this build does not know, is Automatic
         let old: plx_plex::plex::session::Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
-        assert_eq!(drawable_for_setting(old.ui_resolution()), None);
+        assert_eq!(super::drawable_for_setting(old.ui_resolution()), None);
         let unknown: plx_plex::plex::session::Session =
             serde_json::from_str(r#"{"client_id":"c","ui_resolution":"4320p"}"#).unwrap();
-        assert_eq!(drawable_for_setting(unknown.ui_resolution()), None);
+        assert_eq!(super::drawable_for_setting(unknown.ui_resolution()), None);
     }
 }
 
