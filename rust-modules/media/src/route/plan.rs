@@ -1311,6 +1311,11 @@ pub struct Plan {
     /// only one half is recorded. Equal to `vcodec`/`acodec` for a direct play and for a remux.
     pub src_vcodec: String,
     pub src_acodec: String,
+    /// The SOURCE file's video frame rate (0 = unknown), whichever route carries it. Beside
+    /// `src_*` and not beside `fps`: `fps` is what the Load declares for THIS stream (direct play
+    /// and remux, whose video is the source's own elementary stream; 0 on a re-encode), while this
+    /// stays the file's, so a later rebuild of the route ([`video_copy_fps`]) can decide again.
+    pub src_fps: f64,
     pub fps: f64,
     /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
     /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
@@ -1514,6 +1519,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         .cached_item
         .clone()
         .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
+    plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
     plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
@@ -2420,6 +2426,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.contract.remux = remux;
     plan.contract.no_video_copy = no_video_copy;
+    // A remux's video is the source's own elementary stream, so the Load declares the source's rate
+    // (a 4K H.264 24p stream declared at the 60 an unknown rate keeps is presented at ~13 fps).
+    plan.fps = video_copy_fps(&plan.contract, plan.src_fps);
     // `plan.contract.ceiling` is NOT set here — it was set for every flavour up at the decision,
     // which is what the direct-play branch needed too. Spending it below is the third reader of
     // the same reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild
@@ -2537,6 +2546,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     plan
 }
 
+
+/// The video frame rate the Load may declare for a route with this contract: the SOURCE's own when
+/// the server copies the video stream (a remux, so direct play's rule holds there too), 0 (unknown)
+/// when it re-encodes it (an HLS rung, `no_video_copy`, a burned subtitle) — the encoder owns that
+/// rate and nothing here knows it. The one place the rule lives: the plan, the recovery install and
+/// the retranscode landing all ask it.
+pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
+    if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
 
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
 /// them (h264/hevc + the chosen audio track's codec). If a specific track was picked (aidx >= 0),

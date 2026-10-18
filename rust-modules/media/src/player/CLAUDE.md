@@ -125,8 +125,12 @@ something.
   declared at 24 or 30 it announces 24 once and holds it — and the sink's displayed-frame counter
   measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
   declares the stream's rate class
-  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
-  keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
+  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a stream with no known rate
+  keeps 60. A REMUX (the enhanced `start.mkv`, `directStream=1`: video copied, audio re-encoded) copies the
+  source's video stream, so it declares the SOURCE rate (`route::video_copy_fps`, from `Plan::src_fps` /
+  `PlaybackSession::src_fps`) exactly as direct play does — until 2026-10-18 it carried 0, declared 60 and
+  presented ~16 fps on a 4K H.264 24p file; a real video re-encode (an HLS rung, `no_video_copy`, a forced
+  burn) still has no known rate and keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
   clamped by `Caps::av1_row`; the clamp is unmeasured (one owner reports AV1 playing on a webOS 10.3.1 set, with no log). `/tmp/plxnative-sinkmax=WxH@F`
   overrides the envelope for the legs still unrun on 10.3.1.
 - **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
