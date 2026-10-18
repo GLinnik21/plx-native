@@ -53,6 +53,9 @@
 //!   user (this household's admin) — see `publish`.
 //! - `GET /auth`    → the sign-in phase, the offered roster and the flow's error line (the
 //!   same object `/state` embeds under `auth`).
+//! - `GET /llm`     → the operator guide (Markdown): the whole API's shapes, the
+//!   queued-write contract and the token vocabulary in one document an LLM can curl
+//!   and immediately operate — the API's own onboarding.
 //! - `GET|POST /shot` — the one binary answer in this API (a PNG, so it bypasses the
 //!   JSON-only `reply`): a screenshot of the app's own UI plane — what the app draws (the
 //!   home rows, the detail page, the player HUD) — read back from the GL surface by the
@@ -199,6 +202,11 @@ fn serve(stream: TcpStream, port: u16) {
         shot_reply(&stream);
         return;
     }
+    // The LLM's onboarding: Markdown, so it does not ride the JSON-only `reply` either.
+    if path == "/llm" && method == "GET" {
+        reply_ct(&stream, 200, "text/markdown; charset=utf-8", llm_guide());
+        return;
+    }
     let (status, json) = route(&method, &path, &body, port);
     reply(&stream, status, &json);
 }
@@ -282,7 +290,13 @@ fn find_crlf_crlf(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-fn reply(mut stream: &TcpStream, status: u16, body: &str) {
+fn reply(stream: &TcpStream, status: u16, body: &str) {
+    reply_ct(stream, status, "application/json", body);
+}
+
+/// One answer with an explicit content type: the JSON routes ride [`reply`], `/llm`
+/// carries Markdown.
+fn reply_ct(mut stream: &TcpStream, status: u16, content_type: &str, body: &str) {
     use std::io::Write;
     let reason = match status {
         200 => "OK",
@@ -293,11 +307,99 @@ fn reply(mut stream: &TcpStream, status: u16, body: &str) {
         _ => "Internal Server Error",
     };
     let head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(head.as_bytes());
     let _ = stream.write_all(body.as_bytes());
+}
+
+/// The operator guide any LLM can curl (`GET /llm`): the whole API's shapes, the
+/// queued-write contract and the token vocabulary in one document, so an agent that
+/// is handed only this television's IP can operate it without prior knowledge.
+/// Static by design — every fact in it is a contract of this module (the shapes are
+/// the arms of [`route`], the vocabulary is `events::dispatch_remote_token`), so
+/// there is nothing to compute and nothing to drift.
+fn llm_guide() -> &'static str {
+    r#"# plx-native command API — operator guide
+
+You are talking to a running plx-native (a Plex TV client) on this television.
+Base URL: the one you used to fetch this guide (port 8920 stable / 8921 debug /
+8922 nightly). All answers are JSON except `GET /shot` (PNG) and this document
+(Markdown).
+
+## The one rule
+
+Writes are QUEUED, not applied. `202 {"queued":"..."}` means accepted; the effect
+lands on the next presented frame (~50 ms). A 202 proves nothing — re-`GET /state`
+(or `GET /shot`) until it says what you expected.
+
+## Read
+
+- `GET /health` → `{"app","flavour","port","up_ms"}` — liveness.
+- `GET /state` → the last frame's snapshot: `state` (one of `idle`, `resolving`,
+  `connecting`, `buffering`, `seeking`, `playing`, `error`), `playing`, `paused`,
+  `pos_ms`, `dur_ms`, `kbps`, `title`, `rk`, `kind`, `url`, `transcode`, `verdict`,
+  `audio[]` and `subs[]` (each with `sid`, `selected`, `title`), and `auth` (the
+  sign-in phase plus `profiles[]` with `index`, `title`, `pin`). 404 until the
+  first frame.
+- `GET /auth` → the sign-in phase, the offered profile roster, the flow's error.
+- `GET /llm` → this guide.
+
+## Write (POST, small JSON body)
+
+- `/play`    body `{"rk":"33258"}` — a PMS ratingKey (digits). 404: PMS has no such
+  item, or the session has no token yet (retry).
+- `/stop`, `/pause`, `/resume` — body `{}`. Player transport.
+- `/seek`    body `{"pos_ms":120000}`.
+- `/audio`   body `{"sid":190844}` — a track id from `/state`'s `audio[]`.
+- `/sub`     body `{"sid":238396}` — a track id from `/state`'s `subs[]`.
+- `/quality` body `{"q":"720p_4_mbps"}` — a rung: `auto`, `original`,
+  `1080p_20_mbps`, `1080p_8_mbps`, `720p_4_mbps`, `720p_2_mbps`, `480p_720_kbps`.
+  Applied live to the stream on screen.
+- `/profile` body `{"index":0}` (optional `"pin":"1234"`) — a "who's watching" pick
+  from `GET /auth`'s roster.
+- `/command` body `{"tok":"down"}` — one verbatim remote token (vocabulary below).
+
+## Screenshot
+
+`GET /shot` (or POST) → 200 `image/png` (1920x1080, ~1.2 s) or 504 when nothing is
+presented in time. It captures the app's UI plane only: rows, menus, the player
+HUD. The VIDEO FRAME IS NOT in it — it plays on a hardware overlay plane the
+read-back cannot see, so during playback the video area reads back black. Each
+capture also writes `shot-N.png` under `/tmp/<app id>/` on the TV.
+
+## Token vocabulary for /command
+
+- navigation: `up` `down` `left` `right`
+- keys: `ok` (=`enter`=`select`), `back` (=`esc`), `pageup`, `pagedown`, `chup`,
+  `chdown`, `play`, `pause`, `stop`, `ff`, `rew`, `playpause`, `exit`, `backspace`,
+  `clear`
+- press-and-hold: `okdown` then `okup` (opens the item menu); the general form is
+  `holddown:<name>`, `holdrep:<name>`, `holdup:<name>`
+- pointer (1920x1080 logical pixels): `ck:x,y` click, `pm:x,y` move, `pd:x,y` down,
+  `pu:x,y` up
+- `wheel:<dy>` — the settings wheel; `k:<sym>,<wcode>` — a raw SDL key escape
+  (both fields decimal, both required)
+- `txt:star+wars` — keyboard text (`+` = space)
+- `diag` — the lab diagnostics upload; `pat:<spec>` — the test-pattern ground
+  (lab harnesses, rarely wanted)
+
+## Finding content
+
+This API does not browse the library. To find a ratingKey: pull the
+`X-Plex-Token=...` parameter out of `/state`'s `url` (present while anything has
+played) and query the Plex Media Server yourself; the items' `ratingKey` field is
+the `rk` for `/play`.
+
+## First actions
+
+1. `GET /health` — alive?
+2. `GET /state` — what is on screen?
+3. act — `POST /play {"rk":"..."}` or a `/command` token
+4. re-`GET /state` until the state says what you expected
+5. `GET /shot` — see the screen
+"#
 }
 
 /// Route one request. `path` is the raw request target (no query strings in this API).
