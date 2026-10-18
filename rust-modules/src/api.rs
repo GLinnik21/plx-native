@@ -53,6 +53,14 @@
 //!   user (this household's admin) — see `publish`.
 //! - `GET /auth`    → the sign-in phase, the offered roster and the flow's error line (the
 //!   same object `/state` embeds under `auth`).
+//! - `GET|POST /shot` — the one binary answer in this API (a PNG, so it bypasses the
+//!   JSON-only `reply`): a screenshot of the app's own UI plane — what the app draws (the
+//!   home rows, the detail page, the player HUD) — read back from the GL surface by the
+//!   frame thread before the swap. It is NOT the video overlay: the overlay lives on a
+//!   hardware plane the read-back cannot see (the same limit `capture` documents; the shot
+//!   discards the framebuffer's alpha for the same reason — a compositor instruction, not
+//!   opacity). 200 `image/png`, or 504 when the frame loop presented nothing within the
+//!   deadline.
 //!
 //! The `api:` verbs, performed on the frame thread by [`handle`] (all of them, by
 //! construction, go through the media layer's own commit functions — the same ones the
@@ -186,8 +194,41 @@ fn serve(stream: TcpStream, port: u16) {
     let Some((method, path, body)) = read_request(&stream) else {
         return;
     };
+    // The one binary answer: a PNG, so it cannot ride the JSON-only `reply`.
+    if path == "/shot" && (method == "GET" || method == "POST") {
+        shot_reply(&stream);
+        return;
+    }
     let (status, json) = route(&method, &path, &body, port);
     reply(&stream, status, &json);
+}
+
+/// `GET|POST /shot` — the one binary answer in this API (a PNG, so it cannot ride the
+/// JSON-only `reply`): a screenshot of the app's own UI plane. Arms an on-demand capture
+/// on the frame thread and waits for the read-back: 200 `image/png` on a presented frame,
+/// 504 when the frame loop produced nothing within the deadline (wedged loop, or a screen
+/// that never drew). Debug-only by construction — the whole API is debug-gated in `init`.
+fn shot_reply(mut stream: &TcpStream) {
+    use std::io::Write;
+    let Some(png) = crate::shot::api_capture(Duration::from_secs(8)) else {
+        log("api: shot: no frame presented within the deadline");
+        let body =
+            json!({"error": "no frame presented within 8s (frame loop wedged or screen never drew)"}).to_string();
+        let head = format!(
+            "HTTP/1.1 504 Gateway Timeout\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body.as_bytes());
+        return;
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        png.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&png);
+    log(&format!("api: shot: served {} bytes", png.len()));
 }
 
 /// Read `METHOD SP PATH SP HTTP/1.1` + headers + body (up to 64 KiB — a command body is

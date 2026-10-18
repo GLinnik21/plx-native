@@ -579,10 +579,18 @@ unsafe fn present_and_swap(
         let screenshot_seam = !dumping;
         #[cfg(all(feature = "hostsim", not(feature = "devtriggers")))]
         let screenshot_seam = true;
-        #[cfg(feature = "hostsim")]
+        // The seam is NOT hostsim-only: on the television the command API (debug build,
+        // `GET|POST /shot`) is the on-demand door and needs the same before-swap readback.
+        // The TV never arms the automatic paths (no `PLXNATIVE_SHOT*` in its environment),
+        // so a presented frame costs the atomics and nothing more.
+        #[cfg(not(feature = "hostsim"))]
+        let screenshot_seam = true;
         if screenshot_seam && crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
             // The headless one-shot is done: finish this frame, then leave through the ordinary
             // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            // The television never arms the one-shot (no PLXNATIVE_SHOT_EXIT), so this only
+            // ever fires in hostsim — but the statement itself is not cfg-gated (attributes on
+            // expressions are not stable), it is simply dead on the television.
             app.running = false;
         }
         {
