@@ -132,7 +132,7 @@ impl LibraryScreen {
         let mut right = Vec::new();
         let mut widest = Vec::new();
         if let Some(readout) = self.filtered_readout(cx) {
-            let item = HeaderItem { label: readout, dimmed: true, ..Default::default() };
+            let item = HeaderItem { label: readout, readout: true, ..Default::default() };
             widest.push(item.clone());
             right.push(item);
         }

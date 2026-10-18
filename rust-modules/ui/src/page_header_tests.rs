@@ -72,3 +72,44 @@ fn focus_pill_grows_by_the_control_scale() {
     let pill = plate.scaled(crate::widgets::CTRL_FOCUS_SCALE);
     assert!((pill.w / plate.w - 1.07).abs() < 0.001);
 }
+
+#[test]
+fn neighbouring_text_runs_stand_48_apart() {
+    assert_eq!(GAP, 48.0, "the board's 53px between visible text edges, less glyph side bearings");
+    let l = header("Title").layout(1920.0, &Fixed);
+    let (a, b) = (l.items[0].text, l.items[1].text);
+    assert_eq!(b.x - (a.x + a.w), GAP);
+}
+
+#[test]
+fn values_are_regular_weight_white_and_labels_are_65_percent() {
+    let _g = plx_base::testlock::serial();
+    let h = header("Title");
+    let l = h.layout(1920.0, &Fixed);
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, None));
+    let value = runs.iter().find(|r| r.text == "Title").expect("the sort value is drawn");
+    assert!(!value.bold, "no bold anywhere in the row");
+    assert_eq!(value.ink, [1.0, 1.0, 1.0, 1.0], "values at 100% white");
+    let label = runs.iter().find(|r| r.text == "Collections").expect("the label is drawn");
+    assert!(!label.bold);
+    assert_eq!(label.ink, [1.0, 1.0, 1.0, 0.65], "labels at 65% white");
+    assert!(runs.iter().all(|r| !r.bold && r.size == theme::size::BODY), "one size, one weight");
+}
+
+#[test]
+fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
+    let _g = plx_base::testlock::serial();
+    let mut spec = header("Title").spec().clone();
+    spec.right.insert(0, HeaderItem { readout: true, ..item("24 of 27", None) });
+    let h = PageHeader::new(spec, &[], &Fixed);
+    let l = h.layout(1920.0, &Fixed);
+    let (readout, collections) = (l.items[3].text, l.items[4].text);
+    assert_eq!(collections.x - (readout.x + readout.w), READOUT_GAP);
+    assert_eq!(READOUT_GAP, 64.0);
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, None));
+    let run = runs.iter().find(|r| r.text == "24 of 27").unwrap();
+    assert_eq!(run.ink, theme::COUNT_FILTERED_INK);
+    assert_eq!(run.ink[3], 0.5);
+    let last = l.items.last().unwrap();
+    assert!((last.text.x + last.text.w - 1771.0).abs() < 0.01, "the cluster still ends at the right text edge");
+}

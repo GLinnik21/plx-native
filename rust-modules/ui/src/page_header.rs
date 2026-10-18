@@ -27,7 +27,9 @@ pub const OVERHANG: f32 = 20.0;
 pub const TOP: f32 = 148.0;
 pub const HEIGHT: f32 = 56.0;
 /// Gap between two items' plates' text runs (plates may touch their neighbours' overhang).
-pub const GAP: f32 = 2.0 * OVERHANG + theme::space::SM;
+pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;
+/// Text edge to text edge between a read-out and the control after it.
+pub const READOUT_GAP: f32 = 64.0;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
 
@@ -46,6 +48,9 @@ pub struct HeaderItem {
     pub focusable: bool,
     /// Drawn quieter (an owner handle, an unavailable control).
     pub dimmed: bool,
+    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and [`READOUT_GAP`] before the next
+    /// item.
+    pub readout: bool,
 }
 
 /// What the header is built from.
@@ -100,7 +105,7 @@ fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
         CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, bold))
     };
     w(&item.label, false)
-        + item.value.as_deref().map_or(0.0, |v| w(" \u{b7} ", false) + w(v, true))
+        + item.value.as_deref().map_or(0.0, |v| w(" \u{b7} ", false) + w(v, false))
         + if item.fold_glyph { FOLD_GAP + FOLD_SIZE } else { 0.0 }
 }
 
@@ -126,10 +131,15 @@ pub fn fit_left(widths: &[f32], budget: f32, more_w: f32) -> usize {
     n
 }
 
-/// Width of a cluster of items laid out with [`GAP`] between them.
+/// The space after `item` before the next one.
+fn gap_after(item: &HeaderItem) -> f32 { if item.readout { READOUT_GAP } else { GAP } }
+
+/// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
+/// read-out).
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     let runs: f32 = items.iter().map(|i| run_w(i, measure)).sum();
-    runs + GAP * items.len().saturating_sub(1) as f32
+    let gaps: f32 = items.iter().rev().skip(1).map(gap_after).sum();
+    runs + gaps
 }
 
 impl PageHeader {
@@ -170,7 +180,7 @@ impl PageHeader {
         for (i, it) in self.spec.right.iter().enumerate() {
             let w = run_w(it, measure);
             place(Slot::Right(i), rx, w, it.focusable);
-            rx += w + GAP;
+            rx += w + gap_after(it);
         }
         HeaderLayout {
             items,
@@ -202,6 +212,8 @@ impl PageHeader {
             }
             let (rest, strong) = if focused {
                 (super::ACCENT_INK, super::ACCENT_INK)
+            } else if item.is_some_and(|i| i.readout) {
+                (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)
             } else if dim {
                 (theme::with_a(theme::CONTROL_TEXT_REST, 0.6), theme::with_a(theme::CONTROL_IDLE_INK, 0.6))
             } else {
@@ -221,7 +233,7 @@ impl PageHeader {
             if let Some(v) = item.and_then(|i| i.value.as_deref()) {
                 if let (Ok(sep), Ok(v)) = (CString::new(" \u{b7} "), CString::new(v)) {
                     x += p.text(sep.as_ptr(), x, y, theme::size::BODY, rest, 0, 0);
-                    x += p.text(v.as_ptr(), x, y, theme::size::BODY, strong, 0, 1);
+                    x += p.text(v.as_ptr(), x, y, theme::size::BODY, strong, 0, 0);
                 }
             }
             if item.is_some_and(|i| i.fold_glyph) {

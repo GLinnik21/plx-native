@@ -175,3 +175,20 @@ fn the_header_cluster_leaves_the_names_room_in_every_shipped_language() {
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
 }
+
+/// The "+N" stays on the row wherever focus sits: only the right cluster is fixed-width, and the
+/// fold the left group makes must not depend on which header stop holds focus.
+#[test]
+fn the_overflow_stays_visible_wherever_focus_is_in_the_row() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(12);
+    assert!(page.libraries.iter().any(|(elem, _)| *elem == MORE), "twelve libraries fold into +N");
+    let before = page.libraries.clone();
+    fixture.direction(&mut page, &mut engine, Dir::Up);
+    for _ in 0..16 {
+        fixture.direction(&mut page, &mut engine, Dir::Right);
+        page.sync(&fixture.cx(&engine));
+        assert_eq!(page.libraries, before, "focus on {} changed the fold", at(&engine));
+        assert!(page.header.as_ref().unwrap().plate(MORE).is_some());
+    }
+}

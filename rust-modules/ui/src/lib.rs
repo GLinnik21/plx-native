@@ -315,6 +315,35 @@ pub mod draw_census {
         TEXT.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
+    /// A recorded text run with its STYLE: what a test needs to say "regular weight, 65% white".
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Run {
+        pub text: String,
+        pub size: i32,
+        pub ink: [f32; 4],
+        pub bold: bool,
+        pub align: i32,
+        /// Anchor (x, y) and measured width, in screen space.
+        pub at: Rect,
+    }
+    thread_local! {
+        static RUNS: RefCell<Option<Vec<Run>>> = const { RefCell::new(None) };
+    }
+    pub fn note_run(run: Run) {
+        RUNS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(run);
+            }
+        });
+    }
+    /// Every text run a recording painter is handed while `f` runs, with size, ink, weight and
+    /// alignment: the census for a test that asks HOW a word was drawn.
+    pub fn capture_runs(f: impl FnOnce()) -> Vec<Run> {
+        RUNS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        RUNS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
     thread_local! {
         static TEX: RefCell<Option<Vec<(u32, Rect, f32)>>> = const { RefCell::new(None) };
     }
@@ -1568,6 +1597,10 @@ impl Painter {
                 let at = self.place(Rect::new(x, y, w, 0.0));
                 draw_census::note(100, at);
                 draw_census::note_text(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(), at);
+                draw_census::note_run(draw_census::Run {
+                    text: unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
+                    size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                });
             }
             return w;
         }
