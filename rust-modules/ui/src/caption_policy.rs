@@ -4,10 +4,9 @@
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing.
 //!
-//! CONTRACT FREEZE: the types and the two function signatures are what the library, collection
-//! and settings packages compile against. [`band_h`] is final. [`caption_lines`] is a first cut
-//! (no pluralised or per-locale strings yet); P3 completes it in place with the
-//! `captions.json` catalog keys and the locale-correct plurals, and may change nothing else here.
+//! The types and the two function signatures are what the library, collection and settings
+//! packages compile against. [`band_h`] sizes the band; [`caption_lines`] words the lines in the
+//! given locale, with the catalog's plurals.
 
 use plx_platform::i18n::LocaleContext;
 
@@ -83,28 +82,91 @@ pub struct CaptionFacts {
 
 /// The caption's lines for `facts` under `policy`: `[title, details]` with absent lines `None`.
 /// A line with nothing to say is `None`, so a missing fact never leaves an empty string behind.
-pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, _locale: &LocaleContext) -> [Option<String>; 2] {
+///
+/// Every word on a line comes from the catalog in `locale` (the shared `core.*` / `browse.*`
+/// duration, count and plural keys plus `captions.new_episodes`); the only literals are the
+/// technical marks `HDR`, `4K`, `1080p` and the middle dot.
+pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &LocaleContext) -> [Option<String>; 2] {
     let title = policy.title.then(|| facts.title.clone()).flatten().filter(|t| !t.is_empty());
-    let join = |parts: Vec<String>| (!parts.is_empty()).then(|| parts.join(" \u{b7} "));
     let details = match policy.details {
         DetailsKind::None => None,
-        DetailsKind::YearLength => join(
-            facts.year.filter(|y| *y > 0).map(|y| y.to_string()).into_iter()
-                .chain(facts.duration_min.filter(|m| *m > 0).map(|m| crate::fmt::dur_short(i64::from(m) * 60_000)))
-                .collect(),
-        ),
+        DetailsKind::YearLength => year_length(facts, locale),
         DetailsKind::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
         DetailsKind::Video => join(
-            facts.video_resolution.clone().into_iter().filter(|r| !r.is_empty())
+            facts.video_resolution.as_deref().and_then(resolution_mark).into_iter()
                 .chain(facts.hdr.then(|| "HDR".to_string())).collect(),
         ),
         DetailsKind::AgeRatingScore => join(
             facts.content_rating.clone().into_iter().filter(|r| !r.is_empty())
-                .chain(facts.audience_rating.filter(|s| *s > 0.0).map(|s| format!("{s:.1}"))).collect(),
+                .chain(facts.audience_rating.filter(|s| *s > 0.0)
+                    .map(|s| locale.decimal((s * 10.0).round() as i64, 1))).collect(),
         ),
     };
     [title, details]
 }
+
+fn join(parts: Vec<String>) -> Option<String> {
+    (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+}
+
+/// PMS `videoResolution` ("4k", "1080", "720", "sd") as the mark a viewer knows.
+fn resolution_mark(raw: &str) -> Option<String> {
+    let r = raw.trim().to_ascii_lowercase();
+    match r.as_str() {
+        "" => None,
+        "4k" => Some("4K".to_string()),
+        "sd" => Some("SD".to_string()),
+        n if n.bytes().all(|b| b.is_ascii_digit()) => Some(format!("{n}p")),
+        other => Some(other.to_string()),
+    }
+}
+
+/// The default details line, by kind: a collection is its size, a show its season count (or its
+/// unwatched new episodes), a started item the time it has left, anything else year and length.
+fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
+    use plx_platform::i18n::msg;
+    if let Some(sub) = f.subtype.as_deref() {
+        let n = i64::from(f.child_count?);
+        return Some(match sub {
+            "movie" => msg::browse_person_films_in(cx, n),
+            "show" => msg::browse_person_shows_in(cx, n),
+            _ => msg::browse_search_items_in(cx, n),
+        });
+    }
+    let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
+    if f.is_show {
+        let unwatched = f.leaf_count.zip(f.viewed_leaf_count).map(|(l, v)| l.saturating_sub(v)).filter(|n| *n > 0);
+        if let Some(n) = unwatched {
+            return Some(msg::captions_new_episodes_in(cx, i64::from(n)));
+        }
+        let seasons = f.season_count.or(f.child_count).filter(|n| *n > 0)
+            .map(|n| msg::browse_detail_seasons_in(cx, i64::from(n)));
+        return join(year.into_iter().chain(seasons).collect());
+    }
+    let dur = f.duration_min.filter(|m| *m > 0);
+    if let (Some(d), Some(off)) = (dur, f.view_offset_min.filter(|m| *m > 0)) {
+        if off < d {
+            let left = i64::from(d - off);
+            let (h, m) = (left / 60, left % 60);
+            return Some(if h > 0 { msg::core_time_left_hours_in(cx, h, m) } else { msg::core_time_left_minutes_in(cx, m) });
+        }
+    }
+    let length = dur.map(|d| {
+        let (h, m) = (i64::from(d) / 60, i64::from(d) % 60);
+        if h > 0 { msg::core_duration_short_hours_in(cx, h, m) } else { msg::core_duration_short_minutes_in(cx, m) }
+    });
+    join(year.into_iter().chain(length).collect())
+}
+
+/// The caption's text shadow (`0 1px 8px` black 35%): the glyph path has no blur, so it is set as
+/// an offset copy of the line, as `collection_tile`'s fan name is.
+pub const CAPTION_SHADOW: [f32; 4] = [0.0, 0.0, 0.0, 0.35];
+/// The shadow's downward offset.
+pub const CAPTION_SHADOW_DY: f32 = 1.0;
+
+#[cfg(test)]
+#[path = "caption_policy_tests.rs"]
+mod more_tests;
 
 #[cfg(test)]
 mod tests {

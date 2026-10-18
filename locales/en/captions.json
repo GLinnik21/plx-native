@@ -1,0 +1,12 @@
+{
+  "captions.new_episodes": {
+    "value": {
+      "one": "{count} new episode",
+      "other": "{count} new episodes"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "Details line under a focused show poster that has unwatched episodes, e.g. 4 new episodes. Shown under the poster, one line: keep it short."
+  }
+}

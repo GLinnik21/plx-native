@@ -10,7 +10,9 @@
 //! paging all describe the same cells. [`neighbour`], [`settled`] and [`growth_before`] are
 //! column-count agnostic, and the Library's rail-aware layout uses them too.
 
-use crate::card_row::{self, RowStyle, LABEL_BAND_COLLAPSED, UNDER_LABEL_H};
+use crate::card_row::{self, RowStyle, LABEL_BAND_COLLAPSED};
+#[cfg(test)]
+use crate::card_row::UNDER_LABEL_H;
 #[cfg(test)]
 use crate::consts::CARD_H;
 use crate::consts::{CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, UNDER_LABEL_AIR};
@@ -60,6 +62,12 @@ impl GridBands {
 
     pub fn caption_policy(&self) -> crate::caption_policy::CaptionPolicy {
         self.caption_policy
+    }
+
+    /// The focused band's height under this grid's caption policy (0 / 80 / 112), what
+    /// [`growth_before_for`] and the other `_for` geometry take.
+    pub fn band_h(&self) -> f32 {
+        crate::caption_policy::band_h(&self.caption_policy)
     }
 
     /// The row whose band is open (or opening).
@@ -280,8 +288,14 @@ pub fn rows(len: usize) -> usize { len.div_ceil(COLS) }
 
 /// How far every open band above row `row` pushes it down.
 pub fn growth_before(row: usize, bands: &[GridBand]) -> f32 {
+    growth_before_for(card_row::LEGACY_BAND_H, row, bands)
+}
+
+/// [`growth_before`] for bands of `band_h` ([`crate::caption_policy::band_h`]): 40 px per open
+/// one-line band, 72 px per two-line one, nothing when the policy shows nothing.
+pub fn growth_before_for(band_h: f32, row: usize, bands: &[GridBand]) -> f32 {
     bands.iter().filter(|band| band.row < row)
-        .map(|band| card_row::under_band(band.expansion) - LABEL_BAND_COLLAPSED).sum()
+        .map(|band| card_row::under_band_for(band_h, band.expansion) - LABEL_BAND_COLLAPSED).sum()
 }
 
 /// Row `row`'s top in document space (before scroll), with every open band above it counted.
@@ -289,7 +303,12 @@ pub fn growth_before(row: usize, bands: &[GridBand]) -> f32 {
 pub fn row_top(row: usize, top: f32, bands: &[GridBand]) -> f32 { row_top_in(&Geom::DEFAULT, row, top, bands) }
 
 pub fn row_top_in(g: &Geom, row: usize, top: f32, bands: &[GridBand]) -> f32 {
-    top + row as f32 * g.pitch() + growth_before(row, bands)
+    row_top_in_for(card_row::LEGACY_BAND_H, g, row, top, bands)
+}
+
+/// [`row_top_in`] for bands of `band_h`.
+pub fn row_top_in_for(band_h: f32, g: &Geom, row: usize, top: f32, bands: &[GridBand]) -> f32 {
+    top + row as f32 * g.pitch() + growth_before_for(band_h, row, bands)
 }
 
 #[cfg(test)]
@@ -298,8 +317,14 @@ pub fn cell(index: usize, top: f32, scroll: f32, bands: &[GridBand]) -> Rect {
 }
 
 pub fn cell_in(g: &Geom, index: usize, top: f32, scroll: f32, bands: &[GridBand]) -> Rect {
+    cell_in_for(card_row::LEGACY_BAND_H, g, index, top, scroll, bands)
+}
+
+/// [`cell_in`] for bands of `band_h`.
+pub fn cell_in_for(band_h: f32, g: &Geom, index: usize, top: f32, scroll: f32, bands: &[GridBand]) -> Rect {
     let col = index % g.cols;
-    Rect::new(g.left + col as f32 * (g.w + g.gap), row_top_in(g, index / g.cols, top, bands) - scroll, g.w, g.h)
+    Rect::new(g.left + col as f32 * (g.w + g.gap),
+        row_top_in_for(band_h, g, index / g.cols, top, bands) - scroll, g.w, g.h)
 }
 
 #[cfg(test)]
@@ -336,14 +361,25 @@ pub fn snap_row(current: f32, row: usize, len: usize, top: f32, edge: f32) -> f3
 }
 
 pub fn snap_row_in(g: &Geom, current: f32, row: usize, len: usize, top: f32, edge: f32) -> f32 {
+    snap_row_in_for(card_row::LEGACY_BAND_H, g, current, row, len, top, edge)
+}
+
+/// [`snap_row_in`] for bands of `band_h`: the focused row shows whole with its open band.
+pub fn snap_row_in_for(band_h: f32, g: &Geom, current: f32, row: usize, len: usize, top: f32, edge: f32) -> f32 {
     if row == 0 || len == 0 { return 0.0; }
     let bands = settled(Some(row));
-    let focused_top = row_top_in(g, row, top, &bands);
-    let min = card_row::reveal(current, focused_top + g.h + UNDER_LABEL_H - (SCR_H - MARGIN_Y),
+    let focused_top = row_top_in_for(band_h, g, row, top, &bands);
+    let min = card_row::reveal(current, focused_top + g.h + shown_band(band_h) - (SCR_H - MARGIN_Y),
         focused_top - edge, f32::INFINITY);
     if min <= 0.0 { return 0.0; }
-    (0..=row).map(|k| row_top_in(g, k, top, &bands) - edge).find(|&at| at >= min - 0.5)
+    (0..=row).map(|k| row_top_in_for(band_h, g, k, top, &bands) - edge).find(|&at| at >= min - 0.5)
         .unwrap_or(focused_top - edge)
+}
+
+/// The label block a focused row shows under its posters for a band of `band_h`: the band less the
+/// air [`UNDER_LABEL_AIR`] below it ([`UNDER_LABEL_H`] for the legacy band), never negative.
+fn shown_band(band_h: f32) -> f32 {
+    (card_row::open_gap(band_h) - UNDER_LABEL_AIR).max(0.0)
 }
 
 /// The D-pad neighbour of card `index` in a `len`-card grid of `cols` columns. Down from above a
@@ -368,9 +404,14 @@ pub fn visible(len: usize, top: f32, scroll: f32) -> std::ops::Range<usize> {
 }
 
 pub fn visible_in(g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Range<usize> {
+    visible_in_for(card_row::LEGACY_BAND_H, g, len, top, scroll)
+}
+
+/// [`visible_in`] for bands of `band_h`.
+pub fn visible_in_for(band_h: f32, g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Range<usize> {
     if len == 0 { return 0..0; }
     let pitch = g.pitch();
-    let first = ((scroll - top - g.h - UNDER_LABEL_H) / pitch).floor().max(0.0) as usize;
+    let first = ((scroll - top - g.h - shown_band(band_h)) / pitch).floor().max(0.0) as usize;
     let last = ((scroll + SCR_H - top) / pitch).ceil().max(0.0) as usize + 1;
     first.saturating_mul(g.cols)..last.saturating_mul(g.cols).min(len)
 }
