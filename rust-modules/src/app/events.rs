@@ -180,8 +180,8 @@ pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
 ///
 /// THE one place event coordinates enter the UI, so the conversion cannot be forgotten at a new
 /// call site — there are nine, and patching them individually is how the tenth ends up wrong.
-/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is on every
-/// television seen so far.
+/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is 1:1 unless
+/// a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one).
 pub(crate) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
     plx_base::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
 }

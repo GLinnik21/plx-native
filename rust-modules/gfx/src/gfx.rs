@@ -331,7 +331,7 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// through `u_screen`, which the shaders divide by — so the viewport transform scales the whole
 /// authored canvas to whatever the drawable is, for free. `glScissor` bypasses all of that: it
 /// takes bottom-left *window pixels*. So it needs both the Y flip and the logical→physical scale,
-/// which is 1.0 on every television seen so far (`surface::scale`) and would otherwise clip the
+/// which is 1.0 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one) (`surface::scale`) and would otherwise clip the
 /// wrong band of the screen.
 /// Where authored coordinates land in the CURRENTLY BOUND target, as the same `(vx, vy, scale)`
 /// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.

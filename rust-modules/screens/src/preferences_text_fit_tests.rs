@@ -140,7 +140,10 @@ fn every_picker_level_fits_its_column_in_every_language() {
                 Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
-            for &field in fields {
+            // The Interface resolution picker is opened from the Settings root, not a field list.
+            let fields: Vec<PickerKind> = fields.iter().copied()
+                .chain((kind == Kind::Playback).then_some(PickerKind::UiResolution)).collect();
+            for field in fields {
                 let current = resolve_value(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
                 let section = field_options(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs)).into_iter()
                     .fold(Section::new(""), |section, (label, value)| section.row(Row::new(&label).checked(value == current)));
@@ -244,7 +247,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::screen();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
     let mut out = Vec::new();
     for language in SHIPPED {

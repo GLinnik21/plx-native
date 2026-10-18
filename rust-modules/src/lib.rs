@@ -41,6 +41,14 @@ pub fn sim_runtime_dir() -> std::path::PathBuf {
     plx_base::paths::runtime_dir().to_path_buf()
 }
 
+/// Publish a webOS major version for this simulator run (`PLXNATIVE_SIM_WEBOS_MAJOR`, read by the
+/// binary): the simulator has no firmware file, so it otherwise reports "unknown" and the
+/// webOS-1-3-only Interface resolution row stays hidden.
+#[cfg(feature = "hostsim")]
+pub fn publish_sim_webos_major(major: u32) {
+    plx_platform::tv::device::publish_info(plx_platform::tv::device::Info { major, ..Default::default() });
+}
+
 /// The event log's path, built by the ONE expression [`plx_base::eventlog::log`] uses.
 ///
 /// `src/bin/sim.rs` truncates this file at startup. Spelling the name a second time over there

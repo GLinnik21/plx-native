@@ -2579,7 +2579,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
             // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
             // is the entire logical->physical mapping — nothing else in the renderer knows the
-            // drawable size. At 1:1 on every television seen so far; on any 16:9 surface a
+            // drawable size. At 1:1 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one); on any 16:9 surface a
             // plain scale with zero letterbox (1080p->4K is exactly 2x); and on an unexpected
             // aspect, letterboxed rather than stretched or stuffed into a corner. See `surface`.
             let (vx, vy, vw, vh) = plx_base::surface::viewport();

@@ -67,14 +67,17 @@ pub enum PickerKind {
     SubtitleMode,
     SubtitleLanguage,
     ForcedSubtitles,
+    /// Settings > System > Interface resolution (install-wide; pushed from the Settings root).
+    UiResolution,
 }
 
 impl SettingsPage {
     /// The pages a boot target opens the surface over, root first: `plxnative-settings=picker-…`
-    /// is reached as root → Playback → the picker, so BACK from it lands where an interactive
-    /// visit would. Every other page is booted as the surface's root.
+    /// is reached as root → Playback → the picker (root → the picker for a root row's), so BACK from it
+    /// lands where an interactive visit would. Every other page is booted as the surface's root.
     pub fn boot_trail(self) -> Vec<SettingsPage> {
         match self {
+            SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
             page => vec![page],
         }
@@ -87,6 +90,7 @@ impl PickerKind {
         match self {
             PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval => SettingsPage::Playback,
             PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
+            PickerKind::UiResolution => SettingsPage::Root,
         }
     }
 }

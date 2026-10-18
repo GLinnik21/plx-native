@@ -52,7 +52,7 @@ use super::probe::Location;
 pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -611,7 +611,7 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the ten player
+    /// Every preference key but `language` (`ui_resolution`, `profile_prefs`, the per-profile home of the ten player
     /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
     /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
     /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
@@ -1224,6 +1224,69 @@ impl DeckPress {
     /// triangle, its press and its menu's Play row are all derived from.
     pub fn press_plays(self) -> bool {
         self == DeckPress::Play
+    }
+}
+
+/// **The window the interface asks for at launch** (Settings > System > Interface resolution).
+///
+/// The UI is authored at 1920x1080 and `plx_base::surface` fits that canvas into whatever drawable
+/// webOS grants; a smaller one fills fewer pixels and the television's compositor upscales it.
+/// `Auto` is the native 1920x1080 canvas on EVERY set: a smaller window is always the owner's
+/// choice, because it trades text sharpness for smoother frames and only the owner can judge that trade
+/// on their own panel. Install-wide (not per profile) because the window is created once, before
+/// anyone is seated. Absence, and any spelling this build does not know, is `Auto`. The setting is
+/// offered, and the stored value honoured at boot, on webOS 1-3 only
+/// (`plx_platform::tv::device::offers_ui_resolution`); elsewhere the stored value is kept but unused.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiResolution {
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "900p")]
+    Hd900,
+    #[serde(rename = "720p")]
+    Hd720,
+    /// Half the canvas in each direction: the one scale at which every texel maps to a whole
+    /// number of canvas pixels (see `plx_base::surface`).
+    #[serde(rename = "540p")]
+    Sd540,
+}
+
+impl UiResolution {
+    /// Every option, the order the picker lists them in. There is no 1920x1080 entry: Automatic
+    /// already is the native canvas, and an explicit one would be the same choice twice.
+    pub const LADDER: [UiResolution; 4] =
+        [UiResolution::Auto, UiResolution::Hd900, UiResolution::Hd720, UiResolution::Sd540];
+
+    /// The option's position in [`UiResolution::LADDER`], the row a picker highlights.
+    pub fn index(self) -> usize {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    /// The option at a picker row; an index past the end is `Auto`.
+    pub fn from_index(index: usize) -> UiResolution {
+        Self::LADDER.get(index).copied().unwrap_or_default()
+    }
+
+    /// The serialized spelling, for an identity comparison that must not depend on the language.
+    pub fn tag(self) -> &'static str {
+        match self {
+            UiResolution::Auto => "auto",
+            UiResolution::Hd900 => "900p",
+            UiResolution::Hd720 => "720p",
+            UiResolution::Sd540 => "540p",
+        }
+    }
+
+    /// The window size this option asks for. `Auto` is the native canvas, so it names no
+    /// smaller window: `None`.
+    pub fn size(self) -> Option<(i32, i32)> {
+        match self {
+            UiResolution::Auto => None,
+                        UiResolution::Hd900 => Some((1600, 900)),
+            UiResolution::Hd720 => Some((1280, 720)),
+            UiResolution::Sd540 => Some((960, 540)),
+        }
     }
 }
 
@@ -2171,6 +2234,17 @@ impl Session {
         self.prefs.auto_sign_in
     }
 
+    /// The Interface resolution the NEXT launch draws at; see [`UiResolution`].
+    pub fn ui_resolution(&self) -> UiResolution {
+        self.prefs.ui_resolution
+    }
+
+    pub fn with_ui_resolution(&self, mode: UiResolution) -> Self {
+        let mut next = self.clone();
+        next.prefs.ui_resolution = mode;
+        next
+    }
+
     /// Record the Settings switch while leaving every unrelated session field intact.
     pub fn with_auto_sign_in(&self, on: bool) -> Self {
         let mut next = self.clone();
@@ -2661,8 +2735,7 @@ fn empty_session() -> std::sync::Arc<Session> {
 fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
     match state {
         ReadState::Ready { session, .. } => session.clone(),
-        ReadState::Cleared { language } | ReadState::Locked { language } =>
-            std::sync::Arc::new(Session { language: *language, ..Default::default() }),
+        ReadState::Cleared { kept } | ReadState::Locked { kept } => std::sync::Arc::new(kept.into_session()),
         ReadState::Missing | ReadState::Blocked => empty_session(),
     }
 }
@@ -2890,7 +2963,7 @@ static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub fn install_transient_for_test(locked: bool) {
     plx_base::testlock::assert_held("session read fixture");
     let _io = io();
-    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: plx_platform::i18n::saved_preference() } } else { ReadState::Blocked }));
+    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { kept: install_preferences::Retained { language: plx_platform::i18n::saved_preference(), ..Default::default() } } } else { ReadState::Blocked }));
 }
 
 pub fn visible_generation() -> u64 {
@@ -3316,7 +3389,7 @@ mod cache_timing_tests {
         frame_step.lands();
         for (read, landed) in [
             ((|| ReadState::Blocked) as fn() -> ReadState, false),
-            ((|| ReadState::Locked { language: plx_platform::i18n::Preference::System }) as fn() -> ReadState, false),
+            ((|| ReadState::Locked { kept: Default::default() }) as fn() -> ReadState, false),
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
             }) as fn() -> ReadState, true),
@@ -3431,8 +3504,7 @@ fn peek_locked() -> Session {
 fn session_from_read(read: &ReadState) -> Session {
     match read {
         ReadState::Ready { session, .. } => (**session).clone(),
-        ReadState::Cleared { language } | ReadState::Locked { language } =>
-            Session { language: *language, ..Default::default() },
+        ReadState::Cleared { kept } | ReadState::Locked { kept } => kept.into_session(),
         ReadState::Missing | ReadState::Blocked => Session::default(),
     }
 }
@@ -3457,7 +3529,7 @@ enum ReadState {
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
-    Locked { language: plx_platform::i18n::Preference },
+    Locked { kept: install_preferences::Retained },
     /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
     /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
     Blocked,
@@ -3468,7 +3540,7 @@ enum ReadState {
     /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
     /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
     /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
-    Cleared { language: plx_platform::i18n::Preference },
+    Cleared { kept: install_preferences::Retained },
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
@@ -3497,8 +3569,8 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
         // It is also deliberately not Blocked/Locked: those carry locked/blocked UI framing that a
         // cleanly signed-out device must not present. `ReadState::Cleared` is its own variant so
         // downstream `match`es are forced to decide, rather than silently inheriting either policy.
-        persistence::CanonicalRead::Cleared { language, .. } => ReadState::Cleared { language },
-        persistence::CanonicalRead::Locked { public, .. } => ReadState::Locked { language: public.language },
+        persistence::CanonicalRead::Cleared { kept, .. } => ReadState::Cleared { kept },
+        persistence::CanonicalRead::Locked { public, .. } => ReadState::Locked { kept: install_preferences::Retained::of(&public) },
         persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
         persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
     }
@@ -3528,8 +3600,8 @@ fn read_live_locked() -> ReadState {
                     plaintext,
                     retry_canonical: true,
                 },
-                ReadState::Locked { language } => ReadState::Locked { language },
-                ReadState::Cleared { language } => ReadState::Locked { language },
+                ReadState::Locked { kept } => ReadState::Locked { kept },
+                ReadState::Cleared { kept } => ReadState::Locked { kept },
                 _ => ReadState::Blocked,
             }
         }
@@ -3610,7 +3682,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = plx_platform::tv::secure::open(&envelope.sealed) else {
                     plx_base::eventlog::log("session: secure file is present but its device key is unavailable");
-                    return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
+                    return ReadState::Locked { kept: install_preferences::load().unwrap_or_default() };
                 };
                 return serde_json::from_slice::<Session>(&plain)
                     .map(|session| ReadState::Ready {
@@ -3618,12 +3690,12 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
                         plaintext: false,
                         retry_canonical: marked,
                     })
-                    .unwrap_or(ReadState::Locked { language: install_preferences::load().unwrap_or_default() });
+                    .unwrap_or(ReadState::Locked { kept: install_preferences::load().unwrap_or_default() });
             }
         }
         if identifies_secure_envelope(&bytes) {
             plx_base::eventlog::log("session: unsupported or damaged secure envelope is locked");
-            return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
+            return ReadState::Locked { kept: install_preferences::load().unwrap_or_default() };
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
             return ReadState::Ready {
@@ -3633,7 +3705,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             };
         }
     }
-    install_preferences::load().map_or(ReadState::Missing, |language| ReadState::Cleared { language })
+    install_preferences::load().map_or(ReadState::Missing, |kept| ReadState::Cleared { kept })
 }
 
 
@@ -3772,11 +3844,11 @@ fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
         ReadState::Blocked => vec![1],
-        ReadState::Locked { language } => [vec![1], language.tag().as_bytes().to_vec()].concat(),
+        ReadState::Locked { kept } => [vec![1], kept.language.tag().as_bytes().to_vec(), kept.ui_resolution.tag().as_bytes().to_vec()].concat(),
         // Its own bucket, distinct from both Missing and Locked/Blocked: a concurrent transition
         // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
         // silently matched against whichever of those two buckets it happens to share a vec! with.
-        ReadState::Cleared { language } => [vec![2], language.tag().as_bytes().to_vec()].concat(),
+        ReadState::Cleared { kept } => [vec![2], kept.language.tag().as_bytes().to_vec(), kept.ui_resolution.tag().as_bytes().to_vec()].concat(),
         ReadState::Ready { session, .. } => serde_json::to_vec(&**session).expect("Session serialization"),
     }
 }
@@ -3932,6 +4004,18 @@ pub fn set_language(language: plx_platform::i18n::Preference) -> bool {
         async_persistence::CompletionOutcome::Durable(_)));
     if saved { plx_platform::i18n::set_saved_preference(language); }
     saved
+}
+
+/// Blocking persistence seam for the Interface resolution picker, dispatched on the storage
+/// worker. The choice applies at the NEXT launch, so a pick is only claimed once it is durable.
+pub fn set_ui_resolution(mode: UiResolution) -> bool {
+    let mut already = false;
+    let write = update_with_outcome(|current| {
+        already = current.ui_resolution() == mode;
+        (!already).then(|| current.with_ui_resolution(mode))
+    });
+    // Already the stored choice is a pick that landed; an unreadable or refused record is not.
+    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
 }
 
 
@@ -4730,23 +4814,26 @@ pub fn clear() -> ClearOutcome {
 /// Worker receipt: retaining/resetting a public preference never republishes credentials.
 pub struct Erasure {
     pub outcome: ClearOutcome,
-    pub retained_language: plx_platform::i18n::Preference,
+    /// What the next launch reads: kept by sign-out; after delete-all, the language is System and
+    /// (on the file backend, where the whole retained file goes) the resolution is Automatic.
+    pub retained: Retained,
     pub preference_failures: Vec<String>,
 }
 
 /// Clear the credentials for a sign-out (`all_local == false`), which retains the install-wide
-/// language, or for "Delete all local data", which then resets that language to System.
+/// language and Interface resolution, or for "Delete all local data", which then resets the
+/// language to System.
 ///
-/// A retry carries the first worker's confirmed language, so a failed auxiliary write cannot
-/// replace it with System after the credentials themselves have already been cleared.
-pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18n::Preference>) -> Erasure {
+/// A retry carries the first worker's confirmed choices, so a failed auxiliary write cannot
+/// replace them with the defaults after the credentials themselves have already been cleared.
+pub fn clear_for_erase(all_local: bool, retry: Option<Retained>) -> Erasure {
     let _io = io();
-    let language = retry_language.unwrap_or_else(|| session_from_read(&read_live_locked()).language);
+    let kept = retry.unwrap_or_else(|| Retained::of(&session_from_read(&read_live_locked())));
     let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))));
     // File backends need a credential-free resource before the credential file disappears.
     let mut preference_failures = Vec::new();
-    if !all_local && !native && !install_preferences::save(language) {
-        preference_failures.push("language preference could not be retained".into());
+    if !all_local && !native && !install_preferences::save(kept) {
+        preference_failures.push("install preferences could not be retained".into());
     }
     // Signing out changes what `peek` answers exactly as durably as a save does — and it must drop
     // the cached `Arc<Session>` immediately rather than merely marking it stale: that `Arc` holds
@@ -4867,7 +4954,7 @@ pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18
     if let ClearOutcome::Durable { legacy_swept: complete } = &mut outcome {
         *complete &= legacy_swept;
     }
-    let mut retained_language = language;
+    let mut retained = kept;
     if all_local {
         // Native ClearTenure deliberately retains preferences. Remove only language with a
         // public-only, same-generation CAS after confirmed clearing, never ReplaceAuth.
@@ -4875,13 +4962,18 @@ pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18
             persistence::CanonicalCommit::Durable { .. });
         if !reset { preference_failures.push("stored language preference could not be reset".into()); }
         preference_failures.extend(install_preferences::erase());
-        if reset && preference_failures.is_empty() { retained_language = plx_platform::i18n::Preference::System; }
+        if reset && preference_failures.is_empty() {
+            retained.language = plx_platform::i18n::Preference::System;
+            // The file backend's retained file is gone whole. Native ClearTenure keeps every other
+            // public preference, and its Cleared state accepts the removal of `language` alone.
+            if !native { retained.ui_resolution = UiResolution::Auto; }
+        }
     } else if native && !matches!(outcome, ClearOutcome::Durable { .. })
-        && !install_preferences::save(language) {
+        && !install_preferences::save(kept) {
         // A failed helper clear can still leave only an explicitly supported file fallback.
-        preference_failures.push("fallback language preference could not be retained".into());
+        preference_failures.push("fallback install preferences could not be retained".into());
     }
-    Erasure { outcome, retained_language, preference_failures }
+    Erasure { outcome, retained, preference_failures }
 }
 
 /// Sibling markers are independent of auth.json: a read-only credential inode/directory can
@@ -5303,6 +5395,7 @@ mod prefs_characterisation_tests;
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub mod async_persistence;
 mod install_preferences;
+pub use install_preferences::Retained;
 pub mod prefs;
 #[cfg(test)]
 mod prefs_tests;
@@ -5427,6 +5520,120 @@ mod deck_press_tests {
         for mode in DeckPress::LADDER {
             assert_eq!(DeckPress::from_index(mode.index()), mode);
         }
+    }
+}
+
+/// `Session::ui_resolution`: absent or unknown is Automatic, the default is not serialized (so
+/// committed replay fixtures and every session written before the field serialize unchanged),
+/// a pick round-trips through both formats, and the option maps to the window it asks for.
+#[cfg(test)]
+mod ui_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_unknown_is_automatic() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"ui_resolution": null}),
+            serde_json::json!({"ui_resolution": "8k"}),
+            serde_json::json!({"ui_resolution": "576p"}),
+            serde_json::json!({"ui_resolution": 720}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
+            assert_eq!(session.ui_resolution(), UiResolution::Auto, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_not_serialized() {
+        let session = Session::default();
+        assert_eq!(session.ui_resolution(), UiResolution::Auto);
+        assert!(!serde_json::to_string(&session).unwrap().contains("ui_resolution"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("ui_resolution"), "{prefs}");
+    }
+
+    #[test]
+    fn a_pick_round_trips_through_both_formats() {
+        let session = Session::default().with_ui_resolution(UiResolution::Hd720);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"ui_resolution\":\"720p\""), "{json}");
+        let round: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.ui_resolution(), UiResolution::Hd720);
+        let (public, protected) = split_canonical(&session).unwrap();
+        assert_eq!(join_canonical(&public, &protected).unwrap().ui_resolution(), UiResolution::Hd720);
+        assert_eq!(public_session(&public).ui_resolution(), UiResolution::Hd720);
+    }
+
+    #[test]
+    fn the_ladder_lists_the_options_and_automatic_is_the_native_canvas() {
+        assert_eq!(UiResolution::Auto.size(), None, "Automatic asks for no smaller window on any set");
+        assert_eq!(UiResolution::Hd900.size(), Some((1600, 900)));
+        assert_eq!(UiResolution::Hd720.size(), Some((1280, 720)));
+        assert_eq!(UiResolution::Sd540.size(), Some((960, 540)));
+        assert_eq!(UiResolution::LADDER, [UiResolution::Auto, UiResolution::Hd900, UiResolution::Hd720, UiResolution::Sd540]);
+        for mode in UiResolution::LADDER {
+            assert_eq!(UiResolution::from_index(mode.index()), mode);
+            assert_eq!(serde_json::to_value(mode).unwrap(), serde_json::json!(mode.tag()), "tag is the serialized spelling");
+        }
+        assert_eq!(UiResolution::from_index(UiResolution::LADDER.len()), UiResolution::Auto);
+    }
+
+    /// An earlier build offered an explicit 1080p, which was the native canvas spelled out. It is no
+    /// option now, and a stored one reads as Automatic (which is the same window).
+    #[test]
+    fn a_stored_1080p_is_automatic() {
+        let session: Session = serde_json::from_value(serde_json::json!({"ui_resolution": "1080p"})).unwrap();
+        assert_eq!(session.ui_resolution(), UiResolution::Auto);
+        let (public, protected) = split_canonical(&Session::default()).unwrap();
+        let mut public = serde_json::to_value(&public).unwrap();
+        public["preferences"]["ui_resolution"] = serde_json::json!("1080p");
+        let public: plx_platform::storage::state::PublicPayload = serde_json::from_value(public).unwrap();
+        assert_eq!(join_canonical(&public, &protected).unwrap().ui_resolution(), UiResolution::Auto);
+    }
+
+    /// A signed-out read (Cleared or Locked) carries the resolution exactly as it carries the
+    /// language, in the cached session `peek` serves and in the owned one a writer starts from.
+    #[test]
+    fn a_signed_out_read_carries_the_resolution_like_the_language() {
+        let kept = Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Sd540 };
+        for read in [ReadState::Cleared { kept }, ReadState::Locked { kept }] {
+            for session in [session_from_read(&read), (*session_of(&read)).clone()] {
+                assert_eq!(session.language, plx_platform::i18n::Preference::Be);
+                assert_eq!(session.ui_resolution(), UiResolution::Sd540);
+                assert!(session.account_token.is_empty());
+            }
+        }
+        let other = Retained { ui_resolution: UiResolution::Hd720, ..kept };
+        assert_ne!(read_identity(&ReadState::Cleared { kept }), read_identity(&ReadState::Cleared { kept: other }),
+            "a change of resolution is a change of identity for a deferred load");
+    }
+
+    /// The retained file holds the resolution beside the language, a spelling this build does not
+    /// know (or the retired 1080p) costs the resolution and never the language, and Automatic is not written.
+    #[test]
+    fn the_retained_file_is_soft_about_the_resolution() {
+        let _serial = plx_base::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plx-retained-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        redirect_candidates_for_test(Some(vec![dir.join("auth.json")]));
+        let path = dir.join("auth.language.json");
+        for (body, language, resolution) in [
+            (r#"{"version":1,"language":"be","ui_resolution":"8k"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be","ui_resolution":"1080p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be","ui_resolution":"720p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Hd720),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let loaded = install_preferences::load();
+            assert_eq!(loaded, Some(Retained { language, ui_resolution: resolution }), "{body}");
+        }
+        assert!(install_preferences::save(Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Auto }));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("ui_resolution"), "Automatic is not written");
+        redirect_candidates_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -5645,7 +5852,7 @@ mod server_key_pin_tests {
             session: std::sync::Arc::new(Session::default()), plaintext: false, retry_canonical: false,
         }));
         for (what, ended) in [
-            ("a cleared record", Cached::Settled(std::sync::Arc::new(ReadState::Cleared { language }))),
+            ("a cleared record", Cached::Settled(std::sync::Arc::new(ReadState::Cleared { kept: install_preferences::Retained { language, ..Default::default() } }))),
             ("a missing record", Cached::Settled(std::sync::Arc::new(ReadState::Missing))),
             ("a local revocation", Cached::Revoked),
         ] {

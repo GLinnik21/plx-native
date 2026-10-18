@@ -148,6 +148,7 @@ extern "C" {
         h: c_int,
         flags: u32,
     ) -> *mut c_void;
+    fn SDL_DestroyWindow(win: *mut c_void);
     fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
     fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
     fn SDL_Delay(ms: u32);

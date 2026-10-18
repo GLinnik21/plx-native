@@ -1598,8 +1598,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - **Three resolutions, and they are not the same number.** The UI is authored at a fixed logical
   `1920x1080` (`SCR_W`/`SCR_H`) and the video track is full-panel `1920x1080`. The **drawable** —
   what GL renders into — is read back at boot by `rust-modules/base/src/surface.rs` and is what
-  `glViewport` uses; it has been 1920x1080 on every device so far, so `surface::scale()` is 1.0 and
-  nothing scales. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
+  `glViewport` uses; it is 1920x1080 1:1 unless a webOS 1-3 owner picks a smaller Interface resolution
+  (Settings > System, applied at the next launch; the row and the boot read are webOS 1-3 only) or the debug
+  drawable trigger asks for one, in which case `surface::scale()` is below 1.0
+  and the compositor fills the panel. The debug-only boot trigger `/tmp/plxnative-drawable=<W>x<H>`
+  (bounded 640x360..=1920x1080) asks for a size directly and outranks the setting. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
   `3840x2160` on the dev TV, whose UI surface is 1080p. It is a diagnostic — **never a layout
   input**, since sizing the UI from it renders a 4K interface into a 1080p buffer. The boot log
   prints all three on one `surface:` line. Do not render at panel resolution even if a set offers
