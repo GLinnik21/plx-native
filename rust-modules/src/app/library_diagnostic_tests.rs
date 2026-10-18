@@ -119,6 +119,8 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
             host,
             kind: LibraryMenuKind::Filter,
             anchor: [0; 4],
+            folded: Vec::new(),
+            opener: None,
             target: plx_data::stores::browse::SectionAddress {
                 epoch: 1,
                 sid: plx_plex::plex::ServerId::from_raw(0),
