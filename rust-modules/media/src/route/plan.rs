@@ -649,9 +649,10 @@ pub enum EnhancementRoute {
     /// client draws itself.
     Remux,
     /// The same remux, for a declared Dolby Vision source whose base layer IS self-displayable
-    /// (P7/P8, `!dovi.base_layer_unusable()`). A remux never carries `DolbyHdrInfo` — the
-    /// declaration rides the direct play only (`fill_direct_plan`'s own doc) — so this is the SAME
-    /// wire shape as [`Self::Remux`]; only the menu's wording differs (Dolby Vision turns off).
+    /// (P7/P8, `!dovi.base_layer_unusable()`). A server that copies the video keeps the
+    /// `DolbyHdrInfo` the direct play would have declared (`decision_copies_video`); one that
+    /// re-encodes the lane drops it. The wire shape is the SAME as [`Self::Remux`]; only the
+    /// menu's wording differs (it hedges that Dolby Vision may turn off).
     RemuxDropsDolbyVision,
     /// A forced re-encode carrying `subtitleStreamID=<id>&subtitles=burn` (M7): the only shape that
     /// keeps an EMBEDDED subtitle in view once the audio enhancement is on.
@@ -942,6 +943,26 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
     }
 }
 
+
+/// Does the server's `/decision` copy the video lane — hand on the source's own elementary stream,
+/// re-encoding only the audio (or nothing)? A lane that says `copy` does; one that says
+/// `transcode` does not; a body silent about the lane follows the contract (`remux` copies by
+/// definition, anything else re-encodes). Dolby Vision survives a copy: the DOVI configuration
+/// record is part of the stream, so a copied lane may keep the declaration the file would have
+/// made as a direct play.
+pub(super) fn decision_copies_video(mc: &plx_plex::plex::MediaContainer, remux: bool) -> bool {
+    let lane = mc
+        .metadata
+        .first()
+        .and_then(|m| m.first_part())
+        .and_then(|p| p.stream.iter().find(|s| s.stream_type == 1))
+        .map(|s| s.decision.as_str());
+    match lane {
+        Some("copy") => true,
+        Some("") | None => remux,
+        Some(_) => false,
+    }
+}
 
 /// `generalDecisionCode` 2000 — "Neither direct play nor conversion is available." The server has
 /// adjudicated the whole request and can serve NEITHER lane; there is nothing left for the client
@@ -1317,13 +1338,20 @@ pub struct Plan {
     /// stays the file's, so a later rebuild of the route ([`video_copy_fps`]) can decide again.
     pub src_fps: f64,
     pub fps: f64,
-    /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
-    /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
-    /// transcode branch's payload describes the server's OUTPUT, which is not this file.
+    /// The fed file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node. Set on
+    /// the DIRECT-PLAY branch, beside `fps`, and on a transcode-branch remux whose `/decision`
+    /// copies the video; a re-encode's payload describes the server's OUTPUT, which is not this
+    /// file.
     pub dovi: plx_data::metadata::Dovi,
     /// The direct-play declaration resolved from one cached capability snapshot. Payload builds,
-    /// reloads and recovery consume this stored answer; remux/transcode leave it at `NONE`.
+    /// reloads and recovery consume this stored answer. A remux whose `/decision` copies the video
+    /// carries it too; a re-encode leaves it at `NONE`.
     pub dv_decision: plx_data::metadata::DvDecision,
+    /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
+    /// whichever route was taken. `dovi`/`dv_decision` above describe what is being fed; these
+    /// are what a later rebuild that copies the video hands on again.
+    pub src_dovi: plx_data::metadata::Dovi,
+    pub src_dv_decision: plx_data::metadata::DvDecision,
     /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
@@ -1583,6 +1611,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // Carried to the session so the quality menu can say whether "Original" means anything for
     // this item without evaluating the gate a second time against a different set of facts.
     plan.source_decodable = video_dp;
+    plan.src_dovi = dovi;
+    plan.src_dv_decision = dv_decision;
     // **Refusing direct play is only half of it.** The transcode query below grants the server
     // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
     // permission whenever the source fits the caps the query carries. Those caps are resolution,
@@ -1596,8 +1626,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // them is a free win worth keeping.
     //
     // **This stays the base-layer question, and does NOT become `dv.refusal().is_some()`.** A copy
-    // arrives with no `DolbyHdrInfo` node attached — the declaration rides the direct play, not
-    // the file — so the test is the pre-declaration one: is this bitstream a correct picture when
+    // arrives with no `DolbyHdrInfo` node unless somebody declares it, and a Profile 5 copy is
+    // never declared (the `decision_copies_video` branch withdraws it), so the test is the
+    // pre-declaration one: is this bitstream a correct picture when
     // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
     // copy of it exactly as wrong as before.
     let no_video_copy = dovi.base_layer_unusable();
@@ -2540,6 +2571,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.vcodec = v;
             plan.acodec = a;
         }
+        // A video copy is still the file's elementary stream, DOVI record included, so the
+        // declaration the direct play would have made rides it. Withdrawn for a base layer that
+        // is wrong undeclared (`no_video_copy`): that copy is refused above the server.
+        if !no_video_copy && decision_copies_video(&mc, remux) {
+            plan.dovi = dovi;
+            plan.dv_decision = dv_decision;
+        }
     }
     plan.url = client.transcode_start_url(&sp).to_url();
     plan.tsession = session;
@@ -2582,8 +2620,9 @@ fn fill_direct_plan(
     plan.vcodec = vcodec.to_string();
     plan.acodec = achosen.clone();
     plan.fps = fps;
-    // Only here: this is the branch that feeds the FILE's own elementary stream, so it is the
-    // only one whose Load payload may describe the file's Dolby Vision.
+    // Set here for the direct play, which feeds the FILE's own elementary stream; a server remux
+    // that copies the video sets the same pair after its `/decision` (`decision_copies_video`).
+    // A re-encode never does.
     plan.dovi = dovi;
     plan.dv_decision = dv_decision;
     // **Dolby Atmos, and it is the same sentence one codec over.** `contents.immersive` tells

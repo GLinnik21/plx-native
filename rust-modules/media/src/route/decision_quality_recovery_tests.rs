@@ -260,11 +260,21 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         false,
         plx_platform::devcaps::dv::DvCapability::Supported,
     ));
-    clear_output_dv(&mut ps);
+    let (src_dovi, src_dv) = (p8(), stream_dv_decision(&ps));
     assert_eq!(
-        stream_dv_decision(&ps),
-        plx_data::metadata::DvDecision::NONE,
-        "the shared remux/transcode output reset clears the declaration",
+        copied_video_dv(false, src_dovi, src_dv),
+        (plx_data::metadata::Dovi::NONE, plx_data::metadata::DvDecision::NONE),
+        "a re-encode carries no source declaration",
+    );
+    assert_eq!(
+        copied_video_dv(true, p5(), src_dv),
+        (plx_data::metadata::Dovi::NONE, plx_data::metadata::DvDecision::NONE),
+        "a Profile 5 copy stays undeclared: its base layer is wrong without the declaration",
+    );
+    assert_eq!(
+        copied_video_dv(true, src_dovi, src_dv),
+        (src_dovi, src_dv),
+        "a copy of a usable base layer keeps the declaration the direct play made",
     );
 
     restore_quality(Quality::Original);

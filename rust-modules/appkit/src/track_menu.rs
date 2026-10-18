@@ -3445,9 +3445,9 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
-    /// M7: a usable-base-layer Dolby Vision source no longer hides the rows — the enhanced remux
-    /// simply never declares DV (`fill_direct_plan` is the only place that ever does), so turning
-    /// the toggle on plays the HDR10 base picture instead. The note says so in plain language.
+    /// M7: a usable-base-layer Dolby Vision source no longer hides the rows. The note is shown
+    /// whatever the server later decides; whether the copied remux keeps DV is settled by its
+    /// `/decision` (`decision_copies_video`), not by the menu.
     #[test]
     fn enh_rows_offered_dv_drops_declaration() {
         let _g = plx_base::testlock::serial();
