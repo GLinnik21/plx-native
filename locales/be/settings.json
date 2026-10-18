@@ -256,8 +256,6 @@
   "settings.login.report_failed": "Не ўдалося даслаць справаздачу.",
   "settings.login.save_failed_title": "Не ўдалося захаваць даныя ўваходу",
   "settings.login.save_failed_body": "Не ўдалося захаваць даныя ўваходу на гэтым тэлевізары. Вы можаце працягнуць, але наступным разам спатрэбіцца ўвайсці зноў.",
-  "settings.login.unknown_device": "невядомы тэлевізар",
-  "settings.login.your_servers": "вашы серверы",
   "settings.language.saving": "Захаванне мовы…",
   "settings.audio.error_retry": "{reason} Абярыце «Паўтарыць».",
   "settings.login.report_id": "ID справаздачы: {id}",

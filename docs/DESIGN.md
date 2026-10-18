@@ -121,7 +121,7 @@ shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.
 
-Surfaces over a page stand on the page's own latched light: `widgets::panel_ground` draws the
+Menus over a page are glass on frozen ground (DS6: `popover_glass`, gradient face, 1 px rim, soft shadow, 30% scrim; the body shows the dim's latched field and the rim refracts the once-captured host snapshot, so nothing is re-blurred while a menu is up). Every other surface stands on the page's own latched light: `widgets::panel_ground` draws the
 underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
 material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
 bar's track and the profile chip — plus the one non-interactive standing note, the "Hold OK for options"

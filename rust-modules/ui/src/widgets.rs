@@ -132,10 +132,22 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
     }
 }
 
+/// Which ground a popover panel stands on — the caller's explicit, per-call choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    /// A MENU (Sort & Filter, the account menu, the item hold menu): glass on the frozen ground
+    /// (`popover_glass`: the latched field and the host snapshot), the latched-field ground only
+    /// when there is nothing frozen to stand on.
+    Menu,
+    /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
+    /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
+    Sheet,
+}
+
 /// **A popover panel's GROUND — the page under it, carried into it, WHERE it is.**
 ///
 /// Every popover in the app stands on this: the menus, the alert panels, the person bio, the
-/// decision alert. It used to be a real backdrop blur of the host (`Glass::CACHED.panel`, and the
+/// decision alert (only the menus wear glass, see the end of this comment). It used to be a real backdrop blur of the host (`Glass::CACHED.panel`, and the
 /// bio's `DYNAMIC_BACKDROP`) tinted by a fixed frost — ~11% of a frame's GPU cycles on the
 /// account panel (`docs/backdrop-blur-profiling.md`), for a picture the frost then covered all but
 /// 15% of. What survives a frost that dense is the page's COLOUR and where it is, which is exactly
@@ -155,15 +167,41 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 /// Never a blank, and never the frost alone — [`theme::PANEL_FROST_TOP`] is only legal over the
 /// field it is frosting.
 ///
-/// **Glass is chrome-only now**: the top bar's standing track and the profile chip's capsule still
-/// sample a live blur, because the page under them moves — and the standing hold hint
-/// (`hold_hint`, a non-interactive note); nothing that is a popover does.
+/// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
+/// states which ground it wants with a [`Ground`], per call, and there is no global switch.
+/// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever the field is latched; that
+/// glass stands on the same frozen pictures (this field, and the host snapshot for its rim) and
+/// reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
+/// (alerts, About, Tracks, the person bio, the decision alert) and the FALLBACK ground of a menu
+/// with nothing frozen to stand on. The chrome (the top bar's track, the profile chip's capsule,
+/// the hold hint) is the only live-blur user.
 pub fn panel_ground(
     p: Painter,
     r: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
+    ground: Ground,
 ) {
+    panel_ground_shadowed(p, r, radius, field, ground, 1.0);
+}
+
+/// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
+/// ([`crate::popover_glass::draw_shadowed`]); the field ground casts none, so it is unchanged.
+pub fn panel_ground_shadowed(
+    p: Painter,
+    r: Rect,
+    radius: f32,
+    field: Option<&crate::underlay::UnderlayField>,
+    ground: Ground,
+    shadow: f32,
+) {
+    // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
+    // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
+    if ground == Ground::Menu
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow))
+    {
+        return;
+    }
     let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
     let weight = panel_tint_sweep().unwrap_or(theme::underlay::PANEL_TINT);
     let drew = crate::profile::phase("panel.field", || {
@@ -1036,6 +1074,15 @@ fn veil_tex() -> std::os::raw::c_uint {
 /// inside it; between them the mark holds on a snowfield and on a black-and-white title card, which
 /// is the case that decided against a bare tick alone.
 pub fn watched_mark(p: Painter, card: Rect, rad: f32) {
+    corner_mark(p, card, rad, crate::icons::Icon::Check);
+}
+
+/// **A tile's one corner mark**: the veil, then `icon` bare over it in the tick's slot. The watched
+/// tick is this with `Icon::Check`; the Watchlist's unplayable marks (a clock for an upcoming
+/// title, a struck-through server for one whose server is offline) are the same object with their
+/// own glyph, so every corner mark shares one veil, one inset, one size and one shadow
+/// (TileStates board: "one bare mark in the watched tick's slot over a darker corner shadow").
+pub fn corner_mark(p: Painter, card: Rect, rad: f32, icon: crate::icons::Icon) {
     let v = card.w * VEIL_RATIO;
     p.tex(
         veil_tex(),
@@ -1055,7 +1102,7 @@ pub fn watched_mark(p: Painter, card: Rect, rad: f32) {
         d * TICK_SHADOW_DY,
         theme::TILE_MARK_SHADOW,
     );
-    crate::icons::draw(p, crate::icons::Icon::Check, tick, theme::TILE_MARK_INK);
+    crate::icons::draw(p, icon, tick, theme::TILE_MARK_INK);
 }
 
 /// Person-glyph box as a fraction of a headshot tile — the [`Art::Person`] fallback's one ratio.
@@ -2532,11 +2579,37 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// The tab band publishes the shared face on `GlassPlan`; both surfaces automatically declare
 /// their current rectangles in the same chrome layer. The planner captures their union once,
 /// and separates their z bands automatically if their sampling regions overlap.
-fn chip_capsule(p: Painter, cap: Rect, e: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) -> bool {
+///
+/// **`frozen` is the opener lift's ground** (`redraw_profile_chip`, the account menu up): the
+/// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
+/// the host snapshot behind its rim and no dim (it is drawn above the dim), and requests no
+/// backdrop entry and no blur source pass. A field that has not latched yet answers `false`, the
+/// flat capsule's cue. The chip on the tab strip passes `None` and keeps the live glass.
+fn chip_capsule(
+    p: Painter,
+    cap: Rect,
+    e: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    frozen: Option<&crate::underlay::UnderlayField>,
+) -> bool {
     let face = match bar_material {
         None => return false,
         Some(f) => chip_face(f, e),
     };
+    if let Some(field) = frozen {
+        let Some(ground) = field.ground_tex() else { return false };
+        let sharp = crate::popover::host::page_tex().unwrap_or(0);
+        return p.glass_frozen(
+            cap,
+            cap.h * 0.5,
+            ground,
+            sharp,
+            None,
+            [1.0, 1.0, 1.0, e],
+            plx_gfx::gfx::GlassRim::Standing,
+            face,
+        );
+    }
     Glass::DYNAMIC_BACKDROP.backdrop(
         p,
         cap,
@@ -2632,6 +2705,19 @@ pub fn profile_chip_text(
 /// its bare-`fn` lift receive those same owner publications rather than recovering either through
 /// a static.
 pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32, bar_material: Option<plx_gfx::gfx::GlassFace>) {
+    profile_chip_on(p, data, chip_expand, bar_material, None);
+}
+
+/// [`profile_chip_with`] on a chosen ground for its capsule: `frozen` is the latched underlay field
+/// of the modal stack the chip is lifted over ([`redraw_profile_chip`]), `None` the live tab-strip
+/// glass.
+fn profile_chip_on(
+    p: Painter,
+    data: ProfileChipRead<'_>,
+    chip_expand: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    frozen: Option<&crate::underlay::UnderlayField>,
+) {
     let r = CHIP_FRAME;
     let expand = chip_expand;
     let d = r.w;
@@ -2654,7 +2740,7 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !chip_capsule(p, cap, 1.0, bar_material) {
+        if !chip_capsule(p, cap, 1.0, bar_material, frozen) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -2743,6 +2829,12 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 /// top band holds still while pages swap under it. A lift on the wrong alpha would make the chip
 /// flicker through a route change that nothing else on the bar reacts to.
 ///
+/// **The lift's capsule stands on FROZEN ground** (owner rule, 2026-10-17: no live-refracting glass
+/// over a page): while the menu is up the capsule is `Painter::glass_frozen` over the stack's
+/// latched underlay field (`ScrimLiftRead::field`), its rim bending the host snapshot, and it
+/// requests no backdrop entry or blur source pass. Before the field has latched it is the flat
+/// capsule. The chip on the tab strip, with no menu up, stays live glass.
+///
 /// [`crate::screen::ScrimLiftRead`] is `Scrim::lift`'s own argument (spec phase 12,
 /// PX-WIDGETS). Its `ChromeRead` borrows the captured profile, labels and unfurl from
 /// `Rig::scrim_chrome_read`; its material is the face the same frame's `GlassPlan` received from
@@ -2752,11 +2844,12 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 /// [`Opener`]: crate::popover::Opener
 pub fn redraw_profile_chip(read: crate::screen::ScrimLiftRead<'_>) {
     let Some(chrome) = read.chrome else { return };
-    crate::guard(|| profile_chip_with(
+    crate::guard(|| profile_chip_on(
         Painter::root().alpha(crate::nav::chrome_alpha()),
         chrome.profile,
         chrome.chip_expand,
         read.bar_material,
+        read.field,
     ));
 }
 
@@ -2811,6 +2904,9 @@ pub struct CircleButton {
     /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
     /// plain disc, which is what every caller that has not opted in still gets.
     pub label: Option<(*const c_char, f32)>,
+    /// A glyph that fills IN over [`icon`](Self::icon) from its bottom edge — see
+    /// [`CircleButton::icon_fill`].
+    pub fill: Option<(crate::icons::Icon, f32, f32)>,
 }
 impl CircleButton {
     pub fn new(glyph: *const c_char) -> Self {
@@ -2818,6 +2914,7 @@ impl CircleButton {
             frame: Rect::new(0.0, 0.0, 60.0, 60.0),
             glyph,
             icon: None,
+            fill: None,
             focused: false,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
@@ -2849,6 +2946,15 @@ impl CircleButton {
     /// own outline circle (Info) would double-ring against the disc face.
     pub fn icon(mut self, i: crate::icons::Icon) -> Self {
         self.icon = Some(i);
+        self
+    }
+    /// Mid-flip between a bare glyph and its filled twin (a bookmark taking its ribbon): `filled`
+    /// is revealed from the glyph box's BOTTOM up to `fill` (0..1) over the plain
+    /// [`icon`](Self::icon), and both ride `dy` px down. The two glyphs must share one silhouette
+    /// (`icons.rs` keeps the pair so). A caller at either rest passes the resting icon alone and
+    /// does not call this, so nothing of the animation is left on a settled control.
+    pub fn icon_fill(mut self, filled: crate::icons::Icon, fill: f32, dy: f32) -> Self {
+        self.fill = Some((filled, fill.clamp(0.0, 1.0), dy));
         self
     }
     pub fn focused(mut self, f: bool) -> Self {
@@ -3013,12 +3119,15 @@ impl View for CircleButton {
                 DISC_LABEL_TAIL * self.scale,
             );
             let ix = r.x + closed_inset + (lead - closed_inset) * e;
-            crate::icons::draw(
-                p,
-                icon,
-                Rect::new(ix, r.y + (r.h - isz) * 0.5, isz, isz),
-                ink,
-            );
+            let dy = self.fill.map_or(0.0, |(_, _, dy)| dy * self.scale);
+            let glyph = Rect::new(ix, r.y + (r.h - isz) * 0.5 + dy, isz, isz);
+            crate::icons::draw(p, icon, glyph, ink);
+            if let Some((filled, fill, _)) = self.fill.filter(|&(_, f, _)| f > 0.0) {
+                let h = glyph.h * fill;
+                p.clip(Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h));
+                crate::icons::draw(p, filled, glyph, ink);
+                p.clip_clear();
+            }
             if let Some((text, _, label_w)) = unfurl {
                 // The label rides the TAIL of the widening, and the ramp is the GEOMETRY rather
                 // than a chosen fraction of it: it fades in exactly as fast as the capsule's tail
@@ -3298,8 +3407,10 @@ fn code(v: f32) -> f32 {
 impl AmbientWash {
     /// The dissolve rate every page wash shares — deliberately slower than any focus spring (the
     /// person mock's `.5s ease`): the wash is atmosphere, and snapping it with the focus pop reads
-    /// as the SCREEN changing rather than the subject. One rate, because two pages dissolving at two
-    /// speeds are two different products.
+    /// as the SCREEN changing rather than the subject. One rate for every focus move, because two
+    /// pages dissolving at two speeds are two different products. The one sanctioned exception is
+    /// the Watchlist's catch-up after a Remove's landing held the wash (`POST_REMOVE_EASE_K`,
+    /// through [`PageGround::key_target_k`]); it returns to this rate once `at_rest_on` holds.
     pub const K: f32 = 80.0;
 
     /// How far a GROUND leans from the app surface toward an item's own colour — the strength every
@@ -3684,6 +3795,26 @@ impl PageGround {
         self.wash.step(self.target, AmbientWash::K, dt);
     }
 
+    /// [`key_target`](Self::key_target) at a rate the screen chooses, for ONE ease that must catch up
+    /// faster than the shared [`AmbientWash::K`] (the Watchlist's, after a Remove's landing held
+    /// the wash). Every other call keeps `key_target`. A larger `k` shortens the dissolve, but the frames on which
+    /// a drawn 8-bit code still changes fall only with `ln k` (the Watchlist's doc has the figures).
+    pub fn key_target_k(&mut self, target: [[f32; 4]; 4], k: f32, dt: f32) {
+        self.target = target;
+        self.wash.step(self.target, k, dt);
+    }
+
+    /// Has the wash come to rest on `target`: within a quarter of an 8-bit code of it on every
+    /// channel and moving slower than one code a second? A screen that ran [`key_target_k`](Self::key_target_k)
+    /// hands back to the shared rate only from here: changing a spring's stiffness mid-flight keeps
+    /// its velocity, which the slower rate then carries past the target.
+    pub fn at_rest_on(&self, target: [[f32; 4]; 4]) -> bool {
+        const CODE: f32 = 1.0 / 255.0;
+        self.wash.corners.iter().zip(target).all(|(c, t)| {
+            c.iter().zip(t).all(|(s, v)| (s.pos - v).abs() < 0.25 * CODE && s.vel.abs() < CODE)
+        })
+    }
+
     /// [`key_target`](Self::key_target) without the dissolve — for a page that has just changed
     /// SUBJECT, where the previous subject's colours must not wash across the new one. Mount-time
     /// only; a jump on a page already on screen is a hard colour cut.
@@ -3952,24 +4083,26 @@ impl<'a> StatusOverlay<'a> {
     }
     /// **The verdict's face — rung, weight and ink — by kind**, the design system's
     /// `StatusOverlay` contract in one place: a `Failed` verdict is bold `size::TITLE` in
-    /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
-    /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
+    /// `TEXT_PRIMARY` (bright, the line the eye lands on; "the app does not scold": a failure is
+    /// never tinted a warning colour); an `Empty` caption is `size::BODY` primary too (DS3) and
+    /// `Working` stays `size::BODY` secondary.
     /// Every `Failed` read-out uses this face, the player's full-screen failure included: it is a
     /// page-placed read-out (`page`, spec "1A") like Home's and sign-in's, with the same 112px
     /// `TEXT_SECONDARY` glyph drawn by this widget.
     pub fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
         match kind {
             StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
-            StatusKind::Failed => (STATUS_FAILED_VERDICT_SZ, true, theme::TEXT_SECONDARY),
-            StatusKind::Empty => (STATUS_CAP_SZ, false, theme::TEXT_TERTIARY),
+            StatusKind::Failed => (STATUS_FAILED_VERDICT_SZ, true, theme::TEXT_PRIMARY),
+            StatusKind::Empty => (STATUS_CAP_SZ, false, theme::TEXT_PRIMARY),
         }
     }
     /// The reason's rung and ink by kind: a `Failed` reason is regular `size::BODY` in
-    /// `TEXT_SECONDARY` (the design system's), the others keep the quiet caption line.
+    /// `TEXT_SECONDARY` (the design system's), the others keep the quiet caption line, also
+    /// `TEXT_SECONDARY` (DS3: every body is secondary).
     pub fn reason_face(kind: StatusKind) -> (c_int, [f32; 4]) {
         match kind {
             StatusKind::Failed => (STATUS_FAILED_REASON_SZ, theme::TEXT_SECONDARY),
-            StatusKind::Working | StatusKind::Empty => (STATUS_REASON_SZ, theme::TEXT_TERTIARY),
+            StatusKind::Working | StatusKind::Empty => (STATUS_REASON_SZ, theme::TEXT_SECONDARY),
         }
     }
     /// Whether the reason sits in the design system's RESERVED TWO-LINE slot — every `Failed`
@@ -5579,13 +5712,25 @@ impl TabStrip {
 /// (`browse::tab_has_favorite`). This doc said "never remove or reorder"; half of it is still the
 /// deliverable and half of it is now the opposite, which is why [`Pill::Section`] carries a
 /// `SecKind` — a bare index means something different once a pill can vanish.
-/// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
-/// wear the padding a label needs (`ui_kits/tv-app/SearchScreen.jsx`). Every other pill keeps
-/// [`TAB_PILL_PAD`].
+/// An icon face ([`TabFace::Icon`], the Search mark today) is SQUARE: 60×60, the icon's own air
+/// rather than a word's, so a mark does not wear the padding a label needs
+/// (`ui_kits/tv-app/SearchScreen.jsx`). Every [`TabFace::Label`] pill keeps [`TAB_PILL_PAD`].
 const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
 /// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
 /// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
 const TAB_ICON_D: f32 = 32.0;
+/// The strip's control keys, by destination identity. A destination is looked up by its key, never
+/// by its position among the captured faces: Search is always `+3` and the profile chip `+4`,
+/// whatever type pills sit between Home and Search.
+pub const TAB_KEY_HOME: u32 = crate::dispatch::STRIP_BASE;
+pub const TAB_KEY_MOVIES: u32 = crate::dispatch::STRIP_BASE + 1;
+pub const TAB_KEY_SHOWS: u32 = crate::dispatch::STRIP_BASE + 2;
+pub const TAB_KEY_SEARCH: u32 = crate::dispatch::STRIP_BASE + 3;
+pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
+/// The Watchlist mark, `+5`: appended after the chip's `+4` so no existing key moves, and placed
+/// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a destination's
+/// identity, never its position.
+pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -5652,6 +5797,39 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("profile chip, focused capsule", CHIP_CAP_MAX));
 }
 
+/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: six
+/// focus stops (Home, both type pills, the Watchlist and Search marks, the chip) fit without scrolling.
+#[cfg(test)]
+mod overscan_strip_tests {
+    use super::*;
+
+    #[test]
+    fn six_stops_do_not_scroll_and_the_drawn_track_clears_the_overscan_rect() {
+        let faces = [
+            TabFace::Label("Home".into()),
+            TabFace::Label("Movies".into()),
+            TabFace::Label("TV Shows".into()),
+            TabFace::Icon(crate::icons::Icon::Bookmark),
+            TabFace::Icon(crate::icons::Icon::Search),
+        ];
+        // A generous per-glyph measure: wider than any shipped label at BODY.
+        let widths = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 20.0).1;
+        assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "five pills must fit the strip's viewport");
+        for idx in 0..faces.len() {
+            assert_eq!(tab_scroll_target(&widths, idx, 0.0), 0.0, "stop {idx} must not scroll the strip");
+        }
+        let geometry = tab_geometry(&widths, 0.0);
+        let mut rects = Vec::new();
+        overscan_rects(&mut rects);
+        let (_, outer) = rects.iter().copied().find(|(name, _)| *name == "top tab track (widest)")
+            .expect("the strip publishes its widest track to the audit");
+        let track = geometry.track;
+        assert!(track.x >= outer.x && track.x + track.w <= outer.x + outer.w + 0.5,
+            "the drawn track must sit inside the widest track the audit checks");
+        assert!(track.y >= outer.y && track.y + track.h <= outer.y + outer.h + 0.5);
+    }
+}
+
 /// The strip's scroll stiffness. The detail page's season-tab row springs at the same 240 — same
 /// control, same overflow problem, so the two rows must move alike (the user directive that keeps
 /// the tab pills and the season tabs in step covers their motion, not just their geometry).
@@ -5682,6 +5860,84 @@ pub struct StripRender {
     /// Home↔Library↔Search route flip rather than restart on the far side. It lived in `home.rs`
     /// while Home was the only screen the chip could be focused on.
     chip_expand: crate::Spring,
+    /// A running tab pulse (see [`TAB_PULSE_S`]): the pill's index in the captured faces and how
+    /// long it has run. Time-driven rather than a spring on purpose: it is a one-shot ornament
+    /// that must start and end at exactly rest, and it asks for its frames as motion
+    /// (`idle::note_motion`), never with `idle::invalidate`: it starts on the frame the item menu
+    /// is dismissed, and damage under that fading menu re-captured the host on every frame.
+    pulse: Option<TabPulse>,
+}
+
+/// How long the tab pulse runs, seconds: up to its peak and back, one beat (the design session:
+/// about 400 ms).
+pub const TAB_PULSE_S: f32 = 0.4;
+/// The pulsed GLYPH's peak scale (the app's `ChromeSnapshot::pulse`: ~1.35x).
+pub const TAB_PULSE_SCALE: f32 = 1.35;
+/// The peak alpha of the soft WHITE glow around the pulsed glyph. A glow, never a plate: a disc
+/// behind the mark is the strip's selected plate and reads as "this tab is selected".
+pub const TAB_PULSE_GLOW_A: f32 = 0.45;
+/// The glow's peak blur, px.
+pub const TAB_PULSE_GLOW_BLUR: f32 = 14.0;
+
+#[derive(Clone, Copy)]
+struct TabPulse {
+    idx: usize,
+    age: f32,
+}
+
+/// The pulse's envelope at `age` seconds: 0 at both ends, 1 at the peak (a half sine, so the
+/// scale and the glow rise and fall with no corner).
+pub fn tab_pulse_envelope(age: f32) -> f32 {
+    if !(0.0..TAB_PULSE_S).contains(&age) {
+        return 0.0;
+    }
+    (std::f32::consts::PI * age / TAB_PULSE_S).sin().max(0.0)
+}
+
+/// The pulsed mark at one envelope value: where the glyph is drawn and the glow around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabPulseLook {
+    pub glyph: Rect,
+    pub glow: Option<TabPulseGlow>,
+}
+/// The pulse's glow: drawn around `rect` with corner `radius` and blur `blur`, in `col`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabPulseGlow {
+    pub rect: Rect,
+    pub radius: f32,
+    pub blur: f32,
+    pub col: [f32; 4],
+}
+/// The mark's glyph rect `ir` under the pulse at envelope `env` (0 = rest): the glyph grown about
+/// its centre, and the soft white glow around it.
+pub fn tab_pulse_look(ir: Rect, env: f32) -> TabPulseLook {
+    if env <= 0.0 {
+        return TabPulseLook { glyph: ir, glow: None };
+    }
+    let grow = 1.0 + (TAB_PULSE_SCALE - 1.0) * env;
+    let glyph = ir.scaled(grow);
+    // Brief: the glow rides the envelope squared, so it is up only around the peak. It is an
+    // OUTSIDE penumbra around the glyph's core (`shadow_outside` cuts its own shape out), so the
+    // outline glyph stays an outline with nothing filled under it.
+    let g = env * env;
+    let core = glyph.scaled(0.6);
+    TabPulseLook {
+        glyph,
+        glow: Some(TabPulseGlow { rect: core, radius: core.h * 0.5, blur: TAB_PULSE_GLOW_BLUR * g, col: [1.0, 1.0, 1.0, TAB_PULSE_GLOW_A * g] }),
+    }
+}
+/// Draw an icon mark of the strip at `ir` in `ink`, pulsed at envelope `env`
+/// ([`tab_pulse_look`]): no plate, no fill — the glyph itself is the pulse.
+pub(crate) fn draw_tab_mark(p: Painter, icon: crate::icons::Icon, ir: Rect, ink: [f32; 4], env: f32) {
+    let look = tab_pulse_look(ir, env);
+    draw_tab_glow(p, look);
+    crate::icons::draw(p, icon, look.glyph, ink);
+}
+/// Everything the pulse draws besides the glyph: the glow, and only the glow.
+fn draw_tab_glow(p: Painter, look: TabPulseLook) {
+    if let Some(g) = look.glow.filter(|g| g.col[3] > 0.0) {
+        p.shadow_outside(g.rect, g.radius, g.blur, 0.0, g.col);
+    }
 }
 
 impl StripRender {
@@ -5690,7 +5946,20 @@ impl StripRender {
             tab_scroll: crate::Spring::at(0.0),
             top_strip: TabStrip::new(),
             chip_expand: crate::Spring::at(0.0),
+            pulse: None,
         }
+    }
+
+    /// Start a pulse on pill `idx` (a restart if one is running). The application asks for it
+    /// through `ChromeSnapshot::pulse`; no screen does.
+    pub fn pulse(&mut self, idx: usize) {
+        self.pulse = Some(TabPulse { idx, age: 0.0 });
+        plx_machine::idle::invalidate();
+    }
+
+    /// The running pulse as `(pill index, envelope)`, `None` at rest.
+    pub fn pulse_read(&self) -> Option<(usize, f32)> {
+        self.pulse.map(|p| (p.idx, tab_pulse_envelope(p.age)))
     }
 
     /// The strip's current scroll offset — what [`tab_members`] needs to place `StripMember`s in
@@ -6400,32 +6669,47 @@ latched_flag!(
 // label byte. A PERMANENT entry in `ci/allow/statics.txt`, not an ownership path: every caller
 // supplies Bridge-owned `TabLabels`, and a key mismatch deterministically replaces the memo. Like
 // `text_view.rs`'s `WRAP_CACHE`, it is never read as logical state.
-static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
+/// The memo's key is the generation AND the captured faces; `CString`s are kept beside them because
+/// paint hands `TabPill` a raw pointer into them.
+type TabMetrics = (u32, Vec<TabFace>, Vec<std::ffi::CString>, Vec<f32>);
+static mut TAB_CACHE: Option<TabMetrics> = None;
 
-/// The shared strip's captured labels, including Home first and an empty Search icon label last.
-/// Supplied by the application; no Browse/Plex type is part of the renderer's vocabulary.
+/// What one pill of the shared strip shows: a captured word, or a mark. The strip never reads the
+/// application's vocabulary to decide which pill is the mark — the application says so per pill.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabFace {
+    Label(String),
+    Icon(crate::icons::Icon),
+}
+
+/// The shared strip's captured faces, in pill order (Home first, Search's mark last), as the
+/// application built them. Supplied by the application; no Browse/Plex type is part of the
+/// renderer's vocabulary.
 #[derive(Clone, Copy)]
 pub struct TabLabels<'a> {
     pub generation: u32,
-    pub labels: &'a [String],
+    pub faces: &'a [TabFace],
 }
 
 /// Build glyph runs and widths from an explicitly supplied vocabulary. The application's
-/// `ChromeSnapshot` owns those labels; both normal chrome and its scrim lift borrow the same
+/// `ChromeSnapshot` owns those faces; both normal chrome and its scrim lift borrow the same
 /// snapshot, so this renderer never reconstructs vocabulary from app globals.
-fn tab_metrics_from(labels: &[String], measure: impl Fn(&std::ffi::CStr) -> f32) -> (Vec<CString>, Vec<f32>) {
-    let words: Vec<CString> = labels.iter().map(|label| CString::new(label.as_str()).unwrap_or_default()).collect();
-    let widths = words.iter().enumerate().map(|(i, word)| {
-        if i + 1 == words.len() { TAB_ICON_PILL_W }
-        else { measure(word) + 2.0 * TAB_PILL_PAD }
+fn tab_metrics_from(faces: &[TabFace], measure: impl Fn(&std::ffi::CStr) -> f32) -> (Vec<CString>, Vec<f32>) {
+    let words: Vec<CString> = faces.iter().map(|face| match face {
+        TabFace::Label(label) => CString::new(label.as_str()).unwrap_or_default(),
+        TabFace::Icon(_) => CString::default(),
+    }).collect();
+    let widths = faces.iter().zip(&words).map(|(face, word)| match face {
+        TabFace::Label(_) => measure(word) + 2.0 * TAB_PILL_PAD,
+        TabFace::Icon(_) => TAB_ICON_PILL_W,
     }).collect();
     (words, widths)
 }
 
 /// Measure a published vocabulary once when it changes. The same metric rule feeds paint and
 /// input geometry; the capability keeps host fixtures independent of a loaded SDL font.
-pub fn tab_widths(labels: &[String], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
-    tab_metrics_from(labels, |word| measure.width(word, theme::size::BODY, true)).1
+pub fn tab_widths(faces: &[TabFace], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
+    tab_metrics_from(faces, |word| measure.width(word, theme::size::BODY, true)).1
 }
 
 /// Publish control geometry from the strip's actual scroll and its current destination. Keys
@@ -6457,9 +6741,8 @@ fn tab_members_at(widths: &[f32], keys: &[u32], scroll: f32, target: f32,
     }
 }
 
-fn tab_cache_matches(cache: &(u32, Vec<CString>, Vec<f32>), data: TabLabels<'_>) -> bool {
-    cache.0 == data.generation && cache.1.len() == data.labels.len()
-        && cache.1.iter().zip(data.labels).all(|(a, b)| a.to_bytes() == b.as_bytes())
+fn tab_cache_matches(cache: &TabMetrics, data: TabLabels<'_>) -> bool {
+    cache.0 == data.generation && cache.1.as_slice() == data.faces
 }
 
 /// Run `f` with the tab row's labels + pill widths, rebuilding them when the full vocabulary key
@@ -6470,7 +6753,7 @@ fn tab_cache_matches(cache: &(u32, Vec<CString>, Vec<f32>), data: TabLabels<'_>)
 /// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
 /// `*const c_char`. Scoping it here makes that impossible to write by accident — so do NOT call
 /// this again from inside `f`.
-fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32]) -> R) -> R {
+fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CString], &[f32]) -> R) -> R {
     use std::ptr::addr_of_mut;
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
@@ -6483,15 +6766,14 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32
         // identical glyph widths on both paths.
         use plx_machine::machine::Measure as _;
         let measure = LegacyMeasure;
-        let (labels, widths) = tab_metrics_from(data.labels,
+        // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
+        // stays the pill count, which is what the draw and the hit test both walk.
+        let (words, widths) = tab_metrics_from(data.faces,
             |l| measure.width(l, theme::size::BODY, true));
-        // The Search pill, last. It carries an EMPTY label so nothing here has to special-case a
-        // missing entry — `labels.len()` stays the pill count, which is what the draw and the hit
-        // test both walk — and a fixed square width, because a mark is not measured like a word.
-        *cache = Some((data.generation, labels, widths));
+        *cache = Some((data.generation, data.faces.to_vec(), words, widths));
     }
-    let (_, labels, widths) = cache.as_ref().unwrap();
-    f(labels, widths)
+    let (_, faces, words, widths) = cache.as_ref().unwrap();
+    f(faces, words, widths)
 }
 
 /// Content width of the whole pill strip: the pills plus the air between them.
@@ -6609,7 +6891,7 @@ impl StripRender {
         // Both reads happen inside the ONE `with_tab_metrics` closure — its doc forbids nesting, and
         // the capsules must be placed from the SAME widths the pills are laid out with, so a capsule
         // can never come to rest somewhere no pill is.
-        let t = with_tab_metrics_for(data, |_, w| {
+        let t = with_tab_metrics_for(data, |_, _, w| {
             let target = tab_scroll_target(w, idx, cur.pos);
             let span = |i: usize| (i < w.len()).then(|| (tab_pill_x(w, i), w[i]));
             self.top_strip.update(selected, focused, span, SelMark::Travels, dt);
@@ -6617,6 +6899,20 @@ impl StripRender {
         });
         self.tab_scroll.step(t, K_TAB_SCROLL, dt);
         crate::anim::probe("tabrow.scroll", self.tab_scroll.pos, self.tab_scroll.vel, t, dt);
+        // The pulse is decorative: it moves no layout, so it runs inside `idle::decorative` and a
+        // page image is never held for it. It asks for the next frame itself, as MOTION
+        // (`idle::note_motion`), never as page damage: it starts on the frame the item menu is
+        // dismissed, and damage under that fading menu re-captured the host and re-latched the
+        // dim's field on every one of its frames.
+        if let Some(mut pulse) = self.pulse.take() {
+            plx_machine::idle::decorative(|| {
+                pulse.age = pulse.age + dt; // the strip's own step, as its springs take
+                if pulse.age < TAB_PULSE_S {
+                    self.pulse = Some(pulse);
+                    plx_machine::idle::note_motion();
+                }
+            });
+        }
     }
 }
 
@@ -6635,7 +6931,7 @@ impl StripRender {
 impl StripRender {
     pub fn reveal(&mut self, data: TabLabels<'_>, idx: usize) {
         let cur = self.tab_scroll;
-        let t = with_tab_metrics_for(data, |_, w| tab_scroll_target(w, idx, cur.pos));
+        let t = with_tab_metrics_for(data, |_, _, w| tab_scroll_target(w, idx, cur.pos));
         self.tab_scroll.jump(t);
     }
 }
@@ -6657,8 +6953,9 @@ impl StripRender {
                    // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
     band.material = BarMaterial::Flat;
-    with_tab_metrics_for(data, |labels, widths| {
-        let n = labels.len();
+    let pulse = self.pulse_read();
+    with_tab_metrics_for(data, |faces, words, widths| {
+        let n = faces.len();
         if n == 0 {
             return;
         }
@@ -6856,22 +7153,21 @@ impl StripRender {
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
                 let (fm, sm) = self.top_strip.mixes((px, widths[i]));
-                if i + 1 == n {
-                    // The Search pill is a MARK, and it takes its ink from exactly the same
+                match &faces[i] {
+                    // An icon face is a MARK, and it takes its ink from exactly the same
                     // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
                     // capsule in step with its neighbours instead of being a separate colour story.
-                    let d = TAB_ICON_D;
-                    let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
-                    crate::icons::draw(
-                        p,
-                        crate::icons::Icon::Search,
-                        ir,
-                        TabPill::mixed_ink(fm, sm),
-                    );
-                } else {
-                    TabPill::new(labels[i].as_ptr(), theme::size::BODY, r)
-                        .mix(fm, sm)
-                        .draw(&env, p);
+                    TabFace::Icon(icon) => {
+                        let d = TAB_ICON_D;
+                        let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                        let env = pulse.filter(|&(at, _)| at == i).map_or(0.0, |(_, e)| e);
+                        draw_tab_mark(p, *icon, ir, TabPill::mixed_ink(fm, sm), env);
+                    }
+                    TabFace::Label(_) => {
+                        TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
+                            .mix(fm, sm)
+                            .draw(&env, p);
+                    }
                 }
             }
         }

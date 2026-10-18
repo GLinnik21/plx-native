@@ -10,7 +10,7 @@
 //! - `draw_scrims()` runs inside the PAGE PASS, so the dim is on the framebuffer before the
 //!   surface's own glass looks through it — see its doc for the two hand-placed calls it replaces.
 //!   Every dim is painted through the stack's ONE inherited field ([`ModalUnderlay`]), latched
-//!   from the undimmed host page (or the playing item's corners over the video plane) at the head
+//!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
 //!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
@@ -145,6 +145,10 @@ impl PopoverMotion {
     pub fn to(&mut self, target: f32) {
         self.target = target;
     }
+    /// Fading out and already below [`CLOSING_GONE`]: the surface is treated as gone.
+    pub fn gone(&self) -> bool {
+        !self.holding && self.target <= 0.0 && self.appear < CLOSING_GONE
+    }
     pub fn settled(&self) -> bool {
         !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
@@ -176,6 +180,14 @@ impl PopoverMotion {
                 present.note(plx_machine::present::PresentEvent::Motion);
             }
         }
+    }
+}
+
+impl<H: Host> Surface<H> {
+    /// A menu (`Compact`) dismissed and faded past [`CLOSING_GONE`]: draws nothing, owes its host
+    /// no dim. Only menus: a sheet's or an opaque surface's close is decided by the spring's rest.
+    pub fn faded(&self) -> bool {
+        self.phase == Phase::Closing && self.style == Style::Compact && self.motion.gone()
     }
 }
 
@@ -237,6 +249,52 @@ pub fn style_caches_host(style: Style) -> bool {
     surface_policy(style, Phase::Opening, false).1 != HostRender::Live
 }
 
+/// **Below this a closing menu is gone**: not drawn, its glass source not rebuilt, and pruned
+/// the frame it is reached. The appear spring's own tail runs on to its 0.002 rest, which is
+/// ~0.2 s of frames nobody can see, each one a full panel (and, for a glass menu, the source
+/// pass behind it, which a page reflowing under a Remove re-takes every frame). 2% of a panel and
+/// of a 30% dim is below what the panel can show.
+pub const CLOSING_GONE: f32 = 0.02;
+
+thread_local! {
+    /// The most opaque surface over the page after this frame's surface step ([`set_veil`]).
+    pub(crate) static VEIL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// The dispatcher's statement, right after it steps the surfaces and before any page tick, of how
+/// much of a surface stands over the page this frame: 1 for an `Opening` or `Open` one, the
+/// appear of a `Closing` one, the largest of them, 0 for none. Thread-local, like
+/// [`page_image_held`](super::transition::page_image_held), and for the same reader: a page's
+/// layout animation that must not run under a menu ([`page_veiled`]).
+pub fn set_veil(v: f32) {
+    VEIL.with(|c| c.set(v));
+}
+
+/// The page is under a menu this frame: a surface is opening, open, or still at least
+/// [`CLOSING_GONE`] opaque on its way out, which is to say the menu still holds the host. **The page
+/// does not move while this is true**: a layout motion that a menu's choice started (the
+/// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`), and so
+/// does the data that would change what the page shows (`app/watchlist.rs`'s feed). A surface
+/// whose body answers [`Screen::lets_host_reflow`] (the Watchlist's Sort & Filter menu) casts no veil:
+/// the page reflows under it.
+pub fn page_veiled() -> bool {
+    VEIL.with(|c| c.get()) >= CLOSING_GONE
+}
+
+/// The veil a set of surfaces casts ([`set_veil`]).
+pub(crate) fn veil_of<H: Host>(surfaces: &[Surface<H>]) -> f32 {
+    surfaces
+        .iter()
+        .map(|s| match s.phase {
+            Phase::Hidden => 0.0,
+            // a surface that lets the page reflow under it does not veil it, in any phase
+            _ if s.entry.inst.as_ref().is_some_and(|i| i.screen.lets_host_reflow()) => 0.0,
+            Phase::Closing => s.motion.appear.clamp(0.0, 1.0),
+            _ => 1.0,
+        })
+        .fold(0.0, f32::max)
+}
+
 /// What a miss beside a surface does, by style — consulted only while `Open`.
 pub fn on_miss(style: Style) -> OnMiss {
     match style {
@@ -262,14 +320,7 @@ pub enum Latched {
     Nothing,
     /// The host page, as it stood at this `popover::host::page_epoch`.
     Page(u32),
-    /// A four-corner envelope (the video plane's stand-in).
-    Corners([[f32; 3]; 4]),
 }
-
-/// Prepare passes a page must have been at rest, over the same envelope, before
-/// [`ModalUnderlay::note_at_rest`] lets the preload run. ~0.5 s at 60 fps only while the video
-/// plane is bound; before that a pass runs only on a presenting frame, so the wait is longer.
-pub const PRELOAD_REST_FRAMES: u16 = 30;
 
 /// What [`ModalUnderlay`] does at the head of a frame's dims — the decision, as a value.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -278,9 +329,8 @@ pub enum LatchStep {
     Keep,
     /// Read the host page off the framebuffer (it has been re-captured, or never read).
     SamplePage,
-    /// Latch from this envelope.
-    Corners([[f32; 3]; 4]),
-    /// Nobody dims any more, or the source has nothing to inherit: back to the flat ink.
+    /// Nobody dims any more, or the source has nothing to inherit (the video plane): back to the
+    /// flat ink.
     Reset,
 }
 
@@ -303,13 +353,6 @@ pub fn latch_step(
                 LatchStep::Keep
             } else {
                 LatchStep::Reset
-            }
-        }
-        Some(UnderlaySource::Corners(c)) => {
-            if held == Latched::Corners(c) {
-                LatchStep::Keep
-            } else {
-                LatchStep::Corners(c)
             }
         }
         Some(UnderlaySource::Page) => {
@@ -414,33 +457,15 @@ impl DimSink for GlDims {
 /// the field it had (`UnderlayField::latch_sampled` is only called with a real answer).
 ///
 /// **When it re-latches**: whenever `popover::host::page_epoch` moves, i.e. whenever the host
-/// snapshot is re-captured because the page under the stack changed; for a video-plane surface,
-/// whenever its corners change. **When it resets**: when no surface declares a dim any more, and
-/// when [`ModalStack::prune`] retires the last surface — EXCEPT a corner envelope, which is kept
-/// dormant ([`retire`](ModalUnderlay::retire)): it is the playing item's light, not the popover's,
-/// and re-latching it was 5.5-7.3 ms of every player popover's open frame. It is also latched
-/// ahead of the first open ([`preload`](ModalUnderlay::preload)). A dormant field is adopted by the
-/// next stack asking for the same envelope and dropped, before anything reads it, by any other.
+/// snapshot is re-captured because the page under the stack changed. **When it resets**: when no
+/// surface declares a dim any more, when the bottom dimming surface has nothing to inherit (a
+/// video-plane surface, [`UnderlaySource::Flat`]: the flat neutral ink, never the playing item's
+/// artwork colour), and when [`ModalStack::prune`] retires the last surface.
 pub struct ModalUnderlay {
     field: crate::underlay::UnderlayField,
     held: Latched,
     /// A page read queued and not yet landed: the epoch it reads, and its ticket.
     pending: Option<(u32, plx_gfx::gfx::FieldTicket)>,
-    /// The stack is empty but the field still holds a corner envelope — see
-    /// [`retire`](Self::retire). It is a CACHE until something asks for it: the next sync, dim or
-    /// presented surface either adopts it (the same envelope) or drops it first.
-    dormant: bool,
-    /// The envelope the page under an EMPTY stack says its first surface will inherit
-    /// ([`note_at_rest`](Self::note_at_rest)), until the presenting side latches it
-    /// ([`preload`](Self::preload)).
-    wanted: Option<[[f32; 3]; 4]>,
-    /// The envelope the page at rest has been asking for, and for how many prepare passes in a
-    /// row ([`note_at_rest`](Self::note_at_rest)).
-    rest_for: Option<[[f32; 3]; 4]>,
-    rest: u16,
-    /// Envelope latches so far (a reconstruction and a texture upload each).
-    #[cfg(any(test, feature = "test-support"))]
-    corner_latches: u32,
 }
 
 impl ModalUnderlay {
@@ -449,128 +474,13 @@ impl ModalUnderlay {
             field: crate::underlay::UnderlayField::new(),
             held: Latched::Nothing,
             pending: None,
-            dormant: false,
-            wanted: None,
-            rest_for: None,
-            rest: 0,
-            #[cfg(any(test, feature = "test-support"))]
-            corner_latches: 0,
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn wanted(&self) -> Option<[[f32; 3]; 4]> {
-        self.wanted
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn corner_latches(&self) -> u32 {
-        self.corner_latches
-    }
-
-    /// **The last surface is gone.** A page latch is dropped (the next stack may sit over a
-    /// different page and starts from a fresh read); a corner envelope is KEPT, dormant, because
-    /// it describes the playing item rather than the popover that closed: re-latching it on every
-    /// open of a player Tracks/More popover was 5.5-7.3 ms of the open frame on the television
-    /// (`ulatch`, 2026-10-01).
+    /// **The last surface is gone.** The latch is dropped: the next stack may sit over a
+    /// different page and starts from a fresh read.
     pub fn retire(&mut self) {
-        if matches!(self.held, Latched::Corners(_)) {
-            self.pending = None;
-            self.dormant = true;
-        } else {
-            self.reset();
-        }
-    }
-
-    /// Set or withdraw the note directly, bypassing the rest count: for the frames that never reach
-    /// [`note_at_rest`](Self::note_at_rest) (a surface is up), and for tests that need a note.
-    pub fn want_corners(&mut self, corners: Option<[[f32; 3]; 4]>) {
-        self.wanted = corners;
-    }
-
-    /// **Note what the page under an empty stack would have its first surface inherit**, once per
-    /// prepare pass, `None` when the page is not at rest, is not a video
-    /// plane or has not been reached. Records only — no GL — so it may run on any frame whose
-    /// prepare pass ran; the latch itself is [`preload`](Self::preload)'s, on a frame that presents.
-    ///
-    /// The note stands only after [`PRELOAD_REST_FRAMES`] prepare passes in a row for the same
-    /// envelope (`None` or a changed envelope restarts the count and withdraws any note). The latch is a ~8 ms reconstruction on
-    /// a frame nobody has budgeted for, so it waits out the playback-start frames, which are the
-    /// heaviest the player has.
-    pub fn note_at_rest(&mut self, corners: Option<[[f32; 3]; 4]>) {
-        match corners {
-            Some(c) if self.rest_for == Some(c) => self.rest = self.rest.saturating_add(1),
-            Some(c) => {
-                self.rest_for = Some(c);
-                self.rest = 1;
-                self.wanted = None;
-            }
-            None => {
-                self.rest_for = None;
-                self.rest = 0;
-                self.wanted = None;
-            }
-        }
-        if self.rest >= PRELOAD_REST_FRAMES {
-            self.wanted = corners;
-        }
-    }
-
-    /// **Latch the noted envelope ahead of the first open**, so a player popover's open frame does
-    /// not pay the reconstruction and the texture upload (5.5-7.3 ms `ulatch` on the television,
-    /// 2026-10-01). Uploads a texture, so the caller runs it only on a frame that presents
-    /// (`app::run::prepare_window`, beside the other uploads, spec §10). Never touches a field a
-    /// live stack is using: only an empty one — nothing held, or the envelope kept dormant.
-    pub fn preload(&mut self) {
-        let Some(c) = self.wanted.take() else { return };
-        if self.held == Latched::Corners(c) {
-            return;
-        }
-        // A stack that has asked for a page read is live, whatever it has latched so far.
-        if !self.dormant && (self.held != Latched::Nothing || self.pending.is_some()) {
-            return;
-        }
-        plx_base::diag::spans::span("upre", || self.latch_corners(c));
-        self.dormant = true;
-    }
-
-    /// Latch a corner envelope: reconstruct the field and upload it. Nothing is read from a page.
-    fn latch_corners(&mut self, c: [[f32; 3]; 4]) {
-        self.pending = None;
-        self.field.reset();
-        self.field
-            .latch_from_corners(c, crate::underlay::Grade::Dim);
-        self.held = Latched::Corners(c);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.corner_latches += 1;
-        }
-    }
-
-    /// Drop a dormant envelope: the surface now being presented cannot inherit it.
-    pub fn drop_dormant(&mut self) {
-        if self.dormant {
-            self.reset();
-        }
-    }
-
-    /// Settle a dormant field against what a stack that DIMS asks for, before anything reads it:
-    /// the same envelope is adopted as is, anything else starts from the flat ink exactly as a
-    /// fresh field would. `None` (no surface declares a dim: the Info card, the Chapters strip, the
-    /// Timing capsule) asks for nothing and leaves the field alone.
-    pub fn wake(&mut self, source: Option<UnderlaySource>) {
-        if !self.dormant || source.is_none() {
-            return;
-        }
-        self.dormant = false;
-        let same = matches!((source, self.held), (Some(UnderlaySource::Corners(a)), Latched::Corners(b)) if a == b);
-        if !same {
-            self.reset();
-        }
-    }
-
-    fn is_dormant(&self) -> bool {
-        self.dormant
+        self.reset();
     }
 
     pub fn field(&self) -> &crate::underlay::UnderlayField {
@@ -600,11 +510,6 @@ impl ModalUnderlay {
     /// panel (simulator, 2026-09-19): under two 8-bit codes on the brightest cell of the measured
     /// Home (field 0.61), for one frame.
     pub fn sync(&mut self, source: Option<UnderlaySource>, sink: &mut dyn DimSink) {
-        // A dim-less panel over the kept envelope: nothing to inherit and nothing to reset.
-        if self.dormant && source.is_none() {
-            return;
-        }
-        self.wake(source);
         if let Some((epoch, ticket)) = self.pending {
             match sink.collect(ticket) {
                 plx_gfx::gfx::FieldRead::Ready(raw) => {
@@ -627,7 +532,6 @@ impl ModalUnderlay {
                     self.pending = sink.kick().map(|t| (epoch, t));
                 }
             }
-            LatchStep::Corners(c) => self.latch_corners(c),
             LatchStep::Reset => self.reset(),
         }
         sink.in_flight(self.pending.is_some());
@@ -637,7 +541,6 @@ impl ModalUnderlay {
         self.field.reset();
         self.held = Latched::Nothing;
         self.pending = None;
-        self.dormant = false;
     }
 }
 
@@ -666,26 +569,10 @@ impl<H: Host> ModalStack<H> {
         self.surfaces.is_empty()
     }
 
-    /// Latch the envelope the page noted ([`ModalUnderlay::note_at_rest`]) — only with no surface
-    /// up, and the note is consumed either way so it cannot outlive the frame it was made on.
-    /// Uploads a texture: presenting frames only (`app::run::prepare_window`).
-    pub fn preload_underlay(&mut self) {
-        if self.surfaces.is_empty() {
-            self.underlay.preload();
-        } else {
-            self.underlay.want_corners(None);
-        }
-    }
-
     /// Present a surface (§3.4): mint the entry, `Mount` + `Enter(Fresh)`; the caller (`Navigation`)
     /// adds the host's `Cover` in the same drain.
     pub fn present(&mut self, ids: &mut Minter, arg: H::Arg, style: Style) -> (EntryId, Vec<Life<H>>) {
         let id = ids.entry();
-        // Only a player panel can inherit the kept envelope; any other surface's panel reads the
-        // field before a dim could replace it, so it starts from the flat ink.
-        if !matches!(style, Style::PlayerPanel { .. }) {
-            self.underlay.drop_dormant();
-        }
         self.surfaces.push(Surface {
             entry: Entry {
                 id,
@@ -831,7 +718,7 @@ impl<H: Host> ModalStack<H> {
         let mut i = 0;
         while i < self.surfaces.len() {
             let s = &self.surfaces[i];
-            if s.phase == Phase::Closing && s.motion.settled() {
+            if s.phase == Phase::Closing && (s.motion.settled() || s.faded()) {
                 let s = self.surfaces.remove(i);
                 out.push(Life::Ev(s.entry.id, ScreenEvent::WillLeave(Leave::ForGood)));
                 out.push(Life::Unmount(s.entry.id));
@@ -841,8 +728,7 @@ impl<H: Host> ModalStack<H> {
             }
         }
         // The last surface is gone: nothing is dimming this host any more, and the next stack
-        // presented over it — perhaps over a different page — starts from a fresh read. A corner
-        // envelope is the exception: it is the playing item's light and is kept dormant.
+        // presented over it — perhaps over a different page — starts from a fresh read.
         if self.surfaces.is_empty() {
             self.underlay.retire();
         }
@@ -896,8 +782,8 @@ impl<H: Host> ModalStack<H> {
     /// here, and so does `PlayerPanel`: its host is `(Live, Live)` and behind it is punch-through
     /// alpha to a hardware plane, but the player's page pass (subtitles, transport) is a page pass
     /// like any other, so a dim painted at its end covers the HUD and lies under the panel — the
-    /// z-order the panels used to hand-draw. It inherits through [`UnderlaySource::Corners`]
-    /// rather than the page, which GL cannot read there.
+    /// z-order the panels used to hand-draw. Its dim is [`UnderlaySource::Flat`] — the neutral ink —
+    /// because the page, which GL cannot read there, has no light to inherit.
     ///
     /// **Each dim is the page's own light pushed down, not a black sheet**: it is painted through
     /// the stack's one [`ModalUnderlay`] field as `Role::Dim { weight: theme::underlay::TINT }`,
@@ -917,19 +803,16 @@ impl<H: Host> ModalStack<H> {
     /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
     /// call's own argument instead of through a static.
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::screen::ScrimLiftRead<'_>) {
-        // Nothing is up: no dim to paint, and the field is not this frame's to touch — it may be
-        // the kept or preloaded envelope (`ModalUnderlay::retire`/`preload`).
+        // Nothing is up: no dim to paint, and the field is not this frame's to touch.
         if self.surfaces.is_empty() {
             return;
         }
         if plx_gfx::gfx::blur_source_pass() {
-            let source = self.underlay_source();
-            self.underlay.wake(source);
             // Declaration/source traversals consume the published field. Only the visible
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
             for (_, alpha, lift) in self.scrims(nav_page_alpha) {
                 GlDims.dim(self.underlay.field(), alpha);
-                (lift)(read);
+                (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
             }
             return;
         }
@@ -958,12 +841,15 @@ impl<H: Host> ModalStack<H> {
         // and costs no presented frame. Queued a frame later instead, on the first ramp frame, it
         // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
         // surface on a frame that captured nothing still queues nothing.
-        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() || self.underlay.is_dormant() {
+        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
-        for (_, a, lift) in dims {
-            plx_base::diag::spans::span("udim", || sink.dim(self.underlay.field(), a));
-            (lift)(read);
+        for (id, a, lift) in dims {
+            let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
+            plx_base::diag::spans::span("udim", || {
+                crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
+            });
+            (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
         }
     }
 
@@ -992,7 +878,7 @@ impl<H: Host> ModalStack<H> {
     pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, crate::screen::ScrimLift)> {
         let mut out = Vec::new();
         for s in &self.surfaces {
-            if s.phase == Phase::Hidden || matches!(s.style, Style::Opaque { .. }) {
+            if s.phase == Phase::Hidden || s.faded() || matches!(s.style, Style::Opaque { .. }) {
                 continue;
             }
             let Some(inst) = s.entry.inst.as_ref() else { continue };
@@ -1036,9 +922,12 @@ mod hide_tests {
     /// motion at 1. Everything below starts here, because a JUST-presented surface is at 0 and
     /// `dismiss` would look instant for the wrong reason.
     fn opened() -> (ModalStack<FixtureHost>, EntryId) {
+        opened_as(Style::Sheet)
+    }
+    fn opened_as(style: Style) -> (ModalStack<FixtureHost>, EntryId) {
         let mut ms: ModalStack<FixtureHost> = ModalStack::new();
         let mut ids = Minter::default();
-        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, Style::Sheet);
+        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, style);
         let mut present = Present::new();
         for i in 0..200u32 {
             let mut ph = PresentHandle::of(&mut present);
@@ -1240,6 +1129,41 @@ mod hide_tests {
         assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0, "…but it is gone NOW");
         assert_eq!(ms.prune().len(), 2);
         assert!(ms.is_empty());
+    }
+
+    /// **A closing menu's fade is over at `CLOSING_GONE`, not at the spring's 0.2% rest.** From that frame
+    /// the surface owes no dim, draws nothing (`Surface::faded`, which the dispatcher's surface
+    /// loop skips, so its glass is never asked for a source) and is pruned.
+    #[test]
+    fn a_closing_menu_below_the_threshold_is_gone() {
+        let (mut sheet, sid) = opened();
+        assert!(sheet.dismiss(sid));
+        for frame in 0..30u32 {
+            step(&mut sheet, 4096 + 16 * frame, 1);
+        }
+        let s = sheet.surface(sid).unwrap();
+        assert!(s.motion.appear < CLOSING_GONE && !s.faded(), "a sheet's close is the spring's rest");
+        let (mut ms, id) = opened_as(Style::Compact);
+        assert!(ms.dismiss(id));
+        let mut seen_visible = false;
+        for frame in 0..400u32 {
+            step(&mut ms, 4096 + 16 * frame, 1);
+            let Some(s) = ms.surface(id) else { break };
+            let a = s.motion.appear;
+            if a >= CLOSING_GONE {
+                seen_visible = true;
+                assert!(!s.faded(), "at {a} it is still fading");
+                assert!(ms.prune().is_empty());
+                continue;
+            }
+            assert!(s.faded(), "at {a} it is below the threshold");
+            assert!(ms.scrims(1.0).is_empty(), "and owes the host no dim");
+            assert_eq!(ms.prune().len(), 2, "and the first prune retires it");
+            assert!(ms.is_empty());
+            assert!(seen_visible, "the fade was seen on the way");
+            return;
+        }
+        panic!("the fade never reached the threshold");
     }
 
     /// An id that names no surface is a no-op, exactly as `dismiss`'s is.

@@ -77,7 +77,11 @@ The bundle has three deliberately different meanings:
 2. **Passive Mali IRQ rate:** virtually no app overhead, but global to the whole GPU. Compare the
    selected-install-closed baseline and active leg; never call it process utilization.
 3. **Mali HWCNT:** phase-attributable JM/tiler/shader/L2 counters. Its `glFinish` boundaries
-   serialize the pipeline, so never quote FPS from this leg.
+   serialize the pipeline, so never quote FPS from this leg. The same goes for late-frame counts:
+   with HWCNT armed, every frame of a busy scene ran 24–27 ms on the T820 (2026-10-17, Watchlist
+   Remove), so a ">25 ms" count from this leg was 15x inflated (76 against 0–5). Use it to compare
+   phases and builds in the same leg; take true late counts from a FRAMEDROP or
+   `tools/tv-sched-trace.sh` run with HWCNT off.
 
 If layer 1 says frames are slow, use `/tmp/plxnative-framedrop` and then
 `/tmp/plxnative-cpuprof` to localize render-thread wall time. Use asynchronous

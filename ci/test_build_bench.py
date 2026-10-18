@@ -117,8 +117,8 @@ FAKE_SYSCTL = ('#!/bin/sh\ncase "$2" in\n'
                '  vm.swapusage) echo "total = 1000.00M  used = ${FAKE_SWAP_USED:-100.00}M  free = 1.00M  (encrypted)";;\n'
                '  *) echo "Fake CPU";;\nesac\n')
 SCRATCH_MAKEFILE = r'''print-bench-config:
-	@printf '%s\n' 'RUST_NIGHTLY=nightly' 'RUST_TDIR=target' 'RUST_TARGET=arm-unknown-linux-gnueabi' \
-	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a' \
+	@printf '%s\n' 'RUST_TOOLCHAIN=1.0.0' 'RUST_TDIR=target' 'RUST_TARGET=armv7-unknown-linux-gnueabi' \
+	  'RUST_FEATFLAGS=' 'RUST_LIB=rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a' \
 	  'RUST_ENV=RUSTFLAGS="-C target-cpu=fake -C x"' 'TEST_FAST_TDIR=target-fast' 'UNIT_RUN=python3 ../tools/cargo-test-parallel.py' 'RELEASE=$(RELEASE)'
 '''
 LEAF = "rust-modules/base/src/cbuf.rs"
@@ -282,7 +282,7 @@ class ShapeTests(unittest.TestCase):
     def test_cargo_is_called_the_way_the_makefile_does(self):
         with Sandbox() as sb:
             (sb.repo / "rust-modules" / "target-fast").mkdir(parents=True)
-            lib = sb.repo / "rust-modules/target/arm-unknown-linux-gnueabi/release/libplxnative_modules.a"
+            lib = sb.repo / "rust-modules/target/armv7-unknown-linux-gnueabi/release/libplxnative_modules.a"
             lib.parent.mkdir(parents=True)
             lib.write_bytes(b"old")
             proc = sb.run("--runs", "1", "--only", "noop,leaf-inc,tests,arm")
@@ -303,7 +303,7 @@ class ShapeTests(unittest.TestCase):
                           [c["args"] for c in plain])
             arm = [c for c in calls if c["args"][0] == "rustc"]
             self.assertEqual(len(arm), 1)
-            self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "arm-unknown-linux-gnueabi",
+            self.assertEqual(arm[0]["args"], ["rustc", "--release", "--target", "armv7-unknown-linux-gnueabi",
                                               "--lib", "--crate-type", "staticlib", "--target-dir", "target",
                                               "--message-format=json-render-diagnostics"])
             self.assertEqual(arm[0]["incr"], "0")
@@ -725,11 +725,11 @@ class MakefileWiringTests(unittest.TestCase):
     def test_host_test_skeleton_matches_the_recipes(self):
         want = " ".join(bb.HOST_TEST_ARGS)
         for header in ("check-cargo-unit-default:", "test-fast:"):
-            self.assertRegex(self.recipe(header), r"cargo \+\$\(RUST_NIGHTLY\) " + re.escape(want) + r"(?=\s|$)", header)
+            self.assertRegex(self.recipe(header), r"cargo \+\$\(RUST_TOOLCHAIN\) " + re.escape(want) + r"(?=\s|$)", header)
 
     def test_arm_skeleton_matches_the_staticlib_recipe(self):
         recipe = self.recipe("$(RUST_LIB):")
-        m = re.search(r"cargo \+\$\(RUST_NIGHTLY\) (rustc .*?--message-format=json-render-diagnostics)", recipe)
+        m = re.search(r"cargo \+\$\(RUST_TOOLCHAIN\) (rustc .*?--message-format=json-render-diagnostics)", recipe)
         self.assertIsNotNone(m, "the Makefile no longer spells the staticlib cargo line this way")
         want = bb.arm_argv({"RUST_TARGET": "$(RUST_TARGET)", "RUST_TDIR": "$(RUST_TDIR)",
                             "RUST_FEATFLAGS": "$(RUST_FEATFLAGS)", "ARM_PROFILE_FLAG": "$(ARM_PROFILE_FLAG)"})
@@ -746,7 +746,7 @@ class MakefileWiringTests(unittest.TestCase):
                                                           "PLX_POSTHOG_KEY": "phc_secretvalue"})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         cfg = dict(line.split("=", 1) for line in proc.stdout.splitlines())
-        for key in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS", "RUST_LIB", "RUST_ENV",
+        for key in ("RUST_TOOLCHAIN", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS", "RUST_LIB", "RUST_ENV",
                     "TEST_FAST_TDIR", "RELEASE", "ARM_PROFILE", "ARM_PROFILE_FLAG"):
             self.assertIn(key, cfg)
         self.assertEqual(cfg["TEST_FAST_TDIR"], "target-fast")

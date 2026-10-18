@@ -38,6 +38,20 @@ fn library_art_has_a_durable_disk_key() {
     assert!(classify("server-a", POSTER).is_some());
 }
 
+/// A scrub-preview frame is one still out of a part's BIF index, asked for once per scrub step and
+/// never again: written to disk, a single scrub through a film would push hundreds of entries
+/// through an LRU whose 8192 slots exist to keep posters.
+#[test]
+fn a_scrub_preview_frame_never_reaches_the_disk() {
+    let frame = "/photo/:/transcode?width=320&height=180&minSize=1&url=%2Flibrary%2Fparts%2F7459%2Findexes%2Fsd%2F600000&X-Plex-Token=t";
+    assert!(classify("server-a", frame).is_none());
+    let lower = "/photo/:/transcode?width=320&height=180&minSize=1&url=%2flibrary%2fparts%2f7459%2findexes%2fsd%2f0&X-Plex-Token=t";
+    assert!(classify("server-a", lower).is_none());
+    // the part's own art is not a preview frame
+    let part_thumb = "/photo/:/transcode?width=320&height=180&minSize=1&url=%2Flibrary%2Fparts%2F7459%2Fthumb&X-Plex-Token=t";
+    assert!(classify("server-a", part_thumb).is_some());
+}
+
 #[test]
 fn keys_include_namespace_source_version_and_every_transform() {
     let name = classify("server-a", POSTER).unwrap().name;

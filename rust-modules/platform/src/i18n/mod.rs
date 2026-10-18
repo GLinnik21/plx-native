@@ -8,20 +8,10 @@ use std::sync::OnceLock;
 pub const CONTRIBUTE_URL: &str =
     "https://github.com/GLinnik21/plx-native/blob/main/docs/localization.md";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Preference {
-    #[default]
-    System,
-    En,
-    Es,
-    Be,
-    Fr,
-}
-/// Every language the app ships, `System` excluded — the grid a text-fit test sums over.
-#[cfg(any(test, feature = "test-support"))]
-pub const SHIPPED: [Preference; 4] =
-    [Preference::En, Preference::Es, Preference::Be, Preference::Fr];
+// `Preference`, `Language`, `SHIPPED` and every table over them are generated from
+// `locales/languages.json` (see `platform/build_support/catalog.rs`); this file holds only the
+// behavior around them. A shipped tag is never renamed: it is what the preferences store.
+include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 impl<'de> Deserialize<'de> for Preference {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;
@@ -29,75 +19,9 @@ impl<'de> Deserialize<'de> for Preference {
     }
 }
 impl Preference {
-    pub fn from_tag(s: &str) -> Self {
-        match s {
-            "en" => Self::En,
-            "es" => Self::Es,
-            "be" => Self::Be,
-            "fr" => Self::Fr,
-            _ => Self::System,
-        }
-    }
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::En => "en",
-            Self::Es => "es",
-            Self::Be => "be",
-            Self::Fr => "fr",
-        }
-    }
     /// Serde's `skip_serializing_if`: System is what an absent preference already means.
     pub fn is_system(&self) -> bool {
         *self == Self::System
-    }
-    pub fn native_name(self) -> &'static str {
-        match self {
-            Self::System => msg::core_system_default(),
-            Self::En => "English",
-            Self::Es => "Español",
-            Self::Be => "Беларуская",
-            Self::Fr => "Français",
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Language {
-    En,
-    Es,
-    Be,
-    Fr,
-    /// Generated expanded labels; selectable only by the host simulator.
-    #[cfg_attr(not(any(test, feature = "test-support", feature = "hostsim")), allow(dead_code))]
-    Pseudo,
-}
-impl Language {
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::En | Self::Pseudo => "en",
-            Self::Es => "es",
-            Self::Be => "be",
-            Self::Fr => "fr",
-        }
-    }
-    fn regional(self) -> &'static str {
-        match self {
-            Self::En | Self::Pseudo => "en-US",
-            Self::Es => "es-ES",
-            Self::Be => "be-BY",
-            Self::Fr => "fr-FR",
-        }
-    }
-    fn parse(s: &str) -> Self {
-        let Ok(l) = s.parse::<Locale>() else {
-            return Self::En;
-        };
-        match l.id.language.as_str() {
-            "es" if l.id.script.is_none_or(|s| s.as_str() == "Latn") => Self::Es,
-            "be" if l.id.script.is_none_or(|s| s.as_str() == "Cyrl") => Self::Be,
-            "fr" if l.id.script.is_none_or(|s| s.as_str() == "Latn") => Self::Fr,
-            _ => Self::En,
-        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,8 +94,9 @@ impl LocaleContext {
             )
             .expect("compiled English date data")
         });
+        // The regional locale, not the bare tag: pt-PT counts 0 as plural where bare `pt` (pt-BR) does not.
         let plural =
-            PluralRules::try_new_cardinal(language.tag().parse::<Locale>().unwrap().into())
+            PluralRules::try_new_cardinal(language.regional().parse::<Locale>().unwrap().into())
                 .expect("compiled catalog plural data");
         Self {
             preference,
@@ -215,7 +140,88 @@ impl LocaleContext {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
         Some(self.date.format(&d).to_string())
     }
+    /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
+    /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
+    /// "12 de março" in European Portuguese, "12. März" in German, and in Belarusian the genitive
+    /// after the day ("12 сакавіка") with the abbreviated form for medium. Hand-written tables, not
+    /// ICU month data, so no name data is compiled in for the shipped languages. The year is
+    /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
+    pub fn month_day(&self, month: u8, day: u8, width: MonthWidth) -> Option<String> {
+        // Validate against a leap year first: `month - 1` below is only reached for 1..=12.
+        icu_calendar::Date::try_new_gregorian(2024, month, day).ok()?;
+        let i = usize::from(month - 1);
+        let (names, joiner) = match (self.language, width) {
+            (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
+            (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
+            (Language::Es, MonthWidth::Medium) => (&ES_MEDIUM, " "),
+            (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
+            (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
+            (Language::Be, MonthWidth::Long) => (&BE_GENITIVE, " "),
+            (Language::Fr, MonthWidth::Medium) => (&FR_MEDIUM, " "),
+            (Language::Fr, MonthWidth::Long) => (&FR_LONG, " "),
+            (Language::It, MonthWidth::Medium) => (&IT_MEDIUM, " "),
+            (Language::It, MonthWidth::Long) => (&IT_LONG, " "),
+            (Language::Pt, MonthWidth::Medium) => (&PT_MEDIUM, " "),
+            (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
+            (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
+            (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
+        };
+        Some(format!("{day}{joiner}{}", names[i]))
+    }
 }
+
+/// Width of a month-and-day caption: `Medium` is the abbreviated month, `Long` the full one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MonthWidth {
+    Medium,
+    Long,
+}
+
+const EN_MEDIUM: [&str; 12] =
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const EN_LONG: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December",
+];
+const ES_MEDIUM: [&str; 12] =
+    ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"];
+const ES_LONG: [&str; 12] = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+    "octubre", "noviembre", "diciembre",
+];
+/// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
+const BE_MEDIUM: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "мая", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+/// Genitive, because a day number governs the month in Belarusian ("12 сакавіка").
+const BE_GENITIVE: [&str; 12] = [
+    "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",
+    "верасня", "кастрычніка", "лістапада", "снежня",
+];
+const FR_MEDIUM: [&str; 12] =
+    ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const FR_LONG: [&str; 12] = [
+    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+    "octobre", "novembre", "décembre",
+];
+const IT_MEDIUM: [&str; 12] =
+    ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+const IT_LONG: [&str; 12] = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre",
+    "ottobre", "novembre", "dicembre",
+];
+const PT_MEDIUM: [&str; 12] =
+    ["jan.", "fev.", "mar.", "abr.", "mai.", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."];
+const PT_LONG: [&str; 12] = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro",
+    "outubro", "novembro", "dezembro",
+];
+/// German writes the day as an ordinal: "12. März".
+const DE_MEDIUM: [&str; 12] =
+    ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+const DE_LONG: [&str; 12] = [
+    "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+    "November", "Dezember",
+];
 /// Reject control bytes and invalid tags before they can become HTTP headers. POSIX suffixes
 /// are only used at this input boundary; callers retain canonical BCP-47 tags.
 pub fn normalize(s: &str) -> Option<String> {
@@ -229,7 +235,7 @@ pub fn normalize(s: &str) -> Option<String> {
     let l = base.parse::<Locale>().ok()?;
     (l.id.language.as_str() != "und").then(|| l.to_string())
 }
-/// `webOS 4.10.2`, or the UI language's "webOS unknown" read-out when the firmware file could not
+/// `webOS 4.10.2`, or the English "webOS unknown" read-out when the firmware file could not
 /// be read — the release is the one field a stranger's report needs, and "unknown" is the honest
 /// reading of an empty one rather than a plausible default. Shared by the support lines of the
 /// failure read-out and of the sign-in report.
@@ -245,24 +251,11 @@ static SAVED_PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 
 /// The confirmed next-launch setting. Reading it never touches credential storage.
 pub fn saved_preference() -> Preference {
-    match SAVED_PREFERENCE.load(std::sync::atomic::Ordering::Acquire) {
-        1 => Preference::En,
-        2 => Preference::Es,
-        3 => Preference::Be,
-        4 => Preference::Fr,
-        _ => Preference::System,
-    }
+    Preference::from_slot(SAVED_PREFERENCE.load(std::sync::atomic::Ordering::Acquire))
 }
 
 pub fn set_saved_preference(value: Preference) {
-    let value = match value {
-        Preference::System => 0,
-        Preference::En => 1,
-        Preference::Es => 2,
-        Preference::Be => 3,
-        Preference::Fr => 4,
-    };
-    SAVED_PREFERENCE.store(value, std::sync::atomic::Ordering::Release);
+    SAVED_PREFERENCE.store(value.slot(), std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -273,9 +266,33 @@ pub fn saved_preference_for_test(value: Preference) -> Preference {
     previous
 }
 
-#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static THREAD_LOCALE: std::cell::Cell<Option<&'static LocaleContext>> = const { std::cell::Cell::new(None) };
+}
+
+/// The fixed English context behind every `"translate": false` message: English plural rules and
+/// en-US number formatting, whatever the UI language or the TV's format locale. The generated
+/// accessors of an English-only message call this instead of [`current`].
+pub fn english() -> &'static LocaleContext {
+    static ENGLISH: OnceLock<LocaleContext> = OnceLock::new();
+    ENGLISH.get_or_init(|| LocaleContext::resolve(Preference::En, None, Some("en-US"), Some("24"), None))
+}
+
+/// Run `f` with [`current`] answering [`english`] on THIS thread, then restore what it answered
+/// before (so it nests, and nests under the test overrides). It is how the diagnostics panel
+/// composes its shared, translated helpers (units, decimals, quality labels) in English.
+///
+/// **Nothing reached inside `f` may cache localized text process-wide** (a `OnceLock<String>`
+/// first touched here would freeze English for the whole app). None does today; keep it so.
+pub fn render_in_english<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<&'static LocaleContext>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            THREAD_LOCALE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(THREAD_LOCALE.with(|slot| slot.replace(Some(english()))));
+    f()
 }
 
 /// Resolve every catalog accessor on THIS test thread in the expanded pseudo-locale until the
@@ -292,16 +309,10 @@ pub fn pseudo_on_this_thread_for_test() -> ThreadLocaleGuard {
 /// drops — the pseudo-locale's thread-local door, for tests that measure real translations.
 #[cfg(any(test, feature = "test-support"))]
 pub fn language_on_this_thread_for_test(preference: Preference) -> ThreadLocaleGuard {
-    static EN: OnceLock<LocaleContext> = OnceLock::new();
-    static ES: OnceLock<LocaleContext> = OnceLock::new();
-    static BE: OnceLock<LocaleContext> = OnceLock::new();
-    static FR: OnceLock<LocaleContext> = OnceLock::new();
-    let slot = match preference {
-        Preference::Es => &ES,
-        Preference::Be => &BE,
-        Preference::Fr => &FR,
-        Preference::En | Preference::System => &EN,
-    };
+    static CONTEXTS: [OnceLock<LocaleContext>; Language::SHIPPED.len()] =
+        [const { OnceLock::new() }; Language::SHIPPED.len()];
+    // System resolves to English here, as a test without a platform locale does.
+    let slot = &CONTEXTS[preference.language().unwrap_or(Language::En).index()];
     let cx = slot.get_or_init(|| LocaleContext::resolve(preference, None, None, None, None));
     ThreadLocaleGuard(THREAD_LOCALE.with(|slot| slot.replace(Some(cx))))
 }
@@ -317,11 +328,11 @@ impl Drop for ThreadLocaleGuard {
 }
 
 pub fn current() -> &'static LocaleContext {
+    if let Some(cx) = THREAD_LOCALE.with(std::cell::Cell::get) {
+        return cx;
+    }
     #[cfg(any(test, feature = "test-support"))]
     {
-        if let Some(cx) = THREAD_LOCALE.with(std::cell::Cell::get) {
-            return cx;
-        }
         CURRENT.get_or_init(|| LocaleContext::resolve(Preference::En, None, None, None, None))
     }
     #[cfg(not(any(test, feature = "test-support")))]

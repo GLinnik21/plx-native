@@ -1017,6 +1017,34 @@
       "comment": "The Library's half of home-idle, and it did not exist before the one-scroll rewrite: a settled library must STOP presenting. It is the only scene that can catch either of this screen's two new perpetual animators — the page/grid fade coordinator and the A–Z rail's alpha spring — repainting forever, because every other library scene drives motion on purpose and an fps FLOOR is blind to a frame rate that is too high. loop_floor still grades loop=, which counts loop iterations: the loop must stay responsive at >=30Hz while presenting nothing. warmup_s is 10, longer than home-idle's 8, because this page settles last: its posters, its section hubs and the shelf reveal springs those land into all have to finish."
     },
     {
+      "name": "watchlist-idle",
+      "tier": "ui",
+      "route": "watchlist",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-watchlist": true
+      },
+      "mock": {},
+      "comment": "The Watchlist page settled: plxnative-watchlist boots onto it. The page reads the discover host, not the PMS, so this scene only sees the synthetic watchlist when the television is booted with `tools/tv-session.sh up --guest --mock --mock-plextv=PORT` (which arms plxnative-discover at the mock too); without that tunnel the page settles on its unavailable read-out, which is also a still screen. It never reads a household's list while the mock is armed. search-idle's twin for this page: a landed list with its posters in is a still screen and must take ui::idle's present gate to the keepalive, while loop_floor keeps a wedged loop from passing by presenting nothing. No fps_floor and no key walk yet; the page's own ceiling is a first reading and is to be MEASURED on the television under the TV lock (`./tests/run.py --fps --mock --filter watchlist-idle`, after `make ARM_PROFILE=release deploy`) before it is trusted."
+    },
+    {
+      "name": "catalog-idle",
+      "tier": "ui",
+      "route": "catalog",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-catalog": "5d776808f016bcd974c5a74e"
+      },
+      "mock": {},
+      "comment": "The catalog page settled: plxnative-catalog boots onto the page of the mock Discover fixture's ComingSoon title (index 8, a show no server holds). Like watchlist-idle it reads the discover host, so it only sees that record when the set is booted with `--mock-plextv=PORT` (which arms plxnative-discover at the mock); without it the page settles on its unavailable read-out, also a still screen. MOCK ONLY: the page's pill is a write to the account's list, and the mock is the only account this scene may ever press on. A landed catalog page with its art in is a still screen and must take ui::idle's present gate to the keepalive, while loop_floor keeps a wedged loop from passing by presenting nothing. No fps_floor and no key walk; the ceiling is a first reading, to be MEASURED on the television under the TV lock before it is trusted."
+    },
+    {
       "name": "search-type",
       "tier": "ui",
       "route": "search",

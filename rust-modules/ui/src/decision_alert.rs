@@ -411,7 +411,7 @@ impl DecisionAlert {
         let _live = crate::popover::host::live();
         let l = self.measured(measure);
         let p = self.pop.content_painter(Popover::RISE);
-        crate::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field)));
+        crate::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field), crate::widgets::Ground::Sheet));
         crate::profile::phase("da.text", || {
             let scroll = self.scroll.pos.clamp(0.0, l.scroll_max);
             if l.scroll_max > 0.0 { p.clip(l.text_viewport); }

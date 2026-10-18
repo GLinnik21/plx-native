@@ -2021,6 +2021,9 @@ pub(crate) unsafe fn construct(
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
+    // dev: /tmp/plxnative-watchlist-live — the owner's switch that lets a debug build write to the
+    // real plex.tv Watchlist; latched here, and logged once when it is on.
+    plx_plex::plex::watchlist::announce_live_writes();
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");
         initial.validate().map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;

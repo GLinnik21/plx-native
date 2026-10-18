@@ -6193,6 +6193,7 @@ impl PersonOwnerGateFixture {
         "cards-conformance.txt": 0,  # card-screen Tier 2 expected failures (PR 0, 2026-10-07; Home and Detail added; Collection adopted Grid, PR 2b); only shrinks
         "cards.txt": 0,  # screens still assembling card sections from the L0 primitives; empty since the profile picker adopted AvatarRow (2026-10-08)
         "blocking.txt": 2,  # frame-thread allow_blocking sites, 2026-10-06; only shrinks
+        "language-lists.txt": 5,  # pinned reviewed-translation tables that list several languages (ci/check-language-lists.py)
         "dump.txt": 9,  # files that may name the frame-dump switch (ci/check-dump-consumers.py); a new file fails the gate
         "layers.txt": 0,
         "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
@@ -6530,7 +6531,7 @@ class FpsMock(unittest.TestCase):
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
                                  "show-detail", "home-hold", "collection-hold", "home-tap",
-                                 "collection-tap",
+                                 "collection-tap", "watchlist-idle", "catalog-idle",
                                  "fixed-480p-reencode-declaration"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:

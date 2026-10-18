@@ -153,7 +153,7 @@ build to reach that mock server):
 make check
 make check-ffmpeg
 make check-ass
-CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml \
+CARGO_INCREMENTAL=0 cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml \
   --lib --no-default-features
 make
 python3 tests/fixtures/make_ass_fixture.py /tmp/ass-render-test

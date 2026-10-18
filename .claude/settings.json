@@ -16,6 +16,11 @@
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/outbound-guard.py",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/watchlist-live-guard.py",
+            "timeout": 15
           }
         ]
       }
@@ -58,7 +63,7 @@
   },
   "permissions": {
     "allow": [
-      "Bash(CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib --no-default-features)",
+      "Bash(CARGO_INCREMENTAL=0 cargo +* check --manifest-path rust-modules/Cargo.toml --lib --no-default-features)",
       "Bash(make check)",
       "Bash(tools/build-gc.sh -n *)",
       "Bash(tools/tv-lock.sh status *)",

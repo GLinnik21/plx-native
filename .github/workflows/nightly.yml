@@ -113,7 +113,7 @@ jobs:
       # whole pipeline with `dry_run: true` before the change ever reaches main. A PULL_REQUEST
       # checks out the PR's own HEAD commit (not the ephemeral merge ref GitHub also offers) —
       # the point of the dry build is to grade the commit the PR is actually proposing.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: >-
             ${{ github.event_name == 'schedule' && 'main'
@@ -236,7 +236,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
@@ -256,7 +256,7 @@ jobs:
             || { echo "::error::$TAG already exists — nightly rebuilds of the same day are refused by design."; exit 1; }
           ! gh release view "$TAG" >/dev/null 2>&1 \
             || { echo "::error::release $TAG already exists."; exit 1; }
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-assets
           path: raw
@@ -364,7 +364,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - env:

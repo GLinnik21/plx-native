@@ -9,7 +9,7 @@
 // draw them — the way iOS renders vector assets. Called from Rust (crate::svg) which
 // uploads the result as a GL texture and tints it per state. Kept in C (like starfish.c)
 // so nanosvg is compiled by the NDK's ARM gcc — pure-Rust SVG crates pull heavy SIMD
-// deps that clash with this target's -neon / build-std constraints.
+// deps that clash with this target's -neon constraint.
 #include <stdlib.h>
 #include <string.h>
 

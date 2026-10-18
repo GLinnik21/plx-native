@@ -129,6 +129,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
         // unless `plxnative-rec` or `plxnative-recplay` is armed.
         app.rec.begin_frame(app.bridge.landgate());
+        // No modal dim has been drawn yet this frame, on any route (the player and a bound preview never
+        // reach `popover::host::begin_frame`, which used to be the only place this was cleared).
+        plx_ui::popover::host::clear_dims();
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -474,9 +477,6 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that
         // does not present, or one while the window is backgrounded, uploads nothing.
         plx_ui::panel_motion::PanelMotion::drain_queued_text(plx_base::diag::heartbeat::now_us);
-        // The player's UltraBlur envelope, latched while nothing is open so the first Tracks/More
-        // popover's open frame does not pay for it (`ModalUnderlay::preload`; an upload, hence here).
-        app.pages.nav.modals.preload_underlay();
         let mut ph = plx_machine::machine::PresentHandle::of(&mut app.present);
         super::adapters::poster::prepare(
             &mut app.pages.budget,
@@ -1815,10 +1815,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // says so itself now, from its own `Tick` — `PlayerOverlayScreen::step` pushes
         // `PlayerReq::ExtendHud`.)
         // (The scrub gesture's per-frame block stood here: the continuous accelerating advance,
-        // the `SCRUB_LOST_MS` lost-keyup safety commit and the tap-release debounce, all three run
+        // the `SCRUB_LOST_MS` lost-keyup safety net and the tap-release debounce, all three run
         // against the mounted `PlayerScreen`'s own `scrub` from the loop. They are that screen's
-        // `Tick` now — `step_scrub_hold` and `step_tap_commit`, formula for formula — which is
-        // what makes the field have one owner. Phase 12, PX-PLAYER.)
+        // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
+        // click-to-confirm (a key target waits for OK) — which is what makes the field have one
+        // owner. Phase 12, PX-PLAYER.)
         // Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
         // rather than a "was something shown" bool, because the two edges have different jobs
         // and the previous bool implemented neither of the ones its comment promised.
@@ -1844,7 +1845,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the DISMISSAL and the ring in one act, because raising the timer alone left
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
-                player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
+                player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
             } else if plx_appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,
@@ -2290,9 +2291,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             });
             fr.underlay_moving |= moving;
         } else if !super::bridge::host_frozen(&app.pages)
-            && matches!(app.route(), AppArg::Search)
+            && matches!(app.route(), AppArg::Search | AppArg::Watchlist)
         {
-            // Search wears the same shared bar as Home/Library (`ScreenArg::chrome() ==
+            // Search and the Watchlist wear the same shared bar as Home/Library (`ScreenArg::chrome() ==
             // Chrome::TabBar`, `screens/registry.rs`), and
             // `SearchScreen::tick` only steps the screen's OWN rows/springs — it never touches
             // the strip's capsule/scroll/chip springs, which live in `Bridge`'s own
@@ -2458,6 +2459,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         app.bridge.hold_network(matches!(app.route(), AppArg::Player));
         // Stops first: the resume patch lands before any read of the item is asked for.
         app.bridge.stops_pump();
+        app.bridge.catalog_feed(&mut app.pages);
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         // …and the read-back it owes: what the server now says about the item(s) just written, on
@@ -2476,6 +2478,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     AppArg::Home => shown.home = true,
                     AppArg::Library => shown.library = true,
                     AppArg::Search => shown.search = true,
+                    AppArg::Watchlist => shown.watchlist = true,
                     _ => {}
                 }
                 shown
@@ -2886,7 +2889,10 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     | plx_screens::registry::ContentArg::Filmography { .. }) => crate::focusprobe::Screen::Person,
                 AppArg::Content(plx_screens::registry::ContentArg::Collection(_)) =>
                     crate::focusprobe::Screen::Collection,
+                AppArg::Content(plx_screens::registry::ContentArg::Catalog { .. }) =>
+                    crate::focusprobe::Screen::Catalog,
                 AppArg::Search => crate::focusprobe::Screen::Search,
+                AppArg::Watchlist => crate::focusprobe::Screen::Watchlist,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
                 // same place: the SURFACE that is up. There is no second table; see
                 // `heartbeat_word_tests::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function`.
@@ -2900,6 +2906,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 | AppArg::FirstRunConsent(_)
                 | AppArg::LibraryMenu(_)
                 | AppArg::AccountMenu
+                | AppArg::WatchlistMenu(_)
                 | AppArg::ItemMenu(_)
                 | AppArg::PlayerOverlay(_)
                 | AppArg::AltSources(_)
@@ -3515,6 +3522,142 @@ mod lifecycle_regression_tests {
         release_borrowed_window(|| true);
         release_borrowed_window(|| false);
         assert_eq!(plx_telemetry::telemetry::window::take_recorded_for_test(), ["wayland_released"]);
+    }
+
+    /// The Watchlist page's `OpenCatalog` request reaches `content::watchlist_requests` and pushes
+    /// the catalog page of the tile's id; a guid the service does not form pushes nothing.
+    #[test]
+    fn a_watchlist_open_catalog_request_pushes_the_catalog_page() {
+        use plx_machine::machine::MachineId;
+        use plx_screens::registry::{ContentArg, HomeTab};
+        use plx_screens::watchlist::page::WatchlistOut;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        frame(&mut app, 0);
+        super::super::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Watchlist, None, None);
+        for i in 1..40 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Watchlist);
+        let instance = app.pages.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
+        let hex = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
+        let fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        app.bridge.push_watchlist_req_for_test(MachineId::Instance(instance), WatchlistOut::OpenCatalog("plex://movie/not-a-hex".into()));
+        content_requests(&mut app, &fr);
+        for i in 40..80 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Watchlist, "a guid with no catalog id opens nothing");
+        app.bridge.push_watchlist_req_for_test(
+            MachineId::Instance(instance),
+            WatchlistOut::OpenCatalog("plex://movie/5d776b1d96b655001f2a9c3e".into()),
+        );
+        content_requests(&mut app, &fr);
+        for i in 80..140 {
+            frame(&mut app, i * 16);
+        }
+        assert!(app.route() == AppArg::Content(ContentArg::Catalog { hex }));
+    }
+
+    /// **The Watchlist is left through the strip, the way it was entered** (owner, on the TV: "I
+    /// can't leave Watchlist"). The whole loop: Home's strip opens the page, and OK on the Home pill
+    /// takes the route back to Home through `content::watchlist_requests`. Every strip press used to
+    /// die in the page, so the route stayed `watchlist` whatever was pressed but BACK.
+    #[test]
+    fn the_strip_leaves_the_watchlist_it_opened() {
+        use plx_machine::machine::{InputEvent, Key, Tick};
+        use plx_ui::widgets::{TAB_KEY_HOME, TAB_KEY_WATCHLIST};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        let mut t = 0u32;
+        let step = |app: &mut App, keys: Vec<InputEvent<u32>>, t: &mut u32| {
+            for n in 0..20 {
+                *t += 16;
+                let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+                fr.now = *t;
+                let inputs = if n == 0 { keys.clone() } else { vec![] };
+                super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
+                content_requests(app, &fr);
+                loop_requests(app);
+            }
+        };
+        let press = |app: &mut App, key: Key, t: &mut u32| {
+            let keys = super::super::bridge::script_key(key, Tick { ms: *t, dt_us: 16_000 });
+            step(app, keys, t);
+        };
+        let focus = |app: &App| app.pages.focus().map(|k| k.elem);
+        // Walk the strip to `want`: UP onto it, then RIGHT from its left end.
+        let walk_to = |app: &mut App, want: u32, t: &mut u32| {
+            for _ in 0..4 {
+                if focus(app).is_some_and(|e| e >= plx_ui::dispatch::STRIP_BASE) { break; }
+                press(app, Key::Up, t);
+            }
+            for _ in 0..app.pages.nav.tabs.strip.len() { press(app, Key::Left, t); }
+            while focus(app) != Some(want) {
+                let before = focus(app);
+                press(app, Key::Right, t);
+                assert_ne!(focus(app), before, "{want:#x} is on the strip");
+            }
+        };
+        step(&mut app, vec![], &mut t);
+        walk_to(&mut app, TAB_KEY_WATCHLIST, &mut t);
+        press(&mut app, Key::Ok, &mut t);
+        assert!(app.route() == AppArg::Watchlist, "the strip opens the Watchlist");
+        walk_to(&mut app, TAB_KEY_HOME, &mut t);
+        press(&mut app, Key::Ok, &mut t);
+        assert_eq!(super::super::words::route_word(&app.route()), "home", "OK on the Home pill leaves the Watchlist");
+    }
+
+    /// **A strip tab's arrival seats in the page it opened, on every tab** (the Watchlist seated on
+    /// the account chip). The mint asks for the page's group 0; a page whose content is still
+    /// landing has none yet, and the fallback used to take the first non-empty group in the
+    /// composed order — the strip, which the container lists first — at its left end, the chip.
+    /// Search (its field) and the Library (its content) seat in the page; so must the Watchlist.
+    #[test]
+    fn a_strip_tab_arrival_seats_in_the_page_it_opened() {
+        use plx_machine::machine::{InputEvent, Key, Tick};
+        use plx_ui::widgets::{TAB_KEY_SEARCH, TAB_KEY_WATCHLIST};
+        let _serial = plx_base::testlock::serial();
+        for (tab, route) in [(TAB_KEY_SEARCH, "search"), (TAB_KEY_WATCHLIST, "watchlist")] {
+            let mut app = app();
+            super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+            let mut t = 0u32;
+            let step = |app: &mut App, keys: Vec<InputEvent<u32>>, t: &mut u32| {
+                for n in 0..20 {
+                    *t += 16;
+                    let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+                    fr.now = *t;
+                    let inputs = if n == 0 { keys.clone() } else { vec![] };
+                    super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
+                    content_requests(app, &fr);
+                    loop_requests(app);
+                }
+            };
+            let press = |app: &mut App, key: Key, t: &mut u32| {
+                let keys = super::super::bridge::script_key(key, Tick { ms: *t, dt_us: 16_000 });
+                step(app, keys, t);
+            };
+            let focus = |app: &App| app.pages.focus().map(|k| k.elem);
+            step(&mut app, vec![], &mut t);
+            for _ in 0..4 {
+                if focus(&app).is_some_and(|e| e >= plx_ui::dispatch::STRIP_BASE) { break; }
+                press(&mut app, Key::Up, &mut t);
+            }
+            for _ in 0..app.pages.nav.tabs.strip.len() { press(&mut app, Key::Left, &mut t); }
+            while focus(&app) != Some(tab) {
+                let before = focus(&app);
+                press(&mut app, Key::Right, &mut t);
+                assert_ne!(focus(&app), before, "{tab:#x} is on the strip");
+            }
+            press(&mut app, Key::Ok, &mut t);
+            assert_eq!(super::super::words::route_word(&app.route()), route);
+            let page = app.pages.nav.top_page().map(|e| e.id);
+            let seat = app.pages.focus();
+            assert!(seat.is_some_and(|k| Some(k.entry) == page && k.elem < plx_ui::dispatch::STRIP_BASE),
+                "{route}: the arrival seats in the page, not on the strip: {seat:?}");
+        }
     }
 
     #[test]
@@ -6610,6 +6753,29 @@ mod pump_wiring_tests {
     //! `app::words::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function` uses
     //! for the identical reason. Why `pump_season()` needs this pin at all: see
     //! `plx_data::stores::metadata`'s module doc, and the commit that added this test.
+    /// **A frame's modal-dim count is cleared at the head of EVERY iteration**, on the player path
+    /// and the preview-bound page too: neither calls `popover::host::begin_frame` (a hardware
+    /// plane has no host to snapshot), so a count left by the last popover frame survived into the
+    /// first one after the player. `App` has no host fixture, so this pins the source text: one
+    /// whole-line call at the loop body's depth, before the frame's draw.
+    #[test]
+    fn the_frame_head_clears_the_modal_dims_on_every_route() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        const CALL: &str = "        plx_ui::popover::host::clear_dims();";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`clear_dims` must be called exactly once, at the loop body's own depth — unnested, so \
+             no route skips it",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let draw = src.find("let (_vx, _vy, _vw, _vh) = draw(app, fr);").expect("the loop's draw");
+        assert!(call < draw, "the count is cleared before the frame is drawn");
+    }
+
     #[test]
     fn the_route_unconditional_frame_update_pumps_the_season_landing_after_detail() {
         let src = std::fs::read_to_string(

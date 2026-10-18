@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from rust_toolchain import pinned
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--inputs',required=True,type=Path)
 p.add_argument('--output',required=True,type=Path)
-p.add_argument('--rust-toolchain',default='nightly')
+p.add_argument('--rust-toolchain',default=pinned(),help='default: the pin in rust-modules/rust-toolchain.toml')
 p.add_argument('--binary',required=True,type=Path)
 p.add_argument('--private-values',required=True,type=Path,help='explicit local confidential-literal list; never archived')
 a=p.parse_args();root=Path(__file__).resolve().parents[1]

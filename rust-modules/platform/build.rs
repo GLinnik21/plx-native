@@ -1,4 +1,4 @@
-//! Code generation for the platform layer: the `i18n::msg` localization catalog and the
+//! Code generation for the platform layer: the `i18n::msg` localization catalog and the language registry's `Preference`/`Language` enums and the
 //! install-identity `Flavor` enum `storage::state` includes. Nothing else happens at build time
 //! here, and nothing here links anything: the host link configuration (SDL, GL, the nanosvg object)
 //! belongs to the application crate's build script, which owns the final binary.
@@ -24,8 +24,15 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/catalog.rs");
     println!("cargo:rerun-if-changed=../build_support/install_identities.rs");
     println!("cargo:rerun-if-changed=../../locales");
-    catalog::build(Path::new("../../locales"), &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()))
-        .expect("valid, complete localization catalogs");
+    if let Err(mut errors) =
+        catalog::build(Path::new("../../locales"), &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()))
+    {
+        errors.sort();
+        for e in &errors {
+            eprintln!("{e}");
+        }
+        panic!("localization catalogs: {} error(s), listed above", errors.len());
+    }
 
     install_identities::emit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ci/install-identities.json"));
 }

@@ -146,3 +146,37 @@ fn only_a_thumbless_collection_draws_the_neutral_tile() {
         "a film without art keeps the ordinary skeleton");
     assert_eq!(neutral_collection_name(None), None);
 }
+
+// ── DS2: the tile corner veil is ONE role token, black 55%, and the watched tick reads it ──
+
+/// The veil is the design's `rgba(0,0,0,.55)` corner radial (TileStates board), held as the one
+/// theme role every tile corner mark reads.
+#[test]
+fn the_tile_corner_veil_is_one_role_token_at_black_55() {
+    let v = crate::theme::TILE_MARK_VEIL;
+    assert_eq!(&v[..3], &[0.0, 0.0, 0.0], "the veil is black");
+    assert!((v[3] - 0.55).abs() < 1e-6, "veil alpha is {}, the board says .55", v[3]);
+}
+
+/// The veil is a GPU texture, so a host test cannot read its pixels; it reads the source instead,
+/// the way the glass budget grades its blur path. The watched tick draws its veil, its shadow and
+/// its ink from role tokens, and the mark body carries no literal alpha of its own.
+#[test]
+fn the_watched_tick_reads_the_veil_token_and_no_literal_alpha() {
+    let src = include_str!("widgets.rs");
+    // The tick is `corner_mark` with the check glyph (the Watchlist's marks share its body), so
+    // the tokens are graded where they are read.
+    let start = src.find("pub fn watched_mark(").expect("watched_mark is in widgets.rs");
+    let rest = &src[start..];
+    let tick = &rest[..rest.find("\n}\n").expect("watched_mark closes") + 2];
+    assert!(tick.contains("corner_mark(") && tick.contains("Icon::Check"), "the watched tick is the shared corner mark:\n{tick}");
+    let start = src.find("pub fn corner_mark(").expect("corner_mark is in widgets.rs");
+    let rest = &src[start..];
+    let body = &rest[..rest.find("\n}\n").expect("corner_mark closes") + 2];
+    assert!(body.contains("crate::theme::TILE_MARK_VEIL") || body.contains("theme::TILE_MARK_VEIL"),
+        "the corner mark's veil must be the role token:\n{body}");
+    assert!(body.contains("theme::TILE_MARK_SHADOW") && body.contains("theme::TILE_MARK_INK"));
+    for literal in ["0.55", "0.40", ".55", ".40"] {
+        assert!(!body.contains(literal), "corner_mark spells an alpha ({literal}) instead of the token");
+    }
+}

@@ -171,25 +171,24 @@ impl RouteGround {
 
     /// `theme::ROUTE_GROUND_FALLBACK`, dropping its alpha column — the corners every authored
     /// atmosphere below reaches for when it has no artwork to key from: the pre-Home fallback
-    /// ([`Self::for_home`]'s `None` seed, [`Self::draw_default`]) and, since PR2 stage B,
+    /// ([`Self::authored`], [`Self::draw_default`]) and, since PR2 stage B,
     /// [`Self::draw_host`]'s own answer when the live frame is not a readable source this frame.
     fn fallback_corners() -> [[f32; 3]; 4] {
         theme::ROUTE_GROUND_FALLBACK.map(|c| [c[0], c[1], c[2]])
     }
 
-    /// A pre-content page receives a numeric atmosphere from its application owner at mount.
+    /// A pre-content page's ground: the authored default ambient, latched at construction.
     /// Neither construction nor drawing this UI value reads a catalog or session file.
     ///
-    /// A real seed is ARTWORK — the future Home's initial hero — so it is graded exactly as a live
-    /// frame would be ([`Grade::Ground`]: capped and leaned toward the surface). The authored
-    /// fallback is not artwork, it IS the finished colour ([`Grade::Dim`], the identity grade) —
-    /// see `theme::ROUTE_GROUND_FALLBACK`'s own doc for why grading it again would be wrong.
-    pub fn for_home(seed: Option<[[f32; 3]; 4]>) -> Self {
+    /// It is deliberately NOT keyed from any artwork — not a hero's `UltraBlur` corners, not a
+    /// remembered one. The first-run pages (favourite libraries, the consent question) open before
+    /// Home has anything to show, and keying them from whatever hero the server happened to list
+    /// painted a saturated rainbow wherever the art's corners were. The authored fallback is not
+    /// artwork, it IS the finished colour ([`Grade::Dim`], the identity grade) — see
+    /// `theme::ROUTE_GROUND_FALLBACK`'s own doc for why grading it again would be wrong.
+    pub fn authored() -> Self {
         let mut ground = Self::new();
-        match seed {
-            Some(blur) => ground.field.latch_from_corners(blur, Grade::Ground),
-            None => ground.field.latch_from_corners(Self::fallback_corners(), Grade::Dim),
-        }
+        ground.field.latch_from_corners(Self::fallback_corners(), Grade::Dim);
         ground
     }
 
@@ -1023,18 +1022,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_home_ground_is_latched_from_its_explicit_seed_before_drawing() {
-        let rgb = [super::theme::SURFACE_APP[0], super::theme::SURFACE_APP[1], super::theme::SURFACE_APP[2]];
-        let seed = [rgb; 4];
-        let ground = super::RouteGround::for_home(Some(seed));
+    fn a_pre_home_ground_is_the_authored_fallback_latched_before_drawing() {
+        let ground = super::RouteGround::authored();
         assert!(ground.is_latched());
-        // The seed is graded exactly as `latch_from_corners(_, Grade::Ground)` would grade it on
-        // any other caller — a fresh field latched the same way is the reference, not a re-typed
-        // formula, so this cannot drift from the production path the way a duplicated mean could.
+        // The reference is a fresh field latched the way the authored fallback is documented to be
+        // (`Grade::Dim`, the identity grade), not a re-typed formula.
         let mut want = super::UnderlayField::new();
-        want.latch_from_corners(seed, super::Grade::Ground);
+        want.latch_from_corners(super::RouteGround::fallback_corners(), super::Grade::Dim);
         assert_eq!(ground.palette(), super::ControlPalette::ambient(want.key()));
-        assert!(super::RouteGround::for_home(None).is_latched());
     }
 
     use super::*;
@@ -1089,7 +1084,7 @@ mod tests {
         }
         let measure = TitleMeasure;
         let min_content = RouteLayout::screen().content.w;
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             let title = plx_platform::i18n::msg::browse_person_filmography_in(&locale);
             let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
@@ -1151,7 +1146,7 @@ mod tests {
         }
         let measure = QuestionMeasure;
         let layout = RouteLayout::screen();
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             for question in [plx_platform::i18n::msg::settings_consent_crash_title_in(&locale),
                 plx_platform::i18n::msg::settings_consent_product_title_in(&locale)] {

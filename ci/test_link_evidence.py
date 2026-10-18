@@ -123,7 +123,7 @@ class StageFromBuildScriptShapedCargoOutput(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='stage-link-evidence-buildshape-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.triple = self.root / 'arm-unknown-linux-gnueabi'
+        self.triple = self.root / 'armv7-unknown-linux-gnueabi'
         self.release = self.triple / 'release'
         self.out = self.release / 'build' / 'plxnative-modules' / '6f340859124788dd' / 'out'
         self.out.mkdir(parents=True)

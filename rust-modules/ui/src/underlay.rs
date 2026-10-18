@@ -11,7 +11,7 @@
 //!   it. (`RouteGround`'s own live-frame sample used to read this way, through the four
 //!   `glReadPixels` taps of `gfx::sample_modal_ambient`; PR2 stage B retired both in favour of the
 //!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
-//!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
+//!   frame — a route that opens before Home has drawn — still reaches for.)
 //!
 //! This is the third: a 15x8 grid reduced from the frame itself (`gfx::field_kick`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
@@ -211,6 +211,14 @@ impl UnderlayField {
         }
     }
 
+    /// A field that holds texture `tex` as if a latch had uploaded it — a host test links GL but
+    /// has no context, so [`upload`] never mints a name there. Its re-latch is a
+    /// `tex_ledger::specified(tex, ..)` call, which is exactly what a real upload records.
+    #[cfg(test)]
+    pub(crate) fn latched_for_test(tex: u32) -> Self {
+        Self { tex, latched: true, ..Self::new() }
+    }
+
     /// **Freeze the frame that has already been drawn — without ever waiting for it.** Idempotent
     /// while latched, which is what makes it safe to call from a `draw` that runs every frame.
     ///
@@ -258,8 +266,7 @@ impl UnderlayField {
     }
 
     /// **Latch from a four-corner envelope instead of the framebuffer** — the CPU source, for the
-    /// two cases that have no readable frame: an overlay over the hardware video plane, and a
-    /// route that opens before Home has ever drawn.
+    /// case that has no readable frame: a route that opens before Home has ever drawn.
     ///
     /// It deliberately does NOT low-pass. The source is already a bilinear surface, i.e. band-
     /// limited far below this grid, and the edge-clamped kernel would only flatten it against the
@@ -296,6 +303,12 @@ impl UnderlayField {
 
     pub fn is_latched(&self) -> bool {
         self.latched
+    }
+
+    /// The field's texture once it is latched — the frozen ground a menu's glass shows through its
+    /// body (`popover_glass::draw`) — and `None` before, when there is no picture of the page yet.
+    pub fn ground_tex(&self) -> Option<u32> {
+        (self.latched && self.tex != 0).then_some(self.tex)
     }
 
     /// **The field's own colour at one screen point**, display-encoded — the same contract as
@@ -337,9 +350,11 @@ impl UnderlayField {
                 }
                 p.field_ground(r, self.tex, alpha);
             }
+            // `Painter::dim` draws the same two primitives and declares them as a DIM, which a
+            // glass above may apply at composite instead of re-filtering its source per frame.
             Role::Dim { weight } => match plan(self.latched && self.tex != 0, weight, alpha) {
-                Draw::Flat(c) => p.rect(r, 0.0, c, c, 0.0),
-                Draw::Field(tint) => p.field(r, self.tex, tint),
+                Draw::Flat(c) => p.dim(r, 0, c),
+                Draw::Field(tint) => p.dim(r, self.tex, tint),
             },
         }
     }

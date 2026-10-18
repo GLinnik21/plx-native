@@ -129,7 +129,7 @@ incremental = false
 # Checked before landing that nothing else in the nearer config chain already sets this and would
 # make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (only
 # `[profile.release]`) nor `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and
-# `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
+# formerly `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
 # against a config `[profile]` by letting config win, and the nearest config wins over a farther
 # one — both rules favour this file over anything upstream, which is the reason it is safe to add
 # here rather than in the crate manifest.

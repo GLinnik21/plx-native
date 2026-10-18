@@ -188,7 +188,7 @@ What keeps that in check:
   by `tools/build-gc.sh --incremental` or `--lanes`) rather than exporting it everywhere.
 - **A fresh lane's first build is seeded with an APFS clone of the third-party output**
   (`tools/cargo-seed.py`, called from the Makefile in linked worktrees only). The registry crates and
-  the build-std sysroot are the same bytes in every lane — cargo's hash for them does not depend on
+  (once also the build-std sysroot) are the same bytes in every lane — cargo's hash for them does not depend on
   the checkout's path — and are about 40% of a lane's target bytes (0.9 GB for a `make check`-only
   lane, 1.3 GB with the ARM release tree as well; the storage helper's tree and `make sim`'s are not
   seeded: the helper's absolute linker path is part of every unit's fingerprint, and the simulator

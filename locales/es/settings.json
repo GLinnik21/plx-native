@@ -253,8 +253,6 @@
   "settings.login.report_failed": "No se pudo enviar el informe.",
   "settings.login.save_failed_title": "No se pudo guardar tu inicio de sesión",
   "settings.login.save_failed_body": "No se pudo guardar tu inicio de sesión en este televisor. Puedes continuar, pero la próxima vez tendrás que volver a iniciar sesión.",
-  "settings.login.unknown_device": "televisor desconocido",
-  "settings.login.your_servers": "tus servidores",
   "settings.language.saving": "Guardando idioma…",
   "settings.audio.error_retry": "{reason} Selecciona Reintentar.",
   "settings.login.report_id": "ID del informe: {id}",

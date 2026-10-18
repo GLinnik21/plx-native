@@ -1965,7 +1965,7 @@ mod tests {
         let measure = FixtureMeasure;
         let flow = header_flow(false, "A short biography.", true, false, true, &measure);
         let mut labels = Vec::new();
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             labels.push(plx_platform::i18n::msg::browse_person_filmography_in(&locale).to_owned());
         }

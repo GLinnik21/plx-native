@@ -57,6 +57,9 @@ sys.path.insert(0, str(HERE))
 
 import link_conditioner  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "ci"))
+from rust_toolchain import pinned  # noqa: E402
+
 SIM = ROOT / "rust-modules" / "target-sim" / "debug" / "plxnative-sim"
 CANVAS_W, CANVAS_H = 1920, 1080  # plx_base::surface::LOGICAL_W / LOGICAL_H: what every x/y here is in
 EXTRA_PROFILES = {
@@ -771,7 +774,7 @@ def main():
             print(f"{n}: NOT COVERED - {why}")
         return 0
     if args.build:
-        subprocess.check_call(["cargo", "build", "--manifest-path", str(ROOT / "rust-modules/Cargo.toml"),
+        subprocess.check_call(["cargo", "+" + pinned(ROOT), "build", "--manifest-path", str(ROOT / "rust-modules/Cargo.toml"),
                                "--target-dir", str(ROOT / "rust-modules/target-sim"), "--features",
                                "hostsim", "--bin", "plxnative-sim"], env=dict(os.environ, CARGO_INCREMENTAL="0"))
     if not args.sim.exists():

@@ -376,13 +376,13 @@ infer past.)
   and `release-guard`; `make -s print-appdir` is safe, `make -p` is never (it prints unexpanded
   recursive variables).
 * Host-only tooling is fine and encouraged: `tools/fwcompat.py`, `ci/check-elf.sh`, the NDK's
-  `arm-webos-linux-gnueabi-readelf` / `-objdump`, `cd rust-modules && cargo +nightly check`,
+  `arm-webos-linux-gnueabi-readelf` / `-objdump`, `cd rust-modules && cargo check`,
   `make check`. **`make check` is NOT in `SIDE_EFFECT_FREE`** (Makefile line 358 — that list is
   the seven `print-*` goals plus `release-guard`, and nothing else), so on a checkout whose last
   build was `RELEASE=1`, a plain `make check` rewrites `pkg/.build-config` at parse time and takes
   `pkg/plxnative` and the staged `.so` files with it: the binary you were about to grade, gone
   before cargo has started. **Grade the ELF first and run host checks after**, or invoke
-  `cargo +nightly check` inside `rust-modules/` directly, which never touches the stamp.
+  `cargo check` inside `rust-modules/` directly, which never touches the stamp.
 
 ## OUTPUT
 

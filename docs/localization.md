@@ -1,15 +1,22 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish, French and Belarusian (official Cyrillic
-orthography). Help improve a translation or contribute another language through a pull request
+PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German and Belarusian
+(official Cyrillic orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
 ## Translate a message
 
-Catalogs live in `locales/en`, `locales/es`, `locales/fr` and `locales/be`, split by UI area. English is the
+Catalogs live in `locales/en`, `locales/es`, `locales/fr`, `locales/it`, `locales/pt`, `locales/de` and `locales/be`, split by UI area. English is the
 source: each scoped, stable key has a `value`, translator `description`, and optional typed
-`args`. The other languages contain the same keys with translated string or plural values.
+`args`. The other languages contain the same keys, except the English-only ones (described
+below), with translated string or plural values.
 The compiler combines each language's files; file names organize ownership, not message identity.
+
+Some English entries carry `"translate": false`. They are technical read-outs meant for the
+people who debug the app — the Stats-for-nerds diagnostics panel, its playback verdict line and
+the support codes on failure screens — and they show in English in every language. Do not add
+them to your catalog; the build rejects a catalog that contains one. Everything else, including
+consent and privacy text that looks technical, is translated.
 
 ```json
 {
@@ -38,8 +45,9 @@ phrase. Never translate protocol identifiers, URLs, brand names or server-return
 Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str` or `i64`;
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
-may be omitted when the form spells it out. Belarusian needs `one`, `few`, `many`, and `other`;
-Spanish and French need `one`, `many`, and `other`; English needs `one` and `other`.
+may be omitted when the form spells it out. Each language needs exactly the categories its
+`plurals` entry in `locales/languages.json` declares, no more: Belarusian `one`, `few`, `many`, and
+`other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English and German `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -47,9 +55,9 @@ context and wrapping; do not include tokens, private server addresses or persona
 
 ## Check and submit
 
-Run `make check` to validate catalogs and run the host checks. Let it finish before starting
+Run `make check` (or, while iterating, `make test-crate C=plx_platform T=catalog`) to validate catalogs and run the host checks. Let it finish before starting
 another build in the same checkout: its structure-gate tests temporarily modify source files. Every build rejects duplicate,
-missing or unknown keys, invalid placeholders, and incomplete plural forms. The generated
+missing or unknown keys, invalid placeholders, incomplete plural forms, or a translation of an English-only message. The generated
 accessors also make unknown message keys and wrong argument types compilation errors. Source
 wording can change without renaming its key; change a key only when its meaning changes.
 
@@ -61,10 +69,10 @@ the Library's TYPE menu, and the
 collection page's meta line and season marks. When one of these tests fails, shorten
 the wording; do not abbreviate it past readability.
 
-Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `be` or `en`
+Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `pt`, `de`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
 regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
-layouts. These environment overrides do not operate in the shipping TV build.
+layouts; English-only diagnostics text is not expanded. These environment overrides do not operate in the shipping TV build.
 
 Open a pull request describing which language and screens changed, and how you checked the
 wording and layout. Translations ship with app releases; the app does not download language packs.
@@ -84,17 +92,36 @@ a sentence. Note any wording they changed and why.
 
 ## Adding a language
 
-Add a catalog directory using its BCP-47 language tag, translating all source keys. This currently
-also requires a code change: extend the compiler's locale list and plural requirements, the
-runtime language and preference enums, the Settings choices, and tests. Select CLDR plural rules
-for that language, add launcher metadata, and verify every character in both bundled font faces.
-The current renderer supports the shipped Latin and Cyrillic languages; Arabic/Hebrew and other
-scripts requiring shaping or bidirectional layout need renderer work before being offered.
+A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`; no Rust file changes.
+
+1. Add the catalog directory, named by the bare language tag (`it`, not `it-IT`), translating all
+   source keys. A translation is a bare string or a plural map; `value`, `description` and `args`
+   belong only in `locales/en`.
+2. Add one line to `locales/languages.json`: `tag`, `native_name` (the name in that language, shown
+   in Settings), `region` (`<tag>-XX`, the formatting locale), `script` (`Latn` or `Cyrl`),
+   `plurals` (the language's CLDR cardinal categories), optionally `excluded_regions` (region codes
+   of this language that keep the English fallback because no catalog serves them: Portuguese
+   excludes `BR`, so a pt-BR television shows English while pt, pt-PT and pt-AO show Portuguese;
+   the build rejects anything but two upper-case letters) and `row` (an unused number from 1 to 999,
+   in list order; a shipped language never changes its row or tag). A test compares `plurals` with
+   ICU's own data, and another checks that ICU has the language's number and plural data.
+3. Add launcher metadata, `pkg/resources/<tag>/appinfo.json`, and verify every character in both
+   bundled font faces (the build tests do).
+4. Run `make test-crate C=plx_platform T=catalog`. A directory with no registry entry, an entry with
+   no directory, a missing or extra key, a missing or never-selected plural form and a wrapped
+   translation are build errors that name the file and key, all listed at once.
+
+The rule for code: a UI language is its directory and registry entry. Code never lists languages:
+every "each language" loop uses `i18n::SHIPPED` (`ci/check-language-lists.py` fails a hand-written
+list), and production code never `match`es on `Language` or `Preference` outside `i18n`. A test that
+pins a reviewed translation iterates its own table and never falls back with `_ =>`. The current
+renderer supports the shipped Latin and Cyrillic languages; Arabic/Hebrew and other scripts
+requiring shaping or bidirectional layout need renderer work before being offered.
 
 ## Runtime behavior
 
-Settings → Language defaults to the television's UI language. Explicit English, Spanish, French and
-Belarusian choices apply the next time the app starts. The running UI and Plex request language
+Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian,
+Portuguese, German and Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.
 

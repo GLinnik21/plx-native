@@ -58,7 +58,7 @@ pub fn plex_tv() -> &'static str {
 }
 
 /// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
-fn loopback_http(v: &str) -> bool {
+pub(super) fn loopback_http(v: &str) -> bool {
     let port = v
         .strip_prefix("http://127.0.0.1:")
         .or_else(|| v.strip_prefix("http://localhost:"))
@@ -243,7 +243,7 @@ impl AccountClient {
     /// and the reasons are in `Client::playback_identity`: `X-Plex-Device-Screen-Resolution` and
     /// `X-Plex-Features`. `X-Plex-Language` carries the UI language resolved at boot by
     /// `identity::language`, including the English fallback.
-    fn headers(&self) -> Vec<String> {
+    pub(super) fn headers(&self) -> Vec<String> {
         use super::identity as id;
         let mut h = vec![
             "Accept: application/json".to_string(),
@@ -519,7 +519,7 @@ fn switch_response(url: &str, response: Result<plx_net::net::Resp, plx_net::net:
         })
 }
 
-fn note_response_contact(url: &str, response: &Result<plx_net::net::Resp, plx_net::net::RequestFailure>) {
+pub(super) fn note_response_contact(url: &str, response: &Result<plx_net::net::Resp, plx_net::net::RequestFailure>) {
     match response {
         Ok(_) => note_contact(url, true),
         Err(failure) if failure.status.is_some() => note_contact(url, true),
@@ -687,13 +687,13 @@ mod evidence_tests {
     #[test]
     fn complete_response_policy_and_provider_decoding_are_unchanged() {
         let _serial = plx_base::testlock::serial();
-        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None });
+        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None, etag: None });
         note_response_contact(SWITCH, &malformed);
         assert!(plex_tv_recently_reachable());
         assert!(matches!(switch_response(SWITCH, malformed), Ok(SwitchOutcome::Unreachable)));
-        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(SwitchOutcome::Switched(_))));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Pending)));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None })), Ok(PinPoll::Authorized(_))));
+        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None })), Ok(SwitchOutcome::Switched(_))));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None, etag: None })), Ok(PinPoll::Pending)));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None })), Ok(PinPoll::Authorized(_))));
         assert!(plx_net::net::global_init());
         for body in [br#"[{"provides":"server","connections":null}]"#.as_slice(), br#"{"users":[]}"#.as_slice()] {
             let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
@@ -1026,7 +1026,7 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
 /// The host is kept, because it is the half that says WHICH service answered — `plex.tv` (the
 /// account API) or `discover.provider.plex.tv` (the metadata provider, `discover.rs`) — and both
 /// are `const`s in this crate rather than anything a user or a server chose.
-fn endpoint_shape(url: &str) -> String {
+pub(super) fn endpoint_shape(url: &str) -> String {
     let path = url.split('?').next().unwrap_or(url);
     let path = path.split_once("://").map(|(_, rest)| rest).unwrap_or(path);
     let mut out = String::with_capacity(path.len());

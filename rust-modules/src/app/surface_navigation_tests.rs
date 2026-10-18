@@ -3,7 +3,7 @@
 //!
 //! The tests marked `#[cfg(feature = "hostsim")]` below (the item-menu opener-lift ones) run ONLY
 //! with that feature: `make test-crate C=app T=<filter>` filters them out and exits 0. Run them with
-//! `CARGO_INCREMENTAL=0 PATH="$HOME/.cargo/bin:$PATH" cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`
+//! `CARGO_INCREMENTAL=0 PATH="$HOME/.cargo/bin:$PATH" cargo test --lib -p plxnative-modules --features hostsim -- <filter>`
 //! from `rust-modules/`.
 
 use super::*;
@@ -27,7 +27,7 @@ fn content_instances_compare_item_identity_and_keep_distinct_entries() {
 #[test]
 fn a_page_arg_wears_the_chrome_its_own_table_says() {
     for r in every_route() {
-        let want = if matches!(r, AppArg::Home | AppArg::Library | AppArg::Search) {
+        let want = if matches!(r, AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist) {
             Chrome::TabBar
         } else {
             Chrome::None
@@ -1265,9 +1265,11 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
     // whose reveal target for its last entry sits well past the real strip's viewport, so
     // jumping straight to it (`StripRender::reveal`, a JUMP, not a step) leaves `rig.strip`'s
     // scroll spring far from where Search's own (short) labels want it.
-    let wide: Vec<String> = (0..8).map(|i| format!("Wide Destination Label Number {i}")).collect();
+    let wide: Vec<plx_ui::widgets::TabFace> = (0..8)
+        .map(|i| plx_ui::widgets::TabFace::Label(format!("Wide Destination Label Number {i}")))
+        .collect();
     rig.strip.reveal(
-        plx_ui::widgets::TabLabels { generation: 1, labels: &wide },
+        plx_ui::widgets::TabLabels { generation: 1, faces: &wide },
         wide.len() - 1,
     );
 

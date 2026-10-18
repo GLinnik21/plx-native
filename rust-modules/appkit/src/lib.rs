@@ -22,13 +22,17 @@
 #![allow(dead_code)]
 
 pub mod chapters_panel;
+pub mod hero_layout; // shared hero row geometry and meta line (Detail and the catalog page)
 pub mod held_key; // the key-hold half of hold-to-scrub, shared by the player HUD and the trailer transport
 pub mod info_panel;
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod player_hud;
+pub mod scrub_preview; // the still above the knob while scrubbing, from the part's BIF index
+pub mod knob_spring; // the knob's spring to the playhead when a scrub is cancelled
 pub mod skip_pill; // the Skip Intro / Skip Credits pill — a `ControlSlot` occupant of the player HUD's control row
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)
 pub mod track_menu;
+pub mod watchlist_disc; // the Watchlist bookmark disc's faces, glyphs and flip (Detail's hero and Home's)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 

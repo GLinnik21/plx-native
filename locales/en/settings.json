@@ -1025,11 +1025,13 @@
   },
   "settings.login.unknown_device": {
     "value": "unknown set",
-    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the device model when the TV did not report one. Codes only; shown in English."
   },
   "settings.login.your_servers": {
     "value": "your servers",
-    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the server scope of the failed request. Codes only; shown in English."
   },
   "settings.language.saving": {
     "value": "Saving language…",

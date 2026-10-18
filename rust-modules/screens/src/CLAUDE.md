@@ -1,7 +1,7 @@
 # screens/ — the application's owned screens (read before adding or changing one)
 
 Every `Screen` impl the dispatcher mounts, steps, focuses and draws lives here, across
-this directory and the `detail/`, `home/`, `library/`, `player/` and `search/` families. This is
+this directory and the `detail/`, `home/`, `item_menu/`, `library/`, `player/`, `search/` and `watchlist/` families. This is
 the APPLICATION half of the restructure; the library half is `../ui/`, whose
 [`CLAUDE.md`](../../ui/src/CLAUDE.md) carries the token rules, the architecture and the rendering
 policy. Read that one first — its four rules bind here too.
@@ -104,6 +104,49 @@ vanished focused row reopens on the safe opening row instead of sliding onto a d
 Every Settings drill-down is a family-stack push through `family::form_activate` (a `Nav` row emits
 `NavOp::Push`); a page never owns a private submenu or a `RoutePush` (grep-gated in
 `settings_nav_structure_tests.rs`). A picker is its own page, `SettingsPage::Picker(PickerKind)`.
+
+## The Watchlist surfaces (page, catalog page, disc, menu rows)
+
+`docs/watchlist.md` is the map; these are the rules that bind a screen here.
+
+- **A screen asks, the application writes and pulses.** The Watchlist page, the Detail bookmark disc,
+  the item menu and the catalog page name no store: a press is an `Action` / `AppFx`
+  (`WatchlistAdd { hex }`, `WatchlistRemove(guid)`, `GoToCatalog(guid)`, `CatalogOut`) and
+  `app::input::apply_item_action` queues the write on the Watchlist store and pulses the strip's
+  bookmark tab. A screen flips nothing itself: the store's intent ledger flips the face and puts it
+  back when plex.tv refuses, and the app hands the screen its new view-model either way. Never call
+  `ChromeSnapshot::pulse` from here.
+- **The catalog page is not a Detail mode** (`catalog.rs`). It never reads `metadata::current()`
+  (a source test asserts it), has no Play, Restart, Also available, Mark watched, extras, seasons,
+  cast or Related, and holds ONE focus element, the primary pill (`Add to Watchlist` outline /
+  `On Watchlist` filled). Its view-model (`CatalogViewModel`, local `Membership`, `Status`, `Load`)
+  is the screen's own, with `From` impls from the data types, so it is drawn and tested without a
+  store. It shares hero geometry through `plx_appkit::hero_layout` (the same rung constants and pill
+  width the Detail action row spends); do not copy them, and do not name `detail` from here. The
+  Trailer button the board DetailNotOnServer draws is **omitted in v1**, an owner default (Q4).
+- **Unknown membership draws the Add face.** Detail, the item menu and the catalog page all treat
+  `Membership::Unknown` (list unread, plex.tv unreachable) as Off, because the add is idempotent; an
+  item-menu card with no `Face` offers no Watchlist row at all.
+- **The menu captures identity at open.** `item_menu/watchlist.rs` builds a `Face { hex, member,
+  kind, from_episode }` when the menu opens, so a membership flip behind it cannot change which title
+  a row acts on. `ItemMenuKind::Catalog` rows are `Go to ...`, then Add or Remove; the menu opens on
+  the go row, and Remove is `destructive(true)`. `Action::has_subject()` (not `!rk().is_empty()`) is
+  the activation guard, because `WatchlistAdd` has no ratingKey.
+- **The hero disc is second and unlabelled** (`detail/hero.rs`: `ELEM_WATCHLIST`, `HeroCtl::Watchlist`;
+  the face, glyphs and `flip_frame` are `plx_appkit::watchlist_disc`, shared with Home's hero). There is one element id for both faces so focus survives a flip,
+  it is always the circle width so it never unfurls, and it is not a focus anchor in full-trailer
+  mode. Its guid must be `plex://movie|show/<24 hex>` or it is absent: `HeroSet::watchlist` is
+  set from `catalog_hex_of_guid` and `hero_ctls` omits the disc otherwise. The first membership
+  answer snaps the fill (`set_watchlist`); only a change from a known face plays the flip.
+- **Home's hero carries the same disc** (`home/mod.rs`: `HERO_WATCHLIST_ELEM`, `HeroDisc`). A hero
+  control's SLOT (`Located::Hero(slot)`: 0 Play, 1 Info, 2 disc, the `CtlPop` index) is not its
+  POSITION in the row (`hero_slots`: Play, disc, Info); neighbours, the focus extent and the hit
+  stops all go through `hero_slots` / `hero_rects`. The disc exists only for a hero row with a known
+  catalog id; the application feeds `set_watchlist(hex, membership)` for the title shown, and the
+  flip plays only when that same title's membership changes (a first answer or a rotation snaps).
+- **New widths, rungs and ids come from the existing systems.** The catalog page's 36 px board line
+  is drawn at `HEADLINE` because the type ladder has no 36 rung; where a board and the shipped
+  tokens disagree the tokens win and the difference is reported, not patched in with a literal.
 
 ## Building a card page
 

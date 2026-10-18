@@ -2,11 +2,12 @@
 """ci/gen-third-party-notices.py on synthetic locks and data: the version column follows the lock (a
 bumped crate changes the rendered table, two lock versions render "A and B", a std snapshot version is
 merged in), a lock package that is neither a row nor `not_shipped` is refused, so is a stale
-`not_shipped` entry or a row in no lock, a moved nightly pin is refused, the `compiler_builtins` version in
+`not_shipped` entry or a row in no lock, a moved toolchain pin is refused, the `compiler_builtins` version in
 the prose follows the std snapshot, rendering is idempotent, and the REAL repository's data file and
 notices pass the gate (so a hand edit of a generated table, or a bump without `make notices`, fails here
 as well as in the gate). Nothing here runs cargo or touches the network."""
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -27,8 +28,9 @@ def lock(*pkgs):
 
 def data():
     return {
-        'toolchain': {'pin': 'nightly-2030-01-01', 'rustc': 'rustc 2.0.0-nightly (abc 2030-01-01)', 'backtrace': '9.9.9'},
+        'toolchain': {'pin': '2.0.0', 'rustc': 'rustc 2.0.0 (abc 2030-01-01)', 'backtrace': '9.9.9'},
         'std_lock': {'libc': '0.2.1', 'compiler_builtins': '0.1.5'},
+        'std_not_shipped': ['rand'],
         'not_shipped': ['syn'],
         'groups': [
             {'id': 'a', 'columns': ['Package', 'Version(s)', 'Declared licence', 'Copyright'],
@@ -48,7 +50,7 @@ def notices():
     return '\n'.join(parts) + '\n'
 
 
-PINS = {'nightly-2030-01-01'}
+PINS = {'2.0.0'}
 
 
 class Render(unittest.TestCase):
@@ -58,7 +60,7 @@ class Render(unittest.TestCase):
         out = gen.render(notices(), data(), self.project)
         self.assertIn('| serde | 1.0.1 | MIT | D |', out)
         self.assertIn('| libc | 0.2.9 and 0.2.1 | MIT | R |', out)
-        self.assertIn('| std | rustc 2.0.0-nightly (abc 2030-01-01) | MIT | Rust |', out)
+        self.assertIn('| std | rustc 2.0.0 (abc 2030-01-01) | MIT | Rust |', out)
         self.assertIn('| icu_x | 2.0.0 |', out)
         self.assertIn('**compiler_builtins 0.1.5**', out)
         self.assertNotIn('stale', out)
@@ -113,10 +115,10 @@ class Classification(unittest.TestCase):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}
         self.assertEqual(gen.problems_in(d, project, PINS), [])
 
-    def test_a_moved_nightly_pin_is_refused(self):
+    def test_a_moved_toolchain_pin_is_refused(self):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}
-        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, {'nightly-2030-02-02'})))
-        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'nightly-2030-02-02'})))
+        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, {'2.0.1'})))
+        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'2.0.1'})))
 
 
 class Graph(unittest.TestCase):
@@ -164,7 +166,7 @@ class Modes(unittest.TestCase):
         (root / 'ci').mkdir()
         (root / 'rust-modules').mkdir()
         (root / '.github' / 'workflows').mkdir(parents=True)
-        (root / '.github' / 'workflows' / 'w.yml').write_text('toolchain: nightly-2030-01-01\n')
+        (root / 'rust-modules' / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "2.0.0"\n')
         (root / 'ci' / 'third-party-crates.json').write_text(json.dumps(data()))
         (root / 'rust-modules' / 'Cargo.lock').write_text(lock(*lock_pkgs))
         (root / 'THIRD-PARTY-NOTICES.md').write_text(notices())
@@ -172,8 +174,8 @@ class Modes(unittest.TestCase):
 
     def run_gen(self, root, *flags):
         import io, contextlib
-        saved = (gen.ROOT, gen.DATA, gen.NOTICES, gen.LOCK, gen.WORKFLOWS)
-        self.addCleanup(lambda: [setattr(gen, k, v) for k, v in zip(('ROOT', 'DATA', 'NOTICES', 'LOCK', 'WORKFLOWS'), saved)])
+        saved = (gen.ROOT, gen.DATA, gen.NOTICES, gen.LOCK, gen.WORKFLOWS, gen.TOOLCHAIN_FILE)
+        self.addCleanup(lambda: [setattr(gen, k, v) for k, v in zip(('ROOT', 'DATA', 'NOTICES', 'LOCK', 'WORKFLOWS', 'TOOLCHAIN_FILE'), saved)])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = gen.main(['--root', str(root), *flags])
@@ -206,6 +208,73 @@ class Modes(unittest.TestCase):
         code, out = self.run_gen(root)
         self.assertEqual(code, 1)
         self.assertNotIn('unclassified:', out)
+
+
+class Toolchain(unittest.TestCase):
+    """--derive-toolchain / --print-stale-pin: what the Dependabot toolchain path writes, on the REAL data file
+    with a faked rust-src (no rustup is run)."""
+
+    def setUp(self):
+        self.text = gen.DATA.read_text()
+        self.data = json.loads(self.text)
+        self.std = {n: [v] for n, v in self.data['std_lock'].items()}
+        self.std.update({n: ['1.0.0'] for n in self.data['std_not_shipped']})
+        self.real = gen.read_std
+        self.addCleanup(setattr, gen, 'read_std', self.real)
+
+    def fake(self, std, rustc='rustc 1.100.0 (abc 2026-11-01)', backtrace='0.3.77'):
+        gen.read_std = lambda pin: (std, rustc, backtrace, [])
+
+    def test_the_layout_round_trips_so_a_derive_changes_only_what_moved(self):
+        d = self.data
+        self.assertEqual(gen.rewrite_toolchain(self.text, d['toolchain']['pin'], d['toolchain']['rustc'], d['toolchain']['backtrace'],
+                                               d['std_lock'], d['std_not_shipped']), self.text)
+
+    def test_a_moved_release_rewrites_the_snapshot(self):
+        std = {**self.std, 'libc': ['0.2.999'], 'compiler_builtins': ['0.1.999']}
+        self.fake(std)
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        self.assertEqual((problems, added), ([], []))
+        new = json.loads(out)
+        self.assertEqual(new['toolchain'], {'pin': '1.100.0', 'rustc': 'rustc 1.100.0 (abc 2026-11-01)', 'backtrace': '0.3.77'})
+        self.assertEqual(new['std_lock']['libc'], '0.2.999')
+        self.assertEqual(new['groups'], self.data['groups'])
+        self.assertEqual(new['not_shipped'], self.data['not_shipped'])
+
+    def test_a_crate_new_to_std_needs_a_person_and_nothing_is_rewritten(self):
+        self.fake({**self.std, 'brandnew': ['0.1.0']})
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        self.assertEqual(added, ['brandnew'])
+        self.assertEqual(out, self.text)
+
+    def test_a_crate_that_left_std_lock_is_dropped_from_std_not_shipped_but_a_linked_one_needs_a_person(self):
+        gone = {k: v for k, v in self.std.items() if k != 'dlmalloc'}
+        self.fake(gone)
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        self.assertEqual((problems, added), ([], []))
+        self.assertNotIn('dlmalloc', json.loads(out)['std_not_shipped'])
+        self.fake({k: v for k, v in self.std.items() if k != 'libc'})
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        self.assertTrue(any('libc' in p for p in problems))
+        self.assertEqual(out, self.text)
+
+    def test_the_stale_pin_is_a_plain_release_or_an_error(self):
+        saved = gen.workflow_pins
+        self.addCleanup(setattr, gen, 'workflow_pins', saved)
+        gen.workflow_pins = lambda: {self.data['toolchain']['pin']}
+        self.assertIsNone(gen.stale_pin(self.data))
+        gen.workflow_pins = lambda: {'1.100.0'}
+        self.assertEqual(gen.stale_pin(self.data), '1.100.0')
+        for bad in ('nightly', '1.100', '1.1.1; rm -rf /', '1.2.3-beta'):
+            gen.workflow_pins = lambda bad=bad: {bad}
+            with self.assertRaises(SystemExit):
+                gen.stale_pin(self.data)
+
+    def test_the_real_std_classification_is_complete_when_the_pinned_toolchain_is_installed(self):
+        std, _, _, problems = self.real(self.data['toolchain']['pin'])
+        if problems:
+            self.skipTest(problems[0])
+        self.assertEqual(gen.std_unclassified(std, self.data), [])
 
 
 class Repository(unittest.TestCase):

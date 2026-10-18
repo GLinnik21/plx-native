@@ -41,7 +41,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_ui::route_screen::{RouteLayout, RoutePush};
-use super::family::SessionGround as RouteGround;
+use plx_ui::route_screen::RouteGround;
 use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
@@ -59,7 +59,7 @@ use super::registry::{word, AppFx, DirectoryLike};
 pub enum Family {
     /// Settings, over a live page: scrim + ambient ground sampled off the host.
     Settings,
-    /// The first-run consent question: a route surface of its own on the hero-keyed ground.
+    /// The first-run consent question: a route surface of its own on the default ambient ground.
     FirstRunConsent,
 }
 
@@ -136,7 +136,6 @@ impl RouteSurface {
         id: InstanceId,
         kind: Family,
         root: SettingsPage,
-        hubs: plx_data::pms::HubsView<'_>,
     ) -> Self {
         let mut s = Self {
             entry,
@@ -145,7 +144,7 @@ impl RouteSurface {
             inner: NavStack::new(Box::new(Immediate)),
             ids: Minter::default(),
             push: Push::new(),
-            ground: if kind == Family::FirstRunConsent { super::family::pre_home_ground(hubs) } else { RouteGround::new() },
+            ground: if kind == Family::FirstRunConsent { RouteGround::authored() } else { RouteGround::new() },
             ground_ready: false,
             remembered: Vec::new(),
         };
@@ -604,9 +603,6 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.ground.refresh() {
-                    fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
-                }
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }
@@ -1602,11 +1598,16 @@ fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
     }
 }
 
-const LANGUAGES: [plx_platform::i18n::Preference; 5] = [
-    plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
-    plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
-    plx_platform::i18n::Preference::Fr,
-];
+/// System, then every shipped language in the registry's (display) order.
+const LANGUAGES: [plx_platform::i18n::Preference; plx_platform::i18n::SHIPPED.len() + 1] = {
+    let mut all = [plx_platform::i18n::Preference::System; plx_platform::i18n::SHIPPED.len() + 1];
+    let mut i = 0;
+    while i < plx_platform::i18n::SHIPPED.len() {
+        all[i + 1] = plx_platform::i18n::SHIPPED[i];
+        i += 1;
+    }
+    all
+};
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1617,14 +1618,11 @@ enum LangId {
 
 impl FormId for LangId {
     fn key(&self) -> RowKey {
-        use plx_platform::i18n::Preference as P;
         RowKey(match self {
-            LangId::Choice(P::System) => 0,
-            LangId::Choice(P::En) => 1,
-            LangId::Choice(P::Es) => 2,
-            LangId::Choice(P::Be) => 3,
-            LangId::Choice(P::Fr) => 5,
-            LangId::Contribute => 4,
+            // System is 0 and each language keeps the row its registry entry names; the guide
+            // sits above the registry's language range, so no new language can take its key.
+            LangId::Choice(p) => p.settings_row(),
+            LangId::Contribute => 1000,
         })
     }
 }
