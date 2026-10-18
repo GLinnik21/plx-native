@@ -323,6 +323,7 @@
       "warmup_s": 5,
       "triggers": {
         "plxnative-library": "0",
+        "plxnative-libtype": "recommended",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
@@ -351,7 +352,7 @@
           "min_global": 48
         }
       },
-      "comment": "home-recent-paging-held's walk over a pageable Library section shelf (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+      "comment": "home-recent-paging-held's walk over a pageable section shelf of the Library's Recommended page (`plxnative-libtype: recommended` presses the header's Recommended control; the Library page itself mounts no shelves) (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
     },
     {
       "name": "library-shelf-paging-held-remote-wan",
@@ -361,6 +362,7 @@
       "warmup_s": 5,
       "triggers": {
         "plxnative-library": "0",
+        "plxnative-libtype": "recommended",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
@@ -389,7 +391,7 @@
           "min_global": 48
         }
       },
-      "comment": "home-recent-paging-held's walk over a pageable Library section shelf (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+      "comment": "home-recent-paging-held's walk over a pageable section shelf of the Library's Recommended page (`plxnative-libtype: recommended` presses the header's Recommended control; the Library page itself mounts no shelves) (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
     },
     {
       "name": "search-row-paging-held-3g",
@@ -709,6 +711,7 @@
       "warmup_s": 5,
       "triggers": {
         "plxnative-library": true,
+        "plxnative-libtype": "recommended",
         "plxnative-framedrop": 25,
         "plxnative-focus": true
       },
@@ -729,7 +732,7 @@
         "rest_s": 4,
         "tail_s": 5
       },
-      "comment": "The Library with a hundred and seventy recommended shelves, forty of them promoted collections (#412), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter library-shelves-deep` starts tests/mock_pms.py --section-hubs 170 --section-hubs-linked 40 itself. This is the INSTRUMENT for #412: the section's shelf count has no cap, so all 170 land, and the scene FAILS if fewer than `walk.min_landed` (150) do (a build that bounds the Library at twelve shelves lands 12, and its shorter walk would otherwise pass on those 12). The walk length derives from what LANDED, as home-grid-deep's does: the shelf count is the seated section's `libhubs: section N landed M shelves` line (`plxnative-library` with no value seats the preferred Movies library, index 0), then one Down per shelf, a second for each linked shelf (its heading is a stop of its own, then its row) and `extra_rows` more to cross the toolbar into the grid, at ~3 keys/s, a rest, and Up back; keys are only ever down/up. Graded: synthetic identity, keys sent == the expected count, a `focus route=library ... region=grid` fingerprint (`plxnative-focus`, armed here) inside the walk window, a `region=shelf row=R` fingerprint there with R >= min_landed - 1 (the SCREEN must show a deep shelf, not only the store having landed 170, or a screen that capped its rows again would pass), loop_floor 50 and fps_floor 30 (library-scroll's) on that window. frame_gt33, the worst frame and p99 are printed, NOT graded (plxnative-framedrop is armed so the heartbeat carries them). max_rows >= 170 + 40 + extra_rows; run_secs covers it plus the launch wait (tests hold it to that). NOT yet run on a device."
+      "comment": "The Library's Recommended page (`plxnative-libtype: recommended` presses the header's Recommended control; the Library page itself mounts no shelves) with a hundred and seventy recommended shelves, forty of them promoted collections (#412), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter library-shelves-deep` starts tests/mock_pms.py --section-hubs 170 --section-hubs-linked 40 itself. This is the INSTRUMENT for #412: the section's shelf count has no cap, so all 170 land, and the scene FAILS if fewer than `walk.min_landed` (150) do (a build that bounds the Library at twelve shelves lands 12, and its shorter walk would otherwise pass on those 12). The walk length derives from what LANDED, as home-grid-deep's does: the shelf count is the seated section's `libhubs: section N landed M shelves` line (`plxnative-library` with no value seats the preferred Movies library, index 0), then one Down per shelf, a second for each linked shelf (its heading is a stop of its own, then its row) and `extra_rows` more to cross the toolbar into the grid, at ~3 keys/s, a rest, and Up back; keys are only ever down/up. Graded: synthetic identity, keys sent == the expected count, a `focus route=library ... region=grid` fingerprint (`plxnative-focus`, armed here) inside the walk window, a `region=shelf row=R` fingerprint there with R >= min_landed - 1 (the SCREEN must show a deep shelf, not only the store having landed 170, or a screen that capped its rows again would pass), loop_floor 50 and fps_floor 30 (library-scroll's) on that window. frame_gt33, the worst frame and p99 are printed, NOT graded (plxnative-framedrop is armed so the heartbeat carries them). max_rows >= 170 + 40 + extra_rows; run_secs covers it plus the launch wait (tests hold it to that). NOT yet run on a device."
     },
     {
       "name": "library-burst",
@@ -979,7 +982,7 @@
       "run_secs": 18,
       "warmup_s": 6,
       "item": "collection",
-      "comment": "The Movies library's Collections page (the header's Collections control, `all?type=18`): `libtype` presses that control, which pushes the page over the grid, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s median 60; fps median 60, min 58-59, max 61, over a 3-card collections grid.",
+      "comment": "The Movies library's Collections page (the header's Collections control, `all?type=18`): `libtype` presses that control, which pushes the page over the grid, then `libosc` sweeps the Collections page, which lists the library's collections (the page that replaced the grid's collection-type listing). `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s median 60; fps median 60, min 58-59, max 61, over a 3-card collections grid.",
       "triggers": {
         "plxnative-library": true,
         "plxnative-libtype": "collections",
@@ -995,7 +998,7 @@
       "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 6,
-      "comment": "The Movies library's Recommended page (the header's Recommended control): `libtype: recommended` presses that control, which pushes the page over the grid, then `libosc` sweeps it. Until the page's own screen lands (P5/P6) it mounts the library grid under the same header, so this scene sweeps that grid. Floors are the library-collections ones, NOT yet measured on the television for this scene.",
+      "comment": "The Movies library's Recommended page (the header's Recommended control): `libtype: recommended` presses that control, which pushes the page over the grid, then `libosc` sweeps it. The page mounts RecommendedScreen (the library's hub shelves stacked down the page), so this scene sweeps those shelves. Floors are the library-collections ones, NOT yet measured on the television for this scene.",
       "triggers": {
         "plxnative-library": true,
         "plxnative-libtype": "recommended",
