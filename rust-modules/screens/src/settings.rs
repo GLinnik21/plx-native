@@ -46,12 +46,11 @@ use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
 };
-use plx_plex::plex::session::UiResolution;
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{theme, Painter, Rect};
 
-use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, PickerKind, SettingsPage, ALERT_GROUP};
+use super::family::{form_activate, form_focus, form_right_target, inner_cx, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, AppFx, DirectoryLike};
 
@@ -951,7 +950,6 @@ enum RootId {
     Language,
     AutoSignIn,
     TrailerAutoplay,
-    Resolution,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
@@ -975,7 +973,6 @@ impl FormId for RootId {
             RootId::Privacy => 7,
             RootId::Legal => 8,
             RootId::About => 9,
-            RootId::Resolution => 10,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1077,7 +1074,6 @@ struct RootInputs {
     library_count: i64,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    resolution: UiResolution,
     language: plx_platform::i18n::Preference,
     /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
     /// an answered/offered plaintext question.
@@ -1151,19 +1147,6 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Row::new(plx_platform::i18n::msg::settings_trailers_title())
                 .detail(plx_platform::i18n::msg::settings_trailers_detail())
                 .toggle(inputs.trailer_autoplay),
-        )
-        // Signed in only, like the switches above: the signed-out root is the sign-in path's own
-        // short list. The value is install-wide and survives sign-out; signing in again shows the row.
-        // It opens its picker like every other multi-value setting; the pick applies at the next launch.
-        .item_if(
-            signed_in,
-            RootId::Resolution,
-            RowKind::Nav(SettingsPage::Picker(PickerKind::UiResolution)),
-            Action::Door,
-            Row::new(plx_platform::i18n::msg::settings_resolution_title())
-                .detail(plx_platform::i18n::msg::settings_resolution_detail())
-                .value(super::preferences::resolution_label(inputs.resolution))
-                .chevron(true),
         );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
@@ -1254,7 +1237,6 @@ impl RootPage {
             plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
                 sess, &plx_plex::plex::session::current_seat())
         }, |(value, _)| *value);
-        let resolution = sess.ui_resolution();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
@@ -1262,7 +1244,7 @@ impl RootPage {
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, language: self.state.language, plaintext,
+            auto_sign_in, trailer_autoplay, language: self.state.language, plaintext,
         });
         let keep = self.form.selected_id().cloned();
         self.form.table.compact = false;

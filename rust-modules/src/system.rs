@@ -380,8 +380,8 @@ pub(crate) fn opaque_region_init() {
         return;
     };
     // Surface-local coordinates. `viewport()` is the rect the renderer actually draws into, which
-    // is the whole drawable (1920x1080 unless the owner picked a smaller Interface resolution)
-    // and is the honest answer on a letterboxed one, where the bars are not ours to claim.
+    // is the whole 1920x1080 surface on every set seen so far and is the honest answer on a
+    // letterboxed one, where the bars are not ours to claim.
     let (vx, vy, vw, vh) = plx_base::surface::viewport();
     let region = unsafe {
         let r = ctor(

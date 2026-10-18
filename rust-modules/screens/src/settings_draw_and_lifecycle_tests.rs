@@ -177,9 +177,9 @@ fn every_root_detail_line_fits_a_known_good_width() {
         }
     }
     assert_eq!(
-        checked, 10,
+        checked, 9,
         "expected a detail line on exactly Favorite libraries, Video & playback, Audio & \
-         subtitles, Language, Automatically Sign In, Play trailers automatically, Interface resolution, Privacy & \
+         subtitles, Language, Automatically Sign In, Play trailers automatically, Privacy & \
          data, Legal notices, and About PlxNative — got {checked}; \
          did the signed-in multi-user fixture stop building one of these rows?"
     );

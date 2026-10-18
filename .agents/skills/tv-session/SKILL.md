@@ -281,9 +281,9 @@ every sign-in code request and every poll, so *Try again* keeps failing the same
 is removed).
 
 **`plxnative-drawable=<W>x<H>` (debug builds only) asks for that window size at boot**, e.g.
-`1280x720`, bounded to 640x360..=1920x1080 (anything outside is ignored and logged). It outranks
-Settings > System > Interface resolution, so a TV run can compare sizes without touching the
-stored setting. Like every trigger it marks the boot as automated.
+`1280x720`, bounded to 640x360..=1920x1080 (anything outside is ignored and logged). It is a
+measurement tool: the default is always the 1920x1080 canvas. Like every trigger it marks the boot
+as automated.
 
 **Two traps that cost real time:**
 
