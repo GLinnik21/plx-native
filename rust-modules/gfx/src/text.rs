@@ -1443,6 +1443,40 @@ pub fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     text_bounds(s,sz,bold).0
 }
 
+/// [`text_width`] with `letter_spacing` px added after every glyph but the last (tracking). A
+/// spacing of 0 is exactly [`text_width`].
+pub fn text_width_tracked(s: *const c_char, sz: c_int, bold: c_int, letter_spacing: f32) -> f32 {
+    let w = text_width(s, sz, bold);
+    if letter_spacing == 0.0 || s.is_null() {
+        return w;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy();
+    w + letter_spacing * cluster_starts(&text).len().saturating_sub(1) as f32
+}
+
+/// Queue the per-cluster strings a live [`draw_text_tracked`] of `s` will rasterize, so the
+/// recording pass prewarms what the tracked draw actually draws (it draws each cluster as its own
+/// string, which a prewarm of the whole string does not cover). Whitespace-only clusters are not
+/// drawn and are not queued.
+pub fn queue_prewarm_tracked(s: *const c_char, sz: c_int, bold: c_int) {
+    if s.is_null() {
+        return;
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+        return;
+    };
+    let starts = cluster_starts(text);
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(text.len());
+        if text[from..to].chars().all(char::is_whitespace) {
+            continue;
+        }
+        if let Ok(c) = std::ffi::CString::new(&text[from..to]) {
+            queue_prewarm(c.as_ptr(), sz, bold);
+        }
+    }
+}
+
 /// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
 /// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
 /// This does not render or upload a glyph and does not spend the text-prewarm budget.
@@ -2083,6 +2117,145 @@ pub fn draw_text(
     }
 }
 
+/// Tracking of the Watchlist header title (design board: `letter-spacing: -0.5px`). CSS puts the
+/// spacing after every character; here it goes BETWEEN characters (n-1 gaps, see
+/// [`text_width_tracked`]), so a centred or right-aligned title has no trailing gap and the board's
+/// trailing 0.5 px is not reproduced (shipped layout wins; the difference is sub-pixel).
+pub const TRACKING_TITLE_TIGHT: f32 = -0.5;
+
+/// True for a char that rides on the previous one (combining mark, joiner, variation selector) and
+/// so must never be separated from it by tracking.
+fn attaches_to_previous(c: char) -> bool {
+    matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF
+        | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D | 0x200C | 0xE0100..=0xE01EF)
+}
+
+/// Byte offsets where each cluster (a char plus the marks that attach to it) starts: the ONE
+/// cluster rule, shared by the width (gaps = clusters - 1) and the draw.
+fn cluster_starts(s: &str) -> Vec<usize> {
+    let mut starts: Vec<usize> = Vec::new();
+    for (i, c) in s.char_indices() {
+        if starts.is_empty() || !attaches_to_previous(c) {
+            starts.push(i);
+        }
+    }
+    starts
+}
+
+/// Pure layout of a tracked string: for every drawable cluster, its byte range in `s` and its
+/// x offset from the string's left edge. The offset is the measured width of everything before the
+/// cluster (`prefix_width`, so kerning and mixed-font runs keep their native advances) plus
+/// `letter_spacing` per preceding gap. Whitespace-only clusters advance but are not returned.
+fn tracked_clusters(
+    s: &str,
+    letter_spacing: f32,
+    mut prefix_width: impl FnMut(&str) -> f32,
+) -> Vec<(std::ops::Range<usize>, f32)> {
+    let mut out = Vec::new();
+    let starts = cluster_starts(s);
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(s.len());
+        if s[from..to].chars().all(char::is_whitespace) {
+            continue;
+        }
+        out.push((from..to, prefix_width(&s[..from]) + letter_spacing * k as f32));
+    }
+    out
+}
+
+/// Draws a tracked string cluster by cluster through `draw_one(cluster, x, hfade_shift)`.
+/// Returns the tracked width.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_tracked_with(
+    s: *const c_char,
+    x: f32,
+    sz: c_int,
+    align: c_int,
+    bold: c_int,
+    letter_spacing: f32,
+    mut draw_one: impl FnMut(*const c_char, f32, f32),
+) -> f32 {
+    let width = text_width_tracked(s, sz, bold, letter_spacing);
+    if s.is_null() {
+        return width;
+    }
+    let Ok(text) = CStr::from_ptr(s).to_str() else {
+        return width;
+    };
+    let left = match align {
+        1 => x - width * 0.5,
+        2 => x - width,
+        _ => x,
+    };
+    let clusters = tracked_clusters(text, letter_spacing, |prefix| {
+        match std::ffi::CString::new(prefix) {
+            Ok(c) if !prefix.is_empty() => text_width(c.as_ptr(), sz, bold),
+            _ => 0.0,
+        }
+    });
+    for (range, off) in clusters {
+        if let Ok(c) = std::ffi::CString::new(&text[range]) {
+            draw_one(c.as_ptr(), left + off, off);
+        }
+    }
+    width
+}
+
+/// [`draw_text`] with `letter_spacing` px of tracking between glyphs (negative tightens). At
+/// `letter_spacing == 0.0` this IS [`draw_text`] (same call, same cache keys, same draw calls).
+/// Otherwise each cluster is drawn as its own cached string at the measured prefix width plus the
+/// spacing, so kerning and mixed-font runs keep their native advances and only the gaps change.
+/// Returns the tracked width (what [`text_width_tracked`] reports).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    if letter_spacing == 0.0 {
+        return draw_text(s, x, y, sz, col, align, bold, zoom);
+    }
+    unsafe {
+        draw_tracked_with(s, x, sz, align, bold, letter_spacing, |c, gx, _| {
+            draw_text(c, gx, y, sz, col, 0, bold, zoom);
+        })
+    }
+}
+
+/// [`draw_text_fade`] with tracking; at 0 it IS [`draw_text_fade`]. The horizontal fade band stays
+/// anchored to the whole string's left edge (each cluster's band is shifted by its offset).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_fade_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    hfade: Option<(f32, f32)>,
+    vfade_top: Option<(f32, f32)>,
+    vfade_bot: Option<(f32, f32)>,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    if letter_spacing == 0.0 {
+        return draw_text_fade(s, x, y, sz, col, align, bold, hfade, vfade_top, vfade_bot, zoom);
+    }
+    unsafe {
+        draw_tracked_with(s, x, sz, align, bold, letter_spacing, |c, gx, off| {
+            let shifted = hfade.map(|(a, z)| (a - off, z - off));
+            draw_text_fade(c, gx, y, sz, col, 0, bold, shifted, vfade_top, vfade_bot, zoom);
+        })
+    }
+}
+
 /// [`draw_text`] with up to three independent fades (its OWN GL program, so plain text pays no
 /// per-fragment fade cost — see the shader's own header for why every ordinary glyph stays off
 /// it): a HORIZONTAL one (`hfade`, glyph alpha 1→0 between `from`..`to` px from the string's LEFT
@@ -2157,6 +2330,58 @@ mod tests {
     //! regression that named this unit was found by a photograph, not by a test.
 
     use super::*;
+
+    #[test]
+    fn tracking_zero_is_the_untracked_width() {
+        let s = std::ffi::CString::new("Watchlist").unwrap();
+        assert_eq!(
+            text_width_tracked(s.as_ptr(), 20, 0, 0.0).to_bits(),
+            text_width(s.as_ptr(), 20, 0).to_bits()
+        );
+    }
+
+    #[test]
+    fn tracking_adds_one_gap_between_each_pair_of_characters() {
+        let s = std::ffi::CString::new("Watchlist").unwrap();
+        let w = text_width(s.as_ptr(), 20, 0);
+        let tight = text_width_tracked(s.as_ptr(), 20, 0, TRACKING_TITLE_TIGHT);
+        assert_eq!(tight, w + TRACKING_TITLE_TIGHT * 8.0);
+        let one = std::ffi::CString::new("W").unwrap();
+        assert_eq!(text_width_tracked(one.as_ptr(), 20, 0, 3.0), text_width(one.as_ptr(), 20, 0));
+    }
+
+    /// The recording pass queues what the tracked draw rasterizes: one string per cluster.
+    #[test]
+    fn tracked_prewarm_queues_the_clusters_the_draw_will_use() {
+        let s = std::ffi::CString::new("ab e\u{301}").unwrap();
+        let got = capture_text_runs_for_test(|| queue_prewarm_tracked(s.as_ptr(), 20, 0));
+        assert_eq!(got, vec!["a", "b", "e\u{301}"]);
+    }
+
+    /// One gap per CLUSTER: a combining mark attaches to its base and adds no gap.
+    #[test]
+    fn tracked_width_counts_clusters_not_code_points() {
+        let s = std::ffi::CString::new("e\u{301}x").unwrap();
+        let plain = text_width(s.as_ptr(), 20, 0);
+        assert_eq!(text_width_tracked(s.as_ptr(), 20, 0, -0.5), plain - 0.5);
+    }
+
+    #[test]
+    fn tracked_clusters_offset_by_prefix_width_plus_gaps() {
+        // Fixed 10 px per char stand-in for the measurer; "e" + U+0301 is one cluster; the space
+        // advances but is not drawn.
+        let s = "ab e\u{301}";
+        let got = tracked_clusters(s, -0.5, |p| p.chars().count() as f32 * 10.0);
+        let offs: Vec<(&str, f32)> = got.iter().map(|(r, o)| (&s[r.clone()], *o)).collect();
+        assert_eq!(offs, vec![("a", 0.0), ("b", 9.5), ("e\u{301}", 28.5)]);
+    }
+
+    #[test]
+    fn tracked_clusters_at_zero_spacing_are_the_untracked_positions() {
+        let got = tracked_clusters("abc", 0.0, |p| p.len() as f32 * 7.0);
+        assert_eq!(got.iter().map(|c| c.1).collect::<Vec<_>>(), vec![0.0, 7.0, 14.0]);
+    }
+
     use plx_base::fontcov;
 
     /// The real shipped cmaps, parsed once for the whole test binary (see `fontcov::shipped`).

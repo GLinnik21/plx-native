@@ -109,6 +109,13 @@ pub struct PmsMovie {
     pub kind: c_int, // 0 = movie, 1 = show, 2 = season, 3 = episode, 4 = collection
     pub resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub show_rk: String, // parent show rk (episode: grandparent; season: parent)
+    /// The title's catalog id, decoded once from `guid` (`plex://movie|show/<24 hex>`); `None` when
+    /// the listing carried none or it is not that form: the app then reads the item's own server
+    /// record for it (`plex::models::resolve_catalog_hex`, via `WatchlistStore::want_hex`) and the
+    /// next menu offers the row once the record named a portable id.
+    pub guid: Option<[u8; 12]>,
+    /// The parent show's catalog id, from `grandparentGuid` (episode); `None` as above.
+    pub show_guid: Option<[u8; 12]>,
     pub season_index: c_int, // season number (episode: parentIndex, or [`SEASON_UNKNOWN`]; season: index)
     pub show_title: String, // episode: grandparentTitle; season: parentTitle
     pub ep_index: c_int, // episode only: episode number within the season
@@ -139,6 +146,21 @@ pub struct PmsMovie {
 }
 
 impl PmsMovie {
+    /// **The Watchlist title this row stands for**, as `(kind, catalog id, from_episode)`: a movie or
+    /// a show is itself, a season or an episode is its SHOW (`from_episode`, so the labels say
+    /// "Show"). The id is the one the row was decoded with, `None` when the server sent no
+    /// `plex://movie|show` guid; a collection (kind 4) stands for no title at all. THE rule for the
+    /// item menu's row and the Home hero's bookmark disc, so the two cannot name different titles.
+    pub fn watchlist_subject(&self) -> Option<(crate::watchlist::model::Kind, Option<[u8; 12]>, bool)> {
+        use crate::watchlist::model::Kind;
+        match self.kind {
+            0 => Some((Kind::Movie, self.guid, false)),
+            1 => Some((Kind::Show, self.guid, false)),
+            2 | 3 => Some((Kind::Show, self.show_guid, true)),
+            _ => None,
+        }
+    }
+
     /// Played fraction for the amber resume bar, or None when not in progress — THE one
     /// resume-bar rule, shared by the home shelves and the Library grid (it was copy-pasted
     /// into both screens before), and the definition of `PosterMark::InProgress`.
@@ -367,6 +389,8 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         ..Default::default()
     };
     m.aired = clean(&it.originally_available_at);
+    m.guid = it.guid_hex();
+    m.show_guid = it.show_guid_hex();
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,

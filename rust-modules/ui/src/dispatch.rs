@@ -264,6 +264,7 @@ pub fn scrim_lift_read<'a, H: Host>(
     super::screen::ScrimLiftRead {
         chrome: rig.scrim_chrome_read(),
         bar_material: glass.and_then(super::frame::glass::GlassPlan::tab_face),
+        field: None,
     }
 }
 
@@ -625,6 +626,16 @@ where
     }
 
     /// The top page's screen, for a test to read.
+    /// **The host a surface samples is being reflowed**: a surface that lets the page reflow
+    /// ([`Screen::lets_host_reflow`](super::screen::Screen::lets_host_reflow)) is up and the top
+    /// page's cards are moving. The host cache follows the page live while this is true.
+    pub fn host_reflow(&self) -> bool {
+        use super::containers::modal::Phase;
+        self.nav.modals.surfaces.iter().any(|s| {
+            s.phase != Phase::Hidden && s.entry.inst.as_ref().is_some_and(|i| i.screen.lets_host_reflow())
+        }) && self.top_screen().is_some_and(|s| s.reflowing())
+    }
+
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }
@@ -669,7 +680,11 @@ where
         if self.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
         if surface.phase == Phase::Closing {
             let live = self.focus().filter(|k| k.entry == entry);
-            if live.is_some() && live != opener { return None; }
+            // focus moved off the opener: the lift stands down, unless the opener LEFT the page and
+            // is still drawn going (a removed card's ghost), which the lift keeps above the dim
+            let departing = || opener.is_some_and(|k| self.nav.entry(entry).and_then(|e| e.inst.as_ref())
+                .is_some_and(|i| i.screen.opener_departing(k)));
+            if live.is_some() && live != opener && !departing() { return None; }
         }
         Some((entry, opener))
     }
@@ -1018,6 +1033,8 @@ where
             let mut ph = PresentHandle::of(present);
             nav.modals.tick(tick, &mut ph);
             present.set_scope(plx_machine::present::Scope::Page);
+            // the pages tick next: what of a menu stands over them this frame
+            super::containers::modal::set_veil(super::containers::modal::veil_of(&nav.modals.surfaces));
         }
         let (host_update, host_render) = self.nav.modals.host_policy();
         report.host_update = Some(host_update);
@@ -1041,13 +1058,16 @@ where
             .filter_map(|e| e.inst.as_ref())
             .map(|i| i.id)
             .collect();
-        let surface_bodies: Vec<InstanceId> = self
+        // A HELD surface (`PopoverMotion::held`: its capture frame, and while its text warms) is at
+        // appear 0 and draws nothing visible, so its own clock does not run either: it is ticked
+        // with no time. Stepped through the hold, a surface's own motion (the Watchlist menu's
+        // morph) ran out frames nobody saw and its first visible frame landed mid-motion.
+        let surface_bodies: Vec<(InstanceId, bool)> = self
             .nav
             .modals
             .surfaces
             .iter()
-            .filter_map(|s| s.entry.inst.as_ref())
-            .map(|i| i.id)
+            .filter_map(|s| Some((s.entry.inst.as_ref()?.id, s.motion.held())))
             .collect();
         // the press machine (§7.4): hold and commit are delivered from the Tick
         for pe in self.input.tick(tick.ms, tick.dt()) {
@@ -1061,11 +1081,14 @@ where
             });
         }
         let page_active = host_update == HostUpdate::Live && rig.page_updates();
-        for id in page_bodies.iter().copied().filter(|_| page_active).chain(surface_bodies) {
+        let held_tick = Tick { dt_us: 0, ..tick };
+        let bodies = page_bodies.iter().map(|&id| (id, false)).filter(|_| page_active).chain(surface_bodies);
+        for (id, held) in bodies {
             report.ticked.push(id);
+            let t = if held { held_tick } else { tick };
             head.push(Stamped {
                 from: MachineId::Nav,
-                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Tick(tick))),
+                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Tick(t))),
             });
         }
         // 5. expired timers, deadline then id order
@@ -1600,6 +1623,7 @@ where
         for (index, s) in modals.surfaces.iter_mut().enumerate() {
             let z = Z::surface(index);
             if z >= ceiling { break; }
+            if s.faded() { continue; }
             let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
@@ -1631,8 +1655,15 @@ where
                     backdrop::draw_span("surf", || plx_gfx::gfx::without_frame_clear(|| {
                         super::rec::speculative(|| super::record_walk(|| inst.screen.draw(&mut f)))
                     }));
+                    // …and what it already shows (its opener, which the page has left out) live.
+                    let mut face = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
+                    face.page_alpha = s.motion.appear;
+                    face.underlay = Some(field);
+                    backdrop::draw_span("surf", || inst.screen.draw_held(&mut face));
                 } else {
-                    backdrop::draw_span("surf", || inst.screen.draw(&mut f));
+                    backdrop::draw_span("surf", || {
+                        crate::popover_glass::drawing_surface(index, || inst.screen.draw(&mut f));
+                    });
                 }
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());

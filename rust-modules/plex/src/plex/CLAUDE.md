@@ -377,11 +377,15 @@ a dead source is **absent** from Home and states itself in its own library secti
 ## Gotchas that bite (all verified in code)
 
 - **`notify.rs` is the PMS server-sent-event feed, and it is not a playback signal.** It parses
-  `/:/eventsource/notifications?filters=playing` (`docs/pms-api.md` §9: the parameter is `filters`,
-  the spec's `filter` is wrong) into lenient `Notification`s over `http::stream`, dropping this
+  `/:/eventsource/notifications?filters=playing%2Ctimeline` (`docs/pms-api.md` §9: the parameter is
+  `filters`, the spec's `filter` is wrong; the encoded comma list was measured to deliver `timeline`) into
+  lenient `Notification`s (`Play`, `Library` for finished movie/show timeline entries, `Ping`,
+  `Ignored`; a `timeline` frame is `event: timeline` + one `{"TimelineEntry":{...}}` object, state 5 both opens
+  and closes a sequence so "created" is state 5 with no `metadataState`, and state 9 for a delete is UNVERIFIED,
+  never captured) over `http::stream`, dropping this
   device's own sessions at the source, and never mints a client id (`client_id` is the persisted
   one; a new id raises a new-device alert). Its policy lives in `plx_data::stores::notify`: shipped
-  OFF, owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
+  ON (`NOTIFY_ENABLED`), owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
   publish: a stranger's `stopped` session would otherwise scrobble our other servers.
 
 - **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
@@ -490,7 +494,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
   in `app/boot.rs`, would leave them to the next account: `replace_after_reauthentication_guarded_with_outcome`
-  clears both when the login's account token differs from the stored one), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  clears both, and the Home pins and recent searches, when the login's owner identity (`owner_identity`, the roster admin's plex.tv id; never the token, which every sign-in mints anew) differs from the stored one or either is unknown), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes

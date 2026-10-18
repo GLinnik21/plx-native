@@ -236,6 +236,34 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
 
 ---
 
+## 2d. Which of these guids does this server hold? — `GET /library/all?type=T&guid=a,b,c`
+
+(Measured 2026-10 on PMS 1.43.4 with a per-server token, read-only. The Watchlist's join from a
+Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
+
+- **One request answers many guids.** `guid=<a>,<b>,<c>` in a SINGLE parameter returns every row whose
+  `guid` is listed; a guid the server does not hold is silently absent, there is no error row.
+  Repeated `guid=a&guid=b` keeps only the last. The separator is a literal `,`; each guid is
+  percent-encoded on its own first.
+- **Only the primary `plex://` guid matches.** `plex://movie/<24 hex>` and `plex://show/<24 hex>`.
+  `imdb://`, `tmdb://` and `tvdb://` (which the items carry in `Guid[]` with `includeGuids=1`) answer
+  size 0, so a title with no `plex://` guid cannot be looked up this way.
+- **`type` narrows and must be right.** `type=1` movies, `type=2` shows. A wrong `type` answers
+  size 0, which is indistinguishable from "not held", so the call is made once per kind and the kind
+  comes from the guid's own prefix. Rows carry `librarySectionID` and, when the server has them,
+  `UltraBlurColors`.
+- **The client chunks at 40 guids** (`GUIDS_PER_REQUEST`) to keep the URL short; PMS's own URL limit
+  was not measured, so 40 is a conservative choice rather than a found ceiling. Cost is
+  servers x kinds x ceil(N/40) requests (about 10 to 12 for 200 titles on two servers).
+- **Absence is only proof when the server answered.** `Client::find_by_guids` returns `Err` when any
+  chunk got no readable answer, and the caller must not read that as "absent": a silent share would
+  otherwise turn a playable title into "Not on your servers".
+- The same guid in two libraries is reported once, with the first row's key.
+- A single-guid form `GET /library/all?guid=plex://movie/<hex>[&type=1]` also works and is what
+  "Also available" uses one guid at a time.
+
+---
+
 ## 3. Hubs (home shelves)
 
 ```
@@ -1264,7 +1292,7 @@ only to a server the account OWNS. Notifications are hints about a stranger's pl
 reach a timeline, a stop, an end-of-stream candidate or a resume point.
 
 ```
-GET /:/eventsource/notifications?filters=playing        (Accept: text/event-stream; X-Plex-Token in the query)
+GET /:/eventsource/notifications?filters=playing%2Ctimeline   (Accept: text/event-stream; X-Plex-Token in the query)
 ```
 
 Measured against a local server with a Guest token:
@@ -1274,7 +1302,11 @@ Measured against a local server with a Guest token:
   twin is `/:/websockets/notifications` on the server and `/:/websocket/notifications` in the spec.
   The measurements win.
 - **A Guest token receives only `playing` events** (session key, the playing client's
-  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). `filters=playing` is requested anyway.
+  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). The app requests `filters=playing,timeline`
+  (the comma sent percent-encoded). The idle measurements below used `filters=playing` alone; a later
+  capture on the owner's own server shows the server **accepts both `filters=playing,timeline` and
+  `filters=playing%2Ctimeline` and then sends `timeline` frames** (the fallback, no `filters`, is not
+  wired and is not needed).
 - **An owner token, watched read-only from the host over loopback HTTP** (one stream at a time, the
   app's identity headers' client identifier, token in a header, no other request): with
   `filters=playing`, 601 s: HTTP 200 `text/event-stream`, 60 frames, every one an SSE `ping`
@@ -1296,17 +1328,56 @@ Measured against a local server with a Guest token:
   client is not a controllable player.
 
 What the parser accepts, leniently: a `data` JSON whose `NotificationContainer.type` is `playing`
-(or absent) and whose `PlaySessionStateNotification` array lists the sessions; every field optional,
+(or absent) and whose `PlaySessionStateNotification` array lists the sessions, or whose type is
+`timeline` (below); every field optional,
 ids as strings or numbers, unknown fields and unknown types ignored. A session whose
 `clientIdentifier` is this device's own is dropped before anything else sees it. The envelope's field
 names are the parser's reading and are not yet confirmed by a capture committed here: a verbatim
 frame would carry the session's key, client id and rating key, so it stays out of the repository
 (scrubbed captures hold only the ping cadence).
 
+**`timeline` frames: CAPTURED** (passive, read-only streams on the owner's own server while its library
+scanned; the raw captures hold titles and paths and stay out of the repository). One frame is
+`event: timeline` + `data: {"TimelineEntry":{...}}`: a single OBJECT, not an array, and no
+`NotificationContainer`. Scrubbed shape (synthetic values):
+`{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,
+"title":"Movie A","state":5,"metadataState":"processing","updatedAt":1760000001}}`. `sectionID` and
+`itemID` are STRINGS; `type` and `state` are integers; `metadataState` ("queued", "matching",
+"processing", "loading") and `mediaState` ("analyzing") appear on some frames only. `type`: 1 movie, 2
+show, 3 season, 4 episode, 10 track. `state` values seen: 2, 3, 4, 5.
+
+The sequence of one movie or show is `state` 5 + `metadataState` "processing", then 4 + "loading", then
+**5 with no `metadataState`: the finished frame, the last of its sequence**. So state 5 opens AND closes a
+sequence (the first, before the item has metadata, is not "finished"). A season runs 2 ("matching"), 5, 3
+("queued"), 3 ("processing"), 4 ("loading") and a final 5, with its episodes (5, 4, 4, 5 each)
+interleaved; a music track is two state-5 frames, the first with `mediaState` "analyzing". The sequence
+is the same whether the item is new or only refreshed (the captures cannot tell them apart), so a
+"create" is "the item finished processing". **Deletion has NOT been observed** (no delete happened in any
+capture): the community-documented state 9 is kept as the delete value and is UNVERIFIED, as is the rest
+of the delete frame.
+
+The parser keeps an entry only when `itemID`, `type` and `state` are present (numbers as numbers or
+numeric strings), `type` is 1 or 2, the `identifier`, when present, is the library plugin's and
+`state` is 5 with neither `metadataState` nor `mediaState` (created) or 9 (deleted, UNVERIFIED); every
+other frame is dropped. The community `NotificationContainer` envelope with an array is still read.
+An `itemID` is the item's `ratingKey` on that server, not a guid. The fixtures
+(`rust-modules/plex/src/plex/notify/fixtures.rs`) are this shape with synthetic titles and ids.
+
+**Frame rates (measured, owner's server, 12 h).** `timeline`: 53 frames in 720 min = 0.07 per minute
+over the window, 7.6 per minute over the 7 minutes that had any; a scan arrives in bursts, the peak
+60 s window held 20 frames (all within one second, a 10-track music add) and a 36-frame season add held
+18 in its busiest minute. Idle is pings only: 6 per minute (4319 in 720 min), 2 bytes of data each.
+`filters=playing,timeline` costs 53 timeline + 4319 ping frames, 19 KB, in 12 h. **Without `filters`**
+the same 12 h held 27 990 frames and 6.8 MB: `activity` 22 004 frames, mean 30.6 per minute over the
+window, 66.9 over its 329 active minutes, peak 215 in one minute and 62 in one second (437 bytes at most),
+plus `progress` 1 401, `status` 106, `account` 59, `reachability` 47 and `preference` 1. Filtering is what
+keeps the feed quiet; an unfiltered subscription is not an option.
+
 What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
 HOLDS owes that item a read-back of OUR state. A page holds what its store enumerates while the page
 is on the navigation stack, visible or covered: Home's, the Library page's and Search's rows only
-while those pages are on it (a popped page holds nothing), a Person, Filmography or Collection page's
+while those pages are on it (a popped page holds nothing), the Watchlist page's matched copies
+on reachable servers inside its hold window (the same rule), a Person, Filmography or Collection page's
 rows, and a Detail page's own item, plus, while it is the loaded Detail, the episodes of its current
 season window (read the owing way) and its related and collection tiles (read quiet). A steady
 `playing` ping owes nothing, `buffering` counts as `playing` and an unknown state is ignored, and two
@@ -1321,6 +1392,16 @@ a recording or replay is armed: it stays queued. A feed that comes back after a 
 seen and owes the covered pages their re-read. A hint is never a playback event: it does not queue a
 stop, an end-of-stream candidate or a resume point, so a stranger's `stopped` cannot scrobble our
 other servers.
+
+What a hint does for the Watchlist: a session on a matched title that the page holds owes a read-back like
+any held card. A `timeline` create or delete does not read the item: it owes the Watchlist store ONE re-match
+of that server and kind (a delete of the item a tile is matched to asks again about that guid, a create asks
+again about the kind's titles the server was not seen to hold, `/library/all?type=T&guid=…` at 40 guids to a
+request), deduplicated per pump, at most once per quiet-refetch spacing (5 s) per server and kind, only once
+the Watchlist has loaded and only when `reread_allowed`; it stays queued otherwise. A feed that came back
+after a gap re-asks the server's titles whole. The tile flips when the answer lands (`docs/watchlist.md`,
+*Live-update gaps*); Home, Library and Search are not touched. A watched toggle on another client emits
+nothing, and the plex.tv membership itself has no PMS signal at all.
 
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
 5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any

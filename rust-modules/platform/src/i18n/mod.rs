@@ -140,7 +140,88 @@ impl LocaleContext {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
         Some(self.date.format(&d).to_string())
     }
+    /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
+    /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
+    /// "12 de março" in European Portuguese, "12. März" in German, and in Belarusian the genitive
+    /// after the day ("12 сакавіка") with the abbreviated form for medium. Hand-written tables, not
+    /// ICU month data, so no name data is compiled in for the shipped languages. The year is
+    /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
+    pub fn month_day(&self, month: u8, day: u8, width: MonthWidth) -> Option<String> {
+        // Validate against a leap year first: `month - 1` below is only reached for 1..=12.
+        icu_calendar::Date::try_new_gregorian(2024, month, day).ok()?;
+        let i = usize::from(month - 1);
+        let (names, joiner) = match (self.language, width) {
+            (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
+            (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
+            (Language::Es, MonthWidth::Medium) => (&ES_MEDIUM, " "),
+            (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
+            (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
+            (Language::Be, MonthWidth::Long) => (&BE_GENITIVE, " "),
+            (Language::Fr, MonthWidth::Medium) => (&FR_MEDIUM, " "),
+            (Language::Fr, MonthWidth::Long) => (&FR_LONG, " "),
+            (Language::It, MonthWidth::Medium) => (&IT_MEDIUM, " "),
+            (Language::It, MonthWidth::Long) => (&IT_LONG, " "),
+            (Language::Pt, MonthWidth::Medium) => (&PT_MEDIUM, " "),
+            (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
+            (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
+            (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
+        };
+        Some(format!("{day}{joiner}{}", names[i]))
+    }
 }
+
+/// Width of a month-and-day caption: `Medium` is the abbreviated month, `Long` the full one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MonthWidth {
+    Medium,
+    Long,
+}
+
+const EN_MEDIUM: [&str; 12] =
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const EN_LONG: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December",
+];
+const ES_MEDIUM: [&str; 12] =
+    ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"];
+const ES_LONG: [&str; 12] = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+    "octubre", "noviembre", "diciembre",
+];
+/// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
+const BE_MEDIUM: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "мая", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+/// Genitive, because a day number governs the month in Belarusian ("12 сакавіка").
+const BE_GENITIVE: [&str; 12] = [
+    "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",
+    "верасня", "кастрычніка", "лістапада", "снежня",
+];
+const FR_MEDIUM: [&str; 12] =
+    ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const FR_LONG: [&str; 12] = [
+    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+    "octobre", "novembre", "décembre",
+];
+const IT_MEDIUM: [&str; 12] =
+    ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+const IT_LONG: [&str; 12] = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre",
+    "ottobre", "novembre", "dicembre",
+];
+const PT_MEDIUM: [&str; 12] =
+    ["jan.", "fev.", "mar.", "abr.", "mai.", "jun.", "jul.", "ago.", "set.", "out.", "nov.", "dez."];
+const PT_LONG: [&str; 12] = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro",
+    "outubro", "novembro", "dezembro",
+];
+/// German writes the day as an ordinal: "12. März".
+const DE_MEDIUM: [&str; 12] =
+    ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+const DE_LONG: [&str; 12] = [
+    "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+    "November", "Dezember",
+];
 /// Reject control bytes and invalid tags before they can become HTTP headers. POSIX suffixes
 /// are only used at this input boundary; callers retain canonical BCP-47 tags.
 pub fn normalize(s: &str) -> Option<String> {

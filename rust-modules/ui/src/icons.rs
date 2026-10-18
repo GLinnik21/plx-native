@@ -226,6 +226,22 @@ pub enum Icon {
     ServerBadgeXmark,
     /// A crossed-out wifi arc — no internet to even reach plex.tv (`IncidentKind::PinCreate`).
     WifiSlash,
+    // ---- Watchlist marks (docs/watchlist-plan.md, DS1) ----
+    //
+    // Baked by `tools/readout-glyphs.py`'s INLINE table at the inline 2.2 weight (search, restart,
+    // info), one even-odd path each, so they sit beside the stroked family without a weight step.
+    /// A bookmark ribbon, outline — the Watchlist's not-on-the-list mark.
+    Bookmark,
+    /// The same silhouette filled, so the outline-to-filled state flip never moves an edge.
+    BookmarkFill,
+    /// A plain clock face — the Watchlist's coming-soon mark (the read-out's clock base, inline weight).
+    Clock,
+    /// A server with a slash through it — the Watchlist's server-offline mark (the read-out's server
+    /// base, slashed the way [`Icon::WifiSlash`] is).
+    ServerSlash,
+    /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
+    /// sign at the inline weight.
+    CircleSlash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -248,6 +264,9 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
         // One entry for the mirrored pair: the reflected path has the same ink bounds.
         Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
+        // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
+        Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
+        Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -262,6 +281,10 @@ pub const fn band(id: Icon) -> f32 {
     match id {
         Icon::Pause | Icon::Rewind | Icon::FastForward => 14.0 / 24.0,
         Icon::Play => 16.0 / 24.0,
+        // Measured ink heights of the Watchlist marks (y 1.9..21.4, 1.9..22.1, 1.5..22.5).
+        Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
+        Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
+        Icon::ServerSlash => 21.0 / 24.0,
         _ => 1.0,
     }
 }
@@ -312,6 +335,11 @@ fn src(id: Icon) -> &'static str {
         Icon::ServerBadgePlus => include_str!("../../../assets/icons/server-badge-plus.svg"),
         Icon::ServerBadgeXmark => include_str!("../../../assets/icons/server-badge-xmark.svg"),
         Icon::WifiSlash => include_str!("../../../assets/icons/wifi-slash.svg"),
+        Icon::Bookmark => include_str!("../../../assets/icons/bookmark.svg"),
+        Icon::BookmarkFill => include_str!("../../../assets/icons/bookmark-fill.svg"),
+        Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
+        Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
+        Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
     }
 }
 
@@ -576,6 +604,63 @@ mod ink_tests {
             let alpha = |x: i32, y: i32| rgba[((y * size + x) * 4 + 3) as usize];
             let max_alpha = (0..size).flat_map(|y| (0..size).map(move |x| alpha(x, y))).max().unwrap();
             assert_eq!(max_alpha, 255, "WifiSlash never reaches full opacity at {size}px");
+        }
+    }
+
+    /// The `d` attribute's coordinates as `(x, y)` pairs. The Watchlist assets are baked absolute
+    /// `M`/`z` paths of bare coordinate pairs, so splitting on letters and whitespace is exact.
+    fn path_points(svg: &str) -> Vec<(f32, f32)> {
+        let start = svg.find(" d=\"").expect("asset has a path") + 4;
+        let d = &svg[start..start + svg[start..].find('"').unwrap()];
+        let nums: Vec<f32> = d
+            .split(|c: char| c.is_ascii_alphabetic() || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert_eq!(nums.len() % 2, 0, "path is not coordinate pairs");
+        nums.chunks(2).map(|p| (p[0], p[1])).collect()
+    }
+
+    /// The five Watchlist marks rasterize at the two sizes the Watchlist draws them at (the 28px
+    /// control-size mark and the 112px read-out) through the production clamp: full opacity reached,
+    /// no ink on the border. Same two checks the read-out family is graded by.
+    #[test]
+    fn the_watchlist_marks_rasterize_clean_at_28_and_112() {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
+            for px in [28, 112] {
+                let px = icon_raster_px(px);
+                let rgba = plx_gfx::svg::rasterize(src(id), px, px)
+                    .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {px}px"));
+                assert_eq!(rgba.len(), (px * px * 4) as usize, "{id:?} wrong buffer size");
+                let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+                let max_alpha =
+                    (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+                assert_eq!(max_alpha, 255, "{id:?} never reaches full opacity at {px}px");
+                for i in 0..px {
+                    for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                        assert_eq!(alpha(x, y), 0, "{id:?} has ink on the border at {px}px ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The Watchlist marks' `ink_x` and `band` entries are the bounds of their own assets, not
+    /// transcriptions of them: the same drift guard `the_crumb_chevron_is_the_row_chevron_mirrored`
+    /// gives the chevron, measured from the path data this time.
+    #[test]
+    fn the_watchlist_marks_ink_entries_match_their_assets() {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
+            let pts = path_points(src(id));
+            let xs = pts.iter().map(|p| p.0);
+            let ys = pts.iter().map(|p| p.1);
+            let (min_x, max_x) = (xs.clone().fold(f32::MAX, f32::min), xs.fold(f32::MIN, f32::max));
+            let (min_y, max_y) = (ys.clone().fold(f32::MAX, f32::min), ys.fold(f32::MIN, f32::max));
+            let (l, r) = ink_x(id);
+            assert!((l - min_x / 24.0).abs() < 0.005, "{id:?} ink left {l} vs asset {}", min_x / 24.0);
+            assert!((r - max_x / 24.0).abs() < 0.005, "{id:?} ink right {r} vs asset {}", max_x / 24.0);
+            let height = (max_y - min_y) / 24.0;
+            assert!((band(id) - height).abs() < 0.005, "{id:?} band {} vs asset {height}", band(id));
         }
     }
 }

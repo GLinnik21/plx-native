@@ -61,11 +61,10 @@
 //! it spends whatever is left inside the screen's glass keep-out and never less than one line. Prose
 //! beyond that budget scrolls (see above) rather than being cut.
 //!
-//! **Its ground is the latched underlay field, not glass** (`widgets::panel_ground`): the page
-//! under it sampled once into the 15×8 field the modal dim already latched, windowed to the
-//! panel's own rect and graded toward the panel material, under the frost. So it reads no
-//! framebuffer, pays no blur region however far it grows, and the page behind it standing still is
-//! a property of the host snapshot rather than a condition of the material. It still clears the
+//! **Its ground is `widgets::panel_ground` with `Ground::Sheet`: NOT glass** (DS6 put glass on
+//! menus only). The latched underlay field: the page under it sampled once into the 15×8 field the
+//! modal dim already latched, windowed to the panel's own rect and graded toward the panel
+//! material, under the frost. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
 use plx_ui::consts::{SCR_H, SCR_W};
@@ -356,8 +355,7 @@ impl AboutPanelScreen {
         measure: &dyn plx_machine::machine::Measure,
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
-        let slide = RISE * (1.0 - appear);
-        let p = Painter::root().alpha(appear).translate(0.0, slide);
+        let p = sheet_painter(appear);
 
         // ---- measure ----
         // The tagline first, because the synopsis's line budget is what is LEFT after it.
@@ -378,7 +376,7 @@ impl AboutPanelScreen {
         let r = panel_rect(s.h);
 
         // ---- ground ----
-        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         // ---- content ----
         let cx = r.x + PAD;
@@ -620,7 +618,7 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is the latched underlay field (a sheet is never glass; DS6 glass is for menus), latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
@@ -675,6 +673,11 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
 /// One full-width hairline across the content column.
 fn rule(p: Painter, r: Rect, y: f32) {
     widgets::hairline(p, r.x + PAD, r.y + y, CONTENT_W);
+}
+
+/// The painter every frame of the sheet draws through: the appear fade and the rise.
+fn sheet_painter(appear: f32) -> Painter {
+    Painter::root().alpha(appear).translate(0.0, RISE * (1.0 - appear))
 }
 
 #[cfg(test)]

@@ -341,9 +341,11 @@ fn live_glass_carries_no_private_source_policy() {
     );
 }
 
-/// **Glass is chrome-only; no popover panel frosts a backdrop blur.** Every panel stands on the
-/// latched underlay field through `panel_ground` (directly, or through `Popover::panel`), and the
-/// blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
+/// **Glass over the blur chain is chrome only; no popover or screen names the blur path.** Every
+/// panel's ground goes through `panel_ground`, which draws `popover_glass` (DS6) for a
+/// `Ground::Menu` ONLY — glass on the frozen ground, which reads no framebuffer — and stands a
+/// `Ground::Sheet` on the latched underlay field (directly, or through `Popover::panel`), as a menu
+/// does too with no latched field. The blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
 /// band — all in `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
 /// standing note, the track's own material, budgeted by
 /// `hold_hint::tests::the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band`),
@@ -409,21 +411,29 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
         offenders.join("\n")
     );
 
-    // …and every panel that used to frost one now stands on the field.
-    for rel in [
-        "screens/src/item_menu.rs",
-        "screens/src/account_menu.rs",
-        "screens/src/alt_sources.rs",
-        "screens/src/about_panel.rs",
-        "screens/src/tracks_panel.rs",
-        "screens/src/library/menu.rs",
-        "screens/src/person_bio.rs",
-        "ui/src/decision_alert.rs",
-    ] {
+    // …and the glass scope is exactly the MENUS (owner decision, wave 2 review): Sort & Filter, the
+    // account menu and the item hold menu name `Ground::Menu`; every other panel (alerts, About,
+    // Tracks, the person bio, the Also-available sheet, the decision alert) names `Ground::Sheet`.
+    // The player's "…" menu stands over the video plane and draws no `panel_ground` at all.
+    let ground_of = |rel: &str| {
         let src = std::fs::read_to_string(root.join(rel)).expect("read panel source");
         assert!(
             src.contains("panel_ground(") || src.contains("pop.panel("),
             "{rel} must draw its ground through `panel_ground` (or `Popover::panel`)"
         );
+        let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        (code.contains("Ground::Menu"), code.contains("Ground::Sheet"))
+    };
+    for rel in ["screens/src/item_menu.rs", "screens/src/account_menu.rs", "screens/src/library/menu.rs"] {
+        assert_eq!(ground_of(rel), (true, false), "{rel} is a MENU: `Ground::Menu` and nothing else");
+    }
+    for rel in [
+        "screens/src/alt_sources.rs",
+        "screens/src/about_panel.rs",
+        "screens/src/tracks_panel.rs",
+        "screens/src/person_bio.rs",
+        "ui/src/decision_alert.rs",
+    ] {
+        assert_eq!(ground_of(rel), (false, true), "{rel} is a SHEET: `Ground::Sheet` and nothing else");
     }
 }

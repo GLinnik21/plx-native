@@ -163,11 +163,12 @@ fn every_tab_pill_round_trips_through_the_focus_packing() {
         (STRIP_SHOWS_ELEM, HomeReq::Tab(HomeTab::Shows)),
         (STRIP_SEARCH_ELEM, HomeReq::Tab(HomeTab::Search)),
         (STRIP_ACCOUNT_ELEM, HomeReq::Account),
+        (STRIP_ACCOUNT_ELEM + 1, HomeReq::Tab(HomeTab::Watchlist)),
     ];
     for (elem, want) in cases {
         assert_eq!(HomeScreen::request_for_strip(elem), Some(want));
     }
-    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 1), None);
+    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 2), None);
     for page_key in [HERO_PLAY_ELEM, HERO_INFO_ELEM, FIRST_ITEM_ELEM] {
         assert_eq!(HomeScreen::request_for_strip(page_key), None);
     }
@@ -1591,7 +1592,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     popped.pop_shelf_for_test(snapshot.view());
     assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
-    assert_eq!(HERO_NBTN, 2);
+    assert_eq!(HERO_NBTN, 3);
     assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
@@ -5037,6 +5038,9 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
     assert_eq!(s.rows[0].elems[0], before[2], "the element moved to column 0 with its card");
     assert_eq!(seated, focus, "and the focus is still on it");
 }
+
+#[path = "hero_watchlist_tests.rs"]
+mod hero_watchlist;
 
 /// The billboard as it is on screen: how much of the page the hero art covers, from the
 /// selected art and any art held beneath it while the selection changes. `0` is the bare wash.

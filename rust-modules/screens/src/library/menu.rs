@@ -698,7 +698,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         let field = f.underlay;
         let frame = self.frame(measure);
         plx_ui::profile::phase("lb.menu", || {
-            plx_ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field);
+            plx_ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
             self.form.table.draw(p, frame, measure);
         });
         for index in 0..self.form.table.n_rows() as usize {

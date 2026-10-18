@@ -211,6 +211,14 @@ impl UnderlayField {
         }
     }
 
+    /// A field that holds texture `tex` as if a latch had uploaded it — a host test links GL but
+    /// has no context, so [`upload`] never mints a name there. Its re-latch is a
+    /// `tex_ledger::specified(tex, ..)` call, which is exactly what a real upload records.
+    #[cfg(test)]
+    pub(crate) fn latched_for_test(tex: u32) -> Self {
+        Self { tex, latched: true, ..Self::new() }
+    }
+
     /// **Freeze the frame that has already been drawn — without ever waiting for it.** Idempotent
     /// while latched, which is what makes it safe to call from a `draw` that runs every frame.
     ///
@@ -297,6 +305,12 @@ impl UnderlayField {
         self.latched
     }
 
+    /// The field's texture once it is latched — the frozen ground a menu's glass shows through its
+    /// body (`popover_glass::draw`) — and `None` before, when there is no picture of the page yet.
+    pub fn ground_tex(&self) -> Option<u32> {
+        (self.latched && self.tex != 0).then_some(self.tex)
+    }
+
     /// **The field's own colour at one screen point**, display-encoded — the same contract as
     /// `RouteGround::sample` and `AmbientWash::sample`, and for the same caller: an edge fade that
     /// has to paint the exact colour of the ground it is cutting across.
@@ -336,9 +350,11 @@ impl UnderlayField {
                 }
                 p.field_ground(r, self.tex, alpha);
             }
+            // `Painter::dim` draws the same two primitives and declares them as a DIM, which a
+            // glass above may apply at composite instead of re-filtering its source per frame.
             Role::Dim { weight } => match plan(self.latched && self.tex != 0, weight, alpha) {
-                Draw::Flat(c) => p.rect(r, 0.0, c, c, 0.0),
-                Draw::Field(tint) => p.field(r, self.tex, tint),
+                Draw::Flat(c) => p.dim(r, 0, c),
+                Draw::Field(tint) => p.dim(r, self.tex, tint),
             },
         }
     }

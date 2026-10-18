@@ -47,6 +47,11 @@ impl GridBands {
         Self { focus: None, slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS] }
     }
 
+    /// The row whose band is open (or opening).
+    pub fn focused(&self) -> Option<usize> {
+        self.focus
+    }
+
     pub fn focus(&mut self, row: Option<usize>, animate: bool) {
         if self.focus == row { return; }
         self.focus = row;
@@ -148,6 +153,29 @@ impl GridPop {
         if self.shrink.0 == Some(to) {
             self.shrink.0 = None;
         }
+    }
+
+    /// The focused card at cell `to` took over a cell whose card left lifted (a landing's ghost
+    /// carries that lift down while it fades): its pop starts from REST and grows with the
+    /// landing, so the two never stand lifted side by side. Nothing lets go — the card that held
+    /// the pop is the ghost, which eases itself.
+    pub fn rise(&mut self, to: usize) {
+        self.pop = (Some(to), Spring::at(1.0));
+        if self.shrink.0 == Some(to) {
+            self.shrink = (None, Spring::at(1.0));
+        }
+    }
+
+    /// The focused card left as a ghost and focus has not been reconciled yet: the pop belongs to
+    /// no card and nothing lets go (the card now in that cell was never lifted; the ghost eases
+    /// itself).
+    pub fn vacate(&mut self) {
+        if let Some(c) = self.pop.0 {
+            if self.shrink.0 == Some(c) {
+                self.shrink = (None, Spring::at(1.0));
+            }
+        }
+        self.pop = (None, Spring::at(1.0));
     }
 
     /// Cell `to` is focused with no deliberate move (a restore, a reconcile): FULL scale at once

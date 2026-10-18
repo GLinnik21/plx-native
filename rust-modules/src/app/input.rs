@@ -645,6 +645,22 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);
         }
+        // The Watchlist hold menu's Remove: the store flips the tile at once, the page plays its
+        // removal landing and a refused write puts the tile back with no toast (Q8).
+        Action::WatchlistRemove(guid) => {
+            let from_page = super::bridge::Bridge::watchlist_page_on_top(pages);
+            bridge.watchlist_remove(&guid, from_page);
+        }
+        // The write is queued on the Watchlist store (the ledger flips the face at once and puts it
+        // back if plex.tv refuses) and the strip's bookmark pulses: the APP owns that, not the menu.
+        Action::WatchlistAdd { hex } => bridge.watchlist_add(hex),
+        // The hold menu's Go to row: the catalog page of the title, by the identity captured when
+        // the menu opened (a guid with no catalog id has no page).
+        Action::GoToCatalog(guid) => {
+            if let Some(hex) = super::bridge::hex_of_guid(&guid) {
+                super::bridge::open_catalog(pages, hex, None);
+            }
+        }
         Action::GoToShow(show_rk, season) => {
             super::bridge::open_detail(pages, bridge, sid, &show_rk, (season > 0).then_some(season), None);
         }

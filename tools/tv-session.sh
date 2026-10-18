@@ -762,6 +762,7 @@ cmd_up() {
     if [ "$keep" = 1 ]; then bad "--mock-plextv cannot be combined with --keep (leftover triggers could select another identity)"; exit 2; fi
     no_token=1
     extra_arm+=("plextv=http://127.0.0.1:$mock_plextv")
+    extra_arm+=("discover=http://127.0.0.1:$mock_plextv")
   fi
   configure_direct_screen || exit 2
   # --remote is --stream plus a front door: there is nothing to publish without a stream, so it

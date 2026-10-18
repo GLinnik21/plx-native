@@ -347,9 +347,11 @@ impl Shelf {
         self.left = false;
         // after the landing rule above: the offsets are taken against the focused card's own move
         let (scroll, w, margin) = (self.row.scroll_x(), self.style.w, self.margin);
-        let on = |x: f32| crate::on_axis(x - scroll, w, SCR_W, margin);
-        self.landing.observe(src, &Scene { shift: scroll - sx0, pitch: self.pitch(), margin_x: self.style.margin_x, on: &on, lifted });
-        self.landing.step(dt, (self.style.k_scroll, self.style.k_scale));
+        let on = |x: f32, _: f32| crate::on_axis(x - scroll, w, SCR_W, margin);
+        let (pitch, margin_x) = (self.pitch(), self.style.margin_x);
+        let slot = |i: usize| (margin_x + i as f32 * pitch, 0.0);
+        self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
+        self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {
@@ -774,7 +776,7 @@ impl Shelf {
         let pr = p.translate(-sx, 0.0);
         for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
             let a = g.alpha.pos.clamp(0.0, 1.0);
-            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift * sweep;
+            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift.0 * sweep;
             if a <= 0.0 || !crate::on_axis(x - sx, self.style.w, SCR_W, self.margin) {
                 continue;
             }
@@ -782,7 +784,7 @@ impl Shelf {
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: false };
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
     }

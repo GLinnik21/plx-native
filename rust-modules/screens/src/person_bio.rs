@@ -15,17 +15,16 @@
 //!
 //! ## Three things here are not obvious
 //!
-//! **1. Its ground is the page's own light, latched once, and its dim is heavier than a menu's.**
-//! The sheet stands on `widgets::panel_ground`: the container's underlay field, sampled from the
-//! UNDIMMED page at the head of the dim (`containers::modal::ModalUnderlay`), drawn through the
-//! panel's own window and frosted. It used to be the app's one `Glass::DYNAMIC_BACKDROP`, re-blurring
-//! the host on every changed present, because a CACHED snapshot taken while its own scrim was still
-//! ramping through zero frosted an undimmed page — and on this page that is not hypothetical:
-//! `person.rs` draws the person's own name at `size::DISPLAY` (48) at x≈474, y≈96, *directly behind
-//! this panel's top-left corner*, where the eyebrow and the identity line sit. A 15x8 field cannot
-//! carry a name — a box 128px wide reduces lettering to a faint lift of its cell — and the panel's
-//! luma ceiling (`theme::underlay::PANEL_LUMA_MAX`) caps even that, so the refreshing backdrop, its
-//! cadence hook and the FPS work it needed went with it. The page around the panel is still dimmed
+//! **1. Its ground is the page's own light (never glass, DS6 is for menus only), and its dim is heavier than a menu's.**
+//! The sheet stands on `widgets::panel_ground` with `Ground::Sheet`: the container's underlay
+//! field, sampled from the UNDIMMED page at the head of the dim
+//! (`containers::modal::ModalUnderlay`), drawn through the panel's own window and frosted. This panel once dropped its dynamic backdrop because a CACHED snapshot taken while
+//! its own scrim was still ramping through zero frosted an undimmed page, and on this page that is
+//! not hypothetical: `person.rs` draws the person's own name at `size::DISPLAY` (48) at x~474,
+//! y~96, *directly behind this panel's top-left corner*, where the eyebrow and the identity line
+//! sit. The field (a 15x8 box cannot carry lettering, and `theme::underlay::PANEL_LUMA_MAX` caps
+//! it) is the ground on every frame. The panel's slide is a plain `translate`; no
+//! ground reads it. The page around the panel is still dimmed
 //! at [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`],
 //! as the PROSE role's weight — because a panel of fine print over a headline should stand further
 //! forward than a menu does.
@@ -161,7 +160,7 @@ impl PersonBioScreen {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
         let panel = panel_rect();
-        plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         let c = content_rect();
         draw_head(p, person, c, measure);

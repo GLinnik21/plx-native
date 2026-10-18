@@ -1759,10 +1759,12 @@ fn fetch_credits(_guid: &str, _session: &plx_plex::plex::session::Session) -> Op
     None
 }
 
-/// HOST SUITE: this is the crate's TLS seam, and the dev Mac has no libcurl to satisfy it — a test
-/// that merely *reaches* this function fails to **link**, not to assert (the boundary the root
-/// `docs/agent-reference.md` calls structural limit #1, and the reason `ff.rs` cfg-gates its `#[link]`s). `pump`
-/// is called by tests, so the reference has to be cut here rather than avoided by discipline.
+/// HOST SUITE: this is the crate's TLS seam. libcurl is bound at run time through `plx_base::dynlib!`
+/// (nothing is linked, so a test that reaches this function still LINKS), which means a test that
+/// calls the real fetch would either take `dlopen`'s `None` branch where the host has no libcurl or,
+/// where it has one, put a real plex.tv request on the wire from a unit test. Neither is a test of
+/// anything, and `pump` is called by tests, so the reference is cut here rather than avoided by
+/// discipline (`docs/agent-reference.md`, host suite structural limit #1, describes the boundary).
 /// Everything downstream of the request — the mailbox, the generation guard, the unknown-vs-failed
 /// distinction and the roles mapping — is exercised directly through the adapter landing,
 /// [`PersonState::pump`] and [`roles_line`],

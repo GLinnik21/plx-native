@@ -199,6 +199,8 @@ const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
 /// The shared dither tile's unit — see `gfx::bind_dither_tile`.
 const GL_TEXTURE2: c_uint = 0x84C2;
+/// `fs_glass.frag`'s composite-time dim field — see `draw_blur_backdrop`.
+const GL_TEXTURE3: c_uint = 0x84C3;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
@@ -665,6 +667,7 @@ static mut SPROG: c_uint = 0;
 static mut SL_RECT: c_int = 0;
 static mut SL_SCREEN: c_int = 0;
 static mut SL_SIZE: c_int = 0;
+static mut SL_MAP: c_int = 0;
 static mut SL_RADIUS: c_int = 0;
 static mut SL_BLUR: c_int = 0;
 static mut SL_OFF: c_int = 0;
@@ -1073,6 +1076,7 @@ pub fn init_gl() {
             SL_RECT = glGetUniformLocation(SPROG, c"u_rect".as_ptr());
             SL_SCREEN = glGetUniformLocation(SPROG, c"u_screen".as_ptr());
             SL_SIZE = glGetUniformLocation(SPROG, c"u_size".as_ptr());
+            SL_MAP = glGetUniformLocation(SPROG, c"u_map".as_ptr());
             SL_RADIUS = glGetUniformLocation(SPROG, c"u_radius".as_ptr());
             SL_BLUR = glGetUniformLocation(SPROG, c"u_blur".as_ptr());
             SL_OFF = glGetUniformLocation(SPROG, c"u_off".as_ptr());
@@ -1725,15 +1729,91 @@ pub fn draw_shadow(
             return;
         }
         use_prog(SPROG); // SL_SCREEN is set once at init
-        glUniform4f(SL_RECT, qx, qy, qw, qh);
         glUniform2f(SL_SIZE, qw, qh);
         glUniform1f(SL_RADIUS, radius);
         glUniform1f(SL_BLUR, b);
         glUniform1f(SL_OFF, off); // occluder (tile) offset above the shadow box; shader discards the covered interior
         glUniform1f(SL_CUT, cut); // <0 = the opaque tile's box cut; >=0 = cut the occluder's rounded shape
         glUniform4fv(SL_COL, 1, col);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        // **Draw the bands around the part the shader certainly discards, not the whole quad.** A
+        // glass menu's shadow is a 30 px blur under a panel hundreds of px across: most of the quad
+        // is the panel interior, where every fragment was rasterized and shaded only to be
+        // discarded (~0.74M GPU cycles/frame on the T820 for that one shadow, measured at 60 px). The skip
+        // rect lies strictly inside the discard region, so the pixels are identical. Its edges sit
+        // on the drawable's pixel grid so a seam never splits a pixel (a pixel drawn twice would
+        // blend twice) and `u_map` keeps `p` relative to the FULL quad. The ledger above books the
+        // full quad once, as before.
+        let scale = match CLIP_TARGET {
+            Some((_, _, ts, _, _)) => ts,
+            None => plx_base::surface::scale() * plx_base::surface::render_scale() as f32,
+        };
+        let inner = shadow_skip_rect([qx, qy, qw, qh], b, radius, off, cut);
+        let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, scale);
+        let (cx, cy) = (qx + qw * 0.5, qy + qh * 0.5);
+        for r in &bands[..n] {
+            glUniform4f(SL_RECT, r[0], r[1], r[2], r[3]);
+            glUniform4f(SL_MAP, r[0] - cx, r[1] - cy, r[2], r[3]);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
     }
+}
+
+/// The rectangle of a shadow quad (`quad` = x, y, w, h, the box inflated by `blur`) that
+/// `fs_shadow.frag` is certain to `discard`, inset so float error cannot make it claim a fragment
+/// the shader would keep; `None` when the occluder leaves no such rectangle. Not yet snapped to the
+/// pixel grid ([`shadow_bands`] does that) and clipped to the quad.
+fn shadow_skip_rect(quad: [f32; 4], blur: f32, radius: f32, off: f32, cut: f32) -> Option<[f32; 4]> {
+    let (bw, bh) = (quad[2] - 2.0 * blur, quad[3] - 2.0 * blur);
+    if bw <= 0.0 || bh <= 0.0 {
+        return None;
+    }
+    // The occluder is the shadow box moved UP by `off`.
+    let (ox, oy) = (quad[0] + blur, quad[1] + blur - off);
+    let k = if cut >= 0.0 {
+        // Rounded occluder, corner radius rc: the axis-aligned rect inset by rc(1 - 1/sqrt 2) has
+        // its corners on the arcs' 45-degree points, so it lies inside the shape; +1 px is margin.
+        let rc = cut.min(bw * 0.5).min(bh * 0.5);
+        rc * (1.0 - std::f32::consts::FRAC_1_SQRT_2) + 1.0
+    } else {
+        // The box cut stops `radius + 1` short of the occluder's edge; +1 px is margin.
+        radius.max(0.0) + 2.0
+    };
+    let (x0, y0) = ((ox + k).max(quad[0]), (oy + k).max(quad[1]));
+    let (x1, y1) = ((ox + bw - k).min(quad[0] + quad[2]), (oy + bh - k).min(quad[1] + quad[3]));
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+/// The rects (up to four, and how many are used) that tile `quad` minus `inner`: the full-width
+/// bands above and below `inner`, then the strips to its left and right. `inner` is first clipped
+/// to the quad and shrunk INWARD onto multiples of `1/scale` (the drawable's pixel edges), so a
+/// seam is on a pixel edge and no float ulp can move it across a pixel centre: every pixel is
+/// drawn exactly once. No `inner`, or one that clips away, returns the quad whole.
+fn shadow_bands(quad: [f32; 4], inner: Option<[f32; 4]>, scale: f32) -> ([[f32; 4]; 4], usize) {
+    let whole = ([quad, [0.0; 4], [0.0; 4], [0.0; 4]], 1);
+    let Some(i) = inner else { return whole };
+    let (qx1, qy1) = (quad[0] + quad[2], quad[1] + quad[3]);
+    let snap_up = |v: f32| (v * scale).ceil() / scale;
+    let snap_dn = |v: f32| (v * scale).floor() / scale;
+    let (x0, y0) = (snap_up(i[0].max(quad[0])), snap_up(i[1].max(quad[1])));
+    let (x1, y1) = (snap_dn((i[0] + i[2]).min(qx1)), snap_dn((i[1] + i[3]).min(qy1)));
+    if !(x1 > x0 && y1 > y0) || !scale.is_finite() || scale <= 0.0 {
+        return whole;
+    }
+    let mut out = [[0.0f32; 4]; 4];
+    let mut n = 0;
+    // Edges, not sums: neighbouring bands share the very same f32 seam value.
+    for r in [
+        [quad[0], quad[1], quad[2], y0 - quad[1]],
+        [quad[0], y1, quad[2], qy1 - y1],
+        [quad[0], y0, x0 - quad[0], y1 - y0],
+        [x1, y0, qx1 - x1, y1 - y0],
+    ] {
+        if r[2] > 0.0 && r[3] > 0.0 {
+            out[n] = r;
+            n += 1;
+        }
+    }
+    (out, n)
 }
 
 /// Critically-damped spring step — the **exact analytic** solution of `x'' + 2ω·x' + ω²·x = 0`
@@ -2680,6 +2760,13 @@ pub struct FrameCache {
     /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
     /// on and the capture falls back to [`capture`](Self::capture)'s copy.
     fbo_off: bool,
+    /// **The retained second slot**: a copy of an earlier frame that [`draw_prev`](Self::draw_prev)
+    /// fades away over the new capture (a glass menu's look before and after its page reflowed).
+    /// A texture of its own, made on [`capture_prev`](Self::capture_prev) and deleted on
+    /// [`release_prev`](Self::release_prev): it costs 8.3 MB only for the length of the fade.
+    prev: c_uint,
+    prev_w: c_int,
+    prev_h: c_int,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -2694,7 +2781,61 @@ impl FrameCache {
             off: false,
             fbo: 0,
             fbo_off: false,
+            prev: 0,
+            prev_w: 0,
+            prev_h: 0,
         }
+    }
+
+    /// Copy the framebuffer into the retained second slot. `false` (nothing retained) in a blur
+    /// source pass, on a video-plane frame and when the cache is off.
+    pub fn capture_prev(&mut self) -> bool {
+        if self.off || blur_source_pass() || video_plane_refuses("FrameCache::capture_prev") {
+            return false;
+        }
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        if vw <= 0 || vh <= 0 {
+            return false;
+        }
+        unsafe {
+            if self.prev == 0 || self.prev_w != vw || self.prev_h != vh {
+                delete_tex(self.prev);
+                self.prev = cap_tex(vw, vh);
+                self.prev_w = vw;
+                self.prev_h = vh;
+            }
+            glBindTexture(GL_TEXTURE_2D, self.prev);
+            plx_base::diag::spans::span("capprev", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
+        }
+        true
+    }
+
+    /// Whether the second slot holds a copy.
+    pub fn has_prev(&self) -> bool {
+        self.prev != 0
+    }
+
+    /// Give the second slot's texture back.
+    pub fn release_prev(&mut self) {
+        if self.prev != 0 {
+            delete_tex(self.prev);
+            self.prev = 0;
+        }
+    }
+
+    /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
+    pub fn draw_prev(&self, alpha: f32) -> bool {
+        if self.prev == 0 {
+            return false;
+        }
+        let was = set_page_frozen(false);
+        let tint = tokens::with_a(CAP_TINT, alpha);
+        draw_tex_core(
+            Class::Image, self.prev, 0.0, 0.0, SCR_W, SCR_H, frame_cache_uv(), 0.0, tint.as_ptr(), 0.0,
+            NO_RIM.as_ptr(), SCR_W * 0.5, SCR_H * 0.5, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, None,
+        );
+        set_page_frozen(was);
+        true
     }
 
     /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
@@ -2834,7 +2975,8 @@ impl FrameCache {
     }
 
     pub fn resident_bytes(&self) -> usize {
-        if self.tex == 0 { 0 } else { self.w as usize * self.h as usize * 4 }
+        let one = |t: c_uint, w: c_int, h: c_int| if t == 0 { 0 } else { w as usize * h as usize * 4 };
+        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h)
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -3329,8 +3471,13 @@ pub struct BackdropImage {
     chain: BlurChain,
     texture: std::rc::Rc<BackdropTexture>,
     alpha_invariant: bool,
+    /// The replay that filled this image left the band's dim out ([`backdrop::dim_deferred`]),
+    /// so the composite owes it ([`backdrop::deferred_dim`]). An inline framebuffer capture
+    /// never does: the dim is already on the framebuffer it copies.
+    dim_excluded: bool,
 }
 impl BackdropImage {
+    pub fn dim_excluded(&self) -> bool { self.dim_excluded }
     pub fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
     pub fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
 }
@@ -3354,7 +3501,10 @@ pub fn retain_backdrop(z: backdrop::Z) -> bool {
         let mut chain = c.clone();
         chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
         let alpha_invariant = backdrop::source_alpha(z).is_some();
-        backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
+        // Asked of the walk this is called in: the direct job's own (ceiling `z`) right after its
+        // replay, or the visible one for an inline capture, which never defers.
+        let dim_excluded = backdrop::dim_deferred();
+        backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant, dim_excluded });
         true
     }
 }
@@ -3599,6 +3749,13 @@ pub enum GlassRim {
     /// plastic, which is the same failure the note below records measuring — the hairline is part
     /// of the backdrop, so over a bright ground it clips to white before the scrim gets to it.
     Standing,
+    /// A popover's panel (DS6): the standing container's chamfer and lens, plus the sharp second
+    /// source switched ON — the rim refracts the captured host page, unblurred, through the same
+    /// rounded-rect SDF displacement. A menu draws it on frozen ground ([`draw_glass_frozen`]),
+    /// where that source is the host snapshot and costs nothing per frame. `Standing` (sharp 0)
+    /// takes no sharp source; measured on the standing container, a per-frame band copy was +2.7%
+    /// GPU_ACTIVE, which is why no menu draws over live ground any more. Numbers: `tokens::MENU_*`.
+    Menu,
 }
 
 impl GlassRim {
@@ -3626,6 +3783,7 @@ impl GlassRim {
         match self {
             Self::Bevelled => 0.0,
             Self::Standing => sharp_sweep().unwrap_or(STANDING_SHARP),
+            Self::Menu => tokens::MENU_SHARP,
         }
     }
 
@@ -3636,6 +3794,7 @@ impl GlassRim {
         match self {
             Self::Bevelled => 0.0,
             Self::Standing => rimclear_sweep().unwrap_or(STANDING_RIMCLEAR),
+            Self::Menu => tokens::MENU_RIMCLEAR,
         }
     }
 
@@ -3643,10 +3802,11 @@ impl GlassRim {
         let base = match self {
             Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
             Self::Standing => (STANDING_BEVEL, STANDING_LENS, [0.0, 0.0, 1.0, 0.0]),
+            Self::Menu => (tokens::MENU_BEVEL, tokens::MENU_LENS, [0.0, 0.0, 1.0, 0.0]),
         };
         match self {
             Self::Standing => standing_sweep().unwrap_or(base),
-            Self::Bevelled => base,
+            Self::Bevelled | Self::Menu => base,
         }
     }
 }
@@ -3757,6 +3917,11 @@ static mut GL_RIMCLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
 static mut GL_SOURCE_GROUND: c_int = 0;
+static mut GL_DIM: c_int = 0;
+static mut GL_DIM_UV: c_int = 0;
+static mut GL_DIM_FIELD: c_int = 0;
+static mut GL_DIM_TEX: c_int = 0;
+static mut GL_DIM_SHARP: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -4084,9 +4249,17 @@ fn blur_lazy_init() -> bool {
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
         GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
+        GL_DIM = glGetUniformLocation(GPROG, c"u_dim".as_ptr());
+        GL_DIM_UV = glGetUniformLocation(GPROG, c"u_dim_uv".as_ptr());
+        GL_DIM_FIELD = glGetUniformLocation(GPROG, c"u_dim_field".as_ptr());
+        GL_DIM_TEX = glGetUniformLocation(GPROG, c"u_dim_tex".as_ptr());
+        GL_DIM_SHARP = glGetUniformLocation(GPROG, c"u_dim_sharp".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
+        // The composite-time dim's field, on unit 3 (0 is the snapshot, 1 the sharp grab, 2 the
+        // dither tile). Bound per draw, and only by a draw that owes a field dim.
+        glUniform1i(GL_DIM_TEX, 3);
         // The rim's second source lives on unit 1 for the life of the program; only the texture
         // bound there changes, and only when a chain is rebuilt.
         glUniform1i(GL_SHARP, 1);
@@ -5665,6 +5838,41 @@ pub fn draw_blur_backdrop(
         let ground = tokens::CLEAR_RGB;
         glUniform1f(GL_SOURCE_ALPHA, source_alpha);
         glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
+        // THE MODAL DIM, at composite. A band whose dim is the last draw under it filters the
+        // UNDIMMED prefix once (`backdrop::dim_deferred` skipped the dim in the replay) and takes
+        // this frame's dim here, in `srcRGB`, before the sharp rim mix — the sharp grab is off the
+        // finished framebuffer, which carries the dim already. Blur is linear and the ink is a
+        // smooth field, so this is the picture the in-source dim made, without re-filtering the
+        // page every frame its alpha ramps or its field re-latches (`backdrop::Dim`).
+        let dim = if retained.as_ref().is_some_and(|image| image.dim_excluded) {
+            live.and_then(|request| backdrop::deferred_dim(request.z))
+        } else {
+            None
+        };
+        match dim {
+            Some(d) if d.tint[3] > 0.0 => {
+                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
+                if d.tex != 0 {
+                    // `v_cuv` back to the screen point, then over the screen: the field maps the
+                    // whole screen top-down (`ui::underlay::panel_uv`). `blur_uv_rect` inverted.
+                    let su = c.reg[2] / (span[0] * SCR_W);
+                    let ou = c.reg[0] / SCR_W;
+                    let (sv, ov) = if c.bottom_up {
+                        (-c.reg[3] / (span[1] * SCR_H), (c.reg[1] + c.reg[3]) / SCR_H)
+                    } else {
+                        (c.reg[3] / (span[1] * SCR_H), c.reg[1] / SCR_H)
+                    };
+                    glUniform4f(GL_DIM_UV, su, sv, ou, ov);
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, d.tex);
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
+            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+        }
+        // The sharp grab below is off the finished framebuffer: the dim is in it already.
+        glUniform1f(GL_DIM_SHARP, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -5805,6 +6013,123 @@ pub fn draw_blur_backdrop(
         });
         true
     }
+}
+
+/// **A menu's glass on FROZEN ground** — the same `fs_glass.frag` composite as
+/// [`draw_blur_backdrop`] (the face gradient, the rim, the lit edge, the lens), fed two pictures
+/// the frame already holds instead of a blur chain: `ground`, the latched underlay field
+/// (`ui::underlay`'s 60x32 reconstruction of the undimmed host page, mapped over the whole screen
+/// top-down), as the backdrop the panel's body shows, and `sharp`, the host snapshot
+/// (`ui::popover::host`'s one page-sized capture, bottom-up as [`FrameCache`] holds it), as the
+/// rim's sharp source. Neither is taken here and neither is a function of this frame's page:
+/// nothing is copied off the framebuffer, no source pass runs and no backdrop entry is requested,
+/// so a menu standing over its host costs one panel quad however long it stands, and its morph or
+/// slide moves that quad over pictures that do not change.
+///
+/// Both pictures are UNDIMMED, so the modal dim the frame drew under the panel is applied to both
+/// at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies the same way):
+/// blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed page it
+/// stands on. `sharp` 0 draws the single-source material (the host holds no undimmed page this
+/// frame).
+///
+/// Returns whether the material was handled, a culled or `drawmask`ed quad included (as
+/// [`draw_field_panel`] answers). `false` — no glass program, no ground, a video-plane frame —
+/// asks the caller for its field ground.
+/// `u_dim_field` for a frozen glass whose body samples `ground` and whose dim's ink is `dim_tex`
+/// times its tint (`0` = a flat ink). A menu's dim is the latched underlay field
+/// (`underlay::Role::Dim`) and its ground is the same field, both read at the screen point
+/// `v_cuv`, so the dim's texel is the body's: mode 2 reuses it instead of fetching it again.
+fn frozen_dim_field(ground: c_uint, dim_tex: c_uint) -> f32 {
+    match dim_tex {
+        0 => 0.0,
+        t if t == ground => 2.0,
+        _ => 1.0,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_glass_frozen(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    ground: c_uint,
+    sharp: c_uint,
+    dim: Option<backdrop::Dim>,
+    tint: *const f32,
+    rim: GlassRim,
+    face: GlassFace,
+) -> bool {
+    if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
+        return false;
+    }
+    // §9, as for every glass: a menu over the hardware video plane has no page behind it in our
+    // framebuffer, and the host snapshot of that frame would be a photograph of the hole.
+    if video_plane_refuses("Glass::frozen") {
+        return false;
+    }
+    if culled(x, y, w, h) || gate(Class::Glass, x, y, w, h) {
+        return true;
+    }
+    unsafe {
+        use_prog(GPROG);
+        glUniform1f(GL_SOURCE_ALPHA, 1.0);
+        let g = tokens::CLEAR_RGB;
+        glUniform3f(GL_SOURCE_GROUND, g.0, g.1, g.2);
+        // `v_cuv` IS the screen point over the screen, top-down (the field's own mapping), so the
+        // dim's field is read at `v_cuv` itself.
+        match dim {
+            Some(d) if d.tint[3] > 0.0 => {
+                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                let mode = frozen_dim_field(ground, d.tex);
+                glUniform1f(GL_DIM_FIELD, mode);
+                if mode == 1.0 {
+                    glUniform4f(GL_DIM_UV, 1.0, 1.0, 0.0, 0.0);
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, d.tex);
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
+            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+        }
+        glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
+        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
+        glBindTexture(GL_TEXTURE_2D, ground);
+        glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
+        let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
+        // The snapshot is the whole drawable, bottom-up: its window is the screen rect over the
+        // screen, with the row order flipped (`frame_cache_uv`).
+        let full = [0.0, 0.0, SCR_W, SCR_H];
+        let suv = blur_uv_rect(x, y, w, h, full, [1.0, 1.0], true);
+        glUniform4f(GL_SHARP_RECT, suv[0], suv[1], suv[2], suv[3]);
+        glUniform2f(GL_SHARP_PX, 1.0 / SCR_W, -1.0 / SCR_H);
+        glUniform1f(GL_SHARPW, sharpw);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, if sharp != 0 { sharp } else { ground });
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        // The field is already the softest picture of the page there is: no deep cross.
+        glUniform2f(GL_DEEP, 0.0, 0.0);
+        let (bevel, lens, spec) = rim.params();
+        glUniform1f(GL_BEVEL, bevel);
+        glUniform1f(GL_LENS, lens);
+        glUniform4fv(GL_SPEC, 1, spec.as_ptr());
+        glUniform4fv(GL_TINT, 1, tint);
+        glUniform4fv(GL_SCRIM_TOP, 1, face.scrim_top.as_ptr());
+        glUniform4fv(GL_SCRIM_BOT, 1, face.scrim_bot.as_ptr());
+        glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
+        glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
+        glUniform1f(GL_RIMW_G, face.rim_w);
+        glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
+        glUniform1f(GL_RADIUS, radius);
+        glUniform2f(GL_CH, w * 0.5, h * 0.5);
+        glUniform4f(GL_RECT, x, y, w, h);
+        profile::phase("glass.frozen", || {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        });
+    }
+    true
 }
 
 // ============================== UI self-capture ==============================
@@ -6660,6 +6985,100 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// **A frozen menu glass reads its ground ONCE per fragment, dim included.** The modal dim's
+    /// ink on a menu is the latched underlay field times a weight (`underlay::Role::Dim`), and the
+    /// glass's body is that same field (`UnderlayField::ground_tex`), both read at the screen point
+    /// `v_cuv` — so the dim's texel IS the ground's texel and a second `texture2D` of the same
+    /// texture at the same UV is pure cost (~144k interior fragments of a hold menu, plus the rim's
+    /// two). Mode 2 says so; another field keeps its own fetch (mode 1); a flat ink none (0). Red on
+    /// the build that set 1 for every field ink.
+    #[test]
+    fn a_frozen_glass_reuses_its_ground_texel_for_a_dim_of_the_same_field() {
+        assert_eq!(frozen_dim_field(5, 5), 2.0, "dim on the ground's own field: reuse the texel");
+        assert_eq!(frozen_dim_field(5, 7), 1.0, "a different field keeps its own fetch");
+        assert_eq!(frozen_dim_field(5, 0), 0.0, "a flat ink fetches nothing");
+        let code = shader_code(FS_GLASS);
+        assert!(code.contains("u_dim_field > 1.5"), "the shader must carry the reuse mode");
+        let fetches = code.matches("texture2D(u_dim_tex").count();
+        assert_eq!(fetches, 1, "one dim-field fetch site, behind mode 1");
+        let sharp = code.lines().find(|l| l.contains("u_dim_sharp > 0.0")).expect("the sharp dim");
+        assert!(sharp.contains("dimRGB(sharp") && sharp.contains(", g)"), "the sharp dim reuses the body's texel: {sharp}");
+    }
+
+    /// **The hairline specular costs nothing where it is off.** `u_spec.w` is its strength and both
+    /// shipped glass rims that reach the edge path most (`Menu`, `Standing`) set it to 0, yet the
+    /// band ran `pow` and two `smoothstep`s per rim fragment to multiply by that 0. A uniform branch
+    /// is coherent across every fragment, so the guard is exact and free. Red on the unguarded
+    /// shader.
+    #[test]
+    fn the_glass_hairline_specular_is_skipped_when_its_strength_is_zero() {
+        assert_eq!(GlassRim::Menu.params().2[3], 0.0);
+        let code = shader_code(FS_GLASS);
+        let guard = code.find("if (u_spec.w > 0.0)").expect("the spec guard");
+        let pow = code.find("pow(abs(dot(nrm, u_spec.xy))").expect("the lobe");
+        let hair = code.find("float hair").expect("the hairline");
+        assert!(guard < hair && guard < pow, "the guard must precede the hairline and lobe");
+    }
+
+    /// **The glass interior's box pre-test only skips work, never a decision.** `fs_glass.frag`
+    /// takes its interior exit without evaluating `sdBox` for a fragment inside the panel's box
+    /// inset by `max(radius, bevel) + 1`: there both components of `q` are below -1, so the
+    /// `length` term is 0 and `d = max(|p| - ch) < -bevel - 1`, and the exit (`d < -bevel`) is
+    /// certain. Graded on a replica over a dense grid of each case — the hold menu's panel, a chip,
+    /// a radius above the half-size, a bevel plus radius above it, a zero and a negative radius —
+    /// and the shader must run the test BEFORE the `sdBox` it skips, with a stand-in `d` that is
+    /// itself an interior value. Red on the build that ran `sdBox` on every fragment.
+    #[test]
+    fn the_glass_interior_box_pretest_is_exact_and_runs_first() {
+        fn sd_box(p: [f32; 2], b: [f32; 2], r: f32) -> f32 {
+            let q = [p[0].abs() - b[0] + r, p[1].abs() - b[1] + r];
+            let len = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+            len + q[0].max(q[1]).min(0.0) - r
+        }
+        fn pretest(p: [f32; 2], ch: [f32; 2], r: f32, bevel: f32) -> bool {
+            let k = r.max(bevel) + 1.0;
+            p[0].abs() < ch[0] - k && p[1].abs() < ch[1] - k
+        }
+        let code = shader_code(FS_GLASS);
+        let main = &code[code.find("void main(){").expect("main")..];
+        let guard = main.find("if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
+        let sdf = main.find("d = sdBox(v_p, u_ch, u_iradius);").expect("the guarded sdBox");
+        let exit = main.find("if (d < -u_bevel)").expect("the interior exit");
+        assert!(guard < sdf && sdf < exit, "the pre-test guards the sdBox, and both precede the exit");
+        assert!(main.starts_with("void main(){\n  highp float d = -u_bevel - 1.0;"), "the skipped d is an interior value");
+        assert_eq!(main.matches("sdBox(").count(), 1, "main evaluates sdBox once, behind the pre-test");
+        assert_eq!(GlassRim::Menu.params().0, tokens::MENU_BEVEL);
+        for (case, &(w, h, r, bevel)) in [
+            (382.0f32, 339.0f32, 20.0f32, tokens::MENU_BEVEL),
+            (80.0, 40.0, 20.0, 12.0),
+            (60.0, 60.0, 40.0, 12.0),
+            (60.0, 50.0, 20.0, 12.0),
+            (500.0, 400.0, 0.0, 12.0),
+            (300.0, 200.0, -4.0, 6.0),
+            (900.0, 120.0, 30.0, 28.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let ch = [w * 0.5, h * 0.5];
+            let (mut taken, mut n) = (0u32, 0u32);
+            for i in 0..=400 {
+                for j in 0..=400 {
+                    let p = [-ch[0] + w * i as f32 / 400.0 + 0.25, -ch[1] + h * j as f32 / 400.0 + 0.25];
+                    n += 1;
+                    if pretest(p, ch, r, bevel) {
+                        taken += 1;
+                        let d = sd_box(p, ch, r);
+                        assert!(d < -bevel - 0.99, "{w}x{h} r{r} bevel{bevel}: {p:?} pre-tested in, d {d}");
+                    }
+                }
+            }
+            if case == 0 {
+                assert!(taken * 4 > n * 3, "the hold menu's panel is mostly pre-tested ({taken} of {n})");
+            }
+        }
     }
 
     /// The ambient program is drawn over more pixels than any other in the app — the hero's
@@ -8014,5 +8433,204 @@ mod recording_clear_tests {
         super::without_frame_clear(|| {});
         assert!(!super::frame_clear_allowed(), "must preserve the independent modal freeze");
         super::set_page_frozen(old);
+    }
+}
+
+#[cfg(test)]
+mod shadow_band_tests {
+    use super::{shadow_bands, shadow_skip_rect};
+
+    /// `fs_shadow.frag`'s `sdBox`, line for line.
+    fn sd_box(p: [f32; 2], b: [f32; 2], r: f32) -> f32 {
+        let q = [p[0].abs() - b[0] + r, p[1].abs() - b[1] + r];
+        let len = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+        len + q[0].max(q[1]).min(0.0) - r
+    }
+
+    /// `fs_shadow.frag`'s discard test for a fragment at `pos` (authored px) of `quad`.
+    fn discards(quad: [f32; 4], blur: f32, radius: f32, off: f32, cut: f32, pos: [f32; 2]) -> bool {
+        let p = [pos[0] - (quad[0] + quad[2] * 0.5), pos[1] - (quad[1] + quad[3] * 0.5)];
+        let hsz = [(quad[2] * 0.5 - blur).max(0.0), (quad[3] * 0.5 - blur).max(0.0)];
+        let pq = [p[0], p[1] + off];
+        if cut >= 0.0 {
+            sd_box(pq, hsz, cut.min(hsz[0].min(hsz[1]))) < 0.0
+        } else {
+            pq[0].abs() < hsz[0] - (radius + 1.0) && pq[1].abs() < hsz[1] - (radius + 1.0)
+        }
+    }
+
+    fn area(r: &[f32; 4]) -> f64 {
+        r[2] as f64 * r[3] as f64
+    }
+
+    fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f64 {
+        let w = (a[0] + a[2]).min(b[0] + b[2]) as f64 - a[0].max(b[0]) as f64;
+        let h = (a[1] + a[3]).min(b[1] + b[3]) as f64 - a[1].max(b[1]) as f64;
+        w.max(0.0) * h.max(0.0)
+    }
+
+    /// (box w, box h, radius, blur, off, cut): the glass menu, a chip, radius >= half size, a
+    /// large-offset case, and both cut modes of each.
+    fn cases() -> Vec<(f32, f32, f32, f32, f32, f32)> {
+        let mut v = Vec::new();
+        for &(w, h, r) in &[(500.0, 400.0, 28.0), (500.0, 400.0, 40.0), (80.0, 40.0, 20.0), (60.0, 60.0, 30.0), (300.0, 40.0, 100.0), (220.0, 330.0, 12.0)] {
+            for &(blur, off) in &[(60.0, 24.0), (24.0, 8.0), (60.0, 0.0), (10.0, 40.0)] {
+                v.push((w, h, r, blur, off, r)); // cut >= 0: the occluder's own radius
+                v.push((w, h, r, blur, off, r + 7.0));
+                v.push((w, h, r, blur, off, 0.0));
+                v.push((w, h, r, blur, off, -1.0)); // cut < 0: the opaque tile's box cut
+            }
+        }
+        v
+    }
+
+    fn quad_of(w: f32, h: f32, blur: f32) -> [f32; 4] {
+        [100.25 - blur, 50.5 - blur, w + 2.0 * blur, h + 2.0 * blur]
+    }
+
+    /// The bands tile quad minus inner exactly and never overlap.
+    #[test]
+    fn shadow_bands_tile_the_quad_minus_the_skip_rect() {
+        for &scale in &[1.0f32, 2.0 / 3.0] {
+            for (w, h, r, blur, off, cut) in cases() {
+                let quad = quad_of(w, h, blur);
+                let inner = shadow_skip_rect(quad, blur, r, off, cut);
+                let (bands, n) = shadow_bands(quad, inner, scale);
+                let bands = &bands[..n];
+                let hole = area(&quad) - bands.iter().map(area).sum::<f64>();
+                // The hole is the skip rect snapped inward: inside it, and within a pixel of it.
+                match inner {
+                    Some(i) if n > 1 => {
+                        let px = 1.0 / scale as f64;
+                        let shrunk = (i[2] as f64 - 2.0 * px).max(0.0) * (i[3] as f64 - 2.0 * px).max(0.0);
+                        assert!(hole <= area(&i) + 1e-3, "hole {hole} exceeds the skip rect {}", area(&i));
+                        assert!(hole >= shrunk - 1e-3, "hole {hole} lost more than a pixel per side of {}", area(&i));
+                    }
+                    _ => assert!(hole.abs() < 1e-3 || n > 1, "whole quad expected"),
+                }
+                for (a, ra) in bands.iter().enumerate() {
+                    assert!(ra[2] > 0.0 && ra[3] > 0.0, "empty band kept");
+                    for rb in &bands[a + 1..] {
+                        assert!(overlap(ra, rb) < 1e-4, "bands overlap: {ra:?} {rb:?}");
+                    }
+                    assert!(ra[0] >= quad[0] && ra[1] >= quad[1] && ra[0] + ra[2] <= quad[0] + quad[2] + 1e-3 && ra[1] + ra[3] <= quad[1] + quad[3] + 1e-3);
+                }
+            }
+        }
+    }
+
+    /// A clean tiling check with a known inner rect.
+    #[test]
+    fn shadow_bands_areas_sum_to_quad_minus_inner() {
+        let quad = [0.0, 0.0, 100.0, 80.0];
+        let (b, n) = shadow_bands(quad, Some([20.0, 10.0, 50.0, 40.0]), 1.0);
+        assert_eq!(n, 4);
+        let sum: f64 = b[..n].iter().map(area).sum();
+        assert_eq!(sum, 100.0 * 80.0 - 50.0 * 40.0);
+        let (b, n) = shadow_bands(quad, None, 1.0);
+        assert_eq!((n, b[0]), (1, quad));
+    }
+
+    /// Everything inside the skip rect (corners included) is a fragment the shader discards.
+    #[test]
+    fn shadow_skip_rect_is_certainly_discarded() {
+        for (w, h, r, blur, off, cut) in cases() {
+            let quad = quad_of(w, h, blur);
+            let Some(i) = shadow_skip_rect(quad, blur, r, off, cut) else { continue };
+            for a in 0..=24 {
+                for b in 0..=24 {
+                    let pos = [i[0] + i[2] * a as f32 / 24.0, i[1] + i[3] * b as f32 / 24.0];
+                    assert!(
+                        discards(quad, blur, r, off, cut, pos),
+                        "case {w}x{h} r{r} blur{blur} off{off} cut{cut}: {pos:?} in {i:?} is kept"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Seams (inner edges) are on the drawable grid for scale 1 and 2/3.
+    #[test]
+    fn shadow_bands_seams_lie_on_the_pixel_grid() {
+        for &scale in &[1.0f32, 2.0 / 3.0] {
+            for (w, h, r, blur, off, cut) in cases() {
+                let quad = quad_of(w, h, blur);
+                let inner = shadow_skip_rect(quad, blur, r, off, cut);
+                let (bands, n) = shadow_bands(quad, inner, scale);
+                if n < 2 {
+                    continue;
+                }
+                let on_grid = |v: f32| ((v * scale).round() - v * scale).abs() < 1e-3;
+                for r in &bands[..n] {
+                    // A band edge is either the quad's own edge or a seam.
+                    for (v, q0, q1) in [(r[0], quad[0], quad[0] + quad[2]), (r[0] + r[2], quad[0], quad[0] + quad[2]), (r[1], quad[1], quad[1] + quad[3]), (r[1] + r[3], quad[1], quad[1] + quad[3])] {
+                        let is_quad_edge = (v - q0).abs() < 1e-4 || (v - q1).abs() < 1e-4;
+                        assert!(is_quad_edge || on_grid(v), "scale {scale}: seam {v} off the grid");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Blur larger than the box, tiny boxes, and an occluder pushed off the quad all fall back to
+    /// the whole quad or to well-formed bands.
+    /// **The cut's box pre-test only skips work, never a decision.** `fs_shadow.frag` evaluates the
+    /// occluder's rounded `sdBox` only for a fragment inside the occluder's bounding box: outside it,
+    /// a component of `q` is >= the corner radius, so `sdBox >= 0` and the fragment is kept anyway.
+    /// Graded on the replica over every case and a dense grid, and the shader must run the box test
+    /// BEFORE the SDF it skips. Red on the build whose cut ran `sdBox` on every band fragment (most
+    /// of them far outside the panel).
+    #[test]
+    fn the_cuts_box_pretest_is_exact_and_runs_first() {
+        let code: String = super::FS_SHADOW
+            .to_str()
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cut = code.find("if (u_cut >= 0.0)").expect("the cut branch");
+        let tail = &code[cut..];
+        let sdf = tail.find("sdBox(pq").expect("the cut's SDF");
+        let boxed = tail.find("all(lessThan(abs(pq), hsz))");
+        assert!(boxed.is_some_and(|b| b < sdf), "the bounding-box test must guard the cut's sdBox");
+        for (w, h, r, blur, off, cut) in cases().into_iter().filter(|c| c.5 >= 0.0) {
+            let quad = quad_of(w, h, blur);
+            let hsz = [(quad[2] * 0.5 - blur).max(0.0), (quad[3] * 0.5 - blur).max(0.0)];
+            let (cx, cy) = (quad[0] + quad[2] * 0.5, quad[1] + quad[3] * 0.5);
+            for i in 0..=96 {
+                for j in 0..=96 {
+                    let pos = [quad[0] + quad[2] * i as f32 / 96.0, quad[1] + quad[3] * j as f32 / 96.0];
+                    let pq = [pos[0] - cx, pos[1] - cy + off];
+                    if !(pq[0].abs() < hsz[0] && pq[1].abs() < hsz[1]) {
+                        assert!(!discards(quad, blur, r, off, cut, pos), "{w}x{h} r{r} cut{cut}: {pos:?} outside the box is discarded");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shadow_bands_degenerate_inputs_fall_back() {
+        let q = [10.0, 10.0, 40.0, 30.0];
+        assert_eq!(shadow_skip_rect(q, 20.0, 4.0, 0.0, 4.0), None); // blur eats the box
+        assert_eq!(shadow_skip_rect(q, 25.0, 4.0, 0.0, -1.0), None);
+        assert_eq!(shadow_skip_rect([0.0, 0.0, 3.0, 3.0], 1.0, 20.0, 0.0, 20.0), None); // inset swallows it
+        assert_eq!(shadow_skip_rect([0.0, 0.0, 100.0, 100.0], 10.0, 4.0, 500.0, 4.0), None); // occluder off the quad
+        let (b, n) = shadow_bands(q, None, 1.0);
+        assert_eq!((n, b[0]), (1, q));
+        let (b, n) = shadow_bands(q, Some([20.0, 20.0, 0.0, 5.0]), 1.0);
+        assert_eq!((n, b[0]), (1, q));
+        let (b, n) = shadow_bands(q, Some([20.2, 20.2, 0.5, 5.0]), 1.0); // snaps to nothing
+        assert_eq!((n, b[0]), (1, q));
+        for (w, h, r, blur, off, cut) in cases() {
+            let _ = (w, h);
+            for &(bw, bh) in &[(1.0f32, 1.0f32), (40.0, 30.0), (0.3, 70.0)] {
+                let quad = [5.0, 5.0, 2.0 * blur + bw, 2.0 * blur + bh];
+                let (bands, n) = shadow_bands(quad, shadow_skip_rect(quad, blur, r, off, cut), 2.0 / 3.0);
+                assert!((1..=4).contains(&n));
+                assert!(bands[..n].iter().all(|r| r[2] > 0.0 && r[3] > 0.0));
+            }
+        }
     }
 }

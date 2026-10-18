@@ -13,10 +13,14 @@
 //                u_cut, so NO ink lands under the panel at all. The box cut is wrong here — the
 //                band it leaves between the inset and the edge is at full strength and ends in a
 //                hard step, which is a drawn FRAME once you can see through the thing on top of it.
+// u_size is always the FULL quad; u_map = (band origin - quad centre, band size) places a drawn
+// band (the quad minus the rectangle that is certainly discarded, see gfx::shadow_bands) in that
+// quad's frame, so p is the same value whether the quad is drawn whole or as bands.
 // Coordinate chain is highp - see the PRECISION note in fs_src.frag.
 precision mediump float;
 varying highp vec2 v_uv;
 uniform highp vec2 u_size;
+uniform highp vec4 u_map;
 uniform highp float u_radius;
 uniform highp float u_blur;
 uniform highp float u_off;
@@ -24,11 +28,16 @@ uniform highp float u_cut;
 uniform vec4 u_col;
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){ highp vec2 q=abs(p)-b+vec2(r); return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }
 void main(){
-  highp vec2 p = (v_uv - 0.5) * u_size;
+  highp vec2 p = u_map.xy + v_uv * u_map.zw;
   highp vec2 hsz = max(u_size*0.5 - vec2(u_blur), vec2(0.0));
   highp vec2 pq = p - vec2(0.0, -u_off);
   if (u_cut >= 0.0) {
-    if (sdBox(pq, hsz, min(u_cut, min(hsz.x, hsz.y))) < 0.0) discard;
+    // The rounded SDF only inside the occluder's bounding box: outside it a component of `q` is
+    // >= the corner radius, so `sdBox >= 0` and the fragment is kept anyway. Most band fragments
+    // lie there, and skip one highp `length` each (`gfx::shadow_band_tests` grades the exactness).
+    if (all(lessThan(abs(pq), hsz))) {
+      if (sdBox(pq, hsz, min(u_cut, min(hsz.x, hsz.y))) < 0.0) discard;
+    }
   } else if (all(lessThan(abs(pq), hsz - vec2(u_radius + 1.0)))) {
     discard;
   }

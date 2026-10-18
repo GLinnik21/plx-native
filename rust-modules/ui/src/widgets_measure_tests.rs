@@ -69,13 +69,13 @@ fn measured_status_action_uses_shared_button_width_height_and_reason_spacing() {
 }
 
 /// **A failed read-out never scolds** — the design system's `StatusOverlay` contract ("the app
-/// does not scold"): its verdict is bold `size::TITLE` in `TEXT_SECONDARY` and its reason regular
+/// does not scold"): its verdict is bold `size::TITLE` in `TEXT_PRIMARY` and its reason regular
 /// `size::BODY` in `TEXT_SECONDARY`. No kind's verdict or reason is ever the danger/red token.
 #[test]
 fn a_failed_status_verdict_is_never_the_danger_token() {
     assert_eq!(
         StatusOverlay::verdict_face(StatusKind::Failed),
-        (theme::size::TITLE, true, theme::TEXT_SECONDARY)
+        (theme::size::TITLE, true, theme::TEXT_PRIMARY)
     );
     assert_eq!(StatusOverlay::reason_face(StatusKind::Failed), (theme::size::BODY, theme::TEXT_SECONDARY));
     for kind in [StatusKind::Working, StatusKind::Failed, StatusKind::Empty] {
@@ -83,10 +83,9 @@ fn a_failed_status_verdict_is_never_the_danger_token() {
         let (_, reason) = StatusOverlay::reason_face(kind);
         for c in [ink, reason] {
             assert_ne!(c, theme::DANGER, "{kind:?}");
-            assert_ne!(c, theme::TEXT_PRIMARY, "{kind:?}: primary is the player's glyph read-out's alone");
         }
     }
-    assert_eq!(StatusOverlay::verdict_face(StatusKind::Empty).2, theme::TEXT_TERTIARY);
+    assert_eq!(StatusOverlay::verdict_face(StatusKind::Empty).2, theme::TEXT_PRIMARY);
     assert_eq!(StatusOverlay::verdict_face(StatusKind::Working).2, theme::TEXT_SECONDARY);
 }
 

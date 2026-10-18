@@ -240,6 +240,10 @@ pub trait StackPage<H: Host> {
     fn draw_heading(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _lift: f32) {}
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
+    /// The cards grid section `k`'s landing is fading out, painted BEFORE the grid's own cards so
+    /// the ones that slid over their cells cover them. A page that keeps the cards it removed
+    /// paints them with [`Grid::paint_ghosts`] (named by [`Grid::ghost_keys`]); the default keeps none.
+    fn paint_ghosts(&self, _k: Self::Key, _grid: &Grid, _f: &mut DrawFrame<'_, '_, H>, _p: crate::Painter) {}
 }
 
 enum Body {
@@ -399,6 +403,15 @@ impl<K: Copy + Eq> Stack<K> {
     pub fn shelf(&self, k: K) -> Option<&Shelf> {
         match self.bodies.get(self.index(k)?) {
             Some(Body::Shelf(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Grid `k`'s state (`None` while the layout has no such grid): a page that keeps its removed
+    /// cards for the landing's ghosts reads [`Grid::landing_pending`] and [`Grid::ghost_keys`] here.
+    pub fn grid(&self, k: K) -> Option<&Grid> {
+        match self.bodies.get(self.index(k)?) {
+            Some(Body::Grid(g)) => Some(g),
             _ => None,
         }
     }
@@ -893,6 +906,18 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
     {
         let (s, page) = (self.stack, self.page);
         let Some(key) = focus.filter(|k| k.entry == s.entry) else { return };
+        // an opener that left the page: the lift carries its landing ghost above the dim
+        for (i, body) in s.bodies.iter().enumerate() {
+            if let Body::Grid(g) = body {
+                if g.departing::<H>(key) {
+                    let p = f.painter.alpha(f.page_alpha);
+                    let was = f.lifting.replace(key);
+                    page.paint_ghosts(s.specs[i].key, g, f, p);
+                    f.lifting = was;
+                    return;
+                }
+            }
+        }
         let Some(i) = s.owner(page, f.cx, &key.elem) else { return };
         let Some(src) = page.cards(f.cx, s.specs[i].key) else { return };
         let p = f.painter.alpha(f.page_alpha);
@@ -901,6 +926,12 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
             Body::Grid(g) => g.redraw_focused(f, p, &src, focus),
             Body::Plain => {}
         }
+    }
+
+    /// Whether `key`'s card left a grid section and is still fading as its ghost
+    /// ([`Screen::opener_departing`](crate::screen::Screen::opener_departing)).
+    pub fn opener_departing<H: Host>(&self, key: FocusKey<H::Elem>) -> bool {
+        key.entry == self.stack.entry && self.stack.bodies.iter().any(|b| matches!(b, Body::Grid(g) if g.departing::<H>(key)))
     }
 
     /// The live pop of card `elem` (no press), in whichever card section shows it.
@@ -937,6 +968,9 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
                     sh.draw(f, p, &src, s.frame(page, f.cx, i));
                 }
                 (Kind::Grid { .. }, Body::Grid(g)) => {
+                    if g.has_ghosts() {
+                        page.paint_ghosts(k, g, f, p);
+                    }
                     if let Some(src) = page.cards(f.cx, k) {
                         g.draw(f, p, &src);
                     }
