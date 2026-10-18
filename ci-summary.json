@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T01:08:37Z",
+ "generated": "2026-10-18T01:09:57Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -32,9 +32,9 @@
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 413.0,
+   "now": 413,
    "prev7": 209.0,
    "shown": true,
    "state": "worse",
@@ -45,17 +45,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 73.1,
+   "change7_pct": 72.9,
    "d30": null,
    "delta30": null,
-   "delta7": 194.5,
+   "delta7": 194.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 460.5,
+   "now": 460,
    "prev7": 266.0,
    "shown": true,
    "state": "worse",
@@ -246,18 +246,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.9,
-   "change7_pct": 14.4,
+   "change30_pct": 56.0,
+   "change7_pct": 13.7,
    "d30": 1406,
-   "delta30": 800,
-   "delta7": 277.5,
+   "delta30": 787.5,
+   "delta7": 265.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 90,
-   "now": 2206,
+   "now": 2193.5,
    "prev7": 1928.5,
    "shown": true,
    "state": "flat",
@@ -297,9 +297,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 10,
+   "n_now": 11,
    "n_prev": 0,
-   "now": 329.5,
+   "now": 327,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -312,15 +312,15 @@
    "change30_pct": 75.5,
    "change7_pct": 8.0,
    "d30": 184,
-   "delta30": 139.0,
+   "delta30": 139,
    "delta7": 24.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 323.0,
+   "now": 323,
    "prev7": 299.0,
    "shown": true,
    "state": "flat",
@@ -360,9 +360,9 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 190.0,
+   "now": 190,
    "prev7": 170.0,
    "shown": true,
    "state": "flat",
@@ -394,17 +394,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.7,
+   "change7_pct": 15.1,
    "d30": null,
    "delta30": null,
-   "delta7": 20.5,
+   "delta7": 21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 89,
-   "now": 159.5,
+   "now": 160,
    "prev7": 139,
    "shown": true,
    "state": "flat",
@@ -423,9 +423,9 @@
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 154.0,
+   "now": 154,
    "prev7": 135.5,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 10,
+   "n_now": 11,
    "n_prev": 0,
-   "now": 5.0,
+   "now": 5,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -565,15 +565,15 @@
    "change30_pct": -99.6,
    "change7_pct": 0.0,
    "d30": 758,
-   "delta30": -755.0,
+   "delta30": -755,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 112,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -670,51 +670,6 @@
    "change_pct": 97.6,
    "commits": [
     {
-     "pr": 795,
-     "sha": "559d5a698",
-     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
-    },
-    {
-     "pr": 801,
-     "sha": "646859f9c",
-     "title": "i18n: language registry \u2014 a locales/ directory is a language or a build error"
-    },
-    {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
-     "pr": 802,
-     "sha": "635b51a2c",
-     "title": "Add European Portuguese (pt-PT) language"
-    },
-    {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
-    {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
-     "pr": 820,
-     "sha": "0b0b22092",
-     "title": "Add German (de) as a UI language"
-    },
-    {
      "pr": 831,
      "sha": "f93c586ac",
      "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
@@ -723,58 +678,13 @@
    "from": 209.0,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "since": "2026-10-16",
+   "since": "2026-10-18",
    "threshold_pct": 20.0,
-   "to": 413.0
+   "to": 413
   },
   {
-   "change_pct": 73.1,
+   "change_pct": 72.9,
    "commits": [
-    {
-     "pr": 795,
-     "sha": "559d5a698",
-     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
-    },
-    {
-     "pr": 801,
-     "sha": "646859f9c",
-     "title": "i18n: language registry \u2014 a locales/ directory is a language or a build error"
-    },
-    {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
-     "pr": 802,
-     "sha": "635b51a2c",
-     "title": "Add European Portuguese (pt-PT) language"
-    },
-    {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
-    {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
-     "pr": 820,
-     "sha": "0b0b22092",
-     "title": "Add German (de) as a UI language"
-    },
     {
      "pr": 831,
      "sha": "f93c586ac",
@@ -784,9 +694,9 @@
    "from": 266.0,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "since": "2026-10-16",
+   "since": "2026-10-18",
    "threshold_pct": 20.0,
-   "to": 460.5
+   "to": 460
   },
   {
    "change_pct": 40.1,
@@ -955,25 +865,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 460.5
+   "now": 460
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 413.0
+   "now": 413
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 329.5
+   "now": 327
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 323.0
+   "now": 323
   }
  ],
  "slowest_local": [
