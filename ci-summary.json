@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T15:53:00Z",
+ "generated": "2026-10-18T16:00:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,9 +95,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 106,
-   "now": 433,
+   "now": 433.0,
    "prev7": 320.0,
    "shown": true,
    "state": "worse",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.3,
-   "change7_pct": 2.0,
+   "change30_pct": 121.8,
+   "change7_pct": 1.7,
    "d30": 105.5,
-   "delta30": 129.0,
-   "delta7": 4.5,
+   "delta30": 128.5,
+   "delta7": 4.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 98,
-   "now": 234.5,
+   "now": 234,
    "prev7": 230.0,
    "shown": true,
    "state": "flat",
@@ -381,9 +381,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 98,
-   "now": 186.0,
+   "now": 186,
    "prev7": 321.5,
    "shown": true,
    "state": "better",
@@ -444,9 +444,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 94,
-   "now": 153.0,
+   "now": 153,
    "prev7": 144.5,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 98,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 210.0,
    "commits": [
     {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
      "pr": 821,
      "sha": "0aa486d3d",
      "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
@@ -657,6 +652,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 55.7,
@@ -703,6 +703,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 208,
@@ -749,6 +754,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 263,
@@ -795,6 +805,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 332.0,
@@ -841,6 +856,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 320.0,
@@ -848,7 +868,7 @@
    "label": "Wait after merge",
    "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 433
+   "to": 433.0
   },
   {
    "change_pct": 30.9,
@@ -887,6 +907,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 1026.6,
@@ -933,6 +958,11 @@
      "pr": 822,
      "sha": "2cb770755",
      "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
     }
    ],
    "from": 1025.0,
