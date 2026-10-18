@@ -199,6 +199,18 @@ bypass `handle()`, as before, and stay on the older `pms.requests` list only.)
 bytes, for every `/video/:/transcode/universal/start...` request in place of the 404 a session
 with no server-side transcoder otherwise returns. It is for exercising the TV's playback pipeline
 against a real container; it claims no DSP realism for the enhancement itself.
+
+`--cut-part-after BYTES` (default off) closes the FIRST response of each `/library/parts/<id>`
+GET that would carry more than BYTES body bytes after exactly BYTES of them, with the promised
+`Content-Length` unmet: the cut a direct-play body suffers when a PMS reaps the socket or a LAN
+drops it. Every later request for that part is served whole, so the client's ranged reopen at the
+byte it reached should be answered by an honest 206 and playback continue. Only media parts are
+cut (not `--transcode-fixture`, whose progressive body has no length to be cut below).
+`--part-range-answers-200` (default off) answers a part GET whose `Range` starts past byte 0 with
+a plain 200 and the whole file, as a server (or proxy) that ignores Range does; a client that
+splices that in as the bytes at its offset corrupts the picture, so it must refuse it. Combine the
+two to see the refusal on a TV: the cut is reopened, the reopen answers 200, playback fails with a
+transport error instead of continuing from the wrong bytes.
 """
 import argparse
 import hashlib
@@ -2132,6 +2144,10 @@ class MockPms:
         # `--transcode-fixture PATH`: serve this file (Range/206 supported) for every
         # /video/:/transcode/universal/start* request instead of the plain 404.
         self.transcode_fixture = None
+        # `--cut-part-after` / `--part-range-answers-200` (module doc): opt-in media faults.
+        self.cut_part_after = None
+        self.part_range_answers_200 = False
+        self.parts_cut = set()
         # `--decision-delay-ms N`: hold every transcode decision/start request this long before
         # answering, so a flight's PMS half is observably in flight. 0 answers at once.
         self.decision_delay_ms = 0
@@ -2890,11 +2906,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # _do logs a redacted request path; BaseHTTPRequestHandler would log tokens.
 
-    def _serve_file_ranged(self, method, path, content_type):
+    def _serve_file_ranged(self, method, path, content_type, cut_after=None, range_as_200=False):
         """A byte range GET/HEAD of `path`, real `Range`/206 handling included — the same helper
         `/library/parts/<id>` verification bytes and `--transcode-fixture` both serve through, so
         the start.mkv fixture gets exactly the Range semantics the part-probe path already
-        proved. Returns the status actually sent."""
+        proved. Returns the status actually sent. `cut_after` closes the response after that many
+        body bytes (the `--cut-part-after` fault); `range_as_200` answers a ranged request that
+        starts past byte 0 as a whole-file 200 (`--part-range-answers-200`)."""
         size = path.stat().st_size
         start, end, status = 0, max(0, size - 1), 200
         raw_range = self.headers.get("Range")
@@ -2919,6 +2937,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return 416
             status = 206
+            if range_as_200 and start > 0:
+                start, end, status = 0, max(0, size - 1), 200
         length = end - start + 1
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -2932,12 +2952,22 @@ class Handler(BaseHTTPRequestHandler):
             with path.open("rb") as src:
                 src.seek(start)
                 left = length
+                if cut_after is not None and cut_after < length:
+                    left = cut_after
+                    # The head promised `length`; the connection ends after `cut_after`.
+                    self.close_connection = True
                 while left:
                     block = src.read(min(left, 256 * 1024))
                     if not block:
                         break
                     self.wfile.write(block)
                     left -= len(block)
+                if self.close_connection:
+                    self.wfile.flush()
+                    try:
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
         return status
 
     def _media(self, method):
@@ -2951,9 +2981,16 @@ class Handler(BaseHTTPRequestHandler):
             return False
         content_type = getattr(self.server.pms.lib, "media_content_type", {}).get(
             part_id, "video/x-matroska")
-        status = self._serve_file_ranged(method, path, content_type)
-        with self.server.pms.lock:
-            self.server.pms.requests.append((self.path, status))
+        pms = self.server.pms
+        with pms.lock:
+            cut_after = None
+            if pms.cut_part_after is not None and part_id not in pms.parts_cut:
+                pms.parts_cut.add(part_id)
+                cut_after = pms.cut_part_after
+        status = self._serve_file_ranged(method, path, content_type, cut_after=cut_after,
+                                         range_as_200=pms.part_range_answers_200)
+        with pms.lock:
+            pms.requests.append((self.path, status))
         return True
 
     def _transcode_fixture(self, method):
@@ -3175,6 +3212,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           plaintext_only_lan=False, advertise_ip=None, advertise_port=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
+          cut_part_after=None, part_range_answers_200=False,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
@@ -3238,6 +3276,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
+    pms.cut_part_after = cut_part_after
+    pms.part_range_answers_200 = part_range_answers_200
     pms.decision_delay_ms = decision_delay_ms
     if authorize_after is None and plaintext_only_lan:
         authorize_after = 2
@@ -4074,6 +4114,13 @@ def main():
     ap.add_argument("--transcode-fixture", type=pathlib.Path,
                     help="#266: serve this file (Range/206 supported) for every "
                          "/video/:/transcode/universal/start* request instead of the plain 404")
+    ap.add_argument("--cut-part-after", type=int, metavar="BYTES",
+                    help="close the first response of each /library/parts/<id> GET after BYTES body "
+                         "bytes, short of its Content-Length (a direct-play body cut mid-transfer); "
+                         "later requests are served whole (default off)")
+    ap.add_argument("--part-range-answers-200", action="store_true",
+                    help="answer a /library/parts/<id> GET whose Range starts past byte 0 with a "
+                         "200 and the whole file, as a server that ignores Range does (default off)")
     ap.add_argument("--decision-delay-ms", type=int, default=0, metavar="N",
                     help="sleep N ms before answering a /video/:/transcode/universal/decision or "
                          "start.* request, so a route flight is observably in flight (default 0)")
@@ -4155,7 +4202,9 @@ def main():
                          loudness_analysis=not a.no_loudness_analysis,
                          refuse_enhancements=a.refuse_enhancements,
                          ignore_enhancements=a.ignore_enhancements,
-                         transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
+                         transcode_fixture=a.transcode_fixture,
+                         cut_part_after=a.cut_part_after,
+                         part_range_answers_200=a.part_range_answers_200, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
                          decision_delay_ms=a.decision_delay_ms, home_users=a.home_users, second_account=a.second_account,
