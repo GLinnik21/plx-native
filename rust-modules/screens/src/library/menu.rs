@@ -21,6 +21,9 @@ use plx_ui::table::MENU_MAX_W;
 use plx_ui::Rect;
 use std::borrow::Cow;
 
+/// The "+N" list's panel: left edge and least width, from the `LibraryMore` board.
+const SOURCES_X: f32 = 330.0;
+const SOURCES_W: f32 = 560.0;
 // The compact Library menu's existing corner geometry.
 const PANEL_RADIUS: f32 = 20.0;
 
@@ -129,11 +132,14 @@ fn source_draft(
     current: usize,
     groups: &[SrcGroup],
     sections: &[plx_data::browse::view::SectionView],
+    folded: &[u32],
 ) -> MenuDraft {
     let kind = sections.get(current).map(|section| section.kind);
+    // Only the libraries the header's fold hid: the visible names and the one on view are not here.
     let source_rows: Vec<SrcRow> = sections
         .iter()
-        .filter(|section| Some(section.kind) == kind && section.row.pinned)
+        .filter(|section| Some(section.kind) == kind && section.row.pinned
+            && u32::try_from(section.row.section).is_ok_and(|index| folded.contains(&index)))
         .map(|section| section.row.clone())
         .collect();
     let source_form =
@@ -442,7 +448,12 @@ impl LibraryMenu {
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
-        let width = self.form.table.menu_panel_width(measure);
+        let mut width = self.form.table.menu_panel_width(measure);
+        if self.kind == LibraryMenuKind::Sources {
+            width = width.max(SOURCES_W);
+            // The board hangs the list at x 330 under the names, whatever "+N"'s own x is.
+            return Rect::new(SOURCES_X, (y + h + 16.0).clamp(96.0, 984.0 - height), width, height);
+        }
         Rect::new(
             x.clamp(96.0, (1920.0 - 96.0 - width).max(96.0)),
             (y + h + 16.0).clamp(96.0, 984.0 - height),
@@ -523,6 +534,7 @@ impl LibraryMenu {
                         current,
                         &groups,
                         directory.sections(),
+                        &self.arg.folded,
                     );
                 }
                 section = choice(
@@ -953,7 +965,7 @@ mod tests {
         let mut menu = LibraryMenu::new(EntryId(7), LibraryMenuArg {
             host: plx_machine::machine::InstanceId(8),
             target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
-            kind: LibraryMenuKind::Sort, anchor: [0; 4],
+            kind: LibraryMenuKind::Sort, anchor: [0; 4], folded: Vec::new(),
         });
         let mut sorts = vec![
             SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
@@ -1105,10 +1117,13 @@ mod tests {
         // with_cx retains the same explicit directory shape a Bridge captures from its owner.
         let _guard = plx_base::testlock::serial();
         let (groups, sections) = source_sections();
-        let draft = lay(source_draft(11, 0, &groups, &sections));
+        let draft = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         assert_eq!(draft.sections.len(), 2);
-        assert_eq!(draft.sections[1].header, "Friend NAS");
-        assert_eq!(draft.sections[1].accessory, "friend");
+        assert_eq!(draft.sections[0].header, "Own NAS");
+        assert_eq!(draft.sections[1].header, "Shared with you", "a shared server is a group, not a machine name");
+        assert_eq!(draft.sections[1].accessory, "");
+        assert_eq!(draft.sections[1].rows[0].value.as_deref(), Some("friend"), "its owner stands on the row, dimmed");
+        assert!(draft.sections[0].rows[0].detail.is_empty(), "one-line rows: no count line");
         assert!(draft.sections[1].rows[1].sep);
         assert_eq!(
             draft.rows[2].2, 3,
@@ -1135,9 +1150,10 @@ mod tests {
                 },
                 kind: LibraryMenuKind::Sources,
                 anchor: [0; 4],
+                folded: (0..8).collect(),
             },
         );
-        menu.apply_draft(source_draft(11, 0, &groups, &sections));
+        menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         let recheck = menu.form.key_at(3).expect("recheck is bound").0;
         let placed = with_cx(|cx|
             <LibraryMenu as Focusable<HostFixture>>::place(&menu, &recheck, cx, At::Drawn)
@@ -1163,13 +1179,13 @@ mod tests {
     #[test]
     fn sources_rebuild_on_metadata_without_changing_stable_row_identities() {
         let (groups, sections) = source_sections();
-        let before = lay(source_draft(11, 0, &groups, &sections));
+        let before = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         let mut changed_groups = groups.clone();
         changed_groups[1].state = SourceState::Unreachable;
         let mut changed_sections = sections.clone();
         changed_sections[1].row.count_line = "5 films".into();
         changed_sections[1].row.current = true;
-        let after = lay(source_draft(11, 1, &changed_groups, &changed_sections));
+        let after = lay(source_draft(11, 1, &changed_groups, &changed_sections, &(0..9).collect::<Vec<u32>>()));
 
         assert_ne!(before.stamp, after.stamp);
         assert!(after.sections[1].dim);
@@ -1178,7 +1194,7 @@ mod tests {
             after.rows.iter().map(|r| &r.0).collect::<Vec<_>>()
         );
         assert_eq!(after.selected, 1);
-        assert_eq!(after.sections[1].rows[0].detail, "5 films");
+        assert!(after.sections[1].rows[0].detail.is_empty());
     }
 
     #[test]
@@ -1186,17 +1202,17 @@ mod tests {
         let (mut groups, sections) = source_sections();
         groups[0].name = "A:B".into();
         groups[0].handle = "C".into();
-        let first = lay(source_draft(11, 0, &groups, &sections));
+        let first = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         groups[0].name = "A".into();
         groups[0].handle = "B:C".into();
-        let second = lay(source_draft(11, 0, &groups, &sections));
+        let second = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         assert_ne!(first.stamp, second.stamp);
 
         groups[0].name = "A|B".into();
-        let third = lay(source_draft(11, 0, &groups, &sections));
+        let third = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         groups[0].name = "A".into();
         groups[0].handle = "B:C|A|B".into();
-        let fourth = lay(source_draft(11, 0, &groups, &sections));
+        let fourth = lay(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         assert_ne!(third.stamp, fourth.stamp);
     }
 
@@ -1214,12 +1230,13 @@ mod tests {
                 },
                 kind: LibraryMenuKind::Sources,
                 anchor: [0; 4],
+                folded: (0..8).collect(),
             },
         );
-        menu.apply_draft(source_draft(11, 0, &groups, &sections));
+        menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
         let focused_key = menu.form.key_at(1).expect("second source row").0;
         menu.form.table.sel = 1;
-        let quiet = source_draft(11, 0, &groups, &sections);
+        let quiet = source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>());
         menu.apply_draft(quiet);
         assert_eq!(
             menu.form.table.sel, 1,
@@ -1245,7 +1262,7 @@ mod tests {
             },
         );
         shifted[2].row.section = 2;
-        menu.apply_draft(source_draft(11, 0, &groups, &shifted));
+        menu.apply_draft(source_draft(11, 0, &groups, &shifted, &(0..9).collect::<Vec<u32>>()));
         assert_eq!(
             menu.form.index_of_key(RowKey(focused_key)),
             Some(2)
@@ -1254,6 +1271,21 @@ mod tests {
             menu.form.table.sel, 2,
             "metadata/shape refresh preserves the focused source key"
         );
+    }
+
+    #[test]
+    fn the_plus_n_list_shows_only_folded_libraries_one_line_each_then_the_recheck_row() {
+        let _guard = plx_base::testlock::serial();
+        let (groups, sections) = source_sections();
+        let draft = lay(source_draft(11, 0, &groups, &sections, &[1]));
+        assert_eq!(draft.sections.len(), 1, "the own server has nothing folded: no group");
+        assert_eq!(draft.sections[0].header, "Shared with you");
+        assert_eq!(draft.sections[0].rows[0].label, "Shared Movies");
+        assert!(draft.sections[0].rows[0].detail.is_empty(), "no \"N films\" second line");
+        assert!(!draft.sections[0].rows[0].checked);
+        assert_eq!(draft.sections[0].rows[0].value.as_deref(), Some("friend"));
+        assert!(matches!(draft.rows.last().unwrap().1, Action::Recheck), "the shares check stays, last");
+        assert_eq!(draft.rows.len(), 2);
     }
 
     include!("menu_contract_tests.rs");

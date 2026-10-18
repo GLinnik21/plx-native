@@ -25,6 +25,7 @@
   "widgets.source.relay": "Relay",
   "widgets.source.needs_library": "Serve almeno una libreria",
   "widgets.source.new_shares": "Controlla librerie condivise",
+  "widgets.source.shared_with_you": "Condivise con te",
   "widgets.source.unauthorized": "Non autorizzato",
   "widgets.source.unreachable": "Non raggiungibile",
   "widgets.source.insecure": "Connessione non sicura",

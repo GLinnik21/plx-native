@@ -25,6 +25,7 @@
   "widgets.source.relay": "Retransmissão",
   "widgets.source.needs_library": "A app precisa de uma biblioteca",
   "widgets.source.new_shares": "Procurar partilhas",
+  "widgets.source.shared_with_you": "Partilhadas consigo",
   "widgets.source.unauthorized": "Sem autorização",
   "widgets.source.unreachable": "Inacessível",
   "widgets.source.insecure": "Não seguro",

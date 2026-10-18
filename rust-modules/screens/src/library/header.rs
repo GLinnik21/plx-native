@@ -205,6 +205,7 @@ impl LibraryScreen {
             .layout(SCR_W, measure).left_budget;
 
         self.libraries.clear();
+        self.folded.clear();
         let mut overflow = 0;
         let current = self.view_section(cx);
         let mut left = Vec::new();
@@ -229,6 +230,8 @@ impl LibraryScreen {
                 let more_w = page_header::cluster_width(&[item(format!("+{}", all.len() - 1))], measure);
                 let picks = pack_names(&widths, selected, budget, more_w, layout::MAX_LIBRARY_PILLS);
                 overflow = all.len() - picks.len();
+                self.folded = all.iter().enumerate().filter(|(i, _)| !picks.contains(i))
+                    .filter_map(|(_, (_, section))| u32::try_from(*section).ok()).collect();
                 for &pick in &picks {
                     left.push(HeaderItem { selected_plate: all[pick].1 == current, ..item(labels[pick].as_str()) });
                     self.libraries.push(all[pick]);

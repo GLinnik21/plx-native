@@ -124,6 +124,10 @@
     "value": "Check for shared libraries",
     "description": "Row in the Library panel that re-checks the account for newly shared libraries. A row label in a 527px column, no wrap: keep it short."
   },
+  "widgets.source.shared_with_you": {
+    "value": "Shared with you",
+    "description": "Group header in the Library panel's +N list over the libraries other people share with this account. Their owner's handle stands on each row. A header line, no wrap: keep it short."
+  },
   "widgets.source.unauthorized": {
     "value": "Not authorized",
     "description": "Server/library availability, connection type, or library-picker action."

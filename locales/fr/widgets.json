@@ -25,6 +25,7 @@
   "widgets.source.relay": "Relais",
   "widgets.source.needs_library": "L’application a besoin d’une bibliothèque",
   "widgets.source.new_shares": "Vérifier les partages",
+  "widgets.source.shared_with_you": "Partagées avec vous",
   "widgets.source.unauthorized": "Non autorisé",
   "widgets.source.unreachable": "Injoignable",
   "widgets.source.insecure": "Non sécurisé",

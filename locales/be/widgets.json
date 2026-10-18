@@ -25,6 +25,7 @@
   "widgets.source.relay": "Рэтрансляцыя",
   "widgets.source.needs_library": "Праграме патрэбна бібліятэка",
   "widgets.source.new_shares": "Праверыць агульныя бібліятэкі",
+  "widgets.source.shared_with_you": "Падзеленыя з вамі",
   "widgets.source.unauthorized": "Няма дазволу",
   "widgets.source.unreachable": "Недаступны",
   "widgets.source.insecure": "Неабароненае злучэнне",

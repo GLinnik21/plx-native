@@ -192,6 +192,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
                 host: instance,
                 kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
+                folded: Vec::new(),
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: id.epoch,
                     sid: id.sid,

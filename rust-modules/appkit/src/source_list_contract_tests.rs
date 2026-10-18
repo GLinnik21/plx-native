@@ -50,7 +50,8 @@ fn browse_and_home_levels_keep_marks_values_and_actions_aligned() {
     ];
 
     let (browse, browse_actions) = sections(Level::Browse, &groups, &rows, Tail::None);
-    assert_eq!(marks_for(&browse), vec![(true, None), (false, None), (false, None)]);
+    // The picker carries no tick and no count line; a shared group says its owner on the row.
+    assert_eq!(marks_for(&browse), vec![(false, None), (false, None), (false, Some("friend".into()))]);
     assert_eq!(browse_actions, expected_actions, "Browse actions follow the same library rows");
     assert_eq!(browse.iter().flat_map(|section| section.rows.iter()).count(), browse_actions.len());
 

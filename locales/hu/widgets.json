@@ -25,6 +25,7 @@
   "widgets.source.relay": "Közvetített",
   "widgets.source.needs_library": "Legalább egy könyvtár kell",
   "widgets.source.new_shares": "Megosztott könyvtárak keresése",
+  "widgets.source.shared_with_you": "Megosztva veled",
   "widgets.source.unauthorized": "Nincs jogosultság",
   "widgets.source.unreachable": "Nem érhető el",
   "widgets.source.insecure": "Nem biztonságos",

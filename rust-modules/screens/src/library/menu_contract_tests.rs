@@ -8,6 +8,7 @@ fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
         },
         kind,
         anchor,
+        folded: if kind == LibraryMenuKind::Sources { (0..9).collect() } else { Vec::new() },
     }
 }
 
@@ -91,7 +92,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let mut fresh_groups = Vec::new();
     fresh.groups(&cx_changed, &mut fresh_groups);
     assert_ne!(anchor_bits(fresh_groups[0].extent), anchor_bits(old_extent), "a new open releases the old anchor");
-    assert_eq!(fresh_groups[0].extent.x, 760.0);
+    assert_eq!(fresh_groups[0].extent.x, 330.0, "the +N list hangs at the board's x 330, not at its anchor");
 }
 
 #[test]
@@ -109,7 +110,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
     let filter_key = filter.form.key_at(0).unwrap().0;
     let (groups, sections) = source_sections();
     let mut sources = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    sources.apply_draft(source_draft(11, 0, &groups, &sections));
+    sources.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
     let source_key = sources.form.key_at(1).unwrap().0;
 
     with_cx(|cx| {
@@ -180,7 +181,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
     let _guard = plx_base::testlock::serial();
     let (groups, sections) = source_sections();
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    menu.apply_draft(source_draft(11, 0, &groups, &sections));
+    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
     let owner = InputOwner::Entry(EntryId(7));
     with_cx(|cx| {
         let mut engine = FocusEngine::new();

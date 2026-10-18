@@ -203,3 +203,15 @@ fn a_one_library_row_stands_at_y_158_and_a_multi_library_row_at_148() {
         assert_eq!(control.y, top, "{libraries} libraries");
     }
 }
+
+#[test]
+fn the_plus_n_list_holds_exactly_the_libraries_the_fold_hid() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, page, engine) = grid_page(12);
+    let shown: Vec<u32> = page.libraries.iter().filter(|(elem, _)| *elem != MORE).map(|(_, index)| *index as u32).collect();
+    let current = page.view_section(&fixture.cx(&engine)).unwrap() as u32;
+    assert!(!page.folded.is_empty());
+    assert_eq!(page.folded.len() + shown.len(), 12, "every library is either a name or in the list");
+    assert!(page.folded.iter().all(|index| !shown.contains(index)), "no visible name is repeated in the list");
+    assert!(!page.folded.contains(&current), "nor the library on view");
+}

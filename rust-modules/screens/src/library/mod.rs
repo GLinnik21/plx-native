@@ -151,6 +151,8 @@ pub struct LibraryScreen {
     /// The names on the header row (the library on view among them) and, last, `MORE` when some
     /// do not fit. Empty for a single library: the row then carries only the controls.
     libraries: Vec<(u32, usize)>,
+    /// The directory sections the fold hid behind "+N" (what the Sources list shows).
+    folded: Vec<u32>,
     /// The header row as `sync` last built it (`header.rs`); `None` before the first sync.
     header: Option<Header>,
     /// [`Self::header_key`] of the row `header` was built from.
@@ -246,7 +248,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
@@ -636,6 +638,7 @@ impl LibraryScreen {
             let r = placed.rest_rect;
             fx.push(Fx::App(AppFx::Library(LibraryReq::Menu {
                 kind, anchor: [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()], target,
+                folded: if kind == crate::registry::LibraryMenuKind::Sources { self.folded.clone() } else { Vec::new() },
             })));
         }
     }

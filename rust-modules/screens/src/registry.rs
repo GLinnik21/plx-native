@@ -284,7 +284,10 @@ pub enum HomeCmd {
 pub enum LibraryReq {
     /// Evaluated after dispatch by the application, where the input owner can report a live arm.
     PublishShelves { target: plx_data::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
-    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress },
+    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress,
+        /// The `Sources` menu's contents: the directory sections the header's fold hid (empty for
+        /// every other menu).
+        folded: Vec<u32> },
     Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
     /// Open the item's page. `from_deck` is the SHELF's answer (this library's own Continue
     /// Watching shelf): a deck episode opens its show, any other card its own page.
@@ -314,6 +317,9 @@ pub struct LibraryMenuArg {
     pub kind: LibraryMenuKind,
     /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
     pub anchor: [u32; 4],
+    /// The `Sources` menu lists exactly these directory sections, the libraries the header's fold
+    /// hid behind "+N". Empty for every other menu.
+    pub folded: Vec<u32>,
 }
 
 impl plx_machine::machine::LogicalState for LibraryMenuArg {
@@ -325,6 +331,8 @@ impl plx_machine::machine::LogicalState for LibraryMenuArg {
                 LibraryMenuKind::SortFilter => 5,
             });
         for value in self.anchor { c.u32(value); }
+        c.seq(self.folded.len());
+        for value in &self.folded { c.u32(*value); }
     }
     fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
 }
@@ -2155,6 +2163,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             },
             kind: LibraryMenuKind::Sort,
             anchor: [0; 4],
+            folded: Vec::new(),
         }),
         AppArg::AccountMenu,
         AppArg::ItemMenu(ItemMenuArg {
