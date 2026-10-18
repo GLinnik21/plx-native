@@ -466,8 +466,12 @@ def walk_downs(scene, shelves):
     """The Down presses a walk of `scene` makes for `shelves` landed shelves (before the
     `max_rows` cap `walk_plan` applies). Home: one per row. Library (`walk.landed: "library"`):
     one per shelf, a SECOND for each linked shelf (its heading is a stop of its own, then its
-    row), and `extra_rows` more to cross the toolbar into the grid."""
+    row), and `extra_rows` more to cross the toolbar into the grid. A `walk.reach` surface (the
+    Library page, which mounts no shelves and logs no landing) has a fixed plan: its one "row"
+    plus `extra_rows` Downs from the page header into the grid."""
     w = scene["walk"]
+    if w.get("reach"):
+        return int(shelves) + int(w.get("extra_rows", 0))
     if w.get("landed") != "library":
         return int(shelves)
     return int(shelves) + linked_landed(scene, shelves) + int(w.get("extra_rows", 0))

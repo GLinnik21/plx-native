@@ -7077,17 +7077,21 @@ class FpsMock(unittest.TestCase):
     def test_burst_scene_key_count_and_timing(self):
         b = self.scenes["library-burst"]
         w = b["walk"]
-        # a 7-shelf landing: 7 Downs + extra_rows into the grid, 8 bursts of 4 each way
-        self.assertEqual(self.mf.walk_downs(b, 7), 7 + w["extra_rows"])
-        steps = self.mf.walk_steps(b, 7)
-        self.assertEqual(len(steps), 7 + 6 + 2 * 8 * 4)
-        self.assertEqual(self.mf.walk_expected_keys(b, 7), len(steps))
+        # the Library page mounts no shelves and logs no landing: `walk.reach` lands the walk as
+        # one "row", so the prelude is 1 + extra_rows Downs from the header into the grid, then
+        # 8 bursts of 4 each way
+        self.assertIn("reach", w)
+        self.assertNotIn("landed", w)
+        self.assertEqual(self.mf.walk_downs(b, 1), 1 + w["extra_rows"])
+        steps = self.mf.walk_steps(b, 1)
+        self.assertEqual(len(steps), 3 + 2 * 8 * 4)
+        self.assertEqual(self.mf.walk_expected_keys(b, 1), len(steps))
         self.assertEqual(self.mf.walk_expected_keys(b, 0), 0)
         keys = [k for k, _ in steps]
-        self.assertEqual((keys.count("down"), keys.count("up")), (13 + 32, 32))
-        # first press to last press: 12 prelude gaps and its rest, then 16 bursts of three gaps
+        self.assertEqual((keys.count("down"), keys.count("up")), (3 + 32, 32))
+        # first press to last press: 2 prelude gaps and its rest, then 16 bursts of three gaps
         # and a rest, less the final rest (nothing is pressed after the last key)
-        want = 12 * 0.125 + 1.5 + 16 * (3 * 0.125 + 1.5) - 1.5
+        want = 2 * 0.125 + 1.5 + 16 * (3 * 0.125 + 1.5) - 1.5
         self.assertAlmostEqual(sum(d for _, d in steps[:-1]), want, places=6)
         # and the scene's run_secs covers the worst case (the generic test also holds it)
         self.assertLessEqual(self.mf.walk_secs_needed(b), b["run_secs"])
@@ -7109,23 +7113,23 @@ class FpsMock(unittest.TestCase):
 
     def test_hold_scene_key_count_and_timing(self):
         h = self.scenes["library-hold"]
-        # a 7-shelf landing: 7 Downs + extra_rows into the grid, 3 bursts of 16 each way
-        steps = self.mf.walk_steps(h, 7)
-        self.assertEqual(len(steps), 7 + 6 + 2 * 3 * 16)
-        self.assertEqual(self.mf.walk_expected_keys(h, 7), len(steps))
+        # a reach landing (one "row"): 1 + extra_rows Downs into the grid, 3 bursts of 16 each way
+        steps = self.mf.walk_steps(h, 1)
+        self.assertEqual(len(steps), 3 + 2 * 3 * 16)
+        self.assertEqual(self.mf.walk_expected_keys(h, 1), len(steps))
         self.assertEqual(self.mf.walk_expected_keys(h, 0), 0)
         keys = [k for k, _ in steps]
-        self.assertEqual((keys.count("down"), keys.count("up")), (13 + 48, 48))
+        self.assertEqual((keys.count("down"), keys.count("up")), (3 + 48, 48))
         # the library is deep enough for the held scroll: 48 rows down past the prelude
         cols = 6
-        self.assertGreaterEqual(-(-h["mock"]["movies"] // cols), 13 + 48)
-        # first press to last press: 12 prelude gaps and its rest, then 6 bursts of fifteen gaps
+        self.assertGreaterEqual(-(-h["mock"]["movies"] // cols), 3 + 48)
+        # first press to last press: 2 prelude gaps and its rest, then 6 bursts of fifteen gaps
         # and a rest, less the final rest (nothing is pressed after the last key)
-        want = 12 * 0.125 + 2.0 + 6 * (15 * 0.125 + 2.0) - 2.0
+        want = 2 * 0.125 + 2.0 + 6 * (15 * 0.125 + 2.0) - 2.0
         self.assertAlmostEqual(sum(d for _, d in steps[:-1]), want, places=6)
-        self.assertAlmostEqual(want, 24.75, places=6)
+        self.assertAlmostEqual(want, 23.5, places=6)
         # inside a burst the keys are key_ms apart; every burst ends in the 2 s rest
-        self.assertEqual([d for _, d in steps[13:13 + 16]], [0.125] * 15 + [2.0])
+        self.assertEqual([d for _, d in steps[3:3 + 16]], [0.125] * 15 + [2.0])
         # and the scene's run_secs covers the worst case (the generic test also holds it)
         self.assertLessEqual(self.mf.walk_secs_needed(h), h["run_secs"])
 
@@ -7179,19 +7183,19 @@ class FpsMock(unittest.TestCase):
         self.assertIn("placeholders: n/a", quiet)
         self.assertIn("pupf/pup n/a", quiet)
 
-    def _burst_run(self, tail, sent=None, landed=7):
+    def _burst_run(self, tail, sent=None, landed=1):
         b = self.scenes["library-burst"]
         want = self.mf.walk_expected_keys(b, landed)
         w = type("W", (), {"error": None, "rows": landed, "sent": want if sent is None else sent})
-        lines = [self.SYN, f"libhubs: section 0 landed {landed} shelves, {landed * 12} items",
-                 self.KEY, self._beat()] + tail
+        # the Library page logs no `libhubs` landing: `walk.reach` lands on the focus fingerprint
+        lines = [self.SYN, self.KEY, self._beat()] + tail
         return b, want, lines, w
 
     def test_grade_walk_prelude_grades_only_keys_and_the_grid_fingerprint_for_a_burst_walk(self):
         b, want, lines, w = self._burst_run([self.GRID_FP, self._ph(4)])
         fail, window, detail = run.grade_walk_prelude(b, lines, w)
         self.assertIsNone(fail, fail)
-        self.assertIn("7 shelf(s) landed", detail)
+        self.assertIn("1 row(s) landed", detail)
         self.assertIn("burst: placeholders: ph=4 tile-frames", detail)
         self.assertIn("(recorded, not graded)", detail)
         self.assertIn(self._ph(4), window)
