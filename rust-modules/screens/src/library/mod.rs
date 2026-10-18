@@ -197,7 +197,7 @@ pub struct LibraryScreen {
     initial: bool,
     /// The head group the page seated its own focus in, while that seat is still the page's own
     /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
-    /// head is — the shelves arrive async, usually after a prepared grid, and commit above it.
+    /// head is (the header row, a status read-out).
     provisional: Option<GroupId>,
     /// Remembered cursors the PAGE wrote by seating itself, which the reader has not confirmed.
     /// The engine remembers every seat alike, so its memory alone cannot tell a restore from the
@@ -572,7 +572,7 @@ impl LibraryScreen {
     }
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
-    /// CARD focus rests on, one whose hold opens an item menu (a grid poster or a shelf card with
+    /// CARD focus rests on, one whose hold opens an item menu (a grid poster with
     /// a library item behind it that `registry::item_has_menu`, so not a collection; not a chip, the rail, a heading or a covered page), and whether it
     /// has arrived (the page scroll, the fade and the card's own glide).
     fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
@@ -643,7 +643,6 @@ impl LibraryScreen {
     /// Push this library's `listing` page over the full grid. The pages are one screen in another
     /// `Listing` (`AppArg::LibraryCollections` / `LibraryRecommended`), mounted by the application.
     /// Pressing the control of the page already shown does nothing.
-    /// // P5 / P6 / P7: the pages' own content and the header they share build on this seam.
     pub(super) fn open_listing<H: LibraryLike>(&mut self, listing: Listing, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if listing == self.listing { return; }
         let Some(section) = self.section.as_ref().and_then(|section| u32::try_from(section.key).ok()) else { return };
@@ -1043,7 +1042,7 @@ impl LibraryScreen {
             }
             ScreenEvent::FocusMoved { from, to, by } => {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
-                // tile from rest over the frames after this, as a shelf's does. A restore or a
+                // tile from rest over the frames after this. A restore or a
                 // reconcile is adopted whole by its next tick so a page returning from a Detail
                 // push lands as it was left.
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);

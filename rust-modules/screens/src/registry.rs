@@ -486,8 +486,8 @@ pub enum LibraryCmd {
     Enter(plx_data::stores::browse::SecKind),
     /// Seat focus on one grid card (tests, and the screenshot pipeline's `plxnative-libgrid`).
     FocusGrid { row: usize, col: usize },
-    /// Seat focus on one card of a hub shelf above the grid, `shelf` counted from the top (the
-    /// screenshot pipeline's `plxnative-libshelf`).
+    /// Seat focus on one card of a hub shelf of the Recommended page, `shelf` counted from the top
+    /// (the screenshot pipeline's `plxnative-libshelf`).
     FocusShelf { shelf: usize, col: usize },
     /// Open the Sort or Filter menu exactly as OK on its toolbar chip does (the screenshot
     /// pipeline's `plxnative-libmenu`).

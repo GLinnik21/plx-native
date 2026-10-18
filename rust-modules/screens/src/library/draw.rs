@@ -83,8 +83,8 @@ impl LibraryScreen {
         // but cannot say which part of the screen spent it.
         //
         // `lb.ground` is the full-screen wash the mask census implicated (masking `ambient` moved
-        // `loop=` 43-45 → 57); `lb.document` brackets the chips, the shelf band and the status
-        // read-out with `lb.shelves` inside it for the card rows alone; `lb.grid` is the poster
+        // `loop=` 43-45 → 57); `lb.document` brackets the header and the status
+        // read-out; `lb.grid` is the poster
         // wall's windowed rows and `lb.rail` the letter rail.
         plx_ui::profile::phase("lb.clear", || {
             plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);

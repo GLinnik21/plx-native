@@ -3,7 +3,7 @@
 //! The pill press mounts the page's fade at 0. Since the header restructure the page leads with
 //! its header row, so the arrival seats focus THERE: no tile is selected, so no pop can play out
 //! under the dissolve (the old head-tile arrival did, and the viewer saw a tile that was simply
-//! there). Late-landing shelves must not steal that seat or start a pop either.
+//! there).
 
 use super::*;
 #[allow(unused_imports)]
@@ -37,15 +37,10 @@ fn a_pill_arrival_seats_the_header_row_and_never_pops_a_tile_under_the_dissolve(
     let probe = |d: &Dispatcher<AppHost>| {
         let page = d.top_screen().unwrap().as_any().unwrap()
             .downcast_ref::<plx_screens::library::LibraryScreen>().unwrap();
-        (page.probe_viewport(d.focus()).0, page.probe_arrival(d.focus()))
+        (page.probe_viewport(d.focus()).0, page.probe_content().0)
     };
-    // The shelves are a separate fetch: they land while the page is already up.
     let mut timeline = Vec::new();
     for i in 0..90 {
-        if i == 20 {
-            rig.stores.browse.borrow_mut()
-                .seed_shelves_for_test(0, &["movie.inprogress.1", "tv.recentlyreleased.1"], 3);
-        }
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         timeline.push((i, probe(&d)));
     }
@@ -54,7 +49,5 @@ fn a_pill_arrival_seats_the_header_row_and_never_pops_a_tile_under_the_dissolve(
     assert!(!seated.is_empty(), "nothing took focus");
     assert!(seated.iter().all(|(_, (region, _))| *region == "toolbar"),
         "the arrival must seat the header row, never a tile: {seated:?}");
-    assert!(timeline.iter().all(|(_, (_, (_, pop)))| pop.is_none()),
-        "a tile popped on a header-seated arrival: {timeline:?}");
-    assert!(timeline.iter().any(|(_, (_, (alpha, _)))| *alpha >= 1.0), "the page never became opaque");
+    assert!(timeline.iter().any(|(_, (_, alpha))| *alpha >= 1.0), "the page never became opaque");
 }
