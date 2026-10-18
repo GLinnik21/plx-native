@@ -143,7 +143,6 @@
   "widgets.tracks.normalize_loudness": "Lautstärke angleichen",
   "widgets.tracks.enh_note_sidecar": "Die Untertitel bleiben unverändert.",
   "widgets.tracks.enh_note_burn": "Die Untertitel bleiben an. Dein Plex-Server bearbeitet das Video, um sie zu behalten, daher kann das Bild etwas weicher wirken.",
-  "widgets.tracks.enh_note_dv_off": "Dolby Vision ist aus, solange dies an ist. Das Video läuft weiter in HDR.",
   "widgets.tracks.enh_reason_not_analyzed": "Für dieses Video noch nicht bereit. Dein Plex-Server muss erst den Ton analysieren.",
   "widgets.tracks.enh_reason_dv_unusable": "Für dieses Dolby-Vision-Video nicht verfügbar.",
   "widgets.tracks.enh_reason_dv_subtitle": "Bei diesem Dolby-Vision-Video nicht mit Untertiteln nutzbar. Schalte die Untertitel aus, um es zu nutzen.",

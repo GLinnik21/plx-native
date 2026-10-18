@@ -147,7 +147,6 @@
   "widgets.tracks.normalize_loudness": "Normalizar volume",
   "widgets.tracks.enh_note_sidecar": "As legendas não mudam.",
   "widgets.tracks.enh_note_burn": "As legendas mantêm-se. O seu servidor Plex vai refazer o vídeo para as manter, por isso a imagem pode ficar um pouco menos nítida.",
-  "widgets.tracks.enh_note_dv_off": "O Dolby Vision desliga-se enquanto isto estiver ativo. O vídeo continua em HDR.",
   "widgets.tracks.enh_reason_not_analyzed": "Ainda não disponível para este vídeo. O seu servidor Plex tem de analisar primeiro o som.",
   "widgets.tracks.enh_reason_dv_unusable": "Não disponível para este vídeo Dolby Vision.",
   "widgets.tracks.enh_reason_dv_subtitle": "Não pode ser usado com legendas neste vídeo Dolby Vision. Desative as legendas para o usar.",

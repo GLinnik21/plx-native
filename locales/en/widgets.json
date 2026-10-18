@@ -672,10 +672,6 @@
     "value": "Subtitles stay on. Your Plex server will rework the video to keep them, so the picture may look a little softer.",
     "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is embedded in the file — turning the toggle on makes the server re-encode the video to keep it in view. No jargon: never say burn/re-encode/transcode."
   },
-  "widgets.tracks.enh_note_dv_off": {
-    "value": "Dolby Vision turns off while this is on. The video still plays in HDR.",
-    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows for a Dolby Vision source whose base layer is usable — turning the toggle on plays the HDR10 base picture without the Dolby Vision declaration."
-  },
   "widgets.tracks.enh_reason_not_analyzed": {
     "value": "Not ready for this video yet. Your Plex server needs to scan its sound first.",
     "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the carried audio track has no canNormalizeLoudness fact yet."

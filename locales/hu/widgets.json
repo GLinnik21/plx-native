@@ -143,7 +143,6 @@
   "widgets.tracks.normalize_loudness": "Hangerő kiegyenlítése",
   "widgets.tracks.enh_note_sidecar": "A feliratok nem változnak.",
   "widgets.tracks.enh_note_burn": "A feliratok bekapcsolva maradnak. A Plex-szerver ehhez újrafeldolgozza a videót, ezért a kép kissé életlenebb lehet.",
-  "widgets.tracks.enh_note_dv_off": "Amíg ez be van kapcsolva, a Dolby Vision kikapcsol. A videó továbbra is HDR-ben játszódik le.",
   "widgets.tracks.enh_reason_not_analyzed": "Ehhez a videóhoz még nem érhető el. A Plex-szervernek előbb elemeznie kell a hangját.",
   "widgets.tracks.enh_reason_dv_unusable": "Ennél a Dolby Vision-videónál nem érhető el.",
   "widgets.tracks.enh_reason_dv_subtitle": "Ennél a Dolby Vision-videónál feliratokkal nem használható. Kapcsolja ki a feliratokat.",

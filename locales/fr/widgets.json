@@ -147,7 +147,6 @@
   "widgets.tracks.normalize_loudness": "Normaliser le volume",
   "widgets.tracks.enh_note_sidecar": "Les sous-titres ne changeront pas.",
   "widgets.tracks.enh_note_burn": "Les sous-titres restent affichés. Votre serveur Plex retravaillera la vidéo pour les conserver ; l’image peut paraître un peu moins nette.",
-  "widgets.tracks.enh_note_dv_off": "Dolby Vision est désactivé tant que cette option est active. La vidéo reste lue en HDR.",
   "widgets.tracks.enh_reason_not_analyzed": "Pas encore disponible pour cette vidéo. Votre serveur Plex doit d’abord analyser sa piste son.",
   "widgets.tracks.enh_reason_dv_unusable": "Indisponible pour cette vidéo Dolby Vision.",
   "widgets.tracks.enh_reason_dv_subtitle": "Impossible avec des sous-titres sur cette vidéo Dolby Vision. Désactivez les sous-titres pour l’utiliser.",

@@ -646,14 +646,11 @@ impl OriginalDeclined {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EnhancementRoute {
     /// The ordinary uncapped progressive-MKV remux: no subtitle on screen, or an external one the
-    /// client draws itself.
+    /// client draws itself. A declared Dolby Vision source whose base layer IS self-displayable
+    /// (P7/P8, `!dovi.base_layer_unusable()`) takes this route too: a server that copies the video
+    /// keeps the `DolbyHdrInfo` the direct play would have declared (`decision_copies_video`); one
+    /// that re-encodes the lane drops it.
     Remux,
-    /// The same remux, for a declared Dolby Vision source whose base layer IS self-displayable
-    /// (P7/P8, `!dovi.base_layer_unusable()`). A server that copies the video keeps the
-    /// `DolbyHdrInfo` the direct play would have declared (`decision_copies_video`); one that
-    /// re-encodes the lane drops it. The wire shape is the SAME as [`Self::Remux`]; only the
-    /// menu's wording differs (it hedges that Dolby Vision may turn off).
-    RemuxDropsDolbyVision,
     /// A forced re-encode carrying `subtitleStreamID=<id>&subtitles=burn` (M7): the only shape that
     /// keeps an EMBEDDED subtitle in view once the audio enhancement is on.
     Burn,
@@ -754,10 +751,9 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     if !analyzed {
         return Disabled(DisabledReason::NotAnalyzed);
     }
-    Offered(match (dv_declared, f.subtitle_effect) {
-        (_, SubtitleEffect::Embedded) => EnhancementRoute::Burn,
-        (true, SubtitleEffect::None | SubtitleEffect::Sidecar) => EnhancementRoute::RemuxDropsDolbyVision,
-        (false, SubtitleEffect::None | SubtitleEffect::Sidecar) => EnhancementRoute::Remux,
+    Offered(match f.subtitle_effect {
+        SubtitleEffect::Embedded => EnhancementRoute::Burn,
+        SubtitleEffect::None | SubtitleEffect::Sidecar => EnhancementRoute::Remux,
     })
 }
 
