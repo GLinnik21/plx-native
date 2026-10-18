@@ -8,7 +8,7 @@ pub(super) const RECOMMENDED: u32 = 9;
 pub(super) const SORTFILTER: u32 = 10;
 
 /// What the Collections control knows about its count (`LibraryLike::collections_count`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum CollectionsControl {
     /// Not probed yet: the control shows "Collections" with no number.
     #[default]

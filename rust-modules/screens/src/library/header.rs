@@ -147,6 +147,34 @@ impl LibraryScreen {
         (right, widest)
     }
 
+    /// A fingerprint of everything [`Self::refresh_header`] reads, cheap enough for every frame.
+    fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let listing = H::listing(cx);
+        let directory = H::directory(cx);
+        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        self.view_section(cx).hash(&mut h);
+        self.collections.hash(&mut h);
+        self.listing.hash(&mut h);
+        self.switched.hash(&mut h);
+        for section in directory.sections() {
+            (section.sid.map(|sid| sid.raw()), section.key, section.row.title.as_str(), section.row.pinned).hash(&mut h);
+        }
+        for (id, source) in directory.sources() { (id.raw(), source.handle.as_str()).hash(&mut h); }
+        (listing.id().map(|id| (id.epoch, id.section, id.query)), listing.sort_index(), listing.sort_desc(),
+            listing.unwatched(), listing.genre().map(|genre| genre.id.as_str()), listing.total(),
+            listing.fetch() == SecFetch::Ready, listing.sorts().len(), self.unfiltered.as_ref().map(|(_, total)| *total)).hash(&mut h);
+        match self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action) {
+            Some(GridAction::Sort { key, desc }) => (1u8, key.as_str(), *desc).hash(&mut h),
+            Some(GridAction::Unwatched { desired }) => (2u8, *desired).hash(&mut h),
+            Some(GridAction::Genre { id }) => (3u8, id.as_deref()).hash(&mut h),
+            Some(GridAction::LibraryType(kind)) => (4u8, kind.code()).hash(&mut h),
+            None => 0u8.hash(&mut h),
+        }
+        h.finish()
+    }
+
     /// Rebuild everything the header row is made of: the Collections control's state, the names
     /// that fit (`self.libraries`), and the cached geometry.
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -155,6 +183,11 @@ impl LibraryScreen {
             .and_then(|key| u32::try_from(key).ok())
             .map_or(CollectionsControl::Unknown, |key| CollectionsControl::of(H::collections_count(cx, key)));
         self.note_unfiltered(cx);
+        // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
+        // of the things it is made of changed.
+        let key = self.header_key(cx);
+        if self.header.is_some() && self.header_key == Some(key) { return; }
+        self.header_key = Some(key);
         let (right, widest) = self.header_right(cx);
         let measure = cx.measure;
         let budget = PageHeader::new(PageHeaderSpec { right: right.clone(), ..Default::default() }, &widest, measure)

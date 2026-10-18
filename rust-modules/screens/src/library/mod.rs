@@ -149,7 +149,7 @@ fn shelves_settled(hubs: plx_data::stores::browse::HubsView<'_>) -> bool {
 /// **What this `LibraryScreen` lists** (CONTRACT FREEZE: the enum is final, P4 wires it).
 /// `All` is the library's full grid, the page the header sits on; `Collections` (type 18) and
 /// `Recommended` (the server's hubs) are the two pages the header's controls push over it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Listing {
     #[default]
     All,
@@ -177,6 +177,8 @@ pub struct LibraryScreen {
     libraries: Vec<(u32, usize)>,
     /// The header row as `sync` last built it (`header.rs`); `None` before the first sync.
     header: Option<Header>,
+    /// [`Self::header_key`] of the row `header` was built from.
+    header_key: Option<u64>,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
     collections: CollectionsControl,
     /// The total of the library's unfiltered listing the page last saw, keyed by the listing it
@@ -279,7 +281,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), header: None, collections: CollectionsControl::Unknown, unfiltered: None,
+            libraries: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, unfiltered: None,
             shelf_mode: true, switched: false, shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
             shelf_publication: None, layout, target_layout: layout,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
@@ -1013,6 +1015,10 @@ impl LibraryScreen {
                 }), cx, fx);
                 return Handled::Yes;
             }
+            LibraryCmd::OpenListing(listing) => {
+                self.open_listing(listing, cx, fx);
+                return Handled::Yes;
+            }
             LibraryCmd::OpenMenu(kind) => {
                 use crate::registry::LibraryMenuKind as Kind;
                 let anchor = match kind {
@@ -1247,7 +1253,10 @@ impl LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.seat_wanted = None;
+                let header_before = self.header_key;
                 self.sync(cx);
+                // The Collections count (or any other header input) landed this frame.
+                if self.header_key != header_before { fx.invalidate(Provenance::Landing(fx.from())); }
                 if self.watch_readout(cx) {
                     fx.invalidate(Provenance::Landing(fx.from()));
                 }

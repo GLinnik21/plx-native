@@ -492,6 +492,10 @@ pub enum LibraryCmd {
     /// Choose a TYPE menu value exactly as its row does (the screenshot pipeline's and the fps
     /// suite's `plxnative-libtype`).
     SetType(plx_data::browse::LibraryType),
+    /// Open the Collections or Recommended page exactly as OK on its header control does (the
+    /// screenshot pipeline's `plxnative-libtype=collections|recommended`, i.e. the
+    /// `library-collections` and `library-recommended` scenarios).
+    OpenListing(crate::library::Listing),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -2061,12 +2065,11 @@ where
             AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
-                let mut page = crate::library::LibraryScreen::new(entry, id, kind);
+                let mut page = crate::library::LibraryScreen::new(entry, id, kind).without_shelves();
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            // CONTRACT FREEZE: the same screen in another `Listing`; P4 gives each its own state
-            // (a section, a restored memory) and P5 / P6 build what they list.
+            // CONTRACT FREEZE: the same screen in another `Listing`; P5 / P6 build what they list.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
@@ -2074,7 +2077,9 @@ where
                     AppArg::LibraryCollections { .. } => crate::library::Listing::Collections,
                     _ => crate::library::Listing::Recommended,
                 };
-                Box::new(crate::library::LibraryScreen::new(entry, id, kind).with_listing(listing))
+                // P5: Collections builds its grid here; P6: Recommended builds its hubs (both mount the
+                // library's grid under their header until then).
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).without_shelves().with_listing(listing))
             }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);
