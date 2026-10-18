@@ -185,3 +185,10 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
   screen.
 - The person page's bio provider 401s on an injected token, so a headless boot cannot reach it —
   sign in, or drive that leg a different way.
+
+## Under posters settings page (library redesign)
+
+`SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
+Libraries, which now has two rows (Favorite libraries, Under posters). `settings::caption_policy_of`
+maps the stored `UnderPosters` to the ui `CaptionPolicy`. The Library page is the full grid under one
+header row (`library/header.rs`); the hub shelves are compiled but not mounted in production.

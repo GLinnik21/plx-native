@@ -745,3 +745,6 @@ Then **`make`** must stay green (ARM cross-build). Then the device: there is no 
 nothing above draws a single pixel. For anything that moves pixels, capture the panel on the TV
 (`tools/capture-screen.sh out.png DISPLAY|GRAPHIC`) and eyeball it — the token collapses and
 cap-band re-centering are invisible until deployed.
+
+Note (library redesign): `cards::draw_label` is re-exported so screens can draw a poster caption
+through the shared label path; Settings > Libraries has two rows (Favorite libraries, Under posters).

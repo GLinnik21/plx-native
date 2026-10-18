@@ -109,3 +109,39 @@ four widget entries were updated in this follow-up. Related forms include
 **пры яго выключэнні**. Skarnik also records [даслаць](https://www.skarnik.by/belrus/26517)
 and [дасланы](https://www.skarnik.by/belrus/26516). These confirm word forms,
 while the supplied review determines the interface wording. **Справаздачы** is retained.
+
+## Pending native review: Library/Collections redesign (2026-10-18)
+
+These strings were written without a dictionary lookup (skarnik.by / verbum.by) and need
+native review. Only `under_posters.genre` (from `browse.library.genre`) and the "па
+змаўчанні" part of `under_posters.reset` (from `watchlist.filter.sort_default`) reuse
+existing catalog wording.
+
+`locales/be/under_posters.json`:
+
+| Key suffix | String |
+| --- | --- |
+| `title` | Пад пастарамі |
+| `detail` | Што паказана пад пастарам. |
+| `copy` | Выберыце, што паказвае пад сабой выбраны пастар. Подпіс адкрываецца толькі пад выбраным пастарам, астатнія застаюцца чыстымі. |
+| `title_row` | Назва |
+| `title_detail` | Паказваць назву над звесткамі. |
+| `details_section` | Звесткі |
+| `year_length` | Год · Працягласць |
+| `genre` | Жанр |
+| `video` | Відэа |
+| `age_rating_score` | Узроставы рэйтынг · Ацэнка |
+| `none` | Няма |
+| `reset` | Скінуць па змаўчанні |
+| `sample_title` | Фільм |
+| `sample_genre` | Драма |
+
+`locales/be/library_header.json`:
+
+| Key suffix | String |
+| --- | --- |
+| `collections` | Калекцыі |
+| `recommended` | Рэкамендацыі |
+| `sort_filter` | Сартаванне і фільтр |
+| `filtered_of` | {shown} з {total} |
+| `show` | Паказваць |
