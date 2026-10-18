@@ -2508,8 +2508,13 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 });
             // A direct-play socket read has no other clock, so a server that stops sending without
             // closing would block it forever. Silence this long is answered like a cut: a reopen.
+            // Sized bodies only: a progressive transcode (`start.mkv`) has no length, may be
+            // silent that long while the PMS catches up, and cannot be reopened at a byte (its
+            // restart would answer 200 from the head). It keeps the pre-heal behaviour.
             let direct_play = s.acquisition.is_none();
+            let sized_body = s.size > 0 && s.off < s.size;
             let silence_deadline = (direct_play
+                && sized_body
                 && blocking_deadline.is_none()
                 && matches!(s.src, Src::Socket { .. }))
             .then(|| std::time::Instant::now() + BODY_SILENCE);
@@ -2609,8 +2614,13 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // Direct play only: an HLS segment read carries an acquisition runtime whose
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
-                let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
-                if direct_play && inside && matches!(s.src, Src::Socket { .. }) && s.heal.take(s.off) {
+                // The plaintext socket heals sized bodies only (see the silence deadline above).
+                if direct_play
+                    && sized_body
+                    && s.off >= 0
+                    && matches!(s.src, Src::Socket { .. })
+                    && s.heal.take(s.off)
+                {
                     if heal_at_offset(s) {
                         continue;
                     }
@@ -2720,6 +2730,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         }
         s.parked_at_end = false;
         let aq = s.aq;
+        let sized = s.size > 0;
         let mut hopped_to_tls = None;
         let reopen_began = std::time::Instant::now();
         let ok = match &mut s.src {
@@ -2757,7 +2768,24 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                             *port = t.origin.port() as c_int;
                             *path = p;
                         }
-                        true
+                        // `stream.rs` takes any 2xx, so a server that ignored the Range answers
+                        // 200 from byte 0 and would be spliced in as the bytes at `target`:
+                        // corruption that looks like success (the curl arm refuses it below). A
+                        // sized body knows where it is going, so it is held to the same rule: a
+                        // 206 that starts at the byte asked for, or a 200 for a request from 0.
+                        // An unsized body (a transcode) has no such position to hold it to.
+                        let start = plx_net::stream::hs_range_start(*hs);
+                        let status = plx_net::stream::hs_status(*hs);
+                        let crossed = !sized
+                            || (status == 206 && start == target)
+                            || (status == 200 && target == 0);
+                        if !crossed {
+                            crate::player::log(&format!(
+                                "ff: seek_cb reopen refused: status={status} range_start={start} wanted={target}"
+                            ));
+                            plx_net::stream::http_close(*hs);
+                        }
+                        crossed
                     }
                     Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
                         match open_curl_hop(&t.url(), target, aq) {

@@ -54,6 +54,9 @@ pub struct HttpStream {
     blen: c_int,
     bpos: c_int,
     content_length: i64,
+    /// First byte of the `Content-Range: bytes S-E/T` the response carried, -1 without one.
+    /// A ranged caller compares it with the byte it asked for ([`hs_range_start`]).
+    range_start: i64,
     consumed: i64,
     status: c_int,
     chunked: c_int,
@@ -152,6 +155,7 @@ impl HttpStream {
         self.blen = 0;
         self.bpos = 0;
         self.content_length = -1;
+        self.range_start = -1;
         self.consumed = 0;
         self.status = 0;
         self.chunked = 0;
@@ -261,6 +265,12 @@ pub fn hs_content_length(hs: *const HttpStream) -> i64 {
 #[inline]
 pub fn hs_status(hs: *const HttpStream) -> c_int {
     unsafe { (*hs).status }
+}
+/// First byte of the response's `Content-Range`, or -1 when it carried none (or an unparsable one,
+/// or `bytes */N`).
+#[inline]
+pub fn hs_range_start(hs: *const HttpStream) -> i64 {
+    unsafe { (*hs).range_start }
 }
 
 /// Internal read result reserved for a caller-owned wall-clock deadline. Ordinary callers never
@@ -1686,6 +1696,19 @@ unsafe fn perform_http_request(
             .ok()
             .and_then(|s| s.parse::<i64>().ok())
             .unwrap_or(-1);
+    }
+    if let Some(p) = find_ci(hdr, b"\r\ncontent-range:") {
+        // `bytes S-E/T`: only S is kept. Anything else (`bytes */T`, a unit other than bytes)
+        // stays -1, which no requested byte equals.
+        let v = &hdr[p + 16..];
+        let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
+        if let Some(v) = v.get(..6).filter(|u| u.eq_ignore_ascii_case(b"bytes ")).map(|_| &v[6..]) {
+            let ndig = v.iter().take_while(|b| b.is_ascii_digit()).count();
+            hs.range_start = std::str::from_utf8(&v[..ndig])
+                .ok()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(-1);
+        }
     }
     if header_is_chunked(hdr) {
         hs.chunked = 1;

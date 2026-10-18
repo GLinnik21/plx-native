@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 /// each request head.
 struct ShortBody {
     port: u16,
+    /// Lets a held first connection continue: it then gets [`REST`] and is closed.
+    release: std::sync::Arc<AtomicBool>,
     heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     stop: std::sync::Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -26,20 +28,49 @@ struct ShortBody {
 
 const BODY: &[u8] = b"ABCDEFGH";
 
+/// What a held connection sends once released.
+const REST: &[u8] = b"EFGH";
+
+/// A body with no length, as a progressive transcode (`start.mkv`) answers.
+const UNSIZED_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nABCD";
+
+/// How the server answers a reopen (every request after the first).
+#[derive(Clone, Copy, PartialEq)]
+enum Reopen {
+    /// A 206 for the `Range`, from the byte asked for.
+    Honest,
+    /// A 206 with an empty body.
+    Stuck,
+    /// A 200 with the whole body: the Range was ignored (or a transcode restarted).
+    Full200,
+    /// A 206 whose `Content-Range` starts at byte 0, whatever was asked.
+    WrongStart,
+}
+
 const SHORT_HEAD: &[u8] =
     b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-7/8\r\nContent-Length: 8\r\n\r\nABCD";
 
 impl ShortBody {
     fn start(first: &'static [u8], hold: bool, stuck: bool) -> ShortBody {
+        ShortBody::start_with(first, hold, if stuck { Reopen::Stuck } else { Reopen::Honest })
+    }
+
+    fn start_with(first: &'static [u8], hold: bool, reopen: Reopen) -> ShortBody {
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = srv.local_addr().unwrap().port();
         srv.set_nonblocking(true).expect("nonblocking listener");
         let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let (heads_t, stop_t) = (heads.clone(), stop.clone());
+        let release = std::sync::Arc::new(AtomicBool::new(false));
+        let (heads_t, stop_t, release_t) = (heads.clone(), stop.clone(), release.clone());
         let thread = std::thread::spawn(move || {
-            let mut held = Vec::new();
+            let mut held: Vec<std::net::TcpStream> = Vec::new();
             while !stop_t.load(Ordering::Acquire) {
+                if release_t.load(Ordering::Acquire) {
+                    for mut h in held.drain(..) {
+                        let _ = h.write_all(REST);
+                    }
+                }
                 let mut s = match plx_base::testnet::accept(&srv) {
                     Ok((s, _)) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -74,12 +105,22 @@ impl ShortBody {
                     .and_then(|r| r.split('-').next())
                     .and_then(|n| n.trim().parse::<usize>().ok())
                     .unwrap_or(0);
-                let rest = if stuck { &[][..] } else { &BODY[from.min(BODY.len())..] };
+                let rest = match reopen {
+                    Reopen::Stuck => &[][..],
+                    Reopen::Full200 | Reopen::WrongStart => BODY,
+                    Reopen::Honest => &BODY[from.min(BODY.len())..],
+                };
+                let (status, range_from) = match reopen {
+                    Reopen::Full200 => ("200 OK", None),
+                    Reopen::WrongStart => ("206 Partial Content", Some(0)),
+                    _ => ("206 Partial Content", Some(from)),
+                };
+                let content_range = range_from.map_or_else(String::new, |f| {
+                    format!("Content-Range: bytes {f}-{}/{}\r\n", BODY.len() - 1, BODY.len())
+                });
                 let mut reply = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{}\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    BODY.len() - 1,
-                    BODY.len(),
+                    "HTTP/1.1 {status}\r\n{content_range}Content-Length: {}\r\n\
+                     Connection: close\r\n\r\n",
                     rest.len()
                 )
                 .into_bytes();
@@ -88,7 +129,7 @@ impl ShortBody {
                 let _ = s.flush();
             }
         });
-        ShortBody { port, heads, stop, thread: Some(thread) }
+        ShortBody { port, release, heads, stop, thread: Some(thread) }
     }
 
     fn heads(&self) -> Vec<String> {
@@ -107,6 +148,11 @@ impl Drop for ShortBody {
 
 /// Open the body at byte 0 through `seek_cb` (the reopen path) and hand the AVIO to `f`.
 fn with_source<R>(port: u16, f: impl FnOnce(*mut c_void) -> R) -> R {
+    with_sized_source(port, BODY.len() as i64, f)
+}
+
+/// [`with_source`] for a body of `size` bytes (-1: no length, as a transcode).
+fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) -> R {
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
@@ -118,7 +164,7 @@ fn with_source<R>(port: u16, f: impl FnOnce(*mut c_void) -> R) -> R {
         },
         aq: &mut *aq,
         off: 0,
-        size: BODY.len() as i64,
+        size,
         io_failed: false,
         body_active_us: 0,
         body_bytes: 0,
@@ -189,4 +235,74 @@ fn a_cut_no_reopen_crosses_is_a_transport_failure_not_the_end_of_the_file() {
         assert_eq!(read_cb(op, buf.as_mut_ptr(), buf.len() as c_int), AVERROR_IO);
         assert_eq!(srv.heads().len(), reopened, "{:?}", srv.heads());
     });
+}
+
+/// A progressive transcode (`start.mkv`) is read through this same AVIO with no length. It cannot
+/// be reopened at a byte (the PMS restarts the session and answers 200 from the head), so a cut is
+/// not healed: it ends the way it did before bodies were healed at all, for the player to answer.
+#[test]
+fn an_unsized_body_that_is_cut_is_not_reopened() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start(UNSIZED_HEAD, false, false);
+    let (got, end) = with_sized_source(srv.port, -1, read_to_end);
+    assert_eq!(got, b"ABCD");
+    assert_eq!(end, AVERROR_EOF, "the close of a body with no length is its end");
+    assert_eq!(srv.heads().len(), 1, "no reopen: {:?}", srv.heads());
+}
+
+#[test]
+fn an_unsized_body_is_not_given_the_silence_deadline() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start(UNSIZED_HEAD, true, false);
+    let release = srv.release.clone();
+    // Well past the silence a sized body would be reopened after.
+    let quiet = BODY_SILENCE * 3;
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(quiet);
+        release.store(true, Ordering::Release);
+    });
+    let began = std::time::Instant::now();
+    let (got, end) = with_sized_source(srv.port, -1, read_to_end);
+    let _ = releaser.join();
+    assert!(began.elapsed() >= quiet, "the read returned before the server spoke again");
+    assert_eq!((got.as_slice(), end), (&b"ABCDEFGH"[..], AVERROR_EOF));
+    assert_eq!(srv.heads().len(), 1, "a transcode that is slow is not a cut: {:?}", srv.heads());
+}
+
+/// The reopen of a sized body must come back from the byte asked for. A server that ignores the
+/// Range answers 200 from byte 0; splicing that in as the bytes at the cut is corruption that
+/// looks like success.
+fn assert_reopen_refused(reopen: Reopen) {
+    let srv = ShortBody::start_with(SHORT_HEAD, false, reopen);
+    with_source(srv.port, |op| {
+        let (got, end) = read_to_end(op);
+        assert_eq!(got, b"ABCD", "nothing from the wrong offset may be delivered");
+        assert_eq!(end, AVERROR_IO);
+        assert!(unsafe { (*(op as *mut AvioState)).io_failed }, "the failure is published");
+    });
+    assert!(srv.heads().len() >= 2, "the reopen was tried: {:?}", srv.heads());
+}
+
+#[test]
+fn a_reopen_answered_with_the_whole_body_is_refused() {
+    let _serial = plx_base::testlock::serial();
+    assert_reopen_refused(Reopen::Full200);
+}
+
+#[test]
+fn a_reopen_answered_from_the_wrong_byte_is_refused() {
+    let _serial = plx_base::testlock::serial();
+    assert_reopen_refused(Reopen::WrongStart);
+}
+
+/// The same with a transfer that dies (a head promising bytes the connection then never sends)
+/// rather than ends: no reopen, whatever the transport reports.
+#[test]
+fn an_unsized_body_that_dies_is_not_reopened() {
+    let _serial = plx_base::testlock::serial();
+    let srv = ShortBody::start(SHORT_HEAD, false, false);
+    let (got, end) = with_sized_source(srv.port, -1, read_to_end);
+    assert_eq!(got, b"ABCD");
+    assert!(end < 0 || end == AVERROR_EOF, "{end}");
+    assert_eq!(srv.heads().len(), 1, "no reopen: {:?}", srv.heads());
 }
