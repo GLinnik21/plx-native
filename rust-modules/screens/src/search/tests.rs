@@ -640,7 +640,18 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Screen(
         ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) }))) if key.elem == FIELD)),
         "a mount opens on the field, whatever the last visit left");
-    assert!(!screen.editing, "…and does NOT raise the keyboard: an arrival has nothing to type");
+    assert!(!screen.editing, "…and the Mount alone raises nothing: the keyboard waits for that Enter");
+    let fresh = |elem| ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(FocusKey { entry: ENTRY, elem }) });
+    let (_, out, _) = deliver(&mut screen, &fixture, Some(FocusKey { entry: ENTRY, elem: FIELD }), fresh(FIELD));
+    assert!(screen.editing, "the arrival's Enter onto the field raises the keyboard: arriving is a request to type");
+    assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Keyboard { up: true }))));
+    assert_eq!(fixture.store.query(), "wallace", "…over the term still on screen");
+    // Only the arrival raises it: once it is down, a later re-seat onto the field (a recent picked,
+    // the recents cleared) is not an arrival and leaves it down.
+    deliver(&mut screen, &fixture, Some(FocusKey { entry: ENTRY, elem: FIELD }), key_event(Key::Back, 0));
+    assert!(!screen.editing);
+    deliver(&mut screen, &fixture, Some(FocusKey { entry: ENTRY, elem: FIELD }), fresh(FIELD));
+    assert!(!screen.editing, "a re-seat after the arrival does not raise the keyboard again");
 
     // A seeded entry — the boot trigger's, now a store command — puts the term in the field with
     // the caret at its live end, which is where somebody who had just typed it would be standing.

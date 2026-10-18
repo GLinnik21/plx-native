@@ -313,8 +313,10 @@ The last pill in the top strip. The screen is a vertical stack of zones — the 
 profile chip and the pills), the **field**, and under it either the **recent searches** or the
 **results**.
 
-**OK on the focused field toggles editing**: it raises the **television's own on-screen keyboard**
-if the field is not being edited, and commits the term if it is. A pointer click on the field always
+**Arriving on Search raises the television's own on-screen keyboard** over the field, because
+pressing the pill is a request to type. A return from a result keeps the keyboard down. **OK on the
+focused field toggles editing**: it raises the keyboard if the field is not being edited, and
+commits the term if it is. A pointer click on the field always
 raises the keyboard, because a click *is* the request to type. The app draws no keyboard of its own;
 this is the system panel, and its own edit keys — the arrows, delete and **Clear all** — are handled
 as ordinary keys, so every button on it does something.
@@ -322,7 +324,7 @@ as ordinary keys, so every button on it does something.
 Results arrive as you type and are grouped into one shelf per kind (*Movies*, *TV Shows*, …) with a
 result count beside each heading. UP/DOWN moves between the zones and between shelves, LEFT/RIGHT
 walks a shelf, OK opens the item's detail page. ▲ from the field reaches the top strip; ◀ off the
-first pill reaches the profile chip. **BACK returns to Home** — Search is a peer, not a page (§2.2).
+first pill reaches the profile chip. **BACK returns to Home** once the keyboard is down — Search is a peer, not a page (§2.2); while the keyboard is up, BACK only takes it down.
 
 The line beside the field names the **scope** — which server or servers are being searched. Search
 covers the user's own servers and any shared with the account; Plex Discover / Watchlist catalog

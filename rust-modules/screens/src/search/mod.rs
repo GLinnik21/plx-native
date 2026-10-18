@@ -109,6 +109,15 @@ pub struct SearchScreen {
     /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
     /// included. The shelf paces the repeats and the store takes an identical ask idempotently.
     page_sent: [Option<(usize, bool, usize)>; 5],
+    /// Set by `Mount` and spent by the first `Enter::Fresh` onto the field: a fresh arrival on
+    /// Search is a request to type, so that Enter raises the television's keyboard. It waits for
+    /// the Enter rather than acting on `Mount` because the container's focus handoff (a strip
+    /// pill's arrival included) lands in between, and a `FocusMoved` off the field would commit
+    /// the panel straight back down. A return from a result arrives as `RestoreMemory` +
+    /// `Enter::Restored` with no `Mount`, so it keeps the posture its cover left; the field's
+    /// later re-seats (a recent picked, the recents cleared) find the flag already spent. Not part
+    /// of the state hash: it never outlives the batch that mounted the page.
+    raise_on_arrival: bool,
 }
 
 impl SearchScreen {
@@ -119,7 +128,7 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0, page_sent: [None; 5] }
+            notices: 0, page_sent: [None; 5], raise_on_arrival: false }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -355,7 +364,14 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
             ScreenEvent::RestoreMemory(PageMemory::Search(_)) => {}
             ScreenEvent::Mount => {
                 self.fade.mount();
+                self.raise_on_arrival = true;
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
+            }
+            ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) })
+                if self.raise_on_arrival && *key == self.key(FIELD) =>
+            {
+                self.raise_on_arrival = false;
+                self.keyboard(true, false, fx);
             }
             ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),

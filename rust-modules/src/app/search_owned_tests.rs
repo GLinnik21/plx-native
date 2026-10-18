@@ -167,8 +167,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     assert!(d.top_screen().unwrap().as_any().unwrap()
         .is::<plx_screens::search::SearchScreen>());
 
-    super::frame(&mut d, &mut rig, tick(2), script_key(Key::Ok, tick(2)));
-    assert!(d.input.keyboard);
+    assert!(d.input.keyboard, "the pill's arrival raised the keyboard");
     assert_eq!(rig.keyboard_calls, [true]);
 
     let mut covered = OwnedLeaveTrace::default();
@@ -206,6 +205,48 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     assert_eq!(d.nav.instance_of(home_entry), Some(home_instance),
         "Home is the retained root instance");
     assert!(!d.input.keyboard);
+    assert_eq!(rig.keyboard_calls, [true, false, true, false]);
+
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Pressing the Search pill is a request to type, so the page arrives with the television's
+/// keyboard already up instead of waiting for a second OK on the field. Back still takes it down
+/// and OK raises it again, and a return from a result keeps the posture the cover left (down),
+/// because only a fresh arrival raises it.
+#[test]
+fn the_search_pill_opens_the_page_with_the_keyboard_up() {
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("owned-search-arrives-editing");
+    session.watching("synthetic-arrives-editing");
+    plx_plex::plex::reset_servers_for_test();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+
+    super::nav_root(&mut d, AppArg::Home);
+    super::frame(&mut d, &mut rig, tick(0), vec![]);
+    super::nav_select_tab(&mut d, AppArg::Search);
+    super::frame(&mut d, &mut rig, tick(1), vec![]);
+    let field = d.focus();
+    assert!(d.input.keyboard, "the pill's arrival raises the television's keyboard");
+    assert_eq!(rig.keyboard_calls, [true]);
+    assert!(owned_search_probe(&d).contains("editing=true"));
+
+    super::frame(&mut d, &mut rig, tick(2), script_key(Key::Back, tick(2)));
+    assert!(!d.input.keyboard, "Back takes the arrival's keyboard down");
+    assert!(d.top_arg().is_some_and(|arg| matches!(arg, AppArg::Search)), "…and stays on Search");
+    assert_eq!(d.focus(), field);
+    super::frame(&mut d, &mut rig, tick(3), script_key(Key::Ok, tick(3)));
+    assert!(d.input.keyboard, "OK on the field raises it again");
+    assert_eq!(rig.keyboard_calls, [true, false, true]);
+
+    super::nav_push(&mut d, detail_arg("arrives-editing-result"));
+    super::frame(&mut d, &mut rig, tick(4), vec![]);
+    assert!(!d.input.keyboard);
+    super::nav_pop(&mut d);
+    super::frame(&mut d, &mut rig, tick(5), vec![]);
+    super::frame(&mut d, &mut rig, tick(6), vec![]);
+    assert!(!d.input.keyboard, "a return from a result is not an arrival: the keyboard stays down");
     assert_eq!(rig.keyboard_calls, [true, false, true, false]);
 
     plx_plex::plex::reset_servers_for_test();
@@ -289,6 +330,9 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
         let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
+    // The wheel scrolls only with the keyboard down: take the arrival's keyboard down first.
+    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Back, tick(1)));
+    assert!(!d.input.keyboard);
     let before = field_y(&d, &rig);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), vec![InputEvent { at: tick(1), source: Source::Sdl,
         kind: InputKind::Wheel { dy: -1.0 } }]);
@@ -376,8 +420,8 @@ fn owned_search_observed_keyboard_dismissal_releases_native_latch_and_reopens() 
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
-    let mut events = script_key(Key::Ok, tick(1));
-    events.push(InputEvent { at: tick(1), source: Source::Sdl, kind: InputKind::SystemKeyboard(false) });
+    assert_eq!(rig.keyboard_calls, [true], "the arrival raised the keyboard");
+    let events = vec![InputEvent { at: tick(1), source: Source::Sdl, kind: InputKind::SystemKeyboard(false) }];
     frame(&mut d, &mut rig, AppArg::Search, tick(1), events);
     assert!(!d.input.keyboard);
     assert_eq!(rig.keyboard_calls, [true, false], "the native STARTED latch must also be released");
@@ -406,19 +450,22 @@ fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
     frame(&mut d, &mut rig, AppArg::Search, tick(2),
         crate::app::events::text_inputs("stray", false, tick(2), Source::Sdl));
     assert_eq!(rig.stores.search.query(), "ab", "closed desktop fields reject stray text");
+    // The arrival's keyboard and the commit on leaving the field are this test's given; the
+    // ADOPTION below must add no start of its own, since a start would clear the pending text.
+    assert_eq!(rig.keyboard_calls, [true, false]);
     frame(&mut d, &mut rig, AppArg::Search, tick(3),
         crate::app::events::text_inputs("X", true, tick(3), Source::Sdl));
     assert_eq!(rig.stores.search.query(), "abX");
     assert!(owned_search_probe(&d).contains("editing=true"));
     assert_eq!(rig.keyboard_adoptions, 1);
     assert_eq!(d.focus(), field, "adoption returns focus from results to the editing field");
-    assert!(rig.keyboard_calls.is_empty(), "adoption must not call start, which clears pending text");
+    assert_eq!(rig.keyboard_calls, [true, false], "adoption must not call start, which clears pending text");
     let mut events = script_key(Key::Left, tick(4));
     events.extend(crate::app::events::text_inputs("Y", true, tick(4), Source::Sdl));
     frame(&mut d, &mut rig, AppArg::Search, tick(4), events);
     assert_eq!(rig.stores.search.query(), "abYX", "an already-editing field keeps its chosen caret");
     assert_eq!(rig.keyboard_adoptions, 2);
-    assert!(rig.keyboard_calls.is_empty());
+    assert_eq!(rig.keyboard_calls, [true, false], "the second adoption adds no start either");
 }
 
 #[test]
@@ -432,8 +479,8 @@ fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let text = |s: &str, at| InputEvent { at, source: Source::Script,
         kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(s.into())) };
-    let mut events = script_key(Key::Ok, tick(1));
-    events.push(text("a", tick(1)));
+    // The arrival raised the keyboard, so the batch types straight into it.
+    let mut events = vec![text("a", tick(1))];
     events.extend(script_key(Key::Left, tick(1)));
     events.push(text("b", tick(1)));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), events);
@@ -456,16 +503,13 @@ fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
-    assert_eq!(d.input.keyboard_owner, Some(old));
+    assert_eq!(d.input.keyboard_owner, Some(old), "the arrival raised the old instance's keyboard");
     d.request(MachineId::Nav, NavOp::Push(AppArg::Search));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
     let current = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     assert_ne!(current, old);
-    assert!(!d.input.keyboard, "the departing owner can release its keyboard after navigation commits");
-    assert_eq!(rig.keyboard_calls, [true, false]);
-    frame(&mut d, &mut rig, AppArg::Search, tick(3), script_key(Key::Ok, tick(3)));
-    assert!(d.input.keyboard);
+    assert!(d.input.keyboard, "the departing owner's release is followed by the new arrival's raise");
+    assert_eq!(rig.keyboard_calls, [true, false, true]);
     assert_eq!(d.input.keyboard_owner, Some(current));
     d.emit(MachineId::Instance(old), Fx::Deliver(MachineId::Instance(old), Delivery::Keyboard { up: false }));
     frame(&mut d, &mut rig, AppArg::Search, tick(4), vec![]);
@@ -488,8 +532,7 @@ fn covering_owned_search_releases_its_native_keyboard() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
-    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
-    assert_eq!(rig.keyboard_calls, [true]);
+    assert_eq!(rig.keyboard_calls, [true], "the arrival raised the keyboard");
     d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(plx_screens::family::SettingsPage::Root)));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
     assert!(!d.input.keyboard, "the system keyboard cannot trap input above a new application modal");
@@ -559,8 +602,7 @@ fn owned_search_opens_system_ownership_and_empty_down_keeps_editing() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
-    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
-    assert!(d.input.keyboard);
+    assert!(d.input.keyboard, "the arrival raises the keyboard");
     assert!(owned_search_probe(&d).contains("editing=true"));
     let before = d.focus();
     frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Down, tick(2)));
@@ -824,8 +866,7 @@ fn leaving_owned_search_through_a_real_route_change_releases_its_keyboard() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
-    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
-    assert!(d.input.keyboard, "OK on the field opens the television's keyboard");
+    assert!(d.input.keyboard, "arriving on Search opens the television's keyboard");
     assert_eq!(rig.keyboard_calls, [true]);
     // The real navigation: nothing here names a teardown table or the retired legacy screen's own
     // `leave()` — the test driver asks the CONTAINER for the page (`goto` → `show_page`) and
@@ -1020,12 +1061,12 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
         })] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
 
-    // Mount seats focus on the field: no shelf/strip position, not editing.
+    // Mount seats focus on the field, with no shelf or strip position, and raises the keyboard.
     let on_field = content_probe(&d, &rig);
     assert!(on_field.contains("zone=Field"), "mount must seat focus on the field: {on_field}");
     assert!(on_field.contains(" row=-1 col=-1 recent=-1 pill=-1 card=0 "),
         "field focus carries no shelf or strip position: {on_field}");
-    assert!(on_field.contains("editing=0"), "not editing at mount: {on_field}");
+    assert!(on_field.contains("editing=1"), "the arrival raises the keyboard: {on_field}");
     assert!(on_field.contains("below=Results"), "a real query with a shelf draws Results below the field: {on_field}");
 
     // Down, with no recents remembered, reaches the one seeded shelf's one card directly.
