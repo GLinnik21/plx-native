@@ -537,6 +537,7 @@ fn rapid_filter_activations_invert_the_pending_desired_value() {
             },
             anchor: [0; 4],
             folded: Vec::new(),
+            opener: None,
         },
     );
     let cx = fixture.cx(None);

@@ -9,6 +9,7 @@ fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
         kind,
         anchor,
         folded: if kind == LibraryMenuKind::Sources { (0..9).collect() } else { Vec::new() },
+        opener: None,
     }
 }
 

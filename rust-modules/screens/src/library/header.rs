@@ -300,7 +300,11 @@ impl LibraryScreen {
         let top = layout::HEADER_Y - self.scroll.pos;
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
         let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let focus = focused.and_then(|elem| header.stops.iter().find(|(stop, _)| *stop == elem)).map(|(_, index)| *index);
+        // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
+        // menu is its only copy, and the board shows it as plain text while the panel is open.
+        let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        let focus = focused.filter(|elem| Some(*elem) != lifted)
+            .and_then(|elem| header.stops.iter().find(|(stop, _)| *stop == elem)).map(|(_, index)| *index);
         header.page.draw(p, &layout, focus);
         if let Some((crumb, crumb_layout)) = &header.crumb {
             let mut crumb_layout = *crumb_layout;

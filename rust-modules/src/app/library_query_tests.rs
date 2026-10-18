@@ -223,7 +223,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         d.input.press.is_live(),
         requests.iter().map(|(_, req, _)| req).collect::<Vec<_>>()
     );
-    let (kind, anchor, target, folded) = requests
+    let (kind, anchor, target, folded, control) = requests
         .into_iter()
         .find_map(|(_, req, _)| match req {
             LibraryReq::Menu {
@@ -231,7 +231,8 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
                 anchor,
                 target,
                 folded,
-            } => Some((kind, anchor, target, folded)),
+                control,
+            } => Some((kind, anchor, target, folded, control)),
             _ => None,
         })
         .unwrap_or_else(|| panic!("the real toolbar activation must request its menu: {evidence}"));
@@ -246,6 +247,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
                 anchor,
                 target,
                 folded,
+                opener: Some((d.nav.entry_of_instance(instance).unwrap(), control)),
             },
         )),
     );

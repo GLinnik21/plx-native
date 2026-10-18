@@ -66,6 +66,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
                 kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
                 folded: Vec::new(),
+                opener: None,
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,
                     sid: listing.sid,

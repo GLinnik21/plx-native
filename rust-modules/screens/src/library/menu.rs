@@ -455,7 +455,8 @@ impl LibraryMenu {
             return Rect::new(SOURCES_X, (y + h + 16.0).clamp(96.0, 984.0 - height), width, height);
         }
         Rect::new(
-            x.clamp(96.0, (1920.0 - 96.0 - width).max(96.0)),
+            // The panel's right edge lines up with the header's right text edge (x 1771).
+            x.clamp(96.0, (plx_ui::page_header::TEXT_X1 - width).max(96.0)),
             (y + h + 16.0).clamp(96.0, 984.0 - height),
             width,
             height,
@@ -737,6 +738,12 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
     }
 }
 impl<H: LibraryLike> Screen<H> for LibraryMenu {
+    /// The header control the panel grew out of is THIS surface's while it is up (the board draws
+    /// "Sort & Filter" as plain text over the panel, with no plate), so the page leaves its pill
+    /// out of its pass (`DrawFrame::lifted`). The "+N" list does not lift: its "+N" stays lit.
+    fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
+        self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
+    }
     fn name(&self) -> &'static str {
         "library_menu"
     }
@@ -965,7 +972,7 @@ mod tests {
         let mut menu = LibraryMenu::new(EntryId(7), LibraryMenuArg {
             host: plx_machine::machine::InstanceId(8),
             target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
-            kind: LibraryMenuKind::Sort, anchor: [0; 4], folded: Vec::new(),
+            kind: LibraryMenuKind::Sort, anchor: [0; 4], folded: Vec::new(), opener: None,
         });
         let mut sorts = vec![
             SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
@@ -1151,6 +1158,7 @@ mod tests {
                 kind: LibraryMenuKind::Sources,
                 anchor: [0; 4],
                 folded: (0..8).collect(),
+                opener: None,
             },
         );
         menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
@@ -1231,6 +1239,7 @@ mod tests {
                 kind: LibraryMenuKind::Sources,
                 anchor: [0; 4],
                 folded: (0..8).collect(),
+                opener: None,
             },
         );
         menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
@@ -1286,6 +1295,29 @@ mod tests {
         assert_eq!(draft.sections[0].rows[0].value.as_deref(), Some("friend"));
         assert!(matches!(draft.rows.last().unwrap().1, Action::Recheck), "the shares check stays, last");
         assert_eq!(draft.rows.len(), 2);
+    }
+
+    #[test]
+    fn the_sort_filter_panel_ends_at_the_header_text_edge_and_lifts_its_control() {
+        let _guard = plx_base::testlock::serial();
+        let arg = |kind, opener| LibraryMenuArg {
+            host: plx_machine::machine::InstanceId(8),
+            target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
+            kind,
+            anchor: [1640.0f32.to_bits(), 148.0f32.to_bits(), 150.0f32.to_bits(), 56.0f32.to_bits()],
+            folded: Vec::new(),
+            opener,
+        };
+        let mut menu = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::SortFilter, Some((EntryId(3), 5))));
+        menu.apply_draft(filter_draft(false, None, true));
+        let frame = menu.frame(&FixtureMeasure);
+        assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
+        assert_eq!(
+            <LibraryMenu as Screen<HostFixture>>::opener(&menu),
+            Some((EntryId(3), Some(FocusKey { entry: EntryId(3), elem: 5 }))),
+            "the page's control is lifted into the menu");
+        let more = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::Sources, None));
+        assert_eq!(<LibraryMenu as Screen<HostFixture>>::opener(&more), None, "the +N list keeps its +N lit");
     }
 
     include!("menu_contract_tests.rs");

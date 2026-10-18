@@ -639,6 +639,7 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(LibraryReq::Menu {
                 kind, anchor: [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()], target,
                 folded: if kind == crate::registry::LibraryMenuKind::Sources { self.folded.clone() } else { Vec::new() },
+                control: anchor,
             })));
         }
     }

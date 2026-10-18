@@ -182,6 +182,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
                 kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
                 folded: Vec::new(),
+                opener: None,
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing_id.epoch,
                     sid: listing_id.sid,

@@ -904,9 +904,12 @@ fn library_requests(app: &mut App, now: u32) {
                 };
                 bridge::nav_push_with_return(&mut app.pages, arg, ret);
             }
-            LibraryReq::Menu { kind, anchor, target, folded } => {
+            LibraryReq::Menu { kind, anchor, target, folded, control } => {
                 app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
-                app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor, folded })));
+                app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
+                    host: instance, target, kind, anchor, folded,
+                    opener: (kind != plx_screens::registry::LibraryMenuKind::Sources).then_some((entry, control)),
+                })));
             }
             LibraryReq::Account => chip_activate(&mut app.pages),
             LibraryReq::BackToHome { kind } => {

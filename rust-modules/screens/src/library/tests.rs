@@ -680,7 +680,7 @@ fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
     let owner = InputOwner::Entry(entry);
     let arg = crate::registry::LibraryMenuArg { host: InstanceId(19),
         target: page.address(&fixture.cx(None)).unwrap(), kind: crate::registry::LibraryMenuKind::Sort,
-        anchor: [0; 4], folded: Vec::new() };
+        anchor: [0; 4], folded: Vec::new(), opener: None };
     let mut menu = menu::LibraryMenu::new(entry, arg);
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();

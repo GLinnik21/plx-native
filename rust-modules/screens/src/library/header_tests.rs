@@ -215,3 +215,24 @@ fn the_plus_n_list_holds_exactly_the_libraries_the_fold_hid() {
     assert!(page.folded.iter().all(|index| !shown.contains(index)), "no visible name is repeated in the list");
     assert!(!page.folded.contains(&current), "nor the library on view");
 }
+
+/// **A control a menu has lifted wears no pill** (board: "Sort & Filter" is plain text over its
+/// open panel); every other focused control still does.
+#[test]
+fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(2);
+    let key = page.key(SORTFILTER);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    let pill = page.header.as_ref().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    let drawn = |page: &LibraryScreen, lifted: Option<FocusKey<u32>>| {
+        let cx = fixture.cx(&engine);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        frame.lifted = lifted;
+        plx_ui::draw_census::capture(|| page.draw_header(&frame)).iter()
+            .filter(|(_, rect)| (rect.w - pill.w).abs() < 0.5 && (rect.h - pill.h).abs() < 0.5).count()
+    };
+    assert_eq!(drawn(&page, None), 1, "a focused control wears the pill");
+    assert_eq!(drawn(&page, Some(key)), 0, "its menu lifted it: no plate under the scrim");
+    page.scroll.jump(0.0);
+}
