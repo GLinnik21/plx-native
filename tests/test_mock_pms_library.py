@@ -460,6 +460,69 @@ class DoviAndExtraMedia(unittest.TestCase):
                 server.server_close()
 
 
+class PartFaults(unittest.TestCase):
+    """`--cut-part-after` and `--part-range-answers-200`: opt-in faults on media part bytes, for
+    reproducing a direct-play body cut (and a server that ignores Range) against the mock."""
+
+    BODY = bytes(range(256)) * 8  # 2048 bytes
+
+    def _serve(self, **faults):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clip = pathlib.Path(tmp.name) / "clip.mkv"
+        clip.write_bytes(self.BODY)
+        server, pms = serve(0, movies=0, **faults)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        pms.lib.media_files = {77: clip}
+        pms.lib.media_content_type = {77: "video/x-matroska"}
+        return f"http://127.0.0.1:{server.server_address[1]}/library/parts/77/1/file.mkv"
+
+    def _get(self, url, range_from=None):
+        request = urllib.request.Request(
+            url, headers={} if range_from is None else {"Range": f"bytes={range_from}-"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            try:
+                body = response.read()
+            except Exception as e:  # http.client.IncompleteRead carries what arrived
+                body = getattr(e, "partial", b"")
+            return response.status, response.headers.get("Content-Range"), body
+
+    def test_off_by_default_serves_whole_and_ranged(self):
+        url = self._serve()
+        self.assertEqual(self._get(url), (200, None, self.BODY))
+        self.assertEqual(self._get(url, 100), (206, "bytes 100-2047/2048", self.BODY[100:]))
+
+    def test_the_first_response_of_a_part_is_cut_and_the_ranged_reopen_is_honest(self):
+        url = self._serve(cut_part_after=500)
+        status, _, body = self._get(url, 0)
+        self.assertEqual((status, body), (206, self.BODY[:500]))
+        self.assertEqual(self._get(url, 500), (206, "bytes 500-2047/2048", self.BODY[500:]))
+        # cut once per part, not once per request
+        self.assertEqual(self._get(url, 0)[2], self.BODY)
+
+    def test_a_head_or_a_short_read_does_not_spend_the_cut(self):
+        url = self._serve(cut_part_after=500)
+        head = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(head, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        # a ranged read that ends before the cut point carries no more than BYTES bytes
+        short = urllib.request.Request(url, headers={"Range": "bytes=0-99"})
+        with urllib.request.urlopen(short, timeout=5) as response:
+            self.assertEqual(response.read(), self.BODY[:100])
+        status, _, body = self._get(url, 0)
+        self.assertEqual((status, body), (206, self.BODY[:500]))
+
+    def test_a_cut_past_the_end_of_the_body_cuts_nothing(self):
+        url = self._serve(cut_part_after=5000)
+        self.assertEqual(self._get(url, 0)[2], self.BODY)
+
+    def test_range_answers_200_only_past_byte_zero(self):
+        url = self._serve(part_range_answers_200=True)
+        self.assertEqual(self._get(url, 0)[:2], (206, "bytes 0-2047/2048"))
+        self.assertEqual(self._get(url, 500), (200, None, self.BODY))
+
+
 class PlaintextOnlyLan(unittest.TestCase):
     """PLX-NATIVE-10: `--plaintext-only-lan`'s wire shape and the fail-mode/advertise-ip
     plumbing, kept separate from the (also-passing) live-socket assertions in mock_pms.py's own

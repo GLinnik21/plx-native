@@ -114,7 +114,7 @@ base
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
-| data | `stores browse metadata person collection search viewstate viewledger pms` | 27k | 56% |
+| data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog` | 27k | 56% |
 | session | `auth` | 11k | 35% |
 | media | `ff aq abr hls curlio player route` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
@@ -127,6 +127,13 @@ for build time here; they are not measured build times. Today every row would re
 the split has not happened. Of the last 33 commits that touched `rust-modules/src` at baseline, 26
 touched `screens/` or `ui/`, so a screens-only edit dropping from 100% to about 28% is where most
 of the payoff is. L10 took the player widgets out of `ui` (66k lines at baseline, 51k now).
+
+The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
+intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
+`stores::catalog`) name only layers below data, chiefly `plx_plex`: `plex::watchlist`, `Client::find_by_guids`, `plex::session`
+for the plex.tv credential, and `plex::servers` for the roster, reachability and `facts_gen`
+epochs. Neither names `net` or `media`; the screens (`watchlist`, `catalog`) and the tab pulse sit
+above them, and the application alone routes between them (`docs/watchlist.md`).
 
 Four choices that were not obvious:
 
@@ -1237,7 +1244,7 @@ ready. What it taught beyond the recipe:
   attribute and body of `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files).
   No `cfg(not(test))` arm hid from it except the shipping arms it switches: `metadata`'s detail
   fetch (a test holds the fetch instead of spawning a thread), its two dev stand-ins, `person`'s two
-  plex.tv fetches (a test that reaches them fails to link) and `pms::run`'s `EditItem` arm (since replaced by the stores' `ApplyView` commands, which carry no cfg split). Then
+  plex.tv fetches (libcurl is bound at run time, so a test that reaches them links and then either finds no libcurl or sends a real request; cut for that reason) and `pms::run`'s `EditItem` arm (since replaced by the stores' `ApplyView` commands, which carry no cfg split). Then
   the exceptions the compiler found under `--features test-support`: what only the layer's own
   tests use stays `cfg(test)` (13 private items and two imports, because under `test-support`
   alone they are dead code; `split-data-revert.py` flips them).

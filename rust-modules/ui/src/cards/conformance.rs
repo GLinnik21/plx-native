@@ -358,6 +358,49 @@ pub fn landing(mount: Mount) -> Outcome {
     if bad.is_empty() { Outcome::Pass } else { fail(bad.join("; ")) }
 }
 
+/// Removal: when the focused card leaves, focus goes to the card that FOLLOWED it (the one before
+/// only when it was the last), the new focus is placeable, and no card but that one is lifted once
+/// it has settled. Not in [`CASES`]: it is the DS4 contract for sections that play their removals,
+/// run by the Tier-1 suite against the animated mounts.
+pub fn removal_focuses_next(mount: Mount) -> Outcome {
+    let mut bad = Vec::new();
+    for at in [2usize, 7] {
+        let mut h = mount(8);
+        let cards = h.cards();
+        if cards.len() < 8 {
+            return fail("fewer than 8 cards");
+        }
+        h.tick(2);
+        h.focus(cards[at], By::Restore);
+        h.tick(SETTLE);
+        if let Err(why) = h.landing(Landing::RemoveFocused) {
+            return Outcome::Unsupported(why);
+        }
+        let want = cards[if at + 1 < cards.len() { at + 1 } else { at - 1 }];
+        h.tick(1);
+        if h.focused() != Some(want) {
+            bad.push(format!("removing card {at}: focus is {:?}, not the next card {want}", h.focused()));
+        }
+        h.tick(SETTLE);
+        if h.focused() != Some(want) {
+            bad.push(format!("removing card {at}: focus drifted to {:?} while the landing played", h.focused()));
+        }
+        let Some(now) = h.focused() else { continue };
+        if h.place(now, At::Drawn).is_none() {
+            bad.push(format!("removing card {at}: the new focus is unplaceable"));
+        }
+        if h.scale(now).is_some_and(|s| (s - h.focus_scale()).abs() > 0.002) {
+            bad.push(format!("removing card {at}: the next card is not at the focus scale once settled"));
+        }
+        let lifted: Vec<u32> =
+            h.cards().into_iter().filter(|&c| c != now && h.scale(c).is_some_and(|s| (s - 1.0).abs() > 0.001)).collect();
+        if !lifted.is_empty() {
+            bad.push(format!("removing card {at}: cards {lifted:?} are off rest once settled"));
+        }
+    }
+    if bad.is_empty() { Outcome::Pass } else { fail(bad.join("; ")) }
+}
+
 /// Memory: `memory_at` then a fresh instance and `RestoreMemory` gives the same focused identity.
 pub fn memory(mount: Mount) -> Outcome {
     let mut h = mount(14);

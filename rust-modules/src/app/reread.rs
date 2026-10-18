@@ -15,7 +15,8 @@
 //! "Re-read" is per page kind ([`action`]): Library, Search, Person, Filmography and Collection
 //! owe the read-back of the keys they hold (`Stores::owe_read_back`, the layer-1 reconcile worker,
 //! never a stop and never an end-of-stream candidate); Home owes one quiet refetch per source
-//! (`HubsCmd::RefetchSourceQuiet`); a Detail page under the top is told `Deferred`, which the page
+//! (`HubsCmd::RefetchSourceQuiet`); the Watchlist owes its read-back AND the plex.tv list read
+//! again, which re-matches it (`Action::WatchlistRead`); a Detail page under the top is told `Deferred`, which the page
 //! turns into its own re-read when it owns the Metadata slot again. The read-backs of a covered
 //! list page are quiet (they publish facts, they owe no Detail page: `enqueue_reread`).
 //!
@@ -109,6 +110,11 @@ pub(crate) enum Action {
     HomeQuiet,
     /// The read-back of the keys the page holds.
     ReadBack,
+    /// The Watchlist page: the read-back of its matched copies, and the plex.tv list read again
+    /// (which re-matches it), so a title added elsewhere or newly on a server shows up.
+    WatchlistRead,
+    /// The catalog page: the discover record read again, and the plex.tv list.
+    CatalogRead,
     /// Tell a Detail page under the top to re-read when it owns its slot.
     DetailDeferred,
     /// The visible Detail page, after a resume: its own item read back, which owes the page its
@@ -121,6 +127,12 @@ pub(crate) enum Action {
 pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
     match arg {
         AppArg::Home => Action::HomeQuiet,
+        // The Watchlist page reads back the matched copies it holds (`WatchlistStore::held_keys`).
+        AppArg::Watchlist => Action::WatchlistRead,
+        // The catalog page of a title no server holds owes the re-match for its guid: the plex.tv
+        // list read again (a title newly on a server, or added elsewhere, re-derives its status
+        // line and bookmark face), and the record itself when the first read did not land.
+        AppArg::Content(ContentArg::Catalog { .. }) => Action::CatalogRead,
         AppArg::Library | AppArg::Search => Action::ReadBack,
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
@@ -151,6 +163,14 @@ pub(super) fn run(
                 let keys = bridge.held_keys(&arg);
                 bridge.owe_read_back(keys);
             }
+            Action::WatchlistRead => {
+                let keys = bridge.held_keys(&arg);
+                bridge.owe_read_back(keys);
+                bridge.watchlist_reread();
+            }
+            Action::CatalogRead => if let AppArg::Content(ContentArg::Catalog { hex }) = &arg {
+                bridge.catalog_reread(*hex);
+            },
             Action::DetailDeferred => if let Some(instance) = instance {
                 pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
                     Delivery::Screen(ScreenEvent::App(AppMsg::DetailReconcile {
@@ -257,6 +277,11 @@ mod tests {
         assert_eq!(action(&detail, true), Action::DetailDeferred);
         assert_eq!(action(&AppArg::Library, true), Action::ReadBack);
         assert_eq!(action(&AppArg::Search, true), Action::ReadBack);
+        assert_eq!(action(&AppArg::Watchlist, true), Action::WatchlistRead, "covered Watchlist");
+        assert_eq!(action(&AppArg::Watchlist, false), Action::WatchlistRead, "visible Watchlist on resume");
+        let catalog = AppArg::Content(ContentArg::Catalog { hex: [7; 12] });
+        assert_eq!(action(&catalog, true), Action::CatalogRead, "covered catalog page owes its re-match");
+        assert_eq!(action(&catalog, false), Action::CatalogRead, "visible catalog page on resume");
         assert_eq!(action(&AppArg::Player, true), Action::Nothing);
     }
 

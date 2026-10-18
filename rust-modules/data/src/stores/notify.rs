@@ -27,7 +27,7 @@
 //! a flapping feed backs off instead of resetting on its first frame and resyncs once per
 //! escalation, the rest waiting until it has stayed live for a while.
 
-use plx_plex::plex::notify::{Notification, NotifyEnd, PlaySession};
+use plx_plex::plex::notify::{LibraryEntry, Notification, NotifyEnd, PlaySession};
 use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -210,6 +210,7 @@ impl Conn {
             (std::mem::take(&mut inbox.events), inbox.end.take())
         };
         let mut sessions = Vec::new();
+        let mut library = Vec::new();
         for (key, n) in events {
             if key != self.key {
                 continue;
@@ -224,8 +225,10 @@ impl Conn {
                 }
                 plx_base::eventlog::log(&format!("notify: live sid={}", self.sid.raw()));
             }
-            if let Notification::Play(mut s) = n {
-                sessions.append(&mut s);
+            match n {
+                Notification::Play(mut s) => sessions.append(&mut s),
+                Notification::Library(mut e) => library.append(&mut e),
+                Notification::Ping | Notification::Ignored => {}
             }
         }
         if self.state == State::Live && frame.saturating_sub(self.live_since) >= STABLE_FRAMES {
@@ -238,6 +241,9 @@ impl Conn {
         }
         if !sessions.is_empty() {
             out.plays.push(NotifyPlays { sid: self.sid, sessions });
+        }
+        if !library.is_empty() {
+            out.library.push(NotifyLibrary { sid: self.sid, entries: library });
         }
         if let Some(end) = end {
             self.link = None;
@@ -276,13 +282,21 @@ impl Conn {
     }
 }
 
-/// What one pump found: the sessions other clients reported, per server, and the servers whose
-/// feed came back after a gap.
+/// What one pump found: the sessions other clients reported and the library items a server
+/// finished creating or deleted, per server, and the servers whose feed came back after a gap.
 #[derive(Default, Debug, PartialEq)]
 pub struct NotifyOut {
     pub plays: Vec<NotifyPlays>,
+    pub library: Vec<NotifyLibrary>,
     /// `(server, epoch)` for every server whose [`NotifyStore::resync_epoch`] moved this pump.
     pub resynced: Vec<(ServerId, u32)>,
+}
+
+/// A server's finished movie and show creates and deletes (never empty).
+#[derive(Debug, PartialEq)]
+pub struct NotifyLibrary {
+    pub sid: ServerId,
+    pub entries: Vec<LibraryEntry>,
 }
 
 #[derive(Debug, PartialEq)]

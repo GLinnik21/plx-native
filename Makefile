@@ -1424,6 +1424,20 @@ clean:
 
 test: deploy run
 
+# `disk-preflight` — refuse to start a gate on a nearly full volume. A cold build writes several GB
+# under the checkout's `target/`; on a full disk the failure is `No space left on device (os error
+# 28)` deep inside rustc or the replay driver, which reads exactly like a code failure (2026-10-16:
+# three "blocking" gate FAILs were all ENOSPC, and the same sha passed once space was freed).
+# `PLX_MIN_FREE_MB` is the floor (default 3072); `PLX_MIN_FREE_MB=0` skips it.
+.PHONY: disk-preflight
+disk-preflight:
+	@min=$${PLX_MIN_FREE_MB:-3072}; \
+	free=$$(df -Pk . | awk 'NR==2 {print int($$4/1024)}'); \
+	if [ "$$min" -gt 0 ] && [ "$$free" -lt "$$min" ]; then \
+	  echo "disk-preflight: only $$free MiB free here (< $$min MiB); a build would fail with ENOSPC (os error 28), not a code failure. Free space first: make disk; tools/build-gc.sh --auto (or PLX_MIN_FREE_MB=0 to skip)." >&2; \
+	  exit 1; \
+	fi
+
 # `make check` is a machine-wide QUEUE with TWO slots, not a direct alias for the suite below. On
 # 2026-09-28, ~7 agent worktrees ran `make check` at once on one 10-core/16 GB Mac: each
 # is a cold 412k-line rustc build (~1 GB RSS), swap hit 9-15 GB, and one run took 60
@@ -1437,7 +1451,7 @@ test: deploy run
 # `PLX_CHECK_LOCK=off` bypasses the lock. A second run from the SAME checkout always
 # waits for the first. See `check-unlocked` below for the actual
 # suite; CI runs `make check` uncontended, so the wrapper acquires immediately there.
-check:
+check: disk-preflight
 	@python3 tools/check-lock.py -- $(MAKE) --no-print-directory check-unlocked
 
 # `make check` — the HOST unit suite plus `lint` below, the only correctness signal
@@ -2187,7 +2201,7 @@ sim-macos: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 # Full product replay is a renderer-backed host gate. Keep the fast unit suite usable without
 # a window system; Simulator CI runs this same driver against the simulator it just built.
 .PHONY: check-replay
-check-replay: sim-macos
+check-replay: disk-preflight sim-macos
 	python3 tests/replay_fixtures.py --sim "$$SIM_MACOS_BIN_ENV"
 
 # **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per

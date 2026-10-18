@@ -36,7 +36,9 @@
 //!
 //! **Springs are not the only clock, and that is the standing hazard.** Anything that animates
 //! from raw time — a millisecond ramp, a phase accumulator, a countdown — is invisible to (1) by
-//! construction and must report through (2) itself. Two did not, and both froze in the product:
+//! construction and must report itself: through (2) when it changes content, through
+//! [`note_motion`] when it is a decoration (the tab pulse), because damage under a standing popover
+//! re-captures the frozen host. Two did not, and both froze in the product:
 //! `Xfade` (`plx_ui::xfade`) (every CONTENT cross-fade — the Library's grid and page, Search's
 //! results, Filmography's preview) and `Spinner` (`plx_ui::widgets::Spinner`)
 //! (every loading read-out). They report from their own advance and draw respectively; the reasons
@@ -267,7 +269,8 @@ pub fn enabled() -> bool {
 /// * `Damage(_)` / `Fault(_)` — [`invalidate`]. The provenance is dropped: `plx_machine::idle` has no
 ///   ledger to record it on (`Present::why` is the machine's, and the recorder reads that one).
 /// * `Motion` — [`invalidate`] as well, deliberately NOT the `MOVING` thread-local. `MOVING` is
-///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`], and
+///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`] (or
+///   asserted by a time-driven decoration through [`note_motion`]), and
 ///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted. A caller who
 ///   only knows "something moved" cannot answer that, so it gets one frame — never a claim about
 ///   which springs were in flight.
@@ -294,12 +297,28 @@ pub fn video_plane_bound() -> bool {
 #[inline]
 pub fn note_spring(pos: f32, target: f32, vel: f32) {
     if !settled(pos, target, vel) {
-        MOVING.with(|m| m.set(true));
-        if SCOPE_DEPTH.with(|d| d.get()) == 0 {
-            PAGE_MOVING.with(|m| m.set(true));
-            if DECOR_DEPTH.with(|d| d.get()) == 0 {
-                PAGE_LAYOUT_MOVING.with(|m| m.set(true));
-            }
+        note_motion();
+    }
+}
+
+/// **A time-driven animation visibly moved this frame** — [`note_spring`]'s report without its
+/// rest test, for an animator with no spring to judge: a fixed-length beat stepped by `dt` (the
+/// tab pulse). Attributed exactly as a spring's motion is: to a popover inside a [`MotionScope`],
+/// to the page otherwise, and not to the page's LAYOUT inside [`decorative`].
+///
+/// **Motion, not [`invalidate`], and the difference is the frozen host.** Discrete damage under a
+/// standing popover means "the page changed": `popover::host` re-captures its snapshot, which
+/// moves `page_epoch` and makes the modal dim re-read the page's light. Motion re-draws the page
+/// live only while every panel is FADING and is paused under an open one — the rule every page
+/// decoration already follows. A time-driven animator that reported through `invalidate` made the
+/// item menu's close re-capture Home on each of its frames.
+#[inline]
+pub fn note_motion() {
+    MOVING.with(|m| m.set(true));
+    if SCOPE_DEPTH.with(|d| d.get()) == 0 {
+        PAGE_MOVING.with(|m| m.set(true));
+        if DECOR_DEPTH.with(|d| d.get()) == 0 {
+            PAGE_LAYOUT_MOVING.with(|m| m.set(true));
         }
     }
 }
@@ -531,7 +550,7 @@ pub fn frame_begin_judging_rest_with(dt: f32, rest_dt: f32) {
 /// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
 /// hand it — the same hazard the module doc calls out for `Xfade` (`plx_ui::xfade::Xfade`) and
 /// `Spinner` (`plx_ui::widgets::Spinner`): a millisecond ramp is invisible to [`note_spring`] and
-/// must report through [`invalidate`] itself. `card_row`'s focused-title marquee is the third —
+/// must report itself, through [`invalidate`] for content or [`note_motion`] for a decoration. `card_row`'s focused-title marquee is the third —
 /// it advances from inside `draw`, reached through a generic `Column::draw_child` trait method
 /// and several call sites across three lanes' files, none of which carries a `Tick` — so it reads
 /// this instead of widening that trait's fixed parameter list.

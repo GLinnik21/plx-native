@@ -730,7 +730,7 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
 #[test]
 fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missing() {
     let missing = prepare_load(&ReadState::Missing, || "id-missing".to_string()).0;
-    let cleared = prepare_load(&ReadState::Cleared { language: plx_platform::i18n::Preference::System }, || "id-cleared".to_string()).0;
+    let cleared = prepare_load(&ReadState::Cleared { kept: Default::default() }, || "id-cleared".to_string()).0;
     assert!(
         missing.prefs.playback_quality.is_some(),
         "setup: a Missing read must seed a fresh quality"
@@ -749,9 +749,9 @@ fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missin
 /// (the `Locked | Blocked` bucket) leaves the rest of this module's suite green.
 #[test]
 fn read_identity_gives_cleared_its_own_bucket_distinct_from_every_other_state() {
-    let cleared = read_identity(&ReadState::Cleared { language: plx_platform::i18n::Preference::System });
+    let cleared = read_identity(&ReadState::Cleared { kept: Default::default() });
     assert_ne!(cleared, read_identity(&ReadState::Missing));
-    assert_ne!(cleared, read_identity(&ReadState::Locked { language: plx_platform::i18n::Preference::System }));
+    assert_ne!(cleared, read_identity(&ReadState::Locked { kept: Default::default() }));
     assert_ne!(cleared, read_identity(&ReadState::Blocked));
 }
 
@@ -1209,7 +1209,7 @@ fn fallback_never_outranks_present_or_untrusted_canonical_state() {
             public: Session::default(),
             protection: None,
         },
-        || C::Cleared { revision: 1, language: plx_platform::i18n::Preference::System },
+        || C::Cleared { revision: 1, kept: Default::default() },
         || C::Data {
             revision: 1,
             payload: "not json".into(),
@@ -1510,7 +1510,7 @@ fn p1_authoritative_reads_retire_only_marked_files() {
     for read in [
         (|| C::Opened { revision: 1, session: signed_in() }) as fn() -> C,
         || C::Data { revision: 1, payload: serde_json::to_string(&signed_in()).unwrap() },
-        || C::Cleared { revision: 1, language: plx_platform::i18n::Preference::System },
+        || C::Cleared { revision: 1, kept: Default::default() },
     ] {
         assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
         persistence::READ_FOR_TEST.with(|hook| hook.set(Some(read)));
@@ -1701,7 +1701,7 @@ fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
     RETIRE_PARENT_SYNC_FOR_TEST.with(|hook| hook.set(Some(|| Some(libc::EIO))));
     assert!(!with_io_for_test(retire_marked_fallbacks_locked));
     assert!(!file.file().exists());
-    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1, language: plx_platform::i18n::Preference::System })));
+    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1, kept: Default::default() })));
     assert_eq!(with_io_for_test(persistence::cleanup_after_confirmed_clear),
         persistence::ClearCleanupOutcome::LegacyRetireFailed);
     assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: false });

@@ -10,17 +10,33 @@
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
+use super::landing::{Landing, Occupancy, Scene};
 use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
 use super::pool::{self, Drawn, ShrinkKey};
-use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
+use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, MAX_GRID_BANDS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
     Stop,
 };
 use crate::{Painter, Rect, Spring};
+
+/// Where a card stands in [`Grid::draw`]'s back-to-front order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawRole {
+    /// The copy a card that changed row leaves where it stood (fading out).
+    Leaving,
+    /// A card at rest in its slot.
+    Still,
+    /// A new card (or one that changed row) fading in at its slot, under every card in flight.
+    Arriving,
+    /// A survivor sliding to its slot.
+    Moving,
+    /// The focused card.
+    Focus,
+}
 
 /// Who owns the grid's vertical scroll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,12 +74,15 @@ pub struct GridSpec {
     /// The x of column 0's card.
     pub left: f32,
     pub scroll: ScrollMode,
+    /// Play a content change no focus move announced instead of cutting it (see
+    /// [`animate_landings`](Self::animate_landings)).
+    pub landings: bool,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false }
     }
 
     /// `cols` columns of `style` cards starting at x = `left` (a page with an alphabet rail, or
@@ -78,6 +97,23 @@ impl GridSpec {
         Self { scroll: ScrollMode::External, home_when_unfocused: false, ..self }
     }
 
+    /// Play a content landing that no move announced (`landing.rs`): a removed card fades out where
+    /// it stood on `style.k_scale` ([`Grid::paint_ghosts`] paints it from the card the owner kept),
+    /// every card that keeps its row slides along it on `style.k_scroll`, all together (no
+    /// stagger), and a card that crosses a line break crossfades on `style.k_scale` (out where it
+    /// stood, in at its new cell) instead of flying over the row between. Cards with no end on
+    /// screen cut. Focus is not this spring's: the engine's reconcile has already put it on the
+    /// card that took the removed one's index (the next card), whose pop rises from rest as the
+    /// removed card's ghost sinks. Nothing starts while a menu veils the page: the Remove lands on
+    /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`); a menu that lets the
+    /// page reflow (`Screen::lets_host_reflow`) veils nothing. The frame a landing begins in draws
+    /// the start state, and the draw order is leaving copies, still cards, cards fading in, movers by the
+    /// length of their way, the focused card. Off by default: a grid whose owner keeps no removed cards for
+    /// the ghosts still gets the slide.
+    pub const fn animate_landings(self, on: bool) -> Self {
+        Self { landings: on, ..self }
+    }
+
     fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
 }
 
@@ -87,6 +123,9 @@ pub struct Grid {
     scroll: Spring,
     target: f32,
     bands: GridBands,
+    /// The bands as the last frame drew them, kept from the moment a focus the reader did not move
+    /// settled them on another row until the landing has measured against them (`play_landing`).
+    bands_was: Option<[GridBand; MAX_GRID_BANDS]>,
     pop: GridPop,
     /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
     shrink: ShrinkKey,
@@ -108,6 +147,8 @@ pub struct Grid {
     retry: Retry,
     /// The source's [`CardSource::page_epoch`] at the last tick.
     epoch: u32,
+    /// The animated landing of inserted and removed cards (`landing.rs`); off unless the spec asks.
+    landing: Landing,
 }
 
 impl Grid {
@@ -118,6 +159,7 @@ impl Grid {
             scroll: Spring::at(0.0),
             target: 0.0,
             bands: GridBands::new(),
+            bands_was: None,
             pop: GridPop::new(),
             shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
@@ -131,6 +173,12 @@ impl Grid {
             out: false,
             retry: Retry::new(),
             epoch: 0,
+            landing: {
+                let mut l = Landing::new();
+                l.set_enabled(spec.landings);
+                l.hold_first_frame(true);
+                l
+            },
         }
     }
 
@@ -157,7 +205,7 @@ impl Grid {
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
                 }
-                self.bands.focus(arrived.map(|i| i / self.spec.cols), deliberate);
+                self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
                 if let Some(i) = arrived.filter(|_| deliberate) {
                     self.pop.arm(i);
                 }
@@ -183,6 +231,10 @@ impl Grid {
         let focus = super::focused_index(&cx.focus, self.entry, src);
         self.landed = None;
         self.shift = 0.0;
+        let sy0 = self.scroll.pos;
+        // what the focused card was drawn at before this tick lets it go: if the landing removes
+        // it, its ghost starts there
+        let lifted = self.pop.cell().map(|p| (p, self.pop.pop_scale(p, &self.spec.style)));
         self.shrink.follow(&mut self.pop, src);
         let mut prev = self.pop.cell();
         // A landing and a focus change between the same two ticks (a key over cards that moved, a
@@ -194,7 +246,12 @@ impl Grid {
         // has already armed the pop on its new cell: the anchor is the cell focus left)
         let was = slid.map(|(_, (p, _))| p).or(prev).map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
-        self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+        // No focus is settled AFTER the landing has diffed: while the focused card leaves as a ghost
+        // (focus is off it for a frame, until the app reconciles), its row's caption band stays as
+        // drawn, or the cards below would jump up under the menu that chose the removal.
+        if focus.is_some() {
+            self.focus_band(focus.map(|i| i / self.spec.cols), false);
+        }
         if let Some((i, (p, q))) = slid {
             self.carry(p, q, was);
             prev = Some(q);
@@ -219,13 +276,32 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
+        self.play_landing(src, sy0, lifted, dt);
+        if focus.is_none() && !self.landing.has_takeover() {
+            self.focus_band(None, false);
+        }
+        // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks.
+        // The app reconciles focus a frame after the card leaves: until it does the pop belongs to
+        // no card (the ghost carries the lift), and the takeover waits for the focus.
+        if self.landing.has_takeover() {
+            match focus {
+                Some(i) => {
+                    self.landing.take_takeover();
+                    self.pop.rise(i);
+                }
+                None => self.pop.vacate(),
+            }
+        }
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
             poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
         });
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
-        self.pop.tick(focus, &self.spec.style, dt);
+        // the takeover's rise starts with the landing's springs, not under the menu that chose it
+        if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
+            self.pop.tick(focus, &self.spec.style, dt);
+        }
         self.shrink.note(&self.pop, src);
         if self.spec.scroll == ScrollMode::External {
             return;
@@ -235,6 +311,53 @@ impl Grid {
         if (self.scroll.pos - self.target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
             fx.note(PresentEvent::Motion);
         }
+    }
+
+    /// Move the focused row of the caption bands. A band the reader did not animate settles at once;
+    /// the layout it drew is kept for the landing to measure from, so the cards the band moved start where
+    /// they stood and the move plays on the landing's spring (`play_landing`).
+    fn focus_band(&mut self, row: Option<usize>, animate: bool) {
+        if !animate && self.bands.focused() != row {
+            self.bands_was.get_or_insert_with(|| self.bands.geometry());
+        }
+        self.bands.focus(row, animate);
+    }
+
+    /// Diff the cards against the ones last adopted and step what the change plays. `sy0` is the
+    /// scroll before the landing rule moved it (own mode); an external owner's move is `self.shift`.
+    /// Slots are DOCUMENT points under the caption bands as they stand now; where a card stood is
+    /// measured under the bands the last frame DREW ([`bands_was`](Self::bands_was): a focus the reader did not
+    /// move settled the caption band on another row), so the band's move plays on the landing's
+    /// spring with the cards. Whether a card crossed a line break is judged under the bands that stand now.
+    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32) {
+        let scroll_moved = match self.spec.scroll {
+            ScrollMode::Own => self.scroll.pos - sy0,
+            ScrollMode::External => self.shift,
+        };
+        let (geom, top, scroll, h) = (self.spec.geom(), self.spec.top, self.scroll.pos, self.spec.style.h);
+        let bands = self.bands.geometry();
+        let slot = |i: usize| {
+            let r = poster_grid::cell_in(&geom, i, top, 0.0, &bands);
+            (r.x, r.y)
+        };
+        let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
+        // the layout the last frame drew: the caption band may have settled on another row since
+        let drawn = self.bands_was.take();
+        let was = |i: usize| {
+            let r = poster_grid::cell_in(&geom, i, top, 0.0, drawn.as_ref().unwrap_or(&bands));
+            (r.x, r.y)
+        };
+        let scene = Scene { shift: (0.0, scroll_moved), slot: &slot, was: &was, on: &on, lifted };
+        let began = self.landing.observe(src, &scene);
+        if drawn.is_some() && !began {
+            self.landing.rebase(src.len(), &scene);
+        }
+        let size = {
+            let r = poster_grid::cell_in(&geom, 0, top, 0.0, &bands);
+            (r.w, r.h)
+        };
+        let occupy = Occupancy { slot: &slot, size };
+        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale), Some(&occupy));
     }
 
     /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
@@ -428,6 +551,12 @@ impl Grid {
             Some(Drawn::Rest) => return 1.0,
             None => {}
         }
+        // The takeover is owed but the pop has no cell: the card focus reconciled to rests until the
+        // landing's first step raises it, never the "not told yet" full scale (that read as the
+        // new card jumping to the pop under the menu that chose the removal).
+        if focus == Some(i) && self.pop.cell() != Some(i) && self.landing.has_takeover() {
+            return 1.0;
+        }
         self.pop.scale(i, focus == Some(i), &self.spec.style)
     }
 
@@ -439,6 +568,14 @@ impl Grid {
 
     fn cell(&self, i: usize, bands: &[GridBand]) -> Rect {
         poster_grid::cell_in(&self.spec.geom(), i, self.spec.top, self.scroll.pos, bands)
+    }
+
+    /// Card `i`'s settled (unpopped) cell of `n` cards with a landing's slide folded in: where the
+    /// card is drawn and registered while it springs to [`cell`](Self::cell).
+    fn slot(&self, i: usize, n: usize, bands: &[GridBand]) -> Rect {
+        let (dx, dy) = self.landing.offset_xy(n, i);
+        let r = self.cell(i, bands);
+        Rect::new(r.x + dx, r.y + dy, r.w, r.h)
     }
 
     /// Whether card `i`'s row rests wholly above the content edge: the row over the one a snapped
@@ -453,7 +590,7 @@ impl Grid {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
         let pressed = super::pressed_index(cx, self.entry, src);
-        let cell = self.cell(i, &self.bands.geometry());
+        let cell = self.slot(i, src.len(), &self.bands.geometry());
         let s = match how {
             At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
             At::SpringTarget => if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 },
@@ -461,22 +598,71 @@ impl Grid {
         Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
     }
 
-    /// Draw the grid into `p` (page alpha already applied) and register its stops: non-focused
-    /// cards first, the focused one last; only the cards the scroll can show are touched.
+    /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
+    /// the leaving copies of the cards a landing moved to another row (over the owner's ghosts,
+    /// which it paints before this), the non-focused cards, the focused one last; only the cards
+    /// the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
-        for i in self.window(src.len()) {
-            if focus == Some(i) || self.above_edge(i, &bands) {
-                continue;
-            }
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), false, &bands);
-        }
-        if let Some(i) = focus.filter(|&i| i < src.len()) {
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), true, &bands);
+        self.draw_leaving(f, p, src, &bands);
+        for (role, i) in self.draw_plan(src.len(), focus, &bands) {
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), role == DrawRole::Focus, &bands);
         }
         self.record_stops(f, p, src);
+    }
+
+    /// The cards [`draw`](Self::draw) paints after the leaving copies, back to front: still cards,
+    /// cards fading in, movers by the length of their way, the focused card.
+    fn draw_plan(&self, n: usize, focus: Option<usize>, bands: &[GridBand]) -> Vec<(DrawRole, usize)> {
+        let mut plan = Vec::new();
+        let mut moving: Vec<(f32, usize)> = Vec::new();
+        let mut arriving = Vec::new();
+        for i in self.window(n) {
+            if focus == Some(i) || self.above_edge(i, bands) {
+                continue;
+            }
+            match self.landing.travel(n, i) {
+                Some(t) => moving.push((t, i)),
+                None if self.landing.alpha(n, i) < 1.0 => arriving.push((DrawRole::Arriving, i)),
+                None => plan.push((DrawRole::Still, i)),
+            }
+        }
+        // a card still fading in is under every card in flight, which it may be partly behind
+        plan.extend(arriving);
+        // the longest way (old slot to new, fixed when the landing began) draws on top of the shorter
+        moving.sort_by(|a, b| a.0.total_cmp(&b.0));
+        plan.extend(moving.into_iter().map(|(_, i)| (DrawRole::Moving, i)));
+        if let Some(i) = focus.filter(|&i| i < n) {
+            plan.push((DrawRole::Focus, i));
+        }
+        plan
+    }
+
+    /// Test support: what [`draw`](Self::draw) paints, back to front, as `(role, index, rect,
+    /// alpha)`: the leaving copies first, then the cards in the plan's order. The rect is the
+    /// card's cell with a landing's slide folded in (no pop), the alpha its arrival fade (a
+    /// leaving copy's, its fade-out).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn plan_probe(&self, n: usize, focus: Option<usize>) -> Vec<(DrawRole, usize, Rect, f32)> {
+        let bands = self.bands.geometry();
+        let mut out: Vec<_> = self.leaving_rects(n).into_iter().map(|(i, r, a)| (DrawRole::Leaving, i, r, a)).collect();
+        out.extend(self.draw_plan(n, focus, &bands).into_iter().map(|(role, i)| {
+            (role, i, self.slot(i, n, &bands), self.landing.alpha(n, i))
+        }));
+        out
+    }
+
+    /// Test support: the ghosts a landing is fading out, `(key, rect, alpha)`: the cell each stood
+    /// in, held where it stood on screen, at its pop scale.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_slots(&self) -> Vec<(u64, Rect, f32)> {
+        let bands = self.bands.geometry();
+        self.landing.ghosts().iter().map(|g| {
+            let c = self.cell(g.was, &bands);
+            (g.key, Rect::new(c.x + g.shift.0, c.y + g.shift.1, c.w, c.h).scaled(g.lift.pos), g.alpha.pos.clamp(0.0, 1.0))
+        }).collect()
     }
 
     /// Register the stops of the cards the scroll can show: each is the rect [`draw`](Self::draw) paints.
@@ -489,7 +675,7 @@ impl Grid {
         let bands = self.bands.geometry();
         for i in self.window(src.len()) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
-            let cell = super::to_local(p, self.cell(i, &bands));
+            let cell = super::to_local(p, self.slot(i, src.len(), &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: cell.scaled(s),
@@ -533,14 +719,23 @@ impl Grid {
         if super::lifted_out(f, self.entry, src, i) {
             return;
         }
-        let rect = super::to_local(p, self.cell(i, bands)).scaled(s);
+        let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, focused) {
             return;
         }
+        // an arriving card fades in
+        let p = match self.landing.alpha(src.len(), i) {
+            a if a < 1.0 => p.alpha(a),
+            _ => p,
+        };
         if focused {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            let label = src.label(i).revealed(card_row::band_reveal(open));
+            // The focused card left as a ghost that is still waiting for the landing to step: the
+            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
+            // focus reconciled to takes it up with the landing's first step.
+            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+            let label = label.revealed(card_row::band_reveal(open));
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
@@ -554,6 +749,151 @@ impl Grid {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+    }
+
+    /// The focused card left as a ghost and the landing has not made its first moving step (the menu's
+    /// veil, a held image, or the frame it began in is still being drawn as the start state): the
+    /// caption is still the ghost's, and the card focus reconciled to draws none yet. It changes on the
+    /// frame the springs first step, with [`landing_waiting`](Self::landing_waiting)'s other readers
+    /// (the header count).
+    fn caption_held(&self) -> bool {
+        self.landing_waiting() && self.landing.ghosts().iter().any(|g| g.focused)
+    }
+
+    /// Test support: the element of the focused card's ghost whose caption is on screen now (the
+    /// caption the reader reads under the focus), if the ghost still holds it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_caption(&self) -> Option<u64> {
+        self.landing.ghosts().iter().find(|g| g.focused && self.caption_held()).map(|g| g.key)
+    }
+
+    /// The cards a landing moved to another row, fading out where they stood (at rest, never
+    /// captioned or registered: the card itself is fading in at its new slot).
+    fn draw_leaving<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, bands: &[GridBand]) {
+        for (i, (dx, dy), a) in self.landing.leaving(src.len()) {
+            if a <= 0.0 || !src.loaded(i) || super::lifted_out(f, self.entry, src, i) {
+                continue;
+            }
+            let cell = self.cell(i, bands);
+            let rect = super::to_local(p, Rect::new(cell.x + dx, cell.y + dy, cell.w, cell.h));
+            if !card_row::paint_visible(p, rect, 1.0, false) {
+                continue;
+            }
+            let pr = p.alpha(a);
+            card_row::draw_tile(pr, src.art(i), rect, 1.0, &self.spec.style, src.progress(i));
+            src.overlay(pr, i, &Tile { rect, scale: 1.0, radius: self.spec.style.tile_radius(rect, 1.0), focused: false }, f.measure);
+        }
+    }
+
+    /// The leaving copies a landing draws now, `(index, rect, alpha)`: where each card that changed
+    /// row stood on screen, fading out.
+    pub fn leaving_rects(&self, n: usize) -> Vec<(usize, Rect, f32)> {
+        let bands = self.bands.geometry();
+        self.landing
+            .leaving(n)
+            .map(|(i, (dx, dy), a)| {
+                let c = self.cell(i, &bands);
+                (i, Rect::new(c.x + dx, c.y + dy, c.w, c.h), a)
+            })
+            .collect()
+    }
+
+    /// A landing is playing: an owner that keeps the cards it removed for
+    /// [`paint_ghosts`](Self::paint_ghosts) keeps them while this holds.
+    pub fn landing_pending(&self) -> bool {
+        self.landing.pending()
+    }
+
+    /// A landing is playing but has not stepped yet: the menu's veil has not yet dropped below
+    /// `CLOSING_GONE`, the page is a held image, or the frame it began in is still the frame before
+    /// it (the springs step from the next). An owner pairs its own change with the landing's first step.
+    pub fn landing_waiting(&self) -> bool {
+        self.landing.waiting() || self.landing.unstepped()
+    }
+
+    /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn landing_probe(&self, n: usize, i: usize) -> ((f32, f32), f32) {
+        (self.landing.offset_xy(n, i), self.landing.alpha(n, i))
+    }
+
+    /// The ghosts a landing is fading out, as the indexes they had before it, and the most opaque
+    /// one's alpha.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_probe(&self) -> (Vec<usize>, f32) {
+        let a = self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).fold(0.0, f32::max);
+        (self.landing.ghosts().iter().map(|g| g.was).collect(), a)
+    }
+
+    /// Each ghost's pop scale right now, in [`ghost_keys`](Self::ghost_keys) order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_scales(&self) -> Vec<f32> {
+        self.landing.ghosts().iter().map(|g| g.lift.pos).collect()
+    }
+
+    /// The elements ([`elem_key`](super::elem_key)) of the cards a landing is fading out, in the
+    /// order [`paint_ghosts`](Self::paint_ghosts) reads its ghost source by.
+    pub fn ghost_keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.landing.ghosts().iter().map(|g| g.key)
+    }
+
+    /// Whether `key`'s card left this grid and is still fading as a landing ghost: an opener that
+    /// is departing ([`Screen::opener_departing`](crate::screen::Screen::opener_departing)).
+    pub fn departing<H: Host>(&self, key: FocusKey<H::Elem>) -> bool {
+        key.entry == self.entry && {
+            let k = super::elem_key(&key.elem);
+            self.landing.ghosts().iter().any(|g| g.key == k && g.alpha.pos > 0.0)
+        }
+    }
+
+    /// Whether [`paint_ghosts`](Self::paint_ghosts) has a card to draw this frame.
+    pub fn has_ghosts(&self) -> bool {
+        self.landing.has_ghosts()
+    }
+
+    /// The cards a landing removed, fading out in the cell they stood in (held in place on screen
+    /// when the scroll moved to keep focus where it was): paint them BEFORE [`draw`](Self::draw), so
+    /// the cards that slid over their cells cover them. `ghosts` holds the removed cards in
+    /// [`ghost_keys`](Self::ghost_keys) order (only `art`, `progress`, `loaded`, `overlay` and, for
+    /// the focused card's ghost, `label` are read; a ghost is never registered as a stop, and is
+    /// captioned only while the landing waits to step, so the caption stays as drawn; one that was the focused card eases
+    /// from its lifted scale to rest while it fades). Nothing is drawn when no landing is playing,
+    /// and only what is on screen.
+    pub fn paint_ghosts<H: Host, G: CardSource<H> + ?Sized>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, ghosts: &G) {
+        let bands = self.bands.geometry();
+        // A ghost the opener lift carries is drawn by the lift alone (`DrawFrame::lifting`) and left
+        // out of the page pass (`DrawFrame::lifted`), as a lifted card is.
+        let key = |k: Option<FocusKey<H::Elem>>| k.filter(|k| k.entry == self.entry).map(|k| super::elem_key(&k.elem));
+        let (lifted, lifting) = (key(f.lifted), key(f.lifting));
+        for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
+            let a = g.alpha.pos.clamp(0.0, 1.0);
+            if a <= 0.0 || lifting.is_some_and(|k| k != g.key) {
+                continue;
+            }
+            if lifted == Some(g.key) {
+                crate::popover::set_lift_owns(true);
+                continue;
+            }
+            let cell = self.cell(g.was, &bands);
+            let s = g.lift.pos;
+            let rect = super::to_local(p, Rect::new(cell.x + g.shift.0, cell.y + g.shift.1, cell.w, cell.h)).scaled(s);
+            if !card_row::paint_visible(p, rect, s, false) {
+                continue;
+            }
+            let pr = p.alpha(a);
+            card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
+            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
+            ghosts.overlay(pr, j, &tile, f.measure);
+            // The focused card's caption stays as drawn until the landing steps: from then on it is
+            // the new focus card's, which moves with the focus.
+            if g.focused && self.landing_waiting() {
+                let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
+                let label = ghosts.label(j).revealed(card_row::band_reveal(open));
+                if label.reveal > 0.0 {
+                    card_row::draw_label(pr.alpha(label.reveal), rect, s, &self.spec.style, &label, f.measure);
+                }
+            }
+        }
     }
 
     /// The `Focusable` neighbour of `key`: down from above a short last row lands on its last card.

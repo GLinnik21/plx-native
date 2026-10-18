@@ -271,7 +271,7 @@ mod tests {
             key: AudioPreferencesKey::new(&user, 4), user }
     }
     fn response(body: &str) -> plx_net::net::Resp {
-        plx_net::net::Resp { status: 200, body: body.as_bytes().to_vec(), peer_pin: None }
+        plx_net::net::Resp { status: 200, body: body.as_bytes().to_vec(), peer_pin: None, etag: None }
     }
     fn fixture(method: &str, path: &str, query: &str) -> Result<plx_net::net::Resp, PreferenceError> {
         assert_eq!(method, "GET"); assert!(query.is_empty());
@@ -359,7 +359,7 @@ mod tests {
         let result = request().save_with(&cache, &Mutex::new(()), &prior, patch(), || true,
             |method, path, query| {
                 assert_eq!((method, path, query), ("PUT", "/api/v2/user/profile", "autoSelectSubtitle=2"));
-                Ok(plx_net::net::Resp { status: 204, body: Vec::new(), peer_pin: None })
+                Ok(plx_net::net::Resp { status: 204, body: Vec::new(), peer_pin: None, etag: None })
             }).unwrap();
         assert_eq!(result.preferences.subtitle_mode, 2);
     }

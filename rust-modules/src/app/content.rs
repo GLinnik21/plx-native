@@ -475,6 +475,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     home_requests(app, fr.now);
     library_requests(app, fr.now);
     search_requests(app);
+    watchlist_requests(app);
     // The player's overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
@@ -678,7 +679,9 @@ fn home_requests(app: &mut App, now: u32) {
                 // `from_home: true` is the ONE thing `MenuHost::Home` still decided by phase 10;
                 // since D1 it carries no navigation of its own — the container is the only history
                 // there is, and a menu opened on the root leaves onto the root's own stack.
-                let arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(item, from_deck, true, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
@@ -741,10 +744,63 @@ fn search_requests(app: &mut App) {
             SearchReq::ItemMenu { sid, rk } => {
                 let Some((plx_data::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != *sid || item.rk != *rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(&item, false, false, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(&item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
+        }
+    }
+}
+
+/// What the Watchlist page and its Sort & Filter surface asked (`screens::watchlist`). The page
+/// names no sibling, so every navigation it makes is a request here: the strip's tabs and chip,
+/// BACK, the hold menu, the options surface.
+fn watchlist_requests(app: &mut App) {
+    use plx_screens::watchlist::page::WatchlistOut;
+    for (source, request, ret) in app.bridge.take_watchlist_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        // The Sort & Filter value comes from the surface over the page, not from the page.
+        if let WatchlistOut::SetOptions(options) = &request {
+            if app.pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
+                app.bridge.watchlist_set_options(options);
+            }
+            continue;
+        }
+        if app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
+        match request {
+            WatchlistOut::Back => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
+            WatchlistOut::Tab(tab) => {
+                if !app.bridge.search_tab_available(tab) || matches!(tab, HomeTab::Watchlist) { continue; }
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
+                }
+            }
+            WatchlistOut::Account => chip_activate(&mut app.pages),
+            WatchlistOut::Retry => app.bridge.watchlist_retry(),
+            WatchlistOut::OpenOptions => {
+                let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
+                bridge::open_watchlist_menu(&mut app.pages, arg);
+            }
+            WatchlistOut::Hold { guid, state, copy, .. } => {
+                let Some(arg) = app.bridge.watchlist_hold_arg(&mut app.pages, entry, ret.focus, &guid, state, copy)
+                    else { continue };
+                bridge::open_item_menu(&mut app.pages, arg);
+                app.ok_armed = false;
+            }
+            // The catalog page of a title no server holds, by the tile's guid (a guid the service
+            // does not form as `plex://movie|show/<hex>` has no page to open).
+            WatchlistOut::OpenCatalog(guid) => {
+                if let Some(hex) = bridge::hex_of_guid(&guid) {
+                    bridge::open_catalog(&mut app.pages, hex, Some(ret));
+                }
+            }
+            // The page pushes a matched copy's Detail itself (`ContentReq::Push`), and the surface
+            // is the only sender of the options value (handled above).
+            WatchlistOut::OpenDetail(_) | WatchlistOut::SetOptions(_) => {}
         }
     }
 }
@@ -845,7 +901,9 @@ fn library_requests(app: &mut App, now: u32) {
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+                let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+                app.bridge.watchlist_open_if_idle();
+                arg.watchlist = app.bridge.watchlist_card_face(&item);
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }

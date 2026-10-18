@@ -272,6 +272,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
         (Preference::Be, "Злучыцца", "Паспрабаваць зноў", "Налады → Злучэнні без шыфравання"),
         (Preference::Fr, "Se connecter", "Réessayer", "Paramètres → Connexions non chiffrées"),
         (Preference::De, "Verbinden", "Erneut versuchen", "Einstellungen → Unverschlüsselte Verbindungen"),
+        (Preference::Hu, "Csatlakozás", "Újra", "Beállítások → Titkosítatlan kapcsolatok"),
     ] {
         let locale = LocaleContext::resolve(preference, None, None, None, None);
         for owner in ["", "a-longish-owner18"] {

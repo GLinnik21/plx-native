@@ -311,7 +311,54 @@ fn the_local_subtitle_pickers_never_touch_the_plex_account() {
         assert!(page.state.io.status.is_empty(), "{field:?}: no loading status");
         assert!(page.form.index_of_key(RowKey(RETRY_KEY)).is_none(), "{field:?}: no Retry row");
         assert!(!page.copy.contains(plx_platform::i18n::msg::settings_audio_account_note()), "{field:?}: no account note");
-        assert_eq!(field.kind(), Kind::Playback, "{field:?} belongs to the Video & playback page");
-        assert_eq!(field.kind().title(), plx_platform::i18n::msg::settings_playback_title(), "{field:?}: the crumb names the page it opened from");
+        assert_eq!(field.kind(), Some(Kind::Playback), "{field:?} belongs to the Video & playback page");
+        assert_eq!(field.parent_title(), plx_platform::i18n::msg::settings_playback_title(), "{field:?}: the crumb names the page it opened from");
+    }
+}
+
+/// **The Interface resolution picker** lists Automatic and the three smaller windows (no 1920x1080
+/// entry: Automatic is that), opens on the stored one, writes install-wide through its own command
+/// and pops only on a durable receipt. A refused write keeps the page with the failure and leaves
+/// the checkmark on the stored value, so nothing claims a pick that did not land.
+#[test]
+fn the_interface_resolution_picker_writes_install_wide_and_reverts_on_a_refused_write() {
+    use plx_plex::plex::session::UiResolution;
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("picker-resolution");
+    assert_eq!(PickerKind::UiResolution.kind(), None, "listed by the Settings root, not a field list");
+    assert_eq!(PickerKind::UiResolution.parent_title(), plx_platform::i18n::msg::settings_title());
+    let options = field_options(PickerKind::UiResolution, Quality::Original, DirectPlayMode::Auto, None);
+    assert_eq!(options, [
+        (plx_platform::i18n::msg::settings_resolution_auto().to_string(), Value::UiResolution(UiResolution::Auto)),
+        ("1600x900".to_string(), Value::UiResolution(UiResolution::Hd900)),
+        ("1280x720".to_string(), Value::UiResolution(UiResolution::Hd720)),
+        ("960x540".to_string(), Value::UiResolution(UiResolution::Sd540)),
+    ]);
+
+    let mut page = PickerPage::new(EntryId(0), PickerKind::UiResolution);
+    assert_eq!(page.state.checked, 0, "opens on the stored choice, Automatic");
+    let emitted = drive(&mut page, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) }), 0);
+    assert_eq!(preference_commands(&emitted), 0, "no Plex account load");
+    let emitted = drive(&mut page, ScreenEvent::Activate(0), 0);
+    assert!(popped(&emitted) && preference_commands(&emitted) == 0, "OK on the checked row writes nothing");
+
+    for ok in [false, true] {
+        let mut page = PickerPage::new(EntryId(0), PickerKind::UiResolution);
+        let other = key_of(&page, &Value::UiResolution(UiResolution::Hd720));
+        let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+        assert!(!popped(&emitted), "a write waits for its receipt");
+        let (mode, reply) = emitted.into_iter().find_map(|e| match e.fx {
+            Fx::App(AppFx::Preferences(PreferenceCmd::UiResolution { mode, reply })) => Some((mode, reply)),
+            _ => None,
+        }).expect("the pick asks the app to save the resolution");
+        assert_eq!(mode, UiResolution::Hd720);
+        reply.send(ok).unwrap();
+        let emitted = drive(&mut page, tick(), other);
+        assert_eq!(popped(&emitted), ok, "pops only on a durable receipt");
+        assert_eq!(page.state.io.status.is_empty(), ok);
+        if !ok {
+            assert_eq!(page.state.checked, 0, "the checkmark stays on the stored choice");
+            assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_save_failed());
+        }
     }
 }

@@ -377,11 +377,15 @@ pub struct PlaybackSession {
     /// its output as though it were the source and the whole server-side transform was invisible.
     src_vcodec: String,
     src_acodec: String,
+    /// The file's own video frame rate (0 = unknown), kept beside `src_vcodec` for the same
+    /// reason: `stream_fps` is what the Load declares for the stream now playing, and a route
+    /// rebuilt mid-play needs the file's rate again ([`video_copy_fps`]).
+    src_fps: f64,
     /// The streamed item's Media video/audio codec (h264/hevc, ac3/eac3/aac), so the player picks
     /// the H265 Load payload for a native HEVC direct-play and the matching audio codec.
     stream_vcodec: String,
     stream_acodec: String,
-    /// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
+    /// Source video frame rate of a stream that carries the source video (direct play, and a remux that copies it; 0 = unknown or a re-encode → omit from the Load esInfo).
     stream_fps: f64,
     /// The direct-played file's raw Dolby Vision layering, retained for diagnostics. The Load
     /// payload consumes `stream_dv_decision` below: re-evaluating this record after a late probe
@@ -530,6 +534,7 @@ impl PlaybackSession {
         pq_item_id: String::new(),
         src_vcodec: String::new(),
         src_acodec: String::new(),
+        src_fps: 0.0,
         stream_vcodec: String::new(),
         stream_acodec: String::new(),
         stream_fps: 0.0,
@@ -613,6 +618,7 @@ impl PlaybackSession {
             pq_item_id,
             src_vcodec,
             src_acodec,
+            src_fps,
             stream_vcodec,
             stream_acodec,
             stream_fps,
@@ -676,6 +682,7 @@ impl PlaybackSession {
             pq_item_id: pq_item_id.clone(),
             src_vcodec: src_vcodec.clone(),
             src_acodec: src_acodec.clone(),
+            src_fps: *src_fps,
             stream_vcodec: stream_vcodec.clone(),
             stream_acodec: stream_acodec.clone(),
             stream_fps: *stream_fps,
@@ -997,6 +1004,9 @@ pub(super) struct AppliedRouteProjection {
     side_subs_refused: bool,
     stream_vcodec: String,
     pub(super) stream_acodec: String,
+    /// The file's own frame rate. Not a route change, so [`install_route_projection`] never writes
+    /// it back; it is here so a projection can answer [`video_copy_fps`] for the contract it lands.
+    src_fps: f64,
     stream_fps: f64,
     stream_dovi: plx_data::metadata::Dovi,
     stream_dv_decision: plx_data::metadata::DvDecision,
@@ -1020,6 +1030,7 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         side_subs_refused: s.side_subs_refused,
         stream_vcodec: s.stream_vcodec.clone(),
         stream_acodec: s.stream_acodec.clone(),
+        src_fps: s.src_fps,
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
         stream_dv_decision: s.stream_dv_decision,
@@ -8343,6 +8354,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // truer to put in the stream pair, which is the Load payload's source of truth. The four
         // move together because `stream_*` is what arrives and `src_*` is what the file is, and the
         // diagnostics read-out needs both.
+        let src_fps = if plan.vcodec.is_empty() { s.src_fps } else { plan.src_fps };
         let (stream_vcodec, stream_acodec, src_vcodec, src_acodec) = if plan.vcodec.is_empty() {
             (
                 std::mem::take(&mut s.stream_vcodec),
@@ -8427,6 +8439,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             pq_item_id: plan.pq_item_id,
             src_vcodec,
             src_acodec,
+            src_fps,
             stream_vcodec,
             stream_acodec,
             stream_fps: plan.fps,
@@ -8632,7 +8645,7 @@ fn install_original_remux(
         s.cur_audio = candidate.audio.clone();
         s.stream_vcodec = prepared.vcodec.clone();
         s.stream_acodec = prepared.acodec.clone();
-        s.stream_fps = 0.0;
+        s.stream_fps = video_copy_fps(&s.cur_contract, s.src_fps);
         clear_output_dv(s);
         s.stream_immersive = false;
     } };
@@ -9130,7 +9143,7 @@ pub(super) fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjec
     p.url = applied.url.clone();
     p.stream_vcodec = applied.vcodec.clone();
     p.stream_acodec = applied.acodec.clone();
-    p.stream_fps = 0.0;
+    p.stream_fps = video_copy_fps(&applied.contract, p.src_fps);
     p.stream_dovi = plx_data::metadata::Dovi::NONE;
     p.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
     p.stream_immersive = false;

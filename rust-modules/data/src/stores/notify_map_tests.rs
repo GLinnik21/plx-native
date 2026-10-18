@@ -25,7 +25,7 @@ fn session(key: &str, rk: &str, state: PlayState) -> PlaySession {
 }
 
 fn plays(sessions: Vec<PlaySession>) -> NotifyOut {
-    NotifyOut { plays: vec![NotifyPlays { sid: SID, sessions }], resynced: Vec::new() }
+    NotifyOut { plays: vec![NotifyPlays { sid: SID, sessions }], resynced: Vec::new(), ..Default::default() }
 }
 
 fn one(key: &str, rk: &str, state: PlayState) -> NotifyOut {
@@ -351,7 +351,7 @@ fn a_popped_list_page_holds_nothing() {
 const OTHER: ServerId = ServerId::from_raw(7);
 
 fn on(sid: ServerId, key: &str, rk: &str, state: PlayState) -> NotifyOut {
-    NotifyOut { plays: vec![NotifyPlays { sid, sessions: vec![session(key, rk, state)] }], resynced: Vec::new() }
+    NotifyOut { plays: vec![NotifyPlays { sid, sessions: vec![session(key, rk, state)] }], resynced: Vec::new(), ..Default::default() }
 }
 
 /// A Search page holding `rk` on each of two servers.
@@ -436,4 +436,261 @@ fn a_loaded_details_related_tiles_are_read_quiet_and_only_while_it_is_the_page()
     map(&mut stores, &one("3", "r1", PlayState::Playing), &[detail("d1")]);
     assert_eq!(pending(&stores), ["r1"]);
     assert!(stores.reconcile.is_quiet_for_test(&(SID, "r1".into())), "a tile is patched in place, no Detail re-fetch");
+}
+
+/// A store aggregate whose Watchlist page holds a title matched as `rk` on the first server.
+fn watchlist_holding(rk: &str) -> (Stores, ServerId) {
+    let mut stores = Stores::default();
+    stores.watchlist = super::watchlist::tests::holding_for_test(ServerId::from_raw(0), rk);
+    (stores, ServerId::from_raw(0))
+}
+
+fn pending_on(stores: &Stores) -> Vec<(ServerId, String)> {
+    stores.reconcile.pending_for_test()
+}
+
+fn on_watchlist(sid: ServerId, key: &str, rk: &str, state: PlayState) -> NotifyOut {
+    NotifyOut {
+        plays: vec![NotifyPlays { sid, sessions: vec![session(key, rk, state)] }],
+        resynced: Vec::new(),
+        ..Default::default()
+    }
+}
+
+/// A title the Watchlist page shows (matched on a reachable server) owes a read-back of our state
+/// when someone else's session on it changes, as any held card does.
+#[test]
+fn a_watchlist_held_key_owes_a_quiet_read() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    assert!(stores.holds(sid, "11", &[], Shown::ALL), "the page holds its matched copy");
+    map(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[]);
+    assert_eq!(pending_on(&stores), [(sid, "11".to_string())]);
+}
+
+/// With the Watchlist page off the stack its store's last rows hold nothing and owe nothing.
+#[test]
+fn a_popped_watchlist_holds_nothing() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    let not_watchlist = Shown { watchlist: false, ..Shown::ALL };
+    assert!(stores.holds(sid, "11", &[], Shown::ALL), "held while the page is on the stack");
+    assert!(!stores.holds(sid, "11", &[], not_watchlist));
+    map_shown(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[], not_watchlist);
+    assert!(pending_on(&stores).is_empty(), "Shown.watchlist = false owes nothing");
+}
+
+/// The Watchlist read-back waits for the network like any other: `!reread_allowed` keeps it queued.
+#[test]
+fn a_watchlist_read_waits_for_the_network() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    stores.hold_network(true);
+    map(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[]);
+    assert!(pending_on(&stores).is_empty(), "nothing is spent under the player");
+    assert!(!stores.notify_owed_for_test().is_empty(), "queued, not dropped");
+    stores.hold_network(false);
+    map(&mut stores, &NotifyOut::default(), &[]);
+    assert_eq!(pending_on(&stores), [(sid, "11".to_string())]);
+}
+
+// ---- a library change re-matches the Watchlist (W-notify) ------------------------------------
+
+use super::notify::NotifyLibrary;
+use super::notify_map::LIBRARY_SPACING_FRAMES;
+use super::watchlist::tests::{scripted_for_test, Script};
+use crate::watchlist::model::TileState;
+use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
+
+fn change(kind: LibraryKind, state: LibraryState, rk: &str) -> LibraryEntry {
+    LibraryEntry { item_id: rk.into(), kind, state, section: Some("1".into()) }
+}
+
+fn created(rk: &str) -> LibraryEntry {
+    change(LibraryKind::Movie, LibraryState::Created, rk)
+}
+
+fn deleted(rk: &str) -> LibraryEntry {
+    change(LibraryKind::Movie, LibraryState::Deleted, rk)
+}
+
+fn library(sid: ServerId, entries: Vec<LibraryEntry>) -> NotifyOut {
+    NotifyOut { library: vec![NotifyLibrary { sid, entries }], ..Default::default() }
+}
+
+/// Three movies on the Watchlist (numbered 1-3); the first server holds title 1 as rk `11`.
+fn watchlist_of_three() -> (Stores, Script, ServerId) {
+    let sid = ServerId::from_raw(0);
+    let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
+    let mut stores = Stores::default();
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    (stores, script, sid)
+}
+
+fn tile(stores: &Stores, n: u8) -> Option<TileState> {
+    let v = stores.watchlist.view();
+    let guid = Script::guid(n);
+    (0..v.len()).find(|&i| v.row(i).is_some_and(|r| r.guid == guid)).and_then(|i| v.state(i))
+}
+
+fn quiet_frames(stores: &mut Stores, n: u64) {
+    for _ in 0..n {
+        map(stores, &NotifyOut::default(), &[]);
+    }
+}
+
+#[test]
+fn a_deleted_item_a_tile_is_matched_to_re_asks_that_guid_and_the_tile_flips() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    assert_eq!(tile(&stores, 1), Some(TileState::Available));
+    script.drop_hold(sid, 1);
+    map(&mut stores, &library(sid, vec![deleted("11")]), &[]);
+    assert_eq!(script.asked(), [[Script::guid(1)]], "that guid only, one request");
+    stores.watchlist.pump();
+    assert_ne!(tile(&stores, 1), Some(TileState::Available), "the tile left 'on your servers' at the landing");
+    assert!(stores.notify_owed_for_test().is_empty());
+}
+
+#[test]
+fn a_deleted_item_no_tile_is_matched_to_owes_nothing() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    map(&mut stores, &library(sid, vec![deleted("999"), deleted("not a key")]), &[]);
+    assert!(script.asked().is_empty());
+    assert!(stores.notify_owed_for_test().is_empty());
+    // The same key on another server is not the matched copy either.
+    map(&mut stores, &library(ServerId::from_raw(3), vec![deleted("11")]), &[]);
+    assert!(script.asked().is_empty());
+}
+
+#[test]
+fn a_created_item_re_asks_only_the_titles_the_server_is_not_seen_to_hold() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    script.hold(sid, 2, "12");
+    map(&mut stores, &library(sid, vec![created("12")]), &[]);
+    let asked = script.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let mut guids = asked[0].clone();
+    guids.sort();
+    assert_eq!(guids, [Script::guid(2), Script::guid(3)], "title 1 is held already and is not asked again");
+    stores.watchlist.pump();
+    assert_eq!(tile(&stores, 2), Some(TileState::Available));
+    assert_eq!(tile(&stores, 1), Some(TileState::Available));
+}
+
+#[test]
+fn an_add_of_a_kind_the_list_has_no_rows_of_asks_nothing() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    map(&mut stores, &library(sid, vec![change(LibraryKind::Show, LibraryState::Created, "5")]), &[]);
+    assert!(script.asked().is_empty(), "the three rows are movies");
+    assert!(stores.notify_owed_for_test().is_empty(), "and nothing is left owed");
+}
+
+#[test]
+fn a_burst_of_changes_is_one_re_match_per_server_and_kind() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    script.drop_hold(sid, 1);
+    let burst = NotifyOut {
+        library: vec![
+            NotifyLibrary { sid, entries: vec![created("20"), created("21"), deleted("11"), deleted("11")] },
+            NotifyLibrary { sid, entries: vec![created("22")] },
+        ],
+        ..Default::default()
+    };
+    map(&mut stores, &burst, &[]);
+    let asked = script.asked();
+    assert_eq!(asked.len(), 1, "one request for the burst: {asked:?}");
+    let mut guids = asked[0].clone();
+    guids.sort();
+    assert_eq!(guids, [Script::guid(1), Script::guid(2), Script::guid(3)], "each guid once");
+}
+
+#[test]
+fn a_second_change_inside_the_spacing_waits_for_it() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    map(&mut stores, &library(sid, vec![created("20")]), &[]);
+    assert_eq!(script.asked().len(), 1);
+    stores.watchlist.pump();
+    map(&mut stores, &library(sid, vec![created("21")]), &[]);
+    quiet_frames(&mut stores, LIBRARY_SPACING_FRAMES - 3);
+    assert_eq!(script.asked().len(), 1, "still inside the spacing");
+    assert!(!stores.notify_owed_for_test().is_empty(), "queued, not dropped");
+    quiet_frames(&mut stores, 3);
+    assert_eq!(script.asked().len(), 2, "made once the spacing has passed");
+    assert!(stores.notify_owed_for_test().is_empty());
+}
+
+#[test]
+fn a_re_match_waits_for_the_network_like_every_owed_read() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    stores.hold_network(true);
+    map(&mut stores, &library(sid, vec![created("20")]), &[]);
+    assert!(script.asked().is_empty(), "nothing is spent under the player");
+    assert!(!stores.notify_owed_for_test().is_empty(), "queued, not dropped");
+    stores.hold_network(false);
+    quiet_frames(&mut stores, 1);
+    assert_eq!(script.asked().len(), 1);
+    assert!(stores.notify_owed_for_test().is_empty());
+}
+
+#[test]
+fn a_change_noted_before_the_first_load_is_not_asked_again_after_it() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = Stores::default();
+    let sid = ServerId::from_raw(0);
+    // A create and a delete arrive while the page has never been read and no read is out.
+    map(&mut stores, &library(sid, vec![created("20"), deleted("11")]), &[]);
+    quiet_frames(&mut stores, 5);
+    assert!(stores.notify_owed_for_test().is_empty(), "the read to come already reflects both");
+    let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    quiet_frames(&mut stores, 1);
+    assert!(script.asked().is_empty(), "no redundant re-match right after the first load: {:?}", script.asked());
+}
+
+#[test]
+fn a_change_that_arrives_while_the_first_read_is_out_is_kept_and_asked_after_it() {
+    let _g = plx_base::testlock::serial();
+    let sid = ServerId::from_raw(0);
+    let mut stores = Stores::default();
+    stores.watchlist = super::watchlist::tests::reading_for_test(sid, 3);
+    map(&mut stores, &library(sid, vec![created("20")]), &[]);
+    quiet_frames(&mut stores, 5);
+    assert!(!stores.notify_owed_for_test().is_empty(), "that read's matching may have asked before the create");
+    let (watchlist, script) = scripted_for_test(sid, 3, &[(1, "11")]);
+    stores.watchlist = watchlist;
+    script.forget_asked();
+    quiet_frames(&mut stores, 1);
+    assert_eq!(script.asked().len(), 1, "{:?}", script.asked());
+    assert!(stores.notify_owed_for_test().is_empty());
+}
+
+#[test]
+fn a_feed_that_came_back_after_a_gap_sweeps_the_titles_of_that_server() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, script, sid) = watchlist_of_three();
+    script.hold(sid, 3, "13");
+    let gap = NotifyOut { resynced: vec![(sid, 1)], ..Default::default() };
+    map(&mut stores, &gap, &[]);
+    assert_eq!(script.asked().len(), 1);
+    assert_eq!(script.asked()[0].len(), 3, "title 1 is asked again too: a delete may have been missed");
+    stores.watchlist.pump();
+    assert_eq!(tile(&stores, 3), Some(TileState::Available));
+}
+
+#[test]
+fn a_library_change_leaves_home_and_the_reads_alone() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, _script, sid) = watchlist_of_three();
+    let spent = map(&mut stores, &library(sid, vec![created("20"), deleted("11")]), &[]);
+    assert_eq!(spent, Default::default(), "no Home refetch, no shelf invalidation");
+    assert!(pending(&stores).is_empty());
 }

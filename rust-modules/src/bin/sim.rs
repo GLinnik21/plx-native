@@ -64,6 +64,12 @@ fn main() {
         if let Err(reason) = result { eprintln!("synthetic initial input: {reason}"); std::process::exit(2); }
         return;
     }
+    // The simulator has no firmware file, so the webOS version is unknown (0) and webOS-1-3-only UI
+    // (Settings > System > Interface resolution) is hidden. `PLXNATIVE_SIM_WEBOS_MAJOR=3` publishes
+    // that version for the run, to see those rows; nothing else reads it.
+    if let Some(major) = std::env::var("PLXNATIVE_SIM_WEBOS_MAJOR").ok().and_then(|v| v.parse().ok()) {
+        plxnative_modules::publish_sim_webos_major(major);
+    }
     let port: u16 = args
         .next()
         .or_else(|| std::env::var("PLXNATIVE_PMS_PORT").ok())

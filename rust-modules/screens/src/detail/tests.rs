@@ -153,6 +153,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
         disc_unfurl: [Spring::at(0.0); 3],
+        watchlist: plx_data::catalog::Membership::Unknown, watchlist_flip: Spring::at(0.0), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
@@ -586,6 +587,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
 fn a_spot_round_trips_through_the_page_it_describes() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
+    d.guid = "plex://show/5d776b1d96b655001f2a9c3e".into();
     d.cur_season = 1;
     d.related = (0..6)
         .map(|i| plx_data::pms::PmsMovie {
@@ -599,7 +601,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
     let measure = plx_ui::fixture::FixtureMeasure;
     for (elem, section, col, text) in [
         (hero::ELEM_PLAY, 0, 0, false),
-        (hero::ELEM_MARK_WATCHED, 0, 1, false),
+        (hero::ELEM_MARK_WATCHED, 0, 2, false),
         (season::elem(1).unwrap(), 1, 1, false),
         (
             episodes::elem(1, episodes::Row::Still).unwrap(),
@@ -1232,12 +1234,14 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 #[test]
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
+        watchlist: true,
         restart: true,
         trailer: false,
         alt: false,
         mark: PosterMark::None,
     };
     let after = hero::HeroSet {
+        watchlist: true,
         alt: true,
         ..before
     };
@@ -1395,6 +1399,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
 fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
+        watchlist: true,
         restart: true,
         trailer: false,
         alt: false,
@@ -1435,6 +1440,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                 for trailer in [false, true] {
                     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
                         sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
+                        guid: "plex://movie/5d776b1d96b655001f2a9c3e".into(),
                         resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
                         extras: trailer
                             .then(|| plx_data::metadata::Extra {
@@ -1471,7 +1477,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         "the preview path replaced the Trailer disc"
                     );
                     let (controls, n) = hero::hero_ctls(set);
-                    assert_eq!(n, 2 + usize::from(restart) + usize::from(alt));
+                    assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
                         [0.0, 0.0, 0.0],
@@ -1525,7 +1531,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
             }
         }
     }
-    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![3, 4, 5]);
     assert_eq!(cases, 192);
     clear();
     plx_plex::plex::reset_servers_for_test();
@@ -4759,4 +4765,100 @@ fn an_unfocused_related_row_that_fills_the_screen_does_not_ask() {
             "tick {n}: an unfocused row that fills the screen asks for nothing");
     }
     clear();
+}
+
+// ---- the bookmark disc on a DetailScreen (docs/watchlist-plan.md §1.4, §1.8) -----------------
+
+const WL_HEX: [u8; 12] = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
+const WL_GUID: &str = "plex://movie/5d776b1d96b655001f2a9c3e";
+
+fn movie_with_guid(guid: &str) -> Detail {
+    Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        title: "Movie".into(),
+        part: "/library/parts/movie".into(),
+        guid: guid.into(),
+        ..Default::default()
+    }
+}
+
+fn item_menu_acts(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Vec<crate::registry::ItemMenuAction> {
+    effects
+        .iter()
+        .filter_map(|e| match &e.fx {
+            Fx::App(AppFx::ItemMenu(req)) => Some(req.act.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A title the service cannot key (a local agent, personal media) gets NO disc: not drawn, not
+/// focusable, and its element is not placeable in the row.
+#[test]
+fn a_non_plex_guid_has_no_bookmark_disc() {
+    let _guard = install(movie_with_guid("local://1"));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    let set = screen.hero_set(test_store().view());
+    assert!(!set.watchlist);
+    assert!(!hero::hero_ctls(set).0[..hero::hero_ctls(set).1].contains(&hero::HeroCtl::Watchlist));
+    assert!(!hero::visible_ctls(set, false).0[..hero::visible_ctls(set, false).1].contains(&hero::HeroCtl::Watchlist));
+    assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), None);
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert!(item_menu_acts(&fx).is_empty());
+}
+
+/// A `plex://movie` title gets the disc second, and OK on it asks the item menu's own write: Add
+/// from the outline face, Remove (keyed by the guid) from the filled one.
+#[test]
+fn the_bookmark_disc_press_emits_the_item_menu_write() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    let set = screen.hero_set(test_store().view());
+    assert!(set.watchlist);
+    assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), Some(1));
+    tick_page(&mut screen, None, 16);
+    assert_eq!(screen.watchlist_hex(), Some(WL_HEX));
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistAdd { hex: WL_HEX }]);
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistRemove(WL_GUID.into())]);
+}
+
+/// The first membership answer is the disc's rest face: no fill/ribbon flip plays on open. A later
+/// change from a known face does animate.
+#[test]
+fn the_first_membership_answer_snaps_and_a_later_change_animates() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    tick_page(&mut screen, None, 16);
+    assert_eq!(screen.watchlist_flip.pos, 1.0, "open on an on-list title draws the filled face at rest");
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    tick_page(&mut screen, None, 16);
+    assert!(
+        (0.0..1.0).contains(&screen.watchlist_flip.pos) && screen.watchlist_flip.pos > 0.0,
+        "a flip from a known face animates"
+    );
+}
+
+/// A flip Off -> On, ticked until idle, rests EXACTLY on the filled face (not 0.999 drawing a clip).
+#[test]
+fn the_bookmark_flip_snaps_to_its_target_at_rest() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    tick_page(&mut screen, None, 16);
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 1.0);
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 0.0);
 }

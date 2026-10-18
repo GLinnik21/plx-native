@@ -2143,6 +2143,31 @@ struct AvioState {
     /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
     /// the end still asks the transport, which is how a failure there stays an error.
     parked_at_end: bool,
+    /// Reopens of a cut direct-play body that brought nothing back. See [`HealBudget`].
+    heal: HealBudget,
+}
+
+/// Reopens [`read_cb`] has spent at one byte of a cut body, across calls: libavformat retries a
+/// failed read with a fresh call, so a budget per call let a cut no reopen crosses be reopened
+/// round after round and then read as the end of the file. A byte read refills it.
+#[derive(Clone, Copy, Default)]
+struct HealBudget {
+    at: i64,
+    spent: u8,
+}
+
+impl HealBudget {
+    /// Charge one reopen at byte `at`, or `false` when the budget there is spent.
+    fn take(&mut self, at: i64) -> bool {
+        if self.at != at {
+            *self = HealBudget { at, spent: 0 };
+        }
+        if self.spent >= BODY_HEAL_ATTEMPTS {
+            return false;
+        }
+        self.spent += 1;
+        true
+    }
 }
 
 // TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
@@ -2262,6 +2287,19 @@ impl AvioState {
             Src::Socket { hs, .. } => plx_net::stream::http_body_done(*hs),
             Src::Curl(cs) => cs.body_complete(),
         }
+    }
+
+    /// Whether a cut at the byte reached may be healed by reopening there: a direct-play
+    /// (no acquisition, so not an HLS segment) plaintext socket with a known length and `off`
+    /// still inside it. Unsized transcodes cannot be reopened at a byte, curl heals on its own
+    /// terms, and a position at or past the end is a position, not a cut. One predicate for every
+    /// heal site, so the drain path cannot drift from the read path.
+    fn may_heal_at_offset(&self) -> bool {
+        self.acquisition.is_none()
+            && self.size > 0
+            && self.off >= 0
+            && self.off < self.size
+            && matches!(self.src, Src::Socket { .. })
     }
 
     /// Drain the live media socket into [`Self::bounce`] without blocking. Called from
@@ -2419,13 +2457,26 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
     AVERROR_IO
 }
 
-/// Reopens [`read_cb`] tries, within one read, after the transfer is cut mid-body.
+/// Reopens [`read_cb`] tries at one byte, after the transfer is cut mid-body, before the cut is a
+/// transport failure.
 const BODY_HEAL_ATTEMPTS: u8 = 3;
+
+/// How long a direct-play socket read waits for a byte before the transfer counts as cut.
+#[cfg(not(test))]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Reopen the source at the byte reached, through the same path a seek takes.
+fn heal_at_offset(s: &mut AvioState) -> bool {
+    let at = s.off;
+    crate::player::log(&format!("ff: body ended early at byte {at} of {}, reopening there", s.size));
+    seek_cb(s as *mut AvioState as *mut c_void, at, SEEK_SET) == at
+}
 
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        let mut heals: u8 = 0;
         loop {
             // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
             // interrupt the read — the demux thread services it itself between two av_read_frame
@@ -2442,6 +2493,15 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 return bounced as c_int;
             }
             if park_read_fails_closed(s.bounce_remaining(), s.io_failed) {
+                // The failure was parked by `drain_wire` (the demuxer waits in
+                // `aq_push_with_drain` almost all the time, so it is the drain that meets a LAN
+                // reset or an early close), not by this read. The bounce is empty, so `s.off` is
+                // the first byte not yet delivered: reopen there as a cut read would. `seek_cb`
+                // clears `io_failed` on success and refuses a reopen that is not a 206 from the
+                // byte; the per-offset budget bounds a server that keeps cutting.
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
                 return AVERROR_IO;
             }
             // The abort rule, evaluated where the numbers are — through the same runtime check
@@ -2468,7 +2528,14 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                         owner: BlockingDeadlineOwner::Reserve,
                     })
                 });
-            let live_deadline = blocking_deadline.map(|deadline| deadline.at);
+            // A direct-play socket read has no other clock, so a server that stops sending without
+            // closing would block it forever. Silence this long is answered like a cut: a reopen.
+            // Sized bodies only: a progressive transcode (`start.mkv`) has no length, may be
+            // silent that long while the PMS catches up, and cannot be reopened at a byte (its
+            // restart would answer 200 from the head). It keeps the pre-heal behaviour.
+            let direct_play = s.acquisition.is_none();
+            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + BODY_SILENCE);
+            let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
             let read_started = std::time::Instant::now();
@@ -2564,14 +2631,16 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // Direct play only: an HLS segment read carries an acquisition runtime whose
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
-                let direct_play = s.acquisition.is_none();
+                // The plaintext socket heals sized bodies only (see the silence deadline above).
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
                 if let Src::Curl(cs) = &mut s.src {
                     let cut = cs
                         .body_failure()
                         .is_some_and(|f| matches!(f.rc, 18 | 55 | 56 | 92));
                     let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
-                    if direct_play && cut && inside && heals < BODY_HEAL_ATTEMPTS {
-                        heals += 1;
+                    if direct_play && cut && inside && s.heal.take(s.off) {
                         if cs.seek(s.off) {
                             continue;
                         }
@@ -2579,6 +2648,20 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 }
                 // Teardown was handled above through the AU flag and remains EOF. A negative
                 // result here is therefore a real transport/range failure.
+                s.io_failed = true;
+                return AVERROR_IO;
+            }
+            // A clean close before the length is a cut too (a server that ends the response early
+            // rather than resetting it): reopen at the byte reached. One that no reopen crosses is
+            // still not the end of the file: it is the transfer failing, for the pump to answer.
+            if r == 0 && direct_play && s.size > 0 && s.off >= 0 && s.off < s.size {
+                if s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
+                crate::player::log(&format!(
+                    "ff: body cut at byte {} of {} and no reopen crossed it; transport failure, not EOF",
+                    s.off, s.size
+                ));
                 s.io_failed = true;
                 return AVERROR_IO;
             }
@@ -2591,6 +2674,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             if let Some(watchdog) = &mut s.transport_watchdog {
                 watchdog.reset();
             }
+            s.heal = HealBudget::default();
             s.body_active_us = s
                 .body_active_us
                 .saturating_add(elapsed_since(read_started).as_micros().max(1) as u64);
@@ -2656,6 +2740,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         }
         s.parked_at_end = false;
         let aq = s.aq;
+        let sized = s.size > 0;
         let mut hopped_to_tls = None;
         let reopen_began = std::time::Instant::now();
         let ok = match &mut s.src {
@@ -2693,7 +2778,24 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                             *port = t.origin.port() as c_int;
                             *path = p;
                         }
-                        true
+                        // `stream.rs` takes any 2xx, so a server that ignored the Range answers
+                        // 200 from byte 0 and would be spliced in as the bytes at `target`:
+                        // corruption that looks like success (the curl arm refuses it below). A
+                        // sized body knows where it is going, so it is held to the same rule: a
+                        // 206 that starts at the byte asked for, or a 200 for a request from 0.
+                        // An unsized body (a transcode) has no such position to hold it to.
+                        let start = plx_net::stream::hs_range_start(*hs);
+                        let status = plx_net::stream::hs_status(*hs);
+                        let crossed = !sized
+                            || (status == 206 && start == target)
+                            || (status == 200 && target == 0);
+                        if !crossed {
+                            crate::player::log(&format!(
+                                "ff: seek_cb reopen refused: status={status} range_start={start} wanted={target}"
+                            ));
+                            plx_net::stream::http_close(*hs);
+                        }
+                        crossed
                     }
                     Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
                         match open_curl_hop(&t.url(), target, aq) {
@@ -3219,37 +3321,117 @@ fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
     rpu.write_hevc_unspec62_nalu().ok()
 }
 
-/// True if this HEVC NAL is an SEI (prefix=39 / suffix=40) carrying a user-data-registered
-/// ITU-T T.35 HDR10+ dynamic-metadata message (payloadType 4, country_code 0xB5, terminal
-/// provider 0x003C). webOS's HEVC decoder does NOT support per-frame HDR10+ metadata and
-/// stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and it can
-/// cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
-/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) is kept.
-fn is_hdr10plus_sei(nal: &[u8]) -> bool {
+/// What to do with one HEVC NAL on its way to the decoder.
+#[derive(Debug, PartialEq, Eq)]
+enum SeiStrip {
+    /// Not an SEI, or an SEI without HDR10+: emit the original bytes (nothing allocated for a non-SEI).
+    Keep,
+    /// Every message was HDR10+ (or the SEI could not be parsed cleanly): emit nothing.
+    Drop,
+    /// The NAL minus its HDR10+ message(s), emulation prevention re-inserted.
+    Rewrite(Vec<u8>),
+}
+
+/// Strip the ITU-T T.35 HDR10+ dynamic-metadata message (SEI payloadType 4, country_code 0xB5,
+/// terminal provider 0x003C) from an HEVC SEI NAL (prefix=39 / suffix=40). webOS's HEVC decoder
+/// does NOT support per-frame HDR10+ metadata and stalls on it — Kodi strips it unconditionally
+/// ("webOS doesn't support HDR10+ and it can cause issues"). `nal` is the NAL payload WITHOUT the
+/// start code (starts at the 2-byte NAL header). Only the HDR10+ message goes: the other messages
+/// of the NAL, static HDR10 mastering-display / CLL (137/144) included, are kept byte for byte,
+/// because on HEVC the panel's HDR envelope comes from the pipeline's own parse of them.
+///
+/// Every message is walked, not just the first: an SEI NAL may carry several, and an HDR10+
+/// message behind another one reached the decoder. A list that does not parse cleanly (truncated
+/// header or payload, bytes after the trailing bits) falls back to the whole-NAL rule: dropped if
+/// an HDR10+ header was seen, kept unchanged otherwise.
+fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
     if nal.len() < 2 {
-        return false;
+        return SeiStrip::Keep;
     }
     let nal_type = (nal[0] >> 1) & 0x3f;
     if nal_type != 39 && nal_type != 40 {
-        return false;
+        return SeiStrip::Keep;
     }
-    let mut p = 2usize; // SEI RBSP starts after the 2-byte NAL header
-    let mut ptype = 0usize; // payloadType (0xFF-run + terminator)
-    while p < nal.len() && nal[p] == 0xff {
-        ptype += 255;
-        p += 1;
+    let rbsp = sei_rbsp(&nal[2..]);
+    // Byte ranges of the messages to keep, and whether any HDR10+ message was seen.
+    let mut kept: Vec<(usize, usize)> = Vec::new();
+    let mut found = false;
+    let mut clean = false;
+    let mut p = 0usize;
+    // Each message: payloadType and payloadSize as 0xFF runs plus a terminator, then the payload.
+    // The 0x80 trailing-bits byte ends the list.
+    while p < rbsp.len() {
+        if rbsp[p] == 0x80 {
+            clean = p + 1 == rbsp.len();
+            break;
+        }
+        let start = p;
+        let mut read = || {
+            let mut v = 0usize;
+            while p < rbsp.len() && rbsp[p] == 0xff {
+                v += 255;
+                p += 1;
+            }
+            let last = *rbsp.get(p)?;
+            p += 1;
+            Some(v + last as usize)
+        };
+        let (Some(ptype), Some(psize)) = (read(), read()) else {
+            break;
+        };
+        let end = p.saturating_add(psize);
+        let payload = rbsp.get(p..end.min(rbsp.len())).unwrap_or(&[]);
+        let is_plus = ptype == 4 && payload.len() >= 3 && payload[..3] == [0xb5, 0x00, 0x3c];
+        found |= is_plus;
+        if end > rbsp.len() {
+            break;
+        }
+        if !is_plus {
+            kept.push((start, end));
+        }
+        p = end;
     }
-    if p >= nal.len() {
-        return false;
+    if !found {
+        return SeiStrip::Keep;
     }
-    ptype += nal[p] as usize;
-    p += 1;
-    while p < nal.len() && nal[p] == 0xff {
-        p += 1; // skip payloadSize (0xFF-run + terminator); value unused
+    if !clean || kept.is_empty() {
+        return SeiStrip::Drop;
     }
-    p += 1;
-    // user_data_registered_itu_t_t35 == 4; T.35 header: country 0xB5, provider 0x003C
-    ptype == 4 && p + 3 <= nal.len() && nal[p] == 0xb5 && nal[p + 1] == 0x00 && nal[p + 2] == 0x3c
+    let mut out_rbsp = Vec::with_capacity(rbsp.len());
+    for (s, e) in kept {
+        out_rbsp.extend_from_slice(&rbsp[s..e]);
+    }
+    out_rbsp.push(0x80);
+    // Emulation prevention (H.265 7.4.2): 03 after two zeros when the next byte is <= 03. The
+    // RBSP ends in the 0x80 trailing byte, so the "ends in 00" case cannot arise.
+    let mut out = Vec::with_capacity(out_rbsp.len() + 4);
+    out.extend_from_slice(&nal[..2]);
+    let mut zeros = 0;
+    for b in out_rbsp {
+        if zeros >= 2 && b <= 3 {
+            out.push(3);
+            zeros = 0;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
+    SeiStrip::Rewrite(out)
+}
+
+/// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
+/// message sizes count the bytes they describe.
+fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ebsp.len());
+    let mut zeros = 0;
+    for &b in ebsp {
+        if zeros >= 2 && b == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        out.push(b);
+    }
+    out
 }
 
 /// End offset of a NAL of length `nl` starting at `i`, or None if it is empty or would run
@@ -3369,13 +3551,28 @@ unsafe fn packet_to_annexb(
                 continue;
             }
         }
-        if is_hevc && is_hdr10plus_sei(nal) {
-            let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
-            if n <= 3 || n % 500 == 0 {
-                crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+        let mut nal = nal;
+        let rewritten;
+        if is_hevc {
+            match strip_hdr10plus_sei(nal) {
+                SeiStrip::Keep => {}
+                strip => {
+                    let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 3 || n % 500 == 0 {
+                        crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+                    }
+                    match strip {
+                        SeiStrip::Rewrite(v) => {
+                            rewritten = v;
+                            nal = &rewritten;
+                        }
+                        _ => {
+                            i += nl;
+                            continue;
+                        }
+                    }
+                }
             }
-            i += nl;
-            continue;
         }
         out.extend_from_slice(&sc);
         out.extend_from_slice(nal);
@@ -4296,6 +4493,7 @@ unsafe fn hls_input(
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            heal: HealBudget::default(),
         }),
         avio: std::ptr::null_mut(),
         fmt: std::ptr::null_mut(),
@@ -8545,6 +8743,7 @@ pub fn demux(
                     bounce: Vec::new(),
                     bounce_pos: 0,
                     parked_at_end: false,
+                    heal: HealBudget::default(),
                 });
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
@@ -9343,3 +9542,6 @@ mod late_audio_tests;
 #[cfg(test)]
 #[path = "ff_eof_seek_tests.rs"]
 mod eof_seek_tests;
+#[cfg(test)]
+#[path = "ff_body_heal_tests.rs"]
+mod body_heal_tests;

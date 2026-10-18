@@ -2,11 +2,16 @@
 //!
 //! Capture jobs follow visible dependencies, not every retained entry: a lower glass hidden by a
 //! frozen or opaque replacement cannot force an upper band onto the inline-framebuffer path. The
-//! direct replay includes that replacement and any live dim above it. The PageDip page layer (a
+//! direct replay includes that replacement and any live dim above it, unless the glass applies
+//! that dim at composite (below). The PageDip page layer (a
 //! held image, or a capture frame whose source walk draws the page live) also splits stable
 //! content revision from composite alpha. Its full-alpha filtered source is reused through the
 //! fade; `gfx` applies the changing alpha over the constant app ground at composite
-//! time, while geometry or snapshot-content revision still invalidates normally.
+//! time, while geometry or snapshot-content revision still invalidates normally. A modal DIM
+//! declared through [`paint_dim`] splits the same way: when it is the last thing drawn under a
+//! glass's region, the glass filters the undimmed prefix once and `gfx` applies the dim's current
+//! ink and alpha at composite ([`deferred_dim`]), so a ramping dim or a re-latched dim field
+//! re-blurs nothing.
 //!
 //! This file lived at `ui/frame/backdrop.rs` and moved under `gfx` (module-layers step L5): `gfx`
 //! reads and writes this walk state from its clip, clear, glass and capture paths, and the `gfx`
@@ -143,7 +148,30 @@ pub struct Paint {
     values: Vec<u64>,
     pub glass: Option<Z>,
     source: Vec<Rc<Paint>>,
+    /// This draw is a modal dim a glass above it may apply at composite instead ([`paint_dim`]).
+    /// Not part of equality: `values` already carries its exact arguments.
+    pub dim: Option<Dim>,
 }
+
+/// **A modal dim, as the composite needs it**: `mix(below, ink, alpha)` where the ink is
+/// `tint.rgb` times the field texture `tex` sampled at the screen point, or `tint.rgb` itself when
+/// `tex` is 0 (the flat scrim ink). `tint` is the cascaded colour the draw itself would use.
+///
+/// The dim is LINEAR in what is under it, and its ink is a smooth field (a 60x32 reconstruction of
+/// the page's light, or one colour), so `blur(mix(page, ink, a)) = mix(blur(page), ink, a)` to
+/// within the blur of an already-smooth field. That is what lets a glass above it filter the
+/// undimmed page once and take each frame's dim at composite. It is NOT the rejected variant that
+/// multiplied the host page's RGB going into the backdrop (`ui/src/CLAUDE.md`): the composite
+/// produces the same picture the in-source dim did, only without re-filtering it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dim {
+    pub tex: u32,
+    pub tint: [f32; 4],
+}
+
+/// The command word a dim is recorded under in a glass's signature while that glass applies it at
+/// composite: its alpha, ink and field revision are the composite's inputs then, not the source's.
+pub const DIM_COMMAND: u64 = 998;
 impl PartialEq for Paint {
     fn eq(&self, other: &Self) -> bool {
         // z selects and orders the source commands; it is not a pixel argument. A new glass
@@ -153,7 +181,19 @@ impl PartialEq for Paint {
 }
 /// Reserved command tag shared by the painter and the source dependency walk.
 pub const GLASS_COMMAND: u64 = 999;
+/// The command tag of a menu's glass on frozen ground (`gfx::draw_glass_frozen`). An ordinary
+/// draw to the walk: it reads no framebuffer, so it requests no entry and owes no source.
+pub const GLASS_FROZEN_COMMAND: u64 = 25;
 impl Paint {
+    /// The draw's kind, as a GLASSDIFF line names it (`rrect`, `shadow_outside`, …): what a frame
+    /// test reads a declared list by.
+    pub fn kind(&self) -> String {
+        kind_name(self.values.first().copied().unwrap_or(0))
+    }
+    /// The draw's placed rect (logical px) from its recorded words, `[x, y, w, h]`.
+    pub fn placed(&self) -> [f32; 4] {
+        rect_of(self)
+    }
     fn rect(&self) -> Rect {
         let r = self.bounds.map(f32::from_bits);
         Rect::new(r[0], r[1], r[2], r[3])
@@ -308,22 +348,35 @@ fn fully_occluded(z: Z, layers: &[Layer]) -> bool {
     layers.iter().any(|l| l.blocks && l.z > z && covers(l.rect, canvas()))
 }
 pub fn paint(rect: Rect, values: Vec<u64>) {
+    paint_with(rect, values, None)
+}
+/// [`paint`] for a modal DIM: the same exact-argument record, plus what a glass above it needs to
+/// apply it at composite instead of in its source ([`Dim`]). Whether a given glass does is decided
+/// per glass in [`Sources::resolve`]: only when the dim is the last draw under its region.
+pub fn paint_dim(rect: Rect, values: Vec<u64>, dim: Dim) {
+    paint_with(rect, values, Some(dim))
+}
+fn paint_with(rect: Rect, values: Vec<u64>, dim: Option<Dim>) {
     WALK.with(|w| {
         let w = w.borrow();
         let Some(w) = w.as_ref().filter(|w| w.discovery) else {
             return;
         };
-        // No glass entry is ever created at or above the surfaces band: every
-        // `Glass::DYNAMIC_BACKDROP.backdrop(...)` call site sits inside the CHROME layer scope
-        // (grep-verified against the whole crate), and popovers stood off the blur chain
-        // entirely on 2026-09-19 — they use the frozen-host snapshot in `popover.rs`, which
-        // feeds its own synthetic `Paint` straight into `Sources::begin`, never through this
-        // function. So nothing downstream ever reads a `Paint` recorded above that boundary, yet
-        // the surfaces loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's
-        // own content) runs unconditionally on both the no-GL discovery pass and the real draw
-        // pass — recording its entire primitive stream every discovered frame, whether or not
-        // anything changed, was pure waste, and the heaviest-text screens paid for it most (see
-        // the dated addendum in docs/backdrop-blur-profiling.md). This is the authoritative gate;
+        // Nothing at or above the surfaces band is recorded, because nothing ever reads a
+        // `Paint` recorded there: a glass's source is the prefix of paints BELOW its own z, and
+        // a glass in a surface (no shipped surface has one: a menu's glass stands on frozen
+        // ground, `ui::popover_glass`, and requests no entry) has the page and the modal scrim
+        // under the band as its prefix. Its entry is requested by `surface_with`, not here, so it
+        // resolves; dropping its command word only matters to a glass stacked above it in a
+        // higher surface, which would read nothing of the surface between: such a glass
+        // presented over another surface (`ModalStack::present` stacks) would
+        // miss that surface's changes in its cached blur — a known limit, not ruled out by
+        // any gate, and the reason a second glass surface band would need recording. The surfaces
+        // loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's own content)
+        // runs unconditionally on both the no-GL discovery pass and the real draw pass —
+        // recording its entire primitive stream every discovered frame, whether or not anything
+        // changed, was pure waste, and the heaviest-text screens paid for it most (see the dated
+        // addendum in docs/backdrop-blur-profiling.md). This is the authoritative gate;
         // `Painter::declare`'s `recording_excluded` check exists only to skip building `values`
         // in the first place for this same content.
         if w.current >= Z::surface(0) {
@@ -353,6 +406,7 @@ pub fn paint(rect: Rect, values: Vec<u64>) {
             values,
             glass,
             source: Vec::new(),
+            dim,
         }));
     });
 }
@@ -366,16 +420,6 @@ pub fn recording_excluded() -> bool {
             w.discovery
                 && (w.current >= Z::surface(0) || fully_occluded(w.current, &w.sources.borrow().layers))
         })
-    })
-}
-
-/// True once a DISCOVERY walk has reached the surfaces band — the half of
-/// [`recording_excluded`] where a glass declaration is a bug rather than dead content.
-pub fn in_surfaces_band() -> bool {
-    WALK.with(|w| {
-        w.borrow()
-            .as_ref()
-            .is_some_and(|w| w.discovery && w.current >= Z::surface(0))
     })
 }
 
@@ -440,6 +484,9 @@ fn kind_name(tag: u64) -> String {
         100 => "text".into(),
         101 => "text_fade".into(),
         102 => "text_fade_v".into(),
+        24 => "dim".into(),
+        GLASS_FROZEN_COMMAND => "glass_frozen".into(),
+        DIM_COMMAND => "dim(composite)".into(),
         GLASS_COMMAND => "glass".into(),
         u64::MAX => "layer".into(),
         t => format!("tag{t}"),
@@ -605,6 +652,14 @@ pub struct Entry {
     inline_attempt: Option<u64>,
     fell_back: bool,
     source_alpha: Option<f32>,
+    /// This frame's dim, when this glass applies it at composite rather than filtering it into
+    /// its source (see [`Dim`]): the dim is the LAST draw under the region, nothing above it is,
+    /// and the band is not a lower glass's inline composite. Its signature then records the dim
+    /// as the bare [`DIM_COMMAND`]. `None`: the dim, if any, is in the source as before.
+    dim: Option<Dim>,
+    /// Did the retained image leave the dim out (a direct replay that skipped it)? An image taken
+    /// any other way has it baked in, and is stale the moment [`dim`](Self::dim) says otherwise.
+    captured_dim: bool,
     /// Armed probe only: why the non-compare paths (`begin`'s damage, `request`'s growth) cleared
     /// `valid`, so `resolve` can name it. Never set while the probe is off.
     cause: Option<&'static str>,
@@ -614,6 +669,10 @@ impl Sources {
     /// is armed). `mem::take` of an empty Vec allocates nothing.
     pub fn take_diffs(&mut self) -> Vec<String> {
         std::mem::take(&mut self.diffs)
+    }
+    /// The dim the band at `z` applies at composite this frame — [`deferred_dim`] without a walk.
+    pub fn composite_dim(&self, z: Z) -> Option<Dim> {
+        self.entries.get(&z)?.dim
     }
     pub fn damage(&mut self, z: Z, rect: Rect) {
         self.damage.push(Damage { z, rect });
@@ -630,6 +689,7 @@ impl Sources {
                 values: vec![u64::MAX, layer.revision],
                 glass: None,
                 source: Vec::new(),
+                dim: None,
             }));
         }
         for (&z, e) in &mut self.entries {
@@ -674,9 +734,7 @@ impl Sources {
                 .draw
         });
         self.paints.sort_by_key(|p| p.z);
-        let mut prefixes: BTreeMap<Z, Vec<Rc<Paint>>> = BTreeMap::new();
-        let mut rises: BTreeMap<Z, bool> = BTreeMap::new();
-        for (&z, e) in &mut self.entries {
+        for e in self.entries.values_mut() {
             if !e.wanted.is_empty() {
                 e.members = e.wanted.clone();
                 e.rises = e.wanted_rises;
@@ -684,6 +742,18 @@ impl Sources {
                     e.rect = rect;
                 }
             }
+        }
+        // Which bands capture INLINE (a lower glass contributes to their footprint): their image
+        // is a framebuffer prefix with every dim already in it, so none of them may defer one.
+        let inline: std::collections::BTreeSet<Z> = self
+            .entries
+            .keys()
+            .copied()
+            .filter(|&z| self.composite_capture(z).is_some_and(|(_, composite)| composite))
+            .collect();
+        let mut prefixes: BTreeMap<Z, Vec<Rc<Paint>>> = BTreeMap::new();
+        let mut rises: BTreeMap<Z, bool> = BTreeMap::new();
+        for (&z, e) in &mut self.entries {
             let prefix: Vec<_> = self
                 .paints
                 .iter()
@@ -703,14 +773,52 @@ impl Sources {
                     }
                 })
                 .collect();
-            let current = signature(&prefix, &e.members, e.rises, layers, z);
+            let full = signature(&prefix, &e.members, e.rises, layers, z);
+            // A dim this glass applies at composite: the last draw under the region, the only dim
+            // there, covering all of it, on a band that replays directly. Anything drawn after it
+            // (an opener lift, a lower glass) would be darkened by a composite-time dim, so it
+            // keeps the dim in its source instead.
+            let region = e.members.iter().copied().reduce(union).map(|r| {
+                let r = crate::gfx::blur_region_for(e.rises, r.x, r.y, r.w, r.h);
+                Rect::new(r[0], r[1], r[2], r[3])
+            });
+            let deferred = full.last().filter(|last| {
+                last.dim.is_some()
+                    && full.iter().filter(|p| p.dim.is_some()).count() == 1
+                    && !inline.contains(&z)
+                    && region
+                        .and_then(|r| intersection(r, canvas()))
+                        .is_some_and(|r| covers(last.rect(), r))
+            });
+            e.dim = deferred.and_then(|p| p.dim);
+            // An upper glass reads THIS one's composite through `prefixes`, and that composite
+            // carries the dim at this frame's alpha, so it is handed the dim's real arguments.
+            let dependents = prefix.clone();
+            let (prefix, current) = match deferred {
+                Some(dim) => {
+                    let bare = Rc::new(Paint { values: vec![DIM_COMMAND], ..(**dim).clone() });
+                    let swap = |p: &Rc<Paint>| if Rc::ptr_eq(p, dim) { bare.clone() } else { p.clone() };
+                    let stripped: Vec<_> = prefix.iter().map(swap).collect();
+                    let current = full.iter().map(swap).collect();
+                    (stripped, current)
+                }
+                None => (prefix, full),
+            };
             let captured = signature(&e.captured_prefix, &e.members, e.rises, &e.captured_layers, z);
             // Query the scene that produced the retained image at the CURRENT sampling rects.
-            // Growing into an unchanged part of its captured union is not underlay damage.
-            if current != captured {
+            // Growing into an unchanged part of its captured union is not underlay damage. An
+            // image that has the dim baked in cannot serve a glass that now applies it at
+            // composite, nor the reverse.
+            if current != captured || e.dim.is_some() != e.captured_dim {
+                if e.valid && current == captured && plx_base::diag::spans::armed() {
+                    self.diffs.push(format!(
+                        "GLASSDIFF frame={frame} job={:#x} what=dim-mode composite={} image={}",
+                        z.0, e.dim.is_some(), e.captured_dim
+                    ));
+                }
                 // Armed probe only (`plxnative-framedrop`): name the draw that made the compare
                 // unequal. Unarmed this is one relaxed load and nothing else.
-                if e.valid && plx_base::diag::spans::armed() {
+                if e.valid && current != captured && plx_base::diag::spans::armed() {
                     let region = e.members.iter().copied().reduce(union).map_or([0.0; 4], |r| {
                         crate::gfx::blur_region_for(e.rises, r.x, r.y, r.w, r.h)
                     });
@@ -728,7 +836,7 @@ impl Sources {
             e.source_alpha = layers.iter().rev()
                 .find(|layer| layer.z < z && layer.composite_alpha.is_some())
                 .and_then(|layer| layer.composite_alpha);
-            prefixes.insert(z, e.prefix.clone());
+            prefixes.insert(z, dependents);
             rises.insert(z, e.rises);
         }
     }
@@ -736,53 +844,61 @@ impl Sources {
         self.entries
             .iter()
             .filter_map(|(&z, e)| {
-                let visible: Vec<_> = e
-                    .members
-                    .iter()
-                    .copied()
-                    .filter(|&rect| {
-                        decide(
-                            Request {
-                                z,
-                                rect,
-                                valid: e.valid,
-                            },
-                            &self.layers,
-                            &[],
-                        )
-                        .draw
-                    })
-                    .collect();
-                let refresh = !e.valid && !visible.is_empty();
-                let capture = visible.into_iter().reduce(union).unwrap_or(e.rect);
-                // If a lower glass contributes, capture at the visible prefix instead of replaying
-                // it with a different sharp-rim source. That prefix contains its EXACT composite.
-                let r = crate::gfx::blur_region_for(e.rises, capture.x, capture.y, capture.w, capture.h);
-                let footprint = Rect::new(r[0], r[1], r[2], r[3]);
-                let composite = self.entries.range(..z).any(|(&lower_z, lower)| {
-                    lower.members.iter().any(|r| {
-                        // A retained lower source hidden by a frozen/opaque replacement is not a
-                        // dependency of the visible prefix. Replaying to this z draws the
-                        // replacement (and any current dim above it), so forcing an inline
-                        // framebuffer capture here would merely re-capture a composite the direct
-                        // job already reproduces exactly.
-                        decide(
-                            Request {
-                                z: lower_z,
-                                rect: *r,
-                                valid: lower.valid,
-                            },
-                            &self.layers,
-                            &[],
-                        ).draw && intersects(
-                            Rect::new(r.x - 4.0, r.y - 4.0, r.w + 8.0, r.h + 8.0),
-                            footprint,
-                        )
-                    })
-                });
-                (e.seen == self.frame && refresh && !composite).then_some((z, capture))
+                let (capture, composite) = self.composite_capture(z)?;
+                let refresh = !e.valid && capture.is_some();
+                (e.seen == self.frame && refresh && !composite).then_some((z, capture.unwrap_or(e.rect)))
             })
             .collect()
+    }
+    /// The band at `z`'s capture rect this frame — the union of its VISIBLE members, `None` when
+    /// none is — and whether a lower glass contributes to its footprint, which makes the band
+    /// capture its visible prefix inline rather than replay directly. `None` for an unknown band.
+    fn composite_capture(&self, z: Z) -> Option<(Option<Rect>, bool)> {
+        let e = self.entries.get(&z)?;
+        let visible = e
+            .members
+            .iter()
+            .copied()
+            .filter(|&rect| {
+                decide(
+                    Request {
+                        z,
+                        rect,
+                        valid: e.valid,
+                    },
+                    &self.layers,
+                    &[],
+                )
+                .draw
+            })
+            .reduce(union);
+        let capture = visible.unwrap_or(e.rect);
+        // If a lower glass contributes, capture at the visible prefix instead of replaying
+        // it with a different sharp-rim source. That prefix contains its EXACT composite.
+        let r = crate::gfx::blur_region_for(e.rises, capture.x, capture.y, capture.w, capture.h);
+        let footprint = Rect::new(r[0], r[1], r[2], r[3]);
+        let composite = self.entries.range(..z).any(|(&lower_z, lower)| {
+            lower.members.iter().any(|r| {
+                // A retained lower source hidden by a frozen/opaque replacement is not a
+                // dependency of the visible prefix. Replaying to this z draws the
+                // replacement (and any current dim above it), so forcing an inline
+                // framebuffer capture here would merely re-capture a composite the direct
+                // job already reproduces exactly.
+                decide(
+                    Request {
+                        z: lower_z,
+                        rect: *r,
+                        valid: lower.valid,
+                    },
+                    &self.layers,
+                    &[],
+                ).draw && intersects(
+                    Rect::new(r.x - 4.0, r.y - 4.0, r.w + 8.0, r.h + 8.0),
+                    footprint,
+                )
+            })
+        });
+        Some((visible, composite))
     }
     fn request(&mut self, z: Z, rect: Rect, rises: bool) -> Decision {
         let frame = self.frame;
@@ -802,6 +918,8 @@ impl Sources {
             inline_attempt: None,
             fell_back: false,
             source_alpha: None,
+            dim: None,
+            captured_dim: false,
             cause: None,
         });
         if !covers(e.rect, rect) {
@@ -967,11 +1085,13 @@ pub fn layer(z: Z, shared: bool) -> Scope {
     });
     Scope(old)
 }
+/// One layer of the visible frame, timed as a span and selectable as a profiler phase under the
+/// same name (`gfx::profile::PHASES`).
 pub fn draw_span<T>(name: &'static str, draw: impl FnOnce() -> T) -> T {
     if discovering() {
         draw()
     } else {
-        plx_base::diag::spans::span(name, draw)
+        plx_base::diag::spans::span(name, || crate::gfx::profile::phase(name, draw))
     }
 }
 pub fn suppressed() -> bool {
@@ -1096,6 +1216,24 @@ pub fn region(z: Z) -> Option<Rect> {
 pub fn source_alpha(z: Z) -> Option<f32> {
     WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.source_alpha?))
 }
+/// The dim the glass at `z` applies at COMPOSITE this frame (see [`Dim`]), or `None` when its
+/// source has the dim in it, or there is none. `gfx` reads it only for an image whose replay left
+/// the dim out.
+pub fn deferred_dim(z: Z) -> Option<Dim> {
+    WALK.with(|w| w.borrow().as_ref()?.sources.borrow().composite_dim(z))
+}
+/// **Is this the direct source replay of a band that applies its dim at composite?** Then the dim
+/// is not drawn into the replay: the glass mixes it in over the filtered result instead. The
+/// discovery walk and the visible walk always draw (and record) it.
+pub fn dim_deferred() -> bool {
+    WALK.with(|w| {
+        w.borrow().as_ref().is_some_and(|w| {
+            !w.discovery
+                && w.ceiling != Z::ALL
+                && w.sources.borrow().entries.get(&w.ceiling).is_some_and(|e| e.dim.is_some())
+        })
+    })
+}
 pub fn begin_inline_capture(z: Z) -> bool {
     WALK.with(|w| {
         let w = w.borrow();
@@ -1133,6 +1271,7 @@ pub fn captured(z: Z, image: crate::gfx::BackdropImage) {
                 let recovering = e.fell_back;
                 e.fell_back = false;
                 let members = e.members.clone();
+                e.captured_dim = image.dim_excluded();
                 e.image = Some(Rc::new(image));
                 e.valid = true;
                 e.captured_prefix = e.prefix.clone();
@@ -1165,6 +1304,8 @@ pub fn commit(s: &Rc<RefCell<Sources>>) {
     let layers = s.layers.clone();
     for e in s.entries.values_mut() {
         e.valid = true;
+        // A direct replay skips the dim exactly when the band defers it.
+        e.captured_dim = e.dim.is_some();
         e.captured_prefix = e.prefix.clone();
         e.captured_layers = layers.clone();
     }
@@ -1517,6 +1658,7 @@ mod glassdiff_tests {
             values: v,
             glass: None,
             source: Vec::new(),
+            dim: None,
         })
     }
     #[test]

@@ -1,0 +1,340 @@
+{
+ "comment": "The Watchlist wave-3 capture list: each ui-sim capture, the board it answers, the dev triggers armed in a fresh instance root, the mock state and the key walk. ONE CAPTURE RECIPE, automated by tools/watchlist_captures.py (`python3 tools/watchlist_captures.py --sim <plxnative-sim> [--out DIR] [--only FILE ...]`): (1) tests/mock_pms.py starts in that process on loopback with authorize_after=2, and `POST /_mock/discover {\"list\": <mock>}` resets its Discover list to the capture's `mock` mode (`default` is the 14-title fixture, `empty` clears the list, `movies_only` keeps only the movie titles so Type = TV Shows matches nothing); (2) a fresh instance root gets `plxnative-plextv` and `plxnative-discover` aimed at the mock, and a prep boot with `plxnative-login` signs in through the app's own QR flow - the stored mock session is the account, so no `token` trigger is armed (a `token` boot reads the Watchlist as unavailable for the profile); (3) the capture's `triggers` are armed, the simulator boots, waits `boot_wait_s`, sends each key as a FIFO token through `plxnative-remote` with `key_wait_s` between them (`hold` is `okdown`, 1.2 s, `okup`) and then `shot`; (4) the instance root's shot-N.png becomes `<output_dir>/<file>`, and a capture with `expect_write` fails unless the mock logged that write. `compare` names a baseline PNG (651035609 built the same way in a separate worktree) for the reader to put beside the new capture; the driver does not diff it. Build the simulator with `make sim-macos SIM_TDIR=<dir outside the checkout>` (debug; the release build serves as well). Nothing reaches plex.tv, a real server or a television. The PNGs are scratch output, never committed. WAVE 6 (Bump B) captures live under `w6/`: `board` names the Design board each answers; `mock_extra` is merged into the Discover reset (`guids: all` gives every library title a Discover guid so a card's menu offers Add), `unreachable` aims plex.tv at a closed port after the sign-in (the plex.tv-unreachable Detail), and a key `k@0.12` waits 0.12 s instead of key_wait_s (the mid-flip shot); `mock:<json>` POSTs <json> to /_mock/discover mid-walk, `sleep:<s>` waits, and `ck:<x>,<y>` clicks at logical 1920x1080 pixels. DetailOffline is the catalog page of a title matched on the mock server that then went away: the Watchlist matches Harbor Lights, `{\"pms\":\"fail\"}` makes every PMS request answer 503, a click on Movies makes the library read fail (its failure is what commits the server Unreachable), a click on the Watchlist tab reads the list again (the read re-derives the tiles: ServerOffline), and a click on the first tile opens its catalog page. Run it from a release AND a debug simulator and grep each <file>.log/.out for `panic`. HOME HERO captures live under `home-hero/` and answer the HomeHero board (canvas v44): the hero row's bookmark disc, second after Continue/Play, focused (`right` from Play); `heropin 0` holds the first hero and `mock_extra episode_shows: catalog` points every episode's show at the first catalogued show (The Long Meridian: on the `default` list, off the `empty` one), so the Continue Watching hero has a title the Discover stand-in knows. W-NOTIFY (library add flips a tile live) lives in `library-add-flips-tile.png`: the Watchlist tab stays open, `lib:{\"op\":\"add\",\"title\":\"Northbound Tide\"}` makes the mock library hold a title the list carries as coming soon and pushes the `timeline` frame a server would send (the captured three-frame add sequence; only its finished frame owes the re-match), the tile flips from Coming soon to its on-your-servers face with no key pressed, and `expect_log` fails the capture unless the app logged the library re-match.",
+ "output_dir": "/tmp/watchlist-captures",
+ "boot_wait_s": 5,
+ "key_wait_s": 2,
+ "captures": [
+  {
+   "file": "home-bookmark-tab-focused.png",
+   "board": "Main",
+   "mock": "default",
+   "triggers": {},
+   "keys": [
+    "up",
+    "right",
+    "right",
+    "right",
+    "right"
+   ]
+  },
+  {
+   "file": "watchlist-page.png",
+   "board": "Watchlist",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down"
+   ]
+  },
+  {
+   "file": "sort-filter-open.png",
+   "board": "WatchlistOptions",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "up",
+    "ok"
+   ]
+  },
+  {
+   "file": "empty.png",
+   "board": "WatchlistEmpty",
+   "mock": "empty",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": []
+  },
+  {
+   "file": "filtered.png",
+   "board": "WatchlistFiltered",
+   "mock": "movies_only",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "up",
+    "ok",
+    "down",
+    "down",
+    "ok",
+    "back"
+   ]
+  },
+  {
+   "file": "hold-menu.png",
+   "board": "WatchlistHold",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "right",
+    "hold"
+   ]
+  },
+  {
+   "file": "after-removal.png",
+   "board": "WatchlistRemoved",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "right",
+    "hold",
+    "down",
+    "down",
+    "ok"
+   ],
+   "expect_write": "PUT /actions/removeFromWatchlist"
+  },
+  {
+   "file": "watched-tick-new.png",
+   "board": "TileStates",
+   "mock": "default",
+   "triggers": {
+    "library": "0",
+    "libgrid": "0,2"
+   },
+   "keys": [],
+   "compare": "watched-tick-base.png"
+  },
+  {
+   "file": "account-menu-new.png",
+   "board": "(unchanged sheet)",
+   "mock": "default",
+   "triggers": {
+    "heropin": "0",
+    "acct": "800"
+   },
+   "keys": [],
+   "compare": "account-menu-base.png"
+  },
+  {
+   "file": "item-menu-new.png",
+   "board": "(unchanged sheet)",
+   "mock": "default",
+   "triggers": {
+    "heropin": "0",
+    "itemmenu": ""
+   },
+   "keys": [],
+   "compare": "item-menu-base.png"
+  },
+  {
+   "file": "w6/detail.png",
+   "board": "Detail",
+   "mock": "first_movie_off",
+   "triggers": {
+    "detail": "1001"
+   },
+   "keys": []
+  },
+  {
+   "file": "w6/detail-on-list.png",
+   "board": "DetailOnList",
+   "mock": "default",
+   "triggers": {
+    "detail": "1001"
+   },
+   "keys": []
+  },
+  {
+   "file": "w6/detail-added.png",
+   "board": "DetailAdded",
+   "mock": "first_movie_off",
+   "triggers": {
+    "detail": "1001"
+   },
+   "keys": [
+    "right",
+    "ok"
+   ],
+   "expect_write": "PUT /actions/addToWatchlist"
+  },
+  {
+   "file": "w6/detail-added-midflip.png",
+   "board": "DetailAdded (mid-flip, ribbon drop)",
+   "mock": "first_movie_off",
+   "triggers": {
+    "detail": "1001"
+   },
+   "keys": [
+    "right",
+    "ok@0.12"
+   ]
+  },
+  {
+   "file": "w6/detail-not-on-server.png",
+   "board": "DetailNotOnServer",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "down",
+    "right",
+    "ok"
+   ]
+  },
+  {
+   "file": "w6/detail-offline.png",
+   "board": "DetailOffline",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "sleep:3",
+    "mock:{\"pms\":\"fail\"}",
+    "ck:854,91",
+    "sleep:4",
+    "ck:1157,91",
+    "sleep:6",
+    "ck:221,470",
+    "sleep:5"
+   ]
+  },
+  {
+   "file": "w6/detail-plextv-unreachable.png",
+   "board": "(no board: the plex.tv-unreachable Detail, outline face)",
+   "mock": "default",
+   "unreachable": true,
+   "triggers": {
+    "detail": "1001"
+   },
+   "keys": []
+  },
+  {
+   "file": "w6/hold-menu.png",
+   "board": "HoldMenu",
+   "mock": "default",
+   "triggers": {
+    "heropin": "0"
+   },
+   "keys": [
+    "down",
+    "down",
+    "down",
+    "down",
+    "hold"
+   ],
+   "mock_extra": {
+    "guids": "all"
+   }
+  },
+  {
+   "file": "w6/watchlist-hold.png",
+   "board": "WatchlistHold",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "right",
+    "hold"
+   ]
+  },
+  {
+   "file": "w6/watchlist-hold-unplayable.png",
+   "board": "WatchlistHoldUnplayable",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "down",
+    "down",
+    "right",
+    "right",
+    "right",
+    "hold"
+   ]
+  },
+  {
+   "file": "home-hero/outline.png",
+   "mock": "empty",
+   "keys": [
+    "right"
+   ],
+   "board": "HomeHero",
+   "triggers": {
+    "heropin": "0"
+   },
+   "mock_extra": {
+    "episode_shows": "catalog"
+   }
+  },
+  {
+   "file": "home-hero/filled.png",
+   "mock": "default",
+   "keys": [
+    "right"
+   ],
+   "board": "HomeHero",
+   "triggers": {
+    "heropin": "0"
+   },
+   "mock_extra": {
+    "episode_shows": "catalog"
+   }
+  },
+  {
+   "file": "home-hero/added.png",
+   "mock": "empty",
+   "keys": [
+    "right",
+    "ok"
+   ],
+   "expect_write": "PUT /actions/addToWatchlist",
+   "board": "HomeHero",
+   "triggers": {
+    "heropin": "0"
+   },
+   "mock_extra": {
+    "episode_shows": "catalog"
+   }
+  },
+  {
+   "file": "home-hero/added-midflip.png",
+   "mock": "empty",
+   "keys": [
+    "right",
+    "ok@0.12"
+   ],
+   "board": "HomeHero",
+   "triggers": {
+    "heropin": "0"
+   },
+   "mock_extra": {
+    "episode_shows": "catalog"
+   }
+  },
+  {
+   "file": "library-add-flips-tile.png",
+   "board": "none (W-notify behaviour check)",
+   "mock": "default",
+   "triggers": {
+    "watchlist": ""
+   },
+   "keys": [
+    "sleep:4",
+    "lib:{\"op\":\"add\",\"title\":\"Northbound Tide\"}",
+    "sleep:4"
+   ],
+   "expect_log": "notify: library re-match"
+  }
+ ],
+ "baseline": "651035609 built the same way in a separate worktree and target dir; the *-base.png files"
+}

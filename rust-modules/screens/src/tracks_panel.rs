@@ -988,9 +988,8 @@ impl TracksPanelScreen {
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let r = panel_rect();
-        let slide = RISE * (1.0 - appear);
-        let p = Painter::root().alpha(appear).translate(0.0, slide);
-        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        let p = sheet_painter(appear);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         // ---- header ------------------------------------------------------------------------------
         let cx = r.x + PAD;
@@ -1246,7 +1245,7 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike> plx_ui::screen
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is the latched underlay field (a sheet is never glass; DS6 glass is for menus), latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
@@ -1298,6 +1297,11 @@ fn rule(p: Painter, x: f32, y: f32, w: f32) {
 /// family shares so that two surfaces leaving together read as one movement. The container owns the
 /// spring; this is only the distance it drives.
 const RISE: f32 = Popover::RISE;
+
+/// The painter every frame of the sheet draws through: the appear fade and the rise.
+fn sheet_painter(appear: f32) -> Painter {
+    Painter::root().alpha(appear).translate(0.0, RISE * (1.0 - appear))
+}
 
 #[cfg(test)]
 mod tests {

@@ -177,6 +177,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.
+  So is the plex.tv Watchlist: a debug build refuses every add/remove unless the mock's discover
+  stand-in is armed or `plxnative-watchlist-live` exists in the install's runtime root. **Never
+  create that file unless the owner asks for it in that same session** — with it, a debug build
+  writes to the owner's real Watchlist. `.claude/hooks/watchlist-live-guard.py` refuses a command
+  that would (`docs/watchlist.md`, "The live switch").
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
   queue behind it.

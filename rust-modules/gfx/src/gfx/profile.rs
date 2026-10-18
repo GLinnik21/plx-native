@@ -79,11 +79,20 @@ mod imp {
     /// index (`blur.reduce{1,2}`, `blur.tap{1,2}`), so this cannot be derived from the call sites
     /// and must be kept beside them. Its only job is to refuse a trigger that names nothing: an
     /// unknown filter arms the profiler, logs `on`, and then silently never matches — which reads
-    /// exactly like "this phase costs nothing".
-    pub const PHASES: [&str; 32] = [
+    /// exactly like "this phase costs nothing". The converse fails as quietly — a call site whose
+    /// name is missing here can never be selected — so `phases_match_the_call_sites` holds the
+    /// list against the source in both directions.
+    pub const PHASES: &[&str] = &[
         "profile.empty",
         "frame.ui",
         "main.ui",
+        // `backdrop::draw_span`'s five layers of the frame, each also a phase: the page (live or
+        // its cached image), the chrome, the modal dims and the surfaces above them.
+        "page",
+        "page.image",
+        "chrome",
+        "scrims",
+        "surf",
         "blur.copy",
         // The direct path's own source pass — the one phase the capture path does not have.
         "blur.scene",
@@ -94,26 +103,32 @@ mod imp {
         "blur.up",
         "glass.composite",
         "glass.sharp",
+        // A menu's glass on frozen ground (`gfx::draw_glass_frozen`): the panel quad alone.
+        "glass.frozen",
         "glass.frost",
         "glass.foreground",
+        "panel.glass",
+        "panel.field",
+        "panel.frost",
+        "da.panel",
+        "da.text",
+        "da.ctl",
         "dt.about",
-        "dt.backdrop",
-        "dt.cast",
-        "dt.ctitle",
-        "dt.eps",
-        "dt.hero",
-        "dt.related",
-        "dt.tabs",
+        "dt.alt",
+        "dt.bio",
+        "dt.tracks",
         "hm.backdrop",
-        "hm.chip",
-        "hm.clear",
         "hm.grid",
         "hm.hero",
-        "hm.layout",
         "hm.status",
-        "hm.tabs",
-        "menu.panel",
-        "menu.scrim",
+        "lb.clear",
+        "lb.ground",
+        "lb.grid",
+        "lb.document",
+        "lb.rail",
+        "lb.shelves",
+        "lb.menu",
+        "st.ground",
     ];
 
     /// Resolve a trigger's contents to a phase name, or explain why it is not one.
@@ -643,4 +658,66 @@ pub fn note_blur_config(
     _sw: i32,
     _sh: i32,
 ) {
+}
+
+#[cfg(all(test, feature = "devtriggers"))]
+mod tests {
+    use super::imp::PHASES;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "target" && !name.starts_with("target-") && !name.starts_with('.') {
+                    sources(&path, out);
+                }
+            } else if name.ends_with(".rs") {
+                out.push((path.display().to_string(), std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+
+    /// Every string literal that directly follows `prefix` in `text`.
+    fn literals_after(text: &str, prefix: &str, out: &mut BTreeSet<String>) {
+        let mut rest = text;
+        while let Some(at) = rest.find(prefix) {
+            rest = &rest[at + prefix.len()..];
+            if let Some(end) = rest.find('"') {
+                out.insert(rest[..end].to_string());
+            }
+        }
+    }
+
+    /// `PHASES` against the workspace's source, both ways: every name a `phase("…")` or
+    /// `draw_span("…")` call passes is selectable, and every selectable name is passed somewhere
+    /// (the two loop-composed blur names appear as their own literals at the composing site).
+    #[test]
+    fn phases_match_the_call_sites() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut files = Vec::new();
+        sources(root, &mut files);
+        let mut called = BTreeSet::new();
+        let mut named = String::new();
+        for (path, text) in &files {
+            if path.ends_with("gfx/profile.rs") || path.ends_with("gpu_timer.rs") {
+                continue;
+            }
+            literals_after(text, "phase(\"", &mut called);
+            literals_after(text, "draw_span(\"", &mut called);
+            named.push_str(text);
+        }
+        // Loop-composed names reach `phase` through a variable, so they are found as literals.
+        let composed = ["blur.reduce1", "blur.reduce2", "blur.tap1", "blur.tap2"];
+        let selectable: BTreeSet<String> = PHASES.iter().map(|s| s.to_string()).collect();
+        let unselectable: Vec<_> = called.iter().filter(|n| !selectable.contains(*n)).collect();
+        assert!(unselectable.is_empty(), "call sites whose phase no trigger can select: {unselectable:?}");
+        let dead: Vec<_> = PHASES
+            .iter()
+            .filter(|n| !called.contains(**n) && !(composed.contains(n) && named.contains(&format!("\"{n}\""))))
+            .collect();
+        assert!(dead.is_empty(), "PHASES entries no call site passes: {dead:?}");
+    }
 }

@@ -258,16 +258,17 @@ struct PendingErase {
     retry_at: u32,
     /// Consecutive clears that reported a surviving credential; drives [`erase_retry_delay`].
     incomplete: u32,
-    /// The install language the first attempt read before clearing. A retry carries it, because
-    /// once the credential file is gone a re-read can no longer see what to retain.
-    language: Option<plx_platform::i18n::Preference>,
+    /// The install language and Interface resolution the first attempt read before clearing. A
+    /// retry carries them, because once the credential file is gone a re-read can no longer see
+    /// what to retain.
+    kept: Option<plx_plex::plex::session::Retained>,
 }
 
 struct EraseWorkerOutcome {
     complete: bool,
     failures: Vec<String>,
-    /// The next-launch language after this erase: retained by sign-out, System after delete-all.
-    language: plx_platform::i18n::Preference,
+    /// The next-launch choices after this erase: retained by sign-out; delete-all resets the language.
+    kept: plx_plex::plex::session::Retained,
 }
 
 pub(crate) struct SessionAdapter {
@@ -756,7 +757,7 @@ impl SessionAdapter {
             if diagnostics { plx_platform::storage::diagnostics::disable(); }
             self.erasures.push_back(PendingErase {
                 epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(), incomplete: 0,
-                language: None,
+                kept: None,
             });
             self.submit_erase();
             None
@@ -768,9 +769,9 @@ impl SessionAdapter {
         let now = crate::app::clock::now();
         // SDL's millisecond counter wraps; the retry is due within the forward half-range.
         if pending.ticket.is_some() || now.wrapping_sub(pending.retry_at) >= u32::MAX / 2 { return; }
-        let (diagnostics, all_local, language) = (pending.diagnostics, pending.all_local, pending.language);
+        let (diagnostics, all_local, kept) = (pending.diagnostics, pending.all_local, pending.kept);
         pending.ticket = plx_base::storage_worker::submit(move || {
-            let erasure = plx_plex::plex::session::clear_for_erase(all_local, language);
+            let erasure = plx_plex::plex::session::clear_for_erase(all_local, kept);
             let cleared = matches!(erasure.outcome,
                 plx_plex::plex::session::ClearOutcome::Durable { legacy_swept: true });
             // A sign-out that could not retain the language retries, carrying it; delete-all
@@ -791,7 +792,7 @@ impl SessionAdapter {
             if all_local { failures.extend(erasure.preference_failures); }
             plx_machine::idle::wake();
             plx_machine::present::wake_from_worker();
-            EraseWorkerOutcome { complete, failures, language: erasure.retained_language }
+            EraseWorkerOutcome { complete, failures, kept: erasure.retained }
         }).ok();
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);
     }
@@ -810,13 +811,13 @@ impl SessionAdapter {
             Ok(outcome) if !outcome.complete => {
                 let pending = self.erasures.front_mut()?;
                 pending.ticket = None;
-                pending.language = Some(outcome.language);
+                pending.kept = Some(outcome.kept);
                 pending.incomplete = pending.incomplete.saturating_add(1);
                 pending.retry_at = crate::app::clock::now().wrapping_add(erase_retry_delay(pending.incomplete));
                 return None;
             }
             Ok(outcome) => {
-                plx_platform::i18n::set_saved_preference(outcome.language);
+                plx_platform::i18n::set_saved_preference(outcome.kept.language);
                 outcome.failures
             }
         };
@@ -1210,7 +1211,7 @@ mod tests {
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
         if erase {
             adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
-                retry_at: crate::app::clock::now(), incomplete: 0, language: None });
+                retry_at: crate::app::clock::now(), incomplete: 0, kept: None });
         } else {
             enqueue_test_commit(&mut adapter, queued_plan(&plx_plex::plex::session::Session::default()));
         }
@@ -1282,7 +1283,7 @@ mod tests {
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
         adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
-            retry_at: crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS), incomplete: 0, language: None });
+            retry_at: crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS), incomplete: 0, kept: None });
         enqueue_test_commit(&mut adapter, queued_plan(&plx_plex::plex::session::Session::default()));
         adapter.submit_commit();
         assert!(adapter.commits.front().unwrap().ticket.is_none(), "erase retains its FIFO position");
@@ -1347,6 +1348,7 @@ mod tests {
     #[test]
     fn signout_keeps_the_install_language_and_only_delete_all_resets_it() {
         use plx_platform::i18n::Preference;
+        use plx_plex::plex::session::UiResolution;
         let _serial = plx_base::testlock::serial();
         let session = plx_plex::plex::session::TempSession::new("erase-language");
         struct Restore(Preference);
@@ -1355,7 +1357,8 @@ mod tests {
         }
         let _restore = Restore(plx_platform::i18n::saved_preference());
         plx_plex::plex::session::save(&plx_plex::plex::session::Session {
-            client_id: "install".into(), account_token: "old".into(), ..Default::default() });
+            client_id: "install".into(), account_token: "old".into(), ..Default::default() }
+            .with_ui_resolution(UiResolution::Hd720));
         assert!(plx_plex::plex::session::set_language(Preference::Be), "setup: a durable language");
         let relaunch = || {
             plx_plex::plex::session::redirect_for_test(Some(session.path()));
@@ -1376,6 +1379,8 @@ mod tests {
         assert!(signed_out.account_token.is_empty(), "sign-out still revokes the credential");
         assert_eq!(signed_out.language, Preference::Be,
             "an ordinary sign-out must keep the install-wide language across relaunch");
+        assert_eq!(signed_out.ui_resolution(), UiResolution::Hd720,
+            "and the install-wide Interface resolution");
 
         plx_platform::i18n::set_saved_preference(Preference::Be);
         assert!(adapter.begin_erase(2, true, &mut meta).is_none());
@@ -1386,6 +1391,8 @@ mod tests {
             "Delete all local data resets the confirmed next-launch language");
         assert_eq!(relaunch().language, Preference::System,
             "Delete all local data must not leave the language behind on disk");
+        assert_eq!(relaunch().ui_resolution(), UiResolution::Auto,
+            "the file backend's retained file goes whole, resolution included");
     }
 
     #[test]
@@ -2354,7 +2361,7 @@ mod tests {
         assert!(begin.find("plx_plex::plex::session::revoke_cached_session()").unwrap() < submitted);
         let worker = source.split("fn submit_erase(").nth(1).unwrap()
             .split("pub(crate) fn take_erased(").next().unwrap();
-        assert!(worker.contains("plx_plex::plex::session::clear_for_erase(all_local, language)"));
+        assert!(worker.contains("plx_plex::plex::session::clear_for_erase(all_local, kept)"));
     }
 
     /// The adapter half of a watched report: while it is queued or on the network nothing is

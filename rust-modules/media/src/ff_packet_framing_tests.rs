@@ -709,3 +709,109 @@ fn a_framing_names_the_load_declaration_it_goes_with() {
         assert_eq!(LoadVideo::of_stream(spelling), Some(lv));
     }
 }
+
+/// An HEVC prefix-SEI NAL (type 39) holding `messages`, each `(payloadType, payload)`.
+fn sei_nal(messages: &[(u8, &[u8])]) -> Vec<u8> {
+    let mut nal = vec![39 << 1, 1];
+    for &(ptype, payload) in messages {
+        nal.push(ptype);
+        nal.push(payload.len() as u8);
+        nal.extend_from_slice(payload);
+    }
+    nal.push(0x80);
+    nal
+}
+
+const HDR10PLUS: &[u8] = &[0xb5, 0x00, 0x3c, 0x00, 0x01, 0x04, 0x01];
+
+fn is_hdr10plus_sei(nal: &[u8]) -> bool {
+    strip_hdr10plus_sei(nal) != SeiStrip::Keep
+}
+
+#[test]
+fn hdr10plus_is_found_alone_and_behind_another_message() {
+    assert!(is_hdr10plus_sei(&sei_nal(&[(4, HDR10PLUS)])));
+    // A mastering-display message first: only the first message used to be read.
+    assert!(is_hdr10plus_sei(&sei_nal(&[(137, &[0u8; 24]), (4, HDR10PLUS)])));
+}
+
+#[test]
+fn static_hdr_metadata_and_other_t35_messages_are_kept() {
+    let both = sei_nal(&[(137, &[0u8; 24]), (144, &[0u8; 4])]);
+    assert_eq!(strip_hdr10plus_sei(&both), SeiStrip::Keep);
+    // Dolby Vision RPU-adjacent or other T.35 payloads from another provider stay.
+    let other = sei_nal(&[(4, &[0xb5, 0x00, 0x31, 0x44])]);
+    assert_eq!(strip_hdr10plus_sei(&other), SeiStrip::Keep);
+    // A non-SEI NAL (IDR slice) is never touched.
+    assert_eq!(strip_hdr10plus_sei(&[19 << 1, 1, 0xb5, 0x00, 0x3c]), SeiStrip::Keep);
+}
+
+#[test]
+fn static_hdr_metadata_sharing_a_nal_with_hdr10plus_survives() {
+    let mastering = [0x11u8; 24];
+    let nal = sei_nal(&[(137, &mastering), (4, HDR10PLUS)]);
+    assert_eq!(strip_hdr10plus_sei(&nal), SeiStrip::Rewrite(sei_nal(&[(137, &mastering)])));
+    // HDR10+ first, static metadata after, and a suffix SEI keeps its NAL type.
+    let mut nal = sei_nal(&[(4, HDR10PLUS), (144, &[1, 2, 3, 4])]);
+    nal[0] = 40 << 1;
+    let mut want = sei_nal(&[(144, &[1, 2, 3, 4])]);
+    want[0] = 40 << 1;
+    assert_eq!(strip_hdr10plus_sei(&nal), SeiStrip::Rewrite(want));
+}
+
+#[test]
+fn an_sei_of_only_hdr10plus_is_dropped() {
+    assert_eq!(strip_hdr10plus_sei(&sei_nal(&[(4, HDR10PLUS)])), SeiStrip::Drop);
+    assert_eq!(strip_hdr10plus_sei(&sei_nal(&[(4, HDR10PLUS), (4, HDR10PLUS)])), SeiStrip::Drop);
+}
+
+#[test]
+fn a_kept_message_gets_its_emulation_prevention_back() {
+    let payload = [0, 0, 0, 7, 0, 0, 1, 9, 0, 0, 2, 0, 0, 4];
+    let nal = sei_nal(&[(5, &payload), (4, HDR10PLUS)]);
+    let SeiStrip::Rewrite(out) = strip_hdr10plus_sei(&nal) else {
+        panic!("expected a rewrite");
+    };
+    let mut want = vec![39 << 1, 1, 5, payload.len() as u8];
+    want.extend_from_slice(&[0, 0, 3, 0, 7, 0, 0, 3, 1, 9, 0, 0, 3, 2, 0, 0, 4]);
+    want.push(0x80);
+    assert_eq!(out, want);
+    // and it unescapes back to the original message
+    assert_eq!(sei_rbsp(&out[2..]), [&[5u8, payload.len() as u8][..], &payload, &[0x80]].concat());
+}
+
+#[test]
+fn sei_sizes_count_bytes_after_emulation_prevention_is_removed() {
+    // A first payload of 00 00 00 is carried as 00 00 03 00 in the NAL; reading the size against
+    // the raw bytes would land one byte short of the HDR10+ message.
+    let mut nal = vec![39 << 1, 1, 5, 3, 0, 0, 3, 0];
+    nal.extend_from_slice(&[4, HDR10PLUS.len() as u8]);
+    nal.extend_from_slice(HDR10PLUS);
+    nal.push(0x80);
+    assert!(is_hdr10plus_sei(&nal));
+    // the kept 00 00 00 payload is escaped again exactly as it came
+    assert_eq!(
+        strip_hdr10plus_sei(&nal),
+        SeiStrip::Rewrite(vec![39 << 1, 1, 5, 3, 0, 0, 3, 0, 0x80])
+    );
+}
+
+#[test]
+fn a_truncated_sei_never_panics_and_only_a_seen_header_drops_it() {
+    let full = sei_nal(&[(137, &[0u8; 24]), (4, HDR10PLUS)]);
+    // First byte of the HDR10+ payload: 2 header bytes + (type, size, 24) + (type, size).
+    let plus_payload = 2 + 2 + 24 + 2;
+    for n in 0..full.len() {
+        let got = strip_hdr10plus_sei(&full[..n]);
+        if n < plus_payload + 3 {
+            // the T.35 header is not all there: never HDR10+, left as received
+            assert_eq!(got, SeiStrip::Keep, "prefix {n}");
+        } else {
+            // header seen but the list is cut: dropped whole, never rewritten
+            assert_eq!(got, SeiStrip::Drop, "prefix {n}");
+        }
+    }
+    // oversized payloadSize running past the end
+    assert_eq!(strip_hdr10plus_sei(&[39 << 1, 1, 4, 200, 0xb5, 0x00, 0x3c]), SeiStrip::Drop);
+    assert_eq!(strip_hdr10plus_sei(&[39 << 1, 1, 4, 200, 0xb5]), SeiStrip::Keep);
+}

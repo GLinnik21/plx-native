@@ -140,6 +140,22 @@ uniform vec2 u_deep;
 // re-running the source/reduction chain for every alpha step.
 uniform float u_source_alpha;
 uniform vec3 u_source_ground;
+// A MODAL DIM applied here rather than filtered into the snapshot (`backdrop::Dim`): the dim is
+// `mix(below, ink, a)`, linear in what it covers, and its ink is a smooth field (the page's own
+// latched light times a weight, or one flat colour), so dimming the filtered page equals filtering
+// the dimmed one. `u_dim.a = 0` disables it; `u_dim_field` says what the ink is: 0 `u_dim.rgb`;
+// 1 `u_dim.rgb` times the field texture at the screen point (`u_dim_uv` maps snapshot UV there);
+// 2 `u_dim.rgb` times the texel this fragment ALREADY read from `u_tex` — a frozen menu glass
+// whose ground is the dim's own field, read at the same screen point (`gfx::frozen_dim_field`),
+// where a second fetch of the same texture at the same UV would be pure cost.
+uniform vec4 u_dim;
+uniform highp vec4 u_dim_uv;
+uniform float u_dim_field;
+uniform sampler2D u_dim_tex;
+// The SHARP source takes the same dim when it is an undimmed picture of the page: a menu's glass
+// reads the frozen host snapshot there (`gfx::draw_glass_frozen`), which holds no scrim. 0 for a
+// live glass, whose sharp grab is off the finished framebuffer and carries the dim already.
+uniform float u_dim_sharp;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -149,11 +165,31 @@ uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // the darkest thing on the bar, which is a lamp underneath the floor.
 uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (alpha 0 = none)
 
+// The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
+// `u_tex` texel already read at `uv`, the ink in mode 2.
+vec3 dimRGB(vec3 c, highp vec2 uv, vec4 g){
+  if (u_dim.a > 0.0) {
+    vec3 ink = u_dim.rgb;
+    float a = u_dim.a;
+    if (u_dim_field > 1.5) {
+      ink *= g.rgb;
+      a *= g.a;
+    } else if (u_dim_field > 0.0) {
+      vec4 f = texture2D(u_dim_tex, uv * u_dim_uv.xy + u_dim_uv.zw);
+      ink *= f.rgb;
+      a *= f.a;
+    }
+    c = mix(c, ink, a);
+  }
+  return c;
+}
+
 // The snapshot fetch every path here goes through, so the two exits of this shader cannot disagree
 // about how soft the backdrop is — which is the defect its interior early-out already produced once
-// over coverage.
-vec3 srcRGB(highp vec2 uv){
-  vec3 c = texture2D(u_tex, uv).rgb;
+// over coverage. `g` hands back the centre texel, which a mode-2 dim reuses as its ink.
+vec3 srcRGB(highp vec2 uv, out vec4 g){
+  g = texture2D(u_tex, uv);
+  vec3 c = g.rgb;
   if (u_deep.x > 0.0) {
     highp vec2 d = u_deep;
     c += texture2D(u_tex, uv + vec2( d.x,  d.y)).rgb;
@@ -162,7 +198,8 @@ vec3 srcRGB(highp vec2 uv){
     c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
   }
-  return mix(u_source_ground, c, u_source_alpha);
+  c = mix(u_source_ground, c, u_source_alpha);
+  return dimRGB(c, uv, g);
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
@@ -180,12 +217,23 @@ highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
   return s * (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
 }
 void main(){
-  highp float d = sdBox(v_p, u_ch, u_iradius);
+  // THE INTERIOR'S BOX PRE-TEST, the shadow cut's twin (`fs_shadow.frag`): inside the box inset by
+  // `max(radius, bevel) + 1` on each axis, both components of sdBox's `q` are below -1, so its
+  // `length` term is 0 and `d = max(|p| - ch)` < -bevel - 1. Such a fragment is certain to take
+  // the interior exit below, and it gets there without the highp `length` and the rest of
+  // `sdBox`, which is most of a menu panel. Only work is skipped, never a decision: a fragment the
+  // pre-test leaves out still takes the exit when its `d` says so (`gfx` test
+  // `the_glass_interior_box_pretest_is_exact_and_runs_first`).
+  highp float d = -u_bevel - 1.0;
+  if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0)))) {
+    d = sdBox(v_p, u_ch, u_iradius);
+  }
   // INTERIOR EARLY-OUT, the same shape as fs_src.frag's and for the same reason: past the bevel
   // there is no lens, no edge light and full coverage, so a panel's large flat middle pays one
   // fetch and nothing else. The branch is coherent across a tile, which is what makes it pay here.
   if (d < -u_bevel) {
-    vec3 flat_rgb = srcRGB(v_cuv) * u_tint.rgb;
+    vec4 g0;
+    vec3 flat_rgb = srcRGB(v_cuv, g0) * u_tint.rgb;
     // The scrim reaches here too — this is most of the surface. The rim does not: it is a band at
     // the edge and `rimShape` below is zero this far in, which is what makes skipping it exact.
     vec4 fsc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
@@ -197,7 +245,8 @@ void main(){
   highp float lens = t * t;
   highp vec2 nrm = sdBoxNormal(v_p, u_ch, u_iradius);
   highp vec2 push = nrm * (lens * u_lens);
-  vec3 rgb = srcRGB(v_cuv + push * u_uvpx);
+  vec4 g;
+  vec3 rgb = srcRGB(v_cuv + push * u_uvpx, g);
   if (u_sharpw > 0.0) {
     // The quad's own 0..1 coordinate, recovered from the panel-local pixels the SDF already uses:
     // `vs_img.vert` builds both from the same `a_pos`, so this needs no second varying and cannot
@@ -205,6 +254,7 @@ void main(){
     highp vec2 f = v_p / (2.0 * u_ch) + 0.5;
     highp vec2 suv = u_sharp_rect.xy + f * u_sharp_rect.zw;
     vec3 sharp = texture2D(u_sharp, suv + push * u_sharp_px).rgb;
+    if (u_dim_sharp > 0.0) sharp = dimRGB(sharp, v_cuv + push * u_uvpx, g);
     rgb = mix(rgb, sharp, smoothstep(0.0, 1.0, t) * u_sharpw);
   }
   rgb *= u_tint.rgb;
@@ -228,12 +278,16 @@ void main(){
   // just inside the boundary. The soft wide band this replaced read as a glow around the panel;
   // what a glass rim actually shows is a fine bright line that follows the whole perimeter, and
   // its thinness is most of why it reads as an edge rather than as lighting.
-  float hair = smoothstep(-2.2, -0.9, d) * (1.0 - smoothstep(-0.6, 0.4, d));
-  // `u_spec.w` is the line's FLOOR strength — it runs all the way round — and the two-lobe term
-  // adds to it at the corners the light axis points at. A line that vanishes between the lobes
-  // stops being a perimeter and becomes two marks.
-  float lobe = pow(abs(dot(nrm, u_spec.xy)), u_spec.z);
-  rgb += u_edge.rgb * (hair * u_spec.w * (0.45 + 0.55 * lobe));
+  // Behind its strength: `Menu` and `Standing` carry 0, and a uniform branch is coherent across
+  // every fragment, so skipping the `pow` and two `smoothstep`s that multiply by that 0 is exact.
+  if (u_spec.w > 0.0) {
+    float hair = smoothstep(-2.2, -0.9, d) * (1.0 - smoothstep(-0.6, 0.4, d));
+    // `u_spec.w` is the line's FLOOR strength — it runs all the way round — and the two-lobe term
+    // adds to it at the corners the light axis points at. A line that vanishes between the lobes
+    // stops being a perimeter and becomes two marks.
+    float lobe = pow(abs(dot(nrm, u_spec.xy)), u_spec.z);
+    rgb += u_edge.rgb * (hair * u_spec.w * (0.45 + 0.55 * lobe));
+  }
   // The container's own SCRIM, then ITS RIM on top of that, both before coverage — the order they
   // are read in, and the reason this surface is now the only one of its shape.
   vec4 sc = mix(u_scrim_top, u_scrim_bot, clamp(v_p.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));

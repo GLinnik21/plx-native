@@ -1485,7 +1485,7 @@ PINNED_ENV = {"LANG": "C", "LC_ALL": "C", "TZ": "UTC"}
 
 
 def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, base=None, no_hold=False,
-            keys=None, extra_holds=None):
+            keys=None, extra_holds=None, allow_overlay=False):
     """The simulator's environment: this machine's minus every PLXNATIVE_* variable (a developer's own
     session settings must not leak into a render) and with the locale and time zone pinned
     (`PINNED_ENV`), plus the dump's."""
@@ -1510,6 +1510,8 @@ def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, 
         env["PLXNATIVE_DUMP_KEYS"] = keys
     if extra_holds is not None:
         env["PLXNATIVE_DUMP_EXTRA_HOLDS"] = str(extra_holds)
+    if allow_overlay:
+        env["PLXNATIVE_DUMP_ALLOW_OVERLAY"] = "1"
     return env
 
 
@@ -1820,9 +1822,31 @@ def parse_triggers(specs):
     return out
 
 
+def post_mock_discover(port, body):
+    """POST one JSON object to the mock's `/_mock/discover` (its Discover list mode, `guids`, `pms`...)."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/_mock/discover", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        r.read()
+
+
+def parse_mock_discover(specs):
+    """`--mock-discover` JSON strings -> [dict]; each must be a JSON object."""
+    out = []
+    for spec in specs or ():
+        try:
+            body = json.loads(spec)
+        except ValueError as e:
+            raise Failure(f"--mock-discover {spec!r}: not JSON ({e})")
+        if not isinstance(body, dict):
+            raise Failure(f"--mock-discover {spec!r}: want a JSON object")
+        out.append(body)
+    return out
+
+
 def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=None, allow_absent=False, max_hold_ms=60000,
                timeout=3600, keep=False, say=print, no_hold=False, keys=None, extra_holds=None, triggers=None,
-               plan=None, storyboard_sha=None):
+               plan=None, storyboard_sha=None, allow_overlay=False, mock_discover=None, token=True):
     """Boot the mock catalog PMS on a free port, run the dump build against it headless, pipe its RGB24
     frames through the sentinel scan into ffmpeg, and leave `master.mkv`, `frames.tsv`, `dump.json` and
     `render.json` in `out_dir`. Returns the render record. Raises Failure on anything not clean."""
@@ -1846,16 +1870,23 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
     finished = False
     try:
         (runtime / "plxnative-plextv").write_text(f"http://127.0.0.1:{port}")
+        (runtime / "plxnative-discover").write_text(f"http://127.0.0.1:{port}")  # the Watchlist reads the mock, never discover.provider.plex.tv
         sign_in_demo_profile(sim_bin, runtime, port, say)
+        for body in mock_discover or ():  # the plex.tv/discover stand-in's state (`POST /_mock/discover`), after the sign-in
+            post_mock_discover(port, body)
         with pms.lock:
             pms.request_log.clear()  # the log below is the film's alone
-        for name, value in {"token": DEMO_TOKEN, "heropin": "0", **(HINT_OFF if plan else {}), **(triggers or {})}.items():
+        # `token=False` boots on the STORED mock session alone: a `token` boot reads the Watchlist as
+        # unavailable for the profile (plex.tv's list belongs to the signed-in account).
+        for name, value in {**({"token": DEMO_TOKEN} if token else {}), "heropin": "0", **(HINT_OFF if plan else {}),
+                            **(triggers or {})}.items():
             (runtime / f"plxnative-{name}").write_text(value)
         enc = subprocess.Popen(ffv1_argv(ffmpeg, out_dir / "master.mkv"), stdin=subprocess.PIPE)
         log = open(runtime / "sim.out", "w")
         sim = subprocess.Popen([str(sim_bin), "127.0.0.1", str(port)], stdout=log, stderr=subprocess.STDOUT,
                                env=sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms,
-                                           no_hold=no_hold, keys=keys, extra_holds=extra_holds))
+                                           no_hold=no_hold, keys=keys, extra_holds=extra_holds,
+                                           allow_overlay=allow_overlay))
 
         def pump():
             try:
@@ -1969,7 +2000,9 @@ def cmd_render(args):
     frames, preroll, keys, plan, sha = storyboard_args(args)
     run_render(args.bin, args.out, ffmpeg, frames, preroll, args.hero, args.allow_absent,
                args.max_hold_ms, args.timeout, args.keep_runtime, no_hold=args.no_hold, keys=keys,
-               extra_holds=args.extra_holds, triggers=parse_triggers(args.trigger), plan=plan, storyboard_sha=sha)
+               extra_holds=args.extra_holds, triggers=parse_triggers(args.trigger), plan=plan, storyboard_sha=sha,
+               allow_overlay=args.allow_overlay, mock_discover=parse_mock_discover(args.mock_discover),
+               token=not args.no_token)
 
 
 def cmd_hold_gate(args):
@@ -2142,7 +2175,16 @@ def main(argv=None):
                    help="play tests/video/feel.json (or FILE): its frames, preroll and keys replace --frames/--preroll/--keys")
     p.add_argument("--trigger", action="append", metavar="NAME=VALUE",
                    help="a boot trigger written into the instance root as plxnative-NAME (repeatable), e.g. detail=102")
-    p.add_argument("--keys", help="the scene's script: <virtual frame>:<key>,... (up/down/left/right/ok/back); "
+    p.add_argument("--allow-overlay", action="store_true",
+                   help="MOTION REVIEW ONLY: film a scene with a modal or popover open (the driver otherwise refuses it: its "
+                        "dim field is not hold-independent). Never a deliverable; the hold-injection gate does not cover it")
+    p.add_argument("--no-token", action="store_true",
+                   help="do not arm the `token` trigger: boot on the stored mock sign-in alone (the Watchlist is that account's, "
+                        "and reads as unavailable under a `token` boot)")
+    p.add_argument("--mock-discover", action="append", metavar="JSON",
+                   help="a body POSTed to the mock's /_mock/discover after the sign-in (repeatable), e.g. "
+                        "'{\"list\":\"default\",\"guids\":\"all\"}': the Watchlist's list and which titles Add can succeed on")
+    p.add_argument("--keys", help="the scene's script: <virtual frame>:<key>,... (up/down/left/right/ok/back/hold); "
                                   "virtual frames count from the start of the preroll")
     p.add_argument("--extra-holds", help="force k (or r<seed>: seeded 0..3) extra held repeats on every clean frame "
                                          "(the hold-injection gate's switch; a render with it is not a deliverable)")

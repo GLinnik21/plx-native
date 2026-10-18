@@ -1598,8 +1598,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - **Three resolutions, and they are not the same number.** The UI is authored at a fixed logical
   `1920x1080` (`SCR_W`/`SCR_H`) and the video track is full-panel `1920x1080`. The **drawable** —
   what GL renders into — is read back at boot by `rust-modules/base/src/surface.rs` and is what
-  `glViewport` uses; it has been 1920x1080 on every device so far, so `surface::scale()` is 1.0 and
-  nothing scales. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
+  `glViewport` uses; it is 1920x1080 1:1 unless a webOS 1-3 owner picks a smaller Interface resolution
+  (Settings > System, applied at the next launch; the row and the boot read are webOS 1-3 only) or the debug
+  drawable trigger asks for one, in which case `surface::scale()` is below 1.0
+  and the compositor fills the panel. The debug-only boot trigger `/tmp/plxnative-drawable=<W>x<H>`
+  (bounded 640x360..=1920x1080) asks for a size directly and outranks the setting. The **panel** is a third number entirely: `SDL_webOSGetPanelResolution` reports
   `3840x2160` on the dev TV, whose UI surface is 1080p. It is a diagnostic — **never a layout
   input**, since sizing the UI from it renders a 4K interface into a 1080p buffer. The boot log
   prints all three on one `surface:` line. Do not render at panel resolution even if a set offers
@@ -2009,7 +2012,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   call `plx_machine::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
-  it: `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
+  it, through one of two doors: `idle::invalidate()` when what it changes is content,
+  `idle::note_motion()` when it is a time-driven decoration (the tab pulse) — under a standing
+  popover `invalidate` is page damage and re-captures the frozen host every frame. `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
   Filmography's preview; it was the ROUTE dip too until restructure phase 12 moved that to
   `ui::containers::transition::PageDip`, which reports from inside its own `tick` by construction)
   and `Spinner::draw` (every loading read-out) both shipped
