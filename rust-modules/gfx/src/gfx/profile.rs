@@ -128,6 +128,9 @@ mod imp {
         "lb.rail",
         "lb.shelves",
         "lb.menu",
+        "rc.clear",
+        "rc.ground",
+        "rc.rows",
         "st.ground",
     ];
 
