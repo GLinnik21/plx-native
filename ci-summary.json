@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T15:14:19Z",
+ "generated": "2026-10-18T15:24:41Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -49.1,
-   "change7_pct": 35.9,
+   "change30_pct": -49.2,
+   "change7_pct": 35.6,
    "d30": 855.0,
-   "delta30": -420.0,
-   "delta7": 115.0,
+   "delta30": -421.0,
+   "delta7": 114.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 106,
-   "now": 435,
+   "now": 434.0,
    "prev7": 320.0,
    "shown": true,
    "state": "worse",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.3,
-   "change7_pct": 2.0,
+   "change30_pct": 122.7,
+   "change7_pct": 2.2,
    "d30": 105.5,
-   "delta30": 129.0,
-   "delta7": 4.5,
+   "delta30": 129.5,
+   "delta7": 5.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 98,
-   "now": 234.5,
+   "now": 235,
    "prev7": 230.0,
    "shown": true,
    "state": "flat",
@@ -372,18 +372,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 149.3,
-   "change7_pct": -41.8,
+   "change30_pct": 148.0,
+   "change7_pct": -42.1,
    "d30": 75.0,
-   "delta30": 112.0,
-   "delta7": -134.5,
+   "delta30": 111.0,
+   "delta7": -135.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 98,
-   "now": 187.0,
+   "now": 186,
    "prev7": 321.5,
    "shown": true,
    "state": "better",
@@ -444,9 +444,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 94,
-   "now": 153.0,
+   "now": 153,
    "prev7": 144.5,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 98,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 210.0,
    "commits": [
     {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
      "pr": 819,
      "sha": "6110e134d",
      "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
@@ -657,6 +652,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 55.7,
@@ -693,6 +693,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 208,
@@ -729,6 +734,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 263,
@@ -765,6 +775,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 332.0,
@@ -775,7 +790,7 @@
    "to": 485
   },
   {
-   "change_pct": 35.9,
+   "change_pct": 35.6,
    "commits": [
     {
      "pr": 831,
@@ -801,6 +816,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 320.0,
@@ -808,7 +828,7 @@
    "label": "Wait after merge",
    "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 435
+   "to": 434.0
   },
   {
    "change_pct": 30.9,
@@ -837,6 +857,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 1026.6,
@@ -873,6 +898,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 1025.0,
@@ -909,6 +939,11 @@
      "pr": 836,
      "sha": "b55c88f3c",
      "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
     }
    ],
    "from": 1906.5,
