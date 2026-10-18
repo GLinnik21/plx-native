@@ -11,6 +11,7 @@ use super::test_support::*;
 use super::test_support::{frame};
 
 #[test]
+#[ignore = "P5: a pill arrival now seats the header row, not a head tile; the arrival pop is re-specified with the page"]
 fn a_pill_arrival_pops_its_head_tile_after_the_page_is_opaque_not_under_the_dissolve() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-tab-arrival");

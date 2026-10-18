@@ -66,8 +66,7 @@ impl RailPart {
 
     fn in_region<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> bool {
         cx.focus.current.filter(|key| key.entry == self.entry).is_some_and(|key|
-            matches!(region_of_elem(key.elem), Some(KeyRegion::Grid | KeyRegion::Rail))
-                || matches!(key.elem, super::SORT | super::FILTER))
+            matches!(region_of_elem(key.elem), Some(KeyRegion::Grid | KeyRegion::Rail)))
     }
 
     pub(super) fn eligible<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> bool {

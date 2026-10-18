@@ -218,16 +218,24 @@ fn source_draft(
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_sort_by());
     let mut stamp = Stamp::default();
+    let mut selected = None;
+    let section = sort_section(plx_platform::i18n::msg::browse_library_sort_by(), sorts, sort_index, sort_desc, &mut stamp, &mut selected);
+    MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
+}
+
+/// The sort rows, under `title`, stamped into `stamp`; `selected` takes the active sort's identity.
+fn sort_section(title: &str, sorts: &[SortEntry], sort_index: usize, sort_desc: bool,
+    stamp: &mut Stamp, selected: &mut Option<String>) -> MenuSection
+{
+    let mut section = MenuSection::new(title);
     stamp.tag(7);
     stamp.u32(sort_index as u32);
     stamp.bool(sort_desc);
-    let mut selected = None;
     for (i, sort) in sorts.iter().enumerate() {
         let active = i == sort_index;
         if active {
-            selected = Some(format!("sort:{}", sort.key));
+            *selected = Some(format!("sort:{}", sort.key));
         }
         let desc = if active {
             !sort_desc
@@ -259,11 +267,7 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
             row,
         );
     }
-    MenuDraft {
-        stamp: stamp.finish(),
-        form: MenuForm::new().section(section),
-        selected,
-    }
+    section
 }
 
 /// The kind of the library `listing` lists — the section the directory names at the listing's own
@@ -279,11 +283,21 @@ fn listing_kind(
 
 /// The TYPE menu: every [`LibraryType`] the section's kind offers, the current one checked.
 fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
-    let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_filter_by());
+    let mut stamp = Stamp::default();
     let mut selected = None;
-    for &kind in LibraryType::offered(section_kind) {
+    let section = type_section(plx_platform::i18n::msg::browse_library_filter_by(), section_kind, current,
+        LibraryType::offered(section_kind), &mut stamp, &mut selected);
+    MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
+}
+
+/// One row per type in `offered`, the current one checked.
+fn type_section(title: &str, section_kind: SecKind, current: LibraryType, offered: &[LibraryType],
+    stamp: &mut Stamp, selected: &mut Option<String>) -> MenuSection
+{
+    let mut section = MenuSection::new(title);
+    for &kind in offered {
         let identity = format!("type:{}", kind.code());
-        if kind == current { selected = Some(identity.clone()); }
+        if kind == current { *selected = Some(identity.clone()); }
         section = choice(
             section,
             identity,
@@ -291,14 +305,20 @@ fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
             Row::new(kind.title(section_kind)).checked(kind == current),
         );
     }
-    let mut stamp = Stamp::default();
     stamp.tag(13);
     stamp.tag(u8::from(section_kind == SecKind::Show));
     stamp.u32(current.code());
-    MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected }
+    section
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
+    let mut stamp = Stamp::default();
+    let section = filter_section(unwatched, genre, genres_supported, &mut stamp);
+    MenuDraft { stamp: stamp.finish(), form: MenuForm::new().section(section), selected: None }
+}
+
+/// The Unwatched toggle and the Genre row, stamped into `stamp`.
+fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool, stamp: &mut Stamp) -> MenuSection {
     let mut section = MenuSection::new(plx_platform::i18n::msg::browse_library_filter()).item_keyed(
         "unwatched".into(),
         RowKey(0),
@@ -314,7 +334,6 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
         if genre.is_some() { row = row.server_value(); }
         section = choice(section, "genre".into(), Action::Genre, row);
     }
-    let mut stamp = Stamp::default();
     stamp.tag(9);
     stamp.bool(genres_supported);
     stamp.bool(unwatched);
@@ -323,11 +342,36 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: b
         stamp.str(&genre.id);
         stamp.str(&genre.title);
     }
-    MenuDraft {
-        stamp: stamp.finish(),
-        form: MenuForm::new().section(section),
-        selected: None,
+    section
+}
+
+/// **The one Sort & Filter menu** (redesign spec, "Header"): Show, Sort and Filter in one popover.
+/// Show lists the types the library offers besides Collections (which has its own control) and is
+/// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
+/// Unwatched toggle.
+fn sort_filter_draft(
+    section_kind: SecKind,
+    current: LibraryType,
+    sorts: &[SortEntry],
+    sort_index: usize,
+    sort_desc: bool,
+    genre: Option<&GenreEntry>,
+    unwatched: bool,
+) -> MenuDraft {
+    let mut stamp = Stamp::default();
+    stamp.tag(14);
+    let mut selected = None;
+    let mut form = MenuForm::new();
+    let shown: Vec<LibraryType> = LibraryType::offered(section_kind).iter().copied()
+        .filter(|kind| *kind != LibraryType::Collections).collect();
+    if shown.len() > 1 {
+        form = form.section(type_section(plx_platform::i18n::msg::library_header_show(), section_kind,
+            current, &shown, &mut stamp, &mut selected));
     }
+    form = form.section(sort_section(plx_platform::i18n::msg::browse_library_sort(), sorts, sort_index,
+        sort_desc, &mut stamp, &mut selected));
+    let filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp);
+    MenuDraft { stamp: stamp.finish(), form: form.section(filter), selected }
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
@@ -448,6 +492,7 @@ impl LibraryMenu {
             LibraryMenuKind::Filter => plx_platform::i18n::msg::browse_library_filter(),
             LibraryMenuKind::Genre => plx_platform::i18n::msg::browse_library_genre(),
             LibraryMenuKind::Sources => plx_platform::i18n::msg::browse_library_libraries(),
+            LibraryMenuKind::SortFilter => plx_platform::i18n::msg::library_header_sort_filter(),
         };
         let mut section = MenuSection::new(title);
         match self.kind {
@@ -457,6 +502,11 @@ impl LibraryMenu {
             }
             LibraryMenuKind::Filter => {
                 return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Primary);
+            }
+            LibraryMenuKind::SortFilter => {
+                return sort_filter_draft(listing_kind(listing, directory), listing.library_type(), listing.sorts(),
+                    listing.sort_index(), listing.sort_desc(), listing.genre(),
+                    self.desired_unwatched.unwrap_or(listing.unwatched()));
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -600,7 +650,9 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                 } = input.kind
                 {
                     if self.kind == LibraryMenuKind::Genre {
-                        self.kind = LibraryMenuKind::Filter;
+                        // Back from the genre list returns to the menu it was opened from.
+                        self.kind = if self.arg.kind == LibraryMenuKind::SortFilter { LibraryMenuKind::SortFilter }
+                            else { LibraryMenuKind::Filter };
                         self.stamp.clear();
                         self.refresh(cx);
                     } else {
@@ -1229,6 +1281,25 @@ mod tests {
         plx_ui::table::assert_no_fit_failures(&out);
     }
 
+    /// **The one Sort & Filter popover's sections** (redesign spec, "Header"): Show appears only when
+    /// the library offers more than one type besides Collections (TV: Shows / Seasons / Episodes),
+    /// and never lists Collections itself; Sort and Filter always follow.
+    #[test]
+    fn sort_and_filter_menu_sections_follow_the_library_kind() {
+        let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
+        let titles = |draft: MenuDraft| -> Vec<String> { lay(draft).sections.iter().map(|s| s.header.clone()).collect() };
+        let show = titles(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false));
+        let movie = titles(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false));
+        assert_eq!(show.len(), 3, "TV libraries open Show, Sort and Filter");
+        assert_eq!(show[0], plx_platform::i18n::msg::library_header_show());
+        assert_eq!(movie.len(), 2, "a Movies library has one type to show, so no Show section");
+        assert_eq!(movie[0], plx_platform::i18n::msg::browse_library_sort());
+        let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false));
+        assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
+        assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false).stamp,
+            sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, true).stamp);
+    }
+
     /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
     /// — through the real drafts, with server sort/genre titles marked and exempt. Sort covers the
     /// client-side Plays entry (app text); Filter covers both the "All" value and a chosen genre.
@@ -1254,6 +1325,8 @@ mod tests {
                 ("filter no genres", lay(filter_draft(false, None, false))),
                 ("genre all", lay(genre_draft(&genres, None))),
                 ("genre one", lay(genre_draft(&genres, Some(&genres[0])))),
+                ("sort & filter show", lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true))),
+                ("sort & filter movie", lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, true, None, false))),
             ];
             for (name, draft) in drafts {
                 let mut table = TableView::new();

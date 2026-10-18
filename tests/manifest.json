@@ -979,7 +979,7 @@
       "run_secs": 18,
       "warmup_s": 6,
       "item": "collection",
-      "comment": "The Movies library listed as its collections (TYPE menu > Collections, `all?type=18`): `libtype` switches the listing through the TYPE menu's own edit, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s median 60; fps median 60, min 58-59, max 61, over a 3-card collections grid.",
+      "comment": "The Movies library's Collections page (the header's Collections control, `all?type=18`): `libtype` presses that control, which pushes the page over the grid, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s median 60; fps median 60, min 58-59, max 61, over a 3-card collections grid.",
       "triggers": {
         "plxnative-library": true,
         "plxnative-libtype": "collections",
@@ -987,6 +987,21 @@
       },
       "fps_floor": 30,
       "_fps_floor_note": "MEASURED on the dev set 2026-09-28: flat ~60 fps (median 60, min 58-59, max 61) against this floor of 30, the same frozen/alive separator library-scroll keeps for its own flat 60. Kept at 30 rather than raised: the test identity's mapped collection is a tiny 3-card grid, well short of library-scroll's twelve-shelf library, and a bigger collections grid may spend more of the sweep filling tiles the way library-scroll's larger library does — so 30 stays the frozen/alive line here rather than a tight bound on this one grid's size."
+    },
+    {
+      "name": "library-recommended",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 6,
+      "comment": "The Movies library's Recommended page (the header's Recommended control): `libtype: recommended` presses that control, which pushes the page over the grid, then `libosc` sweeps it. Until the page's own screen lands (P5/P6) it mounts the library grid under the same header, so this scene sweeps that grid. Floors are the library-collections ones, NOT yet measured on the television for this scene.",
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-libtype": "recommended",
+        "plxnative-libosc": true
+      },
+      "fps_floor": 30
     },
     {
       "name": "library-switch",

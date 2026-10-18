@@ -7,7 +7,6 @@ use plx_machine::machine::{Host, Measure};
 use plx_ui::screen::{Activate, Hover, Stop};
 use plx_ui::theme;
 use plx_ui::widgets::Art;
-use plx_ui::value_chip::ValueChip;
 use plx_ui::{Env, View, on_axis};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,7 +24,7 @@ fn shelf_on_screen(origin: f32, pitch: f32) -> bool {
 /// Reject a whole control band before creating labels or measuring individual pills. The
 /// full-width envelope preserves travelling capsules; shared cast tokens cover their shadows.
 /// It is deliberately wider than the controls, so no text metrics are needed to reject it.
-fn document_band_visible(p: plx_ui::Painter, y: f32, height: f32, pop: f32) -> bool {
+pub(super) fn document_band_visible(p: plx_ui::Painter, y: f32, height: f32, pop: f32) -> bool {
     let pad = theme::CONTROL_CAST_FOCUS.iter()
         .map(|(dy, blur, _)| dy.abs() + blur).fold(0.0f32, f32::max) + 1.0;
     let mut bounds = Rect::new(0.0, y, SCR_W, height)
@@ -147,7 +146,7 @@ impl LibraryScreen {
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
-        self.draw_library_controls(f);
+        self.draw_header(f);
         plx_ui::profile::phase("lb.shelves", || {
             for index in self.shelf_window() {
                 #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
@@ -167,7 +166,6 @@ impl LibraryScreen {
                 row.cards.paint(f, self.shelf_painter(f), &self.hub_src(index, f.cx), self.shelf_frame(index));
             }
         });
-        self.draw_grid_header(f);
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
             plx_ui::placeholder::note(f.painter, plx_ui::placeholder::Reason::LibrarySpinner, "");
@@ -185,40 +183,12 @@ impl LibraryScreen {
         }
     }
 
-    fn draw_library_controls<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
-        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
-        let pop = self.library_pop.scale_with(0, f.press.scale);
-        let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.cards.heading_lift());
-        if self.libraries.is_empty()
-            || !document_band_visible(p, y, plx_ui::widgets::StatusOverlay::CTRL_H, pop) { return; }
-        // Singleton selectors are hidden for every profile in `sync`; the remaining controls
-        // are always the library pill strip — drawn through the one shared strip path.
-        plx_ui::widgets::draw_strip(p, &self.library_capsules, &self.library_lays(f.cx), y,
-            plx_ui::widgets::StatusOverlay::CTRL_H, 0.0,
-            plx_ui::widgets::TabGround::Plated { pop });
-    }
-
-    fn draw_grid_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
-        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
-        let y = CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos;
-        if !self.layout.grid_head || !document_band_visible(p, y, layout::GRID_HEAD_H, 1.0) { return; }
-        let env = Env::inert();
-        for &elem in self.toolbar_elems() {
-            let chip = self.toolbar_chip(elem, f.cx);
-            if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
-                ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), placed.rect)
-                    .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
-            }
-        }
-        ui_cards::draw_heading(p, plx_platform::i18n::msg::browse_library_all(), "", MARGIN_X,
-            y, layout::GRID_RIGHT - MARGIN_X, f.measure);
-    }
-
     fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         if !f.records_stops() { return; }
-        for (index, (elem, _)) in self.libraries.iter().enumerate() {
-            let rect = self.library_rect(index, f.cx);
-            if on_axis(rect.y, rect.h, SCR_H, 0.0) { self.stop(*elem, f); }
+        for elem in self.header_elems() {
+            if self.header_rect(elem, At::Drawn).is_some_and(|rect| on_axis(rect.y, rect.h, SCR_H, 0.0)) {
+                self.stop(elem, f);
+            }
         }
         for index in self.shelf_window() {
             #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
@@ -233,7 +203,6 @@ impl LibraryScreen {
                 heading.stop(f, rect, self.key(elem));
             }
         }
-        if self.layout.grid_head { for &elem in self.toolbar_elems() { self.stop(elem, f); } }
         if self.readout == Readout::Failed { self.stop(RETRY, f); }
     }
 

@@ -391,6 +391,10 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     let rail = page.key(page.pair.master.elems[0]);
     let placed = page.place(&rail.elem, &cx, At::Drawn).unwrap();
     assert!(placed.clip.h > 0.0);
+    // The header row now leads the document, so the first shelf starts lower; scroll it up under
+    // the fixed rail letter so a shelf tile and the rail overlap.
+    page.scroll.jump(40.0);
+    page.scroll_target = 40.0;
     let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
     page.record_stops(&mut draw);
     let stops = draw.into_stops();
@@ -635,7 +639,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
         "waiting for Shows cannot page through the retained Movies listing");
     let mut groups = Vec::new();
     page.groups(&fixture.cx(None), &mut groups);
-    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == page.toolbar_group()));
+    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail));
     assert!(page.focused_item(Some(page.key(page.keys.keys().first().map_or(0, |k| k.elem))), &fixture.cx(None)).is_none());
 }
 
@@ -813,7 +817,7 @@ fn published_library_projection_and_layout_enter_canonical_state() {
 }
 
 #[test]
-fn library_capsule_and_control_motion_enter_canonical_state() {
+fn a_pending_library_switch_enters_canonical_state() {
     let hash = |page: &LibraryScreen| {
         let mut c = Canon::new();
         page.write(&mut c);
@@ -821,12 +825,8 @@ fn library_capsule_and_control_motion_enter_canonical_state() {
     };
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
     let initial = hash(&page);
-    page.library_capsules.update(0, 0, |_| Some((120.0, 180.0)),
-        plx_ui::widgets::SelMark::Travels, 0.016);
-    let capsule = hash(&page);
-    assert_ne!(initial, capsule, "held capsule geometry affects subsequent frames");
-    page.library_pop.step(Some(0), 0.016);
-    assert_ne!(capsule, hash(&page), "control focus and spring velocity affect subsequent frames");
+    page.switched = true;
+    assert_ne!(initial, hash(&page), "the header-focus-keeping switch changes subsequent frames");
 }
 
 #[test]
@@ -973,8 +973,10 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
         let mut groups = Vec::new();
         page.groups(&cx, &mut groups);
         assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail), grid);
-        for control in [TYPE, SORT, FILTER] {
-            assert_eq!(page.place(&control, &cx, At::SpringTarget).is_some(), head);
+        // The header row is the way out of every state, so its controls are always placed.
+        let _ = head;
+        for control in [SORTFILTER] {
+            assert!(page.place(&control, &cx, At::SpringTarget).is_some());
         }
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry);
         if !grid {
@@ -1006,16 +1008,18 @@ fn foreign_section_replacement_upgrades_a_grid_fade_once() {
 }
 
 #[test]
-fn toolbar_stops_use_the_shared_value_chip_measurement() {
+fn header_controls_sit_in_the_header_row_left_to_right() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let page = fixture.screen();
     let cx = fixture.cx(None);
-    let sort = page.place(&SORT, &cx, At::Drawn).unwrap().rect;
-    let filter = page.place(&FILTER, &cx, At::Drawn).unwrap().rect;
-    assert_eq!(sort.w, plx_ui::value_chip::ValueChip::width(cx.measure, c"Sort", c" · Title", None));
-    assert_eq!(filter.w, plx_ui::value_chip::ValueChip::width(cx.measure, c"Filter", c" · All", None));
-    assert_eq!(filter.x, sort.x + sort.w + 16.0);
+    let mut last = f32::MIN;
+    for elem in page.toolbar_elems() {
+        let rect = page.place(elem, &cx, At::Drawn).unwrap().rect;
+        assert!(rect.x >= last, "{elem}: controls read left to right without overlap");
+        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + plx_ui::page_header::HEIGHT * 0.5 - page.scroll.pos);
+        last = rect.x + rect.w;
+    }
 }
 
 #[test]
@@ -1041,10 +1045,6 @@ fn section_grid_memories_do_not_overwrite_one_another() {
     assert!(engine.remembered_for(ENTRY).contains(&(group_b, card_b.elem)));
     engine.enter(OWNER, &page, FocusTarget::ContainerGroup(group_a), None, &fixture.cx(engine.current(OWNER)));
     assert_eq!(engine.current(OWNER), Some(card_a), "Remembered seating restores the exact section card");
-    // Enter the rail through a toolbar: projection must consult only this section's grid memory.
-    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
-    direction(&mut page, &mut engine, &fixture, Dir::Right);
-    assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
 }
 
 #[test]
@@ -1292,22 +1292,6 @@ fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps(
 }
 
 #[test]
-fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
-    let _guard = plx_base::testlock::serial();
-    let fixture = Fixture::new();
-    let mut page = fixture.screen();
-    let mut engine = FocusEngine::new();
-    let exact = page.key(page.pair.detail.elem_at(23).unwrap());
-    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
-    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
-    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
-    assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(18));
-    direction(&mut page, &mut engine, &fixture, Dir::Left);
-    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)));
-    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == page.pair.groups_config().detail).unwrap().1, exact.elem);
-}
-
-#[test]
 fn removed_grid_key_keeps_its_typed_master_detail_reconciliation_path() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
@@ -1351,7 +1335,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present);
     page.activate(page.libraries[1].0, false, &fixture.cx(None), &mut fx);
-    page.activate(SORT, false, &fixture.cx(None), &mut fx);
+    page.activate(SORTFILTER, false, &fixture.cx(None), &mut fx);
     drop(fx);
     let incoming = SectionAddress { epoch: 1, sid, section: 2 };
     let target = output.iter().find_map(|effect| match &effect.fx {
@@ -1395,12 +1379,11 @@ fn a_single_favourite_library_draws_no_selector() {
                 pinned: true, current: true, ..Default::default() } }]);
     let page = fixture.screen();
     assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
-    assert!(!page.layout.libraries, "no row height is reserved for it");
+    assert!(page.layout.libraries, "the header row is always reserved, names or not");
     let cx = fixture.cx(None);
     let mut groups = Vec::new();
     page.groups(&cx, &mut groups);
-    assert!(!groups.iter().any(|group| group.id == LIBRARY_GROUP),
-        "no selector focus group is offered");
+    assert_eq!(page.header_elems(), page.toolbar_elems(), "the header row holds only the controls");
     let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
     page.record_stops(&mut draw);
     let stops = draw.into_stops();
@@ -1420,13 +1403,9 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
                 current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let cx = fixture.cx(None);
-    let lays = plx_ui::widgets::strip_layout_measured(["Library 0".into(), "Library 1".into()].into_iter(),
-        MARGIN_X + plx_ui::widgets::STRIP_PAD, plx_ui::theme::size::BODY,
-        plx_ui::widgets::STRIP_GAP_WIDE, cx.measure);
-    for (i, lay) in lays.iter().enumerate() {
-        let expected = plx_ui::widgets::strip_pill_rect(lay, CONTENT_TOP, plx_ui::widgets::StatusOverlay::CTRL_H);
-        let actual = page.library_rect(i, &cx);
-        assert_eq!([actual.x, actual.y, actual.w, actual.h], [expected.x, expected.y, expected.w, expected.h]);
+    for (elem, _) in page.libraries.clone() {
+        let rect = page.place(&elem, &cx, At::Drawn).unwrap().rect;
+        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + plx_ui::page_header::HEIGHT * 0.5, "names sit in the header row");
     }
     page.pending.request_section(SectionTarget { epoch: 1, index: 3,
         identity: LibrarySectionIdentity { sid, key: 4 }, kind: SecKind::Show });
@@ -1509,7 +1488,7 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
     let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
-    assert_eq!(tab_strip_bottom, 254.0, "the tab strip band moved — re-measure the fix against it");
+    assert_eq!(tab_strip_bottom, 208.0, "the tab strip band moved — re-measure the fix against it");
 
     // A live strip: two pinned sections of the current kind. `favorite_sections_for` only
     // populates `self.libraries` for 2+ candidates (see
@@ -1757,8 +1736,8 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
 
 /// **The page's focus groups are the base's, adopted shelves or not.** Their ids come from the key
 /// registry (sequential per kind, never from a position), their order is the document's
-/// (shelves in publication order, then the heading row, then the grid), the page's first seat is
-/// the first shelf and a shelf's elements keep their published order. A shelf drawn by
+/// (the header row, shelves in publication order, then the grid), the page's first seat is
+/// the header row and a shelf's elements keep their published order. A shelf drawn by
 /// `cards::Shelf` must not renumber, reorder or reseat any of it.
 #[test]
 fn the_pages_focus_groups_keep_their_ids_order_and_first_seat() {
@@ -1770,14 +1749,14 @@ fn the_pages_focus_groups_keep_their_ids_order_and_first_seat() {
     let mut groups = Vec::new();
     page.groups(&fixture.cx(None), &mut groups);
     let ids: Vec<u32> = groups.iter().map(|group| group.id.0).collect();
-    assert_eq!(ids, [0x2500_0003, 0x2500_0004, 0x2500_0002, 0x2500_0001],
-        "shelf 0, shelf 1, the heading row, the grid");
-    assert_eq!(groups.iter().map(|group| group.len).collect::<Vec<_>>(), [5, 5, 3, 120]);
-    assert_eq!(page.shelves.iter().map(|row| row.group.0).collect::<Vec<_>>(), [0x2500_0003, 0x2500_0004]);
+    assert_eq!(ids, [LIBRARY_GROUP.0, 0x2500_0002, 0x2500_0003, 0x2500_0001],
+        "the header row, shelf 0, shelf 1, the grid");
+    assert_eq!(groups.iter().map(|group| group.len).collect::<Vec<_>>(), [3, 5, 5, 120]);
+    assert_eq!(page.shelves.iter().map(|row| row.group.0).collect::<Vec<_>>(), [0x2500_0002, 0x2500_0003]);
     assert_eq!(page.shelves[0].elems, [0x2200_0000, 0x2200_0001, 0x2200_0002, 0x2200_0003, 0x2200_0004]);
     assert_eq!(page.shelves[1].elems, [0x2200_0005, 0x2200_0006, 0x2200_0007, 0x2200_0008, 0x2200_0009]);
-    assert_eq!(page.first_group(), page.shelves[0].group, "the page seats on its first shelf");
-    for (row, group) in page.shelves.iter().zip(&groups) {
+    assert_eq!(page.first_group(), LIBRARY_GROUP, "the page seats on its header row, which leads the document");
+    for (row, group) in page.shelves.iter().zip(groups.iter().skip(1)) {
         assert!(matches!(group.kind, GroupKind::Row { wrap: false }) && group.seat == Seat::Remembered);
         assert_eq!(page.row_elems(Some(row.group)), row.elems);
         for elem in &row.elems {
@@ -1823,7 +1802,7 @@ fn the_hold_hint_stands_on_a_resting_library_card_once_per_run() {
     assert!(!page.hold_hint.visible(), "not before the dwell");
     // The negatives come BEFORE the first stand: once it has stood the kind's latch is spent and
     // nothing could stand whatever the wiring.
-    let plain = Some(page.key(TYPE));
+    let plain = Some(page.key(SORTFILTER));
     rest(&mut page, plain, 4.0);
     assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
         "never on a chip of the same entry");

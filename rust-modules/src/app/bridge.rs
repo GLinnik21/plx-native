@@ -234,6 +234,9 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
+    fn collections_count(cx: &Cx<'_, Self>, section: u32) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
+        super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
+    }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {

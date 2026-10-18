@@ -588,7 +588,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             let frame = replay.rec.frames.get(replay.at);
             let expected = frame.and_then(|f| f.results.get(replay.result_at));
             let matches = expected.is_some_and(|e| {
-                payload.as_ref().is_some_and(|p| e.get("payload") == Some(p))
+                payload.as_ref().is_some_and(|p| e.get("payload") == Some(&reparsed(p)))
                     && e["to"] == machine_name(addr.to) && e["req"] == addr.req.0
             });
             if !matches {
@@ -703,7 +703,7 @@ impl Recplay {
                 Self::Recording(r) => { r.w.result(r.f, &to, req, payload); r.events = true; }
                 Self::Replaying(r) => {
                     let expected = r.rec.frames.get(r.at).and_then(|f| f.results.get(r.result_at));
-                    if expected.is_none_or(|v| v["payload"] != payload || v["to"] != to || v["req"] != req) {
+                    if expected.is_none_or(|v| v["payload"] != reparsed(&payload) || v["to"] != to || v["req"] != req) {
                         r.result_diffs += 1;
                     }
                     r.result_at += 1;
@@ -755,7 +755,7 @@ impl Recplay {
                 let frame = replay.rec.frames.get(replay.at);
                 let expected = frame.and_then(|frame| frame.effects.get(replay.effect_at));
                 if expected.is_none_or(|value| value["from"] != from || value["e"] != name
-                    || value["payload"] != payload) {
+                    || value["payload"] != reparsed(&payload)) {
                     replay.effect_diffs += 1;
                     plx_base::eventlog::log(&format!("replay: effect diverge f={} index={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.effect_at));
@@ -2673,4 +2673,11 @@ mod fixture_preflight_tests {
             assert_eq!(validate_controlled(&recording, &initial), Ok(()), "{name}");
         }
     }
+}
+
+/// `payload` as the recording's reader sees it. The segments are parsed without `float_roundtrip`,
+/// so a recorded f32 widened to f64 (9.600000381469727) reads back one ulp off; a live value
+/// compared against the file must make the same trip or a fresh recording would diverge from itself.
+fn reparsed(payload: &Value) -> Value {
+    serde_json::from_str(&payload.to_string()).unwrap_or_else(|_| payload.clone())
 }

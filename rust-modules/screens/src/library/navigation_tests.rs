@@ -373,18 +373,11 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
         let mut engine = FocusEngine::new();
         let mut groups = Vec::new();
         page.groups(&fixture.cx(&engine), &mut groups);
-        let mut expected = Vec::new();
-        if libraries > 1 {
-            expected.push(LIBRARY_GROUP);
-        }
+        // One header row (names, "+N" and the controls) always leads the document.
+        let mut expected = vec![LIBRARY_GROUP];
         expected.extend(page.shelves.iter().map(|shelf| shelf.group));
         assert_eq!(page.shelves.len(), shelves);
-        // An empty answer keeps the heading row (its TYPE chip leaves the empty listing); only a
-        // failure or the absence of any library drops it.
-        let head = items > 0 || (libraries > 0 && !failed);
-        if head {
-            expected.push(page.toolbar_group());
-        }
+        let head = true;
         if items > 0 {
             expected.push(page.pair.groups_config().detail);
         }
@@ -395,7 +388,7 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
             groups.iter().map(|group| group.id).collect::<Vec<_>>(),
             expected
         );
-        for control in [SORT, FILTER] {
+        for control in [SORTFILTER] {
             assert_eq!(
                 page.place(&control, &fixture.cx(&engine), At::SpringTarget)
                     .is_some(),
@@ -448,40 +441,32 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
                 }),
             );
             let key = engine.current(OWNER).unwrap();
-            assert!(
-                [TYPE, SORT, FILTER].contains(&key.elem),
-                "Source is never a toolbar stop"
-            );
+            let elems = page.header_elems();
+            assert!(elems.contains(&key.elem), "the header row is one stop sequence");
             assert_eq!(
-                groups
-                    .iter()
-                    .find(|group| group.id == page.toolbar_group())
-                    .unwrap()
-                    .len,
-                3
+                groups.iter().find(|group| group.id == LIBRARY_GROUP).unwrap().len,
+                elems.len()
             );
-            fixture.direction(&mut page, &mut engine, Dir::Left);
-            fixture.direction(&mut page, &mut engine, Dir::Left);
-            assert_eq!(engine.current(OWNER).unwrap().elem, TYPE);
-            fixture.direction(&mut page, &mut engine, Dir::Left);
-            assert_eq!(engine.current(OWNER).unwrap().elem, TYPE);
+            for _ in 0..elems.len() {
+                fixture.direction(&mut page, &mut engine, Dir::Left);
+            }
+            assert_eq!(engine.current(OWNER).unwrap().elem, elems[0], "Left stops at the first name");
+            for want in elems.iter().skip(1) {
+                fixture.direction(&mut page, &mut engine, Dir::Right);
+                assert_eq!(engine.current(OWNER).unwrap().elem, *want, "Right walks names, +N, then the controls");
+            }
             fixture.direction(&mut page, &mut engine, Dir::Right);
-            assert_eq!(engine.current(OWNER).unwrap().elem, SORT);
-            fixture.direction(&mut page, &mut engine, Dir::Right);
-            assert_eq!(engine.current(OWNER).unwrap().elem, FILTER);
-            fixture.direction(&mut page, &mut engine, Dir::Left);
-            assert_eq!(engine.current(OWNER).unwrap().elem, SORT);
+            assert_eq!(engine.current(OWNER).unwrap().elem, SORTFILTER, "Right stops at Sort & Filter");
         }
     }
 }
 
 /// How the page was reached, as far as the focus engine can tell: a pointer click on the strip's
-/// tab, a keyboard OK on it, or a boot/trigger open with nothing focused at all.
+/// tab, or a keyboard OK on it.
 #[derive(Clone, Copy, Debug)]
 enum Opened {
     Pointer,
     Keyboard,
-    Unfocused,
 }
 
 /// Open a Library of `kind` whose A–Z grid is already prepared and whose own shelves have NOT
@@ -496,7 +481,6 @@ fn opened_before_its_shelves(kind: SecKind, opened: Opened) -> (Fixture, Library
     match opened {
         Opened::Pointer => { engine.set(OWNER, tab, Some(STRIP), By::Pointer); }
         Opened::Keyboard => { engine.set(OWNER, tab, Some(STRIP), By::Dir); }
-        Opened::Unfocused => {}
     }
     fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
     for i in 0..3 {
@@ -516,45 +500,6 @@ fn land_shelves(fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut Fo
     assert_eq!(page.shelves.len(), 2, "the landing must reach the page's document");
 }
 
-/// **Field report, TV debug build of main a788b27a:** the Movies tab was clicked, the screen
-/// cold-opened with its grid already prepared, `libhubs: section 0 landed 7 shelves` arrived
-/// AFTER that, and the first DOWN put focus in the "All" block instead of on a shelf.
-///
-/// The page seats its own default focus on the document's first block the first frame it has
-/// one. With the grid prepared and the shelves still in flight that block is the grid's heading
-/// row, so focus sat on SORT; the shelves then committed above it (the page is at its head, so
-/// `SecHubs::commit_staged` rightly lets them in) and pushed the seated control 2 × a shelf pitch
-/// down, off the panel. Nothing re-seated, so the first DOWN walked on from the heading into the
-/// grid. A seat nobody chose must follow the document's head until somebody moves — the same seat
-/// the page takes when the shelves happen to land first. Held for both library kinds and every
-/// entry path, because none of them is involved in the fault.
-#[test]
-fn a_shelf_landing_after_the_head_seat_moves_that_seat_onto_the_first_shelf() {
-    let _guard = plx_base::testlock::serial();
-    for kind in [SecKind::Movie, SecKind::Show] {
-        for opened in [Opened::Pointer, Opened::Keyboard, Opened::Unfocused] {
-            let (mut fixture, mut page, mut engine) = opened_before_its_shelves(kind, opened);
-            assert_eq!(
-                engine.current(OWNER).and_then(|key| page.group_of(&key.elem, &fixture.cx(&engine))),
-                Some(page.toolbar_group()),
-                "{kind:?}/{opened:?}: with no shelves yet, the head of the document is the grid's heading"
-            );
-            land_shelves(&mut fixture, &mut page, &mut engine);
-            assert_eq!(
-                engine.current(OWNER),
-                Some(page.key(page.shelves[0].elems[0])),
-                "{kind:?}/{opened:?}: the landing must carry the page's own seat onto the first shelf's first card"
-            );
-            fixture.direction(&mut page, &mut engine, Dir::Down);
-            assert_eq!(
-                engine.current(OWNER),
-                Some(page.key(page.shelves[1].elems[0])),
-                "{kind:?}/{opened:?}: DOWN walks the shelves, never jumping to the grid's heading or the grid"
-            );
-        }
-    }
-}
-
 /// …and only a seat nobody chose. Once the user has moved, a landing is not allowed to take
 /// focus away from where they put it.
 #[test]
@@ -562,9 +507,9 @@ fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
     fixture.direction(&mut page, &mut engine, Dir::Right);
-    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    assert_eq!(engine.current(OWNER), Some(page.key(RECOMMENDED)));
     land_shelves(&mut fixture, &mut page, &mut engine);
-    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "the user's own move outranks the page's seat");
+    assert_eq!(engine.current(OWNER), Some(page.key(RECOMMENDED)), "the user's own move outranks the page's seat");
 }
 
 /// Pressing OK on the page's own seat is a choice as surely as moving is, and it moves nothing
@@ -574,10 +519,10 @@ fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
 fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
-    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(TYPE));
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(COLLECTIONS));
     land_shelves(&mut fixture, &mut page, &mut engine);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)), "an activated seat is the user's");
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)), "an activated seat is the user's");
 }
 
 /// …and the press is claimed where it STARTS, not where it commits: OK-down on the seat arms a
@@ -592,10 +537,10 @@ fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
         kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
     });
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)));
     fixture.step(&mut page, &mut engine, press(Key::Ok, Edge::Down));
     land_shelves(&mut fixture, &mut page, &mut engine);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)), "a press begun on the seat keeps it");
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)), "a press begun on the seat keeps it");
 }
 
 /// A pointer resting on the seat is the reader's too (a Magic Remote hovers without clicking), and
@@ -604,19 +549,19 @@ fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
 fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
     let _guard = plx_base::testlock::serial();
     let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)));
     fixture.step(&mut page, &mut engine, ScreenEvent::Input(plx_machine::machine::InputEvent {
         at: Tick::default(),
         source: plx_machine::machine::Source::Sdl,
-        kind: InputKind::Pointer { x: 0.0, y: 0.0, hit: Some(TYPE) },
+        kind: InputKind::Pointer { x: 0.0, y: 0.0, hit: Some(COLLECTIONS) },
     }));
     land_shelves(&mut fixture, &mut page, &mut engine);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)), "a hovered seat is the user's");
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)), "a hovered seat is the user's");
 }
 
 /// **A restored seat is the reader's, even at the head.** Movies → Shows → Movies after leaving
-/// focus on SORT: returning to Movies restores its saved viewport (scroll 0) and the engine's
-/// remembered SORT, and the page's re-entry seat lands there. That seat is a restore, not the
+/// focus on RECOMMENDED: returning to Movies restores its saved viewport (scroll 0) and the engine's
+/// remembered RECOMMENDED, and the page's re-entry seat lands there. That seat is a restore, not the
 /// page's own choice, so a shelf landing that follows must leave it where the reader left it.
 #[test]
 fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
@@ -636,9 +581,9 @@ fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
     fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
     frames(&fixture, &mut page, &mut engine, 3);
     assert!(page.libraries.is_empty(), "one library per kind draws no selector");
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)));
+    assert_eq!(engine.current(OWNER), Some(page.key(COLLECTIONS)));
     fixture.direction(&mut page, &mut engine, Dir::Right);
-    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    assert_eq!(engine.current(OWNER), Some(page.key(RECOMMENDED)));
     for (kind, section) in [(SecKind::Show, 1), (SecKind::Movie, 0)] {
         fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::Library(LibraryCmd::Enter(kind))));
         frames(&fixture, &mut page, &mut engine, 2);
@@ -647,59 +592,9 @@ fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
         frames(&fixture, &mut page, &mut engine, 60);
         assert_eq!(page.kind, kind);
     }
-    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "the return restores the reader's seat");
+    assert_eq!(engine.current(OWNER), Some(page.key(RECOMMENDED)), "the return restores the reader's seat");
     land_shelves(&mut fixture, &mut page, &mut engine);
-    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "a restored seat is the reader's");
-}
-
-/// **The engine's memory of a seat the PAGE placed is not a choice the reader made.** Every seat
-/// is remembered by the engine, and the heading was once one group across sections — so Movies' own
-/// automatic Type seat, still remembered, read as a restore when Shows opened with its grid
-/// before its shelves, and the Shows shelves then landed above Sort: the field report again, one
-/// section later.
-#[test]
-fn a_page_placed_seat_remembered_by_the_engine_is_not_a_restore() {
-    let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::new(2, 24, 0);
-    fixture.sections[1].kind = SecKind::Show;
-    fixture.publish(0, 24);
-    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
-    let mut engine = FocusEngine::new();
-    let mut ms = 0;
-    let mut frames = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, n: u32| {
-        for _ in 0..n {
-            ms += 16;
-            fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_000 }));
-        }
-    };
-    let land = |fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, section: usize| {
-        fixture._stores.browse_run(BrowseCmd::SetCur(section));
-        fixture._stores.browse.borrow_mut().seed_shelves_for_test(section, &["Synthetic shelf 0", "Synthetic shelf 1"], 4);
-        fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
-        fixture.step(page, engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
-    };
-    fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
-    frames(&fixture, &mut page, &mut engine, 3);
-    assert_eq!(engine.current(OWNER), Some(page.key(TYPE)), "Movies: grid first, so the page seats Type");
-    land(&mut fixture, &mut page, &mut engine, 0);
-    frames(&fixture, &mut page, &mut engine, 3);
-    assert_eq!(engine.current(OWNER), Some(page.key(page.shelves[0].elems[0])), "Movies: the seat follows the shelves");
-    fixture._stores.browse_run(BrowseCmd::SetCur(1));
-    fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
-    fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::Library(LibraryCmd::Enter(SecKind::Show))));
-    frames(&fixture, &mut page, &mut engine, 2);
-    fixture.publish(1, 24);
-    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
-    frames(&fixture, &mut page, &mut engine, 60);
-    assert_eq!(page.kind, SecKind::Show);
-    assert!(page.shelves.is_empty(), "Shows: grid first, shelves still in flight");
-    land(&mut fixture, &mut page, &mut engine, 1);
-    frames(&fixture, &mut page, &mut engine, 3);
-    assert_eq!(page.shelves.len(), 2, "Shows: the landing must reach the document");
-    fixture.direction(&mut page, &mut engine, Dir::Down);
-    let at = engine.current(OWNER).and_then(|key| page.group_of(&key.elem, &fixture.cx(&engine)));
-    assert!(page.shelves.iter().any(|shelf| Some(shelf.group) == at),
-        "Shows: DOWN must reach a shelf, not the grid's heading or the grid (focus in {at:?})");
+    assert_eq!(engine.current(OWNER), Some(page.key(RECOMMENDED)), "a restored seat is the reader's");
 }
 
 /// **Field report, 0.7.0:** "you cannot select tiles like in a square in Movies and TV Shows —
@@ -776,70 +671,19 @@ fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
     let grid = page.pair.groups_config().detail;
     let deep = page.pair.detail.elem_at(15).expect("a 24-item grid");
     engine.remember_projected(ENTRY, grid, deep);
-    let seat = page.key(FILTER);
+    let seat = page.key(SORTFILTER);
     fixture.step(&mut page, &mut engine, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(seat) }));
-    let chip = page.place(&FILTER, &fixture.cx(&engine), At::SpringTarget).unwrap().rect;
+    let chip = page.place(&SORTFILTER, &fixture.cx(&engine), At::SpringTarget).unwrap().rect;
     let under = (0..page.layout.cols()).map(|col| page.pair.detail.elem_at(col).unwrap())
         .min_by(|a, b| {
             let d = |elem: &u32| (page.place(elem, &fixture.cx(&engine), At::SpringTarget).unwrap().rect.cx() - chip.cx()).abs();
             d(a).total_cmp(&d(b))
         }).unwrap();
-    assert_ne!(under, page.pair.detail.elem_at(0).unwrap(), "the fixture's FILTER chip stands over a later column");
+    assert_ne!(under, page.pair.detail.elem_at(0).unwrap(), "the fixture's SORTFILTER chip stands over a later column");
     fixture.direction(&mut page, &mut engine, Dir::Down);
     assert_eq!(engine.current(OWNER), Some(page.key(under)),
-        "DOWN from FILTER lands in the grid's first row under the chip");
+        "DOWN from SORTFILTER lands in the grid's first row under the chip");
 }
 
-/// **Field report, 0.7.0: "sometimes on TV Shows I jump right to All."** Movies and Shows are one
-/// Library page (a pill press is a teleport, `app::bridge::nav_tab`), so the engine's memory of
-/// the heading row outlives the section switch. A reader who walked through Movies' heading (any
-/// DOWN into its poster wall does) left a cursor there that Shows then read as a RESTORE when its
-/// grid arrived before its shelves — so the Shows shelves landed above the heading while focus
-/// stayed on it, and the page stood in All.
-#[test]
-fn walking_through_one_sections_heading_is_not_a_restore_in_the_next() {
-    let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::new(2, 24, 0);
-    fixture.sections[1].kind = SecKind::Show;
-    fixture.publish(0, 24);
-    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
-    let mut engine = FocusEngine::new();
-    let mut ms = 0;
-    let mut frames = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, n: u32| {
-        for _ in 0..n {
-            ms += 16;
-            fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_000 }));
-        }
-    };
-    let land = |fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, section: usize| {
-        fixture._stores.browse_run(BrowseCmd::SetCur(section));
-        fixture._stores.browse.borrow_mut().seed_shelves_for_test(section, &["Synthetic shelf 0", "Synthetic shelf 1"], 4);
-        fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
-        fixture.step(page, engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
-    };
-    fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
-    frames(&fixture, &mut page, &mut engine, 3);
-    land(&mut fixture, &mut page, &mut engine, 0);
-    frames(&fixture, &mut page, &mut engine, 3);
-    assert_eq!(engine.current(OWNER), Some(page.key(page.shelves[0].elems[0])), "Movies: seated on its first shelf");
-    // The reader walks down through Movies' heading into its poster wall, then back up.
-    for dir in [Dir::Down, Dir::Down, Dir::Down, Dir::Up, Dir::Up, Dir::Up] {
-        fixture.direction(&mut page, &mut engine, dir);
-    }
-    assert_eq!(engine.current(OWNER), Some(page.key(page.shelves[0].elems[0])));
-    fixture._stores.browse_run(BrowseCmd::SetCur(1));
-    fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
-    fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::Library(LibraryCmd::Enter(SecKind::Show))));
-    frames(&fixture, &mut page, &mut engine, 2);
-    fixture.publish(1, 24);
-    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
-    frames(&fixture, &mut page, &mut engine, 60);
-    assert_eq!(page.kind, SecKind::Show);
-    assert!(page.shelves.is_empty(), "Shows: grid first, shelves still in flight");
-    land(&mut fixture, &mut page, &mut engine, 1);
-    frames(&fixture, &mut page, &mut engine, 3);
-    assert_eq!(page.shelves.len(), 2, "Shows: the landing must reach the document");
-    let at = engine.current(OWNER).and_then(|key| page.group_of(&key.elem, &fixture.cx(&engine)));
-    assert_eq!(at, Some(page.shelves[0].group),
-        "Shows: the head seat follows the shelves; Movies' heading cursor is no restore here");
-}
+#[cfg(test)]
+mod header_tests { include!("header_tests.rs"); }

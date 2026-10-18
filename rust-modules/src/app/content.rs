@@ -884,9 +884,23 @@ fn library_requests(app: &mut App, now: u32) {
             }
             continue;
         }
-        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route() != AppArg::Library { continue; }
+        // The full grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library screen, so they answer the same requests.
+        let library_page = matches!(app.route(),
+            AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. });
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !library_page { continue; }
         match request {
             LibraryReq::PublishShelves { .. } => unreachable!(),
+            LibraryReq::OpenListing { listing, section } => {
+                use plx_screens::library::Listing;
+                let arg = match listing {
+                    Listing::Collections => AppArg::LibraryCollections { section },
+                    Listing::Recommended => AppArg::LibraryRecommended { section },
+                    // The full grid is the page underneath: nothing pushes it.
+                    Listing::All => continue,
+                };
+                bridge::nav_push_with_return(&mut app.pages, arg, ret);
+            }
             LibraryReq::Menu { kind, anchor, target } => {
                 app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
                 app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));

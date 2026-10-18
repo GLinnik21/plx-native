@@ -591,7 +591,7 @@ struct Mail {
 pub fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'static str> {
     if !fx_is_valid(slot as usize) { return Err("invalid person slot"); }
     let mail: Mail = serde_json::from_value(value.clone()).map_err(|_| "invalid person reply")?;
-    if serde_json::to_value(&mail).ok().as_ref() != Some(value) {
+    if serde_json::to_value(&mail).ok().as_ref() != Some(value) && reread(&mail).as_ref() != Some(value) {
         return Err("noncanonical person reply");
     }
     let legal = match slot as usize {
@@ -4028,4 +4028,12 @@ mod tests {
         owner.supersede();
     }
 
+}
+
+/// `mail` re-serialized and read back the way the recording's segment reader parses numbers.
+/// Without `float_roundtrip` an f32 widened to f64 (9.600000381469727) reads back one ulp off, so
+/// comparing `to_value` against the parsed file would refuse a recording of ordinary mock ratings.
+fn reread(mail: &impl serde::Serialize) -> Option<serde_json::Value> {
+    let text = serde_json::to_value(mail).ok()?.to_string();
+    serde_json::from_str(&text).ok()
 }

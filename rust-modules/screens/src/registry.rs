@@ -290,10 +290,19 @@ pub enum LibraryReq {
     Account,
     Tab(HomeTab),
     BackToHome { kind: plx_data::stores::browse::SecKind },
+    /// Push the library's Collections or Recommended page over this one (OK on the header's
+    /// control): `AppArg::LibraryCollections` / `LibraryRecommended` for `section`, the section's
+    /// key on its server. Never `Listing::All`, which is this page.
+    OpenListing { listing: crate::library::Listing, section: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
+pub enum LibraryMenuKind {
+    Sort, Filter, Genre, Sources, Type,
+    /// The header's one Sort & Filter popover: Show / Sort / Filter sections. `Sort`, `Filter` and
+    /// `Type` remain as the single-purpose menus the scripted pipeline names.
+    SortFilter,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryMenuArg {
@@ -310,6 +319,7 @@ impl plx_machine::machine::LogicalState for LibraryMenuArg {
             .u64(self.target.section as u64).u32(match self.kind {
                 LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
                 LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3, LibraryMenuKind::Type => 4,
+                LibraryMenuKind::SortFilter => 5,
             });
         for value in self.anchor { c.u32(value); }
     }
@@ -482,6 +492,10 @@ pub enum LibraryCmd {
     /// Choose a TYPE menu value exactly as its row does (the screenshot pipeline's and the fps
     /// suite's `plxnative-libtype`).
     SetType(plx_data::browse::LibraryType),
+    /// Open the Collections or Recommended page exactly as OK on its header control does (the
+    /// screenshot pipeline's `plxnative-libtype=collections|recommended`, i.e. the
+    /// `library-collections` and `library-recommended` scenarios).
+    OpenListing(crate::library::Listing),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -1740,7 +1754,7 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -1782,8 +1796,7 @@ impl LogicalState for AppArg {
             // 11, after Player's 10: a page tag is a screen's identity in a recording, allocated forward.
             Self::Watchlist => { c.u32(0).u32(11); }
             Self::Player => { c.u32(0).u32(10); }
-            // 12 and 13, forward of Watchlist's 11. CONTRACT FREEZE: not in `ARG_SHAPE` yet; P4
-            // adds both to the shape string and re-records the fixtures it moves.
+            // 12 and 13, forward of Watchlist's 11 (both are in `ARG_SHAPE`).
             Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
             Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
@@ -2052,12 +2065,11 @@ where
             AppArg::Library => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
-                let mut page = crate::library::LibraryScreen::new(entry, id, kind);
+                let mut page = crate::library::LibraryScreen::new(entry, id, kind).without_shelves();
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            // CONTRACT FREEZE: the same screen in another `Listing`; P4 gives each its own state
-            // (a section, a restored memory) and P5 / P6 build what they list.
+            // CONTRACT FREEZE: the same screen in another `Listing`; P5 / P6 build what they list.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
@@ -2065,7 +2077,9 @@ where
                     AppArg::LibraryCollections { .. } => crate::library::Listing::Collections,
                     _ => crate::library::Listing::Recommended,
                 };
-                Box::new(crate::library::LibraryScreen::new(entry, id, kind).with_listing(listing))
+                // P5: Collections builds its grid here; P6: Recommended builds its hubs (both mount the
+                // library's grid under their header until then).
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).without_shelves().with_listing(listing))
             }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);
@@ -2403,7 +2417,13 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Merged tree (origin/main's scrub click-to-confirm and Home-hero successor into the Watchlist
 // branch): both sides' shape changes stand; the pin below is the value the pin test reported for
 // the merged tree, and the three replay fixtures were re-recorded on it.
-const SCREEN_SHAPES_PIN: u64 = 0x07c8_d161_c006_f959;
+// Library/Collections redesign PR4: `LibraryScreen` drops the TYPE/SORT/FILTER chip row and its
+// capsule/pop motion for one `LibraryHeader` row (`switched` joins the first shape string),
+// `AppArg` gains `LibraryCollections{section}` / `LibraryRecommended{section}` (inserted after
+// `Library`, so `ARG_SHAPE`, the first entry, moves) and `LibraryMenuKind` gains `SortFilter`. One
+// bump; the replay fixtures that open the Library were re-recorded against it; the previous pin
+// was 0x07c8_d161_c006_f959.
+const SCREEN_SHAPES_PIN: u64 = 0xff36_edc2_57ab_505a;
 
 #[cfg(test)]
 mod arg_tests {
