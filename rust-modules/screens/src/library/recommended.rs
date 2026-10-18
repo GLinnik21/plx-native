@@ -207,7 +207,7 @@ impl RecommendedScreen {
         "restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,",
         "shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,ground_seeded:bool,",
         "ground:PageGround,memory:PageMemory::Library,viewports:[LibraryViewport],",
-        "shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:CardRow}],",
+        "shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:ShelfMotion}],",
         "readout:u32,run:f32}");
 
     /// Remount from the memory a page pushed over this one (or this page's own earlier body) left.

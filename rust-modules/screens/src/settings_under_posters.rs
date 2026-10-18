@@ -243,6 +243,7 @@ fn draw_preview(p: Painter, v: UnderPosters, measure: &dyn plx_machine::machine:
     for i in 0..PREVIEW_TILES {
         let x = narrative.x + i as f32 * (PREVIEW_W + PREVIEW_GAP);
         let r = Rect::new(x, top, PREVIEW_W, PREVIEW_H);
+        // placeholder-exempt: a fixed illustration of the caption policy, not a content stand-in for a pending load
         p.rrect_sheened(r, theme::CARD_RING_RAD * PREVIEW_SCALE, theme::CARD_ABSENT);
         let fit = measure.fit_line(&name.to_string_lossy(), inner, size, true);
         Label::new(fit.as_ptr(), size, theme::TEXT_SECONDARY).bold().h(HAlign::Center).v(VAlign::Middle)
