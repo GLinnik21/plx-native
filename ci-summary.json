@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T10:33:48Z",
+ "generated": "2026-10-18T10:34:48Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,19 +65,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -47.5,
-   "change7_pct": 47.3,
+   "change30_pct": -47.4,
+   "change7_pct": 47.9,
    "d30": 916,
-   "delta30": -435.0,
-   "delta7": 154.5,
+   "delta30": -434,
+   "delta7": 156,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 272,
-   "n_prev": 192,
-   "now": 481.0,
-   "prev7": 326.5,
+   "n_now": 271,
+   "n_prev": 191,
+   "now": 482,
+   "prev7": 326,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -719,7 +719,7 @@
    "to": 454
   },
   {
-   "change_pct": 47.3,
+   "change_pct": 47.9,
    "commits": [
     {
      "pr": 831,
@@ -737,12 +737,12 @@
      "title": "tools: make test-crate works on the stable toolchain"
     }
    ],
-   "from": 326.5,
+   "from": 326,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-18",
    "threshold_pct": 25.0,
-   "to": 481.0
+   "to": 482
   },
   {
    "change_pct": 35.3,
