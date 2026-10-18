@@ -37,7 +37,7 @@ def find_evidence_by_content(source):
     also been observed at `target/<triple>/release/build/<pkg>/<hash>/out/
     <crate>` — a directory shaped like a build-script OUT_DIR rather than
     `deps/`, seen on a `rustup toolchain install nightly` picked up fresh by
-    CI while a dev machine's pinned nightly still used the old layout. So
+    CI while a dev machine's older pinned toolchain still used the old layout. So
     search the whole `<triple>` output tree rather than guessing one
     location, and match on the recorded elf_sha256 instead of a path, so a
     stale sibling with the right name but the wrong build can never be

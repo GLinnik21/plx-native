@@ -55,6 +55,18 @@
     "value": "After a moment on a title, play its trailer with sound.",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
   },
+  "settings.resolution.title": {
+    "value": "Interface resolution",
+    "description": "Settings row: the size the interface is drawn at; lower is smoother but the text is softer"
+  },
+  "settings.resolution.detail": {
+    "value": "Lower is smoother. Applies after restarting.",
+    "description": "Settings detail line under settings.resolution.title; the choice takes effect at the next launch"
+  },
+  "settings.resolution.auto": {
+    "value": "Automatic",
+    "description": "Value of settings.resolution.title: the native 1920x1080 size, the same on every TV"
+  },
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
@@ -1025,11 +1037,13 @@
   },
   "settings.login.unknown_device": {
     "value": "unknown set",
-    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the device model when the TV did not report one. Codes only; shown in English."
   },
   "settings.login.your_servers": {
     "value": "your servers",
-    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the server scope of the failed request. Codes only; shown in English."
   },
   "settings.language.saving": {
     "value": "Saving language…",

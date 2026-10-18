@@ -14,8 +14,8 @@
 # rides on this, and since 2026-09-02 that includes `PLX_RELEASE`, i.e. the version the binary
 # REPORTS:
 #
-#     cd rust-modules && PLX_RELEASE=1 cargo +nightly rustc --release --lib \
-#         --crate-type staticlib --target arm-…-gnueabi
+#     cd rust-modules && PLX_RELEASE=1 cargo +stable rustc --release --lib \
+#         --crate-type staticlib --target armv7-…-gnueabi
 #     make deploy        # links that archive: a dev-featured binary claiming the released version
 #
 # Nothing detects it in the ordinary loop — `ci/check-package.py` would, but only at package time.
@@ -24,23 +24,45 @@
 # per-configuration target dirs were added and is not new; the version is simply one more thing the
 # environment now decides.
 #
-#   target-cpu=cortex-a9   the default arm-*-gnueabi (ARMv6) codegen emits the legacy CP15
-#                          barrier (mcr p15,...,c7,c10,5), UNDEFINED on the A53 → SIGILL.
-#                          cortex-a9 (ARMv7-A) emits the dedicated `dmb`.
+#   the TARGET            armv7-unknown-linux-gnueabi (prebuilt ARMv7 std). The old ARMv6
+#                          arm-unknown-linux-gnueabi std emits the legacy CP15 barrier
+#                          (mcr p15,...,c7,c10,5), UNDEFINED on the A53 → SIGILL, which is why
+#                          std used to be rebuilt with `-Z build-std` on nightly. With this target
+#                          the STABLE toolchain pinned in rust-toolchain.toml builds the app.
+#   target-cpu=cortex-a9   ARMv7-A codegen for our own crates (`dmb`, VFPv3).
+#   target-feature=-soft-float  the armv7 target defaults to +soft-float (no VFP at all); this
+#                          gives our crates VFP back under the same soft calling convention.
 #   target-feature=-neon   NEON is unnecessary (VFP stays on) and dodges crates whose NEON
 #                          path needs unstable intrinsics.
 #   force-frame-pointers   the out-of-process ARM crash walker follows the APCS r11 chain; this
 #                          turns a faulting PC into the Rust call stack that led to it.
 #
-# On that second flag rustc emits `unstable feature specified for -Ctarget-feature: neon` on every
-# ARM build, and it is the ONE warning this tree cannot clear — measured 2026-08-15, so do not
-# re-test it. Dropping the flag does not merely warn differently, it FAILS TO BUILD: 65 ×
-# `error[E0658]: use of unstable library feature stdarch_arm_neon_intrinsics`, all from
-# **simd-adler32 0.3.9** (a transitive dep, via png → flate2, i.e. the icon/artwork decode path),
-# whose ARM NEON arm is gated on intrinsics that are still unstable. So the choice is this warning
-# or no binary. It clears by itself if simd-adler32 stabilises its NEON path, or if the icon decode
-# stack drops it; nothing in this repo can fix it. `target-cpu=cortex-a9` is a different matter
-# entirely — that one is SIGILL-critical, and is not what the warning is about.
+# On STABLE rustc, both target-feature flags above print a warning on every ARM compile:
+#
+#     warning: unstable feature specified for `-Ctarget-feature`: `neon`
+#     warning: unstable feature specified for `-Ctarget-feature`: `soft-float`
+#       = note: this feature is not stably supported; its behavior can change in the future
+#
+# Neither can be cleared, and they mean different things:
+#
+# * `-soft-float` is the one to WATCH. The warning says what it means: rustc may stop honouring the
+#   flag in a later release. Nothing fails when it does: the staticlib still builds and the TV still
+#   runs it, but every float operation in our crates becomes a call to `__aeabi_fmul` and friends
+#   (the UI's per-frame math is float). `ci/check-vfp.py` therefore compiles a tiny float function
+#   for this target with the Makefile's exact flags and FAILS the build (`make check`, and CI's
+#   host-lint job) unless the assembly has VFP arithmetic and no `__aeabi_f*` call, and
+#   `ci/check-elf.sh` repeats the count on the linked binary (~3057 `vmul.f32` against 2
+#   `bl __aeabi_fmul`, both from core's float parsing: std is prebuilt, its float code stays
+#   soft). Do not "fix" the warning by dropping the flag: the gate would go red, correctly.
+#
+# * `-neon` is the one this tree cannot do without, as measured on NIGHTLY on 2026-08-15 (not
+#   re-measured on stable): dropping the flag FAILS TO BUILD, 65 x `error[E0658]: use of unstable
+#   library feature stdarch_arm_neon_intrinsics`, all from **simd-adler32 0.3.9** (a transitive
+#   dep, via png -> flate2, i.e. the icon/artwork decode path), whose ARM NEON arm is gated on
+#   intrinsics that are still unstable. A stable toolchain makes that unstable-intrinsics gate
+#   stricter, not looser, so the flag stays. It clears by itself if simd-adler32 stabilises its NEON
+#   path, or if the icon decode stack drops it. `target-cpu=cortex-a9` is a different matter
+#   entirely: that one is SIGILL-critical, and is not what either warning is about.
 #
 # CAUTION: the RUSTFLAGS *environment variable* replaces this list wholesale rather than
 # appending to it — and the Makefile now ALWAYS sets it, because --remap-path-prefix needs
@@ -51,10 +73,9 @@
 # Consequence worth knowing: a `make` build and a hand-typed `cargo build --target …` now
 # fingerprint differently, so they rebuild over each other if pointed at the same --target-dir.
 # The Makefile's own dirs (target/, target-release/) are unaffected.
-[target.arm-unknown-linux-gnueabi]
-rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon", "-C", "force-frame-pointers=yes"]
+[target.armv7-unknown-linux-gnueabi]
+rustflags = ["-C", "target-cpu=cortex-a9", "-C", "target-feature=-neon,-soft-float", "-C", "force-frame-pointers=yes"]
 
-# std itself must be rebuilt with the flags above — the precompiled std ships the CP15
-# barriers. Needs the nightly toolchain + the rust-src component.
-[unstable]
-build-std = ["std", "panic_unwind"]
+# No `[unstable] build-std`: the target's prebuilt std is ARMv7 (dmb, not the CP15 barrier), so the
+# ARM build runs on the STABLE toolchain pinned in rust-toolchain.toml (which lists the armv7 target,
+# i.e. `rustup target add armv7-unknown-linux-gnueabi`), with no nightly and no rust-src.

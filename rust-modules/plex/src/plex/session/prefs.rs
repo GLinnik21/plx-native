@@ -38,7 +38,7 @@
 use super::{
     DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
     PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
-    SubtitleSize, SubtitleTone,
+    SubtitleSize, SubtitleTone, UiResolution,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -159,6 +159,13 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "super::de_soft_bool")]
     pub auto_sign_in: bool,
+    /// **Interface resolution** — the window the NEXT launch asks for ([`UiResolution`]).
+    /// Install-wide, not per profile: `app::boot::construct` reads it before `SDL_CreateWindow`,
+    /// before anyone is seated. Absence (every session written before the field) is Automatic, the
+    /// native 1920x1080 canvas; skipped at the default so committed replay fixtures serialize
+    /// unchanged. Soft-parsed: a spelling this build does not know costs the preference only.
+    #[serde(default, deserialize_with = "de_soft_ui_resolution", skip_serializing_if = "is_default_ui_resolution")]
+    pub ui_resolution: UiResolution,
     /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
     /// own (per profile in `profile_prefs`; this top-level key is frozen, which a build with
     /// per-profile settings never writes, except that session creation sets it on, as it always
@@ -498,6 +505,8 @@ setting!(TrailerAutoplayPref: bool = trailer_autoplay, "trailer_autoplay", Profi
 
 setting!(AutoSignInPref: bool = auto_sign_in, "auto_sign_in", Install,
     account false, live false, settings None, parse BoolOff);
+setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Install,
+    account false, live false, settings None, parse Soft);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
     account false, live false, settings None, parse OptionalSoft);
 
@@ -581,6 +590,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<AutoSignInPref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
     Descriptor::of::<LastHeroBlurPref>(),
+    Descriptor::of::<UiResolutionPref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
     Descriptor::of::<LastLibraryRow>(),
@@ -1289,6 +1299,22 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_deck_press(mode: &DeckPress) -> bool {
     *mode == DeckPress::default()
+}
+
+/// The interface resolution is a preference too: a spelling this build does not know is Automatic.
+pub(super) fn de_soft_ui_resolution<'de, D>(d: D) -> Result<UiResolution, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(UiResolution::default());
+    };
+    Ok(serde_json::from_value::<UiResolution>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+pub(super) fn is_default_ui_resolution(mode: &UiResolution) -> bool {
+    *mode == UiResolution::default()
 }
 
 /// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags

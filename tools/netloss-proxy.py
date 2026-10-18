@@ -26,8 +26,9 @@ MODES (`POST /_proxy/mode {"mode": ...}`, `GET /_proxy/mode` reads it back with 
                answered. No FIN, no RST. What was in flight is delivered on `pass`, as TCP
                retransmission would deliver it once a link comes back.
     reset      RST every existing connection (SO_LINGER 0) now, and RST each new connection the
-               moment it is accepted (the client's connect succeeds, its first read or write fails
-               with a reset). The listener stays bound, so `pass` resumes with no re-bind.
+               moment it is accepted (the client's connect usually succeeds and its first read or
+               write fails with a reset; on loopback the RST can land first and fail the connect
+               itself). The listener stays bound, so `pass` resumes with no re-bind.
     refuse     the listener is closed, so a new connect is refused (ECONNREFUSED); existing
                connections are left alone and keep forwarding.
 

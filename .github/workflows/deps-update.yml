@@ -93,7 +93,12 @@ jobs:
           # author, not the committer; their own commits have neither.
           owned() {
             [ -n "$(git rev-list -1 "${base}..$1" 2>/dev/null)" ] || return 1
-            ! git log --format='%ae %ce' "${base}..$1" | grep -qv -x -F "${bot_email} ${bot_email}"
+            # Read the whole log before judging it. An early-exit reader (`grep -q`) in this pipefail
+            # shell leaves git log to die of SIGPIPE (141), which a leading `!` would read as "owned".
+            local log foreign
+            log=$(git log --format='%ae %ce' "${base}..$1") || return 1
+            foreign=$(printf '%s\n' "$log" | grep -v -x -F "${bot_email} ${bot_email}" || true)
+            [ -z "$foreign" ]
           }
           # declined BRANCH: true when a pull request for that head was closed without being merged.
           declined() {

@@ -269,12 +269,10 @@ jobs:
           key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the pinned downloads
         uses: ./.github/actions/deps-cache
-      - name: Install nightly Rust
+      - name: Install the pinned Rust toolchain
         # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
-        # check` uses; the simulator job builds on the runner's default one. `rust-src` is not
-        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
-        # cargo run, host tests included — the same component ci.yml's host checks install.
-        run: rustup toolchain install nightly --profile minimal --component rust-src
+        # check` uses (rust-modules/rust-toolchain.toml's release).
+        uses: ./.github/actions/rust-toolchain
       - name: Tests against the bundled FFmpeg
         # The one place the host FFmpeg (same component list as the shipped one) is available to
         # the test suite — `make check` has none, so these are #[ignore]d there.

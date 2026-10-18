@@ -639,7 +639,7 @@ mod composed {
 #[test]
 fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
     use plx_machine::machine::Measure;
-    use plx_platform::i18n::{msg, LocaleContext, Preference};
+    use plx_platform::i18n::{msg, LocaleContext};
     struct ReadingMeasure;
     impl Measure for ReadingMeasure {
         fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
@@ -652,13 +652,11 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
     let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let measure = ReadingMeasure;
     let reader = DocumentReader::new().with_size(theme::size::BODY);
-    for (name, locale) in [
-        ("en", LocaleContext::resolve(Preference::En, None, None, None, None)),
-        ("es", LocaleContext::resolve(Preference::Es, None, None, None, None)),
-        ("be", LocaleContext::resolve(Preference::Be, None, None, None, None)),
-        ("fr", LocaleContext::resolve(Preference::Fr, None, None, None, None)),
-        ("pseudo", LocaleContext::pseudo_for_test()),
-    ] {
+    for (name, locale) in plx_platform::i18n::SHIPPED
+        .into_iter()
+        .map(|p| (p.tag(), LocaleContext::resolve(p, None, None, None, None)))
+        .chain([("pseudo", LocaleContext::pseudo_for_test())])
+    {
         let mut table = TableView::new();
         table.set_sections(vec![Section::new("")
             .row(Row::new(msg::settings_consent_example_in(&locale)).chevron(true))

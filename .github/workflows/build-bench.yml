@@ -145,14 +145,9 @@ jobs:
         timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
 
-      - name: Install the nightly toolchain the Makefile names
+      - name: Install the pinned Rust toolchain the Makefile names
         if: steps.plan.outputs.only != ''
-        run: |
-          set -euo pipefail
-          nightly="$(make -s print-bench-config | sed -n 's/^RUST_NIGHTLY=//p')"
-          test -n "$nightly"
-          rustup toolchain install "$nightly" --profile minimal --component clippy --component rust-src
-          rustup run "$nightly" rustc --version
+        uses: ./.github/actions/rust-toolchain
 
       - if: steps.plan.outputs.only != ''
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -202,13 +197,8 @@ jobs:
         timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
 
-      - name: Install the nightly toolchain the Makefile names
-        run: |
-          set -euo pipefail
-          nightly="$(make -s print-bench-config | sed -n 's/^RUST_NIGHTLY=//p')"
-          test -n "$nightly"
-          rustup toolchain install "$nightly" --profile minimal --component clippy --component rust-src
-          rustup run "$nightly" rustc --version
+      - name: Install the pinned Rust toolchain the Makefile names
+        uses: ./.github/actions/rust-toolchain
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:

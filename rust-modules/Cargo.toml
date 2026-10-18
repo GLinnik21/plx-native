@@ -173,8 +173,7 @@ hostsim = ["dep:xxhash-rust", "plx_base/hostsim", "plx_machine/hostsim", "plx_pl
 #
 # **In the manifest's lint tables, deliberately, and not `-D warnings` in RUSTFLAGS.**
 # `[workspace.lints]` applies to the two workspace packages (this one and the storage helper) and
-# nothing else. RUSTFLAGS reaches every dependency and — because `-Z build-std` compiles the
-# standard library from source — std itself, so a warning in code we neither own nor can patch
+# nothing else. RUSTFLAGS reaches every dependency (and, under the old `-Z build-std`, std itself), so a warning in code we neither own nor can patch
 # would break our build, and the usual escape (`--cap-lints`) cannot separate the two. Same
 # reasoning as `.cargo/config.toml`'s codegen flags: bind the rule to the thing it is about.
 #

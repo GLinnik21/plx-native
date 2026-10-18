@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Collect pinned public dependency sources from explicit archives and installed Rust sources."""
+"""Collect pinned public dependency sources from explicit archives and installed Rust sources.
+
+The Rust toolchain is the one pinned in rust-modules/rust-toolchain.toml (override with
+--rust-toolchain). The binary links that release's PREBUILT `armv7-unknown-linux-gnueabi` std, so the
+`rust-runtime` input packs the `rust-src` component of the SAME release: it is the corresponding
+source of the std the binary contains, not an input of the rebuild (which uses the prebuilt std and
+needs no rust-src, no `-Z build-std`). The packaging job installs rust-src for exactly this.
+"""
 import argparse
 import json
 import os
@@ -11,6 +18,7 @@ import sys
 import tempfile
 
 import deps as deps_module
+from rust_toolchain import TARGET, pinned
 from source_bundle import canonical, digest, fail, read_regular, scan, write_archive
 
 
@@ -54,7 +62,8 @@ def main():
     parser.add_argument('--archive-root', type=Path, required=True,
                         help='checkout holding existing pinned vendor downloads; no downloads performed')
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--rust-toolchain', default='nightly')
+    parser.add_argument('--rust-toolchain', default=pinned(),
+                        help='default: the channel of rust-modules/rust-toolchain.toml (or $RUST_TOOLCHAIN)')
     parser.add_argument('--inventory', type=Path, help='reviewed project inventory; otherwise derive source-set runtime licenses from supplied upstream declarations')
     args = parser.parse_args()
     root, output = args.root.resolve(), args.output.resolve()
@@ -128,7 +137,9 @@ def main():
     revision = re.search(r'^commit-hash: (.+)$', rust_identity, re.M).group(1)
     sources = sysroot / 'lib/rustlib/src/rust'
     if not (sources / 'library/Cargo.lock').is_file():
-        fail('exact rust-src component is not installed')
+        fail('the rust-src component of ' + args.rust_toolchain + ' is not installed '
+             '(`rustup component add rust-src --toolchain ' + args.rust_toolchain + '`); the bundle carries the '
+             'sources of the prebuilt std the binary links')
     contents = {}
     pack_tree(sources, 'rust-src', contents)
     pack_tree(sysroot / 'share/doc/rust/licenses', 'rust-notices/licenses', contents)
@@ -167,6 +178,8 @@ def main():
             scan(data, entry['path'])
             source_rows.append(dict(entry, bytes=len(data), pattern_scan='PASS'))
     spec = {'build_environment': {'rustc': rust_identity,
+                                 'rust_target': TARGET,
+                                 'rust_std': 'prebuilt rust-std of the same release (no -Z build-std); its sources are the rust-runtime input',
                                  'ndk': 'Record exact final build identity before bundle creation',
                                  'configuration': 'Record actual RELEASE/FLAVOR/features before bundle creation'},
             'dependencies': deps,

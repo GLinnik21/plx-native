@@ -647,7 +647,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is the latched underlay field (a sheet is never glass; DS6 glass is for menus), latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
     /// which is strictly earlier than the surface pass this `draw` runs in, and multiplies by the
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
@@ -666,7 +666,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
         // this panel is up can be read as the PANEL or as the host under it.
         let field = f.underlay;
         plx_ui::profile::phase("dt.alt", || {
-            plx_ui::widgets::panel_ground(p, r, PANEL_RAD, field);
+            plx_ui::widgets::panel_ground(p, r, PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
             self.form.table.draw(p, r, measure);
         });
         // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what

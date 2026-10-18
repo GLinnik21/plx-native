@@ -35,6 +35,8 @@ fn a3() -> CarriedAudio { track(13, 3, "ac3", 6, true, false) }
 fn a4() -> CarriedAudio { track(14, 4, "truehd", 8, true, false) }
 fn a5() -> CarriedAudio { track(15, 5, "ac3", 2, false, false) }
 
+const SOURCE_FPS: f64 = 23.976;
+
 fn candidate(direct: bool, audio: CarriedAudio, subtitle_ordinal: Option<i32>) -> AutoOriginalCandidate {
     AutoOriginalCandidate {
         direct,
@@ -137,6 +139,8 @@ fn install(
             acodec: audio.codec.clone(),
             src_vcodec: "hevc".into(),
             src_acodec: audio.codec.clone(),
+            // The fixture's file is a 23.976 fps one, whichever route carries it.
+            src_fps: SOURCE_FPS,
             contract,
             enhancement,
             transport_kbps: 28_000,
@@ -578,6 +582,45 @@ fn enhancement_released_contract_allows_auto_and_original() {
 }
 
 // ---- toggling ------------------------------------------------------------------------------
+
+/// A remux copies the source's video elementary stream, so the Load must declare the SOURCE rate:
+/// a 4K H.264 24p stream declared at the 60 an unknown rate keeps is presented at ~13 fps
+/// (`player/CLAUDE.md`, "Load's adaptiveStreaming ceiling"). The claim path that lands it is
+/// `apply_retranscode_outcome_to_projection`.
+#[test]
+fn toggle_on_from_direct_declares_the_source_rate_for_the_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    assert!(toggle(&mut ps, PREF));
+    let (action, tail) = claim(&mut ps);
+    settle(&mut ps, &action, tail);
+    assert!(ps.cur_contract.remux, "the enhanced route copies the video");
+    assert_eq!(ps.stream_fps, SOURCE_FPS);
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The recovery path (`install_original_remux`) is the other writer of a remux's `stream_fps`.
+#[test]
+fn recovery_to_an_enhanced_remux_declares_the_source_rate() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(true, a1(), None)), 0);
+    let ticket = worker_ticket();
+    assert_eq!(
+        recover_auto_to_original_for(&mut ps, &ticket, 60, RecoveryCause::Automatic),
+        Some(AutoOriginalReload::Remux),
+    );
+    assert!(ps.cur_contract.remux);
+    assert_eq!(ps.stream_fps, SOURCE_FPS);
+    live.finish();
+    cleanup(&mut ps);
+}
 
 #[test]
 fn toggle_on_from_direct_queues_retranscode_then_remux_params() {

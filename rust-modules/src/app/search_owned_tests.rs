@@ -891,7 +891,7 @@ fn every_route_wearing_the_shared_bar_reaches_the_chrome_paint_guard() {
 /// Observed RED against the reintroduced bug: reverting only `draw_chrome`'s guard line to the
 /// literal `matches!(arg.route(), Some(Route::Home | Route::Library))` (leaving
 /// `draws_chrome_for` itself untouched) makes both assertions below fail, while
-/// `cargo +nightly test --lib` on that same mutation reports every OTHER test passing — which is
+/// `cargo test --lib` on that same mutation reports every OTHER test passing — which is
 /// the exact blind spot this test exists to close.
 #[test]
 fn draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal() {
@@ -950,7 +950,7 @@ fn draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal() {
 /// Observed RED: commenting out the `else if !host_frozen(&app.pages) && matches!(app.route(),
 /// AppArg::Search) { ... }` block in `run.rs` (leaving the Home/Library arms above it and the
 /// `search_osc` block below it untouched) makes this test fail with "update must still branch on
-/// AppArg::Search to step the shared strip", while `cargo +nightly test --lib` on that same
+/// AppArg::Search to step the shared strip", while `cargo test --lib` on that same
 /// mutation reports every other test passing — the disabled-arm-passes-every-test blind spot the
 /// finding named directly.
 #[test]
@@ -962,7 +962,7 @@ fn update_still_steps_the_shared_strip_on_search_the_way_home_and_library_do() {
         .expect("app::run::update must exist with its documented signature");
     // `page_of(app.route)` until restructure phase 10, when the two popover routes it resolved
     // were deleted and `page_of` became the identity function and went with them.
-    let needle = "matches!(app.route(), AppArg::Search)";
+    let needle = "matches!(app.route(), AppArg::Search | AppArg::Watchlist)";
     let arm_at = src[fn_start..].find(needle).map(|i| fn_start + i).expect(
         "update must still branch on AppArg::Search to step the shared strip — no arm of this \
          shape was found after fn update's own start",
@@ -1042,16 +1042,16 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
 
     // Up again, from the field itself, reaches the shared strip's Search pill — the same
     // transition `tests/keytable.json`'s Search "up" row records. With no library tabs seeded
-    // here the strip holds only Home (index 0) and Search (index 1), so the pill lands at 1
-    // rather than the real 4-slot device's 3 — the field is a POSITION, not a fixed constant,
+    // here the strip holds only Home (index 0), Watchlist (index 1) and Search (index 2), so the
+    // pill lands at 2 rather than the real 5-slot device's 4 — the field is a POSITION, not a fixed constant,
     // and this asserts it moved off -1 onto the strip's own answer rather than hardcoding a
     // count this test's fixture does not seed.
     frame(&mut d, &mut rig, AppArg::Search, tick(20), script_key(Key::Up, tick(20)));
     for i in 21..30 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
     let on_strip = content_probe(&d, &rig);
     assert!(on_strip.contains("zone=Strip"), "Up from the field must reach the shared strip: {on_strip}");
-    assert!(on_strip.contains(" row=-1 col=-1 recent=-1 pill=1 card=0 "),
-        "the Search pill (Home, Search — no library tabs seeded here) sits at index 1, off this screen's own groups: {on_strip}");
+    assert!(on_strip.contains(" row=-1 col=-1 recent=-1 pill=2 card=0 "),
+        "the Search pill (Home, Watchlist, Search — no library tabs seeded here) sits at index 2, off this screen's own groups: {on_strip}");
 }
 
 /// OK on a Collections-shelf tile asks for the COLLECTION page with the hit's identity, and the

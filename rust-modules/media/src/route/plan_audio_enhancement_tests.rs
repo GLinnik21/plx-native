@@ -138,6 +138,29 @@ fn pass_capable_ac3_local_original_is_enhanced_remux() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// The enhanced remux COPIES the source's video stream, so the plan must carry the file's own rate
+/// (23.976 in `fourk_item`) for the Load to declare: a 4K H.264 24p stream declared at the 60 an
+/// unknown rate keeps is presented at ~13 fps on webOS 4. The re-encoding burn below it claims none.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn enhanced_remux_plan_carries_the_source_rate_and_a_burn_does_not() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |_, _| {});
+    assert_enhanced(&r);
+    assert_eq!(r.plan.fps, 23.976, "a video copy keeps the source's rate");
+    assert_eq!(r.plan.src_fps, 23.976);
+    plx_plex::plex::reset_servers_for_test();
+
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
+        |_, _| {});
+    assert!(!r.plan.contract.remux, "a burn is a real re-encode");
+    assert_eq!(r.plan.fps, 0.0, "a re-encode owns its rate");
+    assert_eq!(r.plan.src_fps, 23.976, "the file's rate is still the file's");
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
 fn no_pass_is_direct_no_params() {

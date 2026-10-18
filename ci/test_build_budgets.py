@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from rust_toolchain import pinned
 
 ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("budgets", ROOT / "ci" / "check-build-budgets.py")
@@ -154,7 +155,7 @@ class FeatureResolution(unittest.TestCase):
 
     def packages(self, root):
         # Path packages outside the manifest directory are third-party to it: `lib` and `opt` count.
-        trees = b.cargo_trees(root, os.environ.get("RUST_NIGHTLY", "nightly"), False)
+        trees = b.cargo_trees(root, pinned(), False)
         return {n for n, _ in b.tree_packages(trees["all"], root)}
 
     def test_optional_dependency_behind_a_feature_only_a_dev_dependency_enables_is_not_counted(self):

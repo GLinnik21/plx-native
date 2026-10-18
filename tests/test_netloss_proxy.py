@@ -173,9 +173,12 @@ class Reset(ProxyCase):
         s.settimeout(2)
         with self.assertRaises(ConnectionResetError):
             s.recv(10)
-        n = self.connect()
-        n.settimeout(2)
+        # The proxy RSTs on accept, which is after the kernel completed the handshake. On loopback
+        # the RST can land before connect() has returned, so connect() itself may raise the reset:
+        # that is the same outcome as the first read or write failing, so the connect is inside.
         with self.assertRaises((ConnectionResetError, BrokenPipeError)):
+            n = self.connect()
+            n.settimeout(2)
             n.sendall(b"a")
             time.sleep(0.2)
             n.sendall(b"b")

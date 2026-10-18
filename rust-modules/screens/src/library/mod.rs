@@ -885,13 +885,14 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        let strip = plx_ui::dispatch::STRIP_BASE;
-        let req = match elem.checked_sub(strip) {
-            Some(0) => Some(LibraryReq::Tab(HomeTab::Home)),
-            Some(1) => Some(LibraryReq::Tab(HomeTab::Movies)),
-            Some(2) => Some(LibraryReq::Tab(HomeTab::Shows)),
-            Some(3) => Some(LibraryReq::Tab(HomeTab::Search)),
-            Some(4) => Some(LibraryReq::Account),
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        let req = match elem {
+            TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
+            TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
+            TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
+            TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
+            TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
+            TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }

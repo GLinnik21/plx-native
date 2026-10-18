@@ -17,16 +17,27 @@ pub struct ValueChip<'a> {
     rect: Rect,
     focused: bool,
     icon: Icon,
+    /// Draw the label and chevron only, over a fill the caller draws itself ([`bare`](Self::bare)).
+    bare: bool,
 }
 
 impl<'a> ValueChip<'a> {
     /// `value` and `note` include their own separators (for example `" · Title"` and `"  owner"`).
     pub fn new(name: &'a CStr, value: &'a CStr, note: Option<&'a CStr>, rect: Rect) -> Self {
-        Self { name, value, note, rect, focused: false, icon: Icon::ChevronDown }
+        Self { name, value, note, rect, focused: false, icon: Icon::ChevronDown, bare: false }
     }
 
     pub fn focused(mut self, focused: bool) -> Self { self.focused = focused; self }
     pub fn icon(mut self, icon: Icon) -> Self { self.icon = icon; self }
+    /// Leave the capsule's fill out and draw only what stands on it, for a caller that draws the
+    /// fill itself: a morphing popover's opener face (`Popover::morph_face`), whose plate is the
+    /// chip's own [`fill`](Self::fill) at the morph's rect.
+    pub fn bare(mut self) -> Self { self.bare = true; self }
+
+    /// The capsule's fill, focused or not: the one place it is chosen.
+    pub fn fill(focused: bool) -> [f32; 4] {
+        if focused { super::ACCENT } else { theme::CONTROL_IDLE_FILL }
+    }
 
     /// The same font roles used by draw. Layout must use the host's measurement capability,
     /// including the recording/replay table, rather than consulting a live font directly.
@@ -40,13 +51,15 @@ impl<'a> ValueChip<'a> {
 
 impl View for ValueChip<'_> {
     fn draw(&self, _: &Env, p: Painter) {
-        let (fill, value_ink, name_ink) = if self.focused {
-            (super::ACCENT, super::ACCENT_INK, theme::with_a(super::ACCENT_INK, NOTE_ALPHA))
+        let (value_ink, name_ink) = if self.focused {
+            (super::ACCENT_INK, theme::with_a(super::ACCENT_INK, NOTE_ALPHA))
         } else {
-            (theme::CONTROL_IDLE_FILL, theme::CONTROL_IDLE_INK, theme::TEXT_SECONDARY)
+            (theme::CONTROL_IDLE_INK, theme::TEXT_SECONDARY)
         };
         let r = self.rect;
-        p.rrect(r, r.h * 0.5, r.h * 0.5, fill);
+        if !self.bare {
+            p.rrect(r, r.h * 0.5, r.h * 0.5, Self::fill(self.focused));
+        }
         let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, r.y + r.h * 0.5);
         let mut x = r.x + PAD;
         x += p.text(self.name.as_ptr(), x, y, theme::size::LABEL, name_ink, 0, 0);

@@ -29,7 +29,7 @@ down in the past tense. Go and read them; they are all still in `docs/agent-refe
   the same batch that documented it." docs/agent-reference.md now **refuses to state a count at all** and opens
   with "Treat every test COUNT in this section as already wrong, including the one in this
   sentence," handing the reader
-  `cd rust-modules && cargo +nightly test --lib -- --list | grep -c ': test'` instead. `ci.yml`'s
+  `cd rust-modules && cargo +$(make -s print-rust-toolchain) test --lib -- --list | grep -c ': test'` instead. `ci.yml`'s
   *Report suite size* step does the same thing for the same stated reason — it **prints** the
   number into the run summary rather than asserting it, because "the count is a fact the suite can
   produce about itself."
@@ -201,8 +201,8 @@ however long you look at it. Verify the code side yourself: open the file, run `
 symbol, run the counting command. Do not infer a claim is false from the diff alone; a rename with
 a `pub use` alias left behind keeps the old name true.
 
-Host-only verification is free and you should use it: `cd rust-modules && cargo +nightly check`,
-`cargo +nightly test --lib -- --list`, `make -s print-flavor print-appid print-rundir`,
+Host-only verification is free and you should use it: `cd rust-modules && cargo +$(make -s print-rust-toolchain) check`,
+`cargo +$(make -s print-rust-toolchain) test --lib -- --list`, `make -s print-flavor print-appid print-rundir`,
 `make check`. **Never anything that reaches the television** — a `PreToolUse` hook refuses it,
 there is one physical set shared with other work, and no finding here needs a device.
 

@@ -72,13 +72,18 @@ const HERO_GROUP: GroupId = GroupId(0);
 const FIRST_HUB_GROUP: u32 = 0x100;
 const HERO_PLAY_ELEM: u32 = 0;
 const HERO_INFO_ELEM: u32 = 1;
+/// The Watchlist bookmark disc (`plx_appkit::watchlist_disc`): present only for a hero with a
+/// Watchlist-takeable title ([`PmsMovie::watchlist_subject`]), second in the row, after Play.
+const HERO_WATCHLIST_ELEM: u32 = 2;
 const FIRST_ITEM_ELEM: u32 = 0x1000;
 /// A collection shelf's linked heading (`ui::linked_heading`) is keyed off its shelf's group: the
 /// heading's group AND its one element are `HEADING_BASE | shelf group`. Both derive from the
 /// interned hub group, so they survive reorder and page memory without a registry of their own;
 /// item elements and hub groups stay below this bit.
 const HEADING_BASE: u32 = 0x8000_0000;
-const HERO_NBTN: usize = 2;
+/// The hero's control slots: Play, Info and the Watchlist disc. A SLOT is a control's identity
+/// (`Located::Hero(slot)`, its pop spring); its POSITION in the row is [`HomeScreen::hero_slots`].
+const HERO_NBTN: usize = 3;
 /// "Connect without encryption?" over the failure read-out (`screens::plaintext_question`): its
 /// group sits between the hero's and the first hub's, its two answers below the first item key.
 const PLAINTEXT_GROUP: GroupId = GroupId(0xF0);
@@ -91,6 +96,7 @@ pub const STRIP_MOVIES_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 1;
 pub const STRIP_SHOWS_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 2;
 pub const STRIP_SEARCH_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 3;
 pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
+pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 const HERO_FLIP_CD: f32 = 0.35;
@@ -132,7 +138,7 @@ const HERO_ICON_GAP: f32 = 12.0;
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
 /// (`base_y` included), so the text, `SCREEN_SHAPES_PIN` and the replay anchors stay what they were;
 /// the primitive's name is split only so the `cards` gate does not read a shape string as a use of it.
-pub const SHAPE: &str = concat!("HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};2],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:Card", "Row{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}");
+pub const SHAPE: &str = concat!("HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};3],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:Card", "Row{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}");
 
 #[derive(Clone)]
 struct HubProjection {
@@ -581,6 +587,9 @@ pub struct HomeScreen {
     /// The question, asked from the read-out's *Connect*.
     plaintext_alert: PlaintextAlert,
     hero_pop: CtlPop<HERO_NBTN>,
+    /// The bookmark disc's membership, flip and the title it belongs to: input state fed by the
+    /// application, never hashed (Detail's disc is the same).
+    disc: HeroDisc,
     /// The standing "Hold OK for options" capsule and its dwell/life schedule — a timer advanced by
     /// `Tick`, not logical state (it is not in `SHAPE`, the way `status_ms` is not).
     hold_hint: HoldHint,
@@ -628,6 +637,7 @@ impl HomeScreen {
             clock: ClockWatch::default(),
             plaintext_alert: PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM),
             hero_pop: CtlPop::new(),
+            disc: HeroDisc::default(),
             hold_hint: HoldHint::new(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
@@ -1220,6 +1230,7 @@ impl HomeScreen {
         match elem {
             HERO_PLAY_ELEM => return Some(Located::Hero(0)),
             HERO_INFO_ELEM => return Some(Located::Hero(1)),
+            HERO_WATCHLIST_ELEM => return Some(Located::Hero(2)),
             _ => {}
         }
         if elem & HEADING_BASE != 0 {
@@ -1432,7 +1443,7 @@ impl HomeScreen {
         }) {
             self.anchor_carousel(view, index);
         }
-        let cta_available = hero_group_len(view) > 0;
+        let cta_available = self.hero_len(view) > 0;
         if cta_available
             && !self.cta_available
             && !self.strip_chosen
@@ -1525,6 +1536,13 @@ impl HomeScreen {
         // decorative: an in-place scale of the focused control, no layout — must not hold the
         // page-freeze snapshot (`idle::decorative`)
         plx_machine::idle::decorative(|| self.hero_pop.step(hero_focus, dt));
+        // The bookmark disc: the title it is for (read by the application's feed) and its flip.
+        self.disc.shown = status_read(view)
+            .is_none()
+            .then(|| self.selected_hero(view))
+            .flatten()
+            .and_then(|h| disc_hex(h.item));
+        self.disc.step(dt);
         let visible_cx: Cx<'_, H> = Cx {
             views: cx.views,
             tick: cx.tick,
@@ -1620,6 +1638,7 @@ impl HomeScreen {
             STRIP_MOVIES_ELEM => HomeReq::Tab(HomeTab::Movies),
             STRIP_SHOWS_ELEM => HomeReq::Tab(HomeTab::Shows),
             STRIP_SEARCH_ELEM => HomeReq::Tab(HomeTab::Search),
+            STRIP_WATCHLIST_ELEM => HomeReq::Tab(HomeTab::Watchlist),
             STRIP_ACCOUNT_ELEM => HomeReq::Account,
             _ => return None,
         })
@@ -1629,7 +1648,7 @@ impl HomeScreen {
         // Enter is queued behind this frame's Tick. Consume the CTA availability observed by
         // this seating request now, so that Tick cannot queue an implicit initial Hero seat
         // over the accepted target while the engine still holds its previous focus.
-        self.cta_available = hero_group_len(H::hubs(cx)) > 0;
+        self.cta_available = self.hero_len(H::hubs(cx)) > 0;
         fx.push(Fx::Deliver(
             MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
@@ -1680,6 +1699,7 @@ impl HomeScreen {
                     HomeTab::Movies => STRIP_MOVIES_ELEM,
                     HomeTab::Shows => STRIP_SHOWS_ELEM,
                     HomeTab::Search => STRIP_SEARCH_ELEM,
+                    HomeTab::Watchlist => STRIP_WATCHLIST_ELEM,
                 };
                 self.strip_chosen = true;
                 self.reseat(
@@ -1780,6 +1800,19 @@ impl HomeScreen {
                         rk: item.rk.clone(),
                     },
                 )
+            }
+            Located::Hero(2) => {
+                // The bookmark disc: the item menu's own write, identity captured here. The app
+                // queues it on the Watchlist store, which flips the face at once and puts it back
+                // if plex.tv refuses (`app::input::apply_item_action`).
+                if let Some(sel) = self.selected_hero(view) {
+                    if let Some(act) = self.disc.press(sel.item) {
+                        fx.push(Fx::App(AppFx::ItemMenu(crate::registry::ItemMenuReq {
+                            act, sid: sel.item.sid, item: None, season: None, loaded_episode: false, from_home: true,
+                        })));
+                    }
+                }
+                return;
             }
             Located::Hero(_) => return,
             Located::Heading(row) => {
@@ -1922,18 +1955,7 @@ impl HomeScreen {
     ) {
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
         let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
-        let pill = Rect::new(
-            MARGIN_X,
-            HERO_ROW_Y,
-            hero_pill_w(measure, label),
-            HERO_CTRL_D,
-        );
-        let info = Rect::new(
-            pill.x + pill.w + HERO_CTRL_GAP,
-            HERO_ROW_Y,
-            HERO_CTRL_D,
-            HERO_CTRL_D,
-        );
+        let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
         let mark_d = HERO_PAGER_D.round();
         let mark = Rect::new(
             info.x + info.w + HERO_PAGER_PAD,
@@ -1963,6 +1985,20 @@ impl HomeScreen {
             .palette(palette)
             .scale(pop(0))
             .draw(env, p);
+        if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
+            // At either rest the plain face; only a flip in flight layers the fill.
+            let (icon, mid) = plx_appkit::watchlist_disc::paint(self.disc.progress(hex));
+            let mut button = CircleButton::new(c"".as_ptr())
+                .icon(icon)
+                .at(rect.x, rect.y)
+                .focused(focus == Some(Located::Hero(2)))
+                .palette(palette)
+                .scale(pop(2));
+            if let Some(frame) = mid {
+                button = button.icon_fill(plx_appkit::watchlist_disc::face_icon(plx_appkit::watchlist_disc::Face::Filled), frame.fill, frame.ribbon_dy);
+            }
+            button.draw(env, p);
+        }
         CircleButton::new(c"".as_ptr())
             .icon(Icon::Info)
             .at(info.x, info.y)
@@ -2068,19 +2104,10 @@ impl HomeScreen {
     pub fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, '_, H>, view: HubsView<'_>) {
         if !f.records_stops() { return; }
         let focus = f.focus.current;
-        let status = status_read(view);
-        let hero_len = if status.is_some() {
-            usize::from(status.is_some_and(|(_, _, a)| a.is_some()))
-        } else {
-            HERO_NBTN
-        };
+        let (slots, hero_len) = self.hero_slots(view);
         if self.snap.pos < 0.5 {
-            for i in 0..hero_len {
-                let elem = if i == 0 {
-                    HERO_PLAY_ELEM
-                } else {
-                    HERO_INFO_ELEM
-                };
+            for &slot in &slots[..hero_len] {
+                let elem = hero_elem(slot);
                 let Some(placed) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else {
                     continue;
                 };
@@ -2247,6 +2274,9 @@ impl LogicalState for HomeScreen {
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _,
+            // The disc's membership is the Watchlist store's (the application feeds it); the flip
+            // is paint, like Detail's.
+            disc: _,
             // The plaintext question is the grant table's (`plex::grant::offers`), which no
             // recording can raise, and its alert only paints over a failed read-out. The clock
             // fact is `net::keypin`'s, likewise unraisable by a recording.
@@ -2313,9 +2343,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             return;
         }
         let view = H::hubs(cx);
-        let hero_len = hero_group_len(view);
+        let hero_len = self.hero_len(view);
         let hero_end = self
-            .hero_button_rect(view, hero_len.saturating_sub(1), cx.measure)
+            .hero_button_rect(view, self.hero_last_slot(view), cx.measure)
             .unwrap_or(Rect::new(MARGIN_X, HERO_ROW_Y, 0.0, HERO_CTRL_D));
         out.push(GroupSpec {
             id: HERO_GROUP,
@@ -2390,7 +2420,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             return answer;
         }
         match self.locate(*key)? {
-            Located::Hero(index) => (index < hero_group_len(H::hubs(cx))).then_some(HERO_GROUP),
+            Located::Hero(slot) => self.hero_has(H::hubs(cx), slot).then_some(HERO_GROUP),
             Located::Item(row, _) => self.rows.get(row).map(|r| r.group),
             Located::Heading(row) => self.rows.get(row).map(|r| heading_group(r.group)),
         }
@@ -2400,13 +2430,17 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
         if let Some(step) = self.plaintext_alert.neighbour(key, dir) {
             return step;
         }
-        let hero_len = hero_group_len(H::hubs(cx));
+        let (slots, n) = self.hero_slots(H::hubs(cx));
         let next = match self.locate(key.elem) {
-            Some(Located::Hero(i)) => match dir {
-                Dir::Left if i > 0 => Some(HERO_PLAY_ELEM),
-                Dir::Right if i + 1 < hero_len => Some(HERO_INFO_ELEM),
-                _ => None,
-            },
+            Some(Located::Hero(slot)) => {
+                // Left and Right walk the row in its drawn order, not in slot order.
+                let at = slots[..n].iter().position(|&s| s == slot);
+                match (dir, at) {
+                    (Dir::Left, Some(at)) if at > 0 => Some(hero_elem(slots[at - 1])),
+                    (Dir::Right, Some(at)) if at + 1 < n => Some(hero_elem(slots[at + 1])),
+                    _ => None,
+                }
+            }
             Some(Located::Item(row, col)) => match dir {
                 Dir::Left if col > 0 => self
                     .rows
@@ -2518,11 +2552,16 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
         }
         if let Some(located) = self.locate(want.elem) {
             let valid = match located {
-                Located::Hero(index) => index < hero_group_len(H::hubs(cx)),
+                Located::Hero(slot) => self.hero_has(H::hubs(cx), slot),
                 Located::Item(_, _) | Located::Heading(_) => true,
             };
             if valid {
                 return want;
+            }
+            // The hero rotated to a title with no disc under a focus that was on it: Play, the
+            // control the disc sits beside, rather than a slide down onto the shelves.
+            if matches!(located, Located::Hero(_)) {
+                return FocusKey { entry: want.entry, elem: HERO_PLAY_ELEM };
             }
         }
         if let Some(elem) = self.next_episode_of(want.elem) {
@@ -2654,6 +2693,42 @@ impl HomeScreen {
         }
     }
 
+    /// The hero controls in row order, as slots, and how many: the failure read-out's lone action,
+    /// else Play, the bookmark disc when the selected title has one, then Info.
+    fn hero_slots(&self, view: HubsView<'_>) -> ([usize; HERO_NBTN], usize) {
+        match status_read(view) {
+            Some((_, _, action)) => ([0, 0, 0], usize::from(action.is_some())),
+            None => self.selected_hero(view).map_or(([0, 1, 0], 2), |h| item_slots(h.item)),
+        }
+    }
+
+    fn hero_len(&self, view: HubsView<'_>) -> usize {
+        self.hero_slots(view).1
+    }
+
+    fn hero_has(&self, view: HubsView<'_>, slot: usize) -> bool {
+        let (slots, n) = self.hero_slots(view);
+        slots[..n].contains(&slot)
+    }
+
+    /// The slot at the row's end (the group's focus extent).
+    fn hero_last_slot(&self, view: HubsView<'_>) -> usize {
+        let (slots, n) = self.hero_slots(view);
+        slots[n.saturating_sub(1)]
+    }
+
+    /// The title the hero shows now, for the application's Watchlist feed. `None` while the
+    /// failure read-out or a title with no Watchlist identity is up.
+    pub fn watchlist_hex(&self) -> Option<[u8; 12]> {
+        self.disc.shown
+    }
+
+    /// The application's answer: `hex`'s membership on the Watchlist (`Unknown` while the list is
+    /// unread, which wears the Add face). See [`HeroDisc::set`] for when this flips and when it snaps.
+    pub fn set_watchlist(&mut self, hex: [u8; 12], membership: plx_data::catalog::Membership) {
+        self.disc.set(hex, membership);
+    }
+
     fn hero_button_rect(
         &self,
         view: HubsView<'_>,
@@ -2669,20 +2744,11 @@ impl HomeScreen {
         let hero = self.selected_hero(view)?.item;
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
         let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
-        let pill = Rect::new(
-            MARGIN_X,
-            HERO_ROW_Y,
-            hero_pill_w(measure, label),
-            HERO_CTRL_D,
-        );
+        let rects = hero_rects(measure, hero, label);
         match index {
-            0 => Some(pill),
-            1 => Some(Rect::new(
-                pill.x + pill.w + HERO_CTRL_GAP,
-                HERO_ROW_Y,
-                HERO_CTRL_D,
-                HERO_CTRL_D,
-            )),
+            0 => Some(rects.play),
+            1 => Some(rects.info),
+            2 => rects.disc,
             _ => None,
         }
     }
@@ -2716,7 +2782,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.adopt_shows(memory, H::hubs(cx));
                 self.restore(memory);
                 self.sync_catalog(cx);
-                self.cta_available = hero_group_len(H::hubs(cx)) > 0;
+                self.cta_available = self.hero_len(H::hubs(cx)) > 0;
                 Handled::Yes
             }
             ScreenEvent::Enter(_) => {
@@ -3095,11 +3161,118 @@ fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch, clock: &Clo
 }
 
 
-fn hero_group_len(view: HubsView<'_>) -> usize {
-    match status_read(view) {
-        Some((_, _, action)) => usize::from(action.is_some()),
-        None => HERO_NBTN,
+/// The focus element of hero control `slot`.
+fn hero_elem(slot: usize) -> u32 {
+    match slot {
+        0 => HERO_PLAY_ELEM,
+        1 => HERO_INFO_ELEM,
+        _ => HERO_WATCHLIST_ELEM,
     }
+}
+
+/// The hero controls an item draws, in ROW order, as slots: Play, the bookmark disc when the item
+/// stands for a Watchlist title, then Info. The disc is second, as on Detail.
+fn item_slots(item: &PmsMovie) -> ([usize; HERO_NBTN], usize) {
+    if disc_hex(item).is_some() { ([0, 2, 1], 3) } else { ([0, 1, 0], 2) }
+}
+
+/// The catalog id the hero's bookmark disc acts on: the item's own, or its show's for a season or
+/// an episode. `None` (no `plex://movie|show` guid, or a collection) means no disc at all, which is
+/// what Detail does too; Home does not resolve a missing id through the server record as the item
+/// menu does, because the disc's presence moves the focus row and must not appear a beat late.
+fn disc_hex(item: &PmsMovie) -> Option<[u8; 12]> {
+    item.watchlist_subject().and_then(|(_, hex, _)| hex)
+}
+
+/// The bookmark disc's state: which title the membership belongs to, the flip toward it, and the
+/// title that was shown before it (the page sliding out keeps its face). Fed by the application.
+#[derive(Default)]
+struct HeroDisc {
+    /// The title the application last fed a membership for.
+    of: Option<([u8; 12], plx_data::catalog::Membership)>,
+    /// 0 = the outline at rest, 1 = filled; stepped toward `of`'s face.
+    flip: Spring,
+    /// The previous title and whether it wore the filled face, for the page sliding out.
+    prev: Option<([u8; 12], bool)>,
+    /// The title the hero shows now, cached each tick for the application's feed.
+    shown: Option<[u8; 12]>,
+}
+
+impl HeroDisc {
+    /// What a press on the disc of `item` asks for, `None` when it names no title.
+    fn press(&self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
+        use crate::registry::ItemMenuAction as Action;
+        let (kind, hex, _) = item.watchlist_subject()?;
+        let hex = hex?;
+        let on = matches!(self.of, Some((h, plx_data::catalog::Membership::On)) if h == hex);
+        Some(if on {
+            Action::WatchlistRemove(plx_data::watchlist::guid_of(kind, &hex))
+        } else {
+            Action::WatchlistAdd { hex }
+        })
+    }
+
+    /// The membership of `hex`. A change on the title already shown flips the disc; a different
+    /// title (the hero rotated) or the first answer for this one (`Unknown` before) snaps the face,
+    /// so the flip plays only on a real membership change of the shown title.
+    fn set(&mut self, hex: [u8; 12], m: plx_data::catalog::Membership) {
+        use plx_data::catalog::Membership;
+        match self.of {
+            Some((h, now)) if h == hex => {
+                if now != m {
+                    if now == Membership::Unknown {
+                        self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
+                    }
+                    self.of = Some((hex, m));
+                }
+            }
+            _ => {
+                self.prev = self.of.map(|(h, m)| (h, plx_appkit::watchlist_disc::target(m) >= 1.0));
+                self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
+                self.of = Some((hex, m));
+            }
+        }
+    }
+
+    /// The flip progress the page of the title `hex` draws its disc at.
+    fn progress(&self, hex: [u8; 12]) -> f32 {
+        match (self.of, self.prev) {
+            (Some((h, _)), _) if h == hex => self.flip.pos,
+            (_, Some((h, filled))) if h == hex => f32::from(filled),
+            _ => 0.0,
+        }
+    }
+
+    /// Step the flip toward the face of the title it belongs to.
+    fn step(&mut self, dt: f32) {
+        let Some((_, m)) = self.of else { return };
+        let target = plx_appkit::watchlist_disc::target(m);
+        plx_machine::idle::decorative(|| self.flip.step(target, plx_ui::widgets::K_DISC_UNFURL, dt));
+        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
+        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
+        if plx_machine::idle::settled(self.flip.pos, target, self.flip.vel) {
+            self.flip.jump(target);
+        }
+    }
+}
+
+/// Where each hero control sits for one hero item (shared by the draw, the hit rects and the focus
+/// extent, so they cannot disagree).
+struct HeroRects {
+    play: Rect,
+    disc: Option<Rect>,
+    info: Rect,
+}
+
+fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
+    let play = Rect::new(MARGIN_X, HERO_ROW_Y, hero_pill_w(measure, label), HERO_CTRL_D);
+    let mut x = play.x + play.w + HERO_CTRL_GAP;
+    let disc = disc_hex(item).map(|_| {
+        let r = Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D);
+        x += HERO_CTRL_D + HERO_CTRL_GAP;
+        r
+    });
+    HeroRects { play, disc, info: Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D) }
 }
 
 fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {

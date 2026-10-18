@@ -721,15 +721,6 @@ impl DvPresentation {
         }
     }
 
-    /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
-    pub fn display(&self) -> &'static str {
-        match self {
-            Self::NotDv => plx_platform::i18n::msg::browse_diagnostics_dv_base_layer(),
-            Self::Declare(_) => plx_platform::i18n::msg::browse_diagnostics_dv_declare(),
-            Self::Refuse(_) => plx_platform::i18n::msg::browse_diagnostics_dv_refuse(),
-        }
-    }
-
     /// Direct play is refused (and, at `build_stream`, the reason for the log line).
     pub fn refusal(&self) -> Option<&'static str> {
         match self {

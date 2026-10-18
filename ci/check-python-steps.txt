@@ -60,7 +60,12 @@ python3 ci/test_source_bundle.py
 ci/check-deps.sh
 # Catalog completeness is checked by the Rust build; these check the UI text entry points too.
 make --no-print-directory check-localization
+# A UI language is a locales/ directory plus its languages.json entry: no hand-written list of
+# languages in Rust, "each language" loops read i18n::SHIPPED (docs/localization.md).
+python3 ci/check-language-lists.py
+python3 ci/test_check_language_lists.py
 python3 tests/test_mock_pms_library.py
+python3 tests/test_mock_pms_discover.py
 # `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
 # PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
 # attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
@@ -141,7 +146,7 @@ tools/plxnative-sample selftest
 # that `up` requires after launch. No SSH or television access occurs in this self-test.
 python3 tools/mock-guest.py --selftest
 tools/tv-session.sh selftest
-# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
+# The PreToolUse/PostToolUse hooks' own suites (~0.8s together). They were not in this
 # target until 2026-08-26, which meant the guard that decides whether a private value may
 # leave this machine was covered by a test nobody ran on a normal check -- the same shape as
 # the bug that produced the leak it exists to prevent, where the check computed its answer and
@@ -150,6 +155,7 @@ python3 .claude/hooks/outbound-guard-test.py
 python3 .claude/hooks/release-config-check-test.py
 python3 .claude/hooks/tv-lock-guard-test.py
 python3 .claude/hooks/cloud-unshallow-test.py
+python3 .claude/hooks/watchlist-live-guard-test.py
 # The PMS probe's own offline suite (~3ms). It talks to the maintainer's real server with a
 # real token, so its redaction and its session CLEANUP are the two things that must not
 # regress -- and both are only covered here. It sat outside this target until 2026-08-27,
@@ -270,7 +276,14 @@ python3 ci/test_dependencies.py
 python3 ci/test_deps_update.py
 # THIRD-PARTY-NOTICES.md section 2.4's package tables are generated from rust-modules/Cargo.lock (ci/gen-third-party-notices.py;
 # inputs in ci/third-party-crates.json): the gate fails when a dependency bump moved a version, a crate entered the lock
-# unclassified, or the std snapshot's nightly is not the one the workflows pin. Reads files only, no cargo; the self-test
+# unclassified, or the std snapshot's toolchain is not the one rust-modules/rust-toolchain.toml pins. Reads files only, no cargo; the self-test
 # runs on synthetic locks and data.
 python3 ci/test_gen_notices.py
 python3 ci/gen-third-party-notices.py --check
+# The soft-float guard: `-C target-feature=-soft-float` (what gives our crates VFP on the armv7 target) is an UNSTABLE
+# feature flag on stable rustc, so a release may stop honouring it. check-vfp.py compiles a tiny float probe with the
+# Makefile's exact codegen flags and fails on any __aeabi_f* libcall or a missing VFP op, with a negative control; its
+# self-test drives the scan and verdict on canned assembly and, where the pinned toolchain is installed, the real probe.
+# --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
+python3 ci/test_check_vfp.py
+python3 ci/check-vfp.py --skip-if-missing

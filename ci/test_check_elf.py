@@ -64,7 +64,7 @@ def defaults():
         "readelf:-n": "Build ID: " + "a" * 40 + "\n",
         "readelf:-d": "Shared library: [libalpha.so]\nShared library: [libbeta.so]\n",
         "readelf:-d:plxnative-storage": "Shared library: [libgamma.so]\nShared library: [libalpha.so]\n",
-        "objdump": "  00: dmb ish\n" * 101,
+        "objdump": "  00: dmb ish\n" * 101 + "  04: vmul.f32 s0, s1, s2\n" * 200 + "  08: bl 0x100 <__aeabi_fmul>\n" * 5,
         "strings": "YOUR_PMS_HOST\n",
     }.items()}
 
@@ -187,12 +187,49 @@ class ElfGateTests(unittest.TestCase):
                                  ("readelf:-n", "Build ID: abc\n"),
                                  ("readelf:-d", "Shared library: [unexpected.so]\n"),
                                  ("readelf:--dyn-syms", ""), ("strings", "no placeholder\n"),
-                                 ("objdump", "  00: dmb ish\n")]:
+                                 ("objdump", "  00: dmb ish\n"),
+                                 # float math without VFP: no vmul.f32 at all, and a libcall instead
+                                 ("objdump", "  00: dmb ish\n" * 101 + "  04: bl 0x100 <__aeabi_fmul>\n" * 200),
+                                 # VFP present but the libcalls are not the rare exception (the bound is 1 call per 20 vmul.f32)
+                                 ("objdump", "  00: dmb ish\n" * 101 + "  04: vmul.f32 s0, s1, s2\n" * 150
+                                  + "  08: bl 0x100 <__aeabi_fmul>\n" * 20)]:
             with self.subTest(key=key):
                 spec = defaults()
                 spec[key]["output"] = replacement
                 result = self.run_gate(spec)
                 self.assertNotEqual(result.returncode, 0, key)
+
+    def test_local_libm_body_is_rejected(self):
+        # compiler_builtins' weak soft-float copy won over glibc's libm: the objdump has a local body.
+        for name in ("roundf", "round", "floorf", "ceilf", "ceil", "trunc", "fmodf", "fmod",
+                     "cbrtf", "sqrtf", "sqrt", "fma"):
+            with self.subTest(name=name):
+                spec = defaults()
+                spec["objdump"]["output"] += f"0001a2b4 <{name}>:\n  00: bl 0x100 <__aeabi_fadd>\n"
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "local libm body was allowed: " + result.stdout)
+                self.assertIn("local definitions of libm functions", result.stdout)
+                self.assertIn(name, result.stdout)
+
+    def test_too_many_soft_arithmetic_calls_are_rejected(self):
+        spec = defaults()
+        # Few fmul (the existing ratio check stays happy); the new bound counts every soft kind.
+        spec["objdump"]["output"] += "  08: bl 0x100 <__aeabi_fadd>\n" * 6 + "  0c: bl 0x100 <__aeabi_ddiv>\n" * 6
+        result = self.run_gate(spec)
+        self.assertNotEqual(result.returncode, 0, "17 soft arithmetic calls were allowed: " + result.stdout)
+        self.assertIn("soft-float arithmetic libcalls", result.stdout)
+
+    def test_fixed_link_shape_passes_with_libm_undefined_and_int_conversions(self):
+        spec = defaults()
+        # Math names are only CALLED (PLT stubs, not local bodies), 9 soft calls remain (core's
+        # float parsing) and the i64<->float conversions, which VFPv3 cannot do, are not counted.
+        spec["objdump"]["output"] += ("  10: bl 0x200 <roundf@plt>\n" * 30
+                                      + "  14: bl 0x100 <__aeabi_dmul>\n" * 4
+                                      + "  18: bl 0x100 <__aeabi_l2d>\n" * 53
+                                      + "  1c: bl 0x100 <__aeabi_d2lz>\n" * 20)
+        result = self.run_gate(spec)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no local libm bodies, 9 soft-float arithmetic calls", result.stdout)
 
     def test_storage_helper_dt_needed_is_graded_against_its_own_list(self):
         for label, output in [("an extra library", "Shared library: [libalpha.so]\nShared library: [libgamma.so]\n"

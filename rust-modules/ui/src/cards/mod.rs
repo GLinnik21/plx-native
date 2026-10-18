@@ -30,14 +30,15 @@
 //!   A non-deliberate `FocusMoved` adopts the new card whole and snaps the old one to rest; only a
 //!   deliberate move lets the old tile go over frames. At most one tile reads lifted in any frame,
 //!   including the one between the landing and the tick.)
-//! - **Animated landings.** A [`Shelf`] built with [`Shelf::animate_landings`] plays a content change
+//! - **Animated landings.** A [`Shelf`] or a [`Grid`] built with [`Shelf::animate_landings`] plays a content change
 //!   that no focus move announced (a card leaves, a card arrives) instead of cutting: the removed
 //!   card fades out as a ghost the owner paints ([`Shelf::paint_ghosts`], from the cards named by
 //!   [`Shelf::ghost_keys`]), the cards that stay slide to their slots (the focused tile is held by
 //!   the landing rule, so it does not move unless the scroll's range clamps it), the new ones fade in.
 //!   Off by default; first loads, slides of the source's window and [`dormant`](Shelf::dormant)
 //!   shelves never animate; the springs are frame-time and count as layout motion. See `landing.rs`.
-//!   [`Grid`] does not animate landings.
+//!   [`Grid`] plays them too when its [`GridSpec`] says `.animate_landings(true)`: slots are (x, y),
+//!   ghosts fade on K_SCALE, survivors spring home on K_SCROLL.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
@@ -88,7 +89,7 @@ pub use crate::poster_grid::{
     growth_before as grid_growth_before, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
     STYLE as GRID_STYLE,
 };
-pub use grid::{Grid, GridSpec, ScrollMode};
+pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};
 pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 

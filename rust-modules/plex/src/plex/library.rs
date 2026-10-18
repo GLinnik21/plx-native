@@ -1,9 +1,39 @@
 //! Library operations (impl Client): sections, section items (`section_items_query`), metadata,
 //! children (`children`, `children_paged`), related (`related`) — plus the two part-level playback ops (stream selection, direct-play target).
-use super::client::{Client, QueryBuilder, StreamUrl};
+use super::client::{urlenc_str, Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::paging::{paged_path, PageReq};
 use super::params::{SectionQuery, StreamSelection};
+
+/// Largest number of guids one `find_by_guids` request carries.
+pub const GUIDS_PER_REQUEST: usize = 40;
+
+/// The Plex `type` a `find_by_guids` call filters on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GuidKind {
+    /// `type=1`
+    Movie,
+    /// `type=2`
+    Show,
+}
+
+/// One guid this server holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuidMatch {
+    pub guid: String,
+    /// This server's own ratingKey for it.
+    pub rating_key: String,
+    pub library_section_id: Option<i64>,
+    /// The row's `UltraBlurColors` corners (`UltraBlurColors::corners`) when the server sent them.
+    pub blur: Option<[[f32; 3]; 4]>,
+}
+
+/// Why `find_by_guids` could not answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidLookupError {
+    /// The server did not answer (or answered unreadably) for at least one chunk.
+    Unanswered,
+}
 
 fn sidecar_key_allowed(key: &str) -> bool {
     let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
@@ -69,6 +99,37 @@ impl Client {
             q = q.int("type", t);
         }
         self.get_json(&q.build())
+    }
+
+    /// Which of `guids` does THIS server hold? One `GET /library/all?type=T&guid=a,b,c` per chunk
+    /// of at most [`GUIDS_PER_REQUEST`], `T` = 1 (movie) or 2 (show) from `kind`. Only `plex://`
+    /// guids are sent; anything else is skipped, never matched. A guid the server does not hold is
+    /// simply absent from the result; `Err` means a chunk could not be answered at all, which the
+    /// caller must NOT read as "absent" (docs/watchlist-plan.md §1.5).
+    ///
+    /// A guid the server holds in two libraries is reported once (the first row); the caller wants
+    /// "this server has it, under this key", not a per-library listing.
+    pub fn find_by_guids(&self, kind: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
+        let mut found: Vec<GuidMatch> = Vec::new();
+        for (paths, chunk) in guid_lookup_paths(kind, guids) {
+            let Some(mc) = self.get_json(&paths) else {
+                return Err(GuidLookupError::Unanswered);
+            };
+            for item in mc.metadata {
+                if chunk.contains(&item.guid)
+                    && !item.rating_key.is_empty()
+                    && !found.iter().any(|m| m.guid == item.guid)
+                {
+                    found.push(GuidMatch {
+                        blur: item.ultra_blur_colors.and_then(|c| c.corners()),
+                        library_section_id: (item.library_section_id != 0).then_some(item.library_section_id),
+                        guid: item.guid,
+                        rating_key: item.rating_key,
+                    });
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Sorted/filtered/paged section listing — the Library browse grid's one fetch.
@@ -330,6 +391,32 @@ impl Client {
     }
 }
 
+/// The request paths `find_by_guids` issues: only `plex://` guids, de-duplicated in order, in
+/// chunks of at most [`GUIDS_PER_REQUEST`]. Each guid is percent-encoded on its own and the chunk is
+/// joined with a literal `,` — the one separator PMS splits the `guid` param on (measured,
+/// docs/watchlist-plan.md); an encoded comma inside a guid cannot occur, since ids are hex. Each
+/// entry pairs the path with the guids that chunk asked for, so a reply row is matched to a guid
+/// that was actually requested. Empty input yields no request at all.
+fn guid_lookup_paths(kind: GuidKind, guids: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut wanted: Vec<&String> = Vec::new();
+    for g in guids {
+        if g.starts_with("plex://") && g.len() > "plex://".len() && !g.contains(',') && !wanted.contains(&g) {
+            wanted.push(g);
+        }
+    }
+    let t = match kind {
+        GuidKind::Movie => 1,
+        GuidKind::Show => 2,
+    };
+    wanted
+        .chunks(GUIDS_PER_REQUEST)
+        .map(|chunk| {
+            let joined = chunk.iter().map(|g| urlenc_str(g)).collect::<Vec<_>>().join(",");
+            (format!("/library/all?type={t}&guid={joined}"), chunk.iter().map(|g| (*g).clone()).collect())
+        })
+        .collect()
+}
+
 /// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
 /// the one thing about an item a guid states outright.
 ///
@@ -346,6 +433,10 @@ fn guid_type(guid: &str) -> Option<i64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "library_guid_tests.rs"]
+mod library_guid_tests;
 
 #[cfg(test)]
 mod tests {

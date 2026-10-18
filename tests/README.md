@@ -343,7 +343,7 @@ library you care about — which is what `test_user` is for.
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`
-  (only when the TV refuses your ssh key), and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
+  (only when the TV refuses your ssh key), and (for `--build`) the pinned stable Rust toolchain with its armv7 rust-std (`make setup-rust`; see the repo `Makefile` / `docs/agent-reference.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
   PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
   actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
@@ -471,6 +471,8 @@ skipped with the ffmpeg commands' location), and whose `expect` block reuses a p
 (`load_max`, `sink_echo`, `decision`, `codec`/`video_size`, `min_timeline_climb_s`; `no_error` always).
 `quality` pins the rung (`480p_720_kbps`). Run it: `tools/tv-lock.sh with --why "fixed 480p declaration" --
 ./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration`.
+
+`boost-remux-declares-source-rate` (#832) is the second such scene: `plxnative-audioenh=boost` turns a direct-playable 4K H.264 24p file into an enhanced remux, and it grades `load_fps: 24.0`, `load_max: 3840x2160@24`, the set's echo, and (`presented_rate: true`, optionally `presented_rate_tol_pct`) the sink's presented rate against the declared one. Fixtures live in `boost-remux/` under the same root; the ffmpeg commands are in the scene's `comment`. Run it: `tools/tv-lock.sh with --why "boost remux declaration" -- ./tests/run.py --fps-player --mock --filter boost-remux-declares-source-rate`.
 
 `home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
 only sweeps about nine rows either side of the top, so it instead presses **Down once per landed

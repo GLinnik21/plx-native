@@ -55,7 +55,8 @@ itself. (In this capture the frame under it was decoded by the simulator.)
   frame-rate regression scenes that measure it on the television rather than trusting it.
 - **Sign in on the TV** with an on-screen QR code and pick a Plex Home profile.
 - **Browse and search your libraries** — on your own servers and on ones shared with you. Your
-  servers' libraries, that is, not Plex's catalogue or Watchlist.
+  servers' libraries, that is, plus the plex.tv Watchlist as its own tab, where any title can be added or
+  removed; search covers servers only.
 - **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos, and AV1 or VP9 (10-bit VP9 only on webOS 4 sets)
   on televisions whose codec table lists that decoder — decided against your television's own
   codec table where it publishes one. Anything else the server transcodes, and you can switch a
@@ -82,7 +83,7 @@ transcodes, Developer Mode installs included.
 |---|---|
 | **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
 | **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/GLinnik21/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
-| **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. |
+| **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. Menus can drop frames at 1920x1080 on these sets; **Settings → System → Interface resolution** trades sharper text for smoother menus. |
 | **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
 ### Rooted or not
@@ -151,7 +152,8 @@ the final release over it either: reinstall the final by hand once it is out.
 ## Privacy
 
 **Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,
-and to `discover.provider.plex.tv` for cast biographies.
+and to `discover.provider.plex.tv` for cast biographies and the Watchlist (reading it, and adding or
+removing a title when you ask, with the active profile's plex.tv token).
 
 **Crash reports and usage analytics are off until you turn them on** — two separate first-run
 questions, each answerable with Don't Share, both reversible later under Account → Settings →

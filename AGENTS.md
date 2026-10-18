@@ -102,7 +102,8 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
   (`app/run.rs` `lifecycle_regression_tests`, the player-return rig) run as `cd rust-modules &&
   CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> PLXNATIVE_RUNTIME_DIR=$(mktemp -d)
-  cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`; a filter that
+  cargo test --lib -p plxnative-modules --features hostsim -- <filter>` (a bare `cargo` inside
+  `rust-modules/` reads the pin in `rust-toolchain.toml`); a filter that
   matches nothing reports `0 tests` and still exits 0. Keep that target dir OUTSIDE the checkout
   and `git add` explicit paths: an untracked `rust-modules/target-*` is not ignored, and
   `git add -A rust-modules` commits it.
@@ -125,7 +126,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tvdev` binary (`make deploy` records the profile on the set); build with `make ARM_PROFILE=release
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
-  `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+  `CARGO_INCREMENTAL=0 cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml --lib
   --no-default-features` when the Claude-only release hook did not run. Keep the
   `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,
   so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
@@ -176,6 +177,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.
+  So is the plex.tv Watchlist: a debug build refuses every add/remove unless the mock's discover
+  stand-in is armed or `plxnative-watchlist-live` exists in the install's runtime root. **Never
+  create that file unless the owner asks for it in that same session** — with it, a debug build
+  writes to the owner's real Watchlist. `.claude/hooks/watchlist-live-guard.py` refuses a command
+  that would (`docs/watchlist.md`, "The live switch").
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
   queue behind it.

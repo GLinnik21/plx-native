@@ -3,7 +3,7 @@
 font-hint-audit.py — verify the theme::size ladder rasterizes with design-true stroke
 weights for the INTER faces we ship (`FONTS` below).
 
-Scope, because a third face ships and is deliberately NOT audited here: `pkg/appfont-cjk.ttf`
+Scope, because further faces ship and are deliberately NOT audited here: `pkg/appfont-emoji.ttf` and `pkg/appfont-cjk.ttf`
 (Noto Sans CJK KR, the fallback chain's link 2 — see rust-modules/gfx/src/text.rs) never draws Latin
 in this app, the ladder was tuned on Inter's stems, and SDL_ttf's synthetic bold is never applied
 to it. A CJK re-cut is graded by rust-modules/base/src/fontcov.rs's coverage gate and by a device

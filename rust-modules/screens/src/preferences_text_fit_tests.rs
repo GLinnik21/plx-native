@@ -140,7 +140,10 @@ fn every_picker_level_fits_its_column_in_every_language() {
                 Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
-            for &field in fields {
+            // The Interface resolution picker is opened from the Settings root, not a field list.
+            let fields: Vec<PickerKind> = fields.iter().copied()
+                .chain((kind == Kind::Playback).then_some(PickerKind::UiResolution)).collect();
+            for field in fields {
                 let current = resolve_value(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
                 let section = field_options(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs)).into_iter()
                     .fold(Section::new(""), |section, (label, value)| section.row(Row::new(&label).checked(value == current)));
@@ -189,6 +192,20 @@ fn direct_play_readout_fits_beside_its_label_in_every_language() {
 /// picker's own label. Pinned in every shipped language; the fit sweep above covers the width.
 #[test]
 fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
+    // Reviewed wording, one row per language; a language without a row fails instead of borrowing
+    // another language's expectation.
+    const WANT: &[(&str, &str)] = &[
+        ("en", "When audio isn't in the subtitle language"),
+        ("es", "Audio fuera del idioma de subtítulos"),
+        ("fr", "Audio hors langue des sous-titres"),
+        ("it", "Se audio e sottotitoli hanno lingue diverse"),
+        ("pt", "Áudio fora do idioma das legendas"),
+        ("de", "Ton nicht in Untertitelsprache"),
+        ("be", "Калі гук не на мове субцітраў"),
+    ];
+    for (tag, _) in WANT {
+        assert!(SHIPPED.iter().any(|p| p.tag() == *tag), "{tag} is pinned but no longer shipped");
+    }
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let mut prefs = AudioPreferences::default();
@@ -199,12 +216,8 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         assert_eq!(readouts[0], plx_platform::i18n::msg::settings_audio_manual(), "{}", language.tag());
         assert_eq!(readouts[1], plx_platform::i18n::msg::settings_audio_foreign_short(), "{}", language.tag());
         assert_eq!(readouts[2], plx_platform::i18n::msg::settings_audio_always(), "{}", language.tag());
-        let want = match language.tag() {
-            "en" => "When audio isn't in the subtitle language",
-            "es" => "Audio fuera del idioma de subtítulos",
-            "fr" => "Audio hors langue des sous-titres",
-            _ => "Калі гук не на мове субцітраў",
-        };
+        let want = WANT.iter().find(|(tag, _)| *tag == language.tag()).map(|(_, want)| *want)
+            .unwrap_or_else(|| panic!("{}: add its reviewed read-out to WANT", language.tag()));
         assert_eq!(readouts[1], want, "{}", language.tag());
     }
 }
@@ -233,7 +246,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::screen();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
     let mut out = Vec::new();
     for language in SHIPPED {

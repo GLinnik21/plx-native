@@ -554,6 +554,22 @@ git checkout -q main
 """)
         self.assertEqual(result['bot'], 'no')
 
+    def test_a_foreign_commit_is_seen_even_when_the_log_is_longer_than_a_pipe_buffer(self):
+        # Actions runs `shell: bash` with -eo pipefail. A reader that quits on its first match
+        # (`grep -q`) leaves `git log` writing into a closed pipe: SIGPIPE, status 141, and a `!` in
+        # front of the pipeline turns that into "owned". It only happens when the log outruns the pipe
+        # buffer, so this branch carries a person's newest commit on top of thousands of the bot's.
+        stamp = r'author b <BOT> 1700000000 +0000\ncommitter b <BOT> 1700000000 +0000\ndata 1\nx\n'
+        result = self.shell_owned("""
+for b in human amended empty; do git branch $b main; done
+{
+  printf 'commit refs/heads/bot\\n""" + stamp + r"""from refs/heads/main\n\n'
+  for i in $(seq 6000); do printf 'commit refs/heads/bot\n""" + stamp + r"""\n'; done
+  printf 'commit refs/heads/bot\nauthor p <person@example.com> 1700000000 +0000\ncommitter p <person@example.com> 1700000000 +0000\ndata 1\nx\n\n'
+} | git fast-import --quiet
+""")
+        self.assertEqual(result['bot'], 'no')
+
     def test_a_declined_bump_is_not_proposed_again_and_points_at_update_hold(self):
         self.assertIn('--state closed', self.code)
         self.assertIn('mergedAt == null', self.code)

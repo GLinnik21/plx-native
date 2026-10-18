@@ -160,3 +160,26 @@ pub mod size {
     /// chrome or prose; `app::diagnostics` is its sole owner.
     pub const DIAGNOSTIC: c_int = 20;
 }
+
+// ---- the popover menu's glass rim (DS6) ---------------------------------------------------------
+//
+// `GlassRim::Menu` — a popover's panel. The same shader and the same rounded-rect SDF the standing
+// container uses; only the numbers differ, and they live here beside the other renderer-side
+// tokens so `gfx.rs` names them rather than restating them. A menu draws them on frozen ground
+// (`draw_glass_frozen`): the host snapshot is its sharp source, so it takes no grab.
+
+/// The menu's chamfer, in authored px — the standing container's own 12, for the same reason: a
+/// shallow ramp keeps the rim a band at the edge and leaves a menu's rows untouched.
+pub const MENU_BEVEL: f32 = 12.0;
+/// The menu's peak rim displacement, in authored px — twice the ramp, as the standing container's,
+/// so the compression lands ON the rim.
+pub const MENU_LENS: f32 = 24.0;
+/// How much of the rim shows the captured host page UNBLURRED (`u_sharpw` in `fs_glass.frag`),
+/// sampled through the displacement the body's source already takes. 0.4 is the middle rung of the
+/// 0.85 / 0.4 / 0 ladder the standing container was laddered over: 0.85 draws a hard sliver of
+/// unblurred page at the edge, 0 leaves the lens nothing to bend. UNVERIFIED on the television —
+/// the TV feel check for the menu glass picks the final rung.
+pub const MENU_SHARP: f32 = 0.4;
+/// How much of the panel face's gradient the chamfer sheds at the very rim, so the refracted band
+/// is not painted out by a .78-.86 face. Same share as the standing container's.
+pub const MENU_RIMCLEAR: f32 = 0.6;

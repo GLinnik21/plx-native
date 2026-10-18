@@ -320,7 +320,7 @@ impl persistence::MigrationStore for MigrationFixture {
             return CanonicalRead::Blocked(error);
         }
         if self.cleared {
-            return CanonicalRead::Cleared { revision: 1, language: plx_platform::i18n::Preference::System };
+            return CanonicalRead::Cleared { revision: 1, kept: Default::default() };
         }
         match &self.data {
             Some(payload) => CanonicalRead::Data {
@@ -768,15 +768,17 @@ fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it(
     let mut backend = plx_platform::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
-    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() };
+    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() }.with_ui_resolution(UiResolution::Hd720);
     assert!(matches!(
         persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
         persistence::CanonicalCommit::Durable { .. }));
     assert!(matches!(persistence::commit_clear_with(&mut transport),
         persistence::CanonicalCommit::Durable { .. }));
     assert!(matches!(persistence::load_helper_with(&mut transport),
-        CanonicalRead::Cleared { language: plx_platform::i18n::Preference::Be, .. }),
-        "sign-out must keep the install-wide language readable");
+        CanonicalRead::Cleared {
+            kept: Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Hd720 }, ..
+        }),
+        "sign-out must keep the install-wide language and Interface resolution readable");
     let client::Load::Present(cleared) = client::load_with(&mut transport).unwrap() else {
         panic!("helper snapshot")
     };
@@ -784,8 +786,10 @@ fn helper_signout_retains_the_language_and_only_the_delete_all_reset_removes_it(
     assert!(matches!(persistence::reset_cleared_language_with(&mut transport),
         persistence::CanonicalCommit::Durable { .. }));
     assert!(matches!(persistence::load_helper_with(&mut transport),
-        CanonicalRead::Cleared { language: plx_platform::i18n::Preference::System, .. }),
-        "Delete all local data must reset the language");
+        CanonicalRead::Cleared {
+            kept: Retained { language: plx_platform::i18n::Preference::System, ui_resolution: UiResolution::Hd720 }, ..
+        }),
+        "Delete all local data must reset the language (the cleared tenure accepts the removal of `language` alone)");
     let client::Load::Present(reset) = client::load_with(&mut transport).unwrap() else {
         panic!("helper snapshot")
     };

@@ -668,13 +668,14 @@ impl Drop for Root {
     }
 }
 
-/// **The file backend keeps only `language` at sign-out** (session.rs `clear_for_erase`: the
-/// credential-free `install_preferences::save(language)` before the credential file goes). Every
+/// **The file backend keeps only `language` and `ui_resolution` at sign-out** (session.rs
+/// `clear_for_erase`: the credential-free `install_preferences::save` before the credential file
+/// goes; both are install-wide choices the next launch reads before anyone is signed in). Every
 /// other preference, the per-profile lists and the install-wide scalars alike, is gone on the next
 /// boot: that is today's fact, and it is what the per-profile move must not silently widen or
 /// narrow.
 #[test]
-fn the_file_backend_keeps_only_the_language_at_sign_out() {
+fn the_file_backend_keeps_only_the_language_and_resolution_at_sign_out() {
     use plx_platform::i18n::Preference;
     let _serial = plx_base::testlock::serial();
     let root = Root::new("signout-keeps-language");
@@ -682,9 +683,10 @@ fn the_file_backend_keeps_only_the_language_at_sign_out() {
     redirect_for_test(None);
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
-    save(&all_non_default());
+    save(&all_non_default().with_ui_resolution(UiResolution::Hd720));
     assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: the non-default preferences are stored");
     assert_eq!(peek().language, Preference::Be);
+    assert_eq!(peek().ui_resolution(), UiResolution::Hd720);
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
 
     // A new process has neither the session cache nor the confirmed-preference atomic.
@@ -693,12 +695,14 @@ fn the_file_backend_keeps_only_the_language_at_sign_out() {
     let fresh = load_with_id(|| "new-install-id".into());
     plx_platform::i18n::set_saved_preference(saved);
 
-    assert_eq!(fresh.language, Preference::Be, "language is the one thing kept");
+    assert_eq!(fresh.language, Preference::Be, "language is kept");
+    assert_eq!(fresh.ui_resolution(), UiResolution::Hd720, "and so is the Interface resolution");
     // A session minted after sign-out is a FRESH one, not `Session::default()`: it writes the
     // explicit fresh quality (`auto`) and has trailer autoplay on. Neither is a kept preference.
     let mut expected = legacy(&Session::default());
     expected["client_id"] = json!("new-install-id");
     expected["language"] = json!("be");
+    expected["ui_resolution"] = json!("720p");
     expected["playback_quality"] = json!("auto");
     expected["trailer_autoplay"] = json!(true);
     assert_eq!(legacy(&fresh), expected, "everything else is the fresh-install session");
