@@ -154,6 +154,14 @@ impl Scrim {
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
     fn name(&self) -> &'static str;
+    /// **How far the page has tucked the app's top chrome away** (the nav tab bar and the profile
+    /// chip), 0 (fully shown, the default) to 1 (gone). The application's `draw_chrome` multiplies
+    /// the nav's chrome alpha by `1 - tuck` and lifts the band by `TOP_BAR_BOTTOM * tuck`. A page
+    /// answers from state it already animates (the Library derives it from its scroll spring), so
+    /// it needs no motion of its own and a resting page keeps the frame loop asleep.
+    fn chrome_tuck(&self) -> f32 {
+        0.0
+    }
     fn state(&self) -> &dyn LogicalState;
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
@@ -782,6 +790,21 @@ impl Default for NavPresentation {
     fn default() -> Self {
         Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0 }
     }
+}
+
+impl NavPresentation {
+    /// This presentation with the top chrome tucked away by `tuck` ([`Screen::chrome_tuck`]):
+    /// the chrome's alpha falls to 0 as the tuck reaches 1. The dispatcher hands the chrome pass
+    /// this value for the page that answers a tuck; every other page answers 0 and is unchanged.
+    pub fn tucked(self, tuck: f32) -> Self {
+        Self { chrome_alpha: self.chrome_alpha * (1.0 - tuck.clamp(0.0, 1.0)), ..self }
+    }
+}
+
+/// How far up (px, positive) the top chrome band lifts at `tuck`: the band's own height times the
+/// tuck, so it leaves the way it came ([`crate::widgets::TOP_BAR_BOTTOM`]).
+pub fn chrome_lift(tuck: f32) -> f32 {
+    crate::widgets::TOP_BAR_BOTTOM * tuck.clamp(0.0, 1.0)
 }
 
 /// What `draw` receives (§6.1): the read context, painter, navigation presentation and typed stop

@@ -1,0 +1,10 @@
+{
+  "scroll_chrome.capsule": {
+    "value": "{name} {count}",
+    "args": {
+      "name": "str",
+      "count": "str"
+    },
+    "description": "The capsule that keeps your place in a library once the header has tucked away while you scroll: the library's name, then how many titles it holds (Films 1,284). The count arrives already formatted for the language; keep the order name then count in every language, and nothing else, since the capsule is 320 px wide and a long library name is shortened to fit."
+  }
+}
