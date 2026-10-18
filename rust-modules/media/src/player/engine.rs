@@ -895,7 +895,8 @@ fn renamed_static_payload(video: LoadVideo) -> String {
 /// at 30.303 fps, so the declaration can sit about 1% below the fed rate. libpf has never been
 /// measured accepting `maxFrameRate` below `videoFps`; the esInfo rational deliberately stays the
 /// raw rate (it is a timing input for libpf's PTS lattice, not a ceiling), and only the ceiling
-/// is snapped. Only the H.264 path reaches this; HEVC and transcodes keep 60.
+/// is snapped. Only the H.264 path reaches this; HEVC and a video re-encode (no known rate) keep 60. A remux
+/// copies the source video, so it arrives here with the source's rate like a direct play.
 fn fps_class(fps: f64) -> u32 {
     for class in [24u32, 25, 30, 50, 60] {
         let c = f64::from(class);
