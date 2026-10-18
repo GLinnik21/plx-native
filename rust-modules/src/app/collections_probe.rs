@@ -65,7 +65,9 @@ pub(crate) fn count(
     directory: plx_data::stores::browse::DirectoryView<'_>,
     section: u32,
 ) -> Option<Result<u32, Forbidden>> {
-    if plx_data::stores::tape::active() { return None; }
+    // A controlled run (replay, record) and a unit test never reach the network: the probe would
+    // be a request the run's own script did not make.
+    if cfg!(test) || plx_data::stores::tape::active() { return None; }
     let current = directory.sections().get(directory.current()?)?;
     if current.key != i64::from(section) { return None; }
     let sid = current.sid?;

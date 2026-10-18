@@ -7,6 +7,7 @@ use super::test_support::*;
 use super::test_support::{frame};
 
 #[test]
+#[ignore = "P6: the production library page mounts without shelves; P6 deletes the shelf code and this test"]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("library-shelf-hold");

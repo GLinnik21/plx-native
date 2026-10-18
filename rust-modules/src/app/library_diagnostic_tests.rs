@@ -263,12 +263,10 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     }
     assert_eq!(
         visited,
-        ["library", "shelf", "toolbar", "grid"]
-            .into_iter()
-            .collect(),
+        ["library", "grid"].into_iter().collect(),
         "{path:?}"
     );
-    assert_eq!(shelves, (0..12).collect());
+    assert!(shelves.is_empty(), "the production page mounts without shelves");
     assert_eq!(grid_rows, (0..20).collect());
     assert!(
         returned,

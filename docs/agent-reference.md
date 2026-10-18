@@ -565,7 +565,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   collection, its linked heading a stop of its own, then More Like This) to the About section at its
   foot, with no `ok` anywhere on the page (each one there opens another page or a reader), `back`
   (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the profile chip and
-  on to the Movies tab, `ok` for the Movies library, six quick `down`s through its four shelves (the
+  on to the Movies tab, `ok` for the Movies library (STALE since the Library redesign: the page is now
+  the full grid under one header row, with no shelves and no All heading, so the walk below through
+  four shelves to the Type and Filter chips no longer matches the page and `feel.json` needs a re-walk), six quick `down`s through its four shelves (the
   two collection shelves' linked headings are stops of their own) to the All heading's Type chip,
   `right` `right` to Filter, `down` into the poster grid and three more moves inside its columns 2 to
   4, eight `up`s back to the first shelf (as many as there were `down`s: the page is left from its
