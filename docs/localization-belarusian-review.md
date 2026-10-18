@@ -159,3 +159,12 @@ existing catalog wording.
 | Key | String |
 | --- | --- |
 | `scroll_chrome.capsule` | {name} {count} |
+
+`locales/be/captions.json`:
+
+| Key | Form | String |
+| --- | --- | --- |
+| `captions.new_episodes` | one | {count} новая серыя |
+| `captions.new_episodes` | few | {count} новыя серыі |
+| `captions.new_episodes` | many | {count} новых серый |
+| `captions.new_episodes` | other | {count} новай серыі |
