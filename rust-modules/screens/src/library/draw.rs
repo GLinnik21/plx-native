@@ -120,7 +120,7 @@ impl LibraryScreen {
             if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
                 let text = super::scroll_chrome::capsule_text(&name, H::listing(f.cx).total(),
                     plx_ui::scroll_capsule::label_budget(), |s| f.measure.width_str(s, theme::size::BODY, true));
-                plx_ui::scroll_capsule::draw(p, &text, ground, self.capsule_field.is_latched().then_some(&self.capsule_field), tuck);
+                plx_ui::scroll_capsule::draw(p, &text, ground, self.capsule_glass_field(), tuck);
             }
         }
         if tuck <= 0.0 {
@@ -130,6 +130,12 @@ impl LibraryScreen {
         // A standing note, never a target: over the page, records no stop and no hit rect.
         self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);
         self.plaintext_alert.draw(f, self.entry);
+    }
+
+    /// The field the capsule stands on: its own latched ground, or `None` (the flat form) before
+    /// the latch lands. The one thing `draw` hands `scroll_capsule::draw`.
+    pub(super) fn capsule_glass_field(&self) -> Option<&plx_ui::underlay::UnderlayField> {
+        self.capsule_field.is_latched().then_some(&self.capsule_field)
     }
 
     /// **Latch the capsule's frozen ground** from the page ground's four corners (top-left,
