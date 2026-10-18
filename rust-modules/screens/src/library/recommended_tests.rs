@@ -1,0 +1,176 @@
+//! The Recommended page: its harness (shared with `shelf_paging_tests.rs`) and the tests of what is
+//! specific to a page that is only hub rows: server order, empty hubs dropped, the first seat, BACK,
+//! and a read-out that fits in every shipped language.
+use super::*;
+use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead, Tick};
+use plx_ui::fixture::{FixtureArg, FixtureMeasure};
+use plx_ui::focus::{FocusEngine, Outcome};
+
+pub(super) struct HostFixture;
+#[derive(Clone, Copy)]
+pub(super) struct Views<'a> {
+    listing: plx_data::stores::browse::ListingView<'a>,
+    directory: plx_data::stores::browse::DirectoryView<'a>,
+    hubs: plx_data::stores::browse::HubsView<'a>,
+}
+impl Host for HostFixture {
+    type Arg = FixtureArg;
+    type Fx = AppFx;
+    type Msg = AppMsg;
+    type Elem = u32;
+    type Views<'a> = Views<'a>;
+    type Init = FixtureArg;
+    type Memory = PageMemory;
+}
+impl LibraryLike for HostFixture {
+    fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
+    fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+    fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
+}
+pub(super) const ENTRY: EntryId = EntryId(81);
+pub(super) const OWNER: InputOwner = InputOwner::Entry(ENTRY);
+
+pub(super) struct Fixture {
+    pub(super) stores: Option<plx_data::stores::Stores>,
+    pub(super) listing: plx_data::stores::browse::ListingSnapshot,
+    pub(super) directory: plx_data::stores::browse::DirectorySnapshot,
+    pub(super) hubs: plx_data::stores::browse::HubsSnapshot,
+    measure: FixtureMeasure,
+}
+
+impl Fixture {
+    pub(super) fn new() -> Self {
+        let sid = plx_plex::plex::ServerId::from_raw(0);
+        let listing = plx_data::browse::view::ListingSnapshot::fixture(sid, Vec::new(), Vec::new());
+        let directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+            plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+                row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
+        Self { stores: None, listing, directory, hubs: plx_data::stores::browse::HubsSnapshot::empty_for_test(), measure: FixtureMeasure }
+    }
+    /// A library whose server published `titles` as hubs (`count` cards each), in that order.
+    pub(super) fn shelves(titles: &[&str], count: usize) -> Self {
+        let mut fixture = Self::new();
+        let stores = plx_data::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut fixture.directory);
+        stores.browse_run(BrowseCmd::SetCur(0));
+        {
+            let mut browse = stores.browse.borrow_mut();
+            browse.seed_items_for_test(120);
+            browse.seed_shelves_for_test(0, titles, count);
+        }
+        let publication = stores.capture_browse(&mut fixture.directory);
+        fixture.listing = publication.listing;
+        fixture.hubs = publication.section_hubs;
+        fixture.stores = Some(stores);
+        fixture
+    }
+    pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
+        Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
+            tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus, ..Default::default() },
+            press: PressRead::default(), owner: OWNER }
+    }
+    pub(super) fn screen(&self) -> RecommendedScreen {
+        let mut page = RecommendedScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
+        page.sync(&self.cx(None));
+        page
+    }
+}
+
+pub(super) fn deliver(page: &mut RecommendedScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, event: ScreenEvent<HostFixture>) -> usize {
+    let mut output = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.step(&event, &fixture.cx(engine.current(OWNER)),
+        &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
+    let mut remembers = 0;
+    for effect in output {
+        if let Fx::Remember { group, elem } = effect.fx {
+            remembers += 1;
+            engine.remember_projected(ENTRY, group, elem);
+        }
+    }
+    remembers
+}
+
+pub(super) fn direction(page: &mut RecommendedScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, dir: Dir) -> usize {
+    let mut links = Vec::new();
+    <RecommendedScreen as Screen<HostFixture>>::links(page, &mut links);
+    let outcome = engine.move_dir(OWNER, page, &links, dir, &fixture.cx(engine.current(OWNER)));
+    if let Outcome::Moved { from, to, by } = outcome {
+        deliver(page, engine, fixture, ScreenEvent::FocusMoved { from, to, by })
+    } else { 0 }
+}
+
+fn effects_of(page: &mut RecommendedScreen, fixture: &Fixture, engine: &FocusEngine<u32>, event: ScreenEvent<HostFixture>) -> Vec<Fx<HostFixture>> {
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.step(&event, &fixture.cx(engine.current(OWNER)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    out.into_iter().map(|effect| effect.fx).collect()
+}
+
+#[test]
+fn the_page_lists_the_servers_hubs_in_admin_order() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1", "movie.genre.1"], 6);
+    let page = fixture.screen();
+    let published: Vec<_> = fixture.hubs.view().shelves().iter().map(|shelf| shelf.id.clone()).collect();
+    let shown: Vec<_> = page.shelves.iter().map(|row| row.id.clone()).collect();
+    assert_eq!(shown, published, "the page's row i is the store's shelf i");
+    assert_eq!(page.readout, Readout::Rows);
+}
+
+#[test]
+fn a_library_with_no_hubs_reads_empty_not_loading() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&[], 0);
+    let page = fixture.screen();
+    assert!(page.shelves.is_empty());
+    assert_eq!(page.readout, Readout::Empty);
+}
+
+#[test]
+fn the_first_tick_seats_focus_on_the_first_row_once() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 6);
+    let mut page = fixture.screen();
+    let engine = FocusEngine::new();
+    let seats = |fx: &[Fx<HostFixture>]| fx.iter().filter(|fx| matches!(fx,
+        Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { .. }))))).count();
+    let first = effects_of(&mut page, &fixture, &engine, ScreenEvent::Tick(Tick { ms: 9000, dt_us: 16_667 }));
+    assert_eq!(seats(&first), 1);
+    let second = effects_of(&mut page, &fixture, &engine, ScreenEvent::Tick(Tick { ms: 9017, dt_us: 16_667 }));
+    assert_eq!(seats(&second), 0, "the seat is made once");
+}
+
+/// BACK pops the page whatever has focus: the return state captured at the Recommended press puts
+/// focus on that control again.
+#[test]
+fn back_pops_the_page() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
+    let mut page = fixture.screen();
+    let engine = FocusEngine::new();
+    let back = ScreenEvent::Input(plx_machine::machine::InputEvent {
+        at: Tick::default(), source: plx_machine::machine::Source::Script,
+        kind: plx_machine::machine::InputKind::Key { key: plx_machine::machine::Key::Back, sym: 0, wcode: 0,
+            edge: plx_machine::machine::Edge::Down, at_edge: false },
+    });
+    let fx = effects_of(&mut page, &fixture, &engine, back);
+    assert!(fx.iter().any(|fx| matches!(fx, Fx::App(AppFx::Content(ContentReq::Back)))), "BACK is the page's own pop");
+}
+
+/// The page's only string fits its band in every shipped language: one line within the panel.
+#[test]
+fn the_empty_read_out_fits_in_every_shipped_language() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let _guard = plx_base::testlock::serial();
+    for language in plx_platform::i18n::SHIPPED {
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
+        let text = plx_platform::i18n::msg::recommended_page_empty();
+        assert!(!text.is_empty(), "{}: empty string", language.tag());
+        let width = plx_machine::machine::Measure::width(&ShippedMeasure, &std::ffi::CString::new(text).unwrap(), plx_ui::theme::size::BODY, false);
+        assert!(width <= plx_ui::widgets::StatusOverlay::REASON_W * 1.6,
+            "{}: {text:?} is {width:.0} px wide, past what the read-out wraps in two lines", language.tag());
+    }
+}

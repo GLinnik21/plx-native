@@ -84,7 +84,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         },
         owner,
     };
-    let mut page = LibraryScreen::new(entry, InstanceId(20), SecKind::Movie);
+    let mut page = RecommendedScreen::new(entry, InstanceId(20), SecKind::Movie);
     page.sync(&cx(&engine));
     assert_eq!(page.shelves.len(), 2);
     for row in 0..2 {
@@ -199,7 +199,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
         press: PressRead::default(),
         owner,
     };
-    let mut page = LibraryScreen::new(entry, InstanceId(21), SecKind::Movie);
+    let mut page = RecommendedScreen::new(entry, InstanceId(21), SecKind::Movie);
     page.sync(&cx(&engine));
     assert_eq!(page.shelves.len(), 2);
     assert!(page.shelves[0].heading.is_none(), "an ordinary shelf has no linked heading");
