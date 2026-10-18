@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T21:05:43Z",
+ "generated": "2026-10-18T21:06:19Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -45.6,
-   "change7_pct": 45.4,
+   "change7_pct": 45.2,
    "d30": 891.0,
    "delta30": -406.0,
-   "delta7": 151.5,
+   "delta7": 151,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 261,
-   "n_prev": 200,
+   "n_prev": 201,
    "now": 485,
-   "prev7": 333.5,
+   "prev7": 334,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -779,7 +779,7 @@
    "to": 425
   },
   {
-   "change_pct": 45.4,
+   "change_pct": 45.2,
    "commits": [
     {
      "pr": 831,
@@ -827,7 +827,7 @@
      "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
     }
    ],
-   "from": 333.5,
+   "from": 334,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-18",
