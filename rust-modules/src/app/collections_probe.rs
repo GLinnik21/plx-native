@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn a_section_is_probed_once_until_its_answer_goes_stale() {
-        let now = 1_000_000;
+        let now = 100_000_000;
         let fresh = Entry { answer: None, at: None, settled: false, probing: false };
         assert!(wants_probe(&fresh, now), "never asked: ask");
         assert!(!wants_probe(&Entry { probing: true, ..fresh }, now), "one worker per section");
