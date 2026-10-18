@@ -406,6 +406,28 @@ pub(crate) fn clean(s: &str) -> String {
         .collect()
 }
 
+/// The facts the "Under posters" caption reads, lifted off the wire row: unknown stays `None` /
+/// `false` rather than a zero a reader could mistake for a value.
+fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
+    let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());
+    let count = |n: i64| (n > 0).then(|| n.min(i64::from(u32::MAX)) as u32);
+    m.subtype = some(&it.subtype);
+    m.smart = m.kind == KIND_COLLECTION && it.smart;
+    m.genre = it.genre.first().and_then(|g| some(&g.tag));
+    let media = it.media.first();
+    m.video_resolution = media.and_then(|x| some(&x.video_resolution));
+    m.hdr = media
+        .into_iter()
+        .flat_map(|x| x.part.iter())
+        .flat_map(|p| p.stream.iter())
+        .any(|s| s.stream_type == 1 && s.is_hdr());
+    m.audience_rating = (it.audience_rating > 0.0).then_some(it.audience_rating as f32);
+    // A leaf count of 0 is "none sent" (a collection, a movie), not an empty show.
+    m.leaf_count = count(it.leaf_count);
+    m.viewed_leaf_count = if m.leaf_count.is_some() { Some(it.viewed_leaf_count.clamp(0, i64::from(u32::MAX)) as u32) } else { None };
+    m.added_at = (it.added_at > 0).then_some(it.added_at);
+}
+
 /// Parse one Plex `Metadata` item (from a section listing OR a hub) into a catalog row.
 /// pub: the Library browse store (`browse.rs`) and the person page (`person.rs`) map their
 /// listings with it too.
@@ -465,9 +487,12 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         KIND_COLLECTION => false,
         _ => it.view_count > 0,
     };
-    if m.kind == KIND_COLLECTION {
+    // `childCount` is a collection's member count and a show's season count; on a movie, episode
+    // or season it is not sent, so the other kinds stay 0.
+    if matches!(m.kind, 1 | KIND_COLLECTION) {
         m.child_count = it.child_count.max(0);
     }
+    fill_caption_facts(&mut m, it);
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
@@ -3959,3 +3984,67 @@ mod home_row_ring_tests;
 #[cfg(test)]
 #[path = "pms_home_hub_windows_tests.rs"]
 mod home_hub_windows_tests;
+
+#[cfg(test)]
+mod caption_fact_tests {
+    use super::*;
+
+    fn row(json: &str) -> PmsMovie {
+        let it: plx_plex::plex::Metadata = serde_json::from_str(json).expect("fixture parses");
+        parse_item(&it, ServerId::UNSET)
+    }
+
+    #[test]
+    fn a_movie_carries_genre_resolution_hdr_score_and_added_at() {
+        let m = row(r#"{"type":"movie","title":"M","ratingKey":"1","audienceRating":7.8,"addedAt":1700000000,
+            "Genre":[{"tag":"Drama"},{"tag":"Crime"}],
+            "Media":[{"videoResolution":"4k","Part":[{"Stream":[
+                {"streamType":1,"colorTrc":"smpte2084"},{"streamType":2}]}]}]}"#);
+        assert_eq!(m.genre.as_deref(), Some("Drama"), "the FIRST genre");
+        assert_eq!(m.video_resolution.as_deref(), Some("4k"));
+        assert!(m.hdr);
+        assert_eq!(m.audience_rating, Some(7.8));
+        assert_eq!(m.added_at, Some(1_700_000_000));
+        assert!(!m.smart && m.leaf_count.is_none() && m.child_count == 0);
+    }
+
+    #[test]
+    fn an_sdr_movie_is_not_hdr_and_unknown_stays_unknown() {
+        let m = row(r#"{"type":"movie","title":"M","Media":[{"videoResolution":"1080",
+            "Part":[{"Stream":[{"streamType":1,"colorTrc":"bt709"}]}]}]}"#);
+        assert!(!m.hdr);
+        assert_eq!((m.genre, m.audience_rating, m.added_at, m.subtype), (None, None, None, None));
+    }
+
+    #[test]
+    fn dolby_vision_without_a_transfer_characteristic_is_hdr() {
+        let m = row(r#"{"type":"movie","title":"M","Media":[{"Part":[{"Stream":[
+            {"streamType":1,"DOVIPresent":true}]}]}]}"#);
+        assert!(m.hdr);
+    }
+
+    #[test]
+    fn a_show_carries_its_season_and_episode_counts() {
+        let m = row(r#"{"type":"show","title":"S","childCount":3,"leafCount":30,"viewedLeafCount":12}"#);
+        assert_eq!((m.child_count, m.leaf_count, m.viewed_leaf_count), (3, Some(30), Some(12)));
+    }
+
+    #[test]
+    fn a_season_has_no_member_count() {
+        let m = row(r#"{"type":"season","title":"S1","childCount":9,"leafCount":9}"#);
+        assert_eq!(m.child_count, 0);
+    }
+
+    #[test]
+    fn a_smart_collection_is_told_from_a_normal_one() {
+        let smart = row(r#"{"type":"collection","title":"C","subtype":"movie","smart":"1","childCount":14}"#);
+        assert!(smart.smart);
+        assert_eq!((smart.child_count, smart.subtype.as_deref()), (14, Some("movie")));
+        let smart_bool = row(r#"{"type":"collection","title":"C","smart":true}"#);
+        assert!(smart_bool.smart);
+        let normal = row(r#"{"type":"collection","title":"C","subtype":"movie","smart":"0","childCount":5}"#);
+        assert!(!normal.smart && normal.child_count == 5);
+        let absent = row(r#"{"type":"collection","title":"C"}"#);
+        assert!(!absent.smart);
+    }
+}

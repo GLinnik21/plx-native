@@ -1143,14 +1143,39 @@ class Library:
             rows.append({
                 "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
                 "type": "collection", "title": c["tag"], "titleSort": c["tag"],
-                "index": c["id"], "childCount": len(members),
+                "index": c["id"], "childCount": len(members), "subtype": "movie",
                 "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
             })
             # A collection with members has the server's automatic composite; the EMPTY one has
             # no artwork at all, which is the case a client's neutral collection tile draws.
             if members:
                 rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
+        rows.extend(self._smart_collection_rows(section))
         return rows
+
+    # Opt-in (`--smart-collections`, or set on an instance): a SMART collection is a saved filter,
+    # so PMS lists it among the section's collections with `smart="1"` and a `childCount` that is the
+    # filter's current match count, while the members are not tagged. It stays out of the default
+    # data so every recorded scene and hash keeps its collection set. Count-only: the mock serves no
+    # children for it.
+    smart_collections = False
+    SMART_COLLECTION_RK = 59001
+
+    def _smart_collection_rows(self, section):
+        if not self.smart_collections:
+            return []
+        matches = [it for it in self.items.values()
+                   if it["type"] == "movie" and it["librarySectionID"] == int(section)
+                   and it.get("viewCount", 0) == 0]
+        title = "Unwatched Movies"
+        return [{
+            "ratingKey": str(self.SMART_COLLECTION_RK),
+            "key": f"/library/collections/{self.SMART_COLLECTION_RK}/children",
+            "type": "collection", "subtype": "movie", "smart": "1", "title": title,
+            "titleSort": title, "index": 900, "childCount": len(matches),
+            "updatedAt": 1_700_000_000, "librarySectionID": int(section),
+            "thumb": f"/library/collections/{self.SMART_COLLECTION_RK}/composite/1700000000",
+        }]
 
     def collection_by_rating_key(self, rk):
         return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
@@ -3224,7 +3249,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
-          media_forced_subtitle=False):
+          media_forced_subtitle=False, smart_collections=False):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -3271,6 +3296,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
                       media_next_episode=media_next_episode,
                       next_episode_remux=next_episode_remux,
                       media_forced_subtitle=media_forced_subtitle)
+    lib.smart_collections = smart_collections
     pms = MockPms(lib)
     pms.link = link_conditioner.Conditioner(seed=seed)
     for spec in link:
@@ -4154,6 +4180,9 @@ def main():
     ap.add_argument("--seasons", type=int, default=2, help="seasons per show (default 2)")
     ap.add_argument("--episodes", type=int, default=6,
                     help="episodes per season (default 6; over 60 makes a season that pages)")
+    ap.add_argument("--smart-collections", action="store_true",
+                    help="list one SMART collection (smart=\"1\", a filter match count as childCount) "
+                         "among the movie section's collections")
     ap.add_argument("--resume-fixture", action="store_true",
                     help="two extra shows in the shows section: 970001 has 12 seasons and an "
                          "on-deck episode (S12E14, part-way through, the newest Continue Watching "
@@ -4220,7 +4249,8 @@ def main():
                          resume_fixture=a.resume_fixture,
                          media_next_episode=a.media_next_episode,
                          next_episode_remux=a.media_next_episode_remux,
-                         media_forced_subtitle=a.media_forced_subtitle)
+                         media_forced_subtitle=a.media_forced_subtitle,
+                         smart_collections=a.smart_collections)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

@@ -20,8 +20,8 @@ fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
     }
 }
 
-/// A collection row keeps its member count (the Library caption's "N items"); no other kind reads
-/// `childCount` into it, so a show's season count never masquerades as one.
+/// A collection row keeps its member count (the Library caption's "N items") and a show its season
+/// count; a season or episode reads no `childCount`, so the field never means something else there.
 #[test]
 fn a_collection_row_carries_its_member_count() {
     let row = |kind: &str, child_count: i64| plx_plex::plex::Metadata {
@@ -30,7 +30,8 @@ fn a_collection_row_carries_its_member_count() {
     };
     assert_eq!(parse_item(&row("collection", 3), sid(0)).child_count, 3);
     assert_eq!(parse_item(&row("collection", -1), sid(0)).child_count, 0, "a nonsense count reads as none");
-    assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 0);
+    assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 5, "a show's season count");
+    assert_eq!(parse_item(&row("season", 5), sid(0)).child_count, 0);
 }
 
 /// A collection has no watch or resume state of its own, whatever counters the server sends with
