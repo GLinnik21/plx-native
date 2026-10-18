@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T13:52:10Z",
+ "generated": "2026-10-18T13:56:28Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -87,17 +87,17 @@
   },
   {
    "change30_pct": -49.1,
-   "change7_pct": 36.1,
+   "change7_pct": 35.9,
    "d30": 855.0,
-   "delta30": -419.5,
-   "delta7": 115.5,
+   "delta30": -420.0,
+   "delta7": 115,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 105,
-   "now": 435.5,
+   "now": 435,
    "prev7": 320,
    "shown": true,
    "state": "worse",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.3,
-   "change7_pct": 2.0,
+   "change30_pct": 122.7,
+   "change7_pct": 2.2,
    "d30": 105.5,
-   "delta30": 129.0,
-   "delta7": 4.5,
+   "delta30": 129.5,
+   "delta7": 5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 97,
-   "now": 234.5,
+   "now": 235,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -376,14 +376,14 @@
    "change7_pct": -42.2,
    "d30": 75.0,
    "delta30": 111.0,
-   "delta7": -136.0,
+   "delta7": -136,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 97,
-   "now": 186.0,
+   "now": 186,
    "prev7": 322,
    "shown": true,
    "state": "better",
@@ -439,14 +439,14 @@
    "change7_pct": 5.5,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 8,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 93,
-   "now": 153.0,
+   "now": 153,
    "prev7": 145,
    "shown": true,
    "state": "flat",
@@ -503,14 +503,14 @@
    "change7_pct": 0.0,
    "d30": 16.5,
    "delta30": 0.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 97,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 210.0,
    "commits": [
     {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
      "pr": 802,
      "sha": "635b51a2c",
      "title": "Add European Portuguese (pt-PT) language"
@@ -657,6 +652,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 55.7,
@@ -683,6 +683,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 208.0,
@@ -709,6 +714,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 262.5,
@@ -735,6 +745,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 327,
@@ -745,7 +760,7 @@
    "to": 485.0
   },
   {
-   "change_pct": 36.1,
+   "change_pct": 35.9,
    "commits": [
     {
      "pr": 831,
@@ -761,6 +776,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 320,
@@ -768,7 +788,7 @@
    "label": "Wait after merge",
    "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 435.5
+   "to": 435
   },
   {
    "change_pct": 30.9,
@@ -787,6 +807,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 1026.6,
@@ -813,6 +838,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 1025.0,
@@ -839,6 +869,11 @@
      "pr": 833,
      "sha": "84759b987",
      "title": "tools: make test-crate works on the stable toolchain"
+    },
+    {
+     "pr": 666,
+     "sha": "af3a670fa",
+     "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
    "from": 1906,
