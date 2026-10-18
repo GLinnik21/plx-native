@@ -13,7 +13,7 @@ use super::*;
 /// `theme.rs`) and a fractional scale resamples all of it. 1/1, 1/2 and 1/3 keep whole texels whole.
 ///
 /// The television asks for the canvas itself (1:1) unless the owner picked a smaller Interface
-/// resolution in Settings (`requested_drawable`), in which case the compositor fills the panel.
+/// resolution in Settings on webOS 1-3 (`requested_drawable`), in which case the compositor fills the panel.
 /// A Mac is the case the `surface` doc was written against — 1920x1080 exceeds the usable area of
 /// every laptop display Apple ships, so asking for it flatly would put the title bar above the
 /// screen and the bottom of the interface under the Dock.
@@ -422,20 +422,28 @@ mod seam_order_tests {
     #[test]
     fn the_setting_maps_to_the_requested_window() {
         use plx_plex::plex::session::UiResolution as R;
-        assert_eq!(super::drawable_for_setting(R::Auto), None);
-        assert_eq!(super::drawable_for_setting(R::Hd900), Some((1600, 900)));
-        assert_eq!(super::drawable_for_setting(R::Hd720), Some((1280, 720)));
-        assert_eq!(super::drawable_for_setting(R::Sd540), Some((960, 540)));
+        for major in [1, 2, 3] {
+            assert_eq!(super::drawable_for_setting(major, R::Auto), None);
+            assert_eq!(super::drawable_for_setting(major, R::Hd900), Some((1600, 900)));
+            assert_eq!(super::drawable_for_setting(major, R::Sd540), Some((960, 540)));
+        }
+        assert_eq!(super::drawable_for_setting(3, R::Hd720), Some((1280, 720)));
+        // webOS 4+, or a set that never said, keeps the canvas whatever a record carried over holds
+        for major in [0, 4, 5, 6, 22] {
+            for mode in R::LADDER {
+                assert_eq!(super::drawable_for_setting(major, mode), None, "major {major} {mode:?}");
+            }
+        }
         // a record that predates the setting, or holds a spelling this build does not know, is Automatic
         let old: plx_plex::plex::session::Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
-        assert_eq!(super::drawable_for_setting(old.ui_resolution()), None);
+        assert_eq!(super::drawable_for_setting(3, old.ui_resolution()), None);
         let unknown: plx_plex::plex::session::Session =
             serde_json::from_str(r#"{"client_id":"c","ui_resolution":"4320p"}"#).unwrap();
-        assert_eq!(super::drawable_for_setting(unknown.ui_resolution()), None);
+        assert_eq!(super::drawable_for_setting(3, unknown.ui_resolution()), None);
         // the retired explicit 1080p reads as Automatic
         let retired: plx_plex::plex::session::Session =
             serde_json::from_str(r#"{"client_id":"c","ui_resolution":"1080p"}"#).unwrap();
-        assert_eq!(super::drawable_for_setting(retired.ui_resolution()), None);
+        assert_eq!(super::drawable_for_setting(3, retired.ui_resolution()), None);
     }
 
     /// A persisted size the set will not give must never brick launch: a refused smaller window is
@@ -550,8 +558,9 @@ unsafe fn show_through(door: CursorDoor, shown: &std::sync::atomic::AtomicUsize)
 /// The window to ask for when it is not the 1920x1080 canvas, `None` for the canvas (1:1): whatever
 /// `/tmp/plxnative-drawable=<W>x<H>` says when that trigger is armed (debug builds only; it
 /// outranks the setting and is bounded to 640x360..=1920x1080 so a typo cannot ask for nonsense),
-/// else the install-wide Settings > System > Interface resolution choice. **Automatic is the
-/// canvas on every set**; a smaller window is only ever the owner's pick.
+/// else, on webOS 1-3 only, the install-wide Settings > System > Interface resolution choice.
+/// **Automatic is the canvas on every set**, and webOS 4+ is always the canvas; a smaller window is
+/// only ever a webOS 1-3 owner's pick (or the debug trigger).
 ///
 /// What was measured, with the heartbeat framedrop A/B (not `profile-tv` counters, so no cause is
 /// claimed): on a 2016 55UH650V (webOS 3.4.3, Mali-T760) at 1280x720, average 46.9 -> 54.5 fps and
@@ -572,8 +581,9 @@ fn requested_drawable(session: &plx_plex::plex::session::Session) -> Option<(c_i
         }
     }
     let chosen = session.ui_resolution();
-    let size = drawable_for_setting(chosen);
-    log(&format!("surface: Interface resolution {chosen:?} -> {size:?}"));
+    let major = plx_platform::tv::device::info().major;
+    let size = drawable_for_setting(major, chosen);
+    log(&format!("surface: webOS major {major}, Interface resolution {chosen:?} -> {size:?}"));
     size
 }
 
@@ -584,10 +594,13 @@ fn window_fallback(asked: (c_int, c_int)) -> Option<(c_int, c_int)> {
     (asked != (SCR_W, SCR_H)).then_some((SCR_W, SCR_H))
 }
 
-/// The window an Interface resolution choice asks for: `None` for Automatic, the native canvas.
+/// The window an Interface resolution choice asks for on firmware `major`: `None` for Automatic,
+/// the native canvas, and `None` on every set the setting is not offered on (webOS 4+ or unknown,
+/// [`plx_platform::tv::device::offers_ui_resolution`]) whatever is stored, so a record carried over
+/// from another set cannot shrink the interface where the owner has no way to change it back.
 #[cfg(any(not(feature = "hostsim"), test))]
-fn drawable_for_setting(chosen: plx_plex::plex::session::UiResolution) -> Option<(c_int, c_int)> {
-    chosen.size()
+fn drawable_for_setting(major: u32, chosen: plx_plex::plex::session::UiResolution) -> Option<(c_int, c_int)> {
+    if plx_platform::tv::device::offers_ui_resolution(major) { chosen.size() } else { None }
 }
 
 
@@ -1171,7 +1184,7 @@ pub(crate) unsafe fn construct(
         Some(initial) => initial.session.persisted.clone(),
         None => plx_plex::plex::session::load(),
     };
-    // The television is placed at 0,0 at exactly canvas size (unless the owner picked a smaller
+    // The television is placed at 0,0 at exactly canvas size (unless a webOS 1-3 owner picked a smaller
     // Interface resolution, `requested_drawable`) and takes the panel. A desktop
     // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `desktop_window_size`.
     #[cfg(feature = "hostsim")]

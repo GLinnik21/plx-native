@@ -1234,7 +1234,9 @@ impl DeckPress {
 /// `Auto` is the native 1920x1080 canvas on EVERY set: a smaller window is always the owner's
 /// choice, because it trades text sharpness for smoother frames and only the owner can judge that trade
 /// on their own panel. Install-wide (not per profile) because the window is created once, before
-/// anyone is seated. Absence, and any spelling this build does not know, is `Auto`.
+/// anyone is seated. Absence, and any spelling this build does not know, is `Auto`. The setting is
+/// offered, and the stored value honoured at boot, on webOS 1-3 only
+/// (`plx_platform::tv::device::offers_ui_resolution`); elsewhere the stored value is kept but unused.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UiResolution {
     #[default]

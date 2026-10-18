@@ -10,9 +10,9 @@
 //! What can change is the **drawable**: the pixel buffer GL renders into. By default it is
 //! 1920x1080 on every set, because that is what `SDL_CreateWindow` asks for and webOS grants, on a
 //! 4K panel that composites the result up to 3840x2160 in hardware, for free. That is the right
-//! arrangement and this module exists to keep it working, not to replace it. The owner can opt in
+//! arrangement and this module exists to keep it working, not to replace it. On webOS 1-3 the owner can opt in
 //! to a smaller window (Settings > System > Interface resolution, applied at the next launch:
-//! 1600x900, 1280x720 or 960x540; `app::boot::requested_drawable` has what was measured), and the
+//! 1600x900, 1280x720 or 960x540, webOS 1-3 only; `app::boot::requested_drawable` has what was measured), and the
 //! same compositor upscale fills the panel. A smaller window trades text sharpness for smoother
 //! frames; only 1/2 (960x540) is a clean texel scale, while 2/3 (1280x720) and 5/6 (1600x900) resample
 //! and may shimmer while scrolling. The Home underlay field also needs a width that is a
@@ -79,7 +79,7 @@ fn drawable() -> (i32, i32) {
 ///
 /// 1.0 by default, and the fast path stays exactly that — `scale() == 1.0` means every drawn
 /// coordinate is already a pixel and the crispness contract holds unchanged. Below 1.0 only when
-/// the owner chose a smaller Interface resolution (5/6, 2/3 or 1/2; 1/2 is the only one that keeps
+/// a webOS 1-3 owner chose a smaller Interface resolution, or the debug drawable trigger asked for one (5/6, 2/3 or 1/2; 1/2 is the only one that keeps
 /// whole texels whole, the others may shimmer while scrolling); the compositor fills the panel.
 ///
 /// It is `min`, not `dw/1920`, because the alternative is a stretched interface. Stretching to fill
@@ -345,7 +345,7 @@ fn pointer_map() -> (f32, i32, i32) {
 ///
 /// SDL reports pointer positions in window pixels, and the UI compares them against layout
 /// constants in logical units. Those are the same numbers only while the scale is 1.0 — which it
-/// is 1:1 unless the owner picks a smaller Interface resolution, which is precisely the assumption
+/// is 1:1 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one), which is precisely the assumption
 /// worth not making twice. Without this, a scaled surface would draw the interface correctly and put every touch
 /// and Magic-Remote click in the wrong place, which reads as "the pointer is broken" rather than
 /// as a resolution problem.
@@ -429,7 +429,7 @@ pub fn probe(win: *mut c_void) {
         ));
         if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
             // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
-            // not the canvas is either the owner's smaller Interface resolution or a firmware doing
+            // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
             // something no set has been seen to do. On a desktop
             // it is the ordinary case — the window is an exact divisor of the canvas by design
             // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
