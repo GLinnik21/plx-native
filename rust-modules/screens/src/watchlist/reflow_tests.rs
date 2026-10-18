@@ -10,6 +10,8 @@ use plx_ui::cards::DrawRole;
 use plx_ui::Rect;
 
 use super::cards_harness::{tile, tiles, Harness};
+use super::header::Count;
+use super::options::{TypeFilter, WatchlistOptionsState};
 use super::page::{Drawn, WatchTile, WatchlistIn};
 
 /// What a viewer sees: each visible thing as `(guid, rect x100, alpha x1000)`, sorted. The role is
@@ -276,4 +278,88 @@ fn a_reorder_moves_within_a_row_and_crossfades_across_rows() {
         crossed += 1;
     }
     assert!(moved > 0 && crossed > 0, "premise: a reversal of three rows has both kinds ({moved} moving, {crossed} crossfading)");
+}
+
+/// Where each card stands on screen, by guid: the most opaque thing drawn for it (a card that
+/// crossfades is its leaving copy until the new one is the stronger).
+fn places(h: &Harness) -> std::collections::BTreeMap<String, (f32, f32)> {
+    let mut best: std::collections::BTreeMap<String, (f32, (f32, f32))> = Default::default();
+    for d in h.screen.drawn_probe(h.focus.map(|k| k.elem)) {
+        let e = best.entry(d.guid).or_insert((-1.0, (0.0, 0.0)));
+        if d.alpha > e.0 {
+            *e = (d.alpha, (d.rect.x, d.rect.y));
+        }
+    }
+    best.into_iter().map(|(g, (_, at))| (g, at)).collect()
+}
+
+/// The page's own scroll spring may take its first step on the frame a landing begins in, which
+/// moves every card the same way. What this asks is that the LAYOUT did not: each card moved by one
+/// shared `(0, dy)`, `dy` a spring step, never a row's worth.
+fn only_the_scroll_moved(before: &std::collections::BTreeMap<String, (f32, f32)>, after: &std::collections::BTreeMap<String, (f32, f32)>) -> Result<f32, String> {
+    let mut dy = None;
+    for (g, b) in before {
+        let Some(a) = after.get(g) else { return Err(format!("{g} is not drawn after")) };
+        if (a.0 - b.0).abs() > 0.02 {
+            return Err(format!("{g} moved sideways: {b:?} -> {a:?}"));
+        }
+        let d = a.1 - b.1;
+        match dy {
+            None => dy = Some(d),
+            Some(first) if (d - first).abs() > 0.02 => return Err(format!("{g} moved {d}px where another moved {first}px: {b:?} -> {a:?}")),
+            _ => {}
+        }
+    }
+    Ok(dy.unwrap_or(0.0))
+}
+
+/// The filter the caption tests share: the focused card (index 7, the second row) moves to index 4,
+/// the first row, so its caption band leaves row 1 and opens on row 0. Returns the harness with the
+/// page fed, before its first tick.
+fn focus_changes_row() -> (Harness, std::collections::BTreeMap<String, (f32, f32)>) {
+    let mut h = Harness::new(tiles(14));
+    h.run(10);
+    h.focus_index(7);
+    h.run(90);
+    h.reconcile();
+    let before = places(&h);
+    let kept: Vec<WatchTile> = h.screen.tiles().iter().skip(3).cloned().collect();
+    h.screen.input(WatchlistIn::Rows(kept));
+    (h, before)
+}
+
+/// **The caption band that follows the focus moves with the cards, not on the click.** The focused
+/// card changes row, so its band closes on one row and opens on another; the cards between measured
+/// their starting cell under the band the page had settled on, not the one it had drawn, so the
+/// frame a landing begins in was not the frame before it.
+#[test]
+fn the_first_frame_of_a_filter_that_moves_the_focus_row_is_the_frame_before_it() {
+    let (mut h, before) = focus_changes_row();
+    h.run(1);
+    if let Err(why) = only_the_scroll_moved(&before, &places(&h)) {
+        panic!("the band that follows the focus moved on the click: {why}");
+    }
+}
+
+/// **The header count moves with the grid.** A Sort & Filter change reaches the page as its options and
+/// its rows on one frame; the count beside the pill keeps the old number until the cards are moving
+/// (as a Remove's does), and shows the new one on that frame, not on the click.
+#[test]
+fn a_filter_changes_the_count_when_the_cards_start_to_move() {
+    let mut h = Harness::new(tiles(14));
+    h.run(60);
+    assert_eq!(h.screen.count(), Some(Count::All(14)), "premise");
+    let start = visible(&h);
+    let kept: Vec<WatchTile> = h.screen.tiles().iter().take(9).cloned().collect();
+    h.screen.input(WatchlistIn::Options(WatchlistOptionsState { type_: TypeFilter::Movies, ..Default::default() }));
+    h.screen.input(WatchlistIn::Rows(kept));
+    let mut changed = false;
+    play(&mut h, 90, |h, f| {
+        let moved = changed || visible(h) != start;
+        changed = moved;
+        let shows = h.screen.count();
+        let want = if moved { Count::Of { shown: 9, total: 14 } } else { Count::All(14) };
+        assert_eq!(shows, Some(want), "frame {f}: the count follows the cards (moving: {moved})");
+    });
+    assert!(changed, "premise: the cards moved");
 }

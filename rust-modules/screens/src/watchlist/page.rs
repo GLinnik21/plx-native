@@ -368,6 +368,16 @@ impl Page {
         })
     }
 
+    /// Whether the title at `i` will have colours once its facts arrive: a playable matched copy
+    /// whose facts the page has not been told yet (a title with facts and no colours has none).
+    fn colours_pending(&self, i: usize) -> bool {
+        self.tiles.get(i).is_some_and(|t| {
+            matches!(t.state, TileState::Available | TileState::ComingSoonMatched)
+                && t.copy.is_some_and(|c| c.blur.is_none())
+                && !self.facts.contains_key(&t.row.guid)
+        })
+    }
+
     /// The grid's length: the loaded rows and the reserved cells past them.
     fn len(&self) -> usize {
         self.cells.len() + self.unloaded()
@@ -699,6 +709,10 @@ pub struct WatchlistScreen {
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
+    /// The element that index was last read from while the page held the engine's focus: while a
+    /// menu holds it instead (Sort & Filter reflows the grid under its own menu) the index follows
+    /// this element through the reflow, not whichever title the new list puts at the old index.
+    focus_elem: Option<u32>,
     /// The page's own arrival seat, while nobody has chosen another (the screens guide's "a seat
     /// nobody chose follows the head"): the group it last seated, `None` once the reader acts, the
     /// page is restored, or the first tile holds it. See [`follow_seat`](Self::follow_seat).
@@ -757,6 +771,7 @@ impl WatchlistScreen {
             ground_catching_up: false,
             removal_owed: false,
             focus: 0,
+            focus_elem: None,
             seat: None,
             own_enters: 0,
             stale_enters: 0,
@@ -831,11 +846,18 @@ impl WatchlistScreen {
     /// the engine's reconcile to put focus on the title that took its index (the next one), and
     /// the grid's landing to play the survivors into their cells (DS4).
     pub fn input(&mut self, ev: WatchlistIn) {
+        // What the header shows now: an input that moves the cards (rows, options) moves the count
+        // with them, so the number it replaces stays until the landing's first step.
+        let shown = self.page.count();
         match ev {
-            WatchlistIn::Rows(rows) => self.page.replace_tiles(rows),
+            WatchlistIn::Rows(rows) => {
+                self.page.replace_tiles(rows);
+                self.hold_count(shown);
+            }
             WatchlistIn::Options(options) => {
                 self.page.options = options;
                 self.page.touch();
+                self.hold_count(shown);
             }
             WatchlistIn::Removed(guid) => {
                 let rows: Vec<WatchTile> = self.page.tiles.iter().filter(|t| t.row.guid != guid).cloned().collect();
@@ -876,6 +898,15 @@ impl WatchlistScreen {
         self.focus = self.focus.min(self.page.len().saturating_sub(1));
     }
 
+    /// Keep `shown`, the count the header showed before an input that moves the cards, until the
+    /// grid's landing steps ([`release_count_hold`](Self::release_count_hold)), when the input
+    /// changed what the count reads. A hold already kept stays: it is the older number.
+    fn hold_count(&mut self, shown: Option<Count>) {
+        if self.stack.grid(Sec::Items).is_some() && self.page.count_hold.is_none() && shown.is_some() && self.page.live_count() != shown {
+            self.page.count_hold = shown.map(|count| CountHold { count });
+        }
+    }
+
     /// OK on the tile at `index`, per the plan §1.9 table. Reads the drawn, committed state.
     pub fn press_at(&self, index: usize) -> Option<WatchlistOut> {
         let t = self.page.tiles.get(index)?;
@@ -911,15 +942,23 @@ impl WatchlistScreen {
     /// every step invalidates the tab strip's glass, so the page is drawn twice for each landing
     /// frame. The target stays at what the wash was last given; once the landing ends it eases to
     /// the newly focused title at [`POST_REMOVE_EASE_K`] (until it is at rest, then the shared rate).
+    ///
+    /// **Never through neutral.** A focused title whose colours have not been loaded yet (a matched
+    /// copy whose facts the store has not sent) keeps the key the wash has, and eases to the title's
+    /// own once they arrive: the flat surface is the answer for a page that has no key, or for a title
+    /// that has none (facts in, no colours; no copy to ask), never a step on the way between two keys.
     fn ground_target(&self) -> [[f32; 4]; 4] {
+        const FLAT: [[f32; 4]; 4] = [theme::SURFACE_APP; 4];
         if self.ground_seeded && self.landing_in_flight() {
             return self.ground_applied;
         }
-        self.page
-            .cells
-            .get(self.focus)
-            .and_then(|c| c.blur)
-            .map_or([theme::SURFACE_APP; 4], |blur| AmbientWash::keyed(blur, PageGround::CARD_W))
+        match self.page.cells.get(self.focus).and_then(|c| c.blur) {
+            Some(blur) => AmbientWash::keyed(blur, PageGround::CARD_W),
+            None if self.ground_seeded && self.ground_applied != FLAT && self.page.colours_pending(self.focus) => {
+                self.ground_applied
+            }
+            None => FLAT,
+        }
     }
 
     /// A landing is in flight (a Remove, a sort or a filter): the grid's landing is playing (or waiting for the menu's
@@ -929,9 +968,10 @@ impl WatchlistScreen {
             || self.stack.grid(Sec::Items).is_some_and(|g| g.landing_pending() || g.has_ghosts())
     }
 
-    /// The header's count follows a Remove when the grid's landing STARTS: not at the commit (the
-    /// hold menu is still up), not under the menu's veil, but on the frame
-    /// the springs step. A removal the grid made no landing for releases on the next tick.
+    /// The header's count follows the cards when the grid's landing STARTS: not at the commit (a
+    /// Remove's hold menu is still up, a Sort & Filter click has drawn only the frame before), not
+    /// under a menu's veil, but on the frame the springs step. A change the grid made no landing for
+    /// releases on the next tick.
     fn release_count_hold(&mut self) {
         if self.page.count_hold.is_none() {
             return;
@@ -948,13 +988,19 @@ impl WatchlistScreen {
     fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>) {
         // The focused cell's index, a reserved one included: `focused()` then answers no title,
         // and the ground falls back to the flat surface, rather than keying a title left behind.
-        if let Some(i) = cx
+        if let Some((key, i)) = cx
             .focus
             .current
             .filter(|key| key.entry == self.page.entry)
-            .and_then(|key| self.page.cell_of(key.elem))
+            .and_then(|key| Some((key, self.page.cell_of(key.elem)?)))
         {
             self.focus = i;
+            self.focus_elem = Some(key.elem);
+        } else if !cx.focus.current.is_some_and(|key| key.entry == self.page.entry) {
+            // a menu holds the engine's focus: the page's own title moved with the reflow
+            if let Some(i) = self.focus_elem.and_then(|e| self.page.cell_of(e)) {
+                self.focus = i;
+            }
         }
         // The removed tiles are let go once the grid has nothing left to fade (the step ran the
         // stack first, so a landing the last input started is already pending here).

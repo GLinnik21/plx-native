@@ -801,15 +801,18 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
     assert!(frames * 10 >= gframes * 2, "and not a snap: {frames} against {gframes}");
 }
 
-/// A Remove no menu veiled starts its landing at once, so the count follows on the first frame.
+/// A Remove no menu veiled starts its landing at once; the frame it begins in draws the frame before
+/// it, so the count follows on the frame after, with the first step.
 #[test]
-fn an_unveiled_remove_lowers_the_count_on_its_first_frame() {
+fn an_unveiled_remove_lowers_the_count_with_its_first_step() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
     use plx_ui::containers::modal::set_veil;
     set_veil(0.0);
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     h.landing(Landing::RemoveFocused).unwrap();
+    assert_eq!(h.screen.count(), Some(Count::All(12)), "the first frame is the frame before the Remove");
+    h.run(1);
     assert_eq!(h.screen.count(), Some(Count::All(11)));
 }
 
@@ -912,5 +915,76 @@ fn the_debug_cue_is_compiled_only_into_a_devtriggers_build() {
         let before: Vec<&str> = src[..at].lines().rev().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).take(2).collect();
         assert!(before.iter().any(|l| *l == "#[cfg(feature = \"devtriggers\")]"),
             "{file}: `{anchor}` must sit under #[cfg(feature = \"devtriggers\")], saw {before:?}");
+    }
+}
+
+/// Rows `n` whose copies carry distinct UltraBlur colours, except the indexes in `bare`.
+fn coloured(n: usize, bare: &[usize]) -> Vec<super::page::WatchTile> {
+    let mut rows = tiles(n);
+    for (i, t) in rows.iter_mut().enumerate().filter(|(i, _)| !bare.contains(i)) {
+        let c = 20 + 15 * i as u8;
+        t.copy.as_mut().unwrap().blur = Some([[c, 255 - c, c / 2]; 4]);
+    }
+    rows
+}
+
+/// **A Remove never takes the page colour through neutral.** The title that takes the removed
+/// one's place has not had its colours loaded yet: the wash holds the old key through the landing and
+/// after it, and eases to the new title once its colours arrive. Neutral is for a page that never had a key.
+#[test]
+fn a_remove_never_passes_the_wash_through_neutral() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::containers::modal::set_veil;
+    set_veil(0.0);
+    let flat = [theme::SURFACE_APP; 4];
+    let mut h = Harness::new(coloured(12, &[3]));
+    h.focus_index(2);
+    h.run(120);
+    let (before, resting) = (h.screen.ground_goal(), h.screen.ground_codes());
+    assert_ne!(before, flat, "premise: the removed title keys a colour");
+    h.landing(Landing::RemoveFocused).unwrap();
+    for frame in 0..200 {
+        h.run(1);
+        h.reconcile();
+        assert_ne!(h.screen.ground_goal(), flat, "frame {frame}: the wash never aims at neutral");
+        assert_eq!(h.screen.ground_goal(), before, "frame {frame}: the old key holds until the new title's colours arrive");
+        assert_eq!(h.screen.ground_codes(), resting, "frame {frame}: and the drawn wash does not move");
+    }
+    assert!(!h.screen.landing_in_flight(), "premise: the landing ended");
+    let blur = [[0.1, 0.8, 0.2]; 4];
+    h.screen.input(WatchlistIn::Facts("plex://movie/g3".into(), MatchedFacts { blur: Some(blur), ..Default::default() }));
+    h.run(2);
+    let after = h.screen.ground_goal();
+    assert!(after != before && after != flat, "the new title's colours key the wash once they are ready");
+}
+
+/// **A 9 to 14 filter never takes the page colour through neutral either.** The menu holds the
+/// engine's focus while the cards reflow, so the page's mirror of it is an index the new list reads
+/// as another title, one whose colours are not loaded. The wash follows the focused ELEMENT, not that index.
+#[test]
+fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
+    use plx_machine::machine::{EntryId, FocusKey};
+    use plx_ui::containers::modal::set_veil;
+    set_veil(0.0);
+    let flat = [theme::SURFACE_APP; 4];
+    let mut h = Harness::new(coloured(9, &[]));
+    h.focus_index(2);
+    h.run(120);
+    let (before, resting) = (h.screen.ground_goal(), h.screen.ground_codes());
+    let focused = h.focus.unwrap().elem;
+    assert_ne!(before, flat, "premise");
+    // the Sort & Filter menu takes the engine's focus; the page keeps its own mirror
+    h.focus = Some(FocusKey { entry: EntryId(77), elem: 1 });
+    // 14 titles: five without colours arrive before the focused one, and the title now at its old index has none
+    let mut rows: Vec<super::page::WatchTile> = (100..105).map(|i| tile(i)).collect();
+    rows.extend(h.screen.tiles().iter().cloned());
+    h.screen.input(WatchlistIn::Options(WatchlistOptionsState::default()));
+    h.screen.input(WatchlistIn::Rows(rows));
+    assert_ne!(h.screen.index_of(focused), Some(2), "premise: the focused title moved");
+    for frame in 0..300 {
+        h.run(1);
+        assert_ne!(h.screen.ground_goal(), flat, "frame {frame}: the wash never aims at neutral");
+        assert_eq!(h.screen.ground_goal(), before, "frame {frame}: it stays on the focused title's key");
+        assert_eq!(h.screen.ground_codes(), resting, "frame {frame}: the drawn wash does not move");
     }
 }

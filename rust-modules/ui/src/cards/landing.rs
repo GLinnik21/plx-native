@@ -111,6 +111,11 @@ pub(crate) struct Scene<'a> {
     pub shift: (f32, f32),
     /// Slot `i`'s top-left in the strip (or document), unscrolled, px.
     pub slot: &'a dyn Fn(usize) -> (f32, f32),
+    /// Slot `i`'s top-left as the cards were DRAWN before this tick: the same as [`slot`](Self::slot)
+    /// unless the owner moved its layout in the tick (a grid's caption band left one row for another),
+    /// when a card starts from where it stood on screen under the old layout and the layout's move
+    /// plays on the landing's spring, with the card.
+    pub was: &'a dyn Fn(usize) -> (f32, f32),
     /// Whether a card at this point in the strip (unscrolled) is on-axis now.
     pub on: &'a dyn Fn(f32, f32) -> bool,
     /// The cell that was focused before this tick and the scale it was drawn at.
@@ -188,6 +193,8 @@ pub(crate) struct Landing {
     /// The landing began in the tick that is now drawing and has not yet been stepped: its first
     /// step is skipped, so the first drawn frame is exactly the start state.
     fresh: bool,
+    /// The springs of the landing now playing have stepped at least once.
+    stepped: bool,
     /// The owner draws the frame a landing begins in as the start state ([`fresh`](Self::fresh)):
     /// a grid does, a shelf steps on it.
     hold_first: bool,
@@ -195,7 +202,7 @@ pub(crate) struct Landing {
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false, fresh: false, hold_first: false }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false, fresh: false, stepped: false, hold_first: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
@@ -245,6 +252,12 @@ impl Landing {
     /// landing (the takeover's pop) while this is true, so everything starts together.
     pub(crate) fn waiting(&self) -> bool {
         self.anim.is_some() && self.paused
+    }
+
+    /// A landing is playing and its springs have not moved yet: the veil or a held image has kept
+    /// them, or the frame it began in is the start state still being drawn.
+    pub(crate) fn unstepped(&self) -> bool {
+        self.anim.is_some() && !self.stepped
     }
 
     /// The cell whose focused card left as a ghost and that another card now holds, once: the
@@ -307,15 +320,15 @@ impl Landing {
     }
 
     /// Run before the section steps: diff the cards against the adopted ones and start what the
-    /// change plays.
-    pub(crate) fn observe<H: Host, S: CardSource<H>>(&mut self, src: &S, scene: &Scene<'_>) {
+    /// change plays; whether it started one.
+    pub(crate) fn observe<H: Host, S: CardSource<H>>(&mut self, src: &S, scene: &Scene<'_>) -> bool {
         if !self.on {
-            return;
+            return false;
         }
         let n = src.len();
         let revision = src.revision();
         if n == self.keys.len() && revision.is_some() && revision == self.revision {
-            return;
+            return false;
         }
         let same = n == self.keys.len() && (0..n).all(|i| key(&src.elem(i)) == self.keys[i]);
         let window = (src.global(0), src.page_epoch());
@@ -324,13 +337,43 @@ impl Landing {
             self.revision = revision;
             self.window = window;
             self.shift = (0.0, 0.0);
-            return;
+            return false;
         }
         self.shift = (self.shift.0 + scene.shift.0, self.shift.1 + scene.shift.1);
         if self.keys.is_empty() || !self.loaded || window != self.window {
-            return self.adopt(src);
+            self.adopt(src);
+            return false;
         }
         self.begin(src, scene);
+        true
+    }
+
+    /// The owner moved its layout (`scene.was` to `scene.slot`) while a landing plays and the cards did
+    /// not change: every card, copy and ghost keeps the place it is drawn at, and the layout's move
+    /// plays out on the springs that are already carrying them (a card at rest starts one).
+    pub(crate) fn rebase(&mut self, n: usize, scene: &Scene<'_>) {
+        let Some(a) = self.anim.as_mut().filter(|a| a.n == n && self.keys.len() == n) else { return };
+        for (i, k) in self.keys.iter().enumerate() {
+            let (was_at, now_at) = ((scene.was)(i), (scene.slot)(i));
+            let d = (was_at.0 - now_at.0, was_at.1 - now_at.1);
+            if d.0.abs() < 0.5 && d.1.abs() < 0.5 {
+                continue;
+            }
+            if let Some(s) = a.off.get_mut(k) {
+                s.x.pos += d.0;
+                s.y.pos += d.1;
+            } else if let Some(w) = a.wrap.get_mut(k) {
+                // the leaving copy stays where it stood; the card itself fades in at its slot
+                w.0 += d.0;
+                w.1 += d.1;
+            } else if (scene.on)(now_at.0, now_at.1) || (scene.on)(was_at.0, was_at.1) {
+                a.off.insert(*k, Slide { x: Spring::at(d.0), y: Spring::at(d.1), travel: d.0 * d.0 + d.1 * d.1 });
+            }
+        }
+        for g in &mut a.ghosts {
+            let (was_at, now_at) = ((scene.was)(g.was), (scene.slot)(g.was));
+            g.shift = (g.shift.0 + was_at.0 - now_at.0, g.shift.1 + was_at.1 - now_at.1);
+        }
     }
 
     fn begin<H: Host, S: CardSource<H>>(&mut self, src: &S, scene: &Scene<'_>) {
@@ -360,12 +403,13 @@ impl Landing {
                 continue;
             };
             let carried = prev.off.get(&k).map_or((0.0, 0.0), |s| (s.x.pos, s.y.pos));
-            let (was_at, now_at) = ((scene.slot)(was), (scene.slot)(i));
+            let (was_at, now_at) = ((scene.was)(was), (scene.slot)(i));
             let start = (was_at.0 - now_at.0 + shift.0 + carried.0, was_at.1 - now_at.1 + shift.1 + carried.1);
             // off-axis both before and after: nothing of it is on screen to slide
             let seen = (scene.on)(now_at.0, now_at.1) || (scene.on)(now_at.0 + start.0, now_at.1 + start.1);
-            // its row changed AND it would move up or down on screen: it crossfades instead
-            if seen && (was_at.1 - now_at.1).abs() >= 0.5 && start.1.abs() >= 0.5 {
+            // its row changed (under the layout that stands now: a caption band's move is not a row
+            // change) AND it would move up or down on screen: it crossfades instead
+            if seen && ((scene.slot)(was).1 - now_at.1).abs() >= 0.5 && start.1.abs() >= 0.5 {
                 next.wrap.insert(k, start);
                 next.fade.insert(k, Spring::at(0.0));
                 continue;
@@ -385,8 +429,10 @@ impl Landing {
             }
         }
         for (was, &k) in old.iter().enumerate().filter(|(_, k)| !kept.contains(k)) {
-            let at = (scene.slot)(was);
-            if (scene.on)(at.0 + shift.0, at.1 + shift.1) {
+            let (at, now_at) = ((scene.was)(was), (scene.slot)(was));
+            // a ghost stands where it stood on screen, under the layout the cards were drawn in
+            let shift = (shift.0 + at.0 - now_at.0, shift.1 + at.1 - now_at.1);
+            if (scene.on)(now_at.0 + shift.0, now_at.1 + shift.1) {
                 let lifted = scene.lifted.filter(|&(c, _)| c == was);
                 if lifted.is_some() {
                     next.takeover = Some(was);
@@ -398,6 +444,7 @@ impl Landing {
         // a landing over one still waiting waits with it
         if !playing {
             self.paused = false;
+            self.stepped = false;
         }
         self.anim = (!next.empty()).then_some(next);
         self.fresh = self.hold_first && self.anim.is_some();
@@ -427,6 +474,7 @@ impl Landing {
         if std::mem::take(&mut self.fresh) {
             return;
         }
+        self.stepped = true;
         for s in a.off.values_mut() {
             s.x.step(0.0, k.0, dt);
             s.y.step(0.0, k.0, dt);

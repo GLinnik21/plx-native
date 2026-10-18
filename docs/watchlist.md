@@ -190,9 +190,10 @@ right-aligned `space::MD` (24 px) clear of it, so the pill does not move and not
 title. It reads "{n} titles" (plural forms in every shipped language) while no Type or Show filter
 narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
 beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
-absent until the list has landed and on the empty-list and unavailable read-outs, and follows a Remove
-when the grid's landing STARTS (on the first feed after the hold menu's veil drops below `CLOSING_GONE`), not at the
-commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
+absent until the list has landed and on the empty-list and unavailable read-outs, and follows the cards
+when the grid's landing STARTS MOVING: a Remove's on the first feed after the hold menu's veil drops
+below `CLOSING_GONE`, a Sort & Filter change's on the frame after the click (the click's own frame
+draws the frame before it), never at the commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
 menu: between the commit and the landing's first step nothing on the grid changes (tile slots and
@@ -200,6 +201,12 @@ scales, the caption under the focused row, the count). Then, on one frame, the r
 fades, the survivors move, and focus transfers to the next title, whose pop RISES from rest into the
 focus pop as the ghost sinks. That rise is the intended look (the design Motion board's "takeover"
 spring), not a departure from the design.
+
+**The page colour never passes through neutral.** The wash holds the key it has through any landing
+(a Remove, a sort or a filter), and follows the focused title, not the index that title had (the Sort
+& Filter menu holds the engine's focus while the cards reflow). A focused title whose colours have not
+loaded yet (a matched copy whose facts have not arrived) leaves the wash on its old key until they do;
+the flat surface is for a page that has no key and for a title that has none.
 
 **The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
 (`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the

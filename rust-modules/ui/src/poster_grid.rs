@@ -47,6 +47,11 @@ impl GridBands {
         Self { focus: None, slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS] }
     }
 
+    /// The row whose band is open (or opening).
+    pub fn focused(&self) -> Option<usize> {
+        self.focus
+    }
+
     pub fn focus(&mut self, row: Option<usize>, animate: bool) {
         if self.focus == row { return; }
         self.focus = row;

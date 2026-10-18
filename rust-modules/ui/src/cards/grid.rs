@@ -16,7 +16,7 @@ use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
 use super::pool::{self, Drawn, ShrinkKey};
-use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
+use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, MAX_GRID_BANDS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
     Stop,
@@ -121,6 +121,9 @@ pub struct Grid {
     scroll: Spring,
     target: f32,
     bands: GridBands,
+    /// The bands as the last frame drew them, kept from the moment a focus the reader did not move
+    /// settled them on another row until the landing has measured against them (`play_landing`).
+    bands_was: Option<[GridBand; MAX_GRID_BANDS]>,
     pop: GridPop,
     /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
     shrink: ShrinkKey,
@@ -154,6 +157,7 @@ impl Grid {
             scroll: Spring::at(0.0),
             target: 0.0,
             bands: GridBands::new(),
+            bands_was: None,
             pop: GridPop::new(),
             shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
@@ -199,7 +203,7 @@ impl Grid {
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
                 }
-                self.bands.focus(arrived.map(|i| i / self.spec.cols), deliberate);
+                self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
                 if let Some(i) = arrived.filter(|_| deliberate) {
                     self.pop.arm(i);
                 }
@@ -244,7 +248,7 @@ impl Grid {
         // (focus is off it for a frame, until the app reconciles), its row's caption band stays as
         // drawn, or the cards below would jump up under the menu that chose the removal.
         if focus.is_some() {
-            self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+            self.focus_band(focus.map(|i| i / self.spec.cols), false);
         }
         if let Some((i, (p, q))) = slid {
             self.carry(p, q, was);
@@ -272,7 +276,7 @@ impl Grid {
         self.anchor = pool::anchor_of(src, focus);
         self.play_landing(src, sy0, lifted, dt);
         if focus.is_none() && !self.landing.has_takeover() {
-            self.bands.focus(None, false);
+            self.focus_band(None, false);
         }
         // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks.
         // The app reconciles focus a frame after the card leaves: until it does the pop belongs to
@@ -307,10 +311,22 @@ impl Grid {
         }
     }
 
+    /// Move the focused row of the caption bands. A band the reader did not animate settles at once;
+    /// the layout it drew is kept for the landing to measure from, so the cards the band moved start where
+    /// they stood and the move plays on the landing's spring (`play_landing`).
+    fn focus_band(&mut self, row: Option<usize>, animate: bool) {
+        if !animate && self.bands.focused() != row {
+            self.bands_was.get_or_insert_with(|| self.bands.geometry());
+        }
+        self.bands.focus(row, animate);
+    }
+
     /// Diff the cards against the ones last adopted and step what the change plays. `sy0` is the
     /// scroll before the landing rule moved it (own mode); an external owner's move is `self.shift`.
-    /// Slots are DOCUMENT points under the caption bands as they stand now, so a card crossing a line
-    /// breaks measures old and new cells under the same bands.
+    /// Slots are DOCUMENT points under the caption bands as they stand now; where a card stood is
+    /// measured under the bands the last frame DREW ([`bands_was`](Self::bands_was): a focus the reader did not
+    /// move settled the caption band on another row), so the band's move plays on the landing's
+    /// spring with the cards. Whether a card crossed a line break is judged under the bands that stand now.
     fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32) {
         let scroll_moved = match self.spec.scroll {
             ScrollMode::Own => self.scroll.pos - sy0,
@@ -323,7 +339,17 @@ impl Grid {
             (r.x, r.y)
         };
         let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
-        self.landing.observe(src, &Scene { shift: (0.0, scroll_moved), slot: &slot, on: &on, lifted });
+        // the layout the last frame drew: the caption band may have settled on another row since
+        let drawn = self.bands_was.take();
+        let was = |i: usize| {
+            let r = poster_grid::cell_in(&geom, i, top, 0.0, drawn.as_ref().unwrap_or(&bands));
+            (r.x, r.y)
+        };
+        let scene = Scene { shift: (0.0, scroll_moved), slot: &slot, was: &was, on: &on, lifted };
+        let began = self.landing.observe(src, &scene);
+        if drawn.is_some() && !began {
+            self.landing.rebase(src.len(), &scene);
+        }
         let size = {
             let r = poster_grid::cell_in(&geom, 0, top, 0.0, &bands);
             (r.w, r.h)
@@ -762,9 +788,10 @@ impl Grid {
     }
 
     /// A landing is playing but has not stepped yet: the menu's veil has not yet dropped below
-    /// `CLOSING_GONE`, or the page is a held image. An owner pairs its own change with the landing's first step.
+    /// `CLOSING_GONE`, the page is a held image, or the frame it began in is still the frame before
+    /// it (the springs step from the next). An owner pairs its own change with the landing's first step.
     pub fn landing_waiting(&self) -> bool {
-        self.landing.waiting()
+        self.landing.waiting() || self.landing.unstepped()
     }
 
     /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.
