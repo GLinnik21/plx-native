@@ -3168,29 +3168,51 @@ unsafe fn parse_extradata(ed: *const u8, len: usize, is_hevc: bool) -> (Vec<u8>,
 
 static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// True if this HEVC NAL is an SEI (prefix=39 / suffix=40) carrying a user-data-registered
-/// ITU-T T.35 HDR10+ dynamic-metadata message (payloadType 4, country_code 0xB5, terminal
-/// provider 0x003C) among its messages. webOS's HEVC decoder does NOT support per-frame HDR10+
-/// metadata and stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and
-/// it can cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
-/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) in a NAL of its own
-/// is kept; one sharing a NAL with HDR10+ goes with it, since the NAL is dropped whole.
+/// What to do with one HEVC NAL on its way to the decoder.
+#[derive(Debug, PartialEq, Eq)]
+enum SeiStrip {
+    /// Not an SEI, or an SEI without HDR10+: emit the original bytes (nothing allocated for a non-SEI).
+    Keep,
+    /// Every message was HDR10+ (or the SEI could not be parsed cleanly): emit nothing.
+    Drop,
+    /// The NAL minus its HDR10+ message(s), emulation prevention re-inserted.
+    Rewrite(Vec<u8>),
+}
+
+/// Strip the ITU-T T.35 HDR10+ dynamic-metadata message (SEI payloadType 4, country_code 0xB5,
+/// terminal provider 0x003C) from an HEVC SEI NAL (prefix=39 / suffix=40). webOS's HEVC decoder
+/// does NOT support per-frame HDR10+ metadata and stalls on it — Kodi strips it unconditionally
+/// ("webOS doesn't support HDR10+ and it can cause issues"). `nal` is the NAL payload WITHOUT the
+/// start code (starts at the 2-byte NAL header). Only the HDR10+ message goes: the other messages
+/// of the NAL, static HDR10 mastering-display / CLL (137/144) included, are kept byte for byte,
+/// because on HEVC the panel's HDR envelope comes from the pipeline's own parse of them.
 ///
 /// Every message is walked, not just the first: an SEI NAL may carry several, and an HDR10+
-/// message behind another one reached the decoder.
-fn is_hdr10plus_sei(nal: &[u8]) -> bool {
+/// message behind another one reached the decoder. A list that does not parse cleanly (truncated
+/// header or payload, bytes after the trailing bits) falls back to the whole-NAL rule: dropped if
+/// an HDR10+ header was seen, kept unchanged otherwise.
+fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
     if nal.len() < 2 {
-        return false;
+        return SeiStrip::Keep;
     }
     let nal_type = (nal[0] >> 1) & 0x3f;
     if nal_type != 39 && nal_type != 40 {
-        return false;
+        return SeiStrip::Keep;
     }
     let rbsp = sei_rbsp(&nal[2..]);
+    // Byte ranges of the messages to keep, and whether any HDR10+ message was seen.
+    let mut kept: Vec<(usize, usize)> = Vec::new();
+    let mut found = false;
+    let mut clean = false;
     let mut p = 0usize;
     // Each message: payloadType and payloadSize as 0xFF runs plus a terminator, then the payload.
     // The 0x80 trailing-bits byte ends the list.
-    while p < rbsp.len() && rbsp[p] != 0x80 {
+    while p < rbsp.len() {
+        if rbsp[p] == 0x80 {
+            clean = p + 1 == rbsp.len();
+            break;
+        }
+        let start = p;
         let mut read = || {
             let mut v = 0usize;
             while p < rbsp.len() && rbsp[p] == 0xff {
@@ -3202,15 +3224,45 @@ fn is_hdr10plus_sei(nal: &[u8]) -> bool {
             Some(v + last as usize)
         };
         let (Some(ptype), Some(psize)) = (read(), read()) else {
-            return false;
+            break;
         };
-        let payload = rbsp.get(p..p.saturating_add(psize)).unwrap_or(&rbsp[p.min(rbsp.len())..]);
-        if ptype == 4 && payload.len() >= 3 && payload[..3] == [0xb5, 0x00, 0x3c] {
-            return true;
+        let end = p.saturating_add(psize);
+        let payload = rbsp.get(p..end.min(rbsp.len())).unwrap_or(&[]);
+        let is_plus = ptype == 4 && payload.len() >= 3 && payload[..3] == [0xb5, 0x00, 0x3c];
+        found |= is_plus;
+        if end > rbsp.len() {
+            break;
         }
-        p = p.saturating_add(psize);
+        if !is_plus {
+            kept.push((start, end));
+        }
+        p = end;
     }
-    false
+    if !found {
+        return SeiStrip::Keep;
+    }
+    if !clean || kept.is_empty() {
+        return SeiStrip::Drop;
+    }
+    let mut out_rbsp = Vec::with_capacity(rbsp.len());
+    for (s, e) in kept {
+        out_rbsp.extend_from_slice(&rbsp[s..e]);
+    }
+    out_rbsp.push(0x80);
+    // Emulation prevention (H.265 7.4.2): 03 after two zeros when the next byte is <= 03. The
+    // RBSP ends in the 0x80 trailing byte, so the "ends in 00" case cannot arise.
+    let mut out = Vec::with_capacity(out_rbsp.len() + 4);
+    out.extend_from_slice(&nal[..2]);
+    let mut zeros = 0;
+    for b in out_rbsp {
+        if zeros >= 2 && b <= 3 {
+            out.push(3);
+            zeros = 0;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
+    SeiStrip::Rewrite(out)
 }
 
 /// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
@@ -3302,13 +3354,28 @@ unsafe fn packet_to_annexb(
             break;
         };
         let nal = &d[i..end];
-        if is_hevc && is_hdr10plus_sei(nal) {
-            let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
-            if n <= 3 || n % 500 == 0 {
-                crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+        let mut nal = nal;
+        let rewritten;
+        if is_hevc {
+            match strip_hdr10plus_sei(nal) {
+                SeiStrip::Keep => {}
+                strip => {
+                    let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 3 || n % 500 == 0 {
+                        crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+                    }
+                    match strip {
+                        SeiStrip::Rewrite(v) => {
+                            rewritten = v;
+                            nal = &rewritten;
+                        }
+                        _ => {
+                            i += nl;
+                            continue;
+                        }
+                    }
+                }
             }
-            i += nl;
-            continue;
         }
         out.extend_from_slice(&sc);
         out.extend_from_slice(nal);
