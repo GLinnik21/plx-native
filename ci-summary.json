@@ -1,19 +1,19 @@
 {
- "generated": "2026-10-18T09:09:06Z",
+ "generated": "2026-10-18T09:10:32Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 215.2,
+   "change7_pct": 202.7,
    "d30": null,
    "delta30": null,
-   "delta7": 117.8,
+   "delta7": 110.9,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 4,
-   "now": 172.5,
+   "now": 165.7,
    "prev7": 54.7,
    "shown": true,
    "state": "worse",
@@ -86,61 +86,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 38.2,
-   "d30": null,
-   "delta30": null,
-   "delta7": 392.2,
-   "group": "local",
-   "id": "bench.check",
-   "kind": "local",
-   "label": "make check, the whole gate",
-   "n_now": 5,
-   "n_prev": 3,
-   "now": 1418.8,
-   "parts": [
-    {
-     "id": "bench.check.cargo",
-     "label": "make check: cargo branch",
-     "now": 1417.0
-    },
-    {
-     "id": "bench.check.python",
-     "label": "make check: python branch",
-     "now": 1001.0
-    }
-   ],
-   "prev7": 1026.6,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 38.2,
-   "d30": null,
-   "delta30": null,
-   "delta7": 392.0,
-   "group": "local",
-   "id": "bench.check.cargo",
-   "kind": "local",
-   "label": "make check: cargo branch",
-   "n_now": 5,
-   "n_prev": 3,
-   "now": 1417.0,
-   "parent": "bench.check",
-   "prev7": 1025.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -49.4,
    "change7_pct": 35.1,
    "d30": 855.0,
@@ -163,17 +108,72 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.1,
+   "change7_pct": 30.9,
    "d30": null,
    "delta30": null,
-   "delta7": 1.8,
+   "delta7": 317.1,
+   "group": "local",
+   "id": "bench.check",
+   "kind": "local",
+   "label": "make check, the whole gate",
+   "n_now": 6,
+   "n_prev": 3,
+   "now": 1343.6,
+   "parts": [
+    {
+     "id": "bench.check.cargo",
+     "label": "make check: cargo branch",
+     "now": 1342.0
+    },
+    {
+     "id": "bench.check.python",
+     "label": "make check: python branch",
+     "now": 982.5
+    }
+   ],
+   "prev7": 1026.6,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 30.9,
+   "d30": null,
+   "delta30": null,
+   "delta7": 317.0,
+   "group": "local",
+   "id": "bench.check.cargo",
+   "kind": "local",
+   "label": "make check: cargo branch",
+   "n_now": 6,
+   "n_prev": 3,
+   "now": 1342.0,
+   "parent": "bench.check",
+   "prev7": 1025.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 8.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 1.7,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 4,
-   "now": 21.7,
+   "now": 21.6,
    "prev7": 19.9,
    "shown": true,
    "state": "flat",
@@ -184,17 +184,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 18.6,
+   "change7_pct": 16.5,
    "d30": null,
    "delta30": null,
-   "delta7": 6.9,
+   "delta7": 6.1,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 4,
-   "now": 44.0,
+   "now": 43.2,
    "prev7": 37.1,
    "shown": true,
    "state": "flat",
@@ -205,17 +205,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.0,
+   "change7_pct": -6.3,
    "d30": null,
    "delta30": null,
-   "delta7": -0.9,
+   "delta7": -3.0,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 4,
-   "now": 46.0,
+   "now": 44.0,
    "prev7": 47.0,
    "shown": true,
    "state": "flat",
@@ -226,17 +226,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.5,
+   "change7_pct": -2.9,
    "d30": null,
    "delta30": null,
-   "delta7": 6.0,
+   "delta7": -3.2,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 4,
-   "now": 114.7,
+   "now": 105.5,
    "prev7": 108.7,
    "shown": true,
    "state": "flat",
@@ -457,17 +457,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.6,
+   "change7_pct": 13.5,
    "d30": null,
    "delta30": null,
-   "delta7": 135.0,
+   "delta7": 116.5,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 3,
-   "now": 1001.0,
+   "now": 982.5,
    "parent": "bench.check",
    "prev7": 866.0,
    "shown": false,
@@ -584,7 +584,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 65.2,
+   "change7_pct": 64.1,
    "d30": null,
    "delta30": null,
    "delta7": 0.3,
@@ -592,7 +592,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 4,
    "now": 0.8,
    "prev7": 0.5,
@@ -606,7 +606,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 215.2,
+   "change_pct": 202.7,
    "commits": [
     {
      "pr": 806,
@@ -664,7 +664,7 @@
    "label": "Unit suite",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 172.5
+   "to": 165.7
   },
   {
    "change_pct": 98.1,
@@ -745,128 +745,6 @@
    "to": 482.0
   },
   {
-   "change_pct": 38.2,
-   "commits": [
-    {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
-     "pr": 802,
-     "sha": "635b51a2c",
-     "title": "Add European Portuguese (pt-PT) language"
-    },
-    {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
-    {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
-     "pr": 820,
-     "sha": "0b0b22092",
-     "title": "Add German (de) as a UI language"
-    },
-    {
-     "pr": 831,
-     "sha": "f93c586ac",
-     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
-    },
-    {
-     "pr": 832,
-     "sha": "2f2f5a511",
-     "title": "Route: a remux declares the source frame rate in the Load"
-    },
-    {
-     "pr": 833,
-     "sha": "84759b987",
-     "title": "tools: make test-crate works on the stable toolchain"
-    }
-   ],
-   "from": 1026.6,
-   "id": "bench.check",
-   "label": "make check, the whole gate",
-   "since": "2026-10-17",
-   "threshold_pct": 25.0,
-   "to": 1418.8
-  },
-  {
-   "change_pct": 38.2,
-   "commits": [
-    {
-     "pr": 806,
-     "sha": "b88c310a9",
-     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
-    },
-    {
-     "pr": 802,
-     "sha": "635b51a2c",
-     "title": "Add European Portuguese (pt-PT) language"
-    },
-    {
-     "pr": 816,
-     "sha": "e351f56e0",
-     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
-    },
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
-    {
-     "pr": 818,
-     "sha": "e8125923d",
-     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
-    },
-    {
-     "pr": 821,
-     "sha": "0aa486d3d",
-     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
-    },
-    {
-     "pr": 820,
-     "sha": "0b0b22092",
-     "title": "Add German (de) as a UI language"
-    },
-    {
-     "pr": 831,
-     "sha": "f93c586ac",
-     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
-    },
-    {
-     "pr": 832,
-     "sha": "2f2f5a511",
-     "title": "Route: a remux declares the source frame rate in the Load"
-    },
-    {
-     "pr": 833,
-     "sha": "84759b987",
-     "title": "tools: make test-crate works on the stable toolchain"
-    }
-   ],
-   "from": 1025.0,
-   "id": "bench.check.cargo",
-   "label": "make check: cargo branch",
-   "since": "2026-10-17",
-   "threshold_pct": 25.0,
-   "to": 1417.0
-  },
-  {
    "change_pct": 35.1,
    "commits": [
     {
@@ -891,6 +769,58 @@
    "since": "2026-10-18",
    "threshold_pct": 15.0,
    "to": 433
+  },
+  {
+   "change_pct": 30.9,
+   "commits": [
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
+    },
+    {
+     "pr": 832,
+     "sha": "2f2f5a511",
+     "title": "Route: a remux declares the source frame rate in the Load"
+    },
+    {
+     "pr": 833,
+     "sha": "84759b987",
+     "title": "tools: make test-crate works on the stable toolchain"
+    }
+   ],
+   "from": 1026.6,
+   "id": "bench.check",
+   "label": "make check, the whole gate",
+   "since": "2026-10-18",
+   "threshold_pct": 25.0,
+   "to": 1343.6
+  },
+  {
+   "change_pct": 30.9,
+   "commits": [
+    {
+     "pr": 831,
+     "sha": "f93c586ac",
+     "title": "Watchlist: a plex.tv Watchlist tab, catalog page, and Detail and hold-menu controls"
+    },
+    {
+     "pr": 832,
+     "sha": "2f2f5a511",
+     "title": "Route: a remux declares the source frame rate in the Load"
+    },
+    {
+     "pr": 833,
+     "sha": "84759b987",
+     "title": "tools: make test-crate works on the stable toolchain"
+    }
+   ],
+   "from": 1025.0,
+   "id": "bench.check.cargo",
+   "label": "make check: cargo branch",
+   "since": "2026-10-18",
+   "threshold_pct": 25.0,
+   "to": 1342.0
   }
  ],
  "schema": 2,
@@ -931,31 +861,31 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1418.8
+   "now": 1343.6
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 172.5
+   "now": 165.7
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 114.7
+   "now": 105.5
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 46.0
+   "now": 44.0
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 44.0
+   "now": 43.2
   }
  ],
  "thresholds": {
