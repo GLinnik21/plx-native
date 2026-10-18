@@ -55,10 +55,11 @@
 //! (`popover::host::set_reflow`) and recaptured once when the cards stop.
 //!
 //! **Where cards stand while they move.** A card drawn over another is a bug at rest and in flight:
-//! the grid paints the leaving copies and ghosts, then the still cards, then the movers by the
+//! the grid paints the ghosts and leaving copies, then the still cards, then the cards fading in, then the movers by the
 //! length of their way (old slot to new, fixed when the landing began, the longest on top), then the
-//! focused card; a new card stays at alpha 0 while a moving survivor's straight path crosses its cell
-//! ([`Occupancy`]).
+//! focused card. A new card stays at alpha 0 while the cards in flight (their rects as they stand
+//! this frame, the union of their areas) cover half its cell or more, and begins to fade in on the
+//! first frame they cover less ([`Occupancy`]); it is then drawn under them, after the still cards.
 //!
 //! **Layout motion and the held page image.** These springs move layout, so they are not
 //! `idle::decorative`: while they run the dispatcher keeps a page image held. A landing that
@@ -458,8 +459,8 @@ impl Landing {
     /// frame after it shows the start state), nor while a menu veils the page (module doc). The
     /// frame a landing begins in only draws the start state (`fresh`), so a change that landed
     /// after the previous tick never shows its end before it moves. `occupy` is the grid's
-    /// cells: an arriving card waits at alpha 0 until no moving survivor's straight path crosses
-    /// its cell.
+    /// cells: an arriving card waits at alpha 0 until the moving survivors cover less than half of
+    /// its cell (their rects as they stand after this step).
     pub(crate) fn step(&mut self, dt: f32, k: (f32, f32), occupy: Option<&Occupancy<'_>>) {
         let Some(a) = self.anim.as_mut() else { return };
         self.paused = true;
@@ -479,16 +480,16 @@ impl Landing {
             s.x.step(0.0, k.0, dt);
             s.y.step(0.0, k.0, dt);
         }
-        // a card that has not begun to appear waits while a survivor is, or will be, in its cell
+        // a card that has not begun to appear waits while the cards in flight cover half its cell
+        // or more (their rects as they stand now: one that has not reached the cell yet does not hold it)
         let blocked: Vec<u64> = occupy.map_or_else(Vec::new, |o| {
-            let sweeps: Vec<(f32, f32, f32, f32)> = a
+            let index: HashMap<u64, usize> = self.keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+            let flying: Vec<Rect> = a
                 .off
                 .iter()
                 .filter_map(|(k, s)| {
-                    let at = o.slot_of(self.keys.iter().position(|x| x == k)?);
-                    let (x0, x1) = (at.0.min(at.0 + s.x.pos), at.0.max(at.0 + s.x.pos));
-                    let (y0, y1) = (at.1.min(at.1 + s.y.pos), at.1.max(at.1 + s.y.pos));
-                    Some((x0, y0, x1 + o.size.0, y1 + o.size.1))
+                    let at = o.slot_of(*index.get(k)?);
+                    Some((at.0 + s.x.pos, at.1 + s.y.pos, o.size.0, o.size.1))
                 })
                 .collect();
             // (a card that changed row crossfades from where it stood: it is not new)
@@ -496,9 +497,8 @@ impl Landing {
                 .iter()
                 .filter(|(k, s)| s.pos <= 0.0 && !a.wrap.contains_key(*k))
                 .filter_map(|(k, _)| {
-                    let at = o.slot_of(self.keys.iter().position(|x| x == k)?);
-                    let (cx1, cy1) = (at.0 + o.size.0, at.1 + o.size.1);
-                    sweeps.iter().any(|&(x0, y0, x1, y1)| x0 < cx1 - 1.0 && x1 > at.0 + 1.0 && y0 < cy1 - 1.0 && y1 > at.1 + 1.0).then_some(*k)
+                    let at = o.slot_of(*index.get(k)?);
+                    (covered_share((at.0, at.1, o.size.0, o.size.1), &flying) >= HALF).then_some(*k)
                 })
                 .collect()
         });
@@ -523,6 +523,41 @@ impl Landing {
 pub(crate) struct Occupancy<'a> {
     pub slot: &'a dyn Fn(usize) -> (f32, f32),
     pub size: (f32, f32),
+}
+
+/// A rect as `(x, y, w, h)`, px.
+type Rect = (f32, f32, f32, f32);
+
+/// The share of a new card's cell that the cards in flight must cover to hold it at alpha 0: it
+/// begins to appear on the first frame they cover less than this.
+const HALF: f32 = 0.5;
+
+/// The share of `cell` that `others` cover together, 0 to 1: the area of their union inside the cell
+/// (two cards in flight may cross each other, so their areas are not summed).
+fn covered_share(cell: Rect, others: &[Rect]) -> f32 {
+    let (cx1, cy1) = (cell.0 + cell.2, cell.1 + cell.3);
+    let inside: Vec<(f32, f32, f32, f32)> = others
+        .iter()
+        .map(|r| (r.0.max(cell.0), r.1.max(cell.1), (r.0 + r.2).min(cx1), (r.1 + r.3).min(cy1)))
+        .filter(|r| r.2 > r.0 && r.3 > r.1)
+        .collect();
+    if inside.is_empty() || cell.2 <= 0.0 || cell.3 <= 0.0 {
+        return 0.0;
+    }
+    let mut xs: Vec<f32> = inside.iter().flat_map(|r| [r.0, r.2]).collect();
+    let mut ys: Vec<f32> = inside.iter().flat_map(|r| [r.1, r.3]).collect();
+    xs.sort_by(f32::total_cmp);
+    ys.sort_by(f32::total_cmp);
+    let mut area = 0.0;
+    for xw in xs.windows(2) {
+        for yw in ys.windows(2) {
+            let (mx, my) = ((xw[0] + xw[1]) * 0.5, (yw[0] + yw[1]) * 0.5);
+            if inside.iter().any(|r| r.0 <= mx && mx < r.2 && r.1 <= my && my < r.3) {
+                area += (xw[1] - xw[0]) * (yw[1] - yw[0]);
+            }
+        }
+    }
+    area / (cell.2 * cell.3)
 }
 
 impl Occupancy<'_> {

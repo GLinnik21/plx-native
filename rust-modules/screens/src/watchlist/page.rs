@@ -1205,6 +1205,18 @@ impl WatchlistScreen {
         out
     }
 
+    /// Test support: the title the focus caption shows now: the focused card's ghost while the
+    /// landing holds the caption of a card that left, else the focused tile's own.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_probe(&self, focus: Option<u32>) -> Option<String> {
+        let grid = self.stack.grid(Sec::Items)?;
+        if let Some(key) = grid.ghost_caption() {
+            return self.page.ghosts.get(&key).map(|g| g.0.row.title.clone());
+        }
+        let i = self.page.cell_of(focus?)?;
+        self.page.tiles.get(i).map(|t| t.row.title.clone())
+    }
+
     /// The poster path and server the tile at `i` asks the poster store for (empty path: the
     /// skeleton); the app's wiring tests read it too.
     pub fn art_of(&self, i: usize) -> Option<(String, u16)> {

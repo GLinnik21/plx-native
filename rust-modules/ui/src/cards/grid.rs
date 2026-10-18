@@ -30,6 +30,8 @@ pub enum DrawRole {
     Leaving,
     /// A card at rest in its slot.
     Still,
+    /// A new card (or one that changed row) fading in at its slot, under every card in flight.
+    Arriving,
     /// A survivor sliding to its slot.
     Moving,
     /// The focused card.
@@ -105,8 +107,8 @@ impl GridSpec {
     /// removed card's ghost sinks. Nothing starts while a menu veils the page: the Remove lands on
     /// the first feed after the veil drops below `CLOSING_GONE` (`landing.rs`); a menu that lets the
     /// page reflow (`Screen::lets_host_reflow`) veils nothing. The frame a landing begins in draws
-    /// the start state, and the draw order is leaving copies, still cards, movers by the length of
-    /// their way, the focused card. Off by default: a grid whose owner keeps no removed cards for
+    /// the start state, and the draw order is leaving copies, still cards, cards fading in, movers by the
+    /// length of their way, the focused card. Off by default: a grid whose owner keeps no removed cards for
     /// the ghosts still gets the slide.
     pub const fn animate_landings(self, on: bool) -> Self {
         Self { landings: on, ..self }
@@ -611,19 +613,24 @@ impl Grid {
         self.record_stops(f, p, src);
     }
 
-    /// The cards [`draw`](Self::draw) paints after the leaving copies, back to front.
+    /// The cards [`draw`](Self::draw) paints after the leaving copies, back to front: still cards,
+    /// cards fading in, movers by the length of their way, the focused card.
     fn draw_plan(&self, n: usize, focus: Option<usize>, bands: &[GridBand]) -> Vec<(DrawRole, usize)> {
         let mut plan = Vec::new();
         let mut moving: Vec<(f32, usize)> = Vec::new();
+        let mut arriving = Vec::new();
         for i in self.window(n) {
             if focus == Some(i) || self.above_edge(i, bands) {
                 continue;
             }
             match self.landing.travel(n, i) {
                 Some(t) => moving.push((t, i)),
+                None if self.landing.alpha(n, i) < 1.0 => arriving.push((DrawRole::Arriving, i)),
                 None => plan.push((DrawRole::Still, i)),
             }
         }
+        // a card still fading in is under every card in flight, which it may be partly behind
+        plan.extend(arriving);
         // the longest way (old slot to new, fixed when the landing began) draws on top of the shorter
         moving.sort_by(|a, b| a.0.total_cmp(&b.0));
         plan.extend(moving.into_iter().map(|(_, i)| (DrawRole::Moving, i)));
@@ -744,10 +751,20 @@ impl Grid {
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
     }
 
-    /// The focused card left as a ghost and the landing has not stepped: the caption is still the
-    /// ghost's, and the card focus reconciled to draws none yet.
+    /// The focused card left as a ghost and the landing has not made its first moving step (the menu's
+    /// veil, a held image, or the frame it began in is still being drawn as the start state): the
+    /// caption is still the ghost's, and the card focus reconciled to draws none yet. It changes on the
+    /// frame the springs first step, with [`landing_waiting`](Self::landing_waiting)'s other readers
+    /// (the header count).
     fn caption_held(&self) -> bool {
-        self.landing.waiting() && self.landing.ghosts().iter().any(|g| g.focused)
+        self.landing_waiting() && self.landing.ghosts().iter().any(|g| g.focused)
+    }
+
+    /// Test support: the element of the focused card's ghost whose caption is on screen now (the
+    /// caption the reader reads under the focus), if the ghost still holds it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_caption(&self) -> Option<u64> {
+        self.landing.ghosts().iter().find(|g| g.focused && self.caption_held()).map(|g| g.key)
     }
 
     /// The cards a landing moved to another row, fading out where they stood (at rest, never
@@ -869,7 +886,7 @@ impl Grid {
             ghosts.overlay(pr, j, &tile, f.measure);
             // The focused card's caption stays as drawn until the landing steps: from then on it is
             // the new focus card's, which moves with the focus.
-            if g.focused && self.landing.waiting() {
+            if g.focused && self.landing_waiting() {
                 let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
                 let label = ghosts.label(j).revealed(card_row::band_reveal(open));
                 if label.reveal > 0.0 {

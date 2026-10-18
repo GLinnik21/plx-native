@@ -197,7 +197,7 @@ draws the frame before it), never at the commit, so the number and the tiles mov
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
 menu: between the commit and the landing's first step nothing on the grid changes (tile slots and
-scales, the caption under the focused row, the count). Then, on one frame, the removed tile's ghost
+scales, the caption under the focused row, the count, the title it reads). Then, on one frame, the removed tile's ghost
 fades, the survivors move, and focus transfers to the next title, whose pop RISES from rest into the
 focus pop as the ghost sinks. That rise is the intended look (the design Motion board's "takeover"
 spring), not a departure from the design.
@@ -216,7 +216,7 @@ the hold menu is re-rendered or re-blurred while it opens, stands or closes, and
 does not move until it has let go (the Remove landing above). **The Sort & Filter menu shows each
 click**: its value reaches the grid at once and the cards reflow under the open panel (a card that
 changes slot in its row slides, one that changes row crossfades, the longest mover on top, a new
-card appearing once the survivors have left its cell). While they move the host is drawn live (no
+card starts to fade in once the cards in flight cover less than half its cell, drawn under them). While they move the host is drawn live (no
 per-frame capture); when they stop it is taken once more and the old look crossfades into the new
 ground over about 150 ms. An opener lifted over the dim (the hold menu's
 card, the Sort & Filter pill) is not in the lens.

@@ -1,6 +1,6 @@
 //! What the Watchlist grid DRAWS while its cards reflow (a Sort & Filter change, a reorder, a count
 //! change, a Remove): the first frame of a change is the frame before it, no two cards share a cell
-//! at rest or in flight, and the back-to-front order is ghosts, still cards, moving survivors (the
+//! at rest or in flight, and the back-to-front order is ghosts, leaving copies, still cards, cards fading in, moving survivors (the
 //! longest path on top), the focused card.
 //!
 //! These read `WatchlistScreen::drawn_probe`, which is `Grid::draw`'s own plan with the rects it
@@ -37,7 +37,7 @@ fn cards(h: &Harness) -> Vec<Drawn> {
     h.screen
         .drawn_probe(h.focus.map(|k| k.elem))
         .into_iter()
-        .filter(|d| matches!(d.role, Some(DrawRole::Still | DrawRole::Moving | DrawRole::Focus)))
+        .filter(|d| matches!(d.role, Some(DrawRole::Still | DrawRole::Arriving | DrawRole::Moving | DrawRole::Focus)))
         .collect()
 }
 
@@ -48,9 +48,10 @@ fn overlap(a: Rect, b: Rect) -> f32 {
 }
 
 /// Two drawn cards sharing a cell: `(a, b)` of the first pair whose rects overlap while both can be
-/// seen.
+/// seen. A card fading in is not counted: it is drawn under the cards in flight and begins once its
+/// cell is half clear (`a_new_card_starts_to_fade_in_once_its_cell_is_half_clear`).
 fn sharing(h: &Harness) -> Option<(String, String)> {
-    let cs: Vec<Drawn> = cards(h).into_iter().filter(|d| d.alpha > 0.01).collect();
+    let cs: Vec<Drawn> = cards(h).into_iter().filter(|d| d.alpha > 0.01 && d.role != Some(DrawRole::Arriving)).collect();
     for (i, a) in cs.iter().enumerate() {
         for b in &cs[i + 1..] {
             if overlap(a.rect, b.rect) > 0.0 {
@@ -133,12 +134,11 @@ fn no_two_cards_share_a_cell_at_rest() {
     }
 }
 
-/// **A card that arrives waits for the survivors to leave its cell.** Two titles become four, the
+/// **A card that arrives does not share a cell with a card at rest.** Two titles become four, the
 /// two new ones in front: the old two slide from cells 0 and 1 to 2 and 3, and the new two fade in
-/// at 0 and 1. A new card visible while a survivor still stands in its cell is two posters in one
-/// cell.
+/// at 0 and 1, under the movers: no two cards share a cell but a fading one with the cards over it.
 #[test]
-fn a_new_card_stays_transparent_while_a_survivor_is_in_its_cell() {
+fn no_cards_share_a_cell_in_flight_but_one_fading_in_under_the_movers() {
     let mut h = Harness::new(tiles(2));
     h.focus_index(0);
     h.run(60);
@@ -157,6 +157,84 @@ fn a_new_card_stays_transparent_while_a_survivor_is_in_its_cell() {
     });
     assert!(released.is_some(), "the new cards do arrive");
     assert!(cards(&h).iter().all(|d| d.alpha > 0.999), "and are whole at rest");
+}
+
+/// Two titles become four, the new two in front: the survivors slide two cells right under the new
+/// cards' cells. Returns the harness with the page fed, before its first tick.
+fn two_become_four() -> Harness {
+    let mut h = Harness::new(tiles(2));
+    h.focus_index(0);
+    h.run(60);
+    let mut four: Vec<WatchTile> = vec![tile(100), tile(101)];
+    four.extend(h.screen.tiles().iter().cloned());
+    h.screen.input(WatchlistIn::Rows(four));
+    h
+}
+
+fn is_new(d: &Drawn) -> bool {
+    d.guid.ends_with("g100") || d.guid.ends_with("g101")
+}
+
+/// The share of `cell` the `movers` cover (they do not overlap one another here).
+fn covered(cell: Rect, movers: &[Rect]) -> f32 {
+    movers.iter().map(|m| overlap(cell, *m)).sum::<f32>() / (cell.w * cell.h)
+}
+
+/// **A new card starts to appear once its cell is half clear.** It waits at alpha 0 while the cards
+/// in flight cover half its cell or more, and its fade begins on the first frame they cover less,
+/// not when the last of them has gone (a large re-toggle showed a dozen frames of empty cells).
+#[test]
+fn a_new_card_starts_to_fade_in_once_its_cell_is_half_clear() {
+    let mut h = two_become_four();
+    let (mut began, mut half_clear): ([Option<u32>; 2], [Option<u32>; 2]) = ([None; 2], [None; 2]);
+    play(&mut h, 300, |h, f| {
+        let probe = cards(h);
+        let movers: Vec<Rect> = probe.iter().filter(|d| matches!(d.role, Some(DrawRole::Moving | DrawRole::Focus)) && !is_new(d)).map(|d| d.rect).collect();
+        for d in probe.iter().filter(|d| is_new(d)) {
+            let k = usize::from(d.guid.ends_with("g101"));
+            if half_clear[k].is_none() && covered(d.rect, &movers) < 0.5 {
+                half_clear[k] = Some(f);
+            }
+            if began[k].is_none() && d.alpha > 0.0 {
+                began[k] = Some(f);
+            }
+        }
+    });
+    assert!(half_clear.iter().all(|f| f.is_some_and(|f| f > 0)), "premise: the cells start covered and clear later: {half_clear:?}");
+    assert_eq!(began, half_clear, "each new card begins to fade on the first frame its cell is under half covered");
+}
+
+/// **A fading-in card is under every card in flight.** Back to front: ghosts, leaving copies, still
+/// cards, the cards fading in, the movers (longest path last), the focused card; the new card that is
+/// partly covered is drawn before the card that covers it.
+#[test]
+fn a_card_fading_in_is_drawn_under_the_cards_in_flight() {
+    let mut h = two_become_four();
+    let mut stacked = false;
+    play(&mut h, 300, |h, f| {
+        let probe = h.screen.drawn_probe(h.focus.map(|k| k.elem));
+        let at = |pred: &dyn Fn(&Drawn) -> bool| probe.iter().position(pred);
+        for (i, new) in probe.iter().enumerate().filter(|(_, d)| is_new(d) && d.alpha > 0.0 && d.alpha < 1.0) {
+            assert_eq!(new.role, Some(DrawRole::Arriving), "frame {f}: a fading card is drawn as arriving: {new:?}");
+            for (j, over) in probe.iter().enumerate().filter(|(_, d)| matches!(d.role, Some(DrawRole::Moving | DrawRole::Focus))) {
+                if overlap(new.rect, over.rect) > 0.0 {
+                    assert!(i < j, "frame {f}: {} fading in is drawn over {} in flight", new.guid, over.guid);
+                    stacked = true;
+                }
+            }
+        }
+        let last_new = probe.iter().rposition(|d| d.role == Some(DrawRole::Arriving));
+        let first_move = at(&|d| matches!(d.role, Some(DrawRole::Moving)));
+        if let (Some(a), Some(m)) = (last_new, first_move) {
+            assert!(a < m, "frame {f}: an arriving card is drawn after a mover");
+        }
+        let still = probe.iter().rposition(|d| d.role == Some(DrawRole::Still));
+        let first_arriving = at(&|d| d.role == Some(DrawRole::Arriving));
+        if let (Some(s), Some(a)) = (still, first_arriving) {
+            assert!(s < a, "frame {f}: a still card is drawn after an arriving one");
+        }
+    });
+    assert!(stacked, "premise: a card fading in was partly under a card in flight");
 }
 
 /// **Back to front: ghosts, still cards, moving survivors (the longest path last), the focused
@@ -181,8 +259,9 @@ fn the_draw_order_is_ghost_still_moving_by_path_length_focus() {
             None => 0,
             Some(DrawRole::Leaving) => 1,
             Some(DrawRole::Still) => 2,
-            Some(DrawRole::Moving) => 3,
-            Some(DrawRole::Focus) => 4,
+            Some(DrawRole::Arriving) => 3,
+            Some(DrawRole::Moving) => 4,
+            Some(DrawRole::Focus) => 5,
         };
         assert!(roles.windows(2).all(|w| rank(&w[0]) <= rank(&w[1])), "frame {f}: roles out of order: {roles:?}");
         assert_eq!(roles.last(), Some(&Some(DrawRole::Focus)), "frame {f}: the focused card is drawn last: {roles:?}");

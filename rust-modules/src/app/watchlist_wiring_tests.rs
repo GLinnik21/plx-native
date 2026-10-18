@@ -735,3 +735,87 @@ fn the_hold_menu_still_freezes_the_grid_under_it() {
     assert!(d.surface_up(), "the menu is still up");
     assert_eq!(guids(&d).len(), 14, "the grid under a hold menu does not move");
 }
+
+// ---------------------------------------------------------------------------------------------
+// The focus caption and the header count change together.
+// ---------------------------------------------------------------------------------------------
+
+/// Fourteen titles named `T1`..`T14`, every third a show.
+fn named() -> Arc<Script> {
+    let names: Vec<String> = (1..=14).map(|n| format!("T{n}")).collect();
+    let titles: Vec<(u8, &str)> = names.iter().enumerate().map(|(i, s)| (i as u8 + 1, s.as_str())).collect();
+    Script::with_kinds(&titles, true, |n| if n % 3 == 0 { WatchKind::Show } else { WatchKind::Movie })
+}
+
+/// What the header counts and what the focus caption reads, this frame.
+fn caption_and_count(d: &Dispatcher<AppHost>) -> (Option<String>, Option<Count>) {
+    (page(d).caption_probe(d.focus().map(|k| k.elem)), page(d).count())
+}
+
+/// Frames until `changed` has been seen, recording `(caption, count)` of each.
+fn record(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32, frames: u32) -> Vec<(Option<String>, Option<Count>)> {
+    (0..frames)
+        .map(|i| {
+            super::frame(d, rig, tick(from + i), vec![]);
+            caption_and_count(d)
+        })
+        .collect()
+}
+
+/// The first frame whose reading differs from the one before it, by `pick`.
+fn first_change<T: PartialEq>(rec: &[(Option<String>, Option<Count>)], pick: impl Fn(&(Option<String>, Option<Count>)) -> T) -> Option<usize> {
+    rec.windows(2).position(|w| pick(&w[0]) != pick(&w[1])).map(|i| i + 1)
+}
+
+/// **The caption after a Remove changes on the frame the count drops.** The hold menu chooses Remove
+/// and goes; the focus caption keeps the removed title through the menu's dismissal, and the title
+/// that took the focus is read on the landing's first moving frame, the frame the count shows 13.
+#[test]
+fn a_removes_caption_changes_on_the_frame_the_count_drops() {
+    use plx_data::watchlist::model::TileState;
+    use plx_machine::machine::Key;
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&named());
+    settle(&mut d, &mut rig, 2);
+    quiet(&mut d, &mut rig, 100);
+    assert_eq!(caption_and_count(&d), (Some("T1".into()), Some(Count::All(14))), "premise: the first title is focused");
+    let entry = d.nav.top_page().unwrap().id;
+    let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(1), TileState::NotOnAnyServer, None).expect("on the page");
+    super::open_item_menu(&mut d, arg);
+    for i in 0..40 {
+        super::frame(&mut d, &mut rig, tick(200 + i), vec![]);
+    }
+    assert!(d.surface_up(), "premise: the hold menu is up");
+    assert!(rig.watchlist_remove(&guid(1), true));
+    super::frame(&mut d, &mut rig, tick(240), super::script_key(Key::Back, tick(240)));
+    let rec = record(&mut d, &mut rig, 241, 120);
+    let caption = first_change(&rec, |r| r.0.clone()).expect("the caption reads the next title");
+    let count = first_change(&rec, |r| r.1).expect("the count drops");
+    assert!(rec[..caption].iter().all(|r| r.0.as_deref() == Some("T1")), "the removed title is kept through the dismissal: {:?}", &rec[..caption]);
+    assert_eq!(rec[caption].0.as_deref(), Some("T2"), "the next title is read");
+    assert_eq!(rec[count].1, Some(Count::All(13)), "the count drops to 13");
+    assert_eq!(caption, count, "the caption changed on frame {caption}, the count on frame {count}");
+}
+
+/// The same for a Sort & Filter change that takes the focused card away: Movies drops the focused
+/// show; its title stays under the focus until the cards move, with the count.
+#[test]
+fn a_filters_caption_changes_on_the_frame_the_count_drops() {
+    use plx_machine::machine::Key;
+    let _serial = plx_base::testlock::serial();
+    let (mut d, mut rig) = mounted(&named());
+    settle(&mut d, &mut rig, 2);
+    quiet(&mut d, &mut rig, 100);
+    for (i, k) in [Key::Right, Key::Right].into_iter().enumerate() {
+        super::frame(&mut d, &mut rig, tick(190 + i as u32), super::script_key(k, tick(190 + i as u32)));
+    }
+    quiet(&mut d, &mut rig, 200);
+    assert_eq!(caption_and_count(&d), (Some("T3".into()), Some(Count::All(14))), "premise: a show is focused");
+    let mut rec = vec![caption_and_count(&d)];
+    rig.watchlist_set_options(&MOVIES);
+    rec.extend(record(&mut d, &mut rig, 300, 120));
+    let caption = first_change(&rec, |r| r.0.clone()).expect("the caption reads another title");
+    let count = first_change(&rec, |r| r.1).expect("the count follows the filter");
+    assert!(rec[..caption].iter().all(|r| r.0.as_deref() == Some("T3")), "the dropped title is kept until the cards move: {:?}", &rec[..caption]);
+    assert_eq!(caption, count, "the caption changed on frame {caption}, the count on frame {count}");
+}
