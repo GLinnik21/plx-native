@@ -8,8 +8,18 @@ pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) use plx_ui::cards::{GridBand, MAX_GRID_BANDS};
-pub(super) const CONTENT_TOP: f32 = plx_ui::consts::GRID_TOP_Y;
-pub(super) const LIBRARY_ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H + plx_ui::consts::CARD_DY + plx_ui::consts::TITLE_DY;
+/// Where the page's header row stands (`PageHeader`'s top): the document starts here.
+pub(super) const HEADER_Y: f32 = plx_ui::page_header::TOP;
+pub(super) const CONTENT_TOP: f32 = HEADER_Y;
+/// The header block: the header row (56) and the air under it, so the grid's first tile top lands
+/// on [`LIBRARY_GRID_TOP`] (244), 96 under the row's top.
+pub(super) const HEADER_BLOCK_H: f32 = 96.0;
+pub(super) const LIBRARY_ROW_H: f32 = HEADER_BLOCK_H;
+/// Screen y of the first grid row's tile top at rest.
+#[cfg(test)]
+#[cfg(test)]
+pub(super) const LIBRARY_GRID_TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
+/// The heading band the hub shelves' `shelves` mode keeps above its grid (no longer drawn).
 pub(super) const GRID_HEAD_H: f32 = plx_ui::consts::TITLE_DY
     + plx_ui::consts::CARD_DY
     + 52.0
@@ -233,7 +243,7 @@ impl Layout {
     /// The document band an empty answer's read-out stands in — `(top, height)` in document
     /// space, directly under the heading row — when the layout reserves one.
     pub(super) fn empty_band(&self) -> Option<(f32, f32)> {
-        (self.empty && self.grid_head && self.rows == 0).then(|| (self.grid_top(), self.grid_pitch()))
+        (self.empty && (self.grid_head || self.libraries) && self.rows == 0).then(|| (self.grid_top(), self.grid_pitch()))
     }
 
     pub(super) fn max_scroll(&self) -> f32 {
@@ -241,7 +251,11 @@ impl Layout {
     }
 
     pub(super) fn row_reveal(&self, row: usize) -> f32 {
-        let top = if row == 0 { self.grid_block_top() } else { self.row_top(row) };
+        // With no shelves above it the first row rests at the top of the page, header in view;
+        // below shelves it scrolls up to the grid's own block.
+        let top = if row == 0 {
+            if self.shelf_run == 0.0 { 0.0 } else { self.grid_block_top() }
+        } else { self.row_top(row) };
         top.clamp(0.0, self.max_scroll())
     }
 
@@ -283,7 +297,7 @@ impl Layout {
             if d < best.0 { best = (d, Block::Shelf(above)); }
         }
 
-        if self.grid_head {
+        if self.grid_head || self.rows > 0 {
             for row in [saved_row.min(self.rows.saturating_sub(1)), 0] {
                 let d = (self.row_reveal(row) - scroll).abs();
                 if d < best.0 {
@@ -328,28 +342,6 @@ pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
     let drive = drive.min(n.saturating_sub(1)) as f32;
     plx_ui::cards::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
         (drive - 1.0) * RAIL_PITCH, max)
-}
-
-/// Preserve the selected favourite while reserving a visible overflow control.
-pub(super) fn library_window(widths: &[f32], selected: usize, available: f32, gap: f32, more: f32, cap: usize) -> (usize, usize) {
-    if widths.is_empty() || cap == 0 { return (0, 0); }
-    let total = widths.iter().sum::<f32>() + gap * widths.len().saturating_sub(1) as f32;
-    if widths.len() <= cap && total <= available { return (0, widths.len()); }
-    let budget = available - more - gap;
-    let room = cap.saturating_sub(1).max(1);
-    let selected = selected.min(widths.len() - 1);
-    for start in 0..=selected {
-        let mut width = 0.0;
-        let mut len = 0;
-        for &pill in widths.iter().skip(start).take(room) {
-            let step = pill + if len == 0 { 0.0 } else { gap };
-            if len > 0 && width + step > budget { break; }
-            width += step;
-            len += 1;
-        }
-        if selected < start + len { return (start, len); }
-    }
-    (selected, 1)
 }
 
 pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {

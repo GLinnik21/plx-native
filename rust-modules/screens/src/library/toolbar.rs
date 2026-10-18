@@ -1,25 +1,40 @@
-//! One value-chip model supplies both focus geometry and paint runs.
-use std::ffi::{CStr, CString};
+//! The header row's elements: the page's controls, the Collections control's state, and which
+//! library the row names. The geometry and the paint are `header.rs`.
 use super::*;
-use plx_ui::value_chip::ValueChip;
 
-pub(super) struct Chip {
-    pub name: &'static CStr,
-    pub value: CString,
-    pub note: Option<CString>,
+/// The header's controls. Their ids sit beside the other page controls (`SORT`, `FILTER`, ...).
+pub(super) const COLLECTIONS: u32 = 8;
+pub(super) const RECOMMENDED: u32 = 9;
+pub(super) const SORTFILTER: u32 = 10;
+
+/// What the Collections control knows about its count (`LibraryLike::collections_count`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum CollectionsControl {
+    /// Not probed yet: the control shows "Collections" with no number.
+    #[default]
+    Unknown,
+    Count(u32),
+    /// The probe found none, or the server refused it (HTTP 403): the control is not on the row.
+    Hidden,
 }
-impl Chip {
-    pub fn width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
-        ValueChip::width(measure, self.name, &self.value, self.note.as_deref())
+
+impl CollectionsControl {
+    pub(super) fn of(answer: Option<Result<u32, crate::registry::Forbidden>>) -> Self {
+        match answer {
+            None => Self::Unknown,
+            Some(Ok(0) | Err(_)) => Self::Hidden,
+            Some(Ok(n)) => Self::Count(n),
+        }
     }
 }
 
 impl LibraryScreen {
-    /// Every library lists more than one type ([`plx_data::browse::LibraryType::offered`]), so TYPE
-    /// always leads; FILTER goes while the listed type takes no filters (collections).
+    /// The controls on the row, left to right. A hidden Collections control is not on it.
     pub(super) fn toolbar_elems(&self) -> &'static [u32] {
-        if self.listed.filters() { &[TYPE, SORT, FILTER] } else { &[TYPE, SORT] }
+        if self.collections == CollectionsControl::Hidden { &[RECOMMENDED, SORTFILTER] }
+        else { &[COLLECTIONS, RECOMMENDED, SORTFILTER] }
     }
+
 
     pub(super) fn view_section<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<usize> {
         let directory = H::directory(cx);
@@ -30,68 +45,12 @@ impl LibraryScreen {
             .filter(|index| *index < directory.sections().len())
     }
 
-    pub(super) fn library_label<H: LibraryLike>(&self, section: usize, cx: &Cx<'_, H>) -> CString {
+    /// A library's name on the header row: its title, and its owner's handle when someone else's.
+    pub(super) fn library_label<H: LibraryLike>(&self, section: usize, cx: &Cx<'_, H>) -> String {
         let directory = H::directory(cx);
-        let value = if let Some(section) = directory.sections().get(section) {
-            let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
-                .map(|(_, source)| source.handle.as_str()).unwrap_or("");
-            if owner.is_empty() { section.row.title.clone() } else { format!("{} {owner}", section.row.title) }
-        } else {
-            let total = self.view_section(cx).map(|section| directory.favorite_sections_for(section).count()).unwrap_or(0);
-            format!("+{}", total.saturating_sub(self.libraries.len().saturating_sub(1)))
-        };
-        CString::new(value).unwrap_or_default()
-    }
-
-    pub(super) fn library_lays<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Vec<plx_ui::widgets::StripLay> {
-        plx_ui::widgets::strip_layout_measured(
-            self.libraries.iter().map(|(_, section)| self.library_label(*section, cx).to_string_lossy().into_owned()),
-            MARGIN_X + plx_ui::widgets::STRIP_PAD, plx_ui::theme::size::BODY,
-            plx_ui::widgets::STRIP_GAP_WIDE, cx.measure)
-    }
-
-    pub(super) fn toolbar_chip<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>) -> Chip {
-        let listing = H::listing(cx);
-        let queued = self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action);
-        let (name, value) = if elem == TYPE {
-            let kind = match queued {
-                Some(GridAction::LibraryType(kind)) => *kind,
-                _ => listing.library_type(),
-            };
-            (plx_platform::i18n::msg::browse_library_type_c(), kind.title(self.kind).to_owned())
-        } else if elem == SORT {
-            let sort = match queued {
-                Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
-                _ => listing.sorts().get(listing.sort_index()),
-            };
-            (plx_platform::i18n::msg::browse_library_sort_c(), sort.map_or(plx_platform::i18n::msg::browse_library_title(), |sort| sort.title.as_str()).to_owned())
-        } else {
-            let genre = match queued {
-                Some(GridAction::Genre { id }) => id.as_ref().and_then(|id| listing.genres().iter().find(|genre| &genre.id == id)),
-                _ => listing.genre(),
-            }.map(|genre| genre.title.as_str());
-            let unwatched = match queued {
-                Some(GridAction::Unwatched { desired }) => *desired,
-                _ => listing.unwatched(),
-            };
-            (plx_platform::i18n::msg::browse_library_filter_c(), match (genre, unwatched) {
-                (None, false) => plx_platform::i18n::msg::browse_library_all().into(),
-                (None, true) => plx_platform::i18n::msg::browse_library_unwatched().into(),
-                (Some(genre), false) => genre.into(),
-                (Some(genre), true) => plx_platform::i18n::msg::browse_library_genre_unwatched(genre),
-            })
-        };
-        Chip { name, value: CString::new(format!(" · {value}")).unwrap_or_default(), note: None }
-    }
-
-    pub(super) fn toolbar_chip_rect<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>, at: At) -> Rect {
-        let x = MARGIN_X + self.toolbar_elems().iter().take_while(|&&key| key != elem)
-            .map(|&key| self.toolbar_chip(key, cx).width(cx.measure) + 16.0).sum::<f32>();
-        let (layout, scroll) = match at {
-            At::Drawn => (&self.layout, self.scroll.pos),
-            At::SpringTarget => (&self.target_layout, self.scroll_target),
-        };
-        Rect::new(x, CONTENT_TOP + layout.grid_block_top() + plx_ui::consts::TITLE_DY + CARD_DY - scroll,
-            self.toolbar_chip(elem, cx).width(cx.measure), 52.0)
+        let Some(section) = directory.sections().get(section) else { return String::new() };
+        let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
+            .map(|(_, source)| source.handle.as_str()).unwrap_or("");
+        if owner.is_empty() { section.row.title.clone() } else { format!("{} {owner}", section.row.title) }
     }
 }

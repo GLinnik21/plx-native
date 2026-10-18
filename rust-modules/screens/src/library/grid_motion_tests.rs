@@ -65,8 +65,8 @@ fn a_type_switch_never_draws_the_empty_interim_layout() {
     page.initial = false;
     let mut engine = FocusEngine::new();
     settle(&mut page, &mut engine, &fixture, 0);
-    let chip = page.key(TYPE);
-    engine.set(OWNER, chip, Some(page.toolbar), By::Restore);
+    let chip = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, chip, Some(page.pair.groups_config().detail), By::Restore);
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: chip, by: By::Dir });
     settle(&mut page, &mut engine, &fixture, 2000);
     let head = |page: &LibraryScreen| page.layout.grid_block_top() - page.scroll.pos;

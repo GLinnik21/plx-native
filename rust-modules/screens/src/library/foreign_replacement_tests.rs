@@ -304,9 +304,8 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         for n in 163..240 {
             incoming.frame(&mut page, &mut engine, n);
         }
-        incoming.down(&mut page, &mut engine); // selected library -> toolbar
-        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()));
-        incoming.down(&mut page, &mut engine); // toolbar -> the incoming grid's first row, under the chip
+        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()), "the library name holds the header row");
+        incoming.down(&mut page, &mut engine); // the header row -> the incoming grid's first row
         let (row, col) = page.grid_position(engine.current(OWNER)).expect("DOWN lands in the grid");
         assert_eq!(row, 0);
         let key = engine.current(OWNER).unwrap();
