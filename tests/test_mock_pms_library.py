@@ -87,6 +87,36 @@ class LibraryRail(unittest.TestCase):
         for row in first["Metadata"]:
             self.assertEqual("thumb" in row, row["childCount"] > 0, row["title"])
 
+    def test_collections_count_probe_reads_total_size_of_a_zero_size_type_18_window(self):
+        """The header's "Collections · N": `all?type=18` with `Size=0` returns no rows and the
+        section's collection count as `totalSize` (docs/pms-api.md section 2b)."""
+        pms = MockPms(Library())
+        listed = get(pms, "/library/sections/1/collections")["Metadata"]
+        probe = get(pms, "/library/sections/1/all?type=18"
+                         "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
+        self.assertEqual(probe.get("Metadata", []), [])
+        self.assertEqual(probe["totalSize"], len(listed))
+        self.assertGreater(probe["totalSize"], 0)
+        shows = get(pms, "/library/sections/2/all?type=18"
+                         "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
+        self.assertEqual(shows["totalSize"], 0, "a section with no collections counts zero")
+
+    def test_a_smart_collection_is_opt_in_and_listed_with_smart_and_a_count(self):
+        plain = get(MockPms(Library()), "/library/sections/1/collections")["Metadata"]
+        self.assertTrue(all(str(r["smart"]) == "0" for r in plain), "the default data has none")
+        lib = Library()
+        lib.smart_collections = True
+        pms = MockPms(lib)
+        rows = get(pms, "/library/sections/1/collections")["Metadata"]
+        smart = [r for r in rows if str(r["smart"]) == "1"]
+        self.assertEqual(len(smart), 1)
+        self.assertEqual(smart[0]["subtype"], "movie")
+        self.assertGreater(smart[0]["childCount"], 0)
+        self.assertEqual(len(rows), len(plain) + 1)
+        probe = get(pms, "/library/sections/1/all?type=18"
+                         "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
+        self.assertEqual(probe["totalSize"], len(plain) + 1)
+
     def test_search_with_include_collections_answers_full_collection_rows(self):
         pms = MockPms(Library())
         listed = get(pms, "/library/sections/1/collections")["Metadata"]

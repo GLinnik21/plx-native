@@ -368,8 +368,16 @@ pub struct Metadata {
     /// Collection rows use this as their tag id (distinct from `ratingKey`).
     #[serde(default, deserialize_with = "de_i64")]
     pub index: i64, // season/episode number
+    /// A show's season count, or a collection's member count (`childCount`).
     #[serde(rename = "childCount", default, deserialize_with = "de_i64")]
     pub child_count: i64,
+    /// A SMART collection (`smart="1"`: a saved filter, not a hand-picked set). Collection rows
+    /// only; lenient because PMS sends it as `1`, `"1"` or `true` depending on the endpoint.
+    #[serde(default, deserialize_with = "de_bool")]
+    pub smart: bool,
+    /// `addedAt`, unix seconds (0 = the server sent none).
+    #[serde(rename = "addedAt", default, deserialize_with = "de_i64")]
+    pub added_at: i64,
     #[serde(rename = "updatedAt", default, deserialize_with = "de_i64")]
     pub updated_at: i64,
     /// `None` when the server sent none — kept apart from a real `0` (Specials), which a plain
@@ -583,6 +591,15 @@ pub struct MediaPart {
     pub container: String,
     #[serde(rename = "Stream", default)]
     pub stream: Vec<Stream>,
+}
+
+impl Stream {
+    /// A video stream whose transfer characteristic is PQ (HDR10) or HLG, or that carries Dolby
+    /// Vision (a Profile 5 file sends no `colorTrc`, so `DOVIPresent` is what marks it). The one
+    /// HDR rule: `metadata::convert_streams` applies the same test to the detail parse.
+    pub fn is_hdr(&self) -> bool {
+        matches!(self.color_trc.as_str(), "smpte2084" | "arib-std-b67") || self.dovi_present != 0
+    }
 }
 
 impl MediaPart {
