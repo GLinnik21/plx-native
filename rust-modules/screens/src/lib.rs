@@ -17,6 +17,7 @@ pub mod account_menu;
 pub mod alt_sources;
 pub mod tracks_panel;
 pub mod consent;
+pub mod catalog; // the catalog page's view-model (plan W6)
 pub mod collection;
 #[cfg(test)]
 mod cards_conformance_tests; // shared-card-sections Tier 2: every card screen through one black-box suite
@@ -39,3 +40,4 @@ pub mod profiles;
 pub mod registry;
 pub mod settings;
 pub mod preferences;
+pub mod watchlist;

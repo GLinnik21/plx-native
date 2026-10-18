@@ -361,6 +361,21 @@ class RenderLauncher(unittest.TestCase):
         zero = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={}, extra_holds=0)
         self.assertEqual(zero["PLXNATIVE_DUMP_EXTRA_HOLDS"], "0", "k=0 is a value, not 'unset'")
 
+    def test_the_overlay_switch_reaches_the_simulator_only_when_asked(self):
+        self.assertNotIn("PLXNATIVE_DUMP_ALLOW_OVERLAY", sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={}))
+        on = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={"PLXNATIVE_DUMP_ALLOW_OVERLAY": "1"})
+        self.assertNotIn("PLXNATIVE_DUMP_ALLOW_OVERLAY", on, "an inherited switch must not leak into a render")
+        on = sv.sim_env("/rt", "/out", "/rt/fifo", 1, 0, False, 1, base={}, allow_overlay=True)
+        self.assertEqual(on["PLXNATIVE_DUMP_ALLOW_OVERLAY"], "1")
+
+    def test_mock_discover_specs_are_json_objects(self):
+        self.assertEqual(sv.parse_mock_discover(['{"list":"default","guids":"all"}', '{"pms":"fail"}']),
+                         [{"list": "default", "guids": "all"}, {"pms": "fail"}])
+        self.assertEqual(sv.parse_mock_discover(None), [])
+        for bad in ("nope", "[1]", '"x"'):
+            with self.assertRaises(sv.Failure):
+                sv.parse_mock_discover([bad])
+
     def test_a_failed_run_leaves_no_master_for_encode_to_adopt(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = pathlib.Path(tmp)

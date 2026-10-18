@@ -2009,7 +2009,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   call `plx_machine::idle::invalidate()` — **a new async landing that repaints must add a call there**, or
   it arrives invisibly until the next keypress. **So must anything that animates from a CLOCK
   rather than a spring** — a millisecond ramp, a phase, a countdown — since `note_spring` cannot see
-  it: `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
+  it, through one of two doors: `idle::invalidate()` when what it changes is content,
+  `idle::note_motion()` when it is a time-driven decoration (the tab pulse) — under a standing
+  popover `invalidate` is page damage and re-captures the frozen host every frame. `Xfade::tick` (the CONTENT cross-fade — the Library's grid and page, Search's results,
   Filmography's preview; it was the ROUTE dip too until restructure phase 12 moved that to
   `ui::containers::transition::PageDip`, which reports from inside its own `tick` by construction)
   and `Spinner::draw` (every loading read-out) both shipped

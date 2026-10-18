@@ -1182,6 +1182,19 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
         if let Some(q) = plx_base::devtrig::read("search") {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
+        // `/tmp/plxnative-watchlist` — boot straight onto the Watchlist page (`SelectTab`, as the
+        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>`, or the
+        // page reads the real discover host; `tools/tv-session.sh --mock-plextv` arms both.
+        if plx_base::devtrig::flag("watchlist") {
+            crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
+        }
+        // `/tmp/plxnative-catalog=<24 hex>` — boot straight onto the catalog page of that title (a
+        // `ContentArg::Catalog` push over Home, as a Watchlist tile's OK opens it). The page reads
+        // the discover host like the Watchlist page, so pair it with `plxnative-discover=<mock
+        // url>`; a value that is not 24 hex digits arms nothing.
+        if let Some(hex) = plx_base::devtrig::read("catalog").and_then(|v| plx_data::watchlist::decode_hex(v.trim())) {
+            crate::app::bridge::open_catalog(&mut app.pages, hex, None);
+        }
         if let Some(s) = plx_base::devtrig::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
                 app.bridge.home_command(HomeCmd::SelectHero(n));
@@ -2575,6 +2588,8 @@ fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
                 anchor: [anchor_rect.x.to_bits(), anchor_rect.y.to_bits(), anchor_rect.w.to_bits(), anchor_rect.h.to_bits()],
                 loaded_episode: false,
                 from_home: true,
+                catalog: None,
+                watchlist: None,
             };
             crate::app::bridge::open_item_menu(&mut app.pages, arg);
         }

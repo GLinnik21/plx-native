@@ -111,6 +111,12 @@ const CURLOPT_URL: c_int = 10002;
 const CURLOPT_WRITEFUNCTION: c_int = 20011;
 const CURLOPT_WRITEDATA: c_int = 10001;
 const CURLOPT_HTTPHEADER: c_int = 10023;
+/// `CURLOPT_HEADERFUNCTION` (FUNCTIONPOINT 20000 + 79) and `CURLOPT_HEADERDATA` (CBPOINT 10000 + 29,
+/// the old `CURLOPT_WRITEHEADER`): both are in `curl.h` since libcurl 7.x, long before the 7.53.1
+/// floor, and both are set through the same two variadic `curl_easy_setopt` bindings as the write
+/// pair, so no new symbol, library or `dlopen` is involved.
+const CURLOPT_HEADERFUNCTION: c_int = 20079;
+const CURLOPT_HEADERDATA: c_int = 10029;
 const CURLOPT_POSTFIELDS: c_int = 10015;
 const CURLOPT_POSTFIELDSIZE: c_int = 60;
 const CURLOPT_POST: c_int = 47;
@@ -581,6 +587,8 @@ struct BodySink {
     body: Vec<u8>,
     max: Option<usize>,
     overflowed: bool,
+    /// The `ETag` of the response being read (see [`header_cb`]); the last hop's, never a redirect's.
+    etag: Option<String>,
 }
 
 impl BodySink {
@@ -589,6 +597,7 @@ impl BodySink {
             body: Vec::new(),
             max,
             overflowed: false,
+            etag: None,
         }
     }
 
@@ -633,6 +642,48 @@ extern "C" fn write_cb(
     }
 }
 
+/// libcurl `CURLOPT_HEADERFUNCTION`: keep the one response header this client reads, `ETag`.
+/// libcurl hands over each header line whole (CRLF included) and each hop's status line, so a
+/// status line forgets the previous hop's validator and the final response's wins. Always takes the
+/// line (returning anything else aborts the transfer); a line that is not UTF-8 text is ignored.
+/// Infallible code, so nothing can unwind across the C frame. The line is not capped here: libcurl
+/// bounds a header line itself, and a validator is kept verbatim (weak `W/` prefix and quotes too).
+extern "C" fn header_cb(
+    ptr: *mut c_char,
+    size: usize,
+    nitems: usize,
+    userdata: *mut c_void,
+) -> usize {
+    let n = size.saturating_mul(nitems);
+    if userdata.is_null() || ptr.is_null() {
+        return n;
+    }
+    let sink = unsafe { &mut *(userdata as *mut BodySink) };
+    let line = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
+    sink.note_header(line);
+    n
+}
+
+impl BodySink {
+    /// One raw header line: a status line clears the validator, an `ETag:` line sets it.
+    fn note_header(&mut self, line: &[u8]) {
+        if line.starts_with(b"HTTP/") {
+            self.etag = None;
+            return;
+        }
+        let Some(colon) = line.iter().position(|&b| b == b':') else { return };
+        if !line[..colon].eq_ignore_ascii_case(b"etag") {
+            return;
+        }
+        if let Ok(value) = std::str::from_utf8(&line[colon + 1..]) {
+            let value = value.trim();
+            if !value.is_empty() {
+                self.etag = Some(value.to_owned());
+            }
+        }
+    }
+}
+
 struct Easy(*mut CURL);
 
 impl Drop for Easy {
@@ -664,6 +715,10 @@ pub struct Resp {
     /// URL, strict verification, no redirects. A transfer that failed has no `Resp`, so this is
     /// never a pin from a connection that did not complete.
     pub peer_pin: Option<String>,
+    /// The final response's `ETag` header, trimmed and otherwise verbatim (a weak `W/"…"` keeps its
+    /// prefix and quotes), or `None` when it sent none. A 304 normally repeats the validator.
+    /// Present on every buffered request; the caller's own `If-None-Match` goes in `headers`.
+    pub etag: Option<String>,
 }
 impl Resp {
     pub fn ok(&self) -> bool {
@@ -747,7 +802,7 @@ fn finish_response(
             verify,
         });
     }
-    Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None })
+    Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None, etag: sink.etag })
 }
 
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
@@ -2131,6 +2186,15 @@ fn request_tls_sink(
                         CURLOPT_WRITEDATA,
                         (&mut sink as *mut BodySink) as *mut c_void,
                     );
+                    // HEADERDATA without a HEADERFUNCTION would send header bytes to the write
+                    // callback (into the body), so the data is set only once the function took.
+                    if curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void) == 0 {
+                        curl_easy_setopt_ptr(
+                            easy.0,
+                            CURLOPT_HEADERDATA,
+                            (&mut sink as *mut BodySink) as *mut c_void,
+                        );
+                    }
                 }
                 Some(stream) => {
                     stream.begin_attempt(
@@ -4307,6 +4371,11 @@ mod request_tests {
 #[cfg(test)]
 #[path = "net_roots_tests.rs"]
 mod roots_tests;
+
+/// The response `ETag` the header callback keeps (plan item NET1), alone and through libcurl.
+#[cfg(test)]
+#[path = "net_response_header_tests.rs"]
+mod response_header_tests;
 
 /// The `User-Agent` the transport installs: one header value, whichever path sends it.
 #[cfg(test)]

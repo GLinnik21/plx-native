@@ -15,7 +15,8 @@
 //! | `PLXNATIVE_DUMP_MAX_HOLD_MS=<ms>` | the fail-closed wall-clock bound on a stretch without progress (default 60000) |
 //! | `PLXNATIVE_DUMP_NO_HOLD=1` | write every frame whatever the debt (a negative-test switch, never a render) |
 //! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo, a never-resolving card or a failed art request (a proof switch) |
-//! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (the storyboard's compiled key schedule, `tests/video/feel.json`, arrives through this variable) |
+//! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (the storyboard's compiled key schedule, `tests/video/feel.json`, arrives through this variable). `hold` is OK held for [`HOLD_UP_AFTER`] frames (the long press that opens an item's context menu) |
+//! | `PLXNATIVE_DUMP_ALLOW_OVERLAY=1` | do not fail when a modal or popover is open. A MOTION-REVIEW switch: the underlay's dim field is cadenced by presented iterations, so such a frame is not guaranteed to be hold-independent (the hold-injection gate does not cover it) and the render is never a deliverable |
 //! | `PLXNATIVE_DUMP_EXTRA_HOLDS=<k>` or `r<seed>` | force `k` (or a seeded 0..=3) EXTRA held repeats on every clean virtual frame: the hold-injection gate's switch |
 //!
 //! **The clock.** `clock::set_replay(ORIGIN_MS + T(v))`, `T(v) = round(v * 1000 / 60)`, where `v` is
@@ -99,7 +100,8 @@
 //! (`placeholder::Frame::absent`), a card that can never resolve (an empty key while nothing else
 //! is pending) and an art request that FAILED (a 404, bytes that do not decode, a refused connect:
 //! the card would hold on its placeholder to the timeout; the run ends at once naming the key),
-//! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, and any
+//! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, unless `ALLOW_OVERLAY` (`site_video.py render --allow-overlay`)
+//! marks a motion review, which is never a deliverable; so does any
 //! PANIC on the loop's thread (a landgate take that never got its answer names the owed mailbox):
 //! a panic hook writes `dump.json` with the message and exits 3, so a failed run always leaves a
 //! valid summary. The launcher renames a failed run's master to `master.partial.mkv`. At the end the driver
@@ -138,6 +140,11 @@ use crate::app::App;
 
 /// Virtual frames between a scripted key's down edge and its up edge: 100 ms, a tap.
 const KEY_UP_AFTER: u64 = 6;
+
+/// Virtual frames a scripted `hold` keeps OK down: 750 ms, past the long-press threshold
+/// (`ui::press::LONG_MS`, 500 ms) and under the hold ceiling (1000 ms), so the item context menu
+/// opens while the key is still down and the release then springs the press back.
+const HOLD_UP_AFTER: u64 = 45;
 
 /// The preroll when none is asked for: virtual frames run and not written first, so the boot's
 /// first paint settles and a hero's reveal (a spring of well under a second) finishes before the
@@ -253,37 +260,42 @@ impl ExtraHolds {
 
 /// `PLXNATIVE_DUMP_KEYS`: `<v>:<key>,...` sorted by frame (stable, so two keys on one frame keep
 /// their order).
-pub(crate) fn parse_keys(spec: &str) -> Result<Vec<(u64, Key)>, String> {
+pub(crate) fn parse_keys(spec: &str) -> Result<Vec<(u64, Key, u64)>, String> {
     let mut out = Vec::new();
     for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (v, name) = part.split_once(':').ok_or_else(|| format!("PLXNATIVE_DUMP_KEYS: {part:?} is not <frame>:<key>"))?;
         let v = v.parse::<u64>().map_err(|_| format!("PLXNATIVE_DUMP_KEYS: {part:?}: the frame is not a number"))?;
+        let mut up_after = KEY_UP_AFTER;
         let key = match name {
+            "hold" => {
+                up_after = HOLD_UP_AFTER;
+                Key::Ok
+            }
             "up" => Key::Up,
             "down" => Key::Down,
             "left" => Key::Left,
             "right" => Key::Right,
             "ok" => Key::Ok,
             "back" => Key::Back,
-            other => return Err(format!("PLXNATIVE_DUMP_KEYS: {other:?} is not up/down/left/right/ok/back")),
+            other => return Err(format!("PLXNATIVE_DUMP_KEYS: {other:?} is not up/down/left/right/ok/back/hold")),
         };
-        out.push((v, key));
+        out.push((v, key, up_after));
     }
-    out.sort_by_key(|&(v, _)| v);
+    out.sort_by_key(|&(v, _, _)| v);
     Ok(out)
 }
 
 /// A scripted key that cannot be pressed AND released inside the run is an error at start, not a
 /// key that silently never happens: the run is `preroll + frames` virtual frames (the last is
 /// `preroll + frames - 1`), the down edge is on frame `v` and the up edge on `v + KEY_UP_AFTER`.
-pub(crate) fn check_key_schedule(keys: &[(u64, Key)], preroll: u32, frames: u32) -> Result<(), String> {
+pub(crate) fn check_key_schedule(keys: &[(u64, Key, u64)], preroll: u32, frames: u32) -> Result<(), String> {
     let total = preroll as u64 + frames as u64;
-    for &(v, key) in keys {
-        if v + KEY_UP_AFTER >= total {
+    for &(v, key, up_after) in keys {
+        if v + up_after >= total {
             return Err(format!(
                 "PLXNATIVE_DUMP_KEYS: {key:?} at virtual frame {v} cannot come up before the run ends \
                  (its up edge is frame {}, the last frame is {}: {preroll} preroll + {frames} frames)",
-                v + KEY_UP_AFTER, total.saturating_sub(1)
+                v + up_after, total.saturating_sub(1)
             ));
         }
     }
@@ -380,7 +392,8 @@ struct Cfg {
     max_hold: Duration,
     no_hold: bool,
     allow_absent: bool,
-    keys: Vec<(u64, Key)>,
+    keys: Vec<(u64, Key, u64)>,
+    allow_overlay: bool,
     extra_holds: ExtraHolds,
 }
 
@@ -399,6 +412,7 @@ impl Cfg {
             max_hold: Duration::from_millis(env_u32("PLXNATIVE_DUMP_MAX_HOLD_MS", 60_000) as u64),
             no_hold: std::env::var_os("PLXNATIVE_DUMP_NO_HOLD").is_some(),
             allow_absent: std::env::var_os("PLXNATIVE_DUMP_ALLOW_ABSENT").is_some(),
+            allow_overlay: std::env::var_os("PLXNATIVE_DUMP_ALLOW_OVERLAY").is_some(),
             keys: std::env::var("PLXNATIVE_DUMP_KEYS").map_or_else(|_| Ok(Vec::new()), |s| parse_keys(&s)).unwrap_or_else(|e| panic!("framedump: {e}")),
             extra_holds: std::env::var("PLXNATIVE_DUMP_EXTRA_HOLDS")
                 .map_or(Ok(ExtraHolds::Fixed(0)), |s| ExtraHolds::parse(&s))
@@ -465,7 +479,7 @@ struct Dump {
     /// Index into `cfg.keys` of the next key to press.
     keys_next: usize,
     /// Key releases owed: (virtual frame to deliver on, key), in due order.
-    ups: Vec<(u64, Key)>,
+    ups: Vec<(u64, Key)>, // (due virtual frame, key), kept sorted by due
     /// The picture of the last CLEAN iteration of this virtual frame (pixels, hash): a frame is
     /// written once a clean iteration reproduces it ([`Action::Hold`], "settling").
     settle: Option<(Vec<u8>, u64)>,
@@ -592,11 +606,13 @@ pub(crate) fn iteration_begin(app: &mut App) {
         if d.holds_run == 0 {
             let at = Tick { ms: ORIGIN_MS + virtual_ms(d.v), dt_us: 0 };
             while d.keys_next < d.cfg.keys.len() && d.cfg.keys[d.keys_next].0 <= d.v {
-                let key = d.cfg.keys[d.keys_next].1;
+                let (_, key, up_after) = d.cfg.keys[d.keys_next];
                 d.keys_next += 1;
                 plx_base::eventlog::log(&format!("framedump: key {key:?} at virtual frame {}", d.v));
                 app.inputs.push(crate::app::bridge::script_edge(key, plx_machine::machine::Edge::Down, at));
-                d.ups.push((d.v + KEY_UP_AFTER, key));
+                let due = d.v + up_after;
+                let at_idx = d.ups.partition_point(|&(t, _)| t <= due);
+                d.ups.insert(at_idx, (due, key));
             }
             while let Some(&(due, key)) = d.ups.first() {
                 if due > d.v { break; }
@@ -666,7 +682,7 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
                 d.fail(why);
             }
         }
-        if app.pages.overlay_open() {
+        if app.pages.overlay_open() && !d.cfg.allow_overlay {
             d.fail("a modal or popover is open: its dim field is sampled on a cadence of presented iterations \
                     and is not yet synchronous in a dump (gfx::field_kick), so the frame would depend on the holds"
                 .to_string());
@@ -865,7 +881,8 @@ mod tests {
 
     #[test]
     fn keys_parse_in_frame_order_and_refuse_nonsense() {
-        assert_eq!(parse_keys("200:ok, 100:right,100:down").unwrap(), [(100, Key::Right), (100, Key::Down), (200, Key::Ok)]);
+        assert_eq!(parse_keys("200:ok, 100:right,100:down").unwrap(), [(100, Key::Right, 6), (100, Key::Down, 6), (200, Key::Ok, 6)]);
+        assert_eq!(parse_keys("10:hold").unwrap(), [(10, Key::Ok, HOLD_UP_AFTER)]);
         assert_eq!(parse_keys("").unwrap(), []);
         assert!(parse_keys("100").is_err());
         assert!(parse_keys("x:ok").is_err());
@@ -875,13 +892,15 @@ mod tests {
     #[test]
     fn a_key_that_cannot_come_up_inside_the_run_is_refused_at_start() {
         // 60 preroll + 100 frames: virtual frames 0..=159, so the last down edge is 153 (up on 159).
-        let keys = |v| vec![(v, Key::Ok)];
+        let keys = |v| vec![(v, Key::Ok, KEY_UP_AFTER)];
         assert!(check_key_schedule(&keys(153), 60, 100).is_ok());
         assert!(check_key_schedule(&keys(154), 60, 100).unwrap_err().contains("up edge is frame 160"));
         assert!(check_key_schedule(&keys(159), 60, 100).is_err(), "on the last frame");
         assert!(check_key_schedule(&keys(160), 60, 100).is_err(), "past the last frame");
+        assert!(check_key_schedule(&[(114, Key::Ok, HOLD_UP_AFTER)], 60, 100).is_ok());
+        assert!(check_key_schedule(&[(115, Key::Ok, HOLD_UP_AFTER)], 60, 100).is_err(), "a hold needs its longer tail");
         assert!(check_key_schedule(&[], 60, 100).is_ok());
-        assert!(check_key_schedule(&[(10, Key::Ok), (500, Key::Back)], 0, 100).is_err(), "any key counts, not the first");
+        assert!(check_key_schedule(&[(10, Key::Ok, 6), (500, Key::Back, 6)], 0, 100).is_err(), "any key counts, not the first");
     }
 
     #[test]

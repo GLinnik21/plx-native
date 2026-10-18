@@ -6,9 +6,9 @@ driver:
 
   1. starts `tests/mock_pms.py` in catalog mode (the demo library, `tests/demo_library/`) on a
      free loopback port, in this process;
-  2. makes a fresh instance root and arms the scene's triggers in it, plus three the driver owns:
+  2. makes a fresh instance root and arms the scene's triggers in it, plus four the driver owns:
      `token` (a placeholder the mock accepts), `plextv` (plex.tv replaced by the mock, so nothing
-     leaves the machine) and `stillclock` (free-running animation held still);
+     leaves the machine), `discover` (the Watchlist's discover host, the same mock) and `stillclock` (free-running animation held still);
   3. runs the simulator with `PLXNATIVE_SHOT_SETTLE`: the app itself writes one PNG once its
      screen has been at rest for the scene's settle time, and exits. The driver waits on that
      process — an artifact, never a sleep — under a ceiling timeout;
@@ -181,7 +181,7 @@ def capture(binary, scene, defaults, hero, keep):
     port = srv.server_address[1]
     rt = pathlib.Path(tempfile.mkdtemp(prefix=f"plxnative-shot-{scene['name']}-"))
     try:
-        triggers = {"plextv": f"http://127.0.0.1:{port}", "stillclock": str(defaults["stillclock_ms"])}
+        triggers = {"plextv": f"http://127.0.0.1:{port}", "discover": f"http://127.0.0.1:{port}", "stillclock": str(defaults["stillclock_ms"])}
         if not scene.get("no_token"):
             triggers["token"] = PLACEHOLDER_TOKEN
         triggers.update(scene.get("triggers", {}))

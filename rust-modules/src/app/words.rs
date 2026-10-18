@@ -34,7 +34,9 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         // manifest intentionally records that opaque modal as `route=person`.
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
         AppArg::Content(ContentArg::Collection(_)) => "collection",
+        AppArg::Content(ContentArg::Catalog { .. }) => "catalog",
         AppArg::Search => "search",
+        AppArg::Watchlist => "watchlist",
         AppArg::Player => "player",
         AppArg::Home => "home",
         // Not pages: a surface's word is ` overlay=`, and none of these reaches the page stack's
@@ -45,6 +47,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         | AppArg::FirstRunConsent(_)
         | AppArg::LibraryMenu(_)
         | AppArg::AccountMenu
+        | AppArg::WatchlistMenu(_)
         | AppArg::ItemMenu(_)
         | AppArg::PlayerOverlay(_)
         | AppArg::AltSources(_)
@@ -67,7 +70,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 10] {
+pub(crate) fn every_route() -> [AppArg; 12] {
     use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
@@ -81,7 +84,9 @@ pub(crate) fn every_route() -> [AppArg; 10] {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
         }),
         AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
         AppArg::Search,
+        AppArg::Watchlist,
         AppArg::Player,
     ]
 }

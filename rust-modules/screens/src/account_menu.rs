@@ -443,7 +443,7 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;
         let r = self.frame(measure);
-        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
+        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
             self.form.table.draw(p, r, measure);
         });

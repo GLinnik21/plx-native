@@ -1211,6 +1211,10 @@ DEMO_PIN_CODE = "DEMO"
 # The account token `--authorize-after` links the demo code with: synthetic, in the harness's own
 # token alphabet (`ALPHABET_TOKEN`), and accepted — never checked — by every endpoint here.
 DEMO_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-demo-account").hexdigest()[:8]
+# `--second-account`: a different plex.tv account (its own token, owner id, uuid and name), so a
+# sign-in over a stored Demo session can be shown to publish the new account, not the old one.
+SECOND_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-second-account").hexdigest()[:8]
+SECOND_ACCOUNT = {"id": 2001, "uuid": "second-user", "username": "second", "title": "Alex Example"}
 # What the demo sign-in QR encodes: the page a person types a code into. A scan of a screenshot
 # lands on plex.tv's own link page, which asks for a code this server invented — harmless.
 DEMO_QR_TEXT = b"https://plex.tv/link"
@@ -1749,6 +1753,295 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 
 # ---------------------------------------------------------------- the server ----------------
 
+# ---------------------------------------------------------------- Discover -----------------
+
+class DiscoverFixture:
+    """The plex.tv Watchlist's Discover service, in memory (docs/watchlist-plan.md W45, §1.3-§1.4).
+
+    The same listener answers it as the PMS: the app's `discover()` base is the loopback stand-in
+    named by `/tmp/plxnative-discover` (`http://127.0.0.1:<port>`), and the paths cannot collide
+    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`).
+    Wire shapes are the plan's INPUT 2 live probe: list items carry NO `watchlistedAt`; `userState`
+    answers an ARRAY and carries `watchlistedAt` only while the item is on the list; add/remove
+    answer `{"MediaContainer":{"size":0}}`; a page Size over 100 answers 400.
+
+    Synthetic data only. 16 catalog titles, 14 of them on the list at the start (newest first):
+
+      * 1-6   released, held by this mock PMS (guid matches a library item)      -> Available
+      * 7     NOT released (future date), held by this mock PMS                   -> ComingSoonMatched
+      * 8, 9  NOT released, held nowhere                                          -> ComingSoon
+      * 10-14 released, held nowhere (13 is a catalog-only show)                  -> NotOnAnyServer
+
+    The other two states come from switches: Unknown (no match while some server is silent) from
+    `POST /_mock/discover {"guid_lookup": "fail"}`, which makes `GET /library/all?guid=` answer 503
+    so an unmatched title re-matches as Unknown; ServerOffline (a matching server that later goes
+    Unreachable) from `{"pms": "fail"}` sent AFTER the list matched, which makes every PMS request
+    answer 503: the app's next library read then fails, commits this server Unreachable, and the
+    next list read re-derives the matched tiles (the DetailOffline capture walks exactly that).
+    Two catalog titles (15, 16) are NOT listed, so a bookmark press on a catalog page can add them.
+    `POST /_mock/discover {"list": "empty"|"movies_only"|"default"}` resets the list (the Watchlist
+    capture recipe, tests/scenarios/watchlist_captures.json): empty, the movies among the 14, or all 14.
+    """
+
+    # (kind, title, year, date, released, held_by_pms). A future date is far enough out to stay
+    # future; the released ones are in the past.
+    TITLES = (
+        ("movie", "Harbor Lights", 2019, "2019-06-14", True, True),
+        ("show", "The Long Meridian", 2021, "2021-09-03", True, True),
+        ("movie", "Paper Kites", 2016, "2016-03-11", True, True),
+        ("show", "Quiet Orbit", 2023, "2023-01-20", True, True),
+        ("movie", "Salt and Cedar", 2008, "2008-10-24", True, True),
+        ("movie", "A Winter Errand", 2012, "2012-12-07", True, True),
+        ("movie", "The Glass Orchard", 2031, "2031-03-12", False, True),
+        ("movie", "Northbound Tide", 2031, "2031-07-25", False, False),
+        ("show", "Lanterns of Vale", 2032, "2032-02-06", False, False),
+        ("movie", "Marrow Road", 2014, "2014-05-30", True, False),
+        ("show", "Copper Hollow", 2018, "2018-11-09", True, False),
+        ("movie", "The Last Ferryman", 2005, "2005-04-15", True, False),
+        ("show", "Static Bloom", 2020, "2020-08-28", True, False),
+        ("movie", "Ninefold", 2011, "2011-09-16", True, False),
+        ("movie", "Ember Rooms", 2017, "2017-02-03", True, False),
+        ("show", "Low Season", 2022, "2022-06-10", True, False),
+    )
+    LISTED = 14
+    BASE_ADDED_AT = 1_760_000_000  # synthetic; entry i was added i days before it
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.catalog = []  # dicts: hex, guid, kind, title, ..., released, held
+        for i, (kind, title, year, date, released, held) in enumerate(self.TITLES):
+            hx = "5d7768%02x" % i + hashlib.md5(f"watchlist-fixture-{i}".encode()).hexdigest()[:16]
+            sort_title = title.lower()
+            for article in ("the ", "a "):
+                sort_title = sort_title.removeprefix(article)
+            self.catalog.append({
+                "hex": hx, "guid": f"plex://{kind}/{hx}", "kind": kind, "title": title,
+                "titleSort": sort_title,
+                "year": year, "date": date, "released": released, "held": held,
+                "rating": round(5.0 + (i * 7 % 40) / 10.0, 1),
+                "summary": f"{title} is a synthetic Discover title for the mock Watchlist.",
+                "genres": ["Drama", "Mystery"] if i % 2 else ["Comedy", "Adventure"],
+            })
+        # Newest first, as `sort=watchlistedAt:desc` answers: [(hex, watchlistedAt)].
+        self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400)
+                      for n, c in enumerate(self.catalog[:self.LISTED])]
+        self.guid_lookup_fails = False
+        self.pms_fails = False  # `{"pms": "fail"}`: the PMS side answers 503 (the server-offline capture)
+
+    def by_hex(self, hx):
+        return next((c for c in self.catalog if c["hex"] == hx), None)
+
+    def bind(self, lib):
+        """Give the held titles a PMS twin: the first movies/shows of `lib` take the fixture guid,
+        so `GET /library/all?type=&guid=` finds them. A library too small to hold them all just
+        leaves the rest unmatched."""
+        for kind in ("movie", "show"):
+            rows = sorted((it for it in lib.items.values() if it.get("type") == kind),
+                          key=lambda it: int(it["ratingKey"]))
+            wanted = [c for c in self.catalog if c["kind"] == kind and c["held"]]
+            for row, c in zip(rows, wanted):
+                row["guid"] = c["guid"]
+
+    def _entry(self, c, added_at=None):
+        e = {"ratingKey": c["hex"], "key": f"/library/metadata/{c['hex']}", "guid": c["guid"],
+             "type": c["kind"], "title": c["title"], "titleSort": c["titleSort"], "year": c["year"],
+             "originallyAvailableAt": c["date"], "rating": c["rating"], "summary": c["summary"],
+             "thumb": f"/library/metadata/{c['hex']}/thumb/1"}
+        if added_at is not None:
+            e["watchlistedAt"] = added_at
+        return e
+
+    @staticmethod
+    def _container(**kw):
+        return {"MediaContainer": dict({"size": 0}, **kw)}
+
+    def _listing(self, variant, q, headers):
+        with self.lock:
+            rows = [self.by_hex(hx) for hx, _ in self.order]
+        if variant == "released":
+            rows = [c for c in rows if c["released"]]
+        start = max(0, int(q.get("X-Plex-Container-Start", headers.get("X-Plex-Container-Start", 0))))
+        size = int(q.get("X-Plex-Container-Size", headers.get("X-Plex-Container-Size", 50)))
+        if size > 100 or size < 0:
+            return 400, {"error": "Size over 100"}
+        page = [self._entry(c) for c in rows[start:start + size]]
+        return 200, self._container(size=len(page), totalSize=len(rows), offset=start,
+                                    librarySectionID="watchlist", librarySectionTitle="Watchlist",
+                                    Metadata=page)
+
+    def handle(self, method, p, q, headers, lib):
+        """`(status, content_type, bytes)` for a Discover path, or None when `p` is not one."""
+        segs = [s for s in p.split("/") if s]
+        j = lambda obj, status=200: (status, "application/json", json.dumps(obj).encode())
+        hexid = lambda s: len(s) == 24 and all(ch in "0123456789abcdef" for ch in s.lower())
+        if (len(segs) == 4 and segs[:3] == ["library", "sections", "watchlist"]
+                and segs[3] in ("all", "released")):
+            if method != "GET":
+                return j({"error": "method not allowed"}, 405)
+            status, obj = self._listing(segs[3], q, headers)
+            return j(obj, status)
+        if len(segs) >= 3 and segs[:2] == ["library", "metadata"] and hexid(segs[2]):
+            c = self.by_hex(segs[2])
+            if c is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            if len(segs) == 5 and segs[3] == "thumb":
+                return (200, "image/png", flat_png(q.get("width", 250), q.get("height", 375),
+                                                   colour_for(segs[2])))
+            if len(segs) == 4 and segs[3] == "userState":
+                with self.lock:
+                    added = dict(self.order).get(segs[2])
+                state = {"ratingKey": segs[2], "type": c["kind"], "viewCount": 0, "viewOffset": 0}
+                if added is not None:
+                    state["watchlistedAt"] = added
+                return j(self._container(size=1, UserState=[state]))
+            if len(segs) == 3:
+                e = self._entry(c)
+                e.update({"contentRating": "PG-13", "duration": 6_000_000,
+                          "Genre": [{"tag": g} for g in c["genres"]]})
+                return j(self._container(size=1, Metadata=[e]))
+            return None
+        if (len(segs) == 2 and segs[0] == "actions"
+                and segs[1] in ("addToWatchlist", "removeFromWatchlist")):
+            if method != "PUT":
+                return j({"error": "method not allowed"}, 405)
+            hx = q.get("ratingKey", "")
+            if not hexid(hx):
+                return j({"error": "bad ratingKey"}, 400)
+            if self.by_hex(hx) is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            with self.lock:
+                listed = any(h == hx for h, _ in self.order)
+                if segs[1] == "addToWatchlist" and not listed:
+                    self.order.insert(0, (hx, int(time.time())))  # a repeated PUT is a no-op
+                elif segs[1] == "removeFromWatchlist":
+                    self.order = [(h, t) for h, t in self.order if h != hx]
+            return j(self._container())
+        if p == "/library/all" and method == "GET" and "guid" in q:
+            # The PMS half: which of these guids does this server hold? (`find_by_guids`)
+            if self.guid_lookup_fails or self.pms_fails:
+                return j({"error": "unavailable"}, 503)
+            want = {urllib.parse.unquote(g) for g in q["guid"].split(",")}
+            kind = {"1": "movie", "2": "show"}.get(q.get("type", ""))
+            rows = [it for it in lib.items.values()
+                    if it.get("guid") in want and (kind is None or it.get("type") == kind)]
+            return j({"MediaContainer": {"size": len(rows), "Metadata": rows}})
+        return None
+
+    LIST_MODES = ("default", "empty", "movies_only", "first_movie_off")
+
+    def set_list(self, mode):
+        """Reset the list to a named starting state: `default` is the first LISTED titles, `empty`
+        none, `movies_only` the movies among those (so a Type = TV Shows filter matches nothing),
+        `first_movie_off` all but the first movie (the one the PMS library's first movie takes the
+        guid of), so that library movie's Detail page shows the not-on-the-list face."""
+        with self.lock:
+            base = self.catalog[:self.LISTED]
+            if mode == "empty":
+                base = []
+            elif mode == "movies_only":
+                base = [c for c in base if c["kind"] == "movie"]
+            elif mode == "first_movie_off":
+                first = next(c for c in base if c["kind"] == "movie")
+                base = [c for c in base if c is not first]
+            self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400) for n, c in enumerate(base)]
+
+    def configure(self, patch, lib=None):
+        """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}` and/or
+        `{"list": "default"|"empty"|"movies_only"|"first_movie_off"}` (the list reset; the capture recipe)."""
+        keys = {"guid_lookup", "list", "guids", "pms", "episode_shows"}
+        if not isinstance(patch, dict) or not patch or set(patch) - keys:
+            return 400, {"error": "need {guid_lookup: fail|ok}, {list: default|empty|movies_only|first_movie_off} and/or {guids: all} and/or {episode_shows: catalog}"}
+        if "pms" in patch and patch["pms"] not in ("fail", "ok"):
+            return 400, {"error": "pms is fail or ok"}
+        if "guids" in patch and patch["guids"] != "all":
+            return 400, {"error": "guids is all"}
+        if "episode_shows" in patch and patch["episode_shows"] != "catalog":
+            return 400, {"error": "episode_shows is catalog"}
+        if "guid_lookup" in patch and patch["guid_lookup"] not in ("fail", "ok"):
+            return 400, {"error": "guid_lookup is fail or ok"}
+        if "list" in patch and patch["list"] not in self.LIST_MODES:
+            return 400, {"error": "list is default, empty, movies_only or first_movie_off"}
+        if "pms" in patch:
+            self.pms_fails = patch["pms"] == "fail"
+        if "guid_lookup" in patch:
+            self.guid_lookup_fails = patch["guid_lookup"] == "fail"
+        if "list" in patch:
+            self.set_list(patch["list"])
+        if patch.get("guids") == "all":
+            if lib is not None:
+                self.bind_all(lib)
+        if patch.get("episode_shows") == "catalog" and lib is not None:
+            self.bind_episode_shows(lib)
+        return 200, dict(patch)
+
+    def _know(self, it):
+        """Give a library title bound by [`bind_all`] a Discover record of its own, off the list, so an
+        Add of its guid is answered (a guid the fixture does not know is a 404 and the flip reverts)
+        and the re-read lists it."""
+        hx = it["guid"].rsplit("/", 1)[1]
+        if self.by_hex(hx) is not None:
+            return
+        title, year = it.get("title", hx), it.get("year") or 2020
+        self.catalog.append({
+            "hex": hx, "guid": it["guid"], "kind": it["type"], "title": title, "titleSort": title.lower(),
+            "year": year, "date": f"{year}-01-01", "released": True, "held": True, "rating": 7.0,
+            "summary": f"{title} is bound to a synthetic Discover guid by the mock.", "genres": ["Drama"]})
+
+    def bind_episode_shows(self, lib):
+        """`{"episode_shows": "catalog"}`: every episode's show takes the guid of the fixture's first
+        show (a catalogued title: the list can hold it, `by_hex` finds it), so a Continue Watching
+        hero (an episode, which acts on its show) has a title the Discover stand-in knows. Applied
+        after `guids: all`; the Home hero captures (`home-hero/`) use it for both faces."""
+        show = next(c for c in self.catalog if c["kind"] == "show")
+        for it in lib.items.values():
+            if it.get("type") == "episode" and it.get("grandparentRatingKey"):
+                it["grandparentGuid"] = show["guid"]
+
+    def bind_all(self, lib):
+        """`{"guids": "all"}`: every library title (and every episode's show) carries a synthetic
+        Discover guid the list does not hold, as a real PMS gives each item one, so any card's
+        item menu can offer Add to Watchlist (the W6 menu captures). Items `bind` already gave a
+        listed guid keep it."""
+        def guid_of(it):
+            hx = hashlib.md5(f"bind-all-{it['ratingKey']}".encode()).hexdigest()[:24]
+            return f"plex://{it['type']}/{hx}"
+        for it in lib.items.values():
+            if it.get("type") in ("movie", "show") and not re.fullmatch(
+                    r"plex://(movie|show)/[0-9a-f]{24}", it.get("guid") or ""):
+                it["guid"] = guid_of(it)
+                self._know(it)
+        for it in lib.items.values():
+            if it.get("type") == "episode" and it.get("grandparentRatingKey"):
+                # The show's own guid is a pure function of its rating key (above).
+                it["grandparentGuid"] = guid_of({"type": "show", "ratingKey": it["grandparentRatingKey"]})
+
+
+LIBRARY_IDENTIFIER = "com.plexapp.plugins.library"
+TIMELINE_STATES = {"created": 5, "deleted": 9}  # `TimelineEntry.state`: processed, deleted
+TIMELINE_TYPES = {"movie": 1, "show": 2}
+
+
+def timeline_frame(entries):
+    """The SSE `timeline` frames a library change sends, in the shape the owner's own server was
+    captured sending (docs/pms-api.md section 9): one `event: timeline` frame per entry, its data a
+    single `{"TimelineEntry": {...}}` object with no envelope. A create is the captured three-frame
+    sequence (state 5 + metadataState processing, state 4 + loading, then the finished state 5 with
+    no metadataState); a delete is one state 9 frame, whose real shape is NOT yet observed.
+    `entries` are `(itemID, kind, state)` with kind `movie|show` and state `created|deleted`."""
+    out = b""
+    for rk, kind, state in entries:
+        steps = ([(5, "processing"), (4, "loading"), (5, None)] if state == "created"
+                 else [(TIMELINE_STATES["deleted"], None)])
+        for code, meta in steps:
+            row = {"identifier": LIBRARY_IDENTIFIER, "sectionID": "1", "itemID": str(rk),
+                   "type": TIMELINE_TYPES[kind], "title": "", "state": code}
+            if meta:
+                row["metadataState"] = meta
+            row["updatedAt"] = int(time.time())
+            out += ("event: timeline\ndata: " + json.dumps({"TimelineEntry": row}) + "\n\n").encode()
+    return out
+
+
 class MockPms:
     def section_pad_hubs(self, key, kind, count, rows=12):
         """`count` synthetic hubs for `/hubs/sections/<key>` (#412), after the library's own.
@@ -1785,8 +2078,17 @@ class MockPms:
                              "more": True, "totalSize": len(lib.recent(kind, 1000)), "Metadata": recent})
         return hubs
 
+
+    def account_token(self):
+        """The plex.tv token the sign-in hands out: Demo's, or SECOND_ACCOUNT's under `--second-account`."""
+        return SECOND_ACCOUNT_TOKEN if self.second_account else DEMO_ACCOUNT_TOKEN
+
     def __init__(self, lib):
         self.lib = lib
+        # The plex.tv Watchlist's Discover stand-in (see its class); held titles take library guids.
+        self.discover = DiscoverFixture()
+        if not isinstance(lib, CatalogLibrary):  # the demo catalog's recorded guids are pinned by fixtures
+            self.discover.bind(lib)
         # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
         self.home_hubs = 0
         # `--section-hubs N` (#412): `/hubs/sections/<id>` answers exactly N hubs; 0 keeps the
@@ -1813,6 +2115,8 @@ class MockPms:
         self.authorize_after = None
         # `--home-users N`: how many profiles the Home roster lists (the first is the Demo owner).
         self.home_users = 1
+        # `--second-account`: plex.tv answers as SECOND_ACCOUNT instead of Demo.
+        self.second_account = False
         self.pin_polls = 0
         self.user_profile = {"autoSelectAudio": True, "defaultAudioLanguage": "en",
                              "defaultSubtitleLanguage": "en", "autoSelectSubtitle": 1,
@@ -1992,11 +2296,27 @@ class MockPms:
                 return j({"error": "method not allowed"}, 405)
             try:
                 req = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            if isinstance(req, dict) and req.get("type") == "timeline":
+                # `{"type": "timeline", "entries": [{"itemID": N, "kind": "movie|show", "state":
+                # "created|deleted"}]}`: a library scan's finished creates and deletes, as the feed
+                # would carry them. It changes no library data (see `POST /_mock/library` for that).
+                try:
+                    entries = [(int(e["itemID"]), e["kind"], e["state"]) for e in req["entries"]]
+                    frame = timeline_frame(entries)
+                except (KeyError, TypeError, ValueError):
+                    return j({"error": "need {type: timeline, entries: [{itemID, kind: movie|show, state: created|deleted}]}"}, 400)
+                with self.lock:
+                    for sub_q in self.subscribers:
+                        sub_q.put(frame)
+                    return j({"delivered": len(self.subscribers)})
+            try:
                 rk = int(req["ratingKey"])
                 state = str(req.get("state", "playing"))
                 offset = req.get("viewOffset")
                 offset = None if offset is None else int(offset)
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 return j({"error": "need {ratingKey, state?, viewOffset?}"}, 400)
             with self.lock:
                 it = lib.items.get(rk)
@@ -2014,6 +2334,44 @@ class MockPms:
                     sub_q.put(frame)
                 delivered = len(self.subscribers)
             return j({"delivered": delivered})
+        if p == "/_mock/library":
+            # TEST-ONLY library change plus the feed frame the server would send for it:
+            # `{"op": "add", "title": "<catalog title>"}` (or `"guid"`) gives the first library movie or
+            # show of that kind that carries no catalog guid the guid of that catalog title, so
+            # `GET /library/all?guid=` finds it, and pushes a `created` timeline entry; `{"op":
+            # "remove", "title"|"guid"}` takes the guid off again (the item itself stays listed) and
+            # pushes a `deleted` one. The catalog is the Discover fixture's (`DiscoverFixture.TITLES`).
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                req = json.loads(body or b"{}")
+                op = req["op"]
+                assert op in ("add", "remove")
+            except (json.JSONDecodeError, KeyError, TypeError, AssertionError):
+                return j({"error": "need {op: add|remove, title|guid}"}, 400)
+            cat = next((c for c in self.discover.catalog
+                        if c["title"] == req.get("title") or c["guid"] == req.get("guid")), None)
+            if cat is None:
+                return j({"error": "no such catalog title"}, 404)
+            with self.lock:
+                if op == "add":
+                    taken = {c["guid"] for c in self.discover.catalog}
+                    it = next((it for _, it in sorted(lib.items.items())
+                               if it.get("type") == cat["kind"] and it.get("guid") not in taken), None)
+                    if it is None:
+                        return j({"error": "no free library item to bind"}, 409)
+                    it["guid"] = cat["guid"]
+                else:
+                    it = next((it for it in lib.items.values() if it.get("guid") == cat["guid"]), None)
+                    if it is None:
+                        return j({"error": "the library does not hold it"}, 409)
+                    it["guid"] = "plex://%s/%s" % (cat["kind"], hashlib.md5(
+                        f"unbound-{it['ratingKey']}".encode()).hexdigest()[:24])
+                frame = timeline_frame([(int(it["ratingKey"]), cat["kind"],
+                                         "created" if op == "add" else "deleted")])
+                for sub_q in self.subscribers:
+                    sub_q.put(frame)
+                return j({"ratingKey": int(it["ratingKey"]), "delivered": len(self.subscribers)})
         if p == "/_mock/config":
             if method != "POST":
                 return j({"error": "method not allowed"}, 405)
@@ -2032,6 +2390,25 @@ class MockPms:
                     setattr(self, key, bool(value))
                 current = {k: getattr(self, k) for k in allowed}
             return j(current)
+
+        if p == "/_mock/discover":
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                patch = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            status, obj = self.discover.configure(patch, self.lib)
+            return j(obj, status)
+        answered = self.discover.handle(method, p, q, headers, lib)
+        if answered is not None:
+            if method == "PUT":
+                self.note_write(method, path, body)
+            return answered
+        if self.discover.pms_fails and not p.startswith("/api/") and not p.startswith("/_mock/"):
+            # The server-offline capture: after the Watchlist matched a title here, every PMS request
+            # fails, so the app's generic-request reachability commit marks this server Unreachable.
+            return j({"error": "unavailable"}, 503)
 
         def paged(rows):
             """PMS pages a listing only when the request carries the window's start, as a query
@@ -2065,15 +2442,17 @@ class MockPms:
                 self.pin_polls += 1
                 linked = self.authorize_after is not None and self.pin_polls >= self.authorize_after
             return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800,
-                      "authToken": DEMO_ACCOUNT_TOKEN if linked else None})
+                      "authToken": self.account_token() if linked else None})
         if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
         if p == "/api/v2/user":
             with self.lock:
                 profile = dict(self.user_profile)
-            return j({"id": 1, "uuid": "demo-user", "username": "demo", "title": "Demo",
-                      "friendlyName": "Demo", "email": "demo@example.invalid", "thumb": "",
+            owner = home_roster(1, self.second_account)[0]
+            return j({"id": owner["id"], "uuid": owner["uuid"], "username": owner["username"],
+                      "title": owner["title"], "friendlyName": owner["title"],
+                      "email": f"{owner['username']}@example.invalid", "thumb": "",
                       "profile": profile,
                       "subscription": {"active": True, "status": "Active", "plan": "lifetime"}})
         if p == "/api/v2/user/profile":
@@ -2101,13 +2480,13 @@ class MockPms:
             with self.lock:
                 return j(dict(self.user_profile))
         if p == "/api/v2/home/users":
-            return j({"users": home_roster(self.home_users)})
+            return j({"users": home_roster(self.home_users, self.second_account)})
         if method == "POST" and p.startswith("/api/v2/home/users/") and p.endswith("/switch"):
-            who = next((u for u in home_roster(self.home_users)
+            who = next((u for u in home_roster(self.home_users, self.second_account)
                         if p == f"/api/v2/home/users/{u['uuid']}/switch"), None)
             if who is not None:
                 return j({"id": who["id"], "uuid": who["uuid"], "title": who["title"],
-                          "authToken": DEMO_ACCOUNT_TOKEN})
+                          "authToken": self.account_token()})
         if p == "/api/v2/resources":
             if self.plaintext_only_lan is not None:
                 cfg = self.plaintext_only_lan
@@ -2330,6 +2709,13 @@ class MockPms:
                                                    include_collections=q.get("includeCollections") == "1")))
         if p == "/photo/:/transcode" and catalog:
             img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
+            if img is None:
+                # A Watchlist title's poster (`/library/metadata/<24-hex guid>/thumb/..`): the Discover
+                # fixture's, not the catalog's, so it gets the flat colour a catalog-less mock draws
+                # instead of a 404 (a frame dump fails closed on a failed art request).
+                segs = [x for x in urllib.parse.urlsplit(q.get("url", "")).path.split("/") if x]
+                if len(segs) >= 4 and segs[:2] == ["library", "metadata"] and self.discover.by_hex(segs[2]):
+                    return (200, "image/png", flat_png(q.get("width", 250), q.get("height", 375), colour_for(q["url"])))
             return (200, *img) if img else (404, "text/plain", b"no image")
         if p == "/photo/:/transcode":
             src = q.get("url", "")
@@ -2768,13 +3154,20 @@ class Server(ThreadingHTTPServer):
 HOME_USER_NAMES = ("Demo", "Alex", "Sam", "Kid", "Guest", "Family", "Pat", "Robin")
 
 
-def home_roster(n):
+def home_roster(n, second=False):
     """The synthetic Home roster plex.tv's `/api/v2/home/users` answers: the Demo owner first
-    (uuid `demo-user`, what the sign-in and `/api/v2/user` name), then `n - 1` more profiles."""
-    return [{"id": i + 1, "uuid": "demo-user" if i == 0 else f"demo-user-{i + 1}",
-             "title": HOME_USER_NAMES[i % len(HOME_USER_NAMES)] + ("" if i < len(HOME_USER_NAMES) else str(i)),
-             "thumb": "", "admin": i == 0, "restricted": i > 0, "protected": False}
-            for i in range(n)]
+    (uuid `demo-user`, what the sign-in and `/api/v2/user` name), then `n - 1` more profiles.
+    `second` answers as SECOND_ACCOUNT's household instead (`--second-account`)."""
+    users = [{"id": i + 1, "uuid": "demo-user" if i == 0 else f"demo-user-{i + 1}", "username": "demo",
+              "title": HOME_USER_NAMES[i % len(HOME_USER_NAMES)] + ("" if i < len(HOME_USER_NAMES) else str(i)),
+              "thumb": "", "admin": i == 0, "restricted": i > 0, "protected": False}
+             for i in range(n)]
+    if second:
+        users[0] = dict(users[0], **SECOND_ACCOUNT)
+        for u in users[1:]:
+            u["id"] += SECOND_ACCOUNT["id"]
+            u["uuid"] = u["uuid"].replace("demo-user", "second-user")
+    return users
 
 
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
@@ -2783,7 +3176,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
-          home_users=1, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
+          home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
@@ -2850,6 +3243,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
         authorize_after = 2
     pms.authorize_after = authorize_after
     pms.home_users = home_users
+    pms.second_account = second_account
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
@@ -2928,6 +3322,14 @@ def selftest():
     with urllib.request.urlopen(other, timeout=5) as reply:
         assert json.load(reply)["uuid"] == "demo-user-3"
     pms.home_users = 1
+    pms.second_account = True
+    with urllib.request.urlopen(base + "/api/v2/user") as reply:
+        second = json.load(reply)
+    with urllib.request.urlopen(base + "/api/v2/home/users") as reply:
+        owner = json.load(reply)["users"][0]
+    assert (second["uuid"], second["title"]) == (owner["uuid"], owner["title"]) == ("second-user", "Alex Example")
+    assert owner["id"] != 1 and pms.account_token() == SECOND_ACCOUNT_TOKEN != DEMO_ACCOUNT_TOKEN
+    pms.second_account = False
 
     # Account preferences live only in this mock. Empty-body PUT changes just named keys,
     # including an empty language, and /user serves the same state to the playback cache.
@@ -3211,6 +3613,7 @@ def selftest():
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
     _selftest_notifications()
+    _selftest_library_feed()
     _selftest_paging()
     _selftest_link()
     print("mock_pms selftest: ok")
@@ -3256,6 +3659,66 @@ def _selftest_notifications():
             assert entry["clientIdentifier"] == "mock-other-client"
         assert pms.lib.items[rk]["viewOffset"] == 123000
         assert pms.sse_opened == 1
+    finally:
+        _teardown(srv)
+
+
+def _selftest_library_feed():
+    """`POST /_mock/notify {"type": "timeline"}` and `POST /_mock/library` push `timeline` frames in the
+    documented shape, and the library hook really moves the guid `GET /library/all?guid=` finds."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    srv, pms = serve(0, seed=7)
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def post(path, obj):
+            req = urllib.request.Request(base + path, method="POST", data=json.dumps(obj).encode())
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.load(r)
+
+        def held(guid):
+            q = urllib.parse.urlencode({"type": "1", "guid": guid})
+            with urllib.request.urlopen(base + "/library/all?" + q, timeout=5) as r:
+                return [m["ratingKey"] for m in json.load(r)["MediaContainer"]["Metadata"]]
+
+        req = urllib.request.Request(base + "/:/eventsource/notifications?filters=playing%2Ctimeline",
+                                     headers={"X-Plex-Token": "t", "Accept": "text/event-stream"})
+        with urllib.request.urlopen(req, timeout=5) as feed:
+            assert feed.readline() == b": ping\n" and feed.readline() == b"\n"
+
+            def frame():
+                assert feed.readline() == b"event: timeline\n"
+                data = json.loads(feed.readline().split(b"data: ", 1)[1])
+                feed.readline()
+                return data["TimelineEntry"]
+
+            assert post("/_mock/notify", {"type": "timeline", "entries": [
+                {"itemID": 5, "kind": "show", "state": "deleted"}]}) == {"delivered": 1}
+            e = frame()
+            assert (e["itemID"], e["type"], e["state"]) == ("5", 2, 9) and "metadataState" not in e, e
+            assert e["identifier"] == LIBRARY_IDENTIFIER
+            title = "Northbound Tide"  # a catalog movie no library item carries
+            guid = next(c_["guid"] for c_ in pms.discover.catalog if c_["title"] == title)
+            assert held(guid) == []
+            added = post("/_mock/library", {"op": "add", "title": title})
+            assert [str(x) for x in held(guid)] == [str(added["ratingKey"])], (held(guid), added)
+            steps = [frame() for _ in range(3)]
+            assert [(x["state"], x.get("metadataState")) for x in steps] == [
+                (5, "processing"), (4, "loading"), (5, None)], steps
+            e = steps[-1]
+            assert (e["itemID"], e["type"]) == (str(added["ratingKey"]), 1), e
+            post("/_mock/library", {"op": "remove", "title": title})
+            assert held(guid) == []
+            assert frame()["state"] == 9
+        for bad in ({"type": "timeline"}, {"type": "timeline", "entries": [{"itemID": 1}]}):
+            try:
+                post("/_mock/notify", bad)
+                raise AssertionError("a malformed timeline body must be refused")
+            except urllib.error.HTTPError as err:
+                assert err.code == 400, err.code
     finally:
         _teardown(srv)
 
@@ -3590,6 +4053,9 @@ def main():
     ap.add_argument("--home-users", type=int, default=1, metavar="N",
                     help="how many profiles the plex.tv Home roster lists, 1-16 (default 1: the "
                          "Demo owner only; more make a stored-session boot open the picker)")
+    ap.add_argument("--second-account", action="store_true",
+                    help="plex.tv answers as a second synthetic account (its own token, owner id and "
+                         "name, 'Alex Example') instead of Demo: a sign-in over a stored Demo session")
     ap.add_argument("--no-plex-pass", action="store_true",
                     help="#266: / and /identity answer myPlexSubscription=false (the version "
                          "string is untouched — tools/mock-guest.py depends on it)")
@@ -3692,7 +4158,7 @@ def main():
                          transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
-                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users,
+                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users, second_account=a.second_account,
                          link=link, link_faults=a.link_fault, shows=a.shows, seasons=a.seasons, episodes=a.episodes,
                          resume_fixture=a.resume_fixture,
                          media_next_episode=a.media_next_episode,

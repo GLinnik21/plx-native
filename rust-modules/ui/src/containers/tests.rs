@@ -152,7 +152,10 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
         let chrome = read.chrome.expect("the fixture rig supplied chrome");
         assert_eq!(chrome.profile.name.to_bytes(), b"Captured A");
         assert_eq!(chrome.profile.initial.to_bytes(), b"A");
-        assert_eq!(chrome.labels.labels, ["Home", "Movies", ""]);
+        // The fixture seeds captured words verbatim; the lift sees exactly what it was given.
+        assert_eq!(chrome.labels.faces, [super::super::widgets::TabFace::Label("Home".into()),
+            super::super::widgets::TabFace::Label("Movies".into()),
+            super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)]);
         assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
         let face = read.bar_material.expect("the frame plan supplied the tab face");
         assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
@@ -162,7 +165,9 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
     let _guard = plx_base::testlock::serial();
     SEEN.store(false, Ordering::Relaxed);
     let (mut d, mut rig, _) = booted();
-    rig.seed_scrim_chrome_for_test("Captured A", "A", &["Home", "Movies", ""], 0.625);
+    rig.seed_scrim_chrome_for_test("Captured A", "A", &[super::super::widgets::TabFace::Label("Home".into()),
+        super::super::widgets::TabFace::Label("Movies".into()),
+        super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)], 0.625);
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
     let modal = modal_mut(&mut d, id);
     modal.scrim_alpha = 0.5;
@@ -646,6 +651,49 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
     }
 }
 
+
+/// **An opener that LEFT the page keeps its lift while the menu fades** (Remove from Watchlist): the
+/// focus reconciles to the next card, but the opener element is not a card focus moved off — it is
+/// the removed card, still drawn as its landing's ghost. Standing the lift down there dropped the
+/// ghost from above the dim into it on the OK frame (sim render 2026-10-16: luminance 103 to 64 in
+/// one frame). The lift holds while the page says the opener is departing, and stands down as
+/// before once it is not.
+#[test]
+fn a_departing_opener_keeps_its_lift_while_the_menu_fades() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    step(&mut d, &mut rig, vec![]);
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    fn page(d: &mut Dispatcher<FixtureHost>, home: EntryId) -> &mut crate::fixture::FixtureScreen {
+        d.nav.entry_mut(home).unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap()
+            .downcast_mut::<crate::fixture::FixtureScreen>().unwrap()
+    }
+    // the opener card was removed: focus reconciles to the next one, the page still draws it going
+    page(&mut d, home).departing = Some(opener.elem);
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))), "the lift holds the departing opener");
+    // once it is gone, the lift stands down as for any focus that moved off
+    page(&mut d, home).departing = None;
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), None, "nothing departing: the lift stands down");
+}
 
 #[test]
 fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
@@ -1317,6 +1365,88 @@ fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
     assert!(!d.nav.modals.top().unwrap().motion.held(), "nothing pending: the ramp starts");
     crate::fixture::modal_draws_text(false);
     plx_gfx::text::reset_prewarm_for_test();
+}
+
+/// **A held surface's clock does not run, and its opener face is still drawn live.** A surface is
+/// HELD (`PopoverMotion::held`) for its capture frame and while its text warms — up to
+/// `SURFACE_TEXT_HOLD_MAX_MS`, six frames — at appear 0, walked through the text recorder. Two
+/// things went wrong on those frames for the Watchlist's Sort & Filter morph (frame dump at
+/// 572f46d07, n180–181):
+///
+/// - its `Tick`s carried the real `dt`, so the morph's springs ran through frames nobody saw and
+///   the first visible frame landed mid-morph, a small glass with rows already on it;
+/// - the page leaves a lifted opener out from the surface's first frame (`lifted_opener`), and
+///   the recorder paints nothing, so the focused pill VANISHED on OK.
+///
+/// So a held surface is delivered `Tick { dt_us: 0 }`, and `Screen::draw_held` is asked for the
+/// part of it that is already on screen, through a LIVE painter.
+#[test]
+fn a_held_surface_ticks_with_no_time_and_draws_its_held_face_live() {
+    let (mut d, mut rig, _) = booted();
+    plx_gfx::text::reset_prewarm_for_test();
+    crate::fixture::modal_draws_text(true);
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let (mut ms, mut held_frames, mut live_frames) = (16, 0, 0);
+    for _ in 0..12 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let held = d.nav.modals.top().unwrap().motion.held();
+        d.draw(&mut rig, true);
+        d.prune(&r.unmounted);
+        let m = modal_mut(&mut d, id);
+        let dt = *m.tick_dts.last().expect("the surface is ticked every frame");
+        let faces = std::mem::take(&mut m.held_faces);
+        if held {
+            held_frames += 1;
+            assert_eq!(dt, 0, "a held surface's clock does not run");
+            // once per walk of the frame (the backdrop discovery walk and the visible one)
+            assert!(!faces.is_empty() && faces.iter().all(|&live| live), "a held surface draws its face through a live painter: {faces:?}");
+        } else {
+            live_frames += 1;
+            assert!(dt > 0, "an unheld surface gets the frame's time");
+            assert!(faces.is_empty(), "an unheld surface draws itself whole");
+        }
+    }
+    assert!(held_frames >= 2 && live_frames >= 2, "premise: both kinds of frame ran ({held_frames} held, {live_frames} live)");
+    crate::fixture::modal_draws_text(false);
+    plx_gfx::text::reset_prewarm_for_test();
+}
+
+/// **The page knows when a menu veils it, before it ticks.** The dispatcher states the veil right
+/// after it steps the surfaces: full while a surface opens or stands open, the surface's own
+/// appear while it fades out, nothing once it has gone. A landing reads it on the page's tick in
+/// the same frame (`cards::landing`), so a Remove chosen in a menu moves the grid only after it.
+#[test]
+fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
+    use crate::containers::modal::{page_veiled, VEIL, CLOSING_GONE};
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let mut ms = 16;
+    for _ in 0..40 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&r.unmounted);
+        assert!(page_veiled() && VEIL.with(|v| v.get()) == 1.0, "an opening or open surface veils the page");
+    }
+    d.request(MachineId::Nav, NavOp::Dismiss(id));
+    let mut frames = 0;
+    while d.nav.modals.top().is_some() && frames < 200 {
+        ms += 16;
+        frames += 1;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let veil = VEIL.with(|v| v.get());
+        if let Some(s) = d.nav.modals.top().filter(|s| s.phase == Phase::Closing) {
+            assert_eq!(veil, s.motion.appear.clamp(0.0, 1.0), "a fading surface veils by its appear");
+            assert_eq!(page_veiled(), veil >= CLOSING_GONE);
+        }
+        d.prune(&r.unmounted);
+    }
+    // a menu holds the page until it is gone: the veil clears when the menu is pruned (its
+    // `CLOSING_GONE` frame), not in a tail the menu is still drawn through
+    assert!(frames < 200 && !page_veiled(), "the veil is clear by the time the surface is gone");
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(!page_veiled() && VEIL.with(|v| v.get()) == 0.0, "no surface, no veil");
 }
 
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out

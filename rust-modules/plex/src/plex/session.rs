@@ -4020,13 +4020,38 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
     }
     // The one login that is not a sign-out: the stored session is still on disk, so no `ClearTenure`
     // ran. A different account must not open on the previous one's library views, which carry no
-    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears).
-    if !cur.account_token.is_empty() && cur.account_token != next.account_token {
+    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears),
+    // nor on its Home pins and search history: those are keyed by profile `uuid` with `""` for the
+    // owner of EVERY account, and sign-out drops them with the file.
+    //
+    // "Different account" is the OWNER'S IDENTITY (`owner_identity` of the roster each side holds),
+    // never the token: a fresh QR sign-in always mints a new plex.tv token, so the same person
+    // signing in again differs by token and must keep their pins, searches and library memory.
+    // Unknown on either side (a roster not yet fetched, or one without a nameable admin) clears.
+    if !cur.account_token.is_empty() && !same_owner(&cur.home_users, &next.home_users) {
         next.prefs.last_library.clear();
         next.prefs.library_views.clear();
+        next.home_pins.clear();
+        next.recent_searches.clear();
     }
     if !may_write() { return Err(()); }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
+}
+
+/// The stable identity of the account a roster belongs to: its admin entry's plex.tv account id
+/// (the same id space as `account::Resource::owner_id`), else that entry's uuid when an old file
+/// carries no id. `None` when the roster is empty ("unknown", not "nobody"), has no admin, or the
+/// admin names neither. A token is NOT an identity: every sign-in mints a new one.
+pub fn owner_identity(roster: &[HomeUserRef]) -> Option<String> {
+    let admin = roster.iter().find(|u| u.admin)?;
+    if admin.id != 0 { Some(format!("id:{}", admin.id)) }
+    else if !admin.uuid.is_empty() { Some(format!("uuid:{}", admin.uuid)) }
+    else { None }
+}
+
+/// Do two rosters name the SAME account? Fails safe: an identity either side cannot name is "no".
+pub fn same_owner(a: &[HomeUserRef], b: &[HomeUserRef]) -> bool {
+    matches!((owner_identity(a), owner_identity(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// What the routine-authority write actually did — the canonical verdict beside the

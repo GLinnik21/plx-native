@@ -60,6 +60,7 @@ pub(crate) fn push_held(keys: &mut HeldKeys, sid: plx_plex::plex::ServerId, rk: 
 }
 
 pub mod browse;
+pub mod catalog;
 pub mod fanout;
 mod content_arg;
 pub use content_arg::ContentArg;
@@ -77,6 +78,7 @@ pub mod subsearch;
 pub mod tape;
 pub mod viewreconcile;
 pub mod viewstate;
+pub mod watchlist;
 
 /// Production store aggregate. All seven stores are physical owners here — Browse, Person and
 /// ViewState landed first; Search, Hubs and Metadata completed the port.
@@ -95,6 +97,10 @@ pub struct Stores {
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
     /// The read-back of landed view-state writes. Appended after ViewState's other owners.
     pub reconcile: viewreconcile::ViewReconcileStore,
+    /// The plex.tv Watchlist (`crate::watchlist`). Appended last, like its `StoreId`.
+    pub watchlist: watchlist::WatchlistStore,
+    /// The catalog page's discover record (`crate::catalog`). Appended last, like its `StoreId`.
+    pub catalog: catalog::CatalogStore,
     /// The PMS notification feed's owner. Ships on for owned servers (`notify::NOTIFY_ENABLED`); no `StoreId`, no
     /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
     pub notify: notify::NotifyStore,
@@ -125,6 +131,8 @@ impl Default for Stores {
             subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
             reconcile: viewreconcile::ViewReconcileStore::default(),
+            watchlist: watchlist::WatchlistStore::default(),
+            catalog: catalog::CatalogStore::default(),
             notify: notify::NotifyStore::default(),
             notify_map: Default::default(),
             view_ledger: Default::default(),
@@ -245,9 +253,10 @@ impl Stores {
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
+        let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| collection.run(cmd),
@@ -268,9 +277,10 @@ impl Stores {
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
+        let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| collection.run(cmd),
@@ -349,6 +359,7 @@ impl Stores {
     }
 
     fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>) {
+        self.watchlist.apply_view(&change);
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
@@ -378,8 +389,9 @@ impl Stores {
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
+        let watchlist = &mut self.watchlist;
         let changed = self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
-            change,
+            { watchlist.apply_view(&change); change },
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
@@ -426,6 +438,8 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
             StoreId::ViewReconcile => self.reconcile.gen(),
+            StoreId::Watchlist => self.watchlist.gen(),
+            StoreId::Catalog => self.catalog.gen(),
             // A landing gate slot only: the stop mailbox is not a store and has no generation.
             StoreId::ViewStop => 0,
         }
@@ -460,6 +474,12 @@ impl Stores {
         if let Some(generation) = self.reconcile.take_notice() {
             notices.push((StoreId::ViewReconcile, generation));
         }
+        if let Some(generation) = self.watchlist.take_notice() {
+            notices.push((StoreId::Watchlist, generation));
+        }
+        if let Some(generation) = self.catalog.take_notice() {
+            notices.push((StoreId::Catalog, generation));
+        }
         notices
     }
 }
@@ -483,6 +503,10 @@ pub enum StoreId {
     /// (`route::take_landed_stops`), which is no store but needs an ordinal of its own because the
     /// gate keeps one mailbox per ordinal.
     ViewStop,
+    /// Appended for the same reason: the plex.tv Watchlist (`crate::watchlist`).
+    Watchlist,
+    /// Appended for the same reason: the catalog page's discover record (`crate::catalog`).
+    Catalog,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -508,7 +532,7 @@ impl StoreWork {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 10] = [
+    pub const ALL: [StoreId; 12] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -519,6 +543,8 @@ impl StoreId {
         StoreId::SubtitleSearch,
         StoreId::ViewReconcile,
         StoreId::ViewStop,
+        StoreId::Watchlist,
+        StoreId::Catalog,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -542,6 +568,8 @@ impl StoreId {
             StoreId::ViewState => "viewstate",
             StoreId::ViewReconcile => "viewreconcile",
             StoreId::ViewStop => "viewstop",
+            StoreId::Watchlist => "watchlist",
+            StoreId::Catalog => "catalog",
         }
     }
 }
@@ -876,7 +904,7 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
     }
 }
 
@@ -887,3 +915,18 @@ mod notify_map_tests;
 #[cfg(test)]
 #[path = "held_keys_tests.rs"]
 mod held_keys_tests;
+
+/// ViewState publishes a press (and each fan-out copy) through `publish_view`, whose first
+/// consumer is Browse's `ApplyView`. The Watchlist is patched from that same command, so the user's
+/// own watched/unwatched press reaches a matched tile at the press frame like every other surface
+/// rather than waiting for the read-back.
+fn watchlist_tee(
+    watchlist: &mut watchlist::WatchlistStore,
+    cmd: browse::BrowseCmd,
+    run: impl FnOnce(browse::BrowseCmd) -> bool,
+) -> bool {
+    if let browse::BrowseCmd::ApplyView { at, edit } = &cmd {
+        watchlist.apply_edit(at.sid, &at.rk, *edit, None);
+    }
+    run(cmd)
+}

@@ -62,6 +62,13 @@ set, and the mock's server arrives OWNED through the app's normal sign-in, so se
 The stored session it leaves on the install is mock-only; clear `state/` under the debug runtime
 root when done.
 
+**Watchlist writes.** The same `--mock-plextv` boot arms `plxnative-discover`, so a Watchlist
+add/remove on the set goes to the mock. Without it a debug build refuses the write and the page header
+says `Debug: watchlist write blocked`. `plxnative-watchlist-live` is the OWNER's switch that lets a
+debug build write to their real plex.tv Watchlist: **never create it, and never pass
+`--arm watchlist-live`, unless the owner asks for it in this same session** (AGENTS.md; the
+`watchlist-live-guard.py` hook refuses both). `up` sweeps every trigger, so an agent run turns it off.
+
 A REAL-LOOKING network loss between the set and the mock needs no root and no change to the set's
 network: `tools/netloss-proxy.py` is a host-side TCP proxy the mock advertises as its own address
 (`tests/mock_pms.py --host 0.0.0.0 --port M --advertise-ip <host LAN IPv4> --advertise-port P

@@ -249,7 +249,9 @@ politeness — an over-reporting animator gives back the whole ~38-points-of-a-c
 every `floor` in the suite still passes.
 
 **Anything that animates from a CLOCK rather than a spring** — a millisecond ramp, a phase, a
-countdown — must call `plx_machine::idle::invalidate()` itself. `note_spring` cannot see it, and both
+countdown — must report itself: `plx_machine::idle::invalidate()` when it changes content,
+`plx_machine::idle::note_motion()` when it is a decoration (the tab pulse; damage under a standing
+popover re-captures the frozen host every frame). `note_spring` cannot see it, and both
 `Xfade::tick` (every CONTENT cross-fade) and `Spinner::draw` (every loading read-out) **shipped
 FROZEN** before they were made to report. (`Xfade` drove the ROUTE dip too until restructure phase
 12 lifted that onto `ui::containers::transition::PageDip`, which reports from inside its own

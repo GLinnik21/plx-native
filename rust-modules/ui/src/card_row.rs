@@ -882,6 +882,20 @@ pub fn draw_focused(
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
+    draw_label(p, rect, s, sty, label, measure);
+}
+
+/// The label block under a tile drawn at `rect` (scale `s`) alone, without the tile: what
+/// [`draw_focused`] ends with, and what a landing's ghost of the focused card keeps drawing while
+/// the grid waits for the landing to step.
+pub fn draw_label(
+    p: Painter,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure,
+) {
     // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
@@ -896,7 +910,6 @@ pub fn draw_focused(
     let p = p.alpha(label.reveal);
     draw_label_block(p, rect, sty, label, ty, measure);
 }
-
 /// **The one trailing FACT under a focused tile** — the caption rung, for every poster shelf in the
 /// app and for the Library grid.
 ///
