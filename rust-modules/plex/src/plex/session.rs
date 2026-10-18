@@ -5622,7 +5622,7 @@ mod ui_resolution_tests {
             (r#"{"version":1,"language":"be","ui_resolution":"8k"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
             (r#"{"version":1,"language":"be","ui_resolution":"1080p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
             (r#"{"version":1,"language":"be"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
-            (r#"{"version":1,"language":"es","ui_resolution":"720p"}"#, plx_platform::i18n::Preference::Es, UiResolution::Hd720),
+            (r#"{"version":1,"language":"be","ui_resolution":"720p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Hd720),
         ] {
             std::fs::write(&path, body).unwrap();
             let loaded = install_preferences::load();
