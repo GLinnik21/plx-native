@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T15:40:06Z",
+ "generated": "2026-10-18T15:44:24Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -49.2,
-   "change7_pct": 35.6,
+   "change30_pct": -49.4,
+   "change7_pct": 35.3,
    "d30": 855.0,
-   "delta30": -421.0,
-   "delta7": 114.0,
+   "delta30": -422.0,
+   "delta7": 113.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 106,
-   "now": 434.0,
+   "now": 433,
    "prev7": 320.0,
    "shown": true,
    "state": "worse",
@@ -288,10 +288,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.8,
+   "change30_pct": 44.5,
    "change7_pct": 7.7,
-   "d30": 223,
-   "delta30": 100.0,
+   "d30": 223.5,
+   "delta30": 99.5,
    "delta7": 23.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.7,
-   "change7_pct": 2.2,
+   "change30_pct": 122.3,
+   "change7_pct": 2.0,
    "d30": 105.5,
-   "delta30": 129.5,
-   "delta7": 5.0,
+   "delta30": 129.0,
+   "delta7": 4.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 98,
-   "now": 235,
+   "now": 234.5,
    "prev7": 230.0,
    "shown": true,
    "state": "flat",
@@ -381,9 +381,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 98,
-   "now": 186,
+   "now": 186.0,
    "prev7": 321.5,
    "shown": true,
    "state": "better",
@@ -444,9 +444,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 94,
-   "now": 153,
+   "now": 153.0,
    "prev7": 144.5,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 98,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 758,
-   "delta30": -755.0,
+   "d30": 768.0,
+   "delta30": -765.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -608,11 +608,6 @@
   {
    "change_pct": 210.0,
    "commits": [
-    {
-     "pr": 819,
-     "sha": "6110e134d",
-     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
-    },
     {
      "pr": 818,
      "sha": "e8125923d",
@@ -657,6 +652,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 55.7,
@@ -698,6 +698,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 208,
@@ -739,6 +744,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 263,
@@ -780,6 +790,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 332.0,
@@ -790,7 +805,7 @@
    "to": 485.0
   },
   {
-   "change_pct": 35.6,
+   "change_pct": 35.3,
    "commits": [
     {
      "pr": 831,
@@ -821,6 +836,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 320.0,
@@ -828,7 +848,7 @@
    "label": "Wait after merge",
    "since": "2026-10-18",
    "threshold_pct": 15.0,
-   "to": 434.0
+   "to": 433
   },
   {
    "change_pct": 30.9,
@@ -862,6 +882,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 1026.6,
@@ -903,6 +928,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 1025.0,
@@ -944,6 +974,11 @@
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
     }
    ],
    "from": 1906.5,
