@@ -5378,18 +5378,19 @@ pub fn stream_fps(ps: &PlaybackSession) -> f64 {
 /// to declare — in every one of those cases the payload must say nothing.
 pub fn stream_dovi(ps: &PlaybackSession) -> plx_data::metadata::Dovi {
     let s = &*ps;
-    if s.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&s.stream_vcodec) {
         s.stream_dovi
     } else {
         // Last-line consistency guard for dev declarations and future route mutations: the LG
-        // payload cannot truthfully describe Dolby Vision on a non-HEVC elementary stream.
+        // payload cannot truthfully describe Dolby Vision on an elementary stream that is neither
+        // HEVC nor AV1.
         plx_data::metadata::Dovi::NONE
     }
 }
 /// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
 /// this is the value the Load payload must consume without consulting the live capability cache.
 pub fn stream_dv_presentation(ps: &PlaybackSession) -> plx_data::metadata::DvPresentation {
-    if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&ps.stream_vcodec) {
         ps.stream_dv_decision.presentation
     } else {
         plx_data::metadata::DvPresentation::NotDv
@@ -5535,7 +5536,7 @@ fn set_stream_declaration_with_capability(
         presentation: dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vc.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vc),
         ),
     };
     if decision.presentation.refusal().is_some() {
@@ -7472,9 +7473,9 @@ fn playback_preview_with_capability(
         Some(capability) => d.dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vcodec.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vcodec),
         ),
-        None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
+        None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     let mode = direct_play_mode();
     if mode == DirectPlayMode::Forced {

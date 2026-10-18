@@ -593,8 +593,8 @@ impl Dovi {
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
     /// definite [`Supported`](plx_platform::devcaps::dv::DvCapability::Supported), and
-    /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
-    /// payload's H265 guard silently discarded the node.
+    /// `video_carries_dv` ([`dv_video_codec`]) closes the old Profile 9 disagreement where the gate
+    /// declared AVC and the payload's codec guard silently discarded the node.
     ///
     /// The four arms, and why each is where it is:
     ///
@@ -610,7 +610,7 @@ impl Dovi {
     ///   declaration arm — which is what keeps the emitted node's `trackType` at `"single"` and,
     ///   with `encryptionType` fixed at `"clear"`, makes the pipeline's `dv-dual-svp`
     ///   secure-video-path flag unreachable. We cannot satisfy that flag.
-    /// - **no node will be sent** (capability absent/unknown, non-HEVC output, a profile the
+    /// - **no node will be sent** (capability absent/unknown, output that is neither HEVC nor AV1, a profile the
     ///   server never named, or Profile 5 with the trigger armed) → fall back to
     ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
     ///   That is what makes "keep the refusal for any case where we would not send the node" a
@@ -625,11 +625,16 @@ impl Dovi {
     ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
     ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
     ///   and one the panel puts in Dolby Vision mode.
+    ///
+    ///   AV1 (Profile 10) is declared the same way, on a set whose codec table lists an AV1 decoder
+    ///   (the direct-play gate's own condition). That half is NOT from a decompile: it was measured
+    ///   on a webOS 6 set (LG C1, 2026-10-18), where an AV1 Profile 10.1 direct play put the panel
+    ///   in Dolby Vision, and is unmeasured on any other firmware.
     pub fn presentation(
         &self,
         signal: bool,
         capability: plx_platform::devcaps::dv::DvCapability,
-        video_is_hevc: bool,
+        video_carries_dv: bool,
     ) -> DvPresentation {
         if !self.present {
             return DvPresentation::NotDv;
@@ -644,7 +649,7 @@ impl Dovi {
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
         let declare = capability == plx_platform::devcaps::dv::DvCapability::Supported
-            && video_is_hevc
+            && video_carries_dv
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
             return if self.base_layer_unusable() {
@@ -669,19 +674,19 @@ impl Dovi {
 
     /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
     /// signal. Call once at a route boundary; installed playback must retain the returned value.
-    pub fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
+    pub fn presentation_now(&self, video_carries_dv: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
             plx_platform::devcaps::dv::capability(),
-            video_is_hevc,
+            video_carries_dv,
         )
     }
 
-    pub fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
+    pub fn decision_now(&self, video_carries_dv: bool) -> DvDecision {
         let capability = plx_platform::devcaps::dv::capability();
         DvDecision {
             capability,
-            presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
+            presentation: self.presentation(!dv_withheld(), capability, video_carries_dv),
         }
     }
 }
@@ -818,6 +823,14 @@ plx_base::devtrig::latched_flag!(
     /// capability answer nor a reload re-evaluates the installed play.
     pub fn dv_withheld = "nodv";
 );
+
+/// Can a Dolby Vision declaration ride on this video codec (the source's own spelling, `"hevc"`,
+/// `"av1"`)? HEVC carries Profiles 5, 7 and 8; AV1 carries Profile 10. Anything else (an AVC
+/// Profile 9, VP9) is never declared, because the Load payload names the codec the node is read
+/// against and the pipeline has no Dolby Vision path for it.
+pub fn dv_video_codec(vcodec: &str) -> bool {
+    vcodec.eq_ignore_ascii_case("hevc") || vcodec.eq_ignore_ascii_case("av1")
+}
 
 /// Prewarm both payload diagnostics before the first frame scope. Their getters are subsequently
 /// filesystem-free even when preview or payload construction first reaches them during a frame.

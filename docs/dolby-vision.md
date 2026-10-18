@@ -70,8 +70,14 @@ single appsrc, which is what playing the enhancement layer would need, is unexam
 Profiles not present here: **4** is dual-layer and deprecated (P&L §1.1 p. 6); **9** is single-layer
 **AVC**, and now falls back without a node because codec eligibility is part of
 `Dovi::presentation` itself (the old gate/payload disagreement has a host regression); **10** and
-**20** are AV1 and MV-HEVC, and this panel has no Dolby Vision decoder for either. (A set whose
-codec table lists an AV1 decoder can direct-play plain AV1, but that is not a Dolby Vision path.)
+**20** are AV1 and MV-HEVC, and this panel has no Dolby Vision decoder for either.
+
+**Profile 10 on a set that decodes AV1** is declared like Profile 8: `metadata::dv_video_codec`
+admits `av1` beside `hevc`, the payload keeps `"video":"AV1"`, and the node is the same three
+fields with `profileId: 10`. Nothing here was decompiled: that libpf's AV1 caps branch reaches
+the same Dolby Vision tail was measured on a webOS 6 set (LG C1, webOS 6.5.3, 2026-10-18): an
+AV1 Profile 10.1 file direct-played with the node put the panel in Dolby Vision and played through,
+where without it the same file showed HDR10. It is unmeasured on any other firmware, and the webOS 4.5 dev set never reaches it (no AV1 row in its codec table).
 
 ---
 

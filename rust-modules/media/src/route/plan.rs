@@ -1569,13 +1569,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             presentation: dovi.presentation(
                 !plx_data::metadata::dv_withheld(),
                 capability,
-                vcodec == "hevc",
+                plx_data::metadata::dv_video_codec(vcodec),
             ),
         },
-        None => dovi.decision_now(vcodec == "hevc"),
+        None => dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     #[cfg(not(any(test, feature = "test-support")))]
-    let dv_decision = dovi.decision_now(vcodec == "hevc");
+    let dv_decision = dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec));
     let dv = dv_decision.presentation;
     let video_dp = if forced { video_feed_supported(vcodec, dv, plx_platform::devcaps::caps()) } else {
         video_direct_plays(vcodec, src_w, src_h, dv, plx_platform::devcaps::caps())

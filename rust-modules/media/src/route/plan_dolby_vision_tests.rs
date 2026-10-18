@@ -123,6 +123,24 @@ fn supported_dv_preserves_signal_and_layer_rules() {
 fn non_hevc_never_declares_dolby_vision() {
     use plx_platform::devcaps::dv::DvCapability::Supported;
 
+    // HEVC and AV1 carry a declaration; an AVC Profile 9 and VP9 never do.
+    for (vcodec, carries) in [("hevc", true), ("HEVC", true), ("av1", true), ("h264", false), ("vp9", false)] {
+        assert_eq!(plx_data::metadata::dv_video_codec(vcodec), carries, "{vcodec}");
+    }
+    let p10 = Dovi {
+        present: true,
+        profile: 10,
+        bl_compat: 1,
+        el_present: false,
+        ..Dovi::NONE
+    };
+    assert_eq!(
+        p10.presentation(true, Supported, plx_data::metadata::dv_video_codec("av1"))
+            .declared()
+            .map(|n| n.profile_id),
+        Some(10),
+    );
+
     let p9 = Dovi {
         present: true,
         profile: 9,
