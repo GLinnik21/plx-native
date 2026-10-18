@@ -5,5 +5,6 @@
   {"tag": "fr", "native_name": "Français",   "region": "fr-FR", "script": "Latn", "plurals": ["one", "many", "other"],        "row": 5},
   {"tag": "it", "native_name": "Italiano",   "region": "it-IT", "script": "Latn", "plurals": ["one", "many", "other"],        "row": 6},
   {"tag": "pt", "native_name": "Português", "region": "pt-PT", "script": "Latn", "plurals": ["one", "many", "other"], "excluded_regions": ["BR"], "row": 7},
-  {"tag": "de", "native_name": "Deutsch",    "region": "de-DE", "script": "Latn", "plurals": ["one", "other"],                "row": 8}
+  {"tag": "de", "native_name": "Deutsch",    "region": "de-DE", "script": "Latn", "plurals": ["one", "other"],                "row": 8},
+  {"tag": "hu", "native_name": "Magyar",     "region": "hu-HU", "script": "Latn", "plurals": ["one", "other"],                "row": 9}
 ]

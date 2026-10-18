@@ -136,6 +136,7 @@ fn crew_display_translates_owned_roles_without_changing_identity_or_character_na
         (Preference::Be, ["Рэжысёр", "Сцэнарыст", "Рэжысёр, сцэнарыст"]),
         (Preference::Fr, ["Réalisateur", "Scénariste", "Réalisateur, scénariste"]),
         (Preference::De, ["Regie", "Drehbuch", "Regie, Drehbuch"]),
+        (Preference::Hu, ["Rendező", "Forgatókönyvíró", "Rendező, forgatókönyvíró"]),
     ] {
         let locale = LocaleContext::resolve(preference, None, None, None, None);
         assert_eq!(detail.credit_role_in(0, &locale), Some("Director"), "server character is not a job identity");

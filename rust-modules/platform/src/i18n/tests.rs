@@ -85,7 +85,14 @@ fn locale_resolution_separates_language_from_formatting() {
     assert_eq!(de.format_locale(), "de-DE");
     assert_eq!(de.number(12345), "12.345");
     assert_eq!(de.decimal(45, 1), "4,5");
-    for tag in ["nl-NL", "be-Latn", "fr-Cyrl", "it-Cyrl", "de-Cyrl", "garbage\r\nheader", "C"] {
+    for tag in ["hu-HU", "hu_HU.UTF-8", "hu"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Hu, "{tag}");
+    }
+    let hu = LocaleContext::resolve(Preference::Hu, None, None, None, None);
+    assert_eq!(hu.format_locale(), "hu-HU");
+    assert_eq!(hu.decimal(45, 1), "4,5");
+    for tag in ["nl-NL", "be-Latn", "fr-Cyrl", "it-Cyrl", "de-Cyrl", "hu-Cyrl", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -127,6 +134,10 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(de.plural(1), PluralCategory::One);
     assert_eq!(de.plural(2), PluralCategory::Other);
     assert_eq!(de.plural(1_000_000), PluralCategory::Other);
+    let hu = LocaleContext::resolve(Preference::Hu, None, None, None, None);
+    assert_eq!(hu.plural(0), PluralCategory::Other);
+    assert_eq!(hu.plural(1), PluralCategory::One);
+    assert_eq!(hu.plural(2), PluralCategory::Other);
     let it = LocaleContext::resolve(Preference::It, None, None, None, None);
     assert_eq!(it.plural(0), PluralCategory::Other);
     assert_eq!(it.plural(1), PluralCategory::One);
@@ -303,6 +314,14 @@ fn german_month_day_captions_write_the_day_as_an_ordinal() {
         assert_eq!(long, &format!("12. {}", MONTHS_DE_LONG[i]));
     }
     assert_eq!(captions[2].1, "12. März");
+}
+
+#[test]
+fn hungarian_month_day_captions_put_the_month_first_and_the_day_as_an_ordinal() {
+    let captions = month_captions(Preference::Hu);
+    assert_eq!(captions[2].1, "március 12.");
+    assert_eq!(captions[2].0, "márc. 12.");
+    assert_eq!(captions[11].1, "december 12.");
 }
 
 #[test]

@@ -250,6 +250,7 @@ fn the_count_reads_in_every_language_with_its_plural_forms() {
         ("it", [(1, "1 titolo"), (2, "2 titoli"), (21, "21 titoli")], "6 di 14"),
         ("pt", [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
         ("de", [(1, "1 Titel"), (2, "2 Titel"), (21, "21 Titel")], "6 von 14"),
+        ("hu", [(1, "1 cím"), (2, "2 cím"), (21, "21 cím")], "6 / 14"),
     ];
     for lang in SHIPPED {
         let (_, all, of) = want.iter().find(|row| row.0 == lang.tag()).unwrap_or_else(|| panic!("{lang:?}: no reviewed count row"));

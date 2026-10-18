@@ -142,7 +142,7 @@ impl LocaleContext {
     }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
-    /// "12 de março" in European Portuguese, "12. März" in German, and in Belarusian the genitive
+    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Belarusian the genitive
     /// after the day ("12 сакавіка") with the abbreviated form for medium. Hand-written tables, not
     /// ICU month data, so no name data is compiled in for the shipped languages. The year is
     /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
@@ -150,6 +150,14 @@ impl LocaleContext {
         // Validate against a leap year first: `month - 1` below is only reached for 1..=12.
         icu_calendar::Date::try_new_gregorian(2024, month, day).ok()?;
         let i = usize::from(month - 1);
+        // Hungarian puts the month first and the day after it, with the ordinal dot: "március 12.".
+        if self.language == Language::Hu {
+            let names = match width {
+                MonthWidth::Medium => &HU_MEDIUM,
+                MonthWidth::Long => &HU_LONG,
+            };
+            return Some(format!("{} {day}.", names[i]));
+        }
         let (names, joiner) = match (self.language, width) {
             (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
             (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
@@ -165,6 +173,7 @@ impl LocaleContext {
             (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
             (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
             (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
+            (Language::Hu, _) => unreachable!("Hungarian returned above"),
         };
         Some(format!("{day}{joiner}{}", names[i]))
     }
@@ -177,6 +186,13 @@ pub enum MonthWidth {
     Long,
 }
 
+/// CLDR `hu` abbreviated format months, with their dots.
+const HU_MEDIUM: [&str; 12] =
+    ["jan.", "febr.", "márc.", "ápr.", "máj.", "jún.", "júl.", "aug.", "szept.", "okt.", "nov.", "dec."];
+const HU_LONG: [&str; 12] = [
+    "január", "február", "március", "április", "május", "június", "július", "augusztus", "szeptember",
+    "október", "november", "december",
+];
 const EN_MEDIUM: [&str; 12] =
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const EN_LONG: [&str; 12] = [

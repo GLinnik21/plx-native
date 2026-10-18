@@ -1,6 +1,6 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German and Belarusian
+PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German, Hungarian and Belarusian
 (official Cyrillic orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
@@ -47,7 +47,7 @@ integers are formatted with the TV's regional settings. A plural message's `coun
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
 may be omitted when the form spells it out. Each language needs exactly the categories its
 `plurals` entry in `locales/languages.json` declares, no more: Belarusian `one`, `few`, `many`, and
-`other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English and German `one` and `other`.
+`other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English, German and Hungarian `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -121,7 +121,7 @@ requiring shaping or bidirectional layout need renderer work before being offere
 ## Runtime behavior
 
 Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian,
-Portuguese, German and Belarusian choices apply the next time the app starts. The running UI and Plex request language
+Portuguese, German, Hungarian and Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.
 
