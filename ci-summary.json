@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T00:27:42Z",
+ "generated": "2026-10-18T00:38:12Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.1,
-   "change7_pct": 39.7,
+   "change30_pct": -47.9,
+   "change7_pct": 40.1,
    "d30": 928.5,
-   "delta30": -446.5,
-   "delta7": 137.0,
+   "delta30": -445.0,
+   "delta7": 138.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 268,
    "n_prev": 209,
-   "now": 482.0,
+   "now": 483.5,
    "prev7": 345,
    "shown": true,
    "state": "worse",
@@ -268,17 +268,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.5,
+   "change7_pct": 7.9,
    "d30": null,
    "delta30": null,
-   "delta7": 77.5,
+   "delta7": 72,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 22,
+   "n_now": 23,
    "n_prev": 39,
-   "now": 987.5,
+   "now": 982,
    "prev7": 910,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 22,
+   "n_now": 23,
    "n_prev": 39,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -524,14 +524,14 @@
    "change7_pct": 7.1,
    "d30": null,
    "delta30": null,
-   "delta7": 1.0,
+   "delta7": 1,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 22,
+   "n_now": 23,
    "n_prev": 39,
-   "now": 15.0,
+   "now": 15,
    "prev7": 14,
    "shown": false,
    "state": "flat",
@@ -789,14 +789,65 @@
    "to": 460.5
   },
   {
-   "change_pct": 39.7,
-   "commits": [],
+   "change_pct": 40.1,
+   "commits": [
+    {
+     "pr": 804,
+     "sha": "a3e2dc6a5",
+     "title": "Draw emoji in titles and library names"
+    },
+    {
+     "pr": 795,
+     "sha": "559d5a698",
+     "title": "Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs"
+    },
+    {
+     "pr": 801,
+     "sha": "646859f9c",
+     "title": "i18n: language registry \u2014 a locales/ directory is a language or a build error"
+    },
+    {
+     "pr": 806,
+     "sha": "b88c310a9",
+     "title": "i18n: keep technical strings English-only (diagnostics panel, verdict line, dev warnings)"
+    },
+    {
+     "pr": 802,
+     "sha": "635b51a2c",
+     "title": "Add European Portuguese (pt-PT) language"
+    },
+    {
+     "pr": 816,
+     "sha": "e351f56e0",
+     "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
+    },
+    {
+     "pr": 819,
+     "sha": "6110e134d",
+     "title": "CI: deps-update owned() misreads a foreign branch under pipefail; netloss proxy test race"
+    },
+    {
+     "pr": 818,
+     "sha": "e8125923d",
+     "title": "Dependencies: Dependabot bumps the pinned Rust toolchain"
+    },
+    {
+     "pr": 821,
+     "sha": "0aa486d3d",
+     "title": "Build: link glibc libm ahead of the Rust staticlib so math calls use VFP"
+    },
+    {
+     "pr": 820,
+     "sha": "0b0b22092",
+     "title": "Add German (de) as a UI language"
+    }
+   ],
    "from": 345,
    "id": "pr_wait",
    "label": "PR CI wait",
-   "since": "2026-10-18",
+   "since": "2026-10-17",
    "threshold_pct": 25.0,
-   "to": 482.0
+   "to": 483.5
   },
   {
    "change_pct": 38.2,
@@ -988,7 +1039,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 987.5
+   "now": 982
   },
   {
    "group": "ci",
