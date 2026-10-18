@@ -1533,6 +1533,8 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
 
 mod type_tests { include!("type_tests.rs"); }
 
+mod collections_listing_tests { include!("collections_listing_tests.rs"); }
+
 mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 

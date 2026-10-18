@@ -1,11 +1,11 @@
 //! T1: the Collections page's own rules: Sort visibility, the section-sync guard, the crumb's
-//! geometry and focus order, the tile caption (Belarusian plurals 1/2/5/21), the tile grid.
+//! geometry and focus order, the tile caption (Belarusian plurals 1/2/5/21).
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_platform::i18n::{self, language_on_this_thread_for_test, Language, Preference};
 
 fn films(n: i64) -> TileFacts<'static> {
-    TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n, smart: false }
+    TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n }
 }
 
 fn lines(tag: &str, stored: CaptionPolicy, f: &TileFacts<'_>) -> [Option<String>; 2] {
@@ -23,8 +23,6 @@ fn sort_is_hidden_unless_the_server_declares_two_or_more() {
     assert!(header(SecKind::Movie, 1, "Title", 1920.0, &m).sort.is_none());
     let h = header(SecKind::Movie, 2, "Title", 1920.0, &m);
     assert!(h.sort.is_some());
-    assert_eq!(h.stops(), [Stop::Root, Stop::Sort]);
-    assert_eq!(header(SecKind::Movie, 1, "Title", 1920.0, &m).stops(), [Stop::Root], "the root link is the only stop");
 }
 
 #[test]
@@ -67,13 +65,6 @@ fn the_crumb_and_the_sort_control_never_meet_in_any_shipped_language() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
-}
-
-#[test]
-fn the_grid_geometry_is_the_librarys() {
-    assert_eq!(GRID_TOP + TILE_H + 40.0, ROW2_TOP);
-    assert_eq!(TILE_W + 35.0, TILE_PITCH);
-    assert_eq!(GRID_TOP, super::super::layout::HEADER_Y + super::super::layout::HEADER_BLOCK_H);
 }
 
 #[test]
@@ -134,9 +125,9 @@ fn every_shipped_language_words_the_count_without_english() {
 }
 
 #[test]
-fn the_empty_sentence_and_smart_label_exist_in_every_language_and_fit_a_centred_line() {
+fn the_empty_sentence_exists_in_every_language_and_fit_a_centred_line() {
     let m = ShippedMeasure;
-    let en = { let _g = language_on_this_thread_for_test(Preference::from_tag("en")); (empty_text("Films"), smart_label().to_owned()) };
+    let en = { let _g = language_on_this_thread_for_test(Preference::from_tag("en")); empty_text("Films") };
     for l in Language::SHIPPED {
         let _g = language_on_this_thread_for_test(Preference::from_tag(l.tag()));
         let e = empty_text("Documentaries & Concerts");
@@ -144,8 +135,7 @@ fn the_empty_sentence_and_smart_label_exist_in_every_language_and_fit_a_centred_
         let w = std::ffi::CString::new(e.clone()).map_or(0.0, |c| m.width(&c, plx_ui::theme::size::BODY, false));
         assert!(w < 1200.0, "{}: {e} is {w}px", l.tag());
         if l.tag() != "en" {
-            assert_ne!(empty_text("Films"), en.0, "{}", l.tag());
-            assert_ne!(smart_label(), en.1, "{}", l.tag());
+            assert_ne!(empty_text("Films"), en, "{}", l.tag());
         }
     }
 }

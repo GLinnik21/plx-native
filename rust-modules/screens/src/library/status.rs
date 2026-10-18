@@ -103,7 +103,8 @@ impl LibraryScreen {
                     else if directory.sections().is_empty() { plx_platform::i18n::msg::browse_library_empty().into() }
                     else if listing.unwatched() || listing.genre().is_some() { plx_platform::i18n::msg::browse_library_no_matches().into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        listing.library_type().empty_readout(section.kind, &section.row.title)
+                        if self.listing == Listing::Collections { super::collections_page::empty_text(&section.row.title) }
+                        else { listing.library_type().empty_readout(section.kind, &section.row.title) }
                     } else { plx_platform::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }

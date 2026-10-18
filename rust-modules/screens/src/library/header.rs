@@ -15,11 +15,15 @@ pub(super) struct Header {
     layout: HeaderLayout,
     /// `(element, index into layout.items)` of every focusable item, in focus order.
     stops: Vec<(u32, usize)>,
+    /// The Collections page's row: the crumb in place of the library names. `None` on every
+    /// other page.
+    crumb: Option<(plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout)>,
 }
 
 impl Header {
     /// The plate (focus and hit rect) of `elem` in document space.
     pub(super) fn plate(&self, elem: u32) -> Option<Rect> {
+        if elem == CRUMB_ROOT { return self.crumb.as_ref().map(|(_, layout)| layout.root_plate); }
         let (_, index) = self.stops.iter().find(|(key, _)| *key == elem)?;
         Some(self.layout.items[*index].plate)
     }
@@ -57,10 +61,14 @@ impl LibraryScreen {
     /// Every focusable element of the header row in focus order: the library names, "+N", then
     /// the controls.
     pub(super) fn header_elems(&self) -> Vec<u32> {
+        if self.listing == Listing::Collections {
+            return [CRUMB_ROOT].into_iter().chain(self.toolbar_elems().iter().copied()).collect();
+        }
         self.libraries.iter().map(|(elem, _)| *elem).chain(self.toolbar_elems().iter().copied()).collect()
     }
 
     pub(super) fn is_header_elem(&self, elem: u32) -> bool {
+        if self.listing == Listing::Collections { return elem == CRUMB_ROOT || self.toolbar_elems().contains(&elem); }
         self.libraries.iter().any(|(key, _)| *key == elem) || self.toolbar_elems().contains(&elem)
     }
 
@@ -157,6 +165,8 @@ impl LibraryScreen {
         self.view_section(cx).hash(&mut h);
         self.collections.hash(&mut h);
         self.listing.hash(&mut h);
+        self.listed.code().hash(&mut h);
+        matches!(self.kind, SecKind::Movie).hash(&mut h);
         self.switched.hash(&mut h);
         for section in directory.sections() {
             (section.sid.map(|sid| sid.raw()), section.key, section.row.title.as_str(), section.row.pinned).hash(&mut h);
@@ -188,6 +198,7 @@ impl LibraryScreen {
         let key = self.header_key(cx);
         if self.header.is_some() && self.header_key == Some(key) { return; }
         self.header_key = Some(key);
+        if self.listing == Listing::Collections { return self.refresh_collections_header(cx); }
         let (right, widest) = self.header_right(cx);
         let measure = cx.measure;
         let budget = PageHeader::new(PageHeaderSpec { right: right.clone(), ..Default::default() }, &widest, measure)
@@ -241,7 +252,20 @@ impl LibraryScreen {
             };
             if let Some(elem) = elem.filter(|_| rect.focusable) { stops.push((elem, index)); }
         }
-        self.header = Some(Header { page, layout, stops });
+        self.header = Some(Header { page, layout, stops, crumb: None });
+    }
+
+    /// The Collections page's row: the crumb (its root is the one stop besides Sort) in place of
+    /// the library names and the page's three controls.
+    fn refresh_collections_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        self.libraries.clear();
+        // Only the collections' own declared sorts count: until the store has switched the section
+        // to the collections listing, `sorts()` is still the films' list.
+        let declared = if self.listed == plx_data::browse::LibraryType::Collections { H::listing(cx).sorts().len() } else { 0 };
+        let row = super::collections_page::header(self.kind, declared, &self.sort_value(cx), SCR_W, cx.measure);
+        let stops = if row.sort.is_some() { vec![(SORTFILTER, 0)] } else { Vec::new() };
+        self.collections_sort = row.sort.is_some();
+        self.header = Some(Header { page: row.page, layout: row.layout, stops, crumb: Some((row.crumb, row.crumb_layout)) });
     }
 
     /// Where the header control or name `elem` is, in screen space at the drawn or target scroll.
@@ -263,9 +287,14 @@ impl LibraryScreen {
         }
         let top = layout::HEADER_Y - self.scroll.pos;
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
-        let focus = f.focus.current.filter(|key| key.entry == self.entry)
-            .and_then(|key| header.stops.iter().find(|(elem, _)| *elem == key.elem))
-            .map(|(_, index)| *index);
+        let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        let focus = focused.and_then(|elem| header.stops.iter().find(|(stop, _)| *stop == elem)).map(|(_, index)| *index);
         header.page.draw(p, &layout, focus);
+        if let Some((crumb, crumb_layout)) = &header.crumb {
+            let mut crumb_layout = *crumb_layout;
+            for rect in [&mut crumb_layout.root_text, &mut crumb_layout.root_plate, &mut crumb_layout.glyph,
+                &mut crumb_layout.page_text, &mut crumb_layout.page_plate] { rect.y -= self.scroll.pos; }
+            crumb.draw(p, &crumb_layout, focused == Some(CRUMB_ROOT));
+        }
     }
 }

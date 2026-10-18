@@ -6,6 +6,8 @@ use super::*;
 pub(super) const COLLECTIONS: u32 = 8;
 pub(super) const RECOMMENDED: u32 = 9;
 pub(super) const SORTFILTER: u32 = 10;
+/// The Collections page's crumb root ("Films"): OK returns to the page below.
+pub(super) const CRUMB_ROOT: u32 = 11;
 
 /// What the Collections control knows about its count (`LibraryLike::collections_count`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -31,6 +33,9 @@ impl CollectionsControl {
 impl LibraryScreen {
     /// The controls on the row, left to right. A hidden Collections control is not on it.
     pub(super) fn toolbar_elems(&self) -> &'static [u32] {
+        // The Collections page's row: the crumb (its own element, `CRUMB_ROOT`) and, only when the
+        // server declares two sorts, the one Sort control. No Collections, Recommended or menu.
+        if self.listing == Listing::Collections { return if self.collections_sort { &[SORTFILTER] } else { &[] }; }
         if self.collections == CollectionsControl::Hidden { &[RECOMMENDED, SORTFILTER] }
         else { &[COLLECTIONS, RECOMMENDED, SORTFILTER] }
     }

@@ -13,7 +13,6 @@ mod scroll_chrome; // TMP
 mod rail_tests;
 mod transactions;
 mod draw;
-#[allow(dead_code)] // until the Collections hooks read every item
 mod collections_page;
 mod header;
 mod toolbar;
@@ -67,7 +66,7 @@ use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
 use layout::{Layout, Block, ShelfRun, CONTENT_TOP};
 use header::Header;
-use toolbar::{CollectionsControl, COLLECTIONS, RECOMMENDED, SORTFILTER};
+use toolbar::{CollectionsControl, COLLECTIONS, CRUMB_ROOT, RECOMMENDED, SORTFILTER};
 #[cfg(test)]
 use layout::COLS;
 use parts::{GridPart, RailPart, GRID_GROUP, RAIL_GROUP};
@@ -185,6 +184,15 @@ pub struct LibraryScreen {
     header_key: Option<u64>,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
     collections: CollectionsControl,
+    /// The Collections page's header carries the Sort control (the server declared two or more
+    /// sorts for the collections listing). A projection of `header`, read by `toolbar_elems`.
+    collections_sort: bool,
+    /// The Collections page asked the store for the collections listing of this epoch: asked once,
+    /// so a store change before the answer lands does not ask again. Not canon.
+    collections_asked: Option<u32>,
+    /// The type the page below was listing when it pushed the Collections page (a TV library may
+    /// be on Seasons or Episodes): where the section goes back to when the page is left.
+    type_before_collections: Option<plx_data::browse::LibraryType>,
     /// The total of the library's unfiltered listing the page last saw, keyed by the listing it
     /// belongs to: the "312 of 1,284" read-out's denominator. A projection, not canon.
     unfiltered: Option<((LibrarySectionIdentity, u32, plx_data::browse::LibraryType), i64)>,
@@ -285,7 +293,8 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, unfiltered: None,
+            libraries: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            type_before_collections: None, unfiltered: None,
             shelf_mode: true, switched: false, shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
             shelf_publication: None, layout, target_layout: layout,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
@@ -416,7 +425,9 @@ impl LibraryScreen {
             }
         }
         if changed {
-            if self.section.is_some() {
+            // A pushed Collections page is fixed to the section that opened it: the section moving
+            // under it is not a foreign swap to dissolve through (`collections_page::syncs_section`).
+            if self.section.is_some() && collections_page::syncs_section(self.listing) {
                 self.initial = true;
                 // A library chosen with OK fades the GRID (the header stays put), so the section
                 // landing under that fade is the page's own transaction, not a foreign swap.
@@ -865,7 +876,54 @@ impl LibraryScreen {
     pub(super) fn open_listing<H: LibraryLike>(&mut self, listing: Listing, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if listing == self.listing { return; }
         let Some(section) = self.section.as_ref().and_then(|section| u32::try_from(section.key).ok()) else { return };
+        if listing == Listing::Collections && self.listed != plx_data::browse::LibraryType::Collections {
+            self.type_before_collections = Some(self.listed);
+        }
         fx.push(Fx::App(AppFx::Library(LibraryReq::OpenListing { listing, section })));
+    }
+
+    /// Stage `kind` as the section's listing type, the edit the Sort & Filter menu's Show rows
+    /// deliver. False when the listing has no address yet.
+    fn request_type<H: LibraryLike>(&mut self, kind: plx_data::browse::LibraryType, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> bool {
+        let Some(target) = GridTarget::from_view(H::listing(cx)) else { return false };
+        let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
+        self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
+            target: address, edit: plx_data::stores::browse::QueryEdit::LibraryType(kind),
+        }), cx, fx);
+        true
+    }
+
+    /// **The Collections page and the page below it share one store listing** (the Browse store
+    /// holds one query per section), so the type is a loan. The Collections page asks for the
+    /// section's collections (`type=18`) once when it can address the section; the full grid, on
+    /// becoming the top page again, puts the section back on the type it was listing when the
+    /// page was pushed (its films when it has none noted). The same call heals a section left on
+    /// collections by a run that ended on the Collections page, which the saved view restores.
+    fn follow_listing_type<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        use plx_data::browse::LibraryType;
+        match self.listing {
+            Listing::Collections => {
+                let Some(epoch) = self.epoch else { return };
+                if self.listed == LibraryType::Collections || self.collections_asked == Some(epoch)
+                    || self.pending.grid().is_some() { return; }
+                if self.request_type(LibraryType::Collections, cx, fx) { self.collections_asked = Some(epoch); }
+            }
+            Listing::All => {
+                if self.buried || !self.live { return; }
+                if self.listed != LibraryType::Collections {
+                    // Back on its own type: the loan is repaid.
+                    self.type_before_collections = None;
+                    return;
+                }
+                if self.pending.grid().is_some() { return; }
+                let kind = self.kind;
+                let back = self.type_before_collections
+                    .filter(|back| LibraryType::offered(kind).contains(back) && *back != LibraryType::Collections)
+                    .unwrap_or(LibraryType::Primary);
+                self.request_type(back, cx, fx);
+            }
+            Listing::Recommended => {}
+        }
     }
 
     fn activate<H: LibraryLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
@@ -877,10 +935,15 @@ impl LibraryScreen {
         // `MORE` is the only way into the Sources menu: an ordinary library name below always
         // requests a section transition, never a menu.
         match elem {
-            // P5: the Collections page lists the library's collections (type 18).
+            // The Collections page lists the library's collections (type 18).
             COLLECTIONS => { self.open_listing(Listing::Collections, cx, fx); return Handled::Yes; }
-            // P6: the Recommended page lists the server's hubs for the library.
+            // The Recommended page lists the server's hubs for the library.
             RECOMMENDED => { self.open_listing(Listing::Recommended, cx, fx); return Handled::Yes; }
+            // The crumb's root link: back to the library page below.
+            CRUMB_ROOT if self.listing == Listing::Collections => {
+                fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back)));
+                return Handled::Yes;
+            }
             SORTFILTER => { self.open_menu(crate::registry::LibraryMenuKind::SortFilter, elem, cx, fx); return Handled::Yes; }
             MORE => { self.open_menu(crate::registry::LibraryMenuKind::Sources, elem, cx, fx); return Handled::Yes; }
             _ => {}
@@ -1012,11 +1075,7 @@ impl LibraryScreen {
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
             // The TYPE menu's own edit, delivered the way its row delivers it.
             LibraryCmd::SetType(kind) => {
-                let Some(target) = GridTarget::from_view(H::listing(cx)) else { return Handled::No };
-                let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
-                self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
-                    target: address, edit: plx_data::stores::browse::QueryEdit::LibraryType(kind),
-                }), cx, fx);
+                if !self.request_type(kind, cx, fx) { return Handled::No; }
                 return Handled::Yes;
             }
             LibraryCmd::OpenListing(listing) => {
@@ -1132,15 +1191,19 @@ impl LibraryScreen {
             self.refresh_header(cx);
             return Handled::Yes;
         }
+        let pushed = self.listing == Listing::Collections;
         let Some(focus) = cx.focus.current.filter(|key| key.entry == self.entry) else {
-            // The nav (or nothing of this page) holds focus: leave the library.
-            fx.push(Fx::App(AppFx::Library(LibraryReq::BackToHome { kind: self.kind })));
+            // The nav (or nothing of this page) holds focus: leave the page. The Collections page
+            // was pushed over the library, so it pops to it; the library itself goes Home.
+            if pushed { fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back))); }
+            else { fx.push(Fx::App(AppFx::Library(LibraryReq::BackToHome { kind: self.kind }))); }
             return Handled::Yes;
         };
         if region_of_elem(focus.elem) == Some(KeyRegion::Rail) {
             self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
         } else if self.is_header_elem(focus.elem) {
-            self.reseat(FocusTarget::ContainerGroup(STRIP), fx);
+            if pushed { fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back))); }
+            else { self.reseat(FocusTarget::ContainerGroup(STRIP), fx); }
         } else if self.scroll_target > 0.5 {
             // Deep in the page: back to its top, on the first row when focus is in the grid.
             self.scroll_target = 0.0;
@@ -1170,6 +1233,7 @@ impl LibraryScreen {
         match ev {
             ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => {
                 self.sync(cx);
+                self.follow_listing_type(cx, fx);
                 // A read-back that lands while a page is pushed over this one is acted on at once.
                 if self.buried { self.requery_stale(cx, fx); }
             }
@@ -1183,12 +1247,18 @@ impl LibraryScreen {
                     self.seat_wanted = Some(key.elem).filter(|_| key.entry == self.entry);
                 }
                 self.sync(cx);
+                self.follow_listing_type(cx, fx);
             }
             ScreenEvent::Cover => {
                 self.live = false;
                 if self.buried { self.requery_stale(cx, fx); }
             }
-            ScreenEvent::Uncover => { self.live = true; self.buried = false; self.sync(cx); }
+            ScreenEvent::Uncover => {
+                self.live = true;
+                self.buried = false;
+                self.sync(cx);
+                self.follow_listing_type(cx, fx);
+            }
             ScreenEvent::WillLeave(leave) => {
                 if matches!(leave, plx_machine::machine::Leave::Deeper) { self.buried = true; }
                 self.save_cursor(cx, fx);

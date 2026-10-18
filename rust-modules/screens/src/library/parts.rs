@@ -475,6 +475,25 @@ struct GridSrc<'a, 'v> {
     view: plx_data::stores::browse::ListingView<'v>,
 }
 
+impl GridSrc<'_, '_> {
+    /// The listing is the section's collections: the Collections page's tiles (caption "N films",
+    /// smart mark) rather than the library's.
+    fn collections(&self) -> bool { self.view.library_type() == plx_data::browse::LibraryType::Collections }
+}
+
+/// A collection tile's label on the Collections page: the lines the Under posters setting asks
+/// for, with the member count as the details line (`collections_page::caption`). A row with
+/// nothing to say gets the plain title.
+pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
+    let facts = super::collections_page::TileFacts {
+        title: &item.title, subtype: item.subtype.as_deref(), child_count: item.child_count,
+    };
+    let stored = crate::settings::caption_policy_of(plx_media::route::under_posters());
+    let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
+    if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
+    ui_cards::TileLabel::from_lines(lines)
+}
+
 impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn len(&self) -> usize { self.total }
     fn elem(&self, i: usize) -> u32 { window_elem(self.windows, i).unwrap_or(0) }
@@ -483,7 +502,9 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
     fn label(&self, i: usize) -> ui_cards::TileLabel {
-        self.view.item(i).map(grid_label).unwrap_or_default()
+        let Some(item) = self.view.item(i) else { return Default::default() };
+        if self.collections() { return collection_label(item); }
+        grid_label(item)
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
@@ -492,6 +513,10 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
+        }
+        // A smart collection wears its mark, focused or not, on the popped tile's rect.
+        if self.collections() && self.view.item(i).is_some_and(|item| item.smart) {
+            plx_ui::collection_tile::draw_smart_mark(p, tile.rect);
         }
     }
     // Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws

@@ -2069,7 +2069,7 @@ where
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            // CONTRACT FREEZE: the same screen in another `Listing`; P5 / P6 build what they list.
+            // The server's hubs for the library, on their own screen.
             AppArg::LibraryRecommended { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);
@@ -2077,7 +2077,8 @@ where
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            // CONTRACT FREEZE: P5 builds the Collections grid here (it mounts the library's grid under its header until then).
+            // The library's grid in `Listing::Collections`: it asks the store for the section's collections (type=18)
+            // when it mounts, wears the "Films > Collections" crumb for a header, and hands the section back when left.
             AppArg::LibraryCollections { .. } => {
                 let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
                     .unwrap_or(plx_data::stores::browse::SecKind::Movie);

@@ -1,17 +1,20 @@
 //! The **Collections page** ("Films > Collections", redesign spec "Collections page"): the library
-//! grid in [`Listing::Collections`] mode (PMS `type=18`).
+//! grid in [`Listing::Collections`] mode. The page asks the store for the section's collections
+//! (`LibraryType::Collections`, PMS `type=18`) when it mounts and puts the section back on its own
+//! type when it is left (`LibraryScreen::collections_listing`).
 //!
 //! The grid, the A-Z rail and the paging come from the ordinary library page; what this module owns
-//! is what is *different* about the page, as plain values the screen reads at its hook sites:
+//! is what is *different* about the page, as plain values the screen reads:
 //!
 //! * the header row: a [`Crumb`] ("Films" link, a centred chevron, "Collections" on the selected
 //!   plate) and, only when the server declares two or more sorts, one "Sort . value" control at
-//!   the right edge ([`header`]);
-//! * which of the library page's behaviours do not run here ([`syncs_section`]);
-//! * the tile: no count badge, a caption of "N films" / "N shows" under the focused tile (the
-//!   collection's name above it when Under posters > Title is on), and the smart mark
-//!   ([`caption`], [`TileFacts`]);
-//! * the empty page's sentence ([`empty_text`]).
+//!   the right edge ([`header`], read by `header.rs`);
+//! * which of the library page's behaviours do not run here ([`syncs_section`], read by
+//!   `LibraryScreen::sync`);
+//! * the tile: no count badge, and a caption of "N films" / "N shows" under the focused tile (the
+//!   collection's name above it when Under posters > Title is on) ([`caption`], [`TileFacts`],
+//!   read by the grid's card source, which also draws the smart mark);
+//! * the empty page's sentence ([`empty_text`], read by the status read-out).
 //!
 //! OK on a tile already opens the collection: `app::input::activate_card` routes a collection row
 //! to `ContentArg::Collection` through `collection_content_arg`, whatever page the row is on.
@@ -20,19 +23,8 @@ use plx_data::stores::browse::SecKind;
 use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::breadcrumb::{Crumb, CrumbLayout};
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
-use plx_ui::page_header::{self, HeaderItem, PageHeader, PageHeaderSpec};
+use plx_ui::page_header::{self, HeaderItem, HeaderLayout, PageHeader, PageHeaderSpec};
 use plx_machine::machine::Measure;
-
-/// The PMS library type the page lists (`/library/sections/{id}/all?type=18`).
-pub const COLLECTIONS_TYPE: u32 = 18;
-
-/// The grid geometry the page shares with the Library: tiles 250 x 375 on a 285 pitch, the first
-/// row's top at y 244 and the second at 659 (375 + 40 of air under an unfocused row).
-pub const TILE_W: f32 = 250.0;
-pub const TILE_H: f32 = 375.0;
-pub const TILE_PITCH: f32 = 285.0;
-pub const GRID_TOP: f32 = 244.0;
-pub const ROW2_TOP: f32 = 659.0;
 
 /// A server that declares at least this many sorts for the listing gets the Sort control. PMS
 /// declares only `titleSort` for `type=18` (and no descending key), so the control is absent today
@@ -60,27 +52,16 @@ pub fn root_label(kind: SecKind) -> &'static str {
     }
 }
 
-/// The header row of the page.
+/// The header row of the page: the crumb, and the Sort control's row when the server declares
+/// two or more sorts.
 pub struct Header {
     pub crumb: Crumb,
     pub crumb_layout: CrumbLayout,
+    /// The right-hand row (the Sort control, or nothing), laid out at the screen's width.
+    pub page: PageHeader,
+    pub layout: HeaderLayout,
     /// The Sort control's laid-out rects, only when [`sort_visible`].
     pub sort: Option<page_header::ItemRect>,
-}
-
-/// What the focus row holds, in order: the crumb's root link, then the Sort control when present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stop {
-    Root,
-    Sort,
-}
-
-impl Header {
-    pub fn stops(&self) -> Vec<Stop> {
-        let mut v = vec![Stop::Root];
-        if self.sort.is_some() { v.push(Stop::Sort); }
-        v
-    }
 }
 
 /// Build the header for `kind` at `width`. `declared_sorts` is how many sorts the server declared
@@ -88,20 +69,19 @@ impl Header {
 pub fn header(kind: SecKind, declared_sorts: usize, sort_value: &str, width: f32, measure: &dyn Measure) -> Header {
     let crumb = Crumb::new(root_label(kind), msg::browse_kind_collections());
     let crumb_layout = crumb.layout(measure);
-    let sort = sort_visible(declared_sorts).then(|| {
-        let item = HeaderItem {
+    let right = if sort_visible(declared_sorts) {
+        vec![HeaderItem {
             label: msg::browse_library_sort().to_owned(),
             value: Some(sort_value.to_owned()),
             fold_glyph: true,
             focusable: true,
             ..Default::default()
-        };
-        let spec = PageHeaderSpec { left: Vec::new(), overflow: 0, right: vec![item] };
-        let page = PageHeader::new(spec, &[], measure);
-        let layout = page.layout(width, measure);
-        layout.items[0]
-    });
-    Header { crumb, crumb_layout, sort }
+        }]
+    } else { Vec::new() };
+    let page = PageHeader::new(PageHeaderSpec { left: Vec::new(), overflow: 0, right }, &[], measure);
+    let layout = page.layout(width, measure);
+    let sort = layout.items.first().copied();
+    Header { crumb, crumb_layout, page, layout, sort }
 }
 
 /// The facts of one collection row the tile and its caption read.
@@ -113,7 +93,6 @@ pub struct TileFacts<'a> {
     /// The member count; 0 = unknown (an empty collection and an unread one look alike on the
     /// wire, so neither gets a count line).
     pub child_count: i64,
-    pub smart: bool,
 }
 
 /// The policy a collection's caption follows: the stored Title switch is honoured; the details
@@ -142,11 +121,6 @@ pub fn caption(stored: CaptionPolicy, facts: &TileFacts<'_>, locale: &LocaleCont
 /// The empty page's sentence, "No collections in {library}".
 pub fn empty_text(library: &str) -> String {
     msg::collections_page_empty(library)
-}
-
-/// The smart mark's name, for the focus probe and any spoken description.
-pub fn smart_label() -> &'static str {
-    msg::collections_page_smart()
 }
 
 #[cfg(test)]
