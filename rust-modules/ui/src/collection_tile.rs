@@ -445,6 +445,42 @@ pub fn draw_fan_name(p: Painter, rest: Rect, r: Rect, name: &str) {
     draw_lines(p, &fit, r.cx(), top, theme::FAN_NAME_INK);
 }
 
+// ── The smart mark: a smart collection fills itself from a saved filter, and its tile says so
+// with one small sparkle in the top-right corner (spec, "Collections page").
+
+/// The mark's disc, as a fraction of the tile's width (250 -> 40).
+const SMART_DISC_RATIO: f32 = 0.16;
+/// The disc's inset from the tile's top-right corner, as a fraction of the tile's width.
+const SMART_INSET_RATIO: f32 = 0.056;
+
+/// The mark's box on a tile at `r`: a disc `0.16 w` across, inset `0.056 w` from the top-right.
+pub fn smart_mark_rect(r: Rect) -> Rect {
+    let d = (r.w * SMART_DISC_RATIO).round();
+    let inset = (r.w * SMART_INSET_RATIO).round();
+    Rect::new(r.x + r.w - inset - d, r.y + inset, d, d)
+}
+
+/// Draw the smart mark on the tile `r`: a dark scrim disc under a four-point sparkle (a long cross
+/// and a small one at its upper right, the shape every "smart" mark takes), in plain primitives so
+/// no mask is rasterised for it. Drawn on every smart collection, focused or not; it moves with the
+/// tile's pop because the caller passes the popped rect.
+pub fn draw_smart_mark(p: Painter, r: Rect) {
+    let d = smart_mark_rect(r);
+    p.rrect(d, d.h * 0.5, d.h * 0.5, with_scrim());
+    let cross = |cx: f32, cy: f32, len: f32| {
+        let t = (len * 0.2).max(2.0);
+        p.rrect(Rect::new(cx - t * 0.5, cy - len * 0.5, t, len), t * 0.5, t * 0.5, theme::TEXT_PRIMARY);
+        p.rrect(Rect::new(cx - len * 0.5, cy - t * 0.5, len, t), t * 0.5, t * 0.5, theme::TEXT_PRIMARY);
+    };
+    cross(d.x + d.w * 0.44, d.y + d.h * 0.56, d.w * 0.5);
+    cross(d.x + d.w * 0.70, d.y + d.h * 0.30, d.w * 0.26);
+}
+
+fn with_scrim() -> [f32; 4] {
+    let k = theme::SCRIM_INK;
+    [k[0], k[1], k[2], 0.55]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,5 +734,18 @@ mod tests {
         }
         let neutral = fit_name("Paper Kites", &NEUTRAL_NAME, 250.0, neutral_band(tile(250.0)), &ShippedMeasure);
         assert_eq!(texts(&neutral), ["Paper Kites"], "the neutral tile keeps the name's own case");
+    }
+
+    #[test]
+    fn the_smart_mark_sits_inside_the_tiles_top_right_corner() {
+        for w in [200.0, 250.0] {
+            let tile = Rect::new(100.0, 244.0, w, w * 1.5);
+            let d = smart_mark_rect(tile);
+            assert!(d.x >= tile.x && d.x + d.w <= tile.x + tile.w, "{w}: {d:?}");
+            assert!(d.y >= tile.y && d.y + d.h < tile.y + 80.0, "{w}: {d:?}");
+            assert_eq!(d.w, d.h);
+            assert!(tile.x + tile.w - (d.x + d.w) >= 10.0, "{w}: clear of the corner radius");
+        }
+        assert_eq!(smart_mark_rect(Rect::new(0.0, 0.0, 250.0, 375.0)).w, 40.0);
     }
 }
