@@ -192,3 +192,14 @@ fn the_overflow_stays_visible_wherever_focus_is_in_the_row() {
         assert!(page.header.as_ref().unwrap().plate(MORE).is_some());
     }
 }
+
+#[test]
+fn a_one_library_row_stands_at_y_158_and_a_multi_library_row_at_148() {
+    let _guard = plx_base::testlock::serial();
+    for (libraries, top) in [(1, 158.0), (2, 148.0)] {
+        let (fixture, page, engine) = grid_page(libraries);
+        let cx = fixture.cx(&engine);
+        let control = <LibraryScreen as Focusable<TestHost>>::place(&page, &SORTFILTER, &cx, At::Drawn).unwrap().rect;
+        assert_eq!(control.y, top, "{libraries} libraries");
+    }
+}

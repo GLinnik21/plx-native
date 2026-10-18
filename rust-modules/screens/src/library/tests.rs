@@ -999,7 +999,8 @@ fn header_controls_sit_in_the_header_row_left_to_right() {
     for elem in page.toolbar_elems() {
         let rect = page.place(elem, &cx, At::Drawn).unwrap().rect;
         assert!(rect.x >= last, "{elem}: controls read left to right without overlap");
-        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + plx_ui::page_header::HEIGHT * 0.5 - page.scroll.pos);
+        let lowered = if page.libraries.is_empty() { layout::SINGLE_LIBRARY_DY } else { 0.0 };
+        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + lowered + plx_ui::page_header::HEIGHT * 0.5 - page.scroll.pos);
         last = rect.x + rect.w;
     }
 }

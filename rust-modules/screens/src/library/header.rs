@@ -238,7 +238,15 @@ impl LibraryScreen {
         }
 
         let page = PageHeader::new(PageHeaderSpec { left, overflow, right }, &widest, measure);
-        let layout = page.layout(SCR_W, measure);
+        let mut layout = page.layout(SCR_W, measure);
+        if self.libraries.is_empty() {
+            // One library: no names, and the three controls sit centred between the nav and the
+            // grid (the board's row top is y 158, ten under the multi-library row's 148).
+            for it in &mut layout.items {
+                it.text.y += layout::SINGLE_LIBRARY_DY;
+                it.plate.y += layout::SINGLE_LIBRARY_DY;
+            }
+        }
         let controls = self.toolbar_elems();
         let mut stops = Vec::new();
         for (index, rect) in layout.items.iter().enumerate() {

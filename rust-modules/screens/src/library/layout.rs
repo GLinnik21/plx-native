@@ -10,6 +10,9 @@ pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) use plx_ui::cards::{GridBand, MAX_GRID_BANDS};
 /// Where the page's header row stands (`PageHeader`'s top): the document starts here.
 pub(super) const HEADER_Y: f32 = plx_ui::page_header::TOP;
+/// A one-library page has no names, so its controls row sits this far lower than `HEADER_Y`: the
+/// board's "row centred at y 158" is the row's top (spec, "Structure").
+pub(super) const SINGLE_LIBRARY_DY: f32 = 10.0;
 pub(super) const CONTENT_TOP: f32 = HEADER_Y;
 /// The header block: the header row (56) and the air under it, so the grid's first tile top lands
 /// on [`LIBRARY_GRID_TOP`] (244), 96 under the row's top.
