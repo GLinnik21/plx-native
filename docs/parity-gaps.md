@@ -865,11 +865,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* The playback decision chain (`transcoder.rs` `/video/:/transcode/universal/decision`) is PMS-only and nothing models a non-PMS content source; the catalog page plays nothing.
 
 - **Folder views remain unavailable** — `minor` / `medium`
-  Libraries offer a Type selector in All: TV libraries list TV Shows, Seasons, Episodes and
-  Collections; movie libraries list Movies and Collections. The query sends `type=2|3|4|18` (a
+  TV libraries pick Shows, Seasons or Episodes in the header's Sort & Filter menu
+  (`screens/library/menu.rs` `type_section`); Collections is the separate Collections page the
+  header control pushes, not a type in that menu. The query still sends `type=2|3|4|18` (a
   movie library's films stay untyped), reloads the selected type's sort options, and displays
-  episodes as landscape stills. Folder views remain open; they are not an option in this selector.
-  *Where:* `browse::LibraryType`, `screens/library/menu.rs`, and `screens/library/layout.rs`.
+  episodes as landscape stills. Folder views remain open; they are not an option in that menu.
+  *Where:* `browse::LibraryType`, `screens/library/menu.rs` (`type_section`), and `screens/library/layout.rs`.
 
 - **The grid's watched/progress state goes stale after playback — its per-owner retained listing publication is not refreshed** — `minor` / `small`
   Play a movie from the Library grid, finish it, press BACK: the poster can still show the amber unwatched angle and no resume bar because playback invalidates the Bridge-owned section-hub shelves, not that owner's retained listing publication. The official client's grid reflects watched state the moment you return.

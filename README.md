@@ -35,9 +35,10 @@ simulator, browsing a demo library of openly licensed films
 
 ![Library](docs/screenshots/library.jpg)
 
-**Library** — a library opens on its own shelves: what you're partway through, with the time
-left under the focused card, and what just landed. Further down is the full grid, with sort,
-filter (including unwatched-only) and an A–Z rail down the side
+**Library** — a library opens on its full poster grid, with an A–Z rail down the side and one
+header row for sort & filter (including unwatched-only), a Collections page and a Recommended
+page. The shelves live on Recommended: what you're partway through, with the time left under
+the focused card, and what just landed
 ([pictured here](docs/screenshots/ux-library-grid.jpg)).
 
 ![Search](docs/screenshots/search.jpg)

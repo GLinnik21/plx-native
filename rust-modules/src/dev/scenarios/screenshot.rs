@@ -4,10 +4,11 @@
 //! `acct`, `detail`, `search`, `library`, `play`…), never through a key walk.
 //!
 //! Each arm here drives the SAME command path a user's key does (`LibraryCmd::FocusGrid` reseats
-//! focus the way the grid's own navigation does; `LibraryCmd::OpenMenu` is OK on the toolbar
-//! chip), and each logs one line when its state is REACHED rather than when it was asked for, so
+//! focus the way the grid's own navigation does; `LibraryCmd::OpenMenu` is OK on the header's
+//! Sort & Filter control), and each logs one line when its state is REACHED rather than when it was asked for, so
 //! the driver can verify from the event log that the picture it captured is the one the manifest
-//! named. `libtype` chooses the listing (the TYPE menu's value) the others then act on. Every arm
+//! named. `libtype` chooses the listing the others then act on (the Show-menu type, or the
+//! Collections / Recommended page the header pushes). Every arm
 //! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
 //! fails loudly instead of capturing the wrong screen.
 //!

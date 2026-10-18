@@ -253,9 +253,11 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
   tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
 - **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
-  library's All grid), `libshelf=<shelf>,<col>` (a library shelf; the view scrolls to it),
-  `libtype=<movies|shows|seasons|episodes|collections>` (the All grid's TYPE menu value, applied
-  before `libgrid`/`libshelf`/`libmenu` act), `libmenu=<sort|filter|type>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
+  library's poster grid), `libshelf=<shelf>,<col>` (a shelf on the Recommended page only, so arm
+  `libtype=recommended` first; the view scrolls to it),
+  `libtype=<movies|shows|seasons|episodes|collections|recommended>` (the first four set the Show-menu
+  type of the page's grid; `collections` and `recommended` press the header control that opens that
+  page; applied before `libgrid`/`libshelf`/`libmenu` act), `libmenu=<sortfilter|sort|filter|type>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
   position while the player stays PLAYING (Up Next only shows while playing; `autopause` would
   take it down). The settled capture waits for every armed seat, menu and clock stop to land, so
   a scene that seeks does not rest before it. `stillclock` also holds the Up Next countdown.
