@@ -1,4 +1,4 @@
-{"updated":"2026-10-18T21:41:28Z",
+{"updated":"2026-10-18T23:24:06Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3022,7 +3022,8 @@
 {"id":39161761346,"at":"2026-10-18T20:06:03Z","sha":"17eb48b95","title":"Dolby Vision: direct-play Profile 7, converted to 8.1 in-app","pr":825,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":264,"macOS simulator build + launch":258,"macOS tests against bundled FFmpeg and ASS":129,"Windows launcher syntax":18}},
 {"id":39165918988,"at":"2026-10-18T21:00:58Z","sha":"9857e415b","title":"Dolby Vision: declare Profile 10 on AV1, not only on HEVC","pr":838,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":209,"Windows launcher syntax":23,"Linux simulator build + launch":254,"macOS tests against bundled FFmpeg and ASS":92}},
 {"id":39166038450,"at":"2026-10-18T21:02:31Z","sha":"9c5153e88","title":"Dolby Vision: keep the declaration when the server copies the video","pr":839,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":147,"Linux simulator build + launch":200,"macOS tests against bundled FFmpeg and ASS":165}},
-{"id":39168561259,"at":"2026-10-18T21:36:05Z","sha":"3ac9e03fd","title":"Dolby Vision: declare Profile 10 on AV1, not only on HEVC","pr":838,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":241,"macOS tests against bundled FFmpeg and ASS":126,"macOS simulator build + launch":162}}
+{"id":39168561259,"at":"2026-10-18T21:36:05Z","sha":"3ac9e03fd","title":"Dolby Vision: declare Profile 10 on AV1, not only on HEVC","pr":838,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":241,"macOS tests against bundled FFmpeg and ASS":126,"macOS simulator build + launch":162}},
+{"id":39176063907,"at":"2026-10-18T23:20:01Z","sha":"2ddd9bf8e","title":"Dolby Vision copy: one rule for whether the server copies the video","pr":839,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":156,"macOS tests against bundled FFmpeg and ASS":118,"Linux simulator build + launch":236,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
