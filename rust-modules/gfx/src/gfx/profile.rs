@@ -126,7 +126,6 @@ mod imp {
         "lb.grid",
         "lb.document",
         "lb.rail",
-        "lb.shelves",
         "lb.menu",
         "rc.clear",
         "rc.ground",
