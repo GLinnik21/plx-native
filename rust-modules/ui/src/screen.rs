@@ -39,6 +39,10 @@ pub enum RenderStrategy {
 pub struct ScrimLiftRead<'a> {
     pub chrome: Option<crate::widgets::ChromeRead<'a>>,
     pub bar_material: Option<plx_gfx::gfx::GlassFace>,
+    /// The stack's latched underlay field, set by `ModalStack::draw_scrims*` (the dispatcher cannot
+    /// know it): the frozen ground a lifted element's glass stands on instead of the live page.
+    /// `None` outside a stack, and before the field has latched.
+    pub field: Option<&'a crate::underlay::UnderlayField>,
 }
 
 pub type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);
@@ -63,7 +67,7 @@ fn no_lift(_: ScrimLiftRead<'_>) {}
 /// `theme::underlay::DIM_*` rows — no surface states a number of its own — and the container paints
 /// it through the stack's one `UnderlayField` (`containers::modal::ModalUnderlay`) as
 /// `Role::Dim { weight: theme::underlay::TINT }`, latched from the undimmed host page (or, over the
-/// video plane, from [`UnderlaySource::Corners`]). So the dim keeps the page's colour where the
+/// video plane, [`UnderlaySource::Flat`], the neutral ink). So the dim keeps the page's colour where the
 /// page has it; at `TINT == 0` it is the flat `theme::scrim_black` rect to the bit.
 ///
 /// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
@@ -101,11 +105,8 @@ pub enum UnderlaySource {
     /// The host page itself, read off the framebuffer before any dim is on it — every surface
     /// presented over a page.
     Page,
-    /// A four-corner envelope (tl, tr, br, bl — `plex::UltraBlurColors::corners`' ring): a surface
-    /// over the hardware video plane, which GL cannot read back, inherits the playing item's own
-    /// UltraBlur colours instead.
-    Corners([[f32; 3]; 4]),
-    /// Nothing honest to inherit (a video-plane surface whose item carries no envelope): the flat
+    /// Nothing honest to inherit (a surface over the hardware video plane, which GL cannot read
+    /// back, and which takes no colour from the playing item's artwork either): the flat
     /// `theme::scrim_black` ink.
     Flat,
 }
@@ -137,16 +138,14 @@ impl Scrim {
         }
     }
 
-    /// A dim of `alpha` over the VIDEO PLANE, inheriting the playing item's `corners` (or the flat
-    /// ink when it has none) — the player's panels, whose page is a hole GL cannot sample.
-    pub const fn over_video(alpha: f32, corners: Option<[[f32; 3]; 4]>) -> Scrim {
+    /// A dim of `alpha` over the VIDEO PLANE in the neutral flat ink — the player's panels, whose
+    /// page is a hole GL cannot sample, and which stay neutral rather than casting the playing
+    /// item's artwork colour over the picture.
+    pub const fn over_video(alpha: f32) -> Scrim {
         Scrim {
             alpha,
             lift: no_lift,
-            source: match corners {
-                Some(c) => UnderlaySource::Corners(c),
-                None => UnderlaySource::Flat,
-            },
+            source: UnderlaySource::Flat,
         }
     }
 }
@@ -207,14 +206,6 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn scrim(&self) -> Scrim {
         Scrim::NONE
     }
-    /// **The envelope a surface opened over this PAGE would inherit its dim from**, when the page
-    /// is the hardware video plane (`Scrim::over_video`'s `corners`). Asked of the top page on a
-    /// presenting frame while no surface is up, so the container can latch the field BEFORE the
-    /// first popover opens instead of inside its open frame (`ModalUnderlay::note_at_rest`, which
-    /// waits for the page to rest). `None` for every page that is not a video plane.
-    fn underlay_corners(&self, _cx: &Cx<'_, H>) -> Option<[[f32; 3]; 4]> {
-        None
-    }
     /// An `Opaque` surface's ground has drawn at full strength: the fold may REPLACE the host
     /// from here (§6.2 `Surface::ground_ready`). The dispatcher copies it onto the surface after
     /// every draw; a page never answers.
@@ -244,13 +235,46 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// **The page element this surface lifts back out of the dim** (`(host page, element)`), for a
-    /// surface that has one: the item menu's captured opener. The dispatcher folds it with the
-    /// surface's phase and the engine's focus into [`Dispatcher::lifted_opener`] and keeps that
-    /// element OUT of the frozen page pass (`DrawFrame::lifted`), so the lift is its only copy.
-    /// `None` (the default) for every other screen.
+    /// surface that has one: the item menu's captured opener, and the Watchlist Sort & Filter
+    /// menu's pill (which the surface itself redraws, dissolving into its morphing panel). The
+    /// dispatcher folds it with the surface's phase and the engine's focus into
+    /// [`Dispatcher::lifted_opener`] and keeps that element OUT of the frozen page pass
+    /// (`DrawFrame::lifted`), so the lift is its only copy. `None` (the default) for every other
+    /// screen.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }
+    /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
+    /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
+    /// opener; a page answering `true` here keeps it up instead, because focus moved only because
+    /// the card left, and the lift ([`redraw_focused`](Self::redraw_focused)) carries the ghost
+    /// above the dim until the menu is gone. `false` (the default) for every other page.
+    fn opener_departing(&self, _key: FocusKey<H::Elem>) -> bool {
+        false
+    }
+    /// **A surface body answering `true` lets the page under it REFLOW while it is up**: the page
+    /// is not veiled by it ([`page_veiled`](crate::containers::modal::page_veiled) stays false), so
+    /// the data the surface's choices change reaches the page, and its landing plays, under the
+    /// open surface. The host the glass samples then follows the page live (`popover::host::set_reflow`)
+    /// and is captured again once, when the page has settled. `false` (the default) for every
+    /// other surface: a menu holds the page still under it.
+    fn lets_host_reflow(&self) -> bool {
+        false
+    }
+    /// A page: its cards are moving this frame (a landing is playing), so the host a surface
+    /// over it samples is stale until it stops. Read only for a surface that
+    /// [`lets_host_reflow`](Self::lets_host_reflow).
+    fn reflowing(&self) -> bool {
+        false
+    }
+    /// **What a HELD surface still shows.** A surface is held (`PopoverMotion::held`) on its
+    /// capture frame and while its text warms: at appear 0, its `draw` walked through the text
+    /// recorder, which paints nothing. For a surface that redraws its own [`opener`](Self::opener)
+    /// that is wrong, because the page leaves the opener out from the surface's FIRST frame: the
+    /// element would vanish for the length of the hold. Such a surface draws that element here,
+    /// as it stands at the start of its motion, through a live painter. The text it draws is the
+    /// page's own and was resident a frame ago. The default draws nothing.
+    fn draw_held(&mut self, _f: &mut DrawFrame<'_, '_, H>) {}
     /// **The card the page has focused, and where it sits** — the host's question for an item menu
     /// and for the focus probe, asked of whichever card page is on screen so the host names no
     /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's
@@ -795,6 +819,11 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// a stale (dipped) copy under the growing one and the release spring of a taken hold is not
     /// page damage. `None` on every frame the lift does not run, and on the lift's own frame.
     pub lifted: Option<FocusKey<H::Elem>>,
+    /// **The lift's own frame for an opener that left the page** ([`Screen::opener_departing`]):
+    /// the element whose landing ghost the lift carries above the dim. A grid's
+    /// `paint_ghosts` paints that ghost alone on such a frame (and the page pass, whose `lifted`
+    /// names it, leaves it out). `None` on every other frame.
+    pub lifting: Option<FocusKey<H::Elem>>,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -846,6 +875,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             press: cx.press,
             underlay: None,
             lifted: None,
+            lifting: None,
             stops: Vec::new(),
         }
     }

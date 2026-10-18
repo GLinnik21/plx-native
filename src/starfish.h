@@ -21,9 +21,11 @@ int  sf_ready(void);
 int  sf_is_load_completed(void);
 int  sf_play(void);
 int  sf_pause(void);
+int  sf_set_volume(int volume);  /* this pipeline's volume 0..100 (setVolume {"volume":n}); library bool */
 int  sf_flush(void);
 int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTimeToDecode (returns 0 on webOS<11) */
 int  sf_set_content_info(long long position_ns);   /* webOS<11 in-place seek: loadSpi_getInfo + setContentInfo(ptsToDecode); 0 = pipeline not reachable */
+int  sf_seek_ms(long long ms);                     /* public StarfishMediaAPIs::Seek(millis): flushes + re-anchors the segment at ms; 0 = refused */
 int  sf_send_segment(void);                        /* Kodi in-place seek: CustomPipeline::sendSegmentEvent; 0 = pipeline not reachable */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData); /* 'O'/'B'/'e' */
 int  sf_feed_abi_is_cow(void);       /* 1 = Feed is the pre-C++11 copy-on-write build (webOS 3.x); resolves Feed on first use */

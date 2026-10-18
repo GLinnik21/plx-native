@@ -404,7 +404,7 @@ fn a_watched_edit_reaches_every_section_and_only_the_right_server() {
     }
 
     assert!(
-        browse.state.set_watched_local(sid, "7", true),
+        browse.state.apply_view_local(&crate::viewstate::ViewAt::leaf(sid, "7"), crate::viewstate::ViewEdit::Watched(true)),
         "the item is in the store, so the edit lands"
     );
     let watched = |browse: &TestBrowse, sec: usize, i: usize| {
@@ -434,7 +434,7 @@ fn a_watched_edit_reaches_every_section_and_only_the_right_server() {
     );
 
     assert!(
-        !browse.state.set_watched_local(sid, "404", true),
+        !browse.state.apply_view_local(&crate::viewstate::ViewAt::leaf(sid, "404"), crate::viewstate::ViewEdit::Watched(true)),
         "an item in no section reports a miss"
     );
 }

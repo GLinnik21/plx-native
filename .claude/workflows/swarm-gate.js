@@ -724,7 +724,7 @@ function weave(sources, w, total) {
       '',
       '## What you are NOT doing',
       'You are NOT running the check suite. Mid-phase the tree is legitimately half-migrated and need not compile; a green build is the final integration\'s job, and chasing one here would rewrite work the next wave is about to replace.',
-      'Do try a cheap `cargo +nightly check --lib` and report `compiles` HONESTLY — `false` is expected and costs nothing. Claiming `true` when it is false costs the next wave its ability to check itself.',
+      'Do try a cheap `cargo check --lib` (inside rust-modules/) and report `compiles` HONESTLY — `false` is expected and costs nothing. Claiming `true` when it is false costs the next wave its ability to check itself.',
       'Resolve merge conflicts. Do not push and do not merge into the default branch.',
       'COMMIT before you finish. An unwoven wave is a wave the next one cannot see, which is the exact failure this stage was added to fix.',
     ].filter(Boolean).join('\n'),

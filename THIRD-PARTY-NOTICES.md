@@ -34,17 +34,22 @@ they no longer do, because the TV's version moves with the firmware (libavformat
 
 | Shipped file | Upstream | Licence |
 |---|---|---|
-| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
+| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0.2**, unmodified | LGPL-2.1-or-later |
 
 **These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
 complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
 
 **Complete corresponding source.** The exact upstream tarball these were built from —
-`ffmpeg-9.0.tar.xz`, sha256 `7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52`,
+`ffmpeg-9.0.2.tar.xz`, sha256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`,
 from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
 The sources are **unmodified**: no patches are applied. The complete configure invocation that
 produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
-repository, which is also attached to each release.
+repository, which is also attached to each release. The attached script takes the version, the
+digest and the tarball from its environment, so it needs no network and none of the manifest
+tooling: from a checkout of the release's tag (or its source bundle), with the attached tarball,
+`FFMPEG_VERSION=9.0.2 FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e FFMPEG_TARBALL=/path/to/ffmpeg-9.0.2.tar.xz ci/build-ffmpeg.sh`
+(the script also reads the checkout's `ci/arm-cc.py` and `ci/check-link-evidence.py`, which it
+has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
@@ -74,22 +79,32 @@ uses `libass-plx-host.so.0`.
 | Component | Version | Licence |
 |---|---|---|
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
-| FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
+| FreeType | 2.15.0 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
 (https://freetype.org). All rights reserved. Its built-in gzip reader contains
 zlib 1.3.1, Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler. FriBidi is
 Copyright (C) 1999, 2000, 2017-2019 Dov Grobgeld; 2001, 2002, 2004, 2005 Behdad Esfahbod;
 2004 Sharif FarsiWeb, Inc.; and other contributors;
-the complete per-file notices accompany its source. libass and HarfBuzz copyright
-notices are retained in their licence files above.
+the complete per-file notices accompany its source. libunibreak is Copyright (C) Wu Yongwei,
+Tom Hacohen, Petr Filipsky and Andreas Roever; its licence file is the upstream `LICENCE`,
+verbatim. The library is used unaltered.
+libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
-`ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
-four archives, the facade (`src/ass.c`, `include/ass.h`), and its complete build
-recipe (`ci/build-libass.sh`, `ci/build-libass.py`). Upstream sources are unmodified.
+`ci/dependencies.json`. Each versioned PlxNative source release contains all
+five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
+`include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
+one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
+`ci/patches/libass-0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
+libass keeps for each font (`ASS_FONT_MAX_FACES`) with arrays that grow on demand, so a subtitle
+track that uses many scripts is not cut off at the tenth face. It touches `libass/ass_font.c` and
+`libass/ass_font.h` only, is applied to the pinned, checksum-verified libass 0.17.5 release by
+`ci/build-libass.py` (which fails the build unless the files then match the digests pinned in
+`ci/dependencies.json`), and is released under libass's own ISC licence.
 The library is built without system font providers or external font-library
 dependencies. FreeType's optional external compression/image libraries are disabled;
 HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
@@ -131,11 +146,12 @@ for the NDK build used here.
 
 ## 2. Redistributed in this package
 
-### 2.1 Vendored C source, compiled into `plxnative`
+### 2.1 Pinned C source, fetched at build time and compiled into `plxnative`
 
 **nanosvg** and **nanosvgrast** — Copyright (c) 2013-14 Mikko Mononen <memon@inside.org>
-Licence: **Zlib** (`licenses/Zlib.txt`). The vendored headers are byte-identical to upstream
-(github.com/memononen/nanosvg); they are not altered.
+Licence: **Zlib** (`licenses/Zlib.txt`). The headers are not kept in this repository: `ci/dependencies.json` pins the upstream commit
+(github.com/memononen/nanosvg) and the sha256 of each file, `ci/deps.py` fetches and verifies them,
+and they are not altered.
 The upstream headers credit, and we reproduce, the following derivations:
 
 - The SVG parser is based on **Anti-Grain Geometry 2.4** SVG example — Copyright (C) 2002-2004
@@ -175,6 +191,7 @@ for a trademark note that applies to some of them.
 ### 2.3 Fonts
 
 **Inter** — `appfont.ttf`, `appfont-bold.ttf`
+(`appfont-bold.ttf` also answers to the family name "PlxSubs", added as a name record.)
 Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter), per the fonts' own
 name table; the licence file shipped with this package states "Copyright 2020". Version
 4.001 (git-66647c0bb).
@@ -207,50 +224,100 @@ Hangul, Kana or Han, so without this face every Korean, Japanese and Chinese tit
 library renders as empty boxes. See `rust-modules/gfx/src/text.rs` for the chain and
 `rust-modules/src/fontcov.rs` for the coverage each face is required to have.
 
+**Noto Sans <script> Bold** — `fonts/subs/NotoSans<Script>-Bold.ttf` (source: `pkg/fonts/subs/`),
+22 faces: Thai, Lao, Khmer, Myanmar, Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, Telugu,
+Kannada, Malayalam, Sinhala, Oriya, Tibetan, Arabic, Hebrew, Thaana, Georgian, Armenian,
+Ethiopic and Canadian Aboriginal. They are the faces the subtitle renderer (libass) draws those
+scripts with; the application's own UI text chain does not use them.
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/<script>) for each face,
+except Hebrew (2024), Bengali (2025) and Tibetan ("Copyright 2015 Google Inc. All Rights
+Reserved."), per each font's own name table (ID 0). Sources: the unhinted Bold TrueType files of
+`github.com/notofonts/notofonts.github.io` at commit `5c3913063bb189df4edc94b766584dfb4c04a187`,
+and for Tibetan the archived file of `github.com/googlefonts/noto-fonts` at commit
+`ffebf8c1ee449e544955a7e813c54f9b73848eac`; every input is pinned by size and sha256 in
+`tools/cut-noto-subs.py`.
+Licence: **SIL Open Font License 1.1** — the same text that ships in this package as `OFL.txt`.
+The licence body distributed with these fonts and the one distributed with Inter are identical
+apart from one URL line; both copyright statements are reproduced here and inside each font's
+own name table. None of the copyright statements declares a **Reserved Font Name**
+(`tools/cut-noto-subs.py` refuses a font that does), so OFL §3 imposes no rename and each family
+name ("Noto Sans Thai", ...) is retained.
+*Modified*: each is subset to the codepoints of its script (everything Inter Bold or the
+Latin/punctuation ranges already cover is removed; layout tables are kept), hinting is dropped,
+the OS/2 and `hhea` metrics are scaled to Inter Bold's line proportions, and two name records are
+added (family and full name "PlxSubs" and "Inter", under non-English language IDs) so libass
+selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
+`fonts/subs/manifest.json` records every input and output hash.
+
+**Noto Emoji** — `appfont-emoji.ttf`
+Copyright 2013-2026 Google LLC, per the font's own name table. Version 3.006, the monochrome Noto
+Emoji, taken from the `@fontsource/noto-emoji` npm package version 5.3.2 (file
+`files/noto-emoji-emoji-400-normal.woff`, the static weight-400 build).
+Licence: **SIL Open Font License 1.1**, the same text that ships in this package as `OFL.txt`.
+The font declares **no Reserved Font Name**, so the family name "Noto Emoji" is retained.
+*Modified*: converted from WOFF to TrueType; the `GSUB`, `vhea`, `vmtx` and `STAT` tables removed
+(SDL2_ttf 2.0.x performs no shaping and no vertical layout); every codepoint above U+FFFF given a
+second cmap entry in the Private Use Area (U+E000 onward) pointing at the same glyph, because
+SDL2_ttf before 2.0.18 cannot address a glyph above U+FFFF; and the OFL licence description added
+to the name table (ID 13). **No codepoint was removed.** The recipe is `tools/cut-noto-emoji.py`,
+which pins the input by sha256.
+
+*Why it ships:* it is the emoji link of the application's font fallback chain, so an emoji in a
+library or title name draws instead of an empty box.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
-The application core is Rust. The Rust standard library is compiled from source
-(`-Z build-std`) and linked in, together with the crates below. All of this code is
+The application core is Rust. The Rust standard library (the pinned stable toolchain's
+prebuilt armv7 `std`) is linked in, together with the crates below. All of this code is
 redistributed in the binary. Where a package offers a choice of licences, our election is
 stated; election does not alter your rights under the other arms.
 
 **Elected MIT** (`licenses/MIT.txt`), with the copyright holders required by that licence:
 
+<!-- BEGIN GENERATED notices:elected-mit (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
+
 | Package | Version(s) | Declared licence | Copyright |
 |---|---|---|---|
-| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (c397dae80 2026-07-02) | MIT OR Apache-2.0 | The Rust Project Developers |
+| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.99.1 (58cf8f9c3 2026-10-13) | MIT OR Apache-2.0 | The Rust Project Developers |
 | — its in-tree backtrace support (`library/backtrace`) | 0.3.76 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | — its in-tree mpmc channels (`library/std/src/sync/mpmc`) | in-tree | MIT OR Apache-2.0 | 2019 The Crossbeam Project Developers |
-| addr2line | 0.25.1 | Apache-2.0 OR MIT | The `addr2line` authors |
+| addr2line | 0.27.1 | Apache-2.0 OR MIT | The `addr2line` authors |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | Jonas Schievink, oyvindln |
 | bitflags | 2.13.0 | MIT OR Apache-2.0 | 2014 The Rust Project Developers |
 | bytemuck | 1.25.0 | Zlib OR Apache-2.0 OR MIT | 2019 Daniel "Lokathor" Gee |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | 2015 Andrew Gallant |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 | 2014 Alex Crichton |
+| chardetng | 1.0.0 | Apache-2.0 OR MIT | Mozilla Foundation |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
 | either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
+| encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | The image-rs Developers |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | 2014-2026 Alex Crichton |
-| gimli | 0.32.3 | MIT OR Apache-2.0 | The `gimli` authors |
+| gimli | 0.34.0 | MIT OR Apache-2.0 | The `gimli` authors |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | Amanieu d'Antras |
 | image | 0.25.10 | MIT OR Apache-2.0 | The image-rs Developers |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | David Tolnay |
-| libc | 0.2.186 and 0.2.185 | MIT OR Apache-2.0 | The Rust Project Developers |
-| memchr | 2.8.2 and 2.7.6 | Unlicense OR MIT | 2015 Andrew Gallant |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
+| libc | 0.2.190 and 0.2.189 | MIT OR Apache-2.0 | The Rust Project Developers |
+| memchr | 2.8.3 and 2.8.2 | Unlicense OR MIT | 2015 Andrew Gallant |
+| miniz_oxide | 0.9.1 and 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | 2014 The Rust Project Developers |
-| object | 0.37.3 | Apache-2.0 OR MIT | The `object` authors |
+| object | 0.39.1 | Apache-2.0 OR MIT | The `object` authors |
 | png | 0.18.1 | MIT OR Apache-2.0 | 2015 nwin |
-| rustc-demangle | 0.1.27 | MIT/Apache-2.0 | Alex Crichton |
-| serde | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
-| serde_core | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
-| serde_json | 1.0.150 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| rustc-demangle | 0.1.28 | MIT/Apache-2.0 | Alex Crichton |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 | 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
+| serde | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| serde_core | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 | Copyright (c) 2018 The Servo Project Developers |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | Copyright (c) 2017 Robert Grosse |
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 
+<!-- END GENERATED notices:elected-mit -->
+
 **MIT only — no alternative arm** (`licenses/MIT.txt`):
+
+<!-- BEGIN GENERATED notices:mit-only (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Copyright |
 |---|---|---|
@@ -259,15 +326,21 @@ stated; election does not alter your rights under the other arms.
 | qrcodegen | 1.8.0 | Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt` |
 | simd-adler32 | 0.3.9 | (c) 2021 Marvin Countryman |
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
-| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.98.0-nightly | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
+| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.99.1 | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
+
+<!-- END GENERATED notices:mit-only -->
 
 **Apache-2.0** (`licenses/Apache-2.0.txt`) — elected for `moxcms` and `pxfm`; the sole declared licence of `calendrical_calculations`:
+
+<!-- BEGIN GENERATED notices:apache (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Declared licence | Copyright |
 |---|---|---|---|
 | calendrical_calculations | 0.2.4 | Apache-2.0 | Copyright 2023 The Unicode Consortium |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
 | pxfm | 0.1.29 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
+
+<!-- END GENERATED notices:apache -->
 
 **ICU4X code and compiled locale data — Unicode-3.0** (`licenses/ICU4X.txt`).
 These packages provide locale parsing, plural selection, regional number/date formatting and
@@ -278,6 +351,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 >
 > Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 > ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+<!-- BEGIN GENERATED notices:icu (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version |
 |---|---|
@@ -308,6 +383,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 | zerotrie | 0.2.5 |
 | zerovec | 0.11.8 |
 
+<!-- END GENERATED notices:icu -->
+
 `calendrical_calculations` implements algorithms from *Calendrical Calculations* by Reingold &
 Dershowitz, Cambridge University Press, 4th edition (2018), released as Lisp code under
 Apache-2.0. Its package licence carries the Unicode Consortium copyright reproduced above;
@@ -320,9 +397,20 @@ implementation. `licenses/libm.txt` preserves its complete upstream licence and 
 attributions. `qrcodegen` supplies the QR code linking viewers to the translation contribution
 guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
 
-The versions above come from the locked ARM runtime dependency graph (`cargo tree
---no-default-features --target arm-unknown-linux-gnueabi --edges normal,no-proc-macro`), excluding
-dev dependencies, build dependencies and host proc-macro implementations.
+The versions above are the ones in `rust-modules/Cargo.lock` (and, for the standard library's own
+crates, the pinned toolchain's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
+--target armv7-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
+(`ci.yml`, host-lint) runs `ci/gen-third-party-notices.py --check --verify-graph` on every pull request: the
+set of crates in that graph must equal the rows above, and no listed version may be one that only a build
+or dev dependency uses. Dev dependencies, build dependencies and host proc-macro implementations are not
+shipped and have no row. A second version of `libc` below is the standard library's own, as the pinned
+release built it (its corresponding source ships in the GPL source bundle).
+
+The four package tables above are generated, not typed: `ci/gen-third-party-notices.py` fills the
+version column from `rust-modules/Cargo.lock` (and, for the standard library's own crates, from the
+`library/Cargo.lock` of the pinned toolchain), keeps the licence and copyright columns from
+`ci/third-party-crates.json`, and `make check` fails when this section disagrees with the lockfile.
+After a dependency bump, run `make notices` and commit the result.
 
 **Conjunctive licence — no election possible:**
 
@@ -358,7 +446,7 @@ IJG code is copyright (C) 1991-2014, Thomas G. Lane, Guido Vollbeding.
 code to the shipped binary. `foldhash` appears in the Rust source tree but is **not** compiled
 here (the standard library takes `hashbrown` with default features disabled, which does not
 enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_macro`,
-`panic_abort` are build-std source components; final object inclusion is recorded in the linker evidence. `std_detect` supplies CPU capability detection in the Rust runtime and is covered by the Rust notices above.
+`panic_abort` are standard-library source components; final object inclusion is recorded in the linker evidence. `std_detect` supplies CPU capability detection in the Rust runtime and is covered by the Rust notices above.
 
 ### 2.5 Compiler runtime fragments statically linked into `plxnative`
 
@@ -372,13 +460,13 @@ enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_m
 
 ### 2.6 Native crash capture
 
-**Sentry Native 0.16.6** — Copyright (c) 2019 Sentry and individual contributors. Licence:
+**Sentry Native 0.17.3** — Copyright (c) 2019 Sentry and individual contributors. Licence:
 **MIT** (`licenses/MIT.txt`). Its client library is statically linked into `plxnative`; the
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
 the next launch. The source is patched for webOS's glibc 2.12 syscall surface and the 32-bit ARM
-APCS frame layout; the pinned source hash and complete patch are in `ci/build-sentry-native.sh` and
-`vendor/sentry-native/webos-arm32.patch`.
+APCS frame layout; the pinned source hash is in `ci/dependencies.json` and the complete patch is
+`ci/patches/sentry-native-0001-webos-arm32.patch`.
 
 **libunwind** (the copy vendored by Sentry Native) — Copyright (c) 2002 Hewlett-Packard Co.
 Licence: **MIT** (`licenses/MIT.txt`). It is statically linked into both the client and crash
@@ -413,7 +501,7 @@ of a bundled copy alone does not establish that no obligation applies.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
-| FFmpeg (libavformat / libavcodec / libavutil) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
+| FFmpeg (libavformat / libavcodec / libavutil) | **9.0.2, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |
@@ -475,14 +563,17 @@ runtime notices listed below:
 | `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |
 | `licenses/libm.txt` | Registry libm and its upstream musl/CORE-MATH attributions (§2.4) |
 | `licenses/qrcodegen.txt` | Project Nayuki QR code generator, complete upstream MIT notice (§2.4) |
+| `licenses/jsmpeg.txt` | jsmpeg, complete upstream MIT licence (§6): a development tool, downloaded from its pinned upstream commit and not in the package; the text is kept with the others |
 | `licenses/Zlib.txt` | nanosvg (§2.1), FreeType's built-in gzip reader (§1.2) |
 | `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
 | `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
 | `licenses/HarfBuzz-Old-MIT.txt` | HarfBuzz and its copyright holders (§1.2) |
+| `licenses/libunibreak-Zlib.txt` | libunibreak, complete upstream licence with its copyright holders (§1.2) |
 
-`OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
+`OFL.txt` (SIL Open Font License 1.1, for **Inter, Noto Sans CJK KR and the Noto Sans script faces** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not
-add a second copy for the second font: the two upstream licence bodies are byte-identical, and
+add a second copy for the other fonts: the upstream licence bodies are identical (the Noto Sans
+script faces' differs by one URL line), and
 what differs between them (the copyright statement and the Reserved Font Name) is reproduced in
 §2.3 and carried inside each font's own name table.
 
@@ -497,7 +588,8 @@ the GPL-3.0-or-later election. Also retain `licenses/GCC-exception-3.1.txt` and
 Two third-party components exist in the PlxNative source repository but are **not** part of this
 package, and therefore carry no obligation discharged here: **libjpeg-turbo**
 (`libturbojpeg.so.0`, copied to developer televisions by the development deploy step only) and
-**jsmpeg** (a host-side development tool). Neither is present in the installed application.
+**jsmpeg** (a host-side development tool; `tools/stream-screen.py` downloads it at the upstream commit
+`ci/dependencies.json` pins, so no copy of it is in the repository; its licence is `licenses/jsmpeg.txt`). Neither is present in the installed application.
 
 ## Source-only attribution
 
@@ -510,7 +602,4 @@ and `ci/check-packaged-elf.py`, which is what proves the old archive is absent f
 then-current MIT grant. That original grant and Gleb Linnik notice are preserved in
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
-Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks, Khronos GLES2 MIT/Apache-2.0 headers, and the MIT-licensed jsmpeg tool
-(Copyright (c) 2017 Dominic Szablewski). Preserve their original embedded notices. Exact per-file
-license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.
+The repository carries no copy of the SDL2, GLES2 or KHR headers; `include/` holds only the project's own `ass.h` facade.

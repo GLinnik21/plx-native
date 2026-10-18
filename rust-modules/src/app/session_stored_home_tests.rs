@@ -8,7 +8,7 @@ struct Cleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
         plx_plex::plex::reset_servers_for_test();
-        session::ProfilePublisher::new(self.0).publish(None, 0);
+        session::ProfilePublisher::new(self.0).publish(None, 0, String::new());
     }
 }
 

@@ -5,8 +5,8 @@ lost — the **research into the television's on-screen keyboard**, which is whe
 went. If you read one section of this file before touching text entry, make it §3.
 
 **Scope: the user's own servers, and nothing else.** Every result comes from a PMS the account can
-reach. Plex Discover / Watchlist / the "Movies & Shows on Plex" catalog are deliberately absent —
-see §6.
+reach. Plex Discover and the "Movies & Shows on Plex" catalog are deliberately absent from the
+results, and the Watchlist is its own strip destination rather than a search scope — see §6.
 
 ---
 
@@ -39,9 +39,17 @@ as "0 post-warmup samples", which is indistinguishable from a real regression.
 
 ### The pill goes LAST
 
-`ui/widgets.rs::search_pill()` is `tab_count() - 1` — Search is always the LAST pill, and since
-2026-09-05 that is the only thing about its position that holds still. The row is
-`Home`, then one pill per type that has a FAVOURITE library, then Search: two to four stops, because
+Search is always the LAST pill: `app/chrome.rs` builds the strip's faces as `Home`, the type pills,
+the Watchlist bookmark (`TabFace::Icon(Icon::Bookmark)`, key `TAB_KEY_WATCHLIST`, `STRIP_BASE + 5`,
+appended after the chip's `+4` so no existing key moved but drawn before Search), then
+`TabFace::Icon(Icon::Search)`. Nothing reads "the last face" as the Search pill: the strip's
+destinations are found by KEY (`widgets::TAB_KEY_SEARCH`, `STRIP_BASE + 3`, and `TAB_KEY_CHIP` at
+`+4`), `app/chrome.rs` builds the faces and the keys together from one `strip_keys` list, and
+`Pill::Search` resolves to wherever that key sits, so an icon pill inserted before it moves no
+other destination. The library and search pages map a pressed key to its destination with those
+constants. The row is
+`Home`, then one pill per type that has a FAVOURITE library, then the bookmark, then Search: three to
+five stops, because
 `browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
 draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section
 is resolved later.
@@ -54,9 +62,9 @@ type that has no pill today. Every positional cursor in the app was converted fo
 `HomeCmd::FocusStrip` delivered when Home MOUNTS, since phase 12 folded `Nav`'s four variants into
 `app::bridge::nav_tab`).
 
-It is also the one pill that is a **mark instead of a word**, so it is square (60×60) and skips the
-label padding, inked through the same `TabPill::mixed_ink` the labels use so it travels under the
-focus capsule with them instead of being a separate colour story.
+It is also the one pill whose face is an **icon instead of a word** (`TabFace::Icon`), so it is square
+(60×60) and skips the label padding, inked through the same `TabPill::mixed_ink` the labels use so it
+travels under the focus capsule with them instead of being a separate colour story.
 
 ### The layout is dictated by the keyboard
 
@@ -282,9 +290,9 @@ than assuming.
 webOS inserts a `Uint32 inputSource` before the text, so the UTF-8 bytes start at **+16**, not +12.
 Both halves are checkable on the dev Mac without a television:
 
-- `include/SDL2/SDL_events.h` — the tree we compile against — declares
-  `SDL_TextInputEvent { type, timestamp, windowID, text[] }`, i.e. text at **+12**. That tree is
-  stock **2.0.4** (`include/SDL2/SDL_version.h`).
+- Stock SDL **2.0.4**'s `SDL_events.h` declares
+  `SDL_TextInputEvent { type, timestamp, windowID, text[] }`, i.e. text at **+12**. (The repository
+  keeps no copy of it; no C unit includes an SDL header.)
 - The NDK sysroot's fork copy
   (`$(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot/usr/include/SDL2/SDL_events.h`, SDL **2.24.1**)
   declares `{ type, timestamp, windowID, inputSource /* webOS specific field */, text[] }` — text at
@@ -297,7 +305,7 @@ single hard-coded number ships garbage on one of the two platforms.
 
 **2. `SDL_WINDOW_INPUT_FOCUS` is a silent precondition.**
 
-`SDL_StartTextInput` looks for a window carrying `0x200` (`include/SDL2/SDL_video.h`) before
+`SDL_StartTextInput` looks for a window carrying `0x200` (`SDL_video.h` in the SDK sysroot's `usr/include/SDL2/`) before
 dispatching to the driver hook. Our window is created with
 `SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN` and nothing else — `app.rs`'s `SDL_WINDOW_FLAGS` is
 `0x2 | 0x1` on the device — so it carries neither `SHOWN` nor a focus flag at creation. **If the flag
@@ -422,7 +430,7 @@ refuses outright to grade a log carrying the simulator's `sim=1` tag against dev
 
 ---
 
-## 6. Out of scope: Discover, Watchlist, and the catalog
+## 6. Out of scope: Discover results and the catalog (the Watchlist is not a search scope)
 
 The official client's search returns Plex's own catalog and Discover results alongside server ones.
 **Ours does not, by decision.** Those live on `discover.provider.plex.tv` /
@@ -431,6 +439,12 @@ The official client's search returns Plex's own catalog and Discover results alo
 tracked them as their own gap from the start. Adding a catalog row to this screen is a separate
 feature with its own client, its own store and its own failure modes — not a wider `limit=` on
 `/hubs/search`.
+
+The Watchlist did ship, but as a destination of its own: the bookmark tab before the Search pill,
+backed by `plex::watchlist`, `WatchlistStore` and the Watchlist page, with the Discover-only
+`CatalogScreen` for titles no server holds (`docs/watchlist.md`). It reads the account's list, not a
+search; typing a query still searches servers only, and a catalog title never appears among the
+results.
 
 What this screen closes, and what it does not, is written up in `docs/parity-gaps.md` under the
 search entries.

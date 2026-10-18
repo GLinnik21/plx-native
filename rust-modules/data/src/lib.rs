@@ -13,6 +13,7 @@
 //! crate enables it in `[dev-dependencies]` only, so no shipped build sees it.
 
 pub mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
+pub mod catalog; // the catalog page's discover record, Membership and Load (plan W6)
 pub mod collection; // collection page model: tag resolution, header metadata and paged members
 pub mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
 pub mod person; // person/actor page data layer: the header handed in by the cast row + /library/people/{id}/media
@@ -21,3 +22,8 @@ pub mod subsearch; // the player's subtitle search & download: agent search, ins
 pub mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 pub mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 pub mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
+pub mod watchlist; // plex.tv Watchlist: rows, match table, tile states, intent ledger, sort/filter
+pub mod viewledger; // the publish order of view-state edits, so a read in flight is re-patched on landing
+
+#[cfg(test)]
+mod watchlist_guid_tests;

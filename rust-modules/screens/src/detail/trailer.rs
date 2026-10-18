@@ -76,7 +76,7 @@ pub(super) enum TrailerKey {
 /// itself navigated by.
 ///
 /// **LEFT/RIGHT scrub.** They used to only reveal the controls: a preview's seek falls back to a
-/// fresh Starfish `Load` on several paths (`INPLACE_SEEK_OK` cleared, a refused or stale native
+/// fresh Starfish `Load` on several paths (the `Reload` seek mode, a refused or stale native
 /// Pause, a stuck in-place seek), and an un-admitted reload spends a budgeted Starfish slot the
 /// machine never counted, with a failure charged as an admitted-Load failure that opens the
 /// process-wide breaker for every later item. `player::preview::seek` closes that hazard with its
@@ -478,6 +478,7 @@ impl Transport {
                 knob: Knob::Tick,
                 mark: self.mark(paused, live_ns),
                 now: self.now_ms,
+                clock_grow: 0.0,
             },
             measure,
         );

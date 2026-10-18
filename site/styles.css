@@ -2622,8 +2622,11 @@ video::-webkit-media-controls-start-playback-button {
    browser plate, --f (its height, in plate widths) on every layer, --k (0..1,
    the PlxNative end state) on .stack-sticky. Without it (no JS, reduced
    motion) every value is the settled end state. Pinned for a stretch of
-   scroll on wide screens; on phones and short landscape windows it plays in
-   the page's flow as the stack passes up the screen.
+   scroll, phones included: in the flow the whole scene had to play inside
+   under half a screen of scrolling, so a swipe raced through it and the frames
+   (four backdrop blurs moving with the page) were dropped on iPhone. Only
+   short landscape windows, where the stack cannot fit beside the title, play
+   in the page's flow as the stack passes up the screen.
 
    Geometry, in --W (one plate's width): a plate is 16:9, laid flat by
    scale(1, 0.5) rotate(-45deg) (an isometric tilt), which takes a box 1.1 W wide and 0.55 W
@@ -2655,7 +2658,7 @@ video::-webkit-media-controls-start-playback-button {
   height: calc(100vh - var(--header-h));
   height: calc(100svh - var(--header-h));
 }
-@media (max-width: 759px), (max-height: 559px) and (orientation: landscape) {
+@media (max-height: 559px) and (orientation: landscape) {
   .fx .stack-scene {
     height: auto;
   }

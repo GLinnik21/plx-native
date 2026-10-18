@@ -1,7 +1,9 @@
 //! The Size / Position persistence path: publish the live atomic first, persist second, and never
-//! republish what the worker learned.
+//! republish what the worker learned. The pick is the seated profile's own (P1a), so each test signs
+//! a profile in.
+use super::prefs_characterisation_tests::{picked, sign_in};
 use super::*;
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref};
 use std::sync::mpsc;
 
 /// Restore the two atomics the tests move, whatever the outcome.
@@ -24,6 +26,7 @@ fn recv(rx: &mpsc::Receiver<bool>) -> bool {
 fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     let _g = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("select-style");
+    sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
     restore_subtitle_position(SubtitlePosition::Low);
@@ -32,13 +35,13 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     select_subtitle_size(SubtitleSize::Large, Some(tx));
     assert_eq!(subtitle_size(), SubtitleSize::Large, "published synchronously, ahead of the worker");
     assert!(recv(&rx), "a writable session is durable");
-    assert_eq!(plx_plex::plex::session::load().prefs.subtitle_size, SubtitleSize::Large);
+    assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large));
 
     let (tx, rx) = mpsc::channel();
     select_subtitle_position(SubtitlePosition::High, Some(tx));
     assert_eq!(subtitle_position(), SubtitlePosition::High);
     assert!(recv(&rx));
-    assert_eq!(plx_plex::plex::session::load().prefs.subtitle_position, SubtitlePosition::High);
+    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::High));
     drop(session);
 }
 
@@ -47,7 +50,8 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
 #[test]
 fn select_never_republishes_when_the_write_completes() {
     let _g = plx_base::testlock::serial();
-    let _session = plx_plex::plex::session::TempSession::new("select-no-republish");
+    let session = plx_plex::plex::session::TempSession::new("select-no-republish");
+    sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
 
@@ -64,6 +68,7 @@ fn select_never_republishes_when_the_write_completes() {
 fn select_reports_a_failed_write_and_keeps_the_live_value() {
     let _g = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("select-failed");
+    sign_in(&session);
     let _restore = Restore(subtitle_size(), subtitle_position());
     restore_subtitle_size(SubtitleSize::Medium);
     // the session file's parent is a regular file, so no write can land

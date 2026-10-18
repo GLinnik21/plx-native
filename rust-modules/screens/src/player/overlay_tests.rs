@@ -991,25 +991,25 @@ fn the_active_groups_seat_round_trips_through_group_of() {
     );
 }
 
-/// **The player's panels dim through the container, inheriting the PLAYING item's own light.** GL
-/// cannot read the video plane, so the track menu and the `…` menu ask for a dim over
-/// [`UnderlaySource::Corners`](plx_ui::screen::UnderlaySource::Corners) — the leaf's UltraBlur
-/// envelope — at their `theme::underlay` roles; the Info card and Chapters strip ask for none, as
-/// they drew none; and an item with no envelope falls back to the flat ink.
+/// **The player's panels dim through the container, in the neutral over-video dim.** GL cannot read
+/// the video plane, so the track menu and the `…` menu ask for a dim over
+/// [`UnderlaySource::Flat`](plx_ui::screen::UnderlaySource::Flat) at their `theme::underlay` roles
+/// and the playing item's UltraBlur envelope is not even carried to the player (`PlayingItem` has no
+/// `blur`): the artwork's colour never casts on it. The Info card and Chapters strip ask for no dim, as they drew none.
 ///
-/// Observed RED before this package: every kind answered `Scrim::NONE` (the dims were hand-drawn
-/// inside `TrackMenuState::draw`/`MoreMenuState::draw`), so the first assertion failed at 0.0.
+/// Observed RED on main: the dims latched from the item's `blur` corners, so the source was
+/// `UnderlaySource::Corners(..)` for an item that carried an envelope (recorded before the field was
+/// removed, with `blur: Some(corners)` installed).
 #[test]
-fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() {
+fn the_player_panels_dim_through_the_container_in_the_neutral_dim_whatever_the_items_blur() {
     use plx_ui::screen::{Screen, UnderlaySource};
     use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let corners = [[0.1, 0.5, 0.2], [0.2, 0.4, 0.1], [0.6, 0.2, 0.1], [0.1, 0.1, 0.4]];
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
         sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), kind: String::new(), audio: Vec::new(), subs: Vec::new(),
         video_fps: 0.0, width: 0, height: 0, bitrate: 0, dovi: Default::default(),
-        markers: Vec::new(), chapters: Vec::new(), blur: Some(corners),
+        markers: Vec::new(), chapters: Vec::new(), hdr: false,
     }))));
     for (kind, alpha) in [
         (OverlayKind::Tracks { tab: 0 }, DIM_PLAYER),
@@ -1021,11 +1021,11 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
         let scrim = Screen::<TestHost>::scrim(&page);
         assert_eq!(scrim.alpha, alpha, "{}: its role's weight", kind.word());
         if alpha > 0.0 {
-            assert_eq!(scrim.source, UnderlaySource::Corners(corners), "{}: the item's own light", kind.word());
+            assert_eq!(scrim.source, UnderlaySource::Flat, "{}: the neutral dim, not the item's light", kind.word());
         }
     }
     let bare = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
-    assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the flat ink");
+    assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the same neutral dim");
 }
 
 /// **A pointer click on a row activates THAT row** — the keys the panel registers as hit stops, the

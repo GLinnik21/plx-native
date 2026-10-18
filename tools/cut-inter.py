@@ -4,9 +4,10 @@ variable font.
 
     python3 tools/cut-inter.py path/to/Inter[opsz,wght].ttf
 
-A THIRD face ships and does not come from here: `pkg/appfont-cjk.ttf` is Noto Sans CJK KR, cut by
-`tools/cut-noto-cjk.py` from a pinned upstream asset. It matches this file's old `appfont*.ttf`
-glob, which is why the wording above is now explicit. None of the three fixes below apply to it —
+Two further faces ship and do not come from here: `pkg/appfont-cjk.ttf` is Noto Sans CJK KR, cut by
+`tools/cut-noto-cjk.py` from a pinned upstream asset, and `pkg/appfont-emoji.ttf` is the monochrome Noto
+Emoji, cut by `tools/cut-noto-emoji.py`. Both match this file's old `appfont*.ttf`
+glob, which is why the wording above is now explicit. None of the three fixes below apply to the CJK face —
 that script's docstring says why, one by one.
 
 Why this is a script and not a one-off: the two fixes below restore conditions the UI was tuned
@@ -38,10 +39,18 @@ two Inter faces.
      leaves a 4 px hole. We flatten the Latin/Cyrillic GPOS pairs into a format-0 `kern` table.
      Format 0's subtable length is a uint16, so it holds at most (65535-14)//6 = 10920 pairs; we
      keep the largest-magnitude pairs between glyphs the font can actually address from cmap.
+
+  4. **The "PlxSubs" alias on the Bold face** (`tools/plxsubs_names.py`): an extra name-ID 1/4
+     record under Windows langID 0x0407, which is what the libass subtitle style asks for. Invisible
+     to UI text and tools (the 0x0409 records stay "Inter"); `tools/cut-noto-subs.py` re-applies it
+     idempotently, and `rust-modules/media/src/player/ass/fonts.rs` asserts it on the shipped file.
 """
 import math
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import plxsubs_names  # noqa: E402  (the subtitle alias; see its docstring)
 
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import _k_e_r_n as kern_mod
@@ -282,6 +291,10 @@ def main() -> int:
                          (6, f"Inter-{style}"), (16, "Inter"), (17, style)):
             n.setName(val, nid, 3, 1, 0x409)
             n.setName(val, nid, 1, 0, 0)
+        if style == "Bold":
+            # The subtitle renderer's family: libass finds this face as "PlxSubs" (plan D6). Written
+            # here as well as by tools/cut-noto-subs.py so a re-cut of Inter cannot drop it.
+            plxsubs_names.add_plxsubs_alias(f)
         digits = freeze_tabular_figures(f)
         kept, total = add_legacy_kern(f)
         notes = add_music_notes(f)

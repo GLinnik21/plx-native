@@ -1768,12 +1768,12 @@ mod tests {
             SaveAuthority::PublicOnly,
             |current| {
                 let mut next = current.clone();
-                next.auto_sign_in = true;
+                next.prefs.auto_sign_in = true;
                 Some(next)
             }
         ));
         assert!(
-            snapshot().unwrap().auto_sign_in,
+            snapshot().unwrap().prefs.auto_sign_in,
             "queue refusal must not erase a user's dirty preference"
         );
     }
@@ -1790,7 +1790,7 @@ mod tests {
             SaveAuthority::PublicOnly,
             |current| {
                 let mut next = current.clone();
-                next.auto_sign_in = true;
+                next.prefs.auto_sign_in = true;
                 Some(next)
             },
         );
@@ -1798,7 +1798,7 @@ mod tests {
             coordinator.status().latest,
             Some(LatestStatus::Failed(Failure::Admission(SubmitError::Full)))
         );
-        assert!(snapshot().unwrap().auto_sign_in);
+        assert!(snapshot().unwrap().prefs.auto_sign_in);
     }
 
     #[test]

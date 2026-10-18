@@ -189,6 +189,11 @@ pub struct LibraryScreen {
     grid_fade: Xfade,
     readout: Readout,
     live: bool,
+    /// A PAGE has been pushed over this one (`WillLeave(Deeper)`) and it has not come back: not
+    /// ticked, not drawn, so the one state in which its listing may be re-fetched without moving
+    /// ground under the reader. A modal (a compact menu) covers the page without setting it.
+    /// Transient like `seat_wanted`: it is not part of the canon, a pop clears it.
+    buried: bool,
     initial: bool,
     /// The head group the page seated its own focus in, while that seat is still the page's own
     /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
@@ -241,7 +246,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
+            readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             library_capsules: plx_ui::widgets::TabStrip::new(),
             library_pop: plx_ui::widgets::CtlPop::new(),
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false,
@@ -322,6 +327,20 @@ impl LibraryScreen {
     fn store<H: LibraryLike>(&self, target: SectionAddress, work: LibraryWork, fx: &mut Effects<'_, H>) {
         fx.push(Fx::App(AppFx::Store(StoreId::Browse,
             StoreCmd::Browse(BrowseCmd::Addressed { target, work }))));
+    }
+
+    /// Re-fetch the listing when a read-back made its membership stale (the Unwatched switch,
+    /// ordering by last viewed): ONLY called while a page is pushed over this one (`buried`), so
+    /// the reader's ground never moves under the cursor and the listing is fresh when the page is
+    /// shown again. It is the same query refreshed, not a query edit (`ListingId::query` stands),
+    /// so the page keeps its scroll and its focus. The Browse pump that lands the new first page
+    /// is the application's (`Bridge::reconcile_pump`), because a buried page is not ticked to
+    /// pump its own store. A modal over the page (a compact menu) never triggers it: the page is
+    /// still visible and ticking.
+    fn requery_stale<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if !H::listing(cx).membership_stale() { return; }
+        let Some(target) = self.address(cx) else { return };
+        self.store(target, LibraryWork::Requery, fx);
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -575,12 +594,25 @@ impl LibraryScreen {
 
     /// The shelf rows with a card on screen, plus two each side and the focused row, as the range the
     /// store holds cards for. Sent only when it changes.
+    ///
+    /// The focused row is found by the focus key's PLACE ([`focused_shelf`]), not only by looking
+    /// for the key among the row's current ones. A row the store gave its cards up to is keyed by
+    /// slot, and the same row holding its cards is keyed by item, so the hold this function sends
+    /// changes the very keys it would otherwise read: BACK from deep in the grid seats focus on the
+    /// first shelf, far off screen, whose cards are released; the row is held because it is
+    /// focused, its cards come back under their item keys, the focus key (still the slot's, until
+    /// the engine reconciles it) is then in no row, the row reads as unfocused and is released, and
+    /// the engine reconciles focus onto a key that has just gone again. Measured on the frame dump:
+    /// focus changed key on every loop iteration for as long as the glide to the top took, the
+    /// store published and withdrew the row each time, and the row's caption band opened on
+    /// whichever iterations happened to find the key present (so the film's frames depended on
+    /// how many iterations a frame took: 76 of 732 differed under `hold-gate`).
     fn send_hold<H: LibraryLike>(&mut self, target: SectionAddress, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if self.shelves.is_empty() { return; }
         let origin = self.layout.shelf_y(&self.run, 0, self.scroll.pos) - self.run.origin(0);
         let seen = self.run.window(-origin, SCR_H - origin);
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
-            .and_then(|key| self.shelves.iter().position(|row| row.elems.contains(&key.elem)));
+            .and_then(|key| focused_shelf(&self.shelves, key.elem, self.keys.last_place(key.elem)));
         let (mut lo, mut hi) = (seen.start, seen.end.saturating_sub(1).max(seen.start));
         if let Some(row) = focused { (lo, hi) = (lo.min(row), hi.max(row)); }
         let hold = plx_ui::cards::hold_band((lo, hi), self.shelves.len());
@@ -853,13 +885,14 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        let strip = plx_ui::dispatch::STRIP_BASE;
-        let req = match elem.checked_sub(strip) {
-            Some(0) => Some(LibraryReq::Tab(HomeTab::Home)),
-            Some(1) => Some(LibraryReq::Tab(HomeTab::Movies)),
-            Some(2) => Some(LibraryReq::Tab(HomeTab::Shows)),
-            Some(3) => Some(LibraryReq::Tab(HomeTab::Search)),
-            Some(4) => Some(LibraryReq::Account),
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        let req = match elem {
+            TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
+            TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
+            TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
+            TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
+            TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
+            TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }
@@ -1042,10 +1075,15 @@ impl LibraryScreen {
             }
         }
         match ev {
-            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
+            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => {
+                self.sync(cx);
+                // A read-back that lands while a page is pushed over this one is acted on at once.
+                if self.buried { self.requery_stale(cx, fx); }
+            }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
                 self.live = true;
+                self.buried = false;
                 // The engine seats the target right after this event, so a key it names must hold
                 // a projected slot by then: pinned and projected until the page's next tick.
                 if let Enter::Fresh { focus: FocusTarget::Elem(key) } = enter {
@@ -1053,9 +1091,16 @@ impl LibraryScreen {
                 }
                 self.sync(cx);
             }
-            ScreenEvent::Cover => { self.live = false; }
-            ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
-            ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
+            ScreenEvent::Cover => {
+                self.live = false;
+                if self.buried { self.requery_stale(cx, fx); }
+            }
+            ScreenEvent::Uncover => { self.live = true; self.buried = false; self.sync(cx); }
+            ScreenEvent::WillLeave(leave) => {
+                if matches!(leave, plx_machine::machine::Leave::Deeper) { self.buried = true; }
+                self.save_cursor(cx, fx);
+                self.flush(fx);
+            }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {
                 use plx_data::stores::browse::QueryEdit;
@@ -1482,6 +1527,15 @@ impl HubShelf {
     /// The group a door INTO this shelf from above lands in: its linked heading when it has one.
     fn entry_group(&self) -> GroupId { self.heading.map_or(self.group, |(group, _)| group) }
 }
+/// The shelf focus stands on: the row that holds the focus key now, else the row the key was last
+/// placed in (`last_place`, the key registry's record). The second half is what keeps a row focused
+/// across the publication that re-keys it, slot keys to item keys or back (see `send_hold`); a key
+/// placed in the grid, the toolbar or a heading names no shelf's card group and answers `None`.
+fn focused_shelf(shelves: &[HubShelf], elem: u32, last_place: Option<(GroupId, usize)>) -> Option<usize> {
+    shelves.iter().position(|row| row.elems.contains(&elem))
+        .or_else(|| last_place.and_then(|(group, _)| shelves.iter().position(|row| row.group == group)))
+}
+
 fn row_style(row: &HubShelf) -> &'static RowStyle { hub_style(row.landscape) }
 fn hub_style(landscape: bool) -> &'static RowStyle { if landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }
 /// A hub shelf's card section. Cards a screen's width off to either side still paint: a popped

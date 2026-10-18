@@ -218,8 +218,8 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   | name | in | required | type | app sends | note |
   |---|---|---|---|---|---|
   | `partId` | path | yes | **integer** | yes (parsed from part key) | ✅ |
-  | `audioStreamID` | query | no | integer | only when audio switched | ✅ |
-  | `subtitleStreamID` | query | no | integer | always (0 = subs off) | ✅ |
+  | `audioStreamID` | query | no | integer | only when audio switched, or an applied remembered audio is written back | ✅ |
+  | `subtitleStreamID` | query | no | integer | when the selection names one (0 = subs off); omitted by an audio-only write-back with no subtitle selected | ✅ |
   | `allParts` | query | no | integer(0/1) | yes (`1`) | ✅ |
 
 - **Response:** no body (200) / 400 if the stream doesn't belong to the part.

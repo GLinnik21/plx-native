@@ -1028,69 +1028,17 @@ mod tests {
         });
     }
 
-    /// A range-capable file server on loopback: `GET` answers 200, `Range: bytes=N-` answers 206.
-    fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        srv.set_nonblocking(true).unwrap();
-        let h = std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let Ok((mut s, _)) = plx_base::testnet::accept(&srv) else {
-                    std::thread::yield_now();
-                    continue;
-                };
-                let body = body.clone();
-                std::thread::spawn(move || {
-                    let mut buf: Vec<u8> = Vec::new();
-                    let mut chunk = [0u8; 1024];
-                    loop {
-                        let Some(k) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                            match s.read(&mut chunk) {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => {
-                                    buf.extend_from_slice(&chunk[..n]);
-                                    continue;
-                                }
-                            }
-                        };
-                        let head = String::from_utf8_lossy(&buf[..k]).to_ascii_lowercase();
-                        buf.drain(..k + 4);
-                        let from = head
-                            .lines()
-                            .find_map(|l| l.strip_prefix("range: bytes="))
-                            .and_then(|r| r.trim_end_matches('-').parse::<usize>().ok());
-                        let reply = match from {
-                            Some(n) if n < body.len() => format!(
-                                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {n}-{}/{}\r\n\r\n",
-                                body.len() - n,
-                                body.len() - 1,
-                                body.len()
-                            ),
-                            _ => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()),
-                        };
-                        let n = from.filter(|n| *n < body.len()).unwrap_or(0);
-                        if s.write_all(reply.as_bytes()).is_err() || s.write_all(&body[n..]).is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-        });
-        (port, h)
-    }
-
     /// **End to end through the bundled FFmpeg**: a generated 5 s MKV with one SRT cue at 1.0 s is
     /// side-read over a local HTTP listener with the clock `offset 2 s`, `disp_base 1 s`, so the
     /// assumed mapping gives `delta = +1 s` and the cue must land at 0.0 s in the store.
     ///
-    /// Needs the host build of the bundled FFmpeg (`make check-ffmpeg`) and a system `ffmpeg` to
-    /// generate the fixture; skips (loudly) when the latter is absent.
+    /// Needs the host build of the bundled FFmpeg and a system `ffmpeg` to generate the fixture.
+    /// `make check-ffmpeg` stages its libraries and runs this test.
     #[test]
-    #[ignore = "needs the host build of the bundled FFmpeg and a system ffmpeg — run by `make check-ffmpeg`"]
+    #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
     fn side_reader_draws_a_shifted_cue_from_a_generated_mkv() {
         let _g = plx_base::testlock::serial();
-        super::super::image_subtitle_tests::bind_host_ffmpeg();
+        let _ffmpeg = super::super::image_subtitle_tests::bind_host_ffmpeg();
         let dir = std::env::temp_dir().join(format!("plx-subside-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("t.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n").unwrap();
@@ -1109,7 +1057,7 @@ mod tests {
         STOP_SERVER.store(false, Ordering::Release);
         let (port, server) = serve_file(body, &STOP_SERVER);
 
-        SHARED.sub_cues.lock().unwrap().clear();
+        crate::player::ass_source::reset();
         crate::player::request_subtitle(0);
         let stop = SideStop::new();
         let url = format!("http://127.0.0.1:{port}/library/parts/1/out.mkv");
@@ -1133,7 +1081,12 @@ mod tests {
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let cue = loop {
-            if let Some(c) = SHARED.sub_cues.lock().unwrap().first().map(|c| (c.track, c.start_ns, c.end_ns)) {
+            // The reader registered the file's text track and its cue went to libass's source.
+            let held = crate::player::ass_source::selected(0).and_then(|source| match &source.content {
+                crate::player::ass::Content::Embedded { events, .. } => events.first().map(|e| (e.start_ms, e.duration_ms)),
+                _ => None,
+            });
+            if let Some(c) = held {
                 break Some(c);
             }
             if std::time::Instant::now() > deadline || reader.is_finished() {
@@ -1146,11 +1099,11 @@ mod tests {
         STOP_SERVER.store(true, Ordering::Release);
         let _ = server.join();
         crate::player::request_subtitle(-1);
-        SHARED.sub_cues.lock().unwrap().clear();
+        crate::player::ass_source::reset();
         let _ = std::fs::remove_dir_all(&dir);
         let cue = cue.unwrap_or_else(|| panic!("no cue arrived; reader ended {end:?}, delta {delta:?}"));
         assert_eq!(delta, Some(1_000_000_000), "assumed delta = keyframe at 2 s - (0 + disp_base 1 s)");
-        assert_eq!(cue, (0, 0, 1_500_000_000), "1.0 s .. 2.5 s shifted by -delta");
+        assert_eq!(cue, (0, 1_500), "1.0 s .. 2.5 s shifted by -delta: starts at 0 and lasts 1.5 s");
         assert_eq!(end, RunEnd::Stopped);
     }
 }

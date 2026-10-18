@@ -11,10 +11,12 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
+use super::SeekMode;
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
 use plx_net::stream::HttpStream;
 use plx_base::task::MainThread;
+use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -176,6 +178,10 @@ pub struct Engine {
     pub native_epoch: u32,
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
+    /// ACB route: `SHARED.frames` when the plane bind completed (`Stage::Streaming`), until a tick
+    /// beyond it is seen. A paused preroll re-pauses only after that tick: a picture presented
+    /// before the bind is not on the panel.
+    pub bound_at_frames: Option<i32>,
     /// webOS 5+ only: the source size the exported window was last placed with, so a corrective
     /// re-place happens exactly once if the demuxer publishes the real one later. 0 = never placed.
     pub placed_src: (c_int, c_int),
@@ -368,10 +374,135 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
     true
 }
 
+/// **A real stop's native object, handed to an off-frame `Unload`.** `StarfishMediaAPIs::Unload`
+/// blocks for 110-150 ms on the dev set (webOS 4.5, release build, measured 2026-10-15 with
+/// `teardown spans:`; the kernel sched trace of the same returns shows the main thread ~31-36 ms in
+/// D state inside a driver `ioctl` and then ~72-74 ms in a futex until the pipeline thread woke it),
+/// and on the main thread that was the whole of the frame that handled BACK: 140-170 ms on 8 of 8
+/// returns. So a real stop issues it on a worker and keeps everything else where it was: the
+/// callback gate, the epoch retirement, the ACB `setState(UNLOADED)`, D1 and the exported window
+/// still run on the main thread, in the same order, once `Unload` has returned
+/// ([`settle_release`], polled once a frame by `app::run` and forced by the adapter before anyone
+/// takes the token again). A reload, an app-switch suspend and the decoder-revoked park keep the
+/// synchronous release: each starts the next Load at once, so there is no frame to save.
+///
+/// While the worker owns the object its epoch is [`Shared::begin_native_release`]'s `Releasing`
+/// phase, which admits only UNLOADCOMPLETED (the main thread has already reset the state any other
+/// callback would write into), and no new native session may begin.
+pub struct PendingRelease {
+    epoch: u32,
+    unload_th: std::thread::JoinHandle<()>,
+    handed_off_at: std::time::Instant,
+    /// The Engine the object belonged to. It used to drop at the end of `teardown`, after the
+    /// release; it still drops after it (the Load payload in particular outlives the Unload).
+    _engine: Engine,
+}
+
+/// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
+#[cfg(test)]
+static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the off-frame release of `epoch`'s object, or release it here when it cannot be handed
+/// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
+/// thread). `Some` = the worker is running and the caller must park it with the Engine.
+fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Option<std::thread::JoinHandle<()>> {
+    if unsafe { sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
+        release_native_object_timed(mt, epoch, sp);
+        return None;
+    }
+    let ticket = UnloadTicket::issue(mt);
+    #[cfg(test)]
+    let refused = FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed);
+    #[cfg(not(test))]
+    let refused = false;
+    let th = if refused {
+        None
+    } else {
+        plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) })
+    };
+    sp.mark("unload_handoff");
+    if th.is_none() {
+        log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
+        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        sp.mark("sf_unload");
+        finish_unloaded_object(mt, epoch, sp);
+        destroy_native_window(mt, sp);
+    }
+    th
+}
+
+/// Finish a parked [`PendingRelease`]: join its `Unload` (only once it has returned, unless
+/// `wait`) and run the main-thread tail. `true` when this call finished it. Reached through
+/// `PlayerAdapter::{poll_release, finish_release}`.
+pub(crate) fn settle_release(slot: &mut Option<PendingRelease>, mt: &MainThread, wait: bool) -> bool {
+    let finished = match slot.as_ref() {
+        Some(p) => p.unload_th.is_finished(),
+        None => return false,
+    };
+    if !finished && !wait {
+        return false;
+    }
+    let p = slot.take().expect("checked above");
+    let mut sp = TeardownSpans::new();
+    // A thread that has finished joins at once; one that has not is a caller about to use the seam
+    // within ~150 ms of the stop, and `task::join` names the wait if it stalls.
+    plx_base::task::join("sf-unload", p.unload_th);
+    sp.mark(if finished { "join" } else { "wait_unload" });
+    finish_unloaded_object(mt, p.epoch, &mut sp);
+    destroy_native_window(mt, &mut sp);
+    sp.emit("release");
+    log(&format!(
+        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop{}",
+        p.epoch,
+        p.handed_off_at.elapsed().as_millis(),
+        if finished { "" } else { " (a caller waited for it)" },
+    ));
+    // `p._engine` drops here, after the object it belonged to is gone.
+    true
+}
+
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
 /// The engine's own teardown and the abandoned-Load release share this so the order below is one
 /// definition.
 fn release_native_object(mt: &MainThread, epoch: u32) {
+    release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
+}
+
+/// **Where a teardown's frame goes, one step at a time.** Each step's wall time is appended as
+/// `label:ms` and the whole run is logged as ONE `teardown spans:` line at the end, so a slow BACK
+/// frame names the call that held the main thread instead of being inferred from a sched trace.
+/// Measuring costs two `Instant::now()` per step; the line is written once per teardown.
+pub(crate) struct TeardownSpans {
+    t0: std::time::Instant,
+    last: std::time::Instant,
+    out: String,
+}
+
+impl TeardownSpans {
+    pub(crate) fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self { t0: now, last: now, out: String::new() }
+    }
+
+    /// Close the step that ran since the previous mark under `label`.
+    pub(crate) fn mark(&mut self, label: &str) {
+        use std::fmt::Write as _;
+        let now = std::time::Instant::now();
+        let ms = now.duration_since(self.last).as_secs_f64() * 1000.0;
+        self.last = now;
+        let _ = write!(self.out, "{}{label}:{ms:.1}", if self.out.is_empty() { "" } else { "," });
+    }
+
+    pub(crate) fn emit(&self, what: &str) {
+        log(&format!(
+            "teardown spans: {what} total={:.1} {}",
+            self.t0.elapsed().as_secs_f64() * 1000.0,
+            self.out,
+        ));
+    }
+}
+
+fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
     // Stop the pipeline, close native callback admission, then drain the Rust epoch.
     //
     // `Unload` waits for the GStreamer state transition, but neither libpf's raw callback fields nor
@@ -387,9 +518,27 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
     // retains the constructed object forever and permanently refuses another Load. Leaking one
     // object is preferable to letting D1 turn a late producer callback into a use-after-free.
     if unsafe { sink().ready(mt) } != 0 {
-        unsafe { sink().unload(mt) };
+        sp.mark("pre_unload");
+        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        sp.mark("sf_unload");
+        finish_unloaded_object(mt, epoch, sp);
+    } else if !SHARED.retire_native_session(epoch) {
+        log(&format!(
+            "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
+        ));
+    }
+    destroy_native_window(mt, sp);
+}
+
+/// Everything after `Unload` returns, in the audited order: close and drain the C callback gate,
+/// retire the Rust epoch, unload the ACB plane, then D1 with complete evidence or quarantine. The
+/// synchronous release and the off-frame release's main-thread tail ([`settle_release`]) share
+/// it, so the order is one definition.
+fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
+    {
         window_step(WindowStage::NativeUnload);
         let callback_gate_proven = unsafe { sink().callback_gate_retire(mt) } != 0;
+        sp.mark("gate_retire");
         let callback_intercepts = unsafe { sink().callback_intercepts(mt) };
         let unload_completed = SHARED.native_unload_completed(epoch);
         let rust_epoch_retired = SHARED.retire_native_session(epoch);
@@ -408,14 +557,18 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
                 "native lifecycle: failed to retire epoch={epoch} after Unload",
             ));
         }
+        sp.mark("retire");
         if ACB_OK.load(Ordering::Relaxed) {
             unsafe { sink().plane_unload(mt) };
+            sp.mark("acb_unload");
             window_step(WindowStage::AcbPlaneUnload);
         }
         match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
         {
             NativeObjectDisposition::Destroy => {
-                if unsafe { sink().destroy(mt) } == 0 {
+                let destroyed = unsafe { sink().destroy(mt) } != 0;
+                sp.mark("sf_destroy");
+                if !destroyed {
                     log("native lifecycle: C seam rejected D1 and quarantined the object");
                     window_step(WindowStage::NativeQuarantined);
                 } else {
@@ -424,20 +577,21 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
             }
             NativeObjectDisposition::Quarantine => {
                 unsafe { sink().quarantine(mt) };
+                sp.mark("quarantine");
                 window_step(WindowStage::NativeQuarantined);
             }
         }
-    } else if !SHARED.retire_native_session(epoch) {
-        log(&format!(
-            "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
-        ));
     }
+}
+
+fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {
     // The webOS 5+ counterpart of acb_unload, and the other half of `with_window_id`'s create.
     // Outside the sf_ready guard because readiness means dispatchable, not "object exists", and
     // because the window is created BEFORE Load — a session that failed between the two would
     // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
     // already no-ops in the other modes (see starfish.h).
     unsafe { sink().destroy_window(mt) };
+    sp.mark("destroy_window");
     if sink().window_mode() == super::VP_EXPORTED {
         window_step(WindowStage::ExportedWindowDestroy);
     }
@@ -644,7 +798,8 @@ pub(crate) fn load_video_refused(lv: LoadVideo, caps: &plx_platform::devcaps::Ca
 ///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
 ///
 /// `maxFrameRate`: **H.264 declares the stream's own rate class** (24/25/30/50/60, never below
-/// the stream; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
+/// the stream beyond one 1 ms container-timebase tick per frame, so 30.303 declares 30, issue
+/// #665; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
 /// value every Dolby Vision verification was taken under. `/tmp/plxnative-sinkmax=WxH@F`
 /// overrides the whole result so the remaining legs are an A/B with no rebuild. Pure; the
 /// wrappers feed it the route.
@@ -675,7 +830,12 @@ fn sink_envelope(
     // displayed-frame counter (callback type 47, see the payload note above) put a number on
     // what the eye saw: declared at 60 the 4K 24p stream was PRESENTED at 13.0 fps mean, worst
     // second 10; declared at 24, 24.1 fps.** The class, not the exact value: 23.976 → 24 keeps
-    // the declaration a ceiling the stream fits under.
+    // the declaration a ceiling the stream fits under. The one deliberate exception is a
+    // millisecond-timebase 30.303 → 30 (`fps_class`, issue #665), where the declaration sits
+    // about 1% BELOW the fed rate. Suspected, NOT yet device-verified: the k6lp SoC's H.264
+    // decoder is 4K@30-limited, so declaring 50 on a 30p 4K stream is refused with num=601;
+    // `pipe_h264_uhd_30p_ms_timebase` and an owner retest on the 60UN7310 are the proof, with a
+    // second `/tmp/plxnative-nofps` leg to tell a rate-pair refusal from the 4K@30 limit.
     if video == LoadVideo::H264 && stream_fps > 0.0 && stream_fps.is_finite() {
         env.fps = fps_class(stream_fps);
     }
@@ -720,11 +880,27 @@ fn renamed_static_payload(video: LoadVideo) -> String {
     PAYLOAD_H265.replacen(r#""video":"H265""#, &to, 1)
 }
 
-/// The smallest of the broadcast/film rate classes the stream fits under: 24, 25, 30, 50, 60,
-/// else the rate rounded up. A ceiling, never below the stream.
+/// The broadcast/film rate class (24, 25, 30, 50, 60) a stream's reported rate belongs to, else
+/// the rate rounded up.
+///
+/// A rate belongs to the smallest class `c` for which either `fps <= c + 0.01` (the exact and
+/// NTSC rates: 23.976, 29.97, 59.94) or its mean frame duration is within **1 ms** of the class's
+/// (`1000/fps > 1000/c - 1`). The 1 ms is the Matroska timebase: timestamps are integers in
+/// `TimestampScale` = 1 ms, so a frame interval estimated from them is off by less than one tick,
+/// and a 30p file reports `avg_frame_rate` 1000/33 (30.303) and PMS `frameRate` 30.303 (issue
+/// #665). The error is constant in TIME, not in rate, so the tolerance grows with the class: the
+/// windows top out at 24.59, 25.64, 30.93, 52.63 and 63.83 and never overlap the next class.
+///
+/// This is NOT a claim that the stream is exactly the class: a constant-33 ms file really is fed
+/// at 30.303 fps, so the declaration can sit about 1% below the fed rate. libpf has never been
+/// measured accepting `maxFrameRate` below `videoFps`; the esInfo rational deliberately stays the
+/// raw rate (it is a timing input for libpf's PTS lattice, not a ceiling), and only the ceiling
+/// is snapped. Only the H.264 path reaches this; HEVC and a video re-encode (no known rate) keep 60. A remux
+/// copies the source video, so it arrives here with the source's rate like a direct play.
 fn fps_class(fps: f64) -> u32 {
     for class in [24u32, 25, 30, 50, 60] {
-        if fps <= f64::from(class) + 0.01 {
+        let c = f64::from(class);
+        if fps <= c + 0.01 || 1000.0 / fps > 1000.0 / c - 1.0 {
             return class;
         }
     }
@@ -1057,6 +1233,11 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     }
     ps.jail_load_blocked = false;
     ps.native_start_refused = false;
+    // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
+    // playback: it gets to try the native Seek again.
+    if pa.engine().is_none() {
+        super::set_native_seek_refused(false);
+    }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1135,6 +1316,10 @@ fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    // The last real stop's object may still be inside its off-frame `Unload`: finish that release
+    // first (waiting for it if it has not returned — only a start within ~150 ms of a stop does),
+    // so the epoch is retired and the object destroyed before this start constructs the next one.
+    pa.finish_release();
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
@@ -1523,6 +1708,7 @@ fn start_bufferfeed_inner(
         native_epoch,
         stage: Stage::Loading,
         video_info_sent: false,
+        bound_at_frames: None,
         placed_src: (0, 0),
         eos_pushed: false,
         // if a seek is armed for the FIRST open (resume, or reload_at), rebase the first
@@ -1554,40 +1740,20 @@ fn start_bufferfeed_inner(
         report_stop: Some(report_stop),
         preview_abandon: false,
     };
-    // Re-arm the in-place-seek probe for this session. `feed_stream` clears it when
-    // `sf_send_segment` can't reach the pipeline, and that is a fact about the StarfishMediaAPIs
-    // object — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session
-    // — not about the TV (see the SCOPE note on INPLACE_SEEK_OK in mod.rs). Left latched for the
-    // process, one teardown-window race silently turned every subsequent seek, of every
-    // subsequent item, into a full reload for the rest of the app's life. Placed HERE rather than
-    // at the top of this function on purpose: the `engine_is_live` no-op return above must NOT
-    // re-arm, or a stray PLAY landing mid-session would cancel a fallback that is still needed.
-    //
-    // NOT re-armed on webOS 5+. In-place seek reaches the pipeline through two decompile-derived
-    // offsets into LG-private C++ objects — `StarfishMediaAPIs::player` at object+0x4c, then
-    // `AbstractPlayer::pipeline` at +0x04 (src/starfish.c's sf_pipeline), plus
-    // MEDIA_CUSTOM_CONTENT_INFO's ptsToDecode at +0x28. Every one of those was read off a
-    // webOS 4.5 binary with a disassembler, and nothing in a symbol table can confirm them on
-    // another firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the
-    // very next seek dereferences whatever now lives there. The reload fallback is slower but is
-    // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
-    // somebody has re-derived the offsets on that firmware.
-    //
-    // NOR when the library is the pre-C++11 build (`inplace_layout_known`): its StarfishMediaAPIs
-    // is a different object from the 4.5 one, and the first fast-forward on a 3.4.0 set crashed
-    // through these offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the direct evidence, and
-    // it covers 3.9.x too. A KNOWN release below 4 is refused as well; an UNKNOWN one
-    // (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as before
-    // #578, because that Feed says the library is 4.x or later and the VP_EXPORTED exclusion
-    // below already handles 5+.
+    // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
+    // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
+    // unreachable, or LG refused a `Seek`), and that is a fact about the StarfishMediaAPIs object
+    // — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session — not
+    // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
+    // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
+    // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
     let layout_known = inplace_layout_known(
         plx_platform::tv::device::info().major,
         sink().feed_abi_is_cow(),
     );
-    super::INPLACE_SEEK_OK.store(
-        layout_known && sink().window_mode() != super::VP_EXPORTED,
-        Ordering::Relaxed,
-    );
+    let mode = session_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
+    log(&format!("seek mode: {mode:?} (layout_known={layout_known})"));
+    super::set_seek_mode(mode);
     pa.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -1815,7 +1981,28 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
+/// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
+/// exactly once, at the user's target.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the paused-seek preroll was open as each `reload_at` / `reload_transcode` was entered,
+/// before its teardown (test probe): the reload keeps it, so what the fresh session's feed gate and
+/// prime see is whatever the dispatcher left open here.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-support"))]
+fn note_reload_preroll() {
+    RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(TX.seek_preroll_active());
+}
+
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
+        note_reload_preroll();
+    }
     if crate::route::url(ps).is_empty() {
         log("reload_at: no url (ignored)");
         settle_missing_route_start();
@@ -1853,6 +2040,8 @@ pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut supe
 /// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
 pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    note_reload_preroll();
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and
         // nothing here would ever disarm it. See `player::abandon_seek`.
@@ -1884,8 +2073,11 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     reload_transcode_start(ps, pa, offset_ns).unwrap_or(BufferfeedStartOutcome::Failed)
 }
 
-/// Stop playback: unblock+join threads, unload+destruct the pipeline, release the
-/// video plane, reset all state so a fresh start_bufferfeed() can restart.
+/// Stop playback: unblock+join threads, reset all state so a fresh start_bufferfeed() can
+/// restart, and release the pipeline and the video plane. With a ready object the native Unload is
+/// handed to the `sf-unload` worker and the destroy / plane release finish later in
+/// `settle_release` (`PendingRelease`), so the object may still exist when this returns; anything
+/// that needs it gone goes through the adapter, which waits for it.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     teardown(ps, pa, false);
 }
@@ -1961,6 +2153,8 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // Revoke every worker ticket before asking those workers to stop. This is the synchronization
     // boundary that makes a late HLS candidate/fallback an ordinary stale event instead of a
     // mutation of the route the next Load is about to own.
+    let mut sp = TeardownSpans::new();
+    let mut unload_th = None;
     crate::route::begin_engine_teardown(for_reload);
     SHARED.stop_hls_clock();
     let mut eng = pa.take().expect("main-thread live check and take are one transaction");
@@ -1998,7 +2192,9 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 
     // The side subtitle reader first: it reads the original Part over its own transport and must
     // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
+    sp.mark("begin");
     super::subside::stop(if for_reload { "reload" } else { "stop" });
+    sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
     if let Some(st) = eng.report_stop.take() {
         st.stop(); // this reporter's own signal — unaffected by the reset_session below
@@ -2025,12 +2221,14 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // doc explains why the handle lives in a registry rather than being passed up to here.
         crate::curlio::abort_active();
     }
+    sp.mark("unblock");
     // 2. JOIN every worker before freeing anything they hold raw ptrs into
     // Through `task::join` so a stall leaves a number behind: this is the main thread, and every
     // teardown freeze the engine has had was one of these three.
     if let Some(t) = eng.stream_th.take() {
         plx_base::task::join("demux", t);
     }
+    sp.mark("join_demux");
     // A Load the D.1.4 budget already gave up on, still inside `sf_load`: do NOT join it here.
     // This is the main thread, and on the set where the budget fires the call may never return —
     // BACK from the timeout read-out used to freeze the app on this line. The native object is
@@ -2045,6 +2243,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
         None => None,
     };
+    sp.mark("join_media");
     // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
     // (Before the join it could only shutdown — see step 1.)
     if stream {
@@ -2069,9 +2268,11 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // one that could park). Safe to outlive the Engine: the reporter owns `ReportStop` and a
     // `TimelineLease`, samples only SHARED clock state, and the route reducer revalidates the lease
     // before each network effect.
+    sp.mark("http_close");
     if !for_reload {
         crate::route::scrobble_stop(ps, final_report, eng.report_th.take());
     }
+    sp.mark("scrobble");
     // 3. Release the native object (see `release_native_object` for the proof chain), unless its
     // Load is still in flight — then hand it, its thread and its payload to the adapter.
     if let Some(load_th) = abandoned_load {
@@ -2092,8 +2293,10 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             _payload: std::mem::take(&mut eng.payload),
             abandoned_at: std::time::Instant::now(),
         });
+    } else if !for_reload {
+        unload_th = release_off_frame(pa.mt(), eng.native_epoch, &mut sp);
     } else {
-        release_native_object(pa.mt(), eng.native_epoch);
+        release_native_object_timed(pa.mt(), eng.native_epoch, &mut sp);
     }
     // 4. drain + destroy both queues (drain_aq also clears both pendings)
     if stream {
@@ -2105,12 +2308,13 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             crate::aq::aq_destroy(&mut **q);
         }
     }
+    sp.mark("drain_aq");
     // 5. reset shared + transport. On a real stop also stop the server transcode + clear the
     // URL; on a reload KEEP them so start_bufferfeed restarts the same item (a direct-play
     // reload has no transcode session anyway, so the skip only matters for the URL).
     // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
     // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek — which on webOS 5+ is EVERY seek, in-place being disabled there — drew
+    // reload-based seek (old-ABI 3.x, a refused native Seek, a transcode seek) drew
     // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
     // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
     // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
@@ -2144,14 +2348,32 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // the next session — which is exactly what the shared flag could not guarantee.
         drop(t);
     }
-    // Every worker `begin_engine_teardown` fenced is joined, the native object is retired and the
-    // URL is gone: the stop is COMPLETE, so retire the fence too. A reload keeps its own phase
+    // Every worker `begin_engine_teardown` fenced is joined and the URL is gone: the stop is
+    // COMPLETE as far as the route is concerned, so retire the fence too. The native object may
+    // still be inside its off-frame `Unload`; that is the adapter's fence (`PendingRelease`), not
+    // the route's, and every native start finishes it first. A reload keeps its own phase
     // (`Prepared`/`OriginalTrial`), which is the transaction the caller is about to start.
     if !for_reload {
         crate::route::finish_engine_teardown();
     }
-    log("stop_bufferfeed: torn down");
-    // Engine (hs/aq boxes, payload) drops here — after all joins
+    sp.mark("reset");
+    sp.emit(if for_reload { "reload" } else { "stop" });
+    match unload_th {
+        Some(unload_th) => {
+            log(&format!(
+                "stop_bufferfeed: torn down (native Unload epoch={} continues off-frame)",
+                eng.native_epoch,
+            ));
+            pa.park_release(PendingRelease {
+                epoch: eng.native_epoch,
+                unload_th,
+                handed_off_at: std::time::Instant::now(),
+                _engine: eng,
+            });
+        }
+        // Engine (hs/aq boxes, payload) drops here — after all joins
+        None => log("stop_bufferfeed: torn down"),
+    }
 }
 
 /// free every queued AU + the held pending one, BOTH lanes (seek + teardown).
@@ -2606,6 +2828,10 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
         else {
             return;
         };
+        // A paused preroll plays one picture for a viewer who is paused: keep that window silent.
+        if TX.seek_preroll_active() {
+            super::mute_for_preroll(mt);
+        }
         let played = unsafe { sink().play(mt) };
         match SHARED.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {
@@ -2724,7 +2950,56 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         continue;
                     }
                 }
-                if eng.flushed {
+                if eng.flushed && super::seek_mode() == SeekMode::NativeSeek {
+                    // NATIVE in-place seek (#568): feed the REAL content PTS (pts_shift=0,
+                    // disp_base=0 -> playpos = presented real pts = content time, as in the
+                    // Segment branch below) and anchor the pipeline with LG's public
+                    // `StarfishMediaAPIs::Seek(millis)`. Seek is a flushing `gst_element_seek`
+                    // whose new segment starts at EXACTLY the millis passed, so the PTS fed from
+                    // here on is on that timeline by construction; the pump skipped its own
+                    // `flush()` for this mode and nothing may flush after this (a `flush()` is
+                    // itself a seek to 0 and re-creates the stale-segment stall). `feed_stream`
+                    // runs on the main thread and is the only Feed caller, and this keyframe is
+                    // not fed yet, so Seek cannot race a Feed. Never a negative millis: Seek
+                    // refuses it, and a negative PTS is unparseable by Feed.
+                    SHARED.pts_shift.store(0, Ordering::Relaxed);
+                    let ms = pts.max(0) / 1_000_000;
+                    let rv = unsafe { sink().seek(mt, ms) };
+                    log(&format!("in-place seek(native): Seek({ms}) rv={rv}"));
+                    if rv == 0 {
+                        // A refused Seek can leave the pipeline refusing every Feed. Drop the rest
+                        // of THIS SESSION's seeks to the reload path and redo THIS one as a
+                        // reload at the user's target (the pump reads the mailbox next tick;
+                        // `reload_at` REPLACES the engine). `eng.flushed`/`rebase_pending` stay
+                        // set so the audio lane keeps holding and no AU reaches a pipeline that
+                        // is rejecting Feed.
+                        super::set_seek_mode(SeekMode::Reload);
+                        // Latched across the reload this very seek is about to do, so the fresh
+                        // session's `select_seek_mode` does not offer the same firmware another
+                        // refused Seek on every later seek of this playback.
+                        super::set_native_seek_refused(true);
+                        log(
+                            "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
+                             the rest of this playback",
+                        );
+                        let tgt = SHARED.seek_target_ns.load(Ordering::Relaxed).max(0);
+                        TX.seek_reqs.store(1, Ordering::Release);
+                        TX.seek_to_ns.store(tgt, Ordering::Release);
+                        eng.pending_video = None;
+                        break;
+                    }
+                    segment_installed = true;
+                    eng.flushed = false;
+                } else if eng.flushed && super::seek_mode() != SeekMode::Segment {
+                    // Flushed but not in a mode that anchors in place: a refused native `Seek`
+                    // downgraded the session to `Reload` and the pump's reload (`reload_at`)
+                    // is on its way. The private Segment path (`sf_pipeline`'s decompile-derived
+                    // offsets, proven on webOS 4.5 only) must NEVER run here, so this keyframe
+                    // anchors nothing: drop it and leave `flushed`/`rebase_pending` set, which
+                    // keeps the audio lane holding until the reload replaces the engine.
+                    eng.pending_video = None;
+                    break;
+                } else if eng.flushed {
                     // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
                     // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
@@ -2757,7 +3032,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         // silently became multi-second reloads with nothing in the event log
                         // naming the cause — only the `sendSegment=0` above, whose consequence
                         // was not stated anywhere.
-                        super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
+                        super::set_seek_mode(SeekMode::Reload);
                         log(
                             "in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
                              -> reload-per-seek for the rest of this session",
@@ -2834,7 +3109,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
-                    super::sf_on_event_inner(0, num, std::ptr::null())
+                    super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live)
                 }) {
                     log("rebase: native presentation probe lost its epoch after accepted Feed");
                 }
@@ -3035,6 +3310,60 @@ fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
     !feed_abi_is_cow && (major == 0 || major >= 4)
 }
 
+/// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
+/// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
+/// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
+pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+    match select_seek_mode(layout_known, window_mode, dev) {
+        SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
+        mode => mode,
+    }
+}
+
+/// How a direct-play seek re-anchors the pipeline in a new session (see [`SeekMode`]).
+///
+/// - `VP_EXPORTED` (webOS 5+) -> [`SeekMode::NativeSeek`]: LG's PUBLIC `StarfishMediaAPIs::Seek`.
+///   The Kodi in-place path (`Segment`) is NOT used there: it reaches LG-private C++ objects
+///   through two decompile-derived offsets (`StarfishMediaAPIs::player` at object+0x4c, then
+///   `AbstractPlayer::pipeline` at +0x04, plus `MEDIA_CUSTOM_CONTENT_INFO`'s `ptsToDecode` at
+///   +0x28) read off a webOS 4.5 binary, which nothing in a symbol table can confirm on another
+///   firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the very next
+///   seek dereferences whatever now lives there. `Seek` is an exported symbol, present on every
+///   firmware 1.2 to 11.2, so it assumes no layout at all.
+/// - A known layout without `VP_EXPORTED` (webOS 4.x) -> [`SeekMode::Segment`], unchanged.
+/// - NOR when the library is the pre-C++11 build (`inplace_layout_known` false): its
+///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
+///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
+///   direct evidence, and it covers 3.9.x too. That COW Feed ABI is also unverified for `Seek`, so
+///   this is [`SeekMode::Reload`], as before. A KNOWN release below 4 is refused as well; an
+///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
+///   before #578, because that Feed says the library is 4.x or later.
+/// `dev` is the `plxnative-seekmode` dev trigger and wins when present, so a webOS 4.5 set can
+/// exercise `NativeSeek`.
+pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+    if let Some(forced) = dev {
+        return forced;
+    }
+    if window_mode == super::VP_EXPORTED {
+        SeekMode::NativeSeek
+    } else if layout_known {
+        SeekMode::Segment
+    } else {
+        SeekMode::Reload
+    }
+}
+
+/// `/tmp/plxnative-seekmode`: `native`, `segment` or `reload`. `None` without the `devtriggers`
+/// feature (`devtrig::read` folds away), so a release build cannot be steered.
+fn dev_seek_mode() -> Option<SeekMode> {
+    match plx_base::devtrig::read("seekmode")?.trim() {
+        "native" => Some(SeekMode::NativeSeek),
+        "segment" => Some(SeekMode::Segment),
+        "reload" => Some(SeekMode::Reload),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod feed_pace_tests {
     use super::{FeedPace, FEED_PACE_CAP_MS, MAX_FEED_AHEAD_NS, PRES_NONE};
@@ -3152,7 +3481,7 @@ mod native_lifecycle_host_seam_tests {
         let first = SHARED.begin_native_session().expect("first native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), first) }, 1);
         assert!(unsafe { crate::player::sink().callback_intercepts(&mt) } > 0);
-        unsafe { crate::player::sink().unload(&mt) };
+        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
         assert!(SHARED.native_unload_completed(first));
         assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 1);
         assert!(SHARED.retire_native_session(first));
@@ -3165,7 +3494,7 @@ mod native_lifecycle_host_seam_tests {
             .expect("unproven native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), unproven) }, 1);
         crate::player::ffi_host::force_callback_intercepts_for_test(0);
-        unsafe { crate::player::sink().unload(&mt) };
+        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
         assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 0);
         assert!(SHARED.retire_native_session(unproven));
         unsafe { crate::player::sink().quarantine(&mt) };
@@ -3861,13 +4190,14 @@ mod prime_livelock_tests {
             native_epoch: 0,
             stage: Stage::Streaming,
             video_info_sent: true,
+            bound_at_frames: None,
             placed_src: (0, 0),
             eos_pushed: false,
             rebase_pending: false,
             rebase_drops: 0,
             seek_armed_at: 0,
             seek_retries: 0,
-            flushed: false,
+                flushed: false,
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,
@@ -4719,6 +5049,243 @@ pub(super) fn streaming_engine_for_test(native_epoch: u32) -> Engine {
     let mut eng = prime_livelock_tests::engine_after_reload();
     eng.native_epoch = native_epoch;
     eng
+}
+
+/// **BACK's frame does not pay for `Unload`** (`PendingRelease`). On the dev set
+/// `StarfishMediaAPIs::Unload` held the frame that handled BACK for 113-150 ms on every return
+/// (`teardown spans: … sf_unload:135.7`). The host sink is given a slow Unload of its own
+/// (`delay_unload_for_test`) and the contract is graded where the device's cannot be: the stop
+/// returns long before the Unload does, nothing the stopped object says reaches the state the next
+/// session owns, no native session can begin while the object is still being released, and a start
+/// issued meanwhile waits for the release instead of racing it — and the release still ends in a
+/// D1 with complete evidence, not a quarantine.
+#[cfg(all(test, feature = "hostsim"))]
+mod off_frame_release_tests {
+    use super::*;
+
+    const UNLOAD_MS: u64 = 400;
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    fn ready_now() -> c_int {
+        unsafe { crate::player::sink().ready(&MainThread::assume()) }
+    }
+
+    /// A live Engine over a ready host object whose Load has returned: what BACK tears down.
+    fn playing_engine(pa: &mut crate::player::adapter::PlayerAdapter) -> u32 {
+        let epoch = SHARED.begin_native_session().expect("native session");
+        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert!(SHARED.mark_native_load_returned(epoch).is_some());
+        let mut eng = streaming_engine_for_test(epoch);
+        eng.load_th = None;
+        pa.install(eng);
+        assert_ne!(
+            ready_now(),
+            0,
+            "PRECONDITION FAILED: the object must be dispatchable, or the stop has nothing to Unload"
+        );
+        epoch
+    }
+
+    fn arm(ps: &crate::route::PlaybackSession) -> crate::player::adapter::PlayerAdapter {
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() })
+    }
+
+    #[test]
+    fn a_stop_returns_before_the_unload_and_the_next_start_waits_for_it() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let epoch = playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+
+        let started = std::time::Instant::now();
+        stop_bufferfeed(&mut ps, &mut pa);
+        let stop = started.elapsed();
+        assert!(
+            stop < std::time::Duration::from_millis(UNLOAD_MS / 4),
+            "the stop held the frame for {stop:?} on a {UNLOAD_MS} ms Unload: BACK pays for it again"
+        );
+        assert!(!pa.is_live(), "the stop must still complete from the route's point of view");
+        assert!(pa.has_pending_release(), "the object must be parked for its main-thread tail");
+
+        // A callback the stopped object delivers now (a late error, say) is dropped: the session
+        // state was already reset for whatever plays next.
+        let before = SHARED.dg_cb_count.load(Ordering::Relaxed);
+        super::super::sf_on_event(epoch, 5, 0, std::ptr::null());
+        assert_eq!(
+            SHARED.dg_cb_count.load(Ordering::Relaxed),
+            before,
+            "a callback from the object being released reached the next session's state"
+        );
+        assert!(
+            SHARED.begin_native_session().is_none(),
+            "a native session began while the previous object was still inside Unload"
+        );
+        assert!(!pa.poll_release(), "the per-frame poll must not wait for a running Unload");
+
+        // A start now (no URL, so it ends NoRoute) finishes the release before anything else.
+        let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
+        let _ = start_bufferfeed_inner(&mut ps, &mut pa, start);
+        let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
+            "the start went ahead while the Unload was still running"
+        );
+        assert!(!pa.has_pending_release(), "the start must leave no release pending");
+        assert_eq!(ready_now(), 0, "the released object must be destroyed before a new one may load");
+        assert!(
+            !crate::player::ffi_host::lifecycle_blocked_for_test(),
+            "the off-frame release must end in a D1 with complete evidence, not a quarantine"
+        );
+        let next = SHARED.begin_native_session().expect("native sessions resume after the release");
+        assert!(SHARED.retire_native_session(next));
+    }
+
+    #[test]
+    fn the_frame_poll_finishes_a_returned_unload_and_exit_waits_for_a_running_one() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+
+        // The ordinary return: the Unload comes back while Home draws; a later frame's poll runs
+        // the tail.
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !pa.poll_release() {
+            assert!(std::time::Instant::now() < deadline, "the returned Unload was never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!pa.has_pending_release());
+        assert_eq!(ready_now(), 0);
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the poll's tail must D1");
+
+        // The exit (`app::run::shutdown`): a release still running is waited for, not abandoned.
+        crate::route::reset_player_control_for_test(&ps);
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        pa.finish_release();
+        assert!(!pa.has_pending_release(), "finish_release must not return with the Unload running");
+        assert_eq!(ready_now(), 0);
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+    }
+
+    #[test]
+    fn the_releases_own_unloadcompleted_does_not_count_into_the_next_sessions_diagnostics() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        pa.finish_release();
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
+        assert_eq!(
+            SHARED.dg_cb_count.load(Ordering::Relaxed),
+            0,
+            "the stopped object's UNLOADCOMPLETED (after reset_session) counted into the next session's callback census"
+        );
+        assert_eq!(SHARED.dg_cb_err_at.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn taking_the_token_or_splitting_waits_for_a_running_unload() {
+        for use_split in [false, true] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let _serial = plx_base::testlock::serial();
+            let mut pa = arm(&ps);
+            let _cleanup = Cleanup;
+            playing_engine(&mut pa);
+            crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+            let started = std::time::Instant::now();
+            stop_bufferfeed(&mut ps, &mut pa);
+            assert!(pa.has_pending_release());
+            if use_split {
+                let _ = pa.split();
+            } else {
+                let _ = pa.mt();
+            }
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
+                "{} returned while the Unload was still running",
+                if use_split { "split()" } else { "mt()" }
+            );
+            assert!(!pa.has_pending_release(), "nothing may be pending once the token is handed out");
+            assert_eq!(ready_now(), 0);
+            assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+        }
+    }
+
+    #[test]
+    fn a_refused_unload_thread_unloads_on_the_main_thread_and_still_d1s() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_UNLOAD_SPAWN_FOR_TEST.store(false, Ordering::Relaxed);
+            }
+        }
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _reset = Reset;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(150);
+        FAIL_UNLOAD_SPAWN_FOR_TEST.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(150),
+            "with no thread the Unload must have run synchronously inside the stop"
+        );
+        assert!(!pa.has_pending_release(), "no worker exists, so nothing may be parked");
+        assert_eq!(ready_now(), 0, "the object must be destroyed");
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
+    }
+
+    #[test]
+    fn an_unloadcompleted_from_the_wrong_epoch_during_the_release_is_not_evidence() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let epoch = playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        let before = SHARED.dg_cb_count.load(Ordering::Relaxed);
+        super::super::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
+        super::super::sf_on_event(0, 23, 0, std::ptr::null());
+        assert_eq!(SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
+        assert!(
+            !SHARED.native_unload_completed(epoch),
+            "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
+        );
+        pa.finish_release();
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+    }
 }
 
 /// issue #74 D.1 regression tests. Real v0.6.0 dispatches every Starfish/ACB verb through
@@ -5659,6 +6226,27 @@ mod sink_envelope_tests {
         assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 30.0, &slow, true).fps, 25);
     }
 
+    /// Issue #665: an MKV's 1 ms timebase stores a 30p frame as 33 ms, so PMS reports 30.303 and
+    /// the strict class rounded it up to 50, which a 4K@30 H.264 decoder refuses. A rate within
+    /// the timebase rounding error above a class snaps to it; a genuinely higher one still rounds up.
+    #[test]
+    fn a_millisecond_timebase_rate_snaps_to_its_class() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for (fps, want) in [
+            (30.303, 30), (24.39, 24), (23.81, 24), (25.0, 25), (50.0, 50), (58.82, 60), (59.94, 60),
+            (31.0, 50), (26.0, 30),
+        ] {
+            assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), fps, &c, false).fps, want, "h264 {fps}");
+        }
+    }
+
+    /// Issue #665: the re-encode of a 4K source at 480p declares FHD60 for H.264.
+    #[test]
+    fn a_480p_ceiling_on_a_4k_source_declares_fhd60_for_h264() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        assert_eq!(sink_envelope(LoadVideo::H264, (854, 480), 0.0, &c, false), ENVELOPE_FHD60);
+    }
+
     #[test]
     fn the_payload_carries_all_three_envelope_numbers() {
         let ps = crate::route::PlaybackSession::IDLE;
@@ -5988,5 +6576,143 @@ mod late_audio_start_tests {
         assert!(eng.max_fed_video_pts > 0, "PRECONDITION FAILED: the host sink fed no video");
         assert_eq!(eng.max_fed_audio_pts, 0, "stale audio must not reach the sink");
         assert_eq!(eng.audio_start_fp, None);
+    }
+}
+
+/// **Issue #568: on webOS 5+ (`VP_EXPORTED`) every direct-play seek was a full fresh Starfish
+/// `Load` (black screen, the DV/HDR badge re-popping).** `scrub: tap commit 905s` was followed by
+/// `reload_at: fresh Load at 905s`, because the Kodi in-place path reaches LG-private objects and
+/// was switched off there. The seek now goes through LG's public `StarfishMediaAPIs::Seek`.
+///
+/// These drive the real mode selection, the pump's reload-or-in-place decision and the real
+/// [`feed_stream`] re-anchor against the host sink with the clock sink armed, which reports
+/// `VP_EXPORTED` exactly as a webOS 5+ set does.
+#[cfg(all(test, feature = "hostsim"))]
+mod native_seek_tests {
+    use super::*;
+    use crate::player::ffi_host;
+
+    const V_STEP_NS: i64 = 41_708_333;
+    const TARGET_NS: i64 = 905_000_000_000;
+
+    /// Process-wide state these tests set, restored on the way out, panic or not.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ffi_host::force_clocksink_for_test(false);
+            ffi_host::reset_seek_probe_for_test(None);
+            crate::player::set_seek_mode(SeekMode::Segment);
+            SHARED.pts_shift.store(0, Ordering::Relaxed);
+            SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
+            SHARED.pres_fed.store(0, Ordering::Relaxed);
+            TX.seek_to_ns.store(-1, Ordering::Relaxed);
+            TX.seek_reqs.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn arm(force_seek: Option<c_int>) -> Restore {
+        ffi_host::force_clocksink_for_test(true);
+        ffi_host::reset_seek_probe_for_test(force_seek);
+        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        TX.seek_to_ns.store(-1, Ordering::Relaxed);
+        TX.seek_reqs.store(0, Ordering::Relaxed);
+        Restore
+    }
+
+    /// An engine that has applied a direct-play seek and is waiting for the keyframe: flushed,
+    /// rebase pending, the video queue holding a keyframe at `TARGET_NS` and the AUs after it.
+    fn engine_seeking() -> Engine {
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.flushed = true;
+        eng.rebase_pending = true;
+        SHARED.seek_target_ns.store(TARGET_NS, Ordering::Relaxed);
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        for i in 0..60 {
+            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, TARGET_NS + i * V_STEP_NS, c_int::from(i == 0), 1);
+        }
+        eng
+    }
+
+    fn tick(eng: &mut Engine) {
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        feed_both_lanes(&mt, eng);
+    }
+
+    #[test]
+    fn a_webos5_session_seeks_natively_and_never_reloads() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        let sink_mode = sink().window_mode();
+        assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
+        let mode = select_seek_mode(inplace_layout_known(5, false), sink_mode, None);
+        assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
+        assert!(
+            !crate::player::pump::seek_reloads(mode),
+            "a mid-play direct-play seek on VP_EXPORTED must NOT be a fresh Load (#568)"
+        );
+    }
+
+    #[test]
+    fn the_other_firmwares_keep_their_modes() {
+        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, None), SeekMode::Segment, "webOS 4.x is unchanged");
+        assert_eq!(select_seek_mode(false, crate::player::VP_ACB, None), SeekMode::Reload, "the old ABI reloads, as before");
+        assert_eq!(select_seek_mode(false, crate::player::VP_NONE, None), SeekMode::Reload);
+        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
+        assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
+        assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
+        assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
+    }
+
+    #[test]
+    fn the_landed_keyframe_is_the_native_seek_and_nothing_flushes() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = engine_seeking();
+        tick(&mut eng);
+
+        assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "Seek(<keyframe ms>), once");
+        assert_eq!(ffi_host::flush_calls_for_test(), 0, "Seek flushes itself; a flush after it re-anchors at 0");
+        assert!(!eng.flushed && !eng.rebase_pending, "the seek is applied");
+        assert_eq!(SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
+        assert!(eng.max_fed_video_pts >= TARGET_NS, "the keyframe and the AUs after it were fed on the Seek's timeline");
+        assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
+    }
+
+    #[test]
+    fn a_pre_zero_keyframe_seeks_to_zero_not_negative() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.flushed = true;
+        eng.rebase_pending = true;
+        SHARED.seek_target_ns.store(0, Ordering::Relaxed);
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, -80_000_000, 1, 1);
+        tick(&mut eng);
+        assert_eq!(ffi_host::seek_log_for_test(), vec![0], "Seek refuses a negative millis");
+    }
+
+    #[test]
+    fn a_refused_seek_reloads_this_one_and_every_later_one() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(Some(0));
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = engine_seeking();
+        tick(&mut eng);
+
+        assert_eq!(crate::player::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
+        assert!(crate::player::pump::seek_reloads(crate::player::seek_mode()));
+        assert_eq!(
+            TX.seek_to_ns.load(Ordering::Acquire),
+            TARGET_NS,
+            "this seek is re-posted at the user's target for the pump's reload"
+        );
+        assert_eq!(eng.max_fed_video_pts, 0, "nothing is fed into a pipeline that refused the seek");
+        assert!(eng.pending_video.is_none());
+        assert_eq!(ffi_host::flush_calls_for_test(), 0);
     }
 }

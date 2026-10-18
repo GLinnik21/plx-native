@@ -9,6 +9,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
+use super::landing::{Landing, Scene};
 use super::pool::{self, Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
@@ -87,6 +88,9 @@ pub struct Shelf {
     pool: RowPool,
     /// Where the artwork warm-ahead stands ([`warm_ahead`](Shelf::warm_ahead)).
     warm: Warm,
+    /// The animated landing of inserted and removed cards (`landing.rs`); off unless the owner
+    /// asks ([`animate_landings`](Shelf::animate_landings)).
+    landing: Landing,
 }
 
 /// Render history of the shelf's artwork warm-ahead: never canonised, restored or compared.
@@ -115,7 +119,61 @@ impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
-            warm: Warm { last: None, forward: true, walk: None } }
+            warm: Warm { last: None, forward: true, walk: None }, landing: Landing::new() }
+    }
+
+    /// Play a content landing no focus move announced over frames (`landing.rs`): a removed card
+    /// fades out where it stood ([`paint_ghosts`](Self::paint_ghosts)), the cards after it slide
+    /// into the gap and an inserted card fades in. The focused tile is held at its slot by the
+    /// landing rule. Off by default: a section that keeps no removed cards for the ghosts still gets
+    /// the slide and the fade-in, but its removed cards would cut.
+    pub const fn animate_landings(mut self, on: bool) -> Self {
+        self.landing.set_enabled(on);
+        self
+    }
+
+    /// A landing is playing: an owner that keeps the cards it removed for
+    /// [`paint_ghosts`](Self::paint_ghosts) keeps them while this holds.
+    pub fn landing_pending(&self) -> bool {
+        self.landing.pending()
+    }
+
+    /// What a landing is doing to card `i` of `n` right now: `(x offset px, alpha)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn landing_probe(&self, n: usize, i: usize) -> (f32, f32) {
+        (self.landing.offset(n, i), self.landing.alpha(n, i))
+    }
+
+    /// The ghosts a landing is fading out, as the indexes they had before it, and the most opaque
+    /// one's alpha.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_probe(&self) -> (Vec<usize>, f32) {
+        let a = self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).fold(0.0, f32::max);
+        (self.landing.ghosts().iter().map(|g| g.was).collect(), a)
+    }
+
+    /// Each ghost's alpha right now, in [`ghost_keys`](Self::ghost_keys) order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_alphas(&self) -> Vec<f32> {
+        self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).collect()
+    }
+
+    /// Each ghost's pop scale right now, in [`ghost_keys`](Self::ghost_keys) order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_scales(&self) -> Vec<f32> {
+        self.landing.ghosts().iter().map(|g| g.lift.pos).collect()
+    }
+
+    /// The elements ([`elem_key`](super::elem_key)) of the cards a landing is fading out, in the
+    /// order [`paint_ghosts`](Self::paint_ghosts) reads its ghost source by: the owner looks each
+    /// removed card up and hands the lot back.
+    pub fn ghost_keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.landing.ghosts().iter().map(|g| g.key)
+    }
+
+    /// Whether [`paint_ghosts`](Self::paint_ghosts) has a card to draw this frame.
+    pub fn has_ghosts(&self) -> bool {
+        self.landing.has_ghosts()
     }
 
     /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
@@ -166,6 +224,10 @@ impl Shelf {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
                 self.tick(t.dt(), cx, src);
+                if self.landing.held() {
+                    // a landing waits under a held page image: a frame must follow its release
+                    fx.invalidate(Provenance::Lifecycle);
+                }
                 self.warm_ahead(cx, src);
                 self.want(cx, src)
             }
@@ -203,6 +265,10 @@ impl Shelf {
         let focus = super::focused_index(&cx.focus, self.entry, src)
             .filter(|_| !self.dormant);
         self.landed = None;
+        let sx0 = self.row.scroll_x();
+        // what the focused card was drawn at before this tick lets it go: if the landing removes
+        // it, its ghost starts there
+        let lifted = self.prev().map(|p| (p, self.row.scale(p)));
         if self.dormant {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
             self.slept = true;
@@ -210,6 +276,7 @@ impl Shelf {
             self.seen = Seen::Nothing;
             self.left = false;
             self.anchor = None;
+            self.landing.snap(src);
             if !self.row.at_exact_rest() {
                 self.row.update(src.len(), None, self.style, dt);
                 self.row.park();
@@ -278,6 +345,13 @@ impl Shelf {
         }
         self.seen = Seen::Nothing;
         self.left = false;
+        // after the landing rule above: the offsets are taken against the focused card's own move
+        let (scroll, w, margin) = (self.row.scroll_x(), self.style.w, self.margin);
+        let on = |x: f32, _: f32| crate::on_axis(x - scroll, w, SCR_W, margin);
+        let (pitch, margin_x) = (self.pitch(), self.style.margin_x);
+        let slot = |i: usize| (margin_x + i as f32 * pitch, 0.0);
+        self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
+        self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {
@@ -579,9 +653,10 @@ impl Shelf {
         self.style.w + self.style.gap
     }
 
-    /// Card `i`'s settled (unpopped) rect in SCREEN space.
-    fn slot(&self, i: usize, at: SectionFrame, sx: f32) -> Rect {
-        card_row::tile_rect(i, self.style.margin_x, self.pitch(), sx, at.y, (self.style.w, self.style.h))
+    /// Card `i`'s settled (unpopped) rect in SCREEN space, a landing's slide folded in (`n` cards).
+    fn slot(&self, i: usize, n: usize, at: SectionFrame, sx: f32) -> Rect {
+        let r = card_row::tile_rect(i, self.style.margin_x, self.pitch(), sx, at.y, (self.style.w, self.style.h));
+        Rect::new(r.x + self.landing.offset(n, i), r.y, r.w, r.h)
     }
 
     /// The scroll the row is drawn at: the spring's, scaled by [`CardSource::sweep`].
@@ -592,7 +667,7 @@ impl Shelf {
     /// The settled, unpopped rect of the shelf's first card in SCREEN space: where the strip
     /// starts, for a screen that registers the shelf's group extent there.
     pub fn head(&self, at: SectionFrame) -> Rect {
-        self.slot(0, at, self.row.scroll_x())
+        self.slot(0, 0, at, self.row.scroll_x())
     }
 
     /// Where `elem` is: the LIVE drawn rect (pop and press folded in) for `At::Drawn`, the settled
@@ -608,7 +683,7 @@ impl Shelf {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
         let pressed = super::pressed_index(cx, self.entry, src);
-        let slot = self.slot(i, at, self.drawn_scroll(src));
+        let slot = self.slot(i, src.len(), at, self.drawn_scroll(src));
         let s = match how {
             At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
             At::SpringTarget => if focus == Some(i) { self.style.focus_scale } else { 1.0 },
@@ -646,7 +721,7 @@ impl Shelf {
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.drawn_scroll(src);
         let pr = p.translate(-sx, 0.0);
-        let visible = |i: usize| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin);
+        let visible = |i: usize| crate::on_axis(self.slot(i, n, at, sx).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             self.draw_card(f, pr, src, i, at, s, false);
@@ -683,6 +758,37 @@ impl Shelf {
         }
     }
 
+    /// The cards a landing removed, fading out where they stood: paint them BEFORE
+    /// [`paint_resting`](Self::paint_resting), so the cards that slid in over their slots cover
+    /// them. `ghosts` holds the removed cards in [`ghost_keys`](Self::ghost_keys) order (only `art`,
+    /// `progress`, `loaded` and `overlay` are read; a ghost is never captioned or registered as a
+    /// stop; one that was the focused card eases from its lifted scale to rest while it fades).
+    /// `src` is the section's current source, for the dive's sweep, which a ghost follows like
+    /// every other card. Nothing is drawn when no landing is playing, and only what is on-axis.
+    pub fn paint_ghosts<H: Host, S: CardSource<H>, G: CardSource<H> + ?Sized>(
+        &self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, ghosts: &G, at: SectionFrame,
+    ) {
+        if self.dormant {
+            return;
+        }
+        let sweep = src.sweep();
+        let sx = self.drawn_scroll(src);
+        let pr = p.translate(-sx, 0.0);
+        for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
+            let a = g.alpha.pos.clamp(0.0, 1.0);
+            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift.0 * sweep;
+            if a <= 0.0 || !crate::on_axis(x - sx, self.style.w, SCR_W, self.margin) {
+                continue;
+            }
+            let s = g.lift.pos;
+            let pr = pr.alpha(a);
+            let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
+            card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
+            ghosts.overlay(pr, j, &tile, f.measure);
+        }
+    }
+
     /// The focused card, painted whether or not it is on-axis.
     pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let focus = super::focused_index(&f.focus, self.entry, src);
@@ -704,9 +810,10 @@ impl Shelf {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.drawn_scroll(src);
-        for i in (0..src.len()).filter(|&i| crate::on_axis(self.slot(i, at, sx).x, self.style.w, SCR_W, self.margin)) {
+        let n = src.len();
+        for i in (0..n).filter(|&i| crate::on_axis(self.slot(i, n, at, sx).x, self.style.w, SCR_W, self.margin)) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
-            let slot = super::to_local(p, self.slot(i, at, sx));
+            let slot = super::to_local(p, self.slot(i, n, at, sx));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
                 rect: slot.scaled(s),
@@ -753,9 +860,13 @@ impl Shelf {
         if super::lifted_out(f, self.entry, src, i) {
             return;
         }
-        let unscrolled = card_row::tile_rect(i, self.style.margin_x, self.pitch(), 0.0, at.y - pr.dy(),
-            (self.style.w, self.style.h));
+        let unscrolled = self.slot(i, src.len(), SectionFrame { y: at.y - pr.dy(), ..at }, 0.0);
         let rect = unscrolled.scaled(s);
+        // an arriving card fades in
+        let pr = match self.landing.alpha(src.len(), i) {
+            a if a < 1.0 => pr.alpha(a),
+            _ => pr,
+        };
         if focused {
             let label = src.label(i).revealed(self.row.band_reveal())
                 .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
@@ -824,7 +935,7 @@ impl Shelf {
     /// Every spring is parked exactly at rest: nothing here needs stepping.
     #[cfg(any(test, feature = "test-support"))]
     pub fn at_rest(&self) -> bool {
-        self.row.at_exact_rest()
+        self.row.at_exact_rest() && !self.landing.pending()
     }
 
     /// The scroll spring's velocity, for a diagnostic witness.

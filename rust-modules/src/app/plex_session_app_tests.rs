@@ -75,28 +75,36 @@ fn login_frames_never_wait_for_the_session_io_lock() {
 }
 
 /// Issue #266: the audio-DSP preference round-trips through the player's one write door
-/// (`player::set_audio_enhancements` -> `route::choose` -> retained worker job -> `session::persist_pref`)
-/// and comes back through the boot-time restore, merged into the record rather than replacing
-/// it. A record saved before the field existed loads as NONE.
+/// (`player::set_audio_enhancements` -> `route::choose` -> retained worker job ->
+/// `session::persist_profile_pref`) as the SEATED profile's own value (the per-profile work), and
+/// comes back through the seat's restore, merged into the record rather than replacing it. The TV's
+/// own top-level key is never written, and a record saved before the field existed loads as NONE.
 #[test]
 fn audio_enhancements_persist_and_restore() {
     let _serial = plx_base::testlock::serial();
-    let _session = session::TempSession::new("audio-enhancements");
+    let temp = session::TempSession::new("audio-enhancements");
     session::save(&signed_in());
-    assert_eq!(session::load().audio_enhancements(), plx_plex::plex::AudioEnhancements::NONE, "absent field = NONE");
+    let stamp = temp.seated("u-audio", &signed_in().account_token);
+    let seat = session::Seat::Seated { user: "u-audio".into(), stamp };
+    let stored = |s: &Session| session::stored_effective::<session::AudioEnhancementsPref>(s, &seat);
+    assert_eq!(stored(&session::load()), plx_plex::plex::AudioEnhancements::NONE, "absent field = NONE");
 
     let enh = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     plx_media::player::set_audio_enhancements(enh);
     plx_base::storage_worker::drain_for_test();
     let saved = session::load();
-    assert_eq!(saved.audio_enhancements(), enh);
+    assert_eq!(stored(&saved), enh);
+    assert_eq!(saved.audio_enhancements(), plx_plex::plex::AudioEnhancements::NONE, "the TV's own key is not written");
     assert_eq!(saved.client_id, signed_in().client_id, "merged, not replaced");
 
     plx_media::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
-    plx_media::player::restore_audio_enhancements(saved.audio_enhancements());
-    assert_eq!(plx_media::player::audio_enhancements(), enh, "boot restores what was saved");
+    plx_media::route::seed_profile_prefs_for_test(&saved);
+    plx_media::route::restore_profile_rows(&saved, &seat, plx_media::route::Overrides::default());
+    assert_eq!(plx_media::player::audio_enhancements(), enh, "the seat restores what the profile saved");
     session::reset_last_write_authority_for_test();
-    assert!(session::persist_pref::<session::AudioEnhancementsPref>(enh), "an unchanged preference is saved...");
+    let write = session::ProfileWrite::capture().expect("the profile is seated");
+    assert!(session::persist_profile_pref::<session::AudioEnhancementsPref>(&write, enh), "an unchanged preference is saved...");
     assert!(session::last_write_authority_for_test().is_none(), "...without being rewritten");
     plx_media::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
+    plx_media::route::unseed_profile_prefs_for_test();
 }

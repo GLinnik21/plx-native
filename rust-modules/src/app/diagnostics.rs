@@ -266,7 +266,7 @@ const CHART_ROWS: usize = LEFT_ROWS - RIGHT_ROWS;
 /// Sixteen seconds at 2 Hz is long enough to show a segment acquisition, a quality transaction and
 /// its buffer consequence while keeping every cell wide enough to survive a phone camera.
 const HIST_N: usize = 32;
-/// The three plot keys, in the UI language. A function rather than a table because the catalog is
+/// The three plot keys, in English (every message here is `translate:false`). A function rather than a table because the catalog is
 /// the only place the words live; [`Diagnostics::chart_key_width`] measures exactly these runs.
 fn chart_labels() -> [&'static str; 3] {
     use plx_platform::i18n::msg;
@@ -420,6 +420,19 @@ impl Diagnostics {
             return;
         }
         self.next_sample = now.wrapping_add(SAMPLE_MS);
+        // The panel is the maintainer's instrument: its own messages are English-only, and the
+        // shared helpers it composes (units, decimals, quality labels) read the UI language, so
+        // the whole sample is taken in English. Nothing sampled here reaches product UI.
+        self.sample(ps, now);
+    }
+
+    /// Take the sample in English (see `update`). The one entry to `resample`.
+    fn sample(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
+        plx_platform::i18n::render_in_english(|| self.resample(ps, now));
+    }
+
+    /// The sample itself: everything the panel will show until the next one.
+    fn resample(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
@@ -491,7 +504,8 @@ fn header(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, n
 fn playback_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, now: u32) -> String {
     use plx_media::player::PlaybackState as S;
     let s = match plx_media::player::state(ps) {
-        S::Idle => plx_platform::i18n::msg::browse_diagnostics_idle(),
+        // No picture and nothing in flight, under the viewer's Pause: read as "Idle (paused)" below.
+        S::Idle | S::Paused => plx_platform::i18n::msg::browse_diagnostics_idle(),
         S::Resolving => plx_platform::i18n::msg::browse_diagnostics_resolving(),
         S::Connecting => plx_platform::i18n::msg::browse_diagnostics_connecting(),
         S::Buffering => plx_platform::i18n::msg::browse_diagnostics_buffering(),
@@ -677,8 +691,8 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
             " · Dolby Vision P{}.{} · {} ({})",
             dv.profile,
             dv.bl_compat,
-            decision.presentation.display(),
-            decision.capability.display(),
+            decision.presentation.label(),
+            decision.capability.label(),
         ));
     }
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_video(), video));
@@ -811,7 +825,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
 
 use plx_ui::fmt::decimal;
 
-/// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
+/// The video feeder's state, in English. `Diag::feed_state_str` is the lab snapshot's wire
 /// spelling of the same states and stays English.
 fn feed_state_label(d: &plx_media::player::Diag) -> &'static str {
     use plx_platform::i18n::msg;
@@ -3255,24 +3269,57 @@ mod tests {
     }
 
     /// Row keys are right-aligned into a [`FIELD_KEY_W`] gutter at the dense diagnostic size, so a
-    /// translation that grows past about a dozen characters runs into the panel's edge. Every
-    /// locale's keys are held to the English budget: "Conservative" and "Dolby Vision".
+    /// key that grows past about a dozen characters runs into the panel's edge. The keys are
+    /// English-only (no translation can widen them), so the English wording is the whole budget:
+    /// "Conservative" and "Dolby Vision".
     #[test]
-    fn every_locale_keeps_its_row_keys_inside_the_gutter() {
-        for lang in ["en", "es", "be", "fr"] {
-            let path = format!("{}/../locales/{lang}/browse.json", env!("CARGO_MANIFEST_DIR"));
-            let text = std::fs::read_to_string(&path).expect("catalog");
-            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
-            let mut keys = 0;
-            for (key, value) in &catalog {
-                if !key.starts_with("browse.diagnostics.field.") {
-                    continue;
-                }
-                let words = value.get("value").unwrap_or(value).as_str().expect("a plain string");
-                assert!(words.chars().count() <= 12, "{lang} {key} = {words:?} is too wide for the key gutter");
-                keys += 1;
+    fn the_english_row_keys_stay_inside_the_gutter() {
+        let path = format!("{}/../locales/en/browse.json", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).expect("catalog");
+        let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
+        let mut keys = 0;
+        for (key, entry) in &catalog {
+            if !key.starts_with("browse.diagnostics.field.") {
+                continue;
             }
-            assert!(keys >= 27, "{lang}: every row key is in the catalog ({keys})");
+            let words = entry["value"].as_str().expect("a plain string");
+            assert!(words.chars().count() <= 12, "{key} = {words:?} is too wide for the key gutter");
+            assert_eq!(entry["translate"], false, "{key}: the panel's row keys are English-only");
+            keys += 1;
+        }
+        assert!(keys >= 27, "every row key is in the catalog ({keys})");
+    }
+
+    /// The panel is the maintainer's instrument, so every value it composes is English in every UI
+    /// language, including the shared helpers (units, decimals, quality labels) that read the UI
+    /// language elsewhere. Nothing but ASCII and the panel's own symbols may appear.
+    #[test]
+    fn panel_rows_are_english_in_every_language() {
+        let _g = plx_base::testlock::serial();
+        let ps = EnhTestSession::new(EnhTestFixture::default());
+        // Not idle: an idle panel shows only the device rows and builds no pipeline/model columns,
+        // which is where the shared localized helpers are reached.
+        struct RestoreState(u8);
+        impl Drop for RestoreState {
+            fn drop(&mut self) {
+                plx_media::player::restore_state_for_test(self.0);
+            }
+        }
+        let _state = RestoreState(plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing));
+        for pref in plx_platform::i18n::SHIPPED {
+            let _lang = plx_platform::i18n::language_on_this_thread_for_test(pref);
+            let mut panel = Diagnostics::default();
+            panel.sample(&ps, 1_000);
+            assert!(!panel.idle && panel.columns.iter().all(|c| !c.is_empty()), "{}: a live session builds column rows", pref.tag());
+            let mut text: Vec<String> = panel.head.to_vec();
+            text.extend(panel.rows.iter().chain(panel.columns.iter().flatten()).flat_map(|f| {
+                std::iter::once(f.key.to_string()).chain(f.val.clone())
+            }));
+            text.extend(panel.chart_values.iter().cloned());
+            for t in &text {
+                let stray: Vec<char> = t.chars().filter(|c| !c.is_ascii() && !"·×—≤±…→".contains(*c)).collect();
+                assert!(stray.is_empty(), "{}: {t:?} carries {stray:?}", pref.tag());
+            }
         }
     }
 

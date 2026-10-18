@@ -73,11 +73,20 @@ const HUB_FETCH_COUNT: i64 = 12;
 /// is. The one conversion in this module is [`backoff_frames`].
 const FIRST_PAINT_FRAMES: u32 = 240;
 
+/// Seconds to this module's unit (frames at 60 fps; the same truncating conversion everywhere).
+const fn secs_to_frames(secs: f32) -> u32 {
+    (secs * 60.0) as u32
+}
+
+/// The least spacing between two notification-driven reads of one section: the quiet Home
+/// refetch's ([`crate::pms::QUIET_SPACING_S`]), in frames.
+const NOTIFY_SPACING_FRAMES: u32 = secs_to_frames(crate::pms::QUIET_SPACING_S);
+
 /// [`crate::pms::backoff_secs`]' 2/4/8/16/30s ladder in this module's unit. The ladder is shared —
 /// hoisted as a PURE function only, deliberately: `pms`'s `landed_ok`/`landed_fail` beside it carry
 /// Home-specific logging, stale-build retention and endpoint-refresh policy that mean nothing here.
 fn backoff_frames(fails: u32) -> u32 {
-    (crate::pms::backoff_secs(fails) * 60.0) as u32
+    secs_to_frames(crate::pms::backoff_secs(fails))
 }
 
 /// One published shelf: the owner's own row, with its items already filtered and capped.
@@ -225,8 +234,8 @@ pub struct SecHubs {
     /// The set the current layout was built from. Empty and `committed == false` is "nothing
     /// published yet"; empty and `committed == true` is the answer "this library has no shelves",
     /// which is a real state the design draws as "this screen with a shorter top".
-    committed: Arc<Vec<Shelf>>,
-    revision: u64,
+    pub(super) committed: Arc<Vec<Shelf>>,
+    pub(super) revision: u64,
     /// Has anything ever been published? Distinct from `committed.is_empty()` for that reason.
     published: bool,
     /// A landing held back because publishing it would move a grid the user is looking at.
@@ -252,6 +261,10 @@ pub struct SecHubs {
     fails: u32,
     /// Frames left before another attempt may spawn.
     retry_left: u32,
+    /// Frames before a server NOTIFICATION may ask for another read of this section, and whether
+    /// one was asked for inside that spacing ([`Self::invalidate_notified`]).
+    notified_wait: u32,
+    notified_owed: bool,
     /// The rows the page holds cards for (`LibraryWork::HubHold`); `None` until it says, which is
     /// the head of the page.
     hold: Option<(usize, usize)>,
@@ -291,13 +304,19 @@ impl Default for HubAdapter {
 
 impl SecHubs {
     pub(super) fn needs_tick(&self) -> bool {
-        self.armed && (self.retry_left > 0 || (!self.published && self.first_paint_left > 0)
+        self.armed && (self.retry_left > 0 || self.notified_wait > 0 || self.notified_owed || (!self.published && self.first_paint_left > 0)
             || (self.owed && self.retry_left == 0) || self.ask_retry_left > 0 || self.row_wanted())
     }
 
     /// The range of rows the page holds cards for, as the store keeps it.
     fn held(&self) -> (usize, usize) {
         clamp_hold(self.hold.unwrap_or((0, HOLD_ROWS - 1)))
+    }
+
+    /// The items of the rows inside the hold window, in row order: what the page holds cards for.
+    pub(super) fn held_items(&self) -> impl Iterator<Item = &PmsMovie> {
+        let (lo, hi) = self.held();
+        self.committed.iter().skip(lo).take(hi.saturating_add(1).saturating_sub(lo)).flat_map(|shelf| shelf.items.iter())
     }
 
     /// Whether a row read is due: a page the user asked for, or a held row without its cards.
@@ -446,6 +465,12 @@ impl SecHubs {
         }
         self.retry_left = self.retry_left.saturating_sub(1);
         self.ask_retry_left = self.ask_retry_left.saturating_sub(1);
+        self.notified_wait = self.notified_wait.saturating_sub(1);
+        if self.notified_owed && self.notified_wait == 0 {
+            self.notified_owed = false;
+            self.owed = true;
+            self.notified_wait = NOTIFY_SPACING_FRAMES;
+        }
         if self.published {
             return false;
         }
@@ -505,6 +530,23 @@ impl SecHubs {
         }
     }
 
+    /// A server's NOTIFICATION says this section may have moved (a stranger's playback stopped).
+    /// The read is owed, but it is a hint and not a user's press: it never forgives a failing
+    /// server (`fails` and `retry_left` stay), and reads of one section are spaced
+    /// ([`NOTIFY_SPACING_FRAMES`], the quiet Home refetch's spacing), a burst inside it becoming ONE
+    /// read when it is over.
+    fn invalidate_notified(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.notified_wait > 0 {
+            self.notified_owed = true;
+        } else {
+            self.owed = true;
+            self.notified_wait = NOTIFY_SPACING_FRAMES;
+        }
+    }
+
     /// A failed landing. It **preserves both** the staged success and the last committed set: a
     /// transient failure must never be able to subtract shelves, which is `pms::Src::last`'s rule
     /// at the same join. It arms the backoff and nothing else.
@@ -518,7 +560,7 @@ impl SecHubs {
     /// so nothing can be SEEN to move) and, on a visible page, only once a BACK-driven head
     /// transition has settled. Returns whether anything was published, so the caller knows to
     /// re-resolve focus against the POST-commit layout.
-    fn commit_staged(&mut self, may_move: bool) -> bool {
+    pub(super) fn commit_staged(&mut self, may_move: bool) -> bool {
         if !may_move {
             return false;
         }
@@ -592,6 +634,7 @@ impl super::BrowseState {
             return;
         }
         let epoch = self.table_epoch();
+        self.hubs_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let worker_ask = ask.clone();
         if let Some(st) = self.state_mut(sec) { st.hubs.inflight = Some((ask.clone(), false)); }
@@ -631,6 +674,7 @@ impl super::BrowseState {
             return;
         }
         let epoch = self.table_epoch();
+        self.hubs_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(&adapter);
         let hold = self.states().get(sec).map_or((0, HOLD_ROWS - 1), |st| st.hubs.held());
         let spawned = plx_base::task::spawn_small("libhubs", move || {
@@ -688,11 +732,13 @@ impl super::BrowseState {
             }
             return false;
         }
+        let (ledger, stamp) = (self.ledger.clone(), self.hubs_stamp);
         let Some(state) = self.state_mut(result.sec) else {
             return false;
         };
         match result.outcome {
-            Outcome::Row { ask, shelf } => {
+            Outcome::Row { ask, mut shelf } => {
+                if let Some(shelf) = shelf.as_mut() { replay_since_request(&ledger, stamp, std::slice::from_mut(shelf)); }
                 let failed = shelf.is_none();
                 if failed {
                     plx_base::eventlog::log(&format!("libhubs: section {} row {} read failed", result.sec, ask.id));
@@ -702,7 +748,8 @@ impl super::BrowseState {
                 return moved || failed;
             }
             Outcome::List(Some(parsed)) => {
-                let shelves = parsed.shelves;
+                let mut shelves = parsed.shelves;
+                replay_since_request(&ledger, stamp, &mut shelves);
                 // The harness (`tests/mock_fps.py`, `LIBHUBS_RE`) reads the section and the shelf
                 // count; new fields go AFTER them.
                 plx_base::eventlog::log(&format!(
@@ -813,15 +860,15 @@ impl super::BrowseState {
             .unwrap_or(false)
     }
 
-    pub(super) fn hubs_set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+    pub(super) fn hubs_set_watched_local(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
         let mut hit = false;
         for st in self.states_mut() {
-            if edit_watched(&mut st.hubs.committed, sid, rk, on) {
+            if edit_watched(&mut st.hubs.committed, at, on) {
                 st.hubs.revised();
                 hit = true;
             }
             if let Some(staged) = st.hubs.staged.as_mut() {
-                edit_watched(staged, sid, rk, on);
+                edit_watched(staged, at, on);
             }
         }
         hit
@@ -839,6 +886,19 @@ impl super::BrowseState {
             }
         }
         hit
+    }
+
+    /// A notification from `sid`: its sections' shelves may have moved. No other server's section
+    /// is touched and the failure ladder is kept (see [`SecHubs::invalidate_notified`]).
+    pub(super) fn hubs_invalidate_server(&mut self, sid: ServerId, adapter: &Arc<super::BrowseAdapter>) {
+        for sec in 0..self.sections().len() {
+            if self.section_sid(sec) == Some(sid) {
+                if let Some(st) = self.state_mut(sec) {
+                    st.hubs.invalidate_notified();
+                }
+            }
+        }
+        self.hubs_pump_spawns(adapter);
     }
 
     pub(super) fn hubs_invalidate_all(&mut self, adapter: &Arc<super::BrowseAdapter>) {
@@ -866,11 +926,26 @@ fn carry_windows(old: &[Shelf], new: &mut [Shelf]) {
     }
 }
 
-fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
+/// The read describes the server from when it was requested: the view-state edits published since
+/// ([`crate::viewledger`]) are made again on the shelves it brought — a marked card stays marked
+/// and a card taken off Continue Watching stays off.
+pub(super) fn replay_since_request(ledger: &crate::viewledger::ViewLedger, stamp: crate::viewledger::Stamp,
+    shelves: &mut [Shelf]) {
+    ledger.patch(stamp, shelves.iter_mut().flat_map(|shelf| shelf.items.iter_mut()));
+    for (at, edit) in ledger.since(stamp) {
+        if let crate::viewstate::ViewEdit::LeftDeck = edit {
+            for shelf in shelves.iter_mut().filter(|shelf| shelf.is_continue) {
+                shelf.items.retain(|item| !at.is_item(item.sid, &item.rk));
+            }
+        }
+    }
+}
+
+fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, at: &crate::viewstate::ViewAt, on: bool) -> bool {
     if !shelves
         .iter()
         .flat_map(|shelf| shelf.items.iter())
-        .any(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .any(|item| at.covers(item))
     {
         return false;
     }
@@ -878,8 +953,8 @@ fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool
         .iter_mut()
         .flat_map(|shelf| shelf.items.iter_mut())
     {
-        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)) {
-            crate::pms::set_watched(item, on);
+        if at.covers(item) {
+            crate::viewstate::ViewEdit::Watched(on).apply(item);
         }
     }
     true
@@ -1096,6 +1171,19 @@ impl HubResult {
     pub(super) fn failed_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
         token_gen: u32) -> Self {
         Self { epoch, sec, client, token_gen, outcome: Outcome::List(None) }
+    }
+
+    /// A successful whole-list answer for `sec` carrying `shelves`, as a worker posts it.
+    pub(super) fn list_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, shelves: Vec<Shelf>) -> Self {
+        Self { epoch, sec, client, token_gen, outcome: Outcome::List(Some(Parsed { shelves })) }
+    }
+
+    /// A successful read of row `(id, key)` of `sec`, one page forward, carrying `shelf`.
+    pub(super) fn row_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, id: &str, key: &str, shelf: Shelf) -> Self {
+        let ask = RowAsk { id: id.into(), key: key.into(), before: false, reload: false };
+        Self { epoch, sec, client, token_gen, outcome: Outcome::Row { ask, shelf: Some(shelf) } }
     }
 }
 
@@ -1759,9 +1847,9 @@ mod tests {
         let revision = before.view().revision();
         let item = &before.view().shelves()[0].items[0];
         let (sid, rk) = (item.sid, item.rk.clone());
-        assert!(!state.hubs_set_watched_local(sid, "absent-item", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "absent-item"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert_ne!(edited.view().revision(), revision);
         assert!(!before.view().shelves()[0].items[0].watched);
@@ -1778,7 +1866,7 @@ mod tests {
             .unwrap()
             .hubs
             .land_ok(vec![staged]);
-        assert!(!state.hubs_set_watched_local(sid, "staged-only", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "staged-only"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), edited.view().revision());
         assert!(state.hubs_commit_staged(sec, true));
         let published = state.hubs_snapshot(sec);
@@ -1886,7 +1974,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .clone();
-        assert!(!state.hubs_set_watched_local(sid, "not-present", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "not-present"), true));
         let after_miss = state.hubs_snapshot(sec);
         assert!(Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
@@ -1902,7 +1990,7 @@ mod tests {
                 .unwrap()
         ));
 
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
@@ -2242,5 +2330,85 @@ mod tests {
         }
         assert_eq!(h.publication(), Publication::Fetching);
         assert!(h.shelves().is_empty());
+    }
+
+    // ---- a notification's invalidate: one server, no ladder reset, spaced ---------------------
+
+    const SERVER_A: ServerId = ServerId::from_raw(3);
+    const SERVER_B: ServerId = ServerId::from_raw(4);
+
+    /// Four published sections: two on server A, two on server B, nothing owed.
+    fn two_servers() -> (super::super::BrowseState, Arc<super::super::BrowseAdapter>) {
+        let (mut state, _) = seeded_section();
+        state.source_mut(0).unwrap().sid = SERVER_A;
+        state.source_mut(1).unwrap().sid = SERVER_B;
+        for sec in 0..state.sections().len() {
+            seed_shelves_for_owner_test(&mut state, sec, &["row"], 1);
+            state.state_mut(sec).unwrap().hubs.owed = false;
+        }
+        (state, Arc::new(super::super::BrowseAdapter::default()))
+    }
+
+    fn owed_by_server(state: &super::super::BrowseState, sid: ServerId) -> Vec<bool> {
+        (0..state.sections().len()).filter(|i| state.section_sid(*i) == Some(sid))
+            .map(|i| state.states()[i].hubs.owed).collect()
+    }
+
+    #[test]
+    fn a_notified_invalidate_leaves_the_other_servers_sections_alone() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the notifying server is re-read");
+        assert_eq!(owed_by_server(&state, SERVER_B), [false, false], "another server's shelves are untouched");
+    }
+
+    #[test]
+    fn a_notified_invalidate_does_not_reset_the_failure_ladder() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        let sec = (0..state.sections().len()).find(|i| state.section_sid(*i) == Some(SERVER_A)).unwrap();
+        {
+            let h = &mut state.state_mut(sec).unwrap().hubs;
+            h.fails = 4;
+            h.retry_left = 900;
+        }
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        let h = &state.states()[sec].hubs;
+        assert_eq!((h.fails, h.retry_left), (4, 900), "a stranger's stop does not forgive a failing server");
+        assert!(h.owed, "the read is still owed behind the ladder");
+        // …whereas the view-state invalidate (the user's own press) does reset it
+        state.hubs_invalidate_all(&adapter);
+        let h = &state.states()[sec].hubs;
+        assert_eq!((h.fails, h.retry_left), (0, 0));
+    }
+
+    #[test]
+    fn a_burst_of_notified_invalidates_is_one_read_per_spacing() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true]);
+        for sec in 0..state.sections().len() {
+            state.state_mut(sec).unwrap().hubs.owed = false; // the reads were claimed
+        }
+        for _ in 0..10 {
+            state.hubs_invalidate_server(SERVER_A, &adapter); // …and a burst follows inside the spacing
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "coalesced, not read again at once");
+        let spacing = NOTIFY_SPACING_FRAMES as usize;
+        for _ in 0..spacing - 1 {
+            state.hubs_tick_all(&adapter);
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "still inside the spacing");
+        state.hubs_tick_all(&adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the whole burst is ONE read once the spacing is over");
+        for sec in 0..state.sections().len() {
+            state.state_mut(sec).unwrap().hubs.owed = false;
+        }
+        for _ in 0..spacing * 2 {
+            state.hubs_tick_all(&adapter);
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "and no more than one");
     }
 }

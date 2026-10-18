@@ -160,10 +160,17 @@ mkdir -p "$runtime" "$target" "$assets"
 build_simulator() {
     cd "$repo"
     make sim-wsl SIM_TDIR="$target"
-    for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf OFL.txt le-roots.pem libass-plx-host.so.0; do
+    for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf appfont-emoji.ttf OFL.txt le-roots.pem libass-plx-host.so.0; do
         staged="$assets/$file.$$.new"
         install -m 0644 "$repo/pkg/$file" "$staged"
         mv -f "$staged" "$assets/$file"
+    done
+    # The subtitle faces live in their own directory under the app dir (player::ass::fonts).
+    mkdir -p "$assets/fonts/subs"
+    for file in "$repo"/pkg/fonts/subs/*.ttf "$repo"/pkg/fonts/subs/manifest.json; do
+        staged="$assets/fonts/subs/$(basename "$file").$$.new"
+        install -m 0644 "$file" "$staged"
+        mv -f "$staged" "$assets/fonts/subs/$(basename "$file")"
     done
 }
 if [ "${PLX_STAGE_TOKEN:-}" = 1 ]; then

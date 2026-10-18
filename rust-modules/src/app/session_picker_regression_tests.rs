@@ -109,6 +109,7 @@ fn refused_back(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
 
 #[test]
 fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else() {
+    let _serial = plx_base::testlock::serial();
     // Pure may_resume/default/reason-string assertions remain in auth.rs's legacy bodies;
     // these are actual owner commands and resource handoffs, not evidence about log output.
     for protected in [true, false] {
@@ -179,12 +180,13 @@ struct ResourceCleanup<'a>(&'a plx_base::task::MainThread);
 impl Drop for ResourceCleanup<'_> {
     fn drop(&mut self) {
         plx_plex::plex::reset_servers_for_test();
-        session::ProfilePublisher::new(self.0).publish(None, 0);
+        session::ProfilePublisher::new(self.0).publish(None, 0, String::new());
     }
 }
 
+/// Called with the test's `testlock::serial()` guard held (the seat trigger writes the player's
+/// process-global cells from every rig in this file, so the whole test holds it, not this part).
 fn live_detachment() {
-    let _lock = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let tmp = session::TempSession::new("picker-owner-detachment");
     let _cleanup = ResourceCleanup(&mt);
@@ -236,6 +238,7 @@ fn live_detachment() {
 
 #[test]
 fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
+    let _serial = plx_base::testlock::serial();
     for protected in [true, false] {
         let saved = stored(protected);
         assert_eq!(saved.active_profile_is_protected(), protected);

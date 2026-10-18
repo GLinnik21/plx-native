@@ -20,7 +20,7 @@ ROOT_FILES = {'Makefile', 'LICENSE', 'LICENSING.md', 'THIRD-PARTY-NOTICES.md',
               'README.md', 'CONTRIBUTING.md', 'DCO', 'PRIVACY.md', 'SECURITY.md',
               'TRADEMARKS.md', '.gitignore', 'AGENTS.md', 'CLAUDE.md'}
 ROOT_DIRS = {'src', 'include', 'rust-modules', 'assets', 'ci', 'tools', 'docs', 'tests', 'licenses', 'locales', '.agents'}
-PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'le-roots.pem',
+PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'appfont-emoji.ttf', 'le-roots.pem',
              'appinfo.json', 'icon.png', 'icon160.png', 'icon320.png', 'icon400.png',
              'largeIcon.png', 'splash.png', 'telemetry.local.json.example'}
 # `tv-host`/`tv-mac` (no dot) are the per-user copies of the first two (tools/tv-config.sh,
@@ -71,11 +71,12 @@ def allowed(name):
         return not any(part in {'target', '__pycache__'} for part in p.parts)
     if p.parts[0] == 'pkg':
         return (name[4:] in PKG_FILES or
+                (len(p.parts) == 4 and p.parts[1:3] == ('fonts', 'subs') and
+                 (p.suffix == '.ttf' or p.name == 'manifest.json')) or
                 (len(p.parts) == 4 and p.parts[1] == 'resources' and p.name == 'appinfo.json') or
                 name in {'pkg/dev/icon.png', 'pkg/dev/largeIcon.png',
                          'pkg/nightly/icon.png', 'pkg/nightly/largeIcon.png'})
-    return (name.startswith('vendor/nanosvg/') or name == 'vendor/sentry-native/webos-arm32.patch'
-            or name.startswith('.github/'))
+    return name.startswith('.github/')
 
 
 def tracked_sources(root, private_values=()):
@@ -130,9 +131,13 @@ def read_regular(root, name):
 # same text anywhere else, a changed file, and every literal private value still fail the scan.
 SENTRY_DSN_PATTERN = rb'https?://[0-9a-fA-F]{24,}@[A-Za-z0-9.-]*ingest[A-Za-z0-9.-]*sentry\.io/'
 PRIVATE_KEY_PATTERN = rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\r\n]{32,}'
+# The Sentry Native top-level directory inside its pinned archive carries the pinned version.
+SENTRY_NATIVE_DIR = 'sentry-native-' + next(
+    dep['version'] for dep in json.loads((Path(__file__).resolve().parents[1] / 'ci/dependencies.json').read_text())
+    if dep['id'] == 'sentry-native')
 PUBLIC_SAMPLE_FILES = {
     # Demo DSN in the upstream Android sample app.
-    'sentry-native-0.16.6/ndk/sample/src/main/java/io/sentry/ndk/sample/MainActivity.java':
+    SENTRY_NATIVE_DIR + '/ndk/sample/src/main/java/io/sentry/ndk/sample/MainActivity.java':
         (SENTRY_DSN_PATTERN, '5c67de55db824517dc03b4d3aba066f45bb6e94425ce7c176733aad75719b1be'),
     # Doc-example and unit-test keys in the crates behind the `rcgen` dev-dependency (Cargo.lock
     # pins each crate's checksum; `cargo vendor` ships dev-dependencies because a build from the
@@ -291,7 +296,7 @@ def validate(path, expected_snapshot=None, private_values=()):
     # Older source bundles predate the renderer. For a tree carrying its build
     # recipe, every statically contained font dependency is a required source.
     if 'ci/build-libass.py' in contents or 'src/ass.c' in contents:
-        for required in ['ci/libass-dependencies.json', 'ci/build-libass.sh',
+        for required in ['ci/dependencies.json', 'ci/deps.py', 'ci/build-libass.sh',
                          'ci/build-libass.py', 'src/ass.c', 'include/ass.h']:
             if required not in contents:
                 fail('missing ASS renderer source: ' + required)
@@ -299,10 +304,26 @@ def validate(path, expected_snapshot=None, private_values=()):
         if re.search(rb'^\s*#\s*include\s*"ass_composite\.h"', contents['src/ass.c'], re.M):
             if 'src/ass_composite.h' not in contents:
                 fail('missing ASS renderer source: src/ass_composite.h')
-    if 'ci/libass-dependencies.json' in contents:
-        for required in json.loads(contents['ci/libass-dependencies.json']):
+        # Facades from the ABI 3 bump on read libass's private font count in a second file.
+        if re.search(rb'^\s*#\s*include\s*"ass_internal\.h"', contents['src/ass.c'], re.M):
+            for required in ['src/ass_internal.h', 'src/ass_fonts.c']:
+                if required not in contents:
+                    fail('missing ASS renderer source: ' + required)
+    if 'ci/dependencies.json' in contents:
+        # Every dependency the manifest bundles (FFmpeg, Sentry Native, the libass stack, nanosvg)
+        # is a required source of this tree.
+        for required in json.loads(contents['ci/dependencies.json']):
+            if not required.get('bundled'):
+                continue
             if required['id'] not in ids:
                 fail('missing dependency source mapping: ' + required['id'])
+            # A pinned patch is part of the corresponding source: present, byte-exact, and named by
+            # the dependency's own entry.
+            listed = next(dep for dep in dependencies if dep['id'] == required['id']).get('patches', [])
+            for patch in required.get('patches', []):
+                if (patch['path'] not in contents or digest(contents[patch['path']]) != patch['sha256']
+                        or patch['path'] not in listed):
+                    fail('missing pinned patch: ' + patch['path'])
     for dep in dependencies:
         for key in ['id', 'version', 'license']:
             if not dep.get(key) or dep[key] in {'UNKNOWN', 'NOASSERTION'}:

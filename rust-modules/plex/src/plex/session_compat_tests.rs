@@ -423,7 +423,7 @@ fn remembered_library_sorts_survive_the_canonical_split() {
         .push(serde_json::json!({"machine_id": 7}));
     public.preferences["library_sorts"].as_array_mut().unwrap().push(serde_json::json!("bad"));
     let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
-    assert_eq!(joined.library_views.len(), 1);
+    assert_eq!(joined.prefs.library_views.len(), 1);
     assert_eq!(joined.views_for("u-sorter").map(|views| views.libs.len()), Some(1));
 }
 
@@ -447,13 +447,13 @@ fn a_pre_441_library_sorts_entry_loads_as_a_sort_only_view() {
     let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
     assert_eq!(joined.views_for("u-sorter").and_then(|views| views.get("machine", 3)),
         Some(&expected));
-    assert_eq!(serde_json::to_string(&joined.library_views).unwrap(), before);
+    assert_eq!(serde_json::to_string(&joined.prefs.library_views).unwrap(), before);
     // … and as the plaintext session file
     let file = format!(r#"{{"client_id":"cid","library_sorts":{before}}}"#);
     let session: Session = serde_json::from_str(&file).unwrap();
     assert_eq!(session.views_for("u-sorter").and_then(|views| views.get("machine", 3)),
         Some(&expected));
-    assert_eq!(serde_json::to_string(&session.library_views).unwrap(), before);
+    assert_eq!(serde_json::to_string(&session.prefs.library_views).unwrap(), before);
 }
 
 /// A malformed NEW field (`"unwatched":"yes"`) costs that one entry — the soft parse drops it —
@@ -494,8 +494,8 @@ fn remembered_subtitle_offsets_survive_the_canonical_split() {
         .push(serde_json::json!({"machine_id": 7}));
     public.preferences["subtitle_offsets"].as_array_mut().unwrap().push(serde_json::json!("bad"));
     let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
-    assert_eq!(joined.subtitle_offsets.len(), 1);
-    assert_eq!(joined.subtitle_offsets[0].items.len(), 1);
+    assert_eq!(joined.prefs.subtitle_offsets.len(), 1);
+    assert_eq!(joined.prefs.subtitle_offsets[0].items.len(), 1);
 }
 
 /// The per-profile list is bounded (oldest evicted first), and setting the offset back to

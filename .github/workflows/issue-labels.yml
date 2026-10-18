@@ -50,13 +50,19 @@ jobs:
     env:
       HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: ci/label-issue.py
+          sparse-checkout: |
+            ci/label-issue.py
+            tools/package.json
+            tools/package-lock.json
           sparse-checkout-cone-mode: false
       - name: Install the Copilot CLI
         if: env.HAS_COPILOT == 'true'
-        run: npm install -g @github/copilot@1.0.92
+        # The version pinned in tools/package.json (Dependabot bumps it with its lockfile); ci/label-issue.py finds `copilot` on PATH.
+        run: |
+          npm ci --prefix tools
+          echo "$PWD/tools/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Label
         env:
           GITHUB_TOKEN: ${{ github.token }}

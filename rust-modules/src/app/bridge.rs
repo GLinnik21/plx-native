@@ -303,6 +303,55 @@ impl ConsentMachine {
     fn current(&self) -> &plx_telemetry::telemetry::consent::Consent { &self.current }
 }
 
+/// **The one trigger of the per-profile player cells**: the seat they were last restored for.
+///
+/// A seat changes only by a profile publication, so the bridge's `SessionFx::PublishProfile` arm
+/// shows every new seat to [`SeatWatch::arrive`], which restores the ten cells
+/// (`route::restore_profile_rows`) when the seat is not the one already restored. That covers every
+/// path (a stored boot, the boot picker's pick, a change of profile, a fresh sign-in, a sign-out) and
+/// puts the restore before the `Ready` of the same step, which is why `follow_auth_landing` no longer
+/// has one. A republication of the SAME seat (a roster refresh) restores nothing, so a pick in flight
+/// is not clobbered.
+///
+/// Process start is the first seat, `Unseated`: boot restores the cells for it itself
+/// (`boot::restore_player_preferences`), so a watch starts there too.
+///
+/// It also carries the boot writers, the dev audio-enhancement arm and the dev track-memory `clear`
+/// (`dev::scenarios::arm_track_memory`): they run once, right after the restore of the first
+/// `Unseated` to `Seated` change, so they force the SEATED profile's record. That
+/// is a stored or picker boot's. A harness boot that injects a token (`--guest` included: both
+/// `tools/tv-session.sh` and `tests/run.py` write `plxnative-token`) is a dev-token boot, which never
+/// seats, so the audio-enhancement arm run at boot is the only one there and sets the live cell alone
+/// (a dev-token boot remembers no track and has nothing to clear).
+struct SeatWatch {
+    restored: plx_plex::plex::session::Seat,
+    arm_pending: bool,
+}
+
+impl SeatWatch {
+    fn new() -> Self {
+        Self { restored: plx_plex::plex::session::Seat::Unseated, arm_pending: true }
+    }
+
+    /// The process now occupies `seat`. Restore for it if that is a change; say whether it was.
+    fn arrive(&mut self, seat: plx_plex::plex::session::Seat) -> bool {
+        if self.restored == seat {
+            return false;
+        }
+        plx_media::route::restore_profile_rows(&plx_plex::plex::session::peek(), &seat,
+            plx_media::route::Overrides { quality: crate::dev::playback_quality_override() });
+        let seated = seat.user().is_some();
+        self.restored = seat;
+        if seated && std::mem::take(&mut self.arm_pending) {
+            crate::dev::scenarios::arm_audio_enhancements();
+            if let Some(user) = self.restored.user() {
+                crate::dev::scenarios::arm_track_memory(user);
+            }
+        }
+        true
+    }
+}
+
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
@@ -314,6 +363,8 @@ pub(crate) struct Bridge {
     session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
     session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
+    /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
+    seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
@@ -363,6 +414,13 @@ pub(crate) struct Bridge {
     /// …and what the item context menu asked, drained by `content::content_requests` — which holds
     /// the route, the trail and the playback session's `&mut` that its dispatch needs.
     item_menu_reqs: Vec<plx_screens::registry::ItemMenuReq>,
+    /// What the Watchlist page and its Sort & Filter surface asked, drained by
+    /// `content::watchlist_requests` (the Search pattern).
+    watchlist_reqs: Vec<(MachineId, plx_screens::watchlist::page::WatchlistOut, ReturnState<u32, PageMemory>)>,
+    /// What the Watchlist page was last handed from the store (`watchlist::Feed`).
+    watchlist: watchlist::Feed,
+    /// The catalog page instance the store was last opened for (`watchlist::catalog_feed`).
+    catalog_seat: Option<InstanceId>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -415,7 +473,7 @@ impl Bridge {
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = plx_data::stores::Stores::default();
-        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter, &stores.view_ledger);
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
@@ -544,6 +602,7 @@ impl Bridge {
             session: plx_session::auth::SessionMachine::from_init(init),
             session_adapter,
             session_ready: None,
+            seat_watch: SeatWatch::new(),
             consent_adapter,
             stores,
             mounter: AppMounter::default(),
@@ -569,6 +628,9 @@ impl Bridge {
             search_reqs: Vec::new(),
             player_reqs: Vec::new(),
             item_menu_reqs: Vec::new(),
+            watchlist_reqs: Vec::new(),
+            watchlist: watchlist::Feed::default(),
+            catalog_seat: None,
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
@@ -822,6 +884,12 @@ impl Bridge {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
 
+    /// The catalog row Home's focus is on, when it is on a card of one (`None`: the billboard, a
+    /// heading, the top bar or no Home mounted).
+    pub(crate) fn home_focused_hub(&self, d: &Dispatcher<AppHost>) -> Option<usize> {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten().map(|(row, _)| row)
+    }
+
     #[cfg(feature = "devtriggers")]
     pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
@@ -854,8 +922,10 @@ impl Bridge {
         let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
         let search = *route == AppArg::Search;
-        if matches!(route, AppArg::Home | AppArg::Library) || search {
-            d.nav.tabs.strip_fallback = Some(if search { plx_ui::dispatch::STRIP_BASE + 3 } else { plx_screens::home::STRIP_HOME_ELEM });
+        let watchlist = *route == AppArg::Watchlist;
+        if matches!(route, AppArg::Home | AppArg::Library) || search || watchlist {
+            d.nav.tabs.strip_fallback = Some(if search { plx_ui::widgets::TAB_KEY_SEARCH }
+                else if watchlist { plx_ui::widgets::TAB_KEY_WATCHLIST } else { plx_screens::home::STRIP_HOME_ELEM });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
@@ -864,12 +934,14 @@ impl Bridge {
             }
             self.chrome_selection = if *route == AppArg::Library {
                 self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
-            } else if search { self.chrome.search_selection() } else { 0 };
+            } else if search { self.chrome.search_selection()
+            } else if watchlist { self.chrome.watchlist_selection() } else { 0 };
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
         } else {
             d.nav.tabs.strip.clear();
             d.nav.tabs.strip_fallback = None;
+            self.chrome.drop_pulse();
         }
     }
 
@@ -905,6 +977,9 @@ impl Bridge {
         glass: &mut plx_ui::frame::glass::GlassPlan, dt: f32) {
         let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
         let focus = Self::home_focus(d);
+        if let Some(idx) = self.chrome.take_pulse() {
+            self.strip.pulse(idx);
+        }
         let labels = self.chrome.labels();
         let chrome_focus = self.chrome.focus(focus);
         self.strip.update(labels, selected, chrome_focus, dt);
@@ -975,12 +1050,19 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
-            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect));
+            if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
+                // the season's address rides on the menu: the strip's item is no catalog row, so
+                // the write's scope cannot be read off one (`apply_item_action`)
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect);
+                // a season acts on its show: the page's own catalog id, when the page is the show
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect));
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect);
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
             }
         }
         // A card page answers its focused card and where it sits: Person, Collection, and Detail's
@@ -991,7 +1073,9 @@ impl Bridge {
         if !matches!(e.arg, AppArg::Content(_)) { return None; }
         let card = real.focused_card(&cx, ret.focus, Some(At::Drawn))?;
         let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>().filter(|m| plx_screens::item_menu::has_actions(m))?;
-        Some(card_menu_arg(item, false, false, entry, ret.focus, card.rect))
+        let mut arg = card_menu_arg(item, false, false, entry, ret.focus, card.rect);
+        arg.watchlist = self.watchlist_card_face(item);
+        Some(arg)
     }
 
     /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
@@ -1020,7 +1104,8 @@ impl Bridge {
     }
 
     /// Drive `popover`'s host-user counters from the surface phases (module doc).
-    fn sync_host(&mut self, d: &Dispatcher<AppHost>) {
+    fn sync_host(&mut self, d: &Dispatcher<AppHost>, dt: f32) {
+        plx_ui::popover::host::set_reflow(d.host_reflow(), dt);
         let live: Vec<(EntryId, bool, bool)> = d
             .nav
             .modals
@@ -1083,6 +1168,7 @@ impl Bridge {
 /// whoever took it, which is this type.
 impl Drop for Bridge {
     fn drop(&mut self) {
+        plx_ui::popover::host::reset_reflow();
         self.session_adapter.cancel_all();
         for (_, cached, closing) in self.held.drain(..) {
             plx_ui::popover::surface_released(cached, closing);
@@ -1128,7 +1214,7 @@ impl Bridge {
     /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
-    /// store's; see `app/content.rs`'s `refresh_content`.
+    /// store's; see `app/content.rs`'s `reconcile_details`.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         self.stores.metadata_run(cmd)
     }
@@ -1146,12 +1232,135 @@ impl Bridge {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
+    /// Keep the view-state reconcile network work owed while the player is on top
+    /// (`Stores::hold_network`); the patches are not held.
+    pub(crate) fn hold_network(&mut self, player_on_top: bool) {
+        self.stores.hold_network(player_on_top);
+    }
+
+    /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
+    /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
+    /// Next chain stops one episode after another without ever leaving the player.
+    pub(crate) fn stops_pump(&mut self) {
+        let stops = plx_data::stores::take_landings_owed(
+            &self.stores.landgate,
+            plx_data::stores::StoreId::ViewStop,
+            |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
+            plx_media::route::take_landed_stops,
+        );
+        if !stops.is_empty() {
+            self.stores.stops_landed(stops, self.directory.view());
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
+    /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
+    pub(crate) fn watchlist_pump(&mut self) {
+        if self.stores.watchlist.pump_with_gate(&self.stores.landgate) {
+            plx_machine::idle::invalidate();
+        }
+    }
+
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
-    pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
-        self.stores.take_detail_refresh()
+    /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
+    /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
+    pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        if self.stores.reconcile_pump(self.directory.view()) {
+            plx_machine::idle::invalidate();
+        }
+        if self.stores.network_held() {
+            return Default::default(); // a membership re-query is a network read
+        }
+        let mut browse = self.stores.browse.borrow_mut();
+        if browse.requery_owed() {
+            return browse.pump_with_gate(&self.stores.landgate).endpoints;
+        }
+        Default::default()
+    }
+
+    /// The PMS notification feed's per-frame pass (`stores::notify`), and the mapping of what it
+    /// brought to reads of our own state (`Stores::notify_map`). Only a server the account OWNS
+    /// gets a connection, so with none described the feed opens nothing and there is nothing to map. `pages` are the content pages on
+    /// the navigation stack, visible and covered, and `shown` says which list pages (Home, Library, Search)
+    /// are on it: what they hold decides which hints are read back.
+    /// A notification never reaches the stop queue or the playback Offset (S5). The event log gets
+    /// only server slots and counts, never a session, key or identifier.
+    /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
+    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown) -> bool {
+        let out = self.stores.notify_pump();
+        let spent = self.stores.notify_map(&out, pages, shown, self.directory.view());
+        if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
+            plx_base::eventlog::log(&format!(
+                "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
+        }
+        for plays in &out.plays {
+            plx_base::eventlog::log(&format!("notify: sid={} sessions={}", plays.sid.raw(), plays.sessions.len()));
+        }
+        for (sid, epoch) in &out.resynced {
+            plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
+        }
+        !out.resynced.is_empty()
+    }
+
+    /// WILL background: the feed's connections are cancelled now and stay closed until resume.
+    pub(crate) fn notify_suspend(&mut self) {
+        self.stores.notify.suspend();
+    }
+
+    /// DID foreground: the feed may connect again, and a pending backoff is forgiven.
+    pub(crate) fn notify_resume(&mut self) {
+        self.stores.notify.resume();
+    }
+
+    /// The network may have changed under every open connection (the foreground edge, beside
+    /// `plex::grant::network_changed`): cancel them and reconnect.
+    pub(crate) fn notify_network_changed(&mut self) {
+        self.stores.notify.network_changed();
+    }
+
+    /// May a covered page's re-read be spent now (`Stores::reread_allowed`)?
+    pub(crate) fn reread_allowed(&self) -> bool {
+        self.stores.reread_allowed()
+    }
+
+    /// Owe the read-back of what a page holds on screen (`Stores::owe_read_back`).
+    pub(crate) fn owe_read_back(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_read_back(keys);
+    }
+
+    /// Owe the read-back of a Detail page's own item, which owes the page its in-place re-read
+    /// (`Stores::owe_page_read`).
+    pub(crate) fn owe_page_read(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_page_read(keys);
+    }
+
+    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
+    /// current section, Search's results, and the Person / Filmography / Collection store when it
+    /// is showing that very page. Nothing for any other page.
+    pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
+        match arg {
+            AppArg::Library => self.stores.library_held_keys(),
+            AppArg::Search => self.stores.search.held_keys(),
+            AppArg::Watchlist => self.stores.watchlist.held_keys(),
+            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
+                self.stores.person.held_keys(content),
+            AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
+            _ => Default::default(),
+        }
+    }
+
+    /// The Home sources, in display order: what a Home re-read asks one quiet refetch of each.
+    pub(crate) fn hub_source_ids(&self) -> Vec<plx_plex::plex::ServerId> {
+        self.stores.hubs.source_ids()
+    }
+
+    /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
+    pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
+        self.stores.take_landed_views()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
@@ -1166,8 +1375,24 @@ impl Bridge {
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
     /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
+    /// Is a quiet read's answer waiting to land? The per-frame publish asks this first.
+    pub(crate) fn hubs_have_staged(&self) -> bool {
+        self.stores.hubs.has_staged()
+    }
+
     pub(crate) fn hubs_snapshot(&self) -> plx_data::pms::HubsSnapshot {
         self.stores.hubs.snapshot()
+    }
+
+    /// Does a Hubs worker still owe this owner a landing? False once every spawned fetch has been
+    /// taken (applied or failed) and for a launch that was refused.
+    pub(crate) fn hubs_owed(&self) -> bool {
+        self.stores.hubs.owed()
+    }
+
+    /// Is no prompted Hubs read of source `sid` out or waiting for room? (A quiet read is not one.)
+    pub(crate) fn hub_source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {
+        self.stores.hubs.source_settled(sid)
     }
 
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
@@ -1237,6 +1462,23 @@ impl Bridge {
         self.refresh_browse_directory();
     }
 
+    /// The Library grid holds `count` items of `sid` (ratingKeys "1"...), none watched, on a
+    /// registered two-source table.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize) {
+        self.seed_registered_browse_for_test([sid, sid]);
+        self.stores.browse.borrow_mut().seed_items_for_test(count);
+    }
+
+    /// `(watched, unwatched, resume_ms)` of the Library grid's `index`th tile.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn grid_tile_for_test(&self, index: usize) -> Option<(bool, bool, i64)> {
+        let mut browse = self.stores.browse.borrow_mut();
+        let snapshot = browse.listing_snapshot();
+        let view = snapshot.view();
+        view.item(index).map(|m| (m.watched, m.unwatched, m.resume_ms))
+    }
+
     /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
     /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
     /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
@@ -1244,6 +1486,30 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Test hook: publish `shelves` as Search's results.
+    #[cfg(test)]
+    pub(crate) fn publish_search_for_test(&mut self, shelves: Vec<plx_data::search::Shelf>) {
+        self.stores.search.publish_shelves_for_test(shelves);
+    }
+
+    /// Test hook: the keys owed a read-back and not yet sent.
+    #[cfg(test)]
+    pub(crate) fn read_back_pending_for_test(&self) -> plx_data::stores::HeldKeys {
+        self.stores.reconcile.pending_for_test()
+    }
+
+    /// Is a view-state write queued or in flight?
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn viewstate_busy_for_test(&self) -> bool {
+        self.stores.viewstate.borrow().is_busy_for_test()
+    }
+
+    /// How many hub refetches Home's store has started.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn hub_refetches_for_test(&self) -> u32 {
+        self.stores.hubs.refetch_count_for_test()
     }
 
     /// [`seed_hubs_for_test`](Self::seed_hubs_for_test) as a grid of `rows` shelves of `items` cards.
@@ -1655,6 +1921,10 @@ impl Bridge {
             AppFx::Search(req) => self.search_reqs.push((from, req, self.effect_return.clone())),
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
+            AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
+            // The catalog page's pill: the same write the item menu's rows make, so an Add pulses
+            // the tab here too. The page flips nothing itself; the store's ledger flips the face.
+            AppFx::Catalog(out) => self.catalog_effect(out),
         }
     }
 
@@ -1712,7 +1982,9 @@ impl Bridge {
             }
             SessionFx::PublishProfile(publication) => {
                 if self.session.publication_is_current(&publication) {
-                    self.session_adapter.publish_profile(publication);
+                    if let Some(seat) = self.session_adapter.publish_profile(publication) {
+                        self.seat_watch.arrive(seat);
+                    }
                     if let Some(io) = &mut self.home_io {
                         io.profile = self.session_adapter.profile_resource_view().expect("controlled publisher");
                     }
@@ -1936,6 +2208,11 @@ fn frame_ingest(
     let _frame_scope = plx_base::task::FrameScope::enter();
     #[cfg(test)]
     plx_base::testlock::assert_held("the store pump behind an app::bridge frame");
+    // The Watchlist's answers land AHEAD of the page's tick, never after it: a feed that landed
+    // after the tick would draw the new cards at their final slots for one frame before the
+    // landing began from the old ones (a snap, then a jump back).
+    rig.watchlist_pump();
+    rig.watchlist_feed(d);
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
     // owner work from its Tick, but Tick runs after views are captured; land the roster first so
     // a discovery result and the directory publication are observed in one frame. Controlled
@@ -1991,7 +2268,7 @@ fn frame_ingest(
         .expect("Session ingest requires an exactly addressed, admitted transfer batch");
     let report = plx_base::diag::spans::span("dframe", || d.frame_with(rig, tick, inputs, results, tap, false));
     d.prune(&report.unmounted);
-    plx_base::diag::spans::span("dsync", || rig.sync_host(d));
+    plx_base::diag::spans::span("dsync", || rig.sync_host(d, tick.dt()));
     // On the simulator, a frame the video plane alone presented is not reported as damage: the
     // loop's gate presents it on its own video-plane term anyway, and the report would keep the
     // settled-capture clock (`plx_machine::idle::last_change_ms`) from ever seeing a paused player at rest
@@ -2503,6 +2780,8 @@ pub(crate) fn card_menu_arg(
         anchor: anchor_bits(rect),
         loaded_episode: false,
         from_home,
+        catalog: None,
+        watchlist: None,
     }
 }
 
@@ -2526,6 +2805,8 @@ fn strip_menu_arg(
         focus,
         anchor: anchor_bits(rect),
         from_home: false,
+        catalog: None,
+        watchlist: None,
     }
 }
 
@@ -2743,11 +3024,11 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
     if let Some(c) = bridge.take_session_ready() {
         // A sign-out followed by a fresh sign-in can replace the session without restarting the
         // process. Re-read only at this one credentials handoff so the old account's in-memory
-        // preference cannot leak into the new session.
+        // lists (the memory mirrors and the profiles' own player values) cannot leak into the new
+        // session. The profile's player and trailer cells are not restored here: the seat is
+        // (`SeatWatch`, at the `PublishProfile` that precedes this `Ready`).
         let saved = plx_plex::plex::session::peek();
-        plx_media::route::restore_all(&saved, plx_media::route::Overrides {
-            quality: crate::dev::playback_quality_override(),
-        });
+        plx_media::route::restore_install_rows(&saved);
         let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
             &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
         execute_endpoint_outcomes(pages, endpoints);
@@ -2885,6 +3166,7 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
     match arg {
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
+        AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
         AppArg::Library => {
             let kind = directory.current().map(|i| directory.sections()[i].kind)?;
             pill_of(directory, Pill::Section(kind))
@@ -2922,6 +3204,7 @@ pub(crate) fn nav_tab(
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
+                    Pill::Watchlist => HomeTab::Watchlist,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -2936,6 +3219,7 @@ pub(crate) fn nav_tab(
             AppArg::Library
         }
         HomeTab::Search => AppArg::Search,
+        HomeTab::Watchlist => AppArg::Watchlist,
     };
     nav_peer(d, arg, ret);
 }
@@ -3616,6 +3900,18 @@ mod library_tab_arrival_tests;
 #[cfg(test)]
 #[path = "strip_home_pill_tests.rs"]
 mod strip_home_pill_tests;
+
+#[path = "watchlist.rs"]
+mod watchlist;
+pub(crate) use watchlist::{hex_of_guid, open_catalog, open_watchlist_menu};
+
+#[cfg(test)]
+#[path = "watchlist_press_tests.rs"]
+mod watchlist_press_tests;
+
+#[cfg(test)]
+#[path = "watchlist_wiring_tests.rs"]
+mod watchlist_wiring_tests;
 
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]

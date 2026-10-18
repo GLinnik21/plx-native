@@ -50,26 +50,54 @@ fn tab_geometry_is_shared_by_paint_members_and_clipping() {
 #[test]
 fn captured_tab_labels_measure_words_and_keep_the_search_mark_square() {
     use super::*;
-    let labels = vec!["Home".into(), "Фильмы".into(), String::new()];
-    let (words, widths) = tab_metrics_from(&labels, |s| s.to_bytes().len() as f32 * 7.0);
-    assert_eq!(words.len(), labels.len());
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Фильмы".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 7.0);
+    assert_eq!(words.len(), faces.len());
     assert_eq!(widths[0], 4.0 * 7.0 + 2.0 * TAB_PILL_PAD);
     assert_eq!(widths[1], "Фильмы".len() as f32 * 7.0 + 2.0 * TAB_PILL_PAD);
     assert_eq!(widths[2], TAB_ICON_PILL_W);
     assert_eq!(words[1].to_bytes(), "Фильмы".as_bytes());
 }
 
+/// DS5: an icon face is an icon wherever it sits, not only last. Two icon faces after two labels
+/// (Home, Movies, Bookmark, Search) both get the square pill, and the strip does not scroll.
+/// Red against a `i + 1 == len` rule: the Bookmark would be measured as an empty label.
+#[test]
+fn an_icon_face_is_square_wherever_it_sits_in_the_strip() {
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Icon(crate::icons::Icon::Bookmark), TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 7.0);
+    assert_eq!(widths[2], TAB_ICON_PILL_W);
+    assert_eq!(widths[3], TAB_ICON_PILL_W);
+    assert_ne!(widths[2], 2.0 * TAB_PILL_PAD, "an icon is not an empty label");
+    assert!(words[2].to_bytes().is_empty() && words[3].to_bytes().is_empty());
+    assert_eq!(widths[0], 4.0 * 7.0 + 2.0 * TAB_PILL_PAD);
+    assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "four stops fit");
+    for i in 0..widths.len() {
+        for &start in &[0.0f32, 400.0, 9000.0] {
+            assert_eq!(tab_scroll_target(&widths, i, start), 0.0, "stop {i} must not scroll");
+        }
+    }
+}
+
 #[test]
 fn tab_metrics_cache_rejects_different_captured_labels_even_at_the_same_generation() {
     use super::*;
-    let labels = vec!["Home".into(), "Movies".into(), String::new()];
-    let (words, widths) = tab_metrics_from(&labels, |_| 42.0);
-    let cache = (7, words, widths);
-    assert!(tab_cache_matches(&cache, TabLabels { generation: 7, labels: &labels }));
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 8, labels: &labels }));
-    let changed = vec!["Home".into(), "TV Shows".into(), String::new()];
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, labels: &changed }));
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, labels: &labels[..2] }));
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |_| 42.0);
+    let cache = (7, faces.clone(), words, widths);
+    assert!(tab_cache_matches(&cache, TabLabels { generation: 7, faces: &faces }));
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 8, faces: &faces }));
+    let changed = vec![TabFace::Label("Home".into()), TabFace::Label("TV Shows".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &changed }));
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &faces[..2] }));
+    let mark_as_word = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Label(String::new())];
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &mark_as_word }),
+        "an empty word is not the Search mark: the face kind is part of the captured vocabulary");
 }
 
 #[test]
@@ -264,4 +292,131 @@ fn a_stale_pill_index_clamps_instead_of_panicking() {
         "an empty strip has no width and no gaps"
     );
     assert_eq!(tab_scroll_target(&[], 0, 12.0), 0.0);
+}
+
+/// The tab pulse rises from rest to its peak and comes back to exactly rest; it ends on its own.
+#[test]
+fn the_tab_pulse_envelope_is_zero_at_both_ends_and_one_at_the_peak() {
+    assert_eq!(tab_pulse_envelope(0.0), 0.0);
+    assert!((tab_pulse_envelope(TAB_PULSE_S * 0.5) - 1.0).abs() < 1e-6, "the peak");
+    assert_eq!(tab_pulse_envelope(TAB_PULSE_S), 0.0, "settled");
+    assert_eq!(tab_pulse_envelope(-1.0), 0.0);
+    assert_eq!(tab_pulse_envelope(TAB_PULSE_S * 3.0), 0.0);
+    assert!(tab_pulse_envelope(TAB_PULSE_S * 0.25) < tab_pulse_envelope(TAB_PULSE_S * 0.5), "rising");
+}
+
+/// A pulse runs for [`TAB_PULSE_S`] and is then gone, and while it runs the page is never held for
+/// it: it is decorative, so it adds no layout motion.
+#[test]
+fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
+    let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let mut strip = StripRender::new();
+    // The strip's own springs settle first, so what is measured below is the pulse alone.
+    for _ in 0..600 {
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+    }
+    assert_eq!(strip.pulse_read(), None);
+    strip.pulse(1);
+    assert_eq!(strip.pulse_read(), Some((1, 0.0)));
+    plx_machine::idle::reset_for_test();
+    strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S * 0.5);
+    let (at, env) = strip.pulse_read().expect("still running at the peak");
+    assert_eq!(at, 1);
+    assert!(env > 0.99, "peak envelope {env}");
+    assert!(!plx_machine::idle::page_layout_moving(), "a pulse is not layout motion");
+    strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S);
+    assert_eq!(strip.pulse_read(), None, "ended on its own");
+}
+
+/// **A running pulse is MOTION, never page damage.** It is a time-driven decoration on the chrome,
+/// and "Add to Watchlist" starts it on the frame the item menu is dismissed, so it runs under a
+/// FADING menu. There `popover::host::host_refresh` draws a moving page live, without capturing it
+/// (`CAPTURE_POINTLESS`); page DAMAGE instead re-captures the host every frame, which bumps
+/// `page_epoch`, which re-latches the modal dim's field (a reduction of the whole page and a
+/// readback) on each of the pulse's frames. Red on the build whose pulse called
+/// `idle::invalidate`: HWCNT on the television held 19.4M a frame for the pulse's 0.55 s after Add,
+/// against 9.2M the frame it ended.
+#[test]
+fn a_running_tab_pulse_reports_motion_not_page_damage() {
+    let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let mut strip = StripRender::new();
+    for _ in 0..600 {
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+    }
+    strip.pulse(1);
+    plx_machine::idle::reset_for_test();
+    let _ = plx_machine::idle::take_local_damage();
+    let mut frames = 0;
+    while strip.pulse_read().is_some() {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+        if strip.pulse_read().is_none() {
+            break;
+        }
+        frames += 1;
+        assert!(plx_machine::idle::present_moving(), "frame {frames}: the pulse keeps the gate awake");
+        assert!(plx_machine::idle::page_moving(), "frame {frames}: as the page's own motion");
+        assert!(!plx_machine::idle::page_layout_moving(), "frame {frames}: decorative, not layout");
+        assert_eq!(plx_machine::idle::take_local_damage(), 0, "frame {frames}: and raises no damage");
+    }
+    // A 0.4 s beat at 60 Hz: 24 frames, less the frame that crosses the end.
+    assert!(frames >= 22, "the pulse ran its beat ({frames} frames)");
+    // What that buys under the fading menu: the page is redrawn live, and an OPEN menu's frozen
+    // host pauses it, as every decoration on a page the user cannot reach is paused.
+    assert!(crate::popover::host_refresh(true, false, true));
+    assert!(!crate::popover::host_refresh(false, false, true));
+}
+
+/// Every draw `f` declares in a backdrop discovery pass, in order.
+fn declared(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+    use crate::frame::backdrop::{discover, Sources};
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = discover(sources.clone());
+        f();
+    }
+    let paints = sources.borrow().paints.clone();
+    paints
+}
+
+/// **The pulse is the GLYPH, not a plate.** The mark grows about its own centre, 1 → 1.35 → 1,
+/// with a brief soft white glow around it, and nothing is filled behind it: a disc there is the
+/// strip's selected plate and reads as "Watchlist selected" (the design session's frame dump of
+/// Add from the Home hold menu, n372 on). Red on the build that drew a `TAB_PULSE_GLOW_A` accent
+/// rrect the pill's size behind the mark.
+#[test]
+fn the_tab_pulse_grows_the_glyph_with_a_white_glow_and_draws_no_plate() {
+    let _g = plx_base::testlock::serial();
+    let ir = Rect::new(900.0, 30.0, TAB_ICON_D, TAB_ICON_D);
+    let (cx, cy) = (ir.x + ir.w * 0.5, ir.y + ir.h * 0.5);
+    // At rest, and at both ends of the beat: the glyph at its own rect and nothing else.
+    for env in [0.0, tab_pulse_envelope(0.0), tab_pulse_envelope(TAB_PULSE_S)] {
+        let look = tab_pulse_look(ir, env);
+        assert_eq!(look.glyph, ir);
+        assert!(look.glow.is_none());
+    }
+    let peak = tab_pulse_look(ir, tab_pulse_envelope(TAB_PULSE_S * 0.5));
+    assert!((peak.glyph.w / ir.w - TAB_PULSE_SCALE).abs() < 1e-3, "the glyph itself grows 1.35x: {:?}", peak.glyph);
+    assert!((peak.glyph.x + peak.glyph.w * 0.5 - cx).abs() < 1e-3 && (peak.glyph.y + peak.glyph.h * 0.5 - cy).abs() < 1e-3, "about its centre");
+    let glow = peak.glow.expect("a glow at the peak");
+    assert_eq!(&glow.col[..3], &[1.0, 1.0, 1.0], "white, not the accent");
+    // What is declared besides the glyph (`draw_tab_mark` draws the icon after this; a test has no
+    // rasteriser for it): the glow is an outside-only penumbra, never a filled shape.
+    let paints = declared(|| draw_tab_glow(Painter::root(), tab_pulse_look(ir, 1.0)));
+    assert!(
+        paints.iter().all(|p| !matches!(p.kind().as_str(), "rect" | "rrect" | "rrect_sheened" | "rect_rimmed")),
+        "no plate behind the mark: {:?}",
+        paints.iter().map(|p| p.kind()).collect::<Vec<_>>()
+    );
+    assert!(paints.iter().any(|p| p.kind() == "shadow_outside"), "the glow is drawn");
+    assert!(declared(|| draw_tab_glow(Painter::root(), tab_pulse_look(ir, 0.0))).iter().all(|p| p.kind() != "shadow_outside"), "and nothing extra at rest");
+}
+
+/// The beat is about 400 ms, up and back.
+#[test]
+fn the_tab_pulse_is_a_400_ms_beat() {
+    assert!((TAB_PULSE_S - 0.4).abs() < 1e-6);
 }

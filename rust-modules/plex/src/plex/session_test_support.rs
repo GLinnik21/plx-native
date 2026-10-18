@@ -46,7 +46,7 @@ pub(super) fn dialable_home(users: usize, uuid: &str, auto: bool) -> Session {
             ..Default::default()
         },
         home_users,
-        auto_sign_in: auto,
+        prefs: Preferences { auto_sign_in: auto, ..Default::default() },
         ..Default::default()
     }
 }
@@ -97,6 +97,9 @@ impl Drop for TempSession {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+/// A stand-in `grant::account_key`: 8 bytes as hex. The account stamp the per-profile tests use.
+pub(super) const STAMP: &str = "00112233445566ff";
 
 pub(super) fn signed_in() -> Session {
     Session {

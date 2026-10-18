@@ -15,7 +15,7 @@ because the overlay's state shape changed on purpose.
 
 ## Behaviour
 
-- **Subtitles root:** a Subtitles section (Off plus single-track languages), one section per
+- **Subtitles root:** a Subtitles section (Off, Forced only, and the single-track languages), one section per
   multi-track language of `yours`, an "Other languages N" row, then Timing (a value row, no
   chevron; it hands off to the timing capsule) and Style. **Other languages:** one row per
   language A-Z; a single-track language is a direct pick row, a multi-track one is a "French, 3
@@ -73,11 +73,11 @@ state, not panel state).
 ## Focus identity
 
 Each page declares rows with semantic ids, one alphabet for every page: `appkit::track_menu::TrackRow`
-(`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
+(`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `SubForcedOnly`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
 `Choice(field, rung)`, `OpenOther`, `OpenLang(lang)`). Selection and saved openers
 are stored by id. `RowKey` is a hand-assigned family base plus a STABLE ordinal (the track's index
 in the item's list, never a list position): `0x0001_0000` Audio, `0x0002_0000` the DSP pair,
-`0x0003_0000` Off, `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
+`0x0003_0000` Off (`0x0003_0001` Forced only), `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
 page's drill-ins, `0x0007_0000` picker rungs (one 256-wide block per field), `0x0008_0000` the Other languages
 drill-in and `0x0009_0000 +` a language's drill-in, which uses its slot on the Other page instead of
 a track index. `OpenLang` carries the language's `LangId`, the stream id of its first track in the
@@ -210,12 +210,13 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
   `d=`/`s=` fields, wall/cpu/run-queue ms): the thread was off the CPU, not busy.
   `--arm framedrop=17 --arm framering --arm framecb` captures the same evidence while writing only
   the slow frames and their neighbours.
-- **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) is the modal underlay latching its field
-  from the UltraBlur corners, and it was paid again on every open. `navcommit` is ~6 ms, of which
-  `tmnew` is under 1 ms. Then come the root page's first strings. Since then the corner envelope is
-  kept across closes and preloaded once the page has rested ~0.5 s with nothing open (`ModalUnderlay::retire`/`note_at_rest`/`preload`), and
-  the overlay's `prepare` queues the root strings on the mount frame (`warm_open`): the open frame
-  measured 17.8-21.7 ms on the 2026-10-02 capture (below), the rest being `after_step`'s focus seat.
+- **The open frame, ~27–34 ms.** `ulatch` (5.5–7.3 ms) was the modal underlay latching its field
+  from the playing item's UltraBlur corners, paid again on every open. That envelope has since been
+  removed altogether: the player's menu dim is the flat neutral ink (`Scrim::over_video`), so there
+  is nothing to latch. `navcommit` is ~6 ms, of which `tmnew` is under 1 ms. Then come the root
+  page's first strings, which the overlay's `prepare` queues on the mount frame (`warm_open`): the
+  open frame measured 17.8-21.7 ms on the 2026-10-02 capture (below), the rest being `after_step`'s
+  focus seat.
 - **Playback start.** The Play/ACB call and single Starfish `Feed()` calls block for 5–28 ms in
   the first seconds.
 

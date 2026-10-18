@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Collect pinned public dependency sources from explicit archives and installed Rust sources."""
+"""Collect pinned public dependency sources from explicit archives and installed Rust sources.
+
+The Rust toolchain is the one pinned in rust-modules/rust-toolchain.toml (override with
+--rust-toolchain). The binary links that release's PREBUILT `armv7-unknown-linux-gnueabi` std, so the
+`rust-runtime` input packs the `rust-src` component of the SAME release: it is the corresponding
+source of the std the binary contains, not an input of the rebuild (which uses the prebuilt std and
+needs no rust-src, no `-Z build-std`). The packaging job installs rust-src for exactly this.
+"""
 import argparse
 import json
+import os
 import html
 from pathlib import Path
 import re
@@ -9,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 
+import deps as deps_module
+from rust_toolchain import TARGET, pinned
 from source_bundle import canonical, digest, fail, read_regular, scan, write_archive
 
 
@@ -52,38 +62,51 @@ def main():
     parser.add_argument('--archive-root', type=Path, required=True,
                         help='checkout holding existing pinned vendor downloads; no downloads performed')
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--rust-toolchain', default='nightly')
+    parser.add_argument('--rust-toolchain', default=pinned(),
+                        help='default: the channel of rust-modules/rust-toolchain.toml (or $RUST_TOOLCHAIN)')
     parser.add_argument('--inventory', type=Path, help='reviewed project inventory; otherwise derive source-set runtime licenses from supplied upstream declarations')
     args = parser.parse_args()
     root, output = args.root.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     source_rows, deps = [], []
-    for name, recipe in [('ffmpeg', 'ci/build-ffmpeg.sh'), ('sentry-native', 'ci/build-sentry-native.sh')]:
-        text = (root / recipe).read_text()
-        version = re.search(r'^VERSION=([^\s]+)', text, re.M).group(1)
-        checksum = re.search(r'^SHA256=([a-f0-9]{64})', text, re.M).group(1)
-        filename = ('ffmpeg-' + version + '.tar.xz' if name == 'ffmpeg'
-                    else 'sentry-native-' + version + '.tar.gz')
-        relative = ('vendor/ffmpeg-build/' if name == 'ffmpeg' else 'vendor/') + filename
-        data, _ = read_regular(args.archive_root.resolve(), relative)
-        if digest(data) != checksum:
-            fail('pinned source archive checksum mismatch: ' + filename)
-        (output / filename).write_bytes(data)
-        deps.append({'id': name, 'version': version, 'license': 'LGPL-2.1-or-later' if name == 'ffmpeg' else 'MIT',
-                     'sources': [{'path': filename, 'sha256': checksum}], 'recipes': [recipe],
-                     'patches': [] if name == 'ffmpeg' else ['vendor/sentry-native/webos-arm32.patch']})
-    # The private ASS library statically contains this entire stack. Ship its exact
-    # upstream inputs along with the facade and build configuration, not URL offers.
-    for dep in json.loads((root / 'ci/libass-dependencies.json').read_text()):
-        filename = dep['archive']
-        data, _ = read_regular(args.archive_root.resolve(), 'vendor/libass-sources/' + filename)
-        if digest(data) != dep['sha256']:
-            fail('pinned source archive checksum mismatch: ' + filename)
-        (output / filename).write_bytes(data)
+    # Every dependency the manifest marks `bundled` rides the source bundle with its exact
+    # upstream inputs (FFmpeg and Sentry Native, the statically contained libass font stack, the
+    # nanosvg headers), not URL offers. The archives are read from the cache the build filled
+    # (`vendor/downloads` of --archive-root, or $PLX_DEPS_CACHE when set, the way ci/deps.py
+    # resolves it); nothing is downloaded here.
+    manifest = json.loads((root / 'ci/dependencies.json').read_text())
+    recipes = {'ffmpeg': ['ci/build-ffmpeg.sh'], 'sentry-native': ['ci/build-sentry-native.sh'],
+               'nanosvg': ['Makefile', 'src/svg.c']}
+    # The private ASS library statically contains the whole libass stack: its recipe is the facade
+    # and the build configuration, which is not a download of any one of the five.
+    libass_recipe = ['ci/build-libass.sh', 'ci/build-libass.py', 'src/ass.c', 'src/ass_fonts.c',
+                     'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h']
+    for dep in manifest:
+        if not dep.get('bundled'):
+            continue
+        sources = []
+        for asset in deps_module.assets_of(dep).values():
+            if os.environ.get('PLX_DEPS_CACHE'):
+                data, _ = read_regular(deps_module.cache_dir().resolve(),
+                                       deps_module.cached_path(dep, asset, Path('.')).as_posix())
+            else:
+                relative = deps_module.cached_path(dep, asset, Path('vendor/downloads'))
+                data, _ = read_regular(args.archive_root.resolve(), relative.as_posix())
+            if digest(data) != asset['sha256']:
+                fail('pinned source archive checksum mismatch: ' + asset['name'])
+            (output / asset['name']).write_bytes(data)
+            sources.append({'path': asset['name'], 'sha256': asset['sha256']})
+        # The pinned local patches ride with the recipe, each checked against its pinned digest.
+        patches = []
+        for patch in dep.get('patches', []):
+            patch_data, _ = read_regular(root, patch['path'])
+            if digest(patch_data) != patch['sha256']:
+                fail('pinned patch checksum mismatch: ' + patch['path'])
+            patches.append(patch['path'])
+        recipe = (libass_recipe if dep.get('group') == 'libass' else recipes[dep['id']]) + \
+            ['ci/deps.py', 'ci/dependencies.json']
         deps.append({'id': dep['id'], 'version': dep['version'], 'license': dep['license'],
-                     'sources': [{'path': filename, 'sha256': dep['sha256']}],
-                     'recipes': ['ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json',
-                                 'src/ass.c', 'src/ass_composite.h', 'include/ass.h'], 'patches': []})
+                     'sources': sources, 'recipes': recipe, 'patches': patches})
     with tempfile.TemporaryDirectory(prefix='collect-', dir=output) as temp:
         vendor = Path(temp) / 'cargo-vendor'
         # Only Cargo's explicitly selected locked sources are read, never a whole private cache.
@@ -114,7 +137,9 @@ def main():
     revision = re.search(r'^commit-hash: (.+)$', rust_identity, re.M).group(1)
     sources = sysroot / 'lib/rustlib/src/rust'
     if not (sources / 'library/Cargo.lock').is_file():
-        fail('exact rust-src component is not installed')
+        fail('the rust-src component of ' + args.rust_toolchain + ' is not installed '
+             '(`rustup component add rust-src --toolchain ' + args.rust_toolchain + '`); the bundle carries the '
+             'sources of the prebuilt std the binary links')
     contents = {}
     pack_tree(sources, 'rust-src', contents)
     pack_tree(sysroot / 'share/doc/rust/licenses', 'rust-notices/licenses', contents)
@@ -153,6 +178,8 @@ def main():
             scan(data, entry['path'])
             source_rows.append(dict(entry, bytes=len(data), pattern_scan='PASS'))
     spec = {'build_environment': {'rustc': rust_identity,
+                                 'rust_target': TARGET,
+                                 'rust_std': 'prebuilt rust-std of the same release (no -Z build-std); its sources are the rust-runtime input',
                                  'ndk': 'Record exact final build identity before bundle creation',
                                  'configuration': 'Record actual RELEASE/FLAVOR/features before bundle creation'},
             'dependencies': deps,

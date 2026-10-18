@@ -8,23 +8,24 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-VERSION=0.16.6
-ARCHIVE="$ROOT/vendor/sentry-native-$VERSION.tar.gz"
+# The pin (version, upstream URL, sha256, patch digest) is declared once, in ci/dependencies.json.
+DEPS="$ROOT/ci/deps.py"
+VERSION=$(python3 "$DEPS" get sentry-native version)
+ARCHIVE="$(python3 "$DEPS" cache-dir)/$(python3 "$DEPS" get sentry-native archive)"
 SOURCE="$ROOT/vendor/sentry-native-src"
 BUILD="$ROOT/vendor/sentry-native-build"
 PREFIX="$ROOT/vendor/sentry-native-prefix"
-PATCH="$ROOT/vendor/sentry-native/webos-arm32.patch"
+PATCH="$ROOT/$(python3 "$DEPS" get sentry-native patches.0.path)"
 # Both PRs this patch used to carry (pointer-width stack reads, getsentry/sentry-native#2052; the
-# ARM32 registers + both frame-record shapes, #2053) landed in 0.16.6, so the patch is down to what
+# ARM32 registers + both frame-record shapes, #2053) landed in the pinned release, so the patch is down to what
 # upstream does not do at all: the glibc<2.15 process_vm_readv shim, the 30s ARM handler timeout,
 # the two webOS/ARM signal-handler escapes (recursive SIGSEGV through getenv), and the 32-frame cap
 # on non-crashed threads.
-URL="https://github.com/getsentry/sentry-native/archive/refs/tags/$VERSION.tar.gz"
-# Take this from the URL above and nothing else: GitHub's API tarball endpoint
-# (repos/<o>/<r>/tarball/<tag>) serves a DIFFERENT artifact for the same tag — its own top-level
-# directory name and its own gzip stream — so a checksum taken from it fails here on every clean
-# build while passing on the machine that cached the file.
-SHA256=a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab
+# The tarball URL is the codeload one (archive/refs/tags/<tag>.tar.gz), declared in the manifest, and
+# nothing else: GitHub's API tarball endpoint (repos/<o>/<r>/tarball/<tag>) serves a DIFFERENT
+# artifact for the same tag — its own top-level directory name and its own gzip stream — so a
+# checksum taken from it fails here on every clean build while passing on the machine that cached
+# the file.
 
 WEBOS_SDK=${WEBOS_SDK:-"$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot"}
 CC="$ROOT/ci/arm-cc.py"
@@ -55,21 +56,18 @@ test -x "$CC" || fail "webOS NDK not found at $WEBOS_SDK (run make setup-env)"
 test -x "$CXX" || fail "webOS NDK C++ compiler not found at $CXX (run make setup-env)"
 test -f "$PATCH" || fail "missing $PATCH"
 
-if [[ ! -f "$ARCHIVE" ]]; then
-    curl -fL --retry 3 --retry-all-errors -o "$ARCHIVE.tmp" "$URL"
-    mv "$ARCHIVE.tmp" "$ARCHIVE"
-fi
-if command -v sha256sum >/dev/null 2>&1; then
-    echo "$SHA256  $ARCHIVE" | sha256sum -c -
-else
-    echo "$SHA256  $ARCHIVE" | shasum -a 256 -c -
-fi
+# ci/deps.py downloads (canonical URL, then mirrors) and verifies the sha256 pinned in the manifest;
+# an archive already in the cache is re-verified rather than trusted.
+python3 "$DEPS" fetch sentry-native >/dev/null
 
 # A failed or interrupted rebuild must not leave an old handler looking current.
 rm -rf "$SOURCE" "$BUILD" "$PREFIX"
 mkdir -p "$SOURCE" "$BUILD" "$PREFIX/bin" "$PREFIX/include" "$PREFIX/lib"
 tar xzf "$ARCHIVE" --strip-components=1 -C "$SOURCE"
-patch -d "$SOURCE" -p1 < "$PATCH"
+python3 "$DEPS" verify sentry-native || fail "$PATCH does not match the digest pinned in ci/dependencies.json"
+# Strict `git apply`, not patch(1): patch accepts fuzz, which let a crash-path hunk land
+# in the wrong place on 0.17.3 (fuzz 2) and still build green. A bump whose context moved must fail.
+python3 "$DEPS" apply-patch "$SOURCE" "$PATCH"
 
 # CMAKE_ASM_COMPILER is set explicitly, and it is load-bearing rather than tidy. libunwind's ARM32
 # sources are `.S`, so CMake enables the ASM language for them; with no compiler named for that

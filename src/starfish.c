@@ -238,6 +238,24 @@ extern void SMP_notifyForeground(void *self) __asm__("_ZN17StarfishMediaAPIs16no
 extern int  SMP_isLoadCompleted(void *self) __asm__("_ZN17StarfishMediaAPIs15isLoadCompletedEv");
 extern int  SMP_Pause(void *self) __asm__("_ZN17StarfishMediaAPIs5PauseEv");
 extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
+/* LG's PUBLIC seek (#568): bool Seek(const char *millis). A decimal-milliseconds string; a negative
+ * value is refused. Present on every firmware 1.2-11.2 (tools/fwcompat.py). Decompiled on 4.5:
+ * it parses the argument, takes the Play() mutex and runs a FLUSH|KEY_UNIT gst_element_seek whose
+ * segment starts at the millis passed - no private offset, no decoder re-init. */
+extern int  SMP_Seek(void *self, const char *millis) __asm__("_ZN17StarfishMediaAPIs4SeekEPKc");
+/* Per-pipeline output volume (the paused-preroll mute): bool setVolume(const char *json). Present on
+ * every firmware 4.4.2-11.2.0 (fwsym inventory) and declared in the NDK header. Decompiled on 4.x:
+ * setVolume parses {"volume":<int>} and, without an "ease" block, applies it at once; its bool
+ * proves nothing (it returns 1 for a null element). Not setAudioMute (absent on 4.4.2 / 4.10.0).
+ *
+ * getVolume is DELIBERATELY NOT BOUND. The NDK header says `const char *getVolume()`, but the 4.5
+ * libplayerAPIs tail-calls the pipeline's vtable slot 0xc8 (`ldr r0,[r0,#0x4c]; ldr r3,[r0];
+ * ldr r3,[r3,#0xc8]; bx r3`), and libpf's implementations (mediapipeline::AbstractPlayer::getVolume,
+ * CustomPipeline::getVolume) return a plain int: the g_object_get "volume" value, 100 when the
+ * property is absent, -1 from the base class. Reading that int as a char* crashed the TV (SIGSEGV,
+ * r0=0x64 into strstr). The mangled name carries no return type and only one firmware was
+ * decompiled, so no readback is declared: the preroll restores the pipeline default (100). */
+extern int  SMP_setVolume(void *self, const char *json) __asm__("_ZN17StarfishMediaAPIs9setVolumeEPKc");
 /* Kodi-parity: signal true end-of-stream so the pipeline drains the last frames instead of
  * hanging on them. Verified present on webOS 4.5 (nm: _ZN17StarfishMediaAPIs7pushEOSEv, defined). */
 extern int  SMP_pushEOS(void *self) __asm__("_ZN17StarfishMediaAPIs7pushEOSEv");
@@ -553,6 +571,14 @@ int sf_play(void) {
     void *object = sf_ready_object();
     return object ? SMP_Play(object) : 0;
 }
+/* Set this pipeline's volume (0..100). Returns the library's bool; 0 also when nothing is loaded. */
+int sf_set_volume(int volume) {
+    void *object = sf_ready_object();
+    if (!object) return 0;
+    char json[32];
+    snprintf(json, sizeof json, "{\"volume\":%d}", volume);
+    return SMP_setVolume(object, json) & 0xff;   /* bool in r0: only the low byte is defined */
+}
 int sf_pause(void) {
     void *object = sf_ready_object();
     return object ? SMP_Pause(object) : 0;
@@ -673,6 +699,20 @@ int sf_set_time_to_decode(long long position_ns) {
     char j[64];
     snprintf(j, sizeof j, "{\"position\":%lld}", position_ns);
     return SMP_setTimeToDecode(object, j);
+}
+/* Public in-place seek (#568): the pipeline flushes itself and re-anchors its segment at `ms`, so
+ * the caller must feed PTS on that same timeline afterwards and must NOT call sf_flush() (a flush is
+ * itself a seek to 0). Not safe against a concurrent sf_feed - the caller quiesces the feeder.
+ * Returns the library's bool: 0 = refused (negative ms, not loaded, or failed inside the pipeline,
+ * which then rejects Feed until a seek/flush succeeds). */
+int sf_seek_ms(long long ms) {
+    void *object = sf_ready_object();
+    if (!object) return 0;
+    char arg[32];
+    snprintf(arg, sizeof arg, "%lld", ms);
+    int rv = SMP_Seek(object, arg) & 0xff;   /* bool in r0: only the low byte is defined */
+    if (elogf) { fprintf(elogf, "Seek(%s) -> %d\n", arg, rv); fflush(elogf); }
+    return rv;
 }
 int sf_send_segment(void) {
     void *p = sf_pipeline();

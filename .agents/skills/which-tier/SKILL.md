@@ -80,7 +80,7 @@ but a photograph could show it (`gfx.rs`, at the `glBlendFuncSeparate` call).
 
 ### Tier 1 — `make check`
 
-`cargo +$(RUST_NIGHTLY) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`, preceded by `make lint` (three **named** clippy lints —
+`cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`, preceded by `make lint` (three **named** clippy lints —
 `ifs_same_cond`, `same_functions_in_if_condition`, `if_same_then_else` — the shadowed-branch gate),
 and followed by **three** host checks that are easy to forget are in here: `python3 ci/flavor.py
 --selftest` (the flavour transform, whose central assertion is that the STABLE transform is the
@@ -106,13 +106,14 @@ lock.) Do not write a new number here: measure it if you need one — this file 
 Count it yourself if you need the number:
 
 ```sh
-cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens -- --list | grep -c ': test'
+cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens -- --list | grep -c ': test'
 ```
 
-**Run it on nightly.** `make check` uses `cargo +$(RUST_NIGHTLY)`; a bare `cargo test` uses your
-default toolchain and the two have disagreed — `task.rs`'s refused-spawn test passed on stable
-while panicking inside `std` on nightly, which reads as flakiness and is not. Nightly is what
-ships, because `-Z build-std` is what ships.
+**Run it on the pinned toolchain.** `make check` uses `cargo +$(RUST_TOOLCHAIN)`, the `channel` of
+`rust-modules/rust-toolchain.toml` (a bare `cargo` inside `rust-modules/` reads that file; from the
+repository root a bare `cargo test` uses your default toolchain). The two have disagreed —
+`task.rs`'s refused-spawn test passed on stable while panicking inside `std` on nightly — back when
+nightly shipped. One pinned stable release now builds the ARM binary and runs the host gates.
 
 **Three structural limits.** Know them before trusting green:
 
@@ -227,7 +228,7 @@ knows the set is theirs.
 | **player pipeline, demux, Starfish/ACB, the Load payload, `route/decision.rs`** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
 | **track selection, resume, markers, Up Next, `/:/timeline`** | `./tests/run.py --server` — **only** | the synthetic tier reaches none of these; a bare `./tests/run.py` is not evidence about any of them |
 | **FFI / linkage / `dynlib!`** | `tools/fwcompat.py` → `make check` → **`make sim` or `make macapp`** → device | **there is no link error any more**; and the device cannot see an Apple-ABI variadic bug — see below |
-| **the release feature configuration** | `cargo +nightly check --lib --no-default-features` → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
+| **the release feature configuration** | `cargo +$(make -s print-rust-toolchain) check --lib --no-default-features` → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
 | **the Makefile, packaging, the `.ipk`** | `make check` (flavour selftest) → `make ipk` (runs `ci/check-package.py`) → a real `make FLAVOR=… install` | the dev loop is `make deploy`, which scp's into an already-registered app dir and **never exercises the package** |
 
 ### The rows that carry a trap
@@ -248,7 +249,9 @@ politeness — an over-reporting animator gives back the whole ~38-points-of-a-c
 every `floor` in the suite still passes.
 
 **Anything that animates from a CLOCK rather than a spring** — a millisecond ramp, a phase, a
-countdown — must call `plx_machine::idle::invalidate()` itself. `note_spring` cannot see it, and both
+countdown — must report itself: `plx_machine::idle::invalidate()` when it changes content,
+`plx_machine::idle::note_motion()` when it is a decoration (the tab pulse; damage under a standing
+popover re-captures the frozen host every frame). `note_spring` cannot see it, and both
 `Xfade::tick` (every CONTENT cross-fade) and `Spinner::draw` (every loading read-out) **shipped
 FROZEN** before they were made to report. (`Xfade` drove the ROUTE dip too until restructure phase
 12 lifted that onto `ui::containers::transition::PageDip`, which reports from inside its own

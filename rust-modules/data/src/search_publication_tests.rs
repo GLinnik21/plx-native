@@ -148,3 +148,36 @@ fn a_late_failure_cannot_unsay_an_answer_this_source_already_gave() {
     );
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A source's answer read before a Mark Watched was pressed lands carrying the pre-press body; the
+/// ledger makes the press again on it. A press whose write had LANDED before the read went out is
+/// not held against the answer (the server had it), which `landed` models by renumbering the entry.
+#[test]
+fn a_source_answer_in_flight_across_a_watched_edit_lands_watched() {
+    let _g = plx_base::testlock::serial();
+    let mut state = SearchState::default();
+    let pressed = crate::viewstate::ViewAt::leaf(ServerId::UNSET, "A");
+    let unwatched = || {
+        let mut items = answered(0, vec![media("A"), media("B")]).items;
+        for it in items[0].iter_mut() {
+            if let Item::Media(m) = it { m.unwatched = true; m.resume_ms = 9; }
+        }
+        items
+    };
+    let marks = |state: &SearchState| -> Vec<(bool, i64)> {
+        state.src[0].items[0].iter().filter_map(|it| match it {
+            Item::Media(m) => Some((m.watched, m.resume_ms)),
+            _ => None,
+        }).collect()
+    };
+    source_mut(&mut state, 0).stamp = state.ledger.stamp(); // the read goes out…
+    let seq = state.ledger.record(&pressed, crate::viewstate::ViewEdit::Watched(true)); // …then the press
+    record(&mut state, 0, Some(unwatched()));
+    assert_eq!(marks(&state), [(true, 0), (false, 9)], "the pressed item stays watched, the other as the server said");
+
+    // the write lands, then a read goes out: the server has the press, so its answer stands
+    state.ledger.landed(seq);
+    source_mut(&mut state, 0).stamp = state.ledger.stamp();
+    record(&mut state, 0, Some(unwatched()));
+    assert_eq!(marks(&state), [(false, 9), (false, 9)], "a read requested after the landing carries the press already");
+}

@@ -330,6 +330,9 @@ pub struct FixtureScreen {
     /// `DrawFrame::lifted` as the page pass last handed it to this page's visible or captured draw
     /// (the element the opener lift owns); `None` when none was. Render bookkeeping, not state.
     pub lifted: Option<FocusKey<u32>>,
+    /// The element this page says is departing (`Screen::opener_departing`): a removed card it
+    /// still draws as it goes.
+    pub departing: Option<u32>,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -462,7 +465,11 @@ impl Machine<FixtureHost> for FixtureScreen {
 }
 
 impl Screen<FixtureHost> for FixtureScreen {
+    fn opener_departing(&self, key: FocusKey<u32>) -> bool {
+        self.departing == Some(key.elem)
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
     fn covered_surfaces_ready(&self) -> bool {
         // Page 901 models a remounted owner awaiting an identity-matched store notice.
         self.arg != FixtureArg::Page(901) || self.state.items_seen > 0
@@ -555,8 +562,8 @@ pub struct FixtureModal {
     pub last_navigation: super::screen::NavPresentation,
     /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
     pub scrim_alpha: f32,
-    /// When set the dim is over the video plane and inherits this envelope (`Scrim::over_video`).
-    pub scrim_corners: Option<[[f32; 3]; 4]>,
+    /// When set the dim is over the video plane (`Scrim::over_video`).
+    pub scrim_over_video: bool,
     /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
     pub scrim_lift: Option<super::screen::ScrimLift>,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
@@ -573,6 +580,11 @@ pub struct FixtureModal {
     /// What this surface names as its opener (`Screen::opener`): the host page and the element
     /// whose card the opener lift owns. `None` like every surface that opens from nothing.
     pub opener: Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)>,
+    /// The `dt_us` of every `Tick` this surface was delivered, in order.
+    pub tick_dts: Vec<u32>,
+    /// One entry per [`Screen::draw_held`] call: whether the painter it was handed was LIVE (not
+    /// the text recorder a held surface's `draw` is walked through).
+    pub held_faces: Vec<bool>,
 }
 
 thread_local! {
@@ -607,12 +619,14 @@ impl FixtureModal {
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
-            scrim_corners: None,
+            scrim_over_video: false,
             scrim_lift: None,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
             render: RenderReport::NONE,
             opener: None,
+            tick_dts: Vec::new(),
+            held_faces: Vec::new(),
         }
     }
 
@@ -638,7 +652,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -755,6 +769,7 @@ impl Machine<FixtureHost> for FixtureModal {
                 }
             }
             ScreenEvent::Tick(t) => {
+                self.tick_dts.push(t.dt_us);
                 // the surface's own foreground spring: reports motion while it settles
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
@@ -798,10 +813,13 @@ impl Screen<FixtureHost> for FixtureModal {
     fn opener(&self) -> Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)> {
         self.opener
     }
+    fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.held_faces.push(!f.painter.records());
+    }
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
-        if let Some(c) = self.scrim_corners {
-            return super::screen::Scrim::over_video(self.scrim_alpha, Some(c));
+        if self.scrim_over_video {
+            return super::screen::Scrim::over_video(self.scrim_alpha);
         }
         match self.scrim_lift {
             Some(lift) => super::screen::Scrim::lifting(self.scrim_alpha, lift),
@@ -922,7 +940,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
         })
     }
 }
@@ -987,19 +1005,6 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
     }
-    fn underlay_corners(&self, _cx: &Cx<'_, FixtureHost>) -> Option<[[f32; 3]; 4]> {
-        VIDEO_PLANE_CORNERS.with(|c| c.get())
-    }
-}
-
-thread_local! {
-    /// What [`VideoPlaneScreen::underlay_corners`] answers: a test's stand-in for the playing
-    /// item's envelope (`None`: no envelope to preload).
-    static VIDEO_PLANE_CORNERS: std::cell::Cell<Option<[[f32; 3]; 4]>> = const { std::cell::Cell::new(None) };
-}
-
-pub fn set_video_plane_corners(c: Option<[[f32; 3]; 4]>) {
-    VIDEO_PLANE_CORNERS.with(|v| v.set(c));
 }
 
 pub struct FixtureRig {
@@ -1021,7 +1026,7 @@ pub struct FixtureRig {
     pub clears: u32,
     scrim_name: std::ffi::CString,
     scrim_initial: std::ffi::CString,
-    scrim_labels: Vec<String>,
+    scrim_labels: Vec<super::widgets::TabFace>,
     scrim_expand: f32,
     scrim_chrome: bool,
     us: u64,
@@ -1055,10 +1060,10 @@ impl FixtureRig {
         }
     }
 
-    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str], expand: f32) {
+    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, faces: &[super::widgets::TabFace], expand: f32) {
         self.scrim_name = std::ffi::CString::new(name).unwrap();
         self.scrim_initial = std::ffi::CString::new(initial).unwrap();
-        self.scrim_labels = labels.iter().map(|s| (*s).to_owned()).collect();
+        self.scrim_labels = faces.to_vec();
         self.scrim_expand = expand;
         self.scrim_chrome = true;
     }
@@ -1086,7 +1091,7 @@ impl Rig<FixtureHost> for FixtureRig {
                 name: &self.scrim_name,
                 name_w: 0.0,
             },
-            labels: super::widgets::TabLabels { generation: 1, labels: &self.scrim_labels },
+            labels: super::widgets::TabLabels { generation: 1, faces: &self.scrim_labels },
             chip_expand: self.scrim_expand,
         })
     }
@@ -1244,6 +1249,15 @@ pub fn key(k: Key, at: Tick) -> InputEvent<u32> {
             at_edge: false,
         },
     }
+}
+
+/// [`key`]'s release: the same key, `Edge::Up`.
+pub fn key_up(k: Key, at: Tick) -> InputEvent<u32> {
+    let mut event = key(k, at);
+    if let InputKind::Key { edge, .. } = &mut event.kind {
+        *edge = plx_machine::machine::Edge::Up;
+    }
+    event
 }
 
 #[test]

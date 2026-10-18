@@ -163,11 +163,12 @@ fn every_tab_pill_round_trips_through_the_focus_packing() {
         (STRIP_SHOWS_ELEM, HomeReq::Tab(HomeTab::Shows)),
         (STRIP_SEARCH_ELEM, HomeReq::Tab(HomeTab::Search)),
         (STRIP_ACCOUNT_ELEM, HomeReq::Account),
+        (STRIP_ACCOUNT_ELEM + 1, HomeReq::Tab(HomeTab::Watchlist)),
     ];
     for (elem, want) in cases {
         assert_eq!(HomeScreen::request_for_strip(elem), Some(want));
     }
-    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 1), None);
+    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 2), None);
     for page_key in [HERO_PLAY_ELEM, HERO_INFO_ELEM, FIRST_ITEM_ELEM] {
         assert_eq!(HomeScreen::request_for_strip(page_key), None);
     }
@@ -1591,7 +1592,7 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     popped.pop_shelf_for_test(snapshot.view());
     assert_ne!(shelf_canon(&popped), rest, "a pop spring is part of the canon");
     // These extents are part of SHAPE, not merely runtime sequence lengths.
-    assert_eq!(HERO_NBTN, 2);
+    assert_eq!(HERO_NBTN, 3);
     assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
@@ -1846,6 +1847,37 @@ fn deck_press_is(mode: plx_media::route::DeckPress) -> DeckPressGuard {
     let prior = DeckPressGuard(plx_media::route::deck_press());
     plx_media::route::restore_deck_press(mode);
     prior
+}
+
+/// **Play carries the resume a stop left.** The stop's `Offset` patch reaches the Continue Watching
+/// card, and OK on it under the Play setting asks for that point, not for the one the card was
+/// drawn with before the stop (G8: a Play taken from a stale row resumed at the old offset).
+#[test]
+fn a_cards_play_carries_the_resume_point_a_stop_patched_in() {
+    use plx_data::stores::hubs::HubsCmd;
+    use plx_data::viewstate::{ViewAt, ViewEdit};
+    let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
+    let mut hubs = plx_data::stores::hubs::HubsStore::default();
+    hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
+    let play = |hubs: &plx_data::stores::hubs::HubsStore| {
+        let snapshot = hubs.snapshot();
+        let mut s = screen(snapshot.view());
+        let card = first_card(&s);
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(card),
+            &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        out.into_iter().find_map(|e| match e.fx {
+            Fx::App(AppFx::Home(HomeReq::Play { rk, resume_ns, .. })) => Some((rk, resume_ns)),
+            _ => None,
+        })
+    };
+    assert_eq!(play(&hubs), Some(("1".to_string(), 0)), "premise: the card has no resume point");
+    let edit = hubs.run(HubsCmd::ApplyView {
+        at: ViewAt::leaf(plx_plex::plex::ServerId::UNSET, "1"),
+        edit: ViewEdit::Offset { ms: 150_000 },
+    });
+    assert!(edit.changed, "the stop's offset reached the card");
+    assert_eq!(play(&hubs), Some(("1".to_string(), 150_000 * 1_000_000)));
 }
 
 #[test]
@@ -4611,4 +4643,600 @@ fn a_held_right_along_the_first_row_re_renders_the_chrome_glass_source_only_for_
         "a stale frame the heading did not cause: {frames:?}");
     assert!(stale <= 17, "{stale} stale frames of {}", frames.len());
     assert!(frames[frames.len() / 2..].iter().all(|f| !f.0), "the source is still churning half-way through the run");
+}
+
+// ---- animated card landings (the Continue Watching row) ----
+
+fn tick_n(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, from: u32, frames: u32) {
+    for f in 0..frames {
+        step(s, view, focus, &ScreenEvent::Tick(Tick { ms: (from + f) * 16, dt_us: 16_667 }));
+    }
+}
+
+/// A Home on the shelves (snap at 1) showing `items` Continue Watching cards, settled.
+fn landing_home(items: usize) -> (plx_data::pms::PmsState, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, items, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    tick_n(&mut s, snapshot.view(), None, 0, 6);
+    (state, s)
+}
+
+#[test]
+fn a_continue_watching_card_that_leaves_fades_out_as_a_ghost_of_the_previous_snapshot() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    assert!(!s.grid.shelves[0].landing_pending(), "premise: the first load played nothing");
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 2);
+    assert!(s.grid.shelves[0].has_ghosts(), "the removed card is still drawn, from the card the screen kept");
+    assert_eq!(s.ghost_cards.len(), 1, "the removed card is kept, by element");
+    assert_eq!(s.rows[0].elems.len(), 5);
+    tick_n(&mut s, after.view(), None, 20, 120);
+    assert!(!s.grid.shelves[0].landing_pending(), "the landing settled");
+    assert!(s.ghost_cards.is_empty(), "the removed cards are let go once nothing fades");
+}
+
+/// A ghost is the card that was removed, not a position in some publication: a later generation
+/// that lands while it fades neither replaces it nor makes it show another card.
+#[test]
+fn a_ghost_keeps_its_own_card_when_another_publication_lands_mid_fade() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let first = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, first.view(), None, 10, 2);
+    plx_data::pms::remove_test_item(&mut state, "5");
+    let second = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, second.view(), None, 20, 2);
+    let shelf = &s.grid.shelves[0];
+    let ghosts = s.ghost_source(shelf);
+    let mut rks: Vec<String> = (0..CardSource::<TestHost>::len(&ghosts)).map(|i| ghosts.item(i).expect("a kept card").rk.to_string()).collect();
+    rks.sort();
+    assert_eq!(rks, ["2", "5"], "each ghost is still the card that left");
+    tick_n(&mut s, second.view(), None, 30, 200);
+    assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].landing_pending());
+}
+
+#[test]
+fn a_continue_watching_card_that_arrives_fades_in() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(5);
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 6, plx_data::pms::HubState::Ready);
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 2);
+    assert_eq!(s.rows[0].elems.len(), 6);
+    assert!(s.grid.shelves[0].landing_pending(), "the arrival is playing");
+    tick_n(&mut s, after.view(), None, 20, 120);
+    assert!(!s.grid.shelves[0].landing_pending());
+}
+
+#[test]
+fn a_dormant_home_adopts_a_landing_without_playing_it() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    s.snap.jump(0.0);
+    s.snap_target = 0.0;
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 3);
+    assert!(!s.grid.shelves[0].landing_pending());
+    assert!(!s.grid.shelves[0].has_ghosts());
+}
+
+#[test]
+fn a_row_that_is_not_continue_watching_cuts() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 2, 6);
+    let before = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(before.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    tick_n(&mut s, before.view(), None, 0, 6);
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 3);
+    assert!(s.grid.shelves.iter().all(|sh| !sh.landing_pending() && !sh.has_ghosts()));
+}
+
+// ---- focus follows the show (layer-1 view state, 10b) ----
+
+/// A Home on the shelves showing `items` Continue Watching EPISODES, each of its own show
+/// (`show<rk>`), settled. A movie is the same card with `kind = 0` and no show.
+fn show_home(items: usize) -> (plx_data::pms::PmsState, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, items, plx_data::pms::HubState::Ready);
+    for i in 1..=items {
+        plx_data::pms::edit_test_item(&mut state, &i.to_string(), &|m| {
+            m.kind = 3;
+            m.show_rk = format!("show{}", m.rk);
+        });
+    }
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    tick_n(&mut s, snapshot.view(), None, 0, 6);
+    (state, s)
+}
+
+/// Land `state` on `s` with `focus` held, the way a publication reaches a mounted Home, and play
+/// the row's frames. Returns the key the engine would leave focus on (`Focusable::reconcile`).
+fn land_following(s: &mut HomeScreen, state: &plx_data::pms::PmsState, focus: FocusKey<u32>) -> FocusKey<u32> {
+    let after = plx_data::pms::hubs_snapshot(state);
+    let context = cx(after.view(), Some(focus));
+    s.sync_catalog(&context);
+    let seated = Focusable::<TestHost>::reconcile(s, focus, &context);
+    tick_n(s, after.view(), Some(seated), 10, 3);
+    seated
+}
+
+fn card_rk(state: &plx_data::pms::PmsState, col: usize) -> String {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    snapshot.view().hub(0).unwrap().items[col].rk.to_string()
+}
+
+#[test]
+fn a_next_episode_replacing_the_focused_tile_keeps_its_element_and_the_focus() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    // the server answers the finished episode "3" of show3 with its next one
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems, before, "the row keeps every element");
+    assert_eq!(seated, focus, "focus stays on the tile: no FocusMoved");
+    assert_eq!(card_rk(&state, 2), "31", "premise: the tile now holds the next episode");
+    assert!(!s.grid.shelves[0].landing_pending() && !s.grid.shelves[0].has_ghosts(),
+        "the same card changing its art is not a remove plus an insert");
+    assert!(s.ghost_cards.is_empty(), "no card was kept as a ghost");
+    // the old key is retired, the new one names the element
+    assert!(s.find_item(&HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching,
+        sid: plx_plex::plex::ServerId::UNSET, rk: "3".into() }).is_none());
+    assert!(s.find_item(&HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching,
+        sid: plx_plex::plex::ServerId::UNSET, rk: "31".into() }).is_some());
+}
+
+/// [`show_home`] with Continue Watching as the DECK row the product has (row 0, above a Recently
+/// Added shelf), which is what the store's visible-Home rules are phrased over.
+fn deck_home(items: usize) -> (plx_data::pms::PmsState, std::sync::Arc<plx_data::pms::PmsAdapter>, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_deck_home_for_test(&mut state, &adapter, items);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    tick_n(&mut s, snapshot.view(), None, 0, 6);
+    (state, adapter, s)
+}
+
+fn publish(state: &mut plx_data::pms::PmsState, adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
+    focused_hub: Option<usize>) -> bool {
+    plx_data::pms::run(state, adapter, plx_data::stores::hubs::HubsCmd::Publish {
+        home_top_visible: true, focused_hub, press_live: false }).changed
+}
+
+#[test]
+fn focus_follows_show_after_cw_commit() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, adapter, mut s) = deck_home(6);
+    assert_eq!(card_rk(&state, 2), "3", "premise: Continue Watching is the first row");
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    // a quiet read answered the finished episode "3" of show3 with its next one; it waits staged
+    plx_data::pms::stage_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    assert_eq!(card_rk(&state, 2), "3", "premise: the published row still holds the finished episode");
+    // the focus is on another row and nothing is pressed: the Continue Watching change lands
+    assert!(publish(&mut state, &adapter, Some(1)), "premise: the staged change was published");
+    assert_eq!(card_rk(&state, 2), "31", "premise: the tile now holds the next episode");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems, before, "the row keeps every element");
+    assert_eq!(seated, focus, "focus stays on the show's tile: no FocusMoved");
+    assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].has_ghosts(), "the same show is not a remove plus an insert");
+}
+
+#[test]
+fn a_cw_change_waits_while_the_focus_is_in_continue_watching() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, adapter, mut s) = deck_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::stage_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    assert!(!publish(&mut state, &adapter, Some(0)), "the focus is on the row that would change: nothing lands");
+    assert_eq!(card_rk(&state, 2), "3");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems, before, "and the row's elements are exactly as they were");
+    assert_eq!(seated, focus);
+    assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].has_ghosts());
+}
+
+#[test]
+fn the_show_leaving_the_row_seats_focus_at_the_same_index() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::remove_test_item(&mut state, "3");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems.len(), 5);
+    assert_eq!(s.rows[0].elems.iter().position(|&e| e == seated.elem), Some(2),
+        "the tile now at the same position takes the focus");
+    assert_eq!(seated.elem, before[3]);
+}
+
+#[test]
+fn the_last_show_leaving_the_row_seats_focus_on_the_new_last_tile() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(4);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[3] };
+    plx_data::pms::remove_test_item(&mut state, "4");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(seated.elem, before[2], "the index clamps to the row's end");
+}
+
+#[test]
+fn another_show_does_not_inherit_the_tile() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| { m.rk = "99".into(); m.show_rk = "showX".into(); });
+    land_following(&mut s, &state, focus);
+    assert_ne!(s.rows[0].elems[2], before[2], "a card of another show gets its own element");
+    assert!(!s.rows[0].elems.contains(&before[2]));
+    assert!(s.grid.shelves[0].landing_pending(), "it is an ordinary remove plus insert");
+}
+
+#[test]
+fn the_same_rating_key_and_show_on_another_server_does_not_inherit() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| { m.rk = "31".into(); m.sid = plx_plex::plex::ServerId::from_raw(1); });
+    land_following(&mut s, &state, focus);
+    assert_ne!(s.rows[0].elems[2], before[2], "the next episode on a friend's server is not this server's tile");
+}
+
+#[test]
+fn a_movie_has_no_show_and_keeps_the_clamp() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| { m.rk = "31".into(); m.kind = 0; m.show_rk.clear(); });
+    land_following(&mut s, &state, focus);
+    assert_ne!(s.rows[0].elems[2], before[2], "a card with no show never inherits");
+}
+
+#[test]
+fn two_tiles_of_one_show_each_keep_their_own_element() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    for rk in ["2", "5"] {
+        plx_data::pms::edit_test_item(&mut state, rk, &|m| m.show_rk = "shared".into());
+    }
+    let first = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(first.view(), None));
+    let before = s.rows[0].elems.clone();
+    plx_data::pms::edit_test_item(&mut state, "2", &|m| m.rk = "21".into());
+    plx_data::pms::edit_test_item(&mut state, "5", &|m| m.rk = "51".into());
+    let focus = FocusKey { entry: s.entry, elem: before[4] };
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems, before, "both replaced tiles keep their elements, in column order");
+    assert_eq!(seated, focus);
+}
+
+#[test]
+fn a_window_that_slid_is_paging_not_a_replacement() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::slide_test_window(&mut state, 3);
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    land_following(&mut s, &state, focus);
+    assert_ne!(s.rows[0].elems[2], before[2], "a card of the same show in a slid window does not inherit");
+}
+
+// ---- review round: the return half, order, and the existing tile ----
+
+fn memory_of(s: &HomeScreen) -> HomeMemory {
+    let PageMemory::Home(memory) = <HomeScreen as Screen<TestHost>>::memory(s) else { unreachable!() };
+    memory
+}
+
+/// A Home evicted while the player ran and mounted again on the CURRENT catalog, then handed its
+/// memory (`ScreenEvent::RestoreMemory`): the path every return to an evicted page takes.
+fn remount(state: &plx_data::pms::PmsState, memory: HomeMemory) -> HomeScreen {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let mut s = screen(snapshot.view());
+    step(&mut s, snapshot.view(), None, &ScreenEvent::RestoreMemory(PageMemory::Home(memory)));
+    s
+}
+
+#[test]
+fn an_evicted_home_remounted_on_the_next_episode_keeps_the_remembered_tile() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let memory = memory_of(&s);
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    let back = remount(&state, memory);
+    assert_eq!(back.rows[0].elems, before, "the tile that held episode 3 holds episode 31 on the same element");
+    assert!(back.find_item(&HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching,
+        sid: plx_plex::plex::ServerId::UNSET, rk: "3".into() }).is_none(), "the old episode's key is retired, not re-added");
+}
+
+#[test]
+fn an_evicted_home_remounted_after_a_card_left_recovers_its_cursor_without_a_collision() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let memory = memory_of(&s);
+    // the movie-less, show-less case: card 3 left the row and nothing replaced it, so the fresh
+    // page numbers its cards from 1 again and the remembered numbers name different cards
+    plx_data::pms::remove_test_item(&mut state, "3");
+    let back = remount(&state, memory);
+    assert_eq!(back.rows[0].elems.len(), 5);
+    let mut seen = std::collections::HashSet::new();
+    assert!(back.items.iter().all(|k| seen.insert(k.elem)), "no element names two cards");
+}
+
+#[test]
+fn the_remembered_shows_are_in_column_order() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, s) = show_home(6);
+    let memory = memory_of(&s);
+    let elems: Vec<u32> = memory.cw_shows.iter().map(|(elem, ..)| *elem).collect();
+    assert_eq!(elems, s.rows[0].elems, "row order, never a hash map's");
+}
+
+#[test]
+fn a_next_episode_that_is_already_in_the_row_takes_the_focus_of_the_finished_one() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    // card 5 is another episode of card 3's show
+    plx_data::pms::edit_test_item(&mut state, "5", &|m| m.show_rk = "show3".into());
+    let first = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(first.view(), None));
+    tick_n(&mut s, first.view(), None, 0, 6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::remove_test_item(&mut state, "3");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(seated.elem, before[4], "focus follows the show to its next episode, not to the same index");
+}
+
+#[test]
+fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    // Continue Watching is ordered by last viewed: the next episode comes first
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    plx_data::pms::promote_test_item(&mut state, "31");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(card_rk(&state, 0), "31", "premise: the next episode is first");
+    assert_eq!(s.rows[0].elems[0], before[2], "the element moved to column 0 with its card");
+    assert_eq!(seated, focus, "and the focus is still on it");
+}
+
+#[path = "hero_watchlist_tests.rs"]
+mod hero_watchlist;
+
+/// The billboard as it is on screen: how much of the page the hero art covers, from the
+/// selected art and any art held beneath it while the selection changes. `0` is the bare wash.
+fn billboard_cover(s: &HomeScreen) -> f32 {
+    let incoming = reveal(s.backdrop.tex.0, &s.backdrop.art);
+    let held = reveal(s.backdrop.outgoing_tex.0, &s.backdrop.outgoing_art);
+    1.0 - (1.0 - incoming) * (1.0 - held)
+}
+
+/// What the screen's carousel names, by rating key.
+fn carousel_rk(s: &HomeScreen) -> Option<String> {
+    s.carousel.as_ref().map(|(_, rk)| rk.clone())
+}
+
+/// A Home of `items` Continue Watching cards whose billboard rests on `on` with its art up, the
+/// way the player found it: the frame that covered it saw the art fully revealed. Delivers the
+/// art the billboard asked for, except `withhold`.
+fn home_resting_on(
+    state: &plx_data::pms::PmsState,
+    on: &str,
+    withhold: &[&str],
+) -> HomeScreen {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let view = snapshot.view();
+    let at = (0..view.hero_count()).find(|&i| view.hero(i).unwrap().item.rk == on).expect("premise: a hero");
+    let mut s = screen(view);
+    s.carousel = Some((view.hero(at).unwrap().item.sid, on.to_string()));
+    let _ = step(&mut s, view, None, &hero_tick(16));
+    let probed = HERO_ART.with(|a| a.borrow().probed.clone());
+    for path in probed.iter().collect::<std::collections::BTreeSet<_>>() {
+        if !withhold.iter().any(|w| w == path) {
+            deliver_hero_art(path);
+        }
+    }
+    for frame in 2..=125u32 {
+        let _ = step(&mut s, view, None, &hero_tick(frame * 16));
+    }
+    assert_eq!(carousel_rk(&s).as_deref(), Some(on), "premise: the billboard rests on {on}");
+    assert!(reveal(s.backdrop.tex.0, &s.backdrop.art) > 0.999, "premise: its art is up");
+    let _ = step(&mut s, view, None, &ScreenEvent::Cover);
+    s
+}
+
+/// The return from the player over a catalog the refetch changed: the landing arrives under the
+/// dip (`StoreChanged` while covered — `app/run.rs` holds the dip for it), then the page is
+/// uncovered and runs `frames` frames. Answers each frame's (carousel rk, billboard cover).
+fn return_over(s: &mut HomeScreen, state: &plx_data::pms::PmsState, from: u32, frames: u32) -> Vec<(Option<String>, f32)> {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let view = snapshot.view();
+    let _ = step(s, view, None, &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), view.generation));
+    let _ = step(s, view, None, &ScreenEvent::Uncover);
+    (from..from + frames)
+        .map(|frame| {
+            let _ = step(s, view, None, &hero_tick(frame * 16));
+            (carousel_rk(s), billboard_cover(s))
+        })
+        .collect()
+}
+
+/// **Owner field report (2026-10-16): "after I exit the playback, I got an unpleasant home hero
+/// reload" — the hero blinks through black, and its logo and text load again.** A played film
+/// that was the billboard leaves Continue Watching when it is finished, so the post-playback
+/// refetch (`app/run.rs`, `HubsCmd::RefetchHubs`) rebuilds the hero pool without it.
+/// `reconcile_carousel` then restarted the rotation at hero 0 — another title whose backdrop the
+/// billboard had no reason to hold (only the shown hero and its two neighbours are demand) — and
+/// re-keyed the art to it with nothing beneath: the bare wash, then the new art dissolving in.
+/// Reproduced on the simulator against the mock (`/:/scrobble` of the hero before BACK:
+/// `reconcile_carousel reset from Some("101")`, `bind changed 101 -> 102`).
+///
+/// The owner's rule for the Continue Watching focus applies to the billboard too: the show's next
+/// episode, else the SAME INDEX — the hero after it, whose backdrop the billboard already holds as
+/// its next neighbour. And no frame of the change shows the bare wash.
+#[test]
+fn a_finished_hero_hands_the_billboard_to_its_successor_without_a_bare_frame() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &[]);
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| items.retain(|m| m.rk != "3"));
+    let trace = return_over(&mut s, &state, 126, 40);
+    assert!(
+        trace.iter().all(|(rk, _)| rk.as_deref() == Some("4")),
+        "the billboard goes to the hero that took the finished one's place, not back to the first: \
+         (carousel, cover) per frame {trace:?}"
+    );
+    assert!(
+        trace.iter().all(|&(_, cover)| cover > 0.999),
+        "no frame of the return may show the bare wash under the billboard: {trace:?}"
+    );
+}
+
+/// The same return when the replacement's art is NOT resident (a pool whose order the refetch
+/// rewrote; a texture the cache let go): the art that was showing stays up under the billboard
+/// until the new one is decoded and uploaded, and the new one then dissolves in OVER it. A genuinely
+/// new picture may load; it may never load over black.
+#[test]
+fn a_replacement_hero_without_resident_art_loads_over_the_art_it_replaces() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &["/art/4"]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| items.retain(|m| m.rk != "3"));
+    let waiting = return_over(&mut s, &state, 126, 20);
+    assert!(
+        waiting.iter().all(|&(_, cover)| cover > 0.999),
+        "while the new art is in flight the old one must hold the billboard: {waiting:?}"
+    );
+    assert!(
+        s.backdrop.outgoing_tex.0 == shown,
+        "…and it is the art that was showing (held tex {}, shown {shown})",
+        s.backdrop.outgoing_tex.0
+    );
+
+    deliver_hero_art("/art/4");
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut landing = Vec::new();
+    for frame in 146..=270u32 {
+        let _ = step(&mut s, view, None, &hero_tick(frame * 16));
+        landing.push(billboard_cover(&s));
+    }
+    assert!(landing.iter().all(|&c| c > 0.999), "the new art dissolves in over the old: {landing:?}");
+    assert!(s.backdrop.tex.0 != 0 && s.backdrop.tex.0 != shown, "the new art is the billboard's");
+    assert_eq!(s.backdrop.outgoing_tex.0, 0, "and once it is up nothing is held beneath it");
+}
+
+/// A watched EPISODE is replaced in Continue Watching by the show's next one, under another rating
+/// key, at the head of the deck. The billboard follows the show (the Continue Watching focus's own
+/// rule, `rebind_shows`), and since an episode's backdrop is the show's, the art never changes.
+#[test]
+fn a_watched_episode_hands_the_billboard_to_the_shows_next_episode() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| {
+        for m in items.iter_mut() {
+            let m = std::sync::Arc::make_mut(m);
+            m.kind = 3;
+            m.show_rk = format!("show{}", m.rk);
+        }
+    });
+    let mut s = home_resting_on(&state, "3", &[]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| {
+        let at = items.iter().position(|m| m.rk == "3").unwrap();
+        let mut next = (*items.remove(at)).clone();
+        next.rk = "3n".into();
+        items.insert(0, std::sync::Arc::new(next));
+    });
+    let trace = return_over(&mut s, &state, 126, 40);
+    assert!(
+        trace.iter().all(|(rk, cover)| rk.as_deref() == Some("3n") && *cover > 0.999),
+        "the billboard follows the show to its next episode, art up throughout: {trace:?}"
+    );
+    assert_eq!(s.backdrop.tex.0, shown, "the show's backdrop, the one already showing");
+}
+
+/// The unchanged half of the contract: a refetch that brings the same catalog back moves nothing
+/// on the billboard — the same hero, the same texture, fully up from the first uncovered frame.
+#[test]
+fn an_unchanged_refetch_leaves_the_billboard_exactly_as_it_was() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 5, plx_data::pms::HubState::Ready);
+    let mut s = home_resting_on(&state, "3", &[]);
+    let shown = s.backdrop.tex.0;
+
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |_| {});
+    let trace = return_over(&mut s, &state, 126, 20);
+    assert!(
+        trace.iter().all(|(rk, cover)| rk.as_deref() == Some("3") && *cover > 0.999),
+        "{trace:?}"
+    );
+    assert_eq!(s.backdrop.tex.0, shown);
 }

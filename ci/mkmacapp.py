@@ -39,6 +39,8 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / 'ci'))
+from rust_toolchain import pinned  # noqa: E402
 
 # A dependency under these prefixes is the OS's own: present on every Mac, in the dyld shared
 # cache, and not ours to copy (copying one is how you ship a library older than the kernel).
@@ -124,7 +126,7 @@ def build_binary(tdir: Path) -> Path:
     there is nothing to take: `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time.
     """
     print("==> building plxnative-sim (release, no dev features)")
-    run("cargo", "build", "--manifest-path", REPO / "rust-modules/Cargo.toml",
+    run("cargo", "+" + pinned(REPO), "build", "--manifest-path", REPO / "rust-modules/Cargo.toml",
         "--target-dir", tdir, "--release", "--no-default-features",
         "--features", "hostsim", "--bin", "plxnative-sim",
         env=dict(os.environ, CARGO_INCREMENTAL="0"))
@@ -276,8 +278,10 @@ def main():
 
     # paths::app_dir resolves Contents/Resources: both fonts and the dynamically
     # loaded native subtitle renderer must be placed there.
-    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
+    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "appfont-emoji.ttf", "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
         shutil.copy2(REPO / "pkg" / f, res / f)
+    # The subtitle faces (tools/cut-noto-subs.py): paths::app_dir/fonts/subs, read by player::ass::fonts.
+    shutil.copytree(REPO / "pkg" / "fonts" / "subs", res / "fonts" / "subs")
     shutil.copy2(REPO / "LICENSE", res / "LICENSE.txt")
     shutil.copy2(REPO / "LICENSING.md", res / "LICENSING.md")
     shutil.copytree(REPO / "licenses", res / "licenses")

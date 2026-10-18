@@ -372,8 +372,10 @@ pub struct Metadata {
     pub child_count: i64,
     #[serde(rename = "updatedAt", default, deserialize_with = "de_i64")]
     pub updated_at: i64,
-    #[serde(rename = "parentIndex", default, deserialize_with = "de_i64")]
-    pub parent_index: i64,
+    /// `None` when the server sent none — kept apart from a real `0` (Specials), which a plain
+    /// default would fold it into.
+    #[serde(rename = "parentIndex", default, deserialize_with = "de_opt_i64")]
+    pub parent_index: Option<i64>,
     #[serde(rename = "parentRatingKey", default)]
     pub parent_rating_key: String, // season → its show
     #[serde(rename = "parentTitle", default)]
@@ -382,6 +384,16 @@ pub struct Metadata {
     pub grandparent_rating_key: String, // episode → its show
     #[serde(rename = "grandparentTitle", default)]
     pub grandparent_title: String, // episode → show title
+    /// An episode's SHOW guid (`plex://show/<hex>`): the watchlist identity of "Add Show to
+    /// Watchlist". Empty on a movie, and on an episode whose server did not send it (then the show's
+    /// own record is read: [`resolve_catalog_hex`]). A season row carries no `grandparentGuid`.
+    #[serde(rename = "grandparentGuid", default, deserialize_with = "de_str")]
+    pub grandparent_guid: String,
+    /// A season's SHOW guid (`plex://show/<hex>`); an episode's is its season's
+    /// (`plex://season/…`), which names no catalog title. [`Metadata::show_guid_hex`] reads this
+    /// for a season row and `grandparentGuid` for an episode.
+    #[serde(rename = "parentGuid", default, deserialize_with = "de_str")]
+    pub parent_guid: String,
     #[serde(rename = "leafCount", default, deserialize_with = "de_i64")]
     pub leaf_count: i64,
     #[serde(rename = "viewedLeafCount", default, deserialize_with = "de_i64")]
@@ -449,7 +461,44 @@ pub struct Metadata {
     pub audience_rating_image: String,
 }
 
+/// The 12 bytes of a catalog id, from a `plex://movie/<hex>` or `plex://show/<hex>` guid. `None` for
+/// any other scheme (`plex://episode/…`, `local://…`, `com.plexapp.agents…`), a malformed tail, or
+/// an empty string: such an item has no Watchlist identity, so it gets no row and no disc.
+/// Decoded ONCE, where a row is built; nothing downstream re-parses the string.
+pub fn catalog_hex_of_guid(guid: &str) -> Option<[u8; 12]> {
+    let tail = guid.strip_prefix("plex://movie/").or_else(|| guid.strip_prefix("plex://show/"))?;
+    if tail.len() != 24 || !tail.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 12];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&tail[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// WORKER. The catalog id to write to: the one the row already carries, else the one the item's own
+/// server record names. `fetch` is `|| client.metadata(rk).map(|m| m.guid)` (or `grandparent`'s
+/// `show_rk` read for an episode's show); it is not called when `known` is set, so a press from a
+/// row that was decoded with its guid costs no round trip. `None` is a server that did not answer
+/// or an item with no `plex://movie|show` identity.
+pub fn resolve_catalog_hex(known: Option<[u8; 12]>, fetch: impl FnOnce() -> Option<String>) -> Option<[u8; 12]> {
+    known.or_else(|| fetch().and_then(|g| catalog_hex_of_guid(&g)))
+}
+
 impl Metadata {
+    /// This item's own catalog id (movie or show), decoded once.
+    pub fn guid_hex(&self) -> Option<[u8; 12]> {
+        catalog_hex_of_guid(&self.guid)
+    }
+
+    /// The show's catalog id for a season (its `parentGuid`) or an episode (its
+    /// `grandparentGuid`), decoded once.
+    pub fn show_guid_hex(&self) -> Option<[u8; 12]> {
+        let guid = if self.kind == "season" { &self.parent_guid } else { &self.grandparent_guid };
+        catalog_hex_of_guid(guid)
+    }
+
     /// Media[0].Part[0] — the primary playable part (None for a show container, which carries
     /// no Media). The part holds the direct-play `key` and the `Stream[]` list.
     pub fn first_part(&self) -> Option<&MediaPart> {
@@ -1093,7 +1142,48 @@ fn de_ultrablur<'de, D: serde::Deserializer<'de>>(
 
 #[cfg(test)]
 mod tests {
-    use super::Envelope;
+    use super::{catalog_hex_of_guid, resolve_catalog_hex, Envelope};
+
+    const HEX: &str = "5d7768264de0ee001fcc87e4";
+    const BYTES: [u8; 12] = [0x5d, 0x77, 0x68, 0x26, 0x4d, 0xe0, 0xee, 0x00, 0x1f, 0xcc, 0x87, 0xe4];
+
+    #[test]
+    fn guid_and_show_guid_decode_once_to_bytes_when_present() {
+        let json = format!(
+            r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"1","type":"episode","guid":"plex://episode/5fbd929d55d986002d63c021","grandparentGuid":"plex://show/{HEX}"}},
+               {{"ratingKey":"2","type":"movie","guid":"plex://movie/{HEX}"}}]}}}}"#
+        );
+        let mc = serde_json::from_slice::<Envelope>(json.as_bytes()).expect("parse").media_container;
+        assert_eq!(mc.metadata[0].guid_hex(), None, "an episode guid is not a watchlist identity");
+        assert_eq!(mc.metadata[0].show_guid_hex(), Some(BYTES));
+        assert_eq!(mc.metadata[1].guid_hex(), Some(BYTES));
+        assert_eq!(mc.metadata[1].show_guid_hex(), None, "a movie has no show");
+    }
+
+    #[test]
+    fn absent_or_malformed_guids_decode_to_none() {
+        for g in [
+            "", "local://1", "plex://episode/5d7768264de0ee001fcc87e4", "plex://movie/", "plex://movie/5d77",
+            "plex://movie/5d7768264de0ee001fcc87zz", "plex://movie/5d7768264de0ee001fcc87e4aa",
+            "plex://movie/5d7768264de0ee001fcc87é", "com.plexapp.agents.imdb://tt0000001?lang=en",
+        ] {
+            assert_eq!(catalog_hex_of_guid(g), None, "{g:?}");
+        }
+        assert_eq!(catalog_hex_of_guid(&format!("plex://show/{HEX}")), Some(BYTES));
+        assert_eq!(catalog_hex_of_guid(&format!("plex://movie/{}", HEX.to_uppercase())), Some(BYTES));
+        let mc = serde_json::from_slice::<Envelope>(br#"{"MediaContainer":{"Metadata":[{"ratingKey":"3"}]}}"#)
+            .expect("parse")
+            .media_container;
+        assert_eq!((mc.metadata[0].guid_hex(), mc.metadata[0].show_guid_hex()), (None, None));
+    }
+
+    #[test]
+    fn a_known_hex_is_never_fetched_and_an_absent_one_resolves_through_the_fetch() {
+        assert_eq!(resolve_catalog_hex(Some(BYTES), || panic!("no round trip")), Some(BYTES));
+        assert_eq!(resolve_catalog_hex(None, || Some(format!("plex://movie/{HEX}"))), Some(BYTES));
+        assert_eq!(resolve_catalog_hex(None, || Some("local://9".into())), None);
+        assert_eq!(resolve_catalog_hex(None, || None), None);
+    }
 
     /// The `Media[]` technical fields feed the resolution badge and (later) the quality ladder, and
     /// PMS is free to string-encode any of them. A strict field there does not lose one number —

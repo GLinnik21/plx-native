@@ -11,6 +11,10 @@
     "value": "Sign in",
     "description": "browse action sign_in"
   },
+  "browse.action.use_another_account": {
+    "value": "Use another account",
+    "description": "Sign-in read-out primary button when the signed-in Plex account has no server: starts a fresh QR sign-in so a different account can be used."
+  },
   "browse.action.more": {
     "value": "MORE",
     "description": "browse action more"
@@ -632,38 +636,46 @@
   },
   "browse.diagnostics.idle": {
     "value": "Idle",
-    "description": "browse diagnostics idle"
+    "translate": false,
+    "description": "Diagnostics panel playback state: nothing loaded yet."
   },
   "browse.diagnostics.resolving": {
     "value": "Resolving",
-    "description": "browse diagnostics resolving"
+    "translate": false,
+    "description": "Diagnostics panel playback state: the stream address is being resolved."
   },
   "browse.diagnostics.connecting": {
     "value": "Connecting",
-    "description": "browse diagnostics connecting"
+    "translate": false,
+    "description": "Diagnostics panel playback state: connecting to the server."
   },
   "browse.diagnostics.buffering": {
     "value": "Buffering",
-    "description": "browse diagnostics buffering"
+    "translate": false,
+    "description": "Diagnostics panel playback state: waiting for media to buffer."
   },
   "browse.diagnostics.seeking": {
     "value": "Seeking",
-    "description": "browse diagnostics seeking"
+    "translate": false,
+    "description": "Diagnostics panel playback state: a seek is in flight."
   },
   "browse.diagnostics.playing": {
     "value": "Playing",
-    "description": "browse diagnostics playing"
+    "translate": false,
+    "description": "Diagnostics panel playback state: playing."
   },
   "browse.diagnostics.error": {
     "value": "Playback error",
-    "description": "browse diagnostics error"
+    "translate": false,
+    "description": "Diagnostics panel playback state: the player failed."
   },
   "browse.diagnostics.paused": {
     "value": "{state} (paused)",
     "args": {
       "state": "str"
     },
-    "description": "browse diagnostics paused"
+    "translate": false,
+    "description": "Diagnostics panel: the playback state with a paused marker."
   },
   "browse.diagnostics.stalled": {
     "value": "{state} (stalled {seconds} s)",
@@ -671,7 +683,8 @@
       "seconds": "i64",
       "state": "str"
     },
-    "description": "browse diagnostics stalled"
+    "translate": false,
+    "description": "Diagnostics panel: the playback state with the seconds it has made no progress."
   },
   "browse.auth.timeout": {
     "value": "Sign-in timed out — try again.",
@@ -752,354 +765,442 @@
   },
   "browse.diagnostics.title": {
     "value": "Diagnostics",
-    "description": "browse diagnostics title"
+    "translate": false,
+    "description": "Diagnostics panel title."
   },
   "browse.diagnostics.unknown_device": {
     "value": "unknown — nyx did not answer",
+    "translate": false,
     "description": "Diagnostics panel: unknown device"
   },
   "browse.diagnostics.unknown": {
     "value": "unknown",
+    "translate": false,
     "description": "Diagnostics panel: unknown"
   },
   "browse.diagnostics.no_hevc": {
     "value": "no HEVC",
+    "translate": false,
     "description": "Diagnostics panel: no hevc"
   },
   "browse.diagnostics.no_vp9": {
     "value": "no VP9",
+    "translate": false,
     "description": "Diagnostics panel: no vp9"
   },
   "browse.diagnostics.device_table": {
     "value": "device table",
+    "translate": false,
     "description": "Diagnostics panel: device table"
   },
   "browse.diagnostics.assumed": {
     "value": "ASSUMED",
+    "translate": false,
     "description": "Diagnostics panel: assumed"
   },
   "browse.diagnostics.pipeline_fps": {
     "value": "pipeline says",
+    "translate": false,
     "description": "Diagnostics panel: pipeline fps"
   },
   "browse.diagnostics.declared_fps": {
     "value": "declared",
+    "translate": false,
     "description": "Diagnostics panel: declared fps"
   },
   "browse.diagnostics.unopened": {
     "value": "stream never opened",
+    "translate": false,
     "description": "Diagnostics panel: unopened"
   },
   "browse.diagnostics.no_connection": {
     "value": "no connection",
+    "translate": false,
     "description": "Diagnostics panel: no connection"
   },
   "browse.diagnostics.refused": {
     "value": "REFUSED",
+    "translate": false,
     "description": "Diagnostics panel: refused"
   },
   "browse.diagnostics.completed": {
     "value": "completed",
+    "translate": false,
     "description": "Diagnostics panel: completed"
   },
   "browse.diagnostics.waiting": {
     "value": "waiting",
+    "translate": false,
     "description": "Diagnostics panel: waiting"
   },
   "browse.diagnostics.no_callbacks": {
     "value": "no callbacks",
+    "translate": false,
     "description": "Diagnostics panel: no callbacks"
   },
   "browse.diagnostics.nothing_demuxed": {
     "value": "NOTHING demuxed",
+    "translate": false,
     "description": "Diagnostics panel: nothing demuxed"
   },
   "browse.diagnostics.unknown_os": {
     "value": "webOS unknown — os_info.json unreadable",
+    "translate": false,
     "description": "Diagnostics panel: unknown os"
   },
   "browse.diagnostics.standalone": {
     "value": "standalone · no PMS",
+    "translate": false,
     "description": "Diagnostics panel: standalone"
   },
   "browse.diagnostics.remote": {
     "value": "remote",
+    "translate": false,
     "description": "Diagnostics panel: remote"
   },
   "browse.diagnostics.relay": {
     "value": "relay",
+    "translate": false,
     "description": "Diagnostics panel: relay"
   },
   "browse.diagnostics.unknown_link": {
     "value": "link unknown",
+    "translate": false,
     "description": "Diagnostics panel: unknown link"
   },
   "browse.diagnostics.progressive": {
     "value": "progressive",
+    "translate": false,
     "description": "Diagnostics panel: progressive"
   },
   "browse.diagnostics.direct_play": {
     "value": "direct play",
+    "translate": false,
     "description": "Diagnostics panel: direct play"
   },
   "browse.diagnostics.remux": {
     "value": "remux (stream copy)",
+    "translate": false,
     "description": "Diagnostics panel: remux"
   },
   "browse.diagnostics.transcode": {
     "value": "transcode (re-encode)",
+    "translate": false,
     "description": "Diagnostics panel: transcode"
   },
   "browse.diagnostics.exported_window": {
     "value": "exported window",
+    "translate": false,
     "description": "Diagnostics panel: exported window"
   },
   "browse.diagnostics.no_window": {
     "value": "NO WINDOW",
+    "translate": false,
     "description": "Diagnostics panel: no window"
   },
   "browse.diagnostics.window_ready": {
     "value": "window ready",
+    "translate": false,
     "description": "Diagnostics panel: window ready"
   },
   "browse.diagnostics.not_placed": {
     "value": "not placed",
+    "translate": false,
     "description": "Diagnostics panel: not placed"
   },
   "browse.diagnostics.placement_failed": {
     "value": "PLACE FAILED (rv=0)",
+    "translate": false,
     "description": "Diagnostics panel: placement failed"
   },
   "browse.diagnostics.unavailable": {
     "value": "NOT AVAILABLE",
+    "translate": false,
     "description": "Diagnostics panel: unavailable"
   },
   "browse.diagnostics.unbound": {
     "value": "init'd · NOT bound",
+    "translate": false,
     "description": "Diagnostics panel: unbound"
   },
   "browse.diagnostics.binding": {
     "value": "bind sent",
+    "translate": false,
     "description": "Diagnostics panel: binding"
   },
   "browse.diagnostics.streaming": {
     "value": "streaming",
+    "translate": false,
     "description": "Diagnostics panel: streaming"
   },
   "browse.diagnostics.none_yet": {
     "value": "none yet",
+    "translate": false,
     "description": "Diagnostics panel: none yet"
   },
   "browse.diagnostics.since_seek": {
     "value": "0 — since seek",
+    "translate": false,
     "description": "Diagnostics panel: since seek"
   },
   "browse.diagnostics.auto_original": {
     "value": "Auto · Original",
+    "translate": false,
     "description": "Diagnostics panel: auto original"
   },
   "browse.diagnostics.auto_hls": {
     "value": "Auto · HLS",
+    "translate": false,
     "description": "Diagnostics panel: auto hls"
   },
   "browse.diagnostics.auto_idle": {
     "value": "Auto · controller idle",
+    "translate": false,
     "description": "Diagnostics panel: auto idle"
   },
   "browse.diagnostics.manual_inactive": {
     "value": "inactive · manual quality",
+    "translate": false,
     "description": "Diagnostics panel: manual inactive"
   },
   "browse.diagnostics.not_sampled": {
     "value": "not sampled",
+    "translate": false,
     "description": "Diagnostics panel: not sampled"
   },
   "browse.diagnostics.first_measurement": {
     "value": "waiting for first measurement",
+    "translate": false,
     "description": "Diagnostics panel: first measurement"
   },
   "browse.diagnostics.not_computed": {
     "value": "not computed",
+    "translate": false,
     "description": "Diagnostics panel: not computed"
   },
   "browse.diagnostics.budget_pending": {
     "value": "waiting for conservative budget",
+    "translate": false,
     "description": "Diagnostics panel: budget pending"
   },
   "browse.diagnostics.timestamps_idle": {
     "value": "waiting for media timestamps · controller idle",
+    "translate": false,
     "description": "Diagnostics panel: timestamps idle"
   },
   "browse.diagnostics.timestamps": {
     "value": "waiting for media timestamps",
+    "translate": false,
     "description": "Diagnostics panel: timestamps"
   },
   "browse.diagnostics.filling": {
     "value": "filling",
+    "translate": false,
     "description": "Diagnostics panel: filling"
   },
   "browse.diagnostics.draining": {
     "value": "draining",
+    "translate": false,
     "description": "Diagnostics panel: draining"
   },
   "browse.diagnostics.steady": {
     "value": "steady",
+    "translate": false,
     "description": "Diagnostics panel: steady"
   },
   "browse.diagnostics.no_deficit": {
     "value": "no conservative deficit",
+    "translate": false,
     "description": "Diagnostics panel: no deficit"
   },
   "browse.diagnostics.direct_unsampled": {
     "value": "not sampled · direct play",
+    "translate": false,
     "description": "Diagnostics panel: direct unsampled"
   },
   "browse.diagnostics.copy_unsampled": {
     "value": "not sampled · stream copy",
+    "translate": false,
     "description": "Diagnostics panel: copy unsampled"
   },
   "browse.diagnostics.timing_unsampled": {
     "value": "active · timing not sampled",
+    "translate": false,
     "description": "Diagnostics panel: timing unsampled"
   },
   "browse.diagnostics.unknown_raster": {
     "value": "unknown raster",
+    "translate": false,
     "description": "Diagnostics panel: unknown raster"
   },
   "browse.diagnostics.awaiting_frames": {
     "value": "awaiting frames",
+    "translate": false,
     "description": "Diagnostics panel: awaiting frames"
   },
   "browse.diagnostics.none_idle": {
     "value": "none · controller idle",
+    "translate": false,
     "description": "Diagnostics panel: none idle"
   },
   "browse.diagnostics.fixed_user": {
     "value": "fixed by user",
+    "translate": false,
     "description": "Diagnostics panel: fixed user"
   },
   "browse.diagnostics.watching_original": {
     "value": "watching Original",
+    "translate": false,
     "description": "Diagnostics panel: watching original"
   },
   "browse.diagnostics.hold_current": {
     "value": "hold current",
+    "translate": false,
     "description": "Diagnostics panel: hold current"
   },
   "browse.diagnostics.checking_original": {
     "value": "checking Original link",
+    "translate": false,
     "description": "Diagnostics panel: checking original"
   },
   "browse.diagnostics.recover_original": {
     "value": "switching back to Original",
+    "translate": false,
     "description": "Diagnostics panel: recover original"
   },
   "browse.diagnostics.response_unchanged": {
     "value": "hold · refreshed response unchanged",
+    "translate": false,
     "description": "Diagnostics panel: response unchanged"
   },
   "browse.diagnostics.starting": {
     "value": "starting",
+    "translate": false,
     "description": "Diagnostics panel: starting"
   },
   "browse.diagnostics.no_adaptive": {
     "value": "no adaptive session",
+    "translate": false,
     "description": "Diagnostics panel: no adaptive"
   },
   "browse.diagnostics.controller_inactive": {
     "value": "adaptive controller inactive",
+    "translate": false,
     "description": "Diagnostics panel: controller inactive"
   },
   "browse.diagnostics.sample_sustains": {
     "value": "sample sustains source demand",
+    "translate": false,
     "description": "Diagnostics panel: sample sustains"
   },
   "browse.diagnostics.sample_below": {
     "value": "sample below source demand",
+    "translate": false,
     "description": "Diagnostics panel: sample below"
   },
   "browse.diagnostics.decision_pending": {
     "value": "waiting for decision",
+    "translate": false,
     "description": "Diagnostics panel: decision pending"
   },
   "browse.diagnostics.original_rejected": {
     "value": "PMS rejected Original source",
+    "translate": false,
     "description": "Diagnostics panel: original rejected"
   },
   "browse.diagnostics.original_timeout": {
     "value": "Original source probe timed out",
+    "translate": false,
     "description": "Diagnostics panel: original timeout"
   },
   "browse.diagnostics.original_connect_failed": {
     "value": "Original source connection failed",
+    "translate": false,
     "description": "Diagnostics panel: original connect failed"
   },
   "browse.diagnostics.original_empty": {
     "value": "Original source returned no body",
+    "translate": false,
     "description": "Diagnostics panel: original empty"
   },
   "browse.diagnostics.original_open_failed": {
     "value": "Original stream could not be opened",
+    "translate": false,
     "description": "Diagnostics panel: original open failed"
   },
   "browse.diagnostics.link_room": {
     "value": "link has room",
+    "translate": false,
     "description": "Diagnostics panel: link room"
   },
   "browse.diagnostics.losing_reserve": {
     "value": "current stream losing reserve",
+    "translate": false,
     "description": "Diagnostics panel: losing reserve"
   },
   "browse.diagnostics.acquisition_behind": {
     "value": "acquisition behind",
+    "translate": false,
     "description": "Diagnostics panel: acquisition behind"
   },
   "browse.diagnostics.reserve_low": {
     "value": "reserve low",
+    "translate": false,
     "description": "Diagnostics panel: reserve low"
   },
   "browse.diagnostics.lowest_quality": {
     "value": "lowest quality",
+    "translate": false,
     "description": "Diagnostics panel: lowest quality"
   },
   "browse.diagnostics.buffer_exhausted": {
     "value": "buffer running out",
+    "translate": false,
     "description": "Diagnostics panel: buffer exhausted"
   },
   "browse.diagnostics.candidate_failed": {
     "value": "HLS candidate failed · retry pending",
+    "translate": false,
     "description": "Diagnostics panel: candidate failed"
   },
   "browse.diagnostics.no_better": {
     "value": "no better quality fits",
+    "translate": false,
     "description": "Diagnostics panel: no better"
   },
   "browse.diagnostics.measuring": {
     "value": "still measuring",
+    "translate": false,
     "description": "Diagnostics panel: measuring"
   },
   "browse.diagnostics.at_best": {
     "value": "no higher request in ladder",
+    "translate": false,
     "description": "Diagnostics panel: at best"
   },
   "browse.diagnostics.waiting_audio": {
     "value": "waiting for audio",
+    "translate": false,
     "description": "Diagnostics panel: waiting audio"
   },
   "browse.diagnostics.deadline_rollback": {
     "value": "fetch deadline rollback",
+    "translate": false,
     "description": "Diagnostics panel: deadline rollback"
   },
   "browse.diagnostics.response_limited": {
     "value": "PMS output below request",
+    "translate": false,
     "description": "Diagnostics panel: response limited"
   },
   "browse.diagnostics.switch_hold": {
     "value": "holding after a recent quality change",
+    "translate": false,
     "description": "Diagnostics panel: switch hold"
   },
   "browse.diagnostics.not_queried": {
     "value": "not yet queried",
+    "translate": false,
     "description": "Diagnostics panel: not queried"
   },
   "browse.diagnostics.fps": {
@@ -1110,6 +1211,7 @@
       "rate": "str",
       "source": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: fps"
   },
   "browse.diagnostics.fps_unknown": {
@@ -1118,6 +1220,7 @@
       "width": "str",
       "height": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: fps unknown"
   },
   "browse.diagnostics.received": {
@@ -1126,6 +1229,7 @@
       "status": "str",
       "amount": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: received"
   },
   "browse.diagnostics.callbacks": {
@@ -1136,6 +1240,7 @@
     "args": {
       "count": "i64"
     },
+    "translate": false,
     "description": "Diagnostics panel: callbacks"
   },
   "browse.diagnostics.callback_error": {
@@ -1148,6 +1253,7 @@
       "error": "str",
       "ordinal": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: callback error"
   },
   "browse.diagnostics.queues": {
@@ -1158,6 +1264,7 @@
       "audio": "str",
       "audio_cap": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: queues"
   },
   "browse.detail.unrated": {
@@ -1169,6 +1276,7 @@
     "args": {
       "seconds": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: frames none"
   },
   "browse.diagnostics.frames_frozen": {
@@ -1177,6 +1285,7 @@
       "frames": "str",
       "seconds": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: frames frozen"
   },
   "browse.diagnostics.manual_quality": {
@@ -1184,6 +1293,7 @@
     "args": {
       "quality": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: manual quality"
   },
   "browse.diagnostics.model_idle": {
@@ -1191,6 +1301,7 @@
     "args": {
       "status": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: model idle"
   },
   "browse.diagnostics.stream_limited": {
@@ -1198,6 +1309,7 @@
     "args": {
       "rate": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: stream limited"
   },
   "browse.diagnostics.demand_unknown": {
@@ -1205,6 +1317,7 @@
     "args": {
       "budget": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: demand unknown"
   },
   "browse.diagnostics.budget_surplus": {
@@ -1214,6 +1327,7 @@
       "demand": "str",
       "margin": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: budget surplus"
   },
   "browse.diagnostics.budget_deficit": {
@@ -1223,6 +1337,7 @@
       "demand": "str",
       "margin": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: budget deficit"
   },
   "browse.diagnostics.reserve_idle": {
@@ -1230,6 +1345,7 @@
     "args": {
       "seconds": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: reserve idle"
   },
   "browse.diagnostics.reserve": {
@@ -1237,6 +1353,7 @@
     "args": {
       "seconds": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: reserve"
   },
   "browse.diagnostics.buffer_trend": {
@@ -1246,6 +1363,7 @@
       "slope": "str",
       "trend": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: buffer trend"
   },
   "browse.diagnostics.horizon": {
@@ -1253,6 +1371,7 @@
     "args": {
       "seconds": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: horizon"
   },
   "browse.diagnostics.risk_percent": {
@@ -1260,6 +1379,7 @@
     "args": {
       "percent": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: risk percent"
   },
   "browse.diagnostics.measured_ratio": {
@@ -1267,6 +1387,7 @@
     "args": {
       "ratio": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: measured ratio"
   },
   "browse.diagnostics.predicted_ratio": {
@@ -1274,6 +1395,7 @@
     "args": {
       "ratio": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: predicted ratio"
   },
   "browse.diagnostics.chart_budget_mbps": {
@@ -1282,6 +1404,7 @@
       "budget": "str",
       "demand": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: chart budget mbps"
   },
   "browse.diagnostics.chart_budget_kbps": {
@@ -1290,6 +1413,7 @@
       "budget": "str",
       "demand": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: chart budget kbps"
   },
   "browse.diagnostics.network_mean": {
@@ -1298,6 +1422,7 @@
       "rate": "str",
       "mean": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: network mean"
   },
   "browse.diagnostics.quality_original": {
@@ -1306,6 +1431,7 @@
       "rate": "str",
       "raster": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: quality original"
   },
   "browse.diagnostics.quality_request": {
@@ -1314,6 +1440,7 @@
       "rate": "str",
       "raster": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: quality request"
   },
   "browse.diagnostics.decoded": {
@@ -1321,6 +1448,7 @@
     "args": {
       "raster": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: decoded"
   },
   "browse.diagnostics.quality_decoded": {
@@ -1329,6 +1457,7 @@
       "quality": "str",
       "raster": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: quality decoded"
   },
   "browse.diagnostics.fallback_evidence": {
@@ -1336,6 +1465,7 @@
     "args": {
       "time": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: fallback evidence"
   },
   "browse.diagnostics.hold_requested": {
@@ -1343,6 +1473,7 @@
     "args": {
       "rate": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: hold requested"
   },
   "browse.diagnostics.prime_down": {
@@ -1350,6 +1481,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: prime down"
   },
   "browse.diagnostics.prime_up": {
@@ -1357,6 +1489,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: prime up"
   },
   "browse.diagnostics.changed_down": {
@@ -1364,6 +1497,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: changed down"
   },
   "browse.diagnostics.changed_up": {
@@ -1371,6 +1505,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: changed up"
   },
   "browse.diagnostics.target_rejected": {
@@ -1378,6 +1513,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: target rejected"
   },
   "browse.diagnostics.refreshing": {
@@ -1385,6 +1521,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: refreshing"
   },
   "browse.diagnostics.refreshed": {
@@ -1392,6 +1529,7 @@
     "args": {
       "target": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: refreshed"
   },
   "browse.diagnostics.original_check_failed": {
@@ -1399,6 +1537,7 @@
     "args": {
       "http": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: original check failed"
   },
   "browse.diagnostics.http_refused": {
@@ -1406,6 +1545,7 @@
     "args": {
       "status": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: http refused"
   },
   "browse.diagnostics.http_failed": {
@@ -1413,6 +1553,7 @@
     "args": {
       "status": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: http failed"
   },
   "browse.diagnostics.http_rejected": {
@@ -1420,6 +1561,7 @@
     "args": {
       "status": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: http rejected"
   },
   "browse.diagnostics.open_http_failed": {
@@ -1427,6 +1569,7 @@
     "args": {
       "status": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: open http failed"
   },
   "browse.diagnostics.no_plex_pass": {
@@ -1434,6 +1577,7 @@
     "args": {
       "version": "str"
     },
+    "translate": false,
     "description": "Diagnostics panel: no plex pass"
   },
   "browse.crew.director": {
@@ -1714,130 +1858,162 @@
   },
   "browse.diagnostics.field.set": {
     "value": "Set",
-    "description": "Row label in the playback diagnostics read-out (which television model and board this is). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (which television model and board this is). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.firmware": {
     "value": "Firmware",
-    "description": "Row label in the playback diagnostics read-out (the television firmware name and codename). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the television firmware name and codename). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.decoder": {
     "value": "Decoder",
-    "description": "Row label in the playback diagnostics read-out (which video codecs the hardware decoder supports). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (which video codecs the hardware decoder supports). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.audio": {
     "value": "Audio",
-    "description": "Row label in the playback diagnostics read-out (the audio codec chain or audio capabilities). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the audio codec chain or audio capabilities). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.dolby_vision": {
     "value": "Dolby Vision",
-    "description": "Row label in the playback diagnostics read-out (the brand name of the HDR format; keep it untranslated). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the brand name of the HDR format). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.server": {
     "value": "Server",
-    "description": "Row label in the playback diagnostics read-out (the Plex Media Server version). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the Plex Media Server version). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.connection": {
     "value": "Connection",
-    "description": "Row label in the playback diagnostics read-out (how the app reaches the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (how the app reaches the server). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.route": {
     "value": "AppArg",
-    "description": "Row label in the playback diagnostics read-out (the delivery route: streaming transport and whether the server converts the file). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the delivery route: streaming transport and whether the server converts the file). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.video": {
     "value": "Video",
-    "description": "Row label in the playback diagnostics read-out (the video codec chain). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the video codec chain). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.picture": {
     "value": "Picture",
-    "description": "Row label in the playback diagnostics read-out (the decoded picture size and frame rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the decoded picture size and frame rate). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.timeline": {
     "value": "Timeline",
-    "description": "Row label in the playback diagnostics read-out (playback position and duration). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (playback position and duration). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.av_sync": {
     "value": "A/V sync",
-    "description": "Row label in the playback diagnostics read-out (how far audio trails video). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (how far audio trails video). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.video_plane": {
     "value": "Video plane",
-    "description": "Row label in the playback diagnostics read-out (the television's hardware video layer). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the television's hardware video layer). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.transfer": {
     "value": "Transfer",
-    "description": "Row label in the playback diagnostics read-out (bytes received from the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (bytes received from the server). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.load": {
     "value": "Load",
-    "description": "Row label in the playback diagnostics read-out (whether the television's media pipeline accepted the stream). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (whether the television's media pipeline accepted the stream). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.feed": {
     "value": "Feed",
-    "description": "Row label in the playback diagnostics read-out (how fast data is being fed to the decoder). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (how fast data is being fed to the decoder). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.queues": {
     "value": "Queues",
-    "description": "Row label in the playback diagnostics read-out (decoder queue fill). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (decoder queue fill). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.frames": {
     "value": "Frames",
-    "description": "Row label in the playback diagnostics read-out (decoded frame count). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (decoded frame count). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.mode": {
     "value": "Mode",
-    "description": "Row label in the playback diagnostics read-out (automatic or manual quality mode). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (automatic or manual quality mode). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.quality": {
     "value": "Quality",
-    "description": "Row label in the playback diagnostics read-out (the requested and decoded quality). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the requested and decoded quality). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.sample": {
     "value": "Sample",
-    "description": "Row label in the playback diagnostics read-out (the last measured transfer rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the last measured transfer rate). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.conservative": {
     "value": "Conservative",
-    "description": "Row label in the playback diagnostics read-out (the conservative bandwidth budget). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the conservative bandwidth budget). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.buffer": {
     "value": "Buffer",
-    "description": "Row label in the playback diagnostics read-out (how much playable media is buffered). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (how much playable media is buffered). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.risk": {
     "value": "Risk",
-    "description": "Row label in the playback diagnostics read-out (the risk of running out of buffered media). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (the risk of running out of buffered media). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.acquisition": {
     "value": "Acquisition",
-    "description": "Row label in the playback diagnostics read-out (how long each piece of media takes to arrive). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (how long each piece of media takes to arrive). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.action": {
     "value": "Action",
-    "description": "Row label in the playback diagnostics read-out (what the quality controller is doing). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (what the quality controller is doing). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.field.reason": {
     "value": "Reason",
-    "description": "Row label in the playback diagnostics read-out (why the quality controller is doing it). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+    "translate": false,
+    "description": "Row label in the playback diagnostics read-out (why the quality controller is doing it). Right-aligned into a narrow gutter, so the wording must stay within 12 characters."
   },
   "browse.diagnostics.chart.budget": {
     "value": "BUDGET / DEMAND",
+    "translate": false,
     "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bandwidth the quality controller may spend beside what the stream needs)."
   },
   "browse.diagnostics.chart.network": {
     "value": "NETWORK ACTIVITY",
+    "translate": false,
     "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bytes arriving from the network)."
   },
   "browse.diagnostics.chart.buffer": {
     "value": "BUFFER HEALTH",
+    "translate": false,
     "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (seconds of media buffered)."
   },
   "browse.diagnostics.build_dev": {
     "value": "dev",
+    "translate": false,
     "description": "Build kind in the diagnostics header: a developer build with test hooks."
   },
   "browse.diagnostics.build_release": {
     "value": "release",
+    "translate": false,
     "description": "Build kind in the diagnostics header: the build users install."
   },
   "browse.diagnostics.header": {
@@ -1851,39 +2027,23 @@
       "version": "str",
       "width": "str"
     },
+    "translate": false,
     "description": "Identity line of the diagnostics read-out: app name and version, build kind, TV software, whether the TV supports Dolby Vision (DV), and the drawing surface size in pixels."
   },
   "browse.diagnostics.dv_yes": {
     "value": "yes",
+    "translate": false,
     "description": "Diagnostics header: the TV supports Dolby Vision."
   },
   "browse.diagnostics.dv_no": {
     "value": "no",
+    "translate": false,
     "description": "Diagnostics header: the TV does not support Dolby Vision."
-  },
-  "browse.diagnostics.dv_supported": {
-    "value": "supported",
-    "description": "Diagnostics: the TV reports Dolby Vision support."
-  },
-  "browse.diagnostics.dv_unsupported": {
-    "value": "unsupported",
-    "description": "Diagnostics: the TV reports no Dolby Vision support."
   },
   "browse.diagnostics.dv_forced": {
     "value": "forced",
+    "translate": false,
     "description": "Diagnostics: the Dolby Vision answer was forced by a test override rather than asked of the TV."
-  },
-  "browse.diagnostics.dv_base_layer": {
-    "value": "base-layer",
-    "description": "Diagnostics: a Dolby Vision file is played through its ordinary HDR base layer."
-  },
-  "browse.diagnostics.dv_declare": {
-    "value": "declare",
-    "description": "Diagnostics: Dolby Vision is declared to the TV for direct play."
-  },
-  "browse.diagnostics.dv_refuse": {
-    "value": "refuse",
-    "description": "Diagnostics: direct play of this Dolby Vision file is refused."
   },
   "browse.diagnostics.placed": {
     "value": "src {width}x{height} rv={rv}",
@@ -1892,38 +2052,47 @@
       "rv": "str",
       "width": "str"
     },
+    "translate": false,
     "description": "Diagnostics: the video layer was placed with this source size; rv is the platform call's technical return value."
   },
   "browse.diagnostics.no_video_path": {
     "value": "NONE — no video path",
+    "translate": false,
     "description": "Diagnostics fault: the app has no way to show video on this TV."
   },
   "browse.diagnostics.no_audio_payload": {
     "value": "NONE (needAudio:false)",
+    "translate": false,
     "description": "Diagnostics: the TV was told the stream has no audio; needAudio:false is the literal technical flag."
   },
   "browse.diagnostics.feed_accepting": {
     "value": "accepting",
+    "translate": false,
     "description": "Diagnostics: the decoder is accepting data."
   },
   "browse.diagnostics.feed_full": {
     "value": "BufferFull (sink is full)",
+    "translate": false,
     "description": "Diagnostics: the decoder's buffer is full; BufferFull is the TV's literal status code."
   },
   "browse.diagnostics.feed_refused": {
     "value": "REFUSED",
+    "translate": false,
     "description": "Diagnostics fault: the decoder refused data."
   },
   "browse.diagnostics.feed_holding": {
     "value": "holding ~1.6 s ahead",
+    "translate": false,
     "description": "Diagnostics: feeding is paused on purpose to stay about 1.6 seconds ahead of the picture."
   },
   "browse.diagnostics.feed_empty": {
     "value": "queue empty (no data)",
+    "translate": false,
     "description": "Diagnostics: there is no data waiting to be fed."
   },
   "browse.diagnostics.feed_none": {
     "value": "— nothing fed yet",
+    "translate": false,
     "description": "Diagnostics: nothing has been fed to the decoder yet."
   },
   "browse.diagnostics.fed_rate": {
@@ -1932,6 +2101,7 @@
       "audio": "str",
       "video": "str"
     },
+    "translate": false,
     "description": "Diagnostics: video frames and audio packets fed per second."
   },
   "browse.diagnostics.uncertainty": {
@@ -1939,14 +2109,16 @@
     "args": {
       "percent": "str"
     },
-    "description": "Diagnostics suffix: the measurement's uncertainty as a percentage. es and be put a no-break space before the percent sign."
+    "translate": false,
+    "description": "Diagnostics suffix: the measurement's uncertainty as a percentage."
   },
   "browse.diagnostics.plex_pass": {
     "value": "{version} · Plex Pass",
     "args": {
       "version": "str"
     },
-    "description": "Diagnostics: the server version, and that its owner has Plex Pass (a product name; keep it untranslated)."
+    "translate": false,
+    "description": "Diagnostics: the server version, and that its owner has Plex Pass (a product name)."
   },
   "browse.library.no_collections": {
     "value": "No collections in {library}",

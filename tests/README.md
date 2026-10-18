@@ -343,7 +343,7 @@ library you care about — which is what `test_user` is for.
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`
-  (only when the TV refuses your ssh key), and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
+  (only when the TV refuses your ssh key), and (for `--build`) the pinned stable Rust toolchain with its armv7 rust-std (`make setup-rust`; see the repo `Makefile` / `docs/agent-reference.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
   PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
   actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
@@ -462,6 +462,17 @@ library); everything else needs real library content and is skipped with that re
 true` marks a scene that runs ONLY under `--mock` (it is skipped, with a reason, on a plain
 `--fps`). An exact scene name as `--filter` selects that scene alone (`home-grid` does not pull in
 `home-grid-deep`).
+
+A **player** scene can also grade what the app declared, not how fast it drew: `fixed-480p-reencode-declaration`
+(#665) is a `--fps-player --mock` scene whose `mock` block hands the mock `extra_media` (a real, ffprobed
+3840x2160 H.264 file, rk 990001) and a `transcode_fixture` (the 854x480 clip `start.mkv` returns), both
+named relative to `$FIXTURES_OUT` (default `~/plxnative-fixtures`; a scene whose files are not built is
+skipped with the ffmpeg commands' location), and whose `expect` block reuses a playback case's keys
+(`load_max`, `sink_echo`, `decision`, `codec`/`video_size`, `min_timeline_climb_s`; `no_error` always).
+`quality` pins the rung (`480p_720_kbps`). Run it: `tools/tv-lock.sh with --why "fixed 480p declaration" --
+./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration`.
+
+`boost-remux-declares-source-rate` (#832) is the second such scene: `plxnative-audioenh=boost` turns a direct-playable 4K H.264 24p file into an enhanced remux, and it grades `load_fps: 24.0`, `load_max: 3840x2160@24`, the set's echo, and (`presented_rate: true`, optionally `presented_rate_tol_pct`) the sink's presented rate against the declared one. Fixtures live in `boost-remux/` under the same root; the ffmpeg commands are in the scene's `comment`. Run it: `tools/tv-lock.sh with --why "boost remux declaration" -- ./tests/run.py --fps-player --mock --filter boost-remux-declares-source-rate`.
 
 `home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
 only sweeps about nine rows either side of the top, so it instead presses **Down once per landed
@@ -817,10 +828,11 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 ## Subtitle soft-render
 
-The **demuxer (`ff.rs`) demuxes embedded plain-text subtitles** (SRT/subrip and mov_text)
-and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** plain-text tracks (tagged by
-index), and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
-instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
+The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip, WebVTT, mov_text, ...)
+and `ass_source::push_text` emits `sub cue [..] len=<n>` lines for the selected track when a cue is
+new (a cue the demuxer re-reads after a seek is not logged again). It pushes cues for **all** text
+tracks (tagged by index), converted to ASS events and rendered by libass; the renderer filters by the
+selected `desired_sub_idx`, so a mid-play track switch is instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
 for native libass rendering; plain-cue log assertions cannot verify that output. See
 [`ass-subtitles.md`](../docs/ass-subtitles.md) for its native pixel and device checks. Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
@@ -830,8 +842,9 @@ our in-process buffer-feed — see project memory). Verified on a 4K HEVC movie 
 tracks (`movie_hevc_4k_pgs_subs`).
 
 The text case targets `movie_h264_ac3_1080p`, which has four text tracks
-`[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;
-`desired_sub_idx = row − 1`) and seeds a `viewOffset` of 843 s so playback lands in the dense
+`[RU-forced, RU, EN, EN-SDH]`, so a hand-written row for the English track is **row 4** (row 0 is
+Off, row 1 is Forced only; `desired_sub_idx = row − 2`) — the case names its track by position
+(`"track": N`), which no new row moves — and seeds a `viewOffset` of 843 s so playback lands in the dense
 opening monologue and cues appear within the run window. (For a transcode item, soft subs ride a
 WebVTT sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the
 only reliable sub path.)
@@ -878,8 +891,44 @@ comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per
 `pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
-metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
-index *r−1*.
+metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row 1 = *Forced only*
+(shown wherever Off is), row *r* = subtitle index *r−2* on the root's flat list. A `"track": N`
+target skips all of them (it counts tracks only), which is why the manifest uses it.
+
+**Track memory.** A track-menu pick on an episode (what `audio_switch` and `subtitle` emulate) is
+remembered for its show by the SEATED profile, and the next episode plays it. So `run.py` arms
+`plxnative-trackmemory=clear` for every case, beside `plxnative-audioenh`: the app forgets the seated
+profile's remembered shows at the first seat, and a case's starting memory is the manifest's rather
+than whatever the previous case's pick left. Only a seated boot (`"session": "stored"`, or a picker
+boot) remembers anything or has anything to clear; a boot that injects a token (the default, `--guest`
+included, since both write `plxnative-token`) never seats, so its picks write no memory. A case that
+grades the memory itself (E1's pick shows on E2) must boot seated; `ui-sim` does, against `mock_pms`
+with a stored mock session and `plxnative-pickuser`. For that walk, `mock_pms.py --media DIR
+--media-next-episode` serves the verification show with a second episode (ratingKey 900005) of the
+same tracks, under its own part id so a selection PUT on episode 1 never reaches it, and a
+continuous PlayQueue over the show. Boot episode 1 (`plxnative-play=900003`,
+`plxnative-menupick=<tab>,<row>`, `plxnative-autoseek=<s>`), let Up Next run, and the log's
+`track-memory: applied …` line on episode 2 is the read. Add `--media-next-episode-remux` and
+episode 2 is a copy remux the app's subtitle side reader is not admitted on (its decision says
+`transcode`/`copy` and its bitrate reads 32000 kbps): a subtitle remembered ON from episode 1 is then
+one episode 2 cannot show, the log says `not shown (copy remux)` and the Subtitles tab carries the
+note line. Serve `--transcode-fixture <the mockverify mkv>` so the remux's start.mkv has bytes, and add
+`--no-plex-pass` (or `--no-loudness-analysis`): on a server with Plex Pass and an analysed audio track the
+plan demotes the remux to a burn re-encode, which draws the remembered subtitle in the picture and
+leaves nothing to note.
+
+**Forced only.** The Subtitles tab's second row (right after Off) is the third remembered subtitle
+state: the forced track in the language of the audio that plays, or nothing. `mock_pms.py --media DIR
+--media-forced-subtitle` flags the verification episodes' English subtitle forced on the wire (the
+fixture has no forced track otherwise; add `--media-next-episode` and episode 2, the same file, has
+it too). Boot seated, `plxnative-play=900003` and `plxnative-menupick=1,1` (row 1 IS Forced only;
+the trigger leaves the panel up) check the row with the language it draws beside it. The show's
+first audio is German, so the first pick draws nothing (the fixture's only forced track is
+English) and the read-out names the audio's language; pick the English audio (Audio tab) and the
+select-streams log shows the follow (`audio=… sub=<the forced track>`; the follow itself writes no
+memory, the audio pick does). The
+log's `track-memory:` line on a later boot or on the next episode (`applied forced-only (track …)`)
+is the memory read.
 
 A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys are the ones listed
 under *Assertions* below. Two are worth naming here because they are recent and easy to miss:

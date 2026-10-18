@@ -53,6 +53,16 @@ Per-title flags in `catalog.json`, all checked by `check`:
   listed in the catalog's `still_poster_approved`, and then the asset may be of kind `still` or
   `backdrop`.
 
+People. The catalog's `people` maps a credited NAME (exactly as a `cast`, `directors`, `writers` or
+`creators` row spells it) to `{"photo": {"asset": id, "box": [x, y, w, h]}}`: an asset and the part
+of it, in SOURCE pixels, that is cut to the 2:3 portrait the mock serves as that person's `thumb`. A
+person without an entry is served without one and the app draws its glyph. The asset is a frame of
+an openly licensed film the person appears in (kind `still` or `backdrop`, which a title may use
+too, and two people may share), or a `headshot`: an openly licensed photograph OF THAT PERSON. Who
+is in the picture is checked by a person, against the film's own credits or the file page: the name
+on a search result is not enough (a namesake is a different person), and a headshot that carries
+the Commons personality-rights tag is refused (`check_assets_complete`).
+
 A clear logo is cut from the title's own poster (`logo-from-poster`: asset kind `poster`), or is the
 film's own official title card or a frame of the film: asset kind `logo-title-card`, which records
 `of` (the title id it belongs to) and `origin` (`official-title-card` or `film-frame`). It is a
@@ -97,6 +107,10 @@ UA = "PlxNativeDemoLibrary/1.0 (+https://github.com/GLinnik21/plex-native-poc)"
 POSTER = (600, 900)
 ART = (1920, 1080)
 THUMB = (1280, 720)
+# A person's photograph as the mock serves it: 2:3, the shape of a real server's headshots, which the
+# app's cast tile crops high (`Crop::Headshot`).
+HEADSHOT = (600, 900)
+SIZES = {"poster": POSTER, "art": ART, "thumb": THUMB, "photo": HEADSHOT}
 
 
 def cache_dir():
@@ -235,10 +249,15 @@ def derive_image(src, dst, size, recipe):
       show may not use it (the pad boundary is a visible seam in the text zone): `hero_geometry`
       refuses `extend`, so such a title is `cover` with a declared `art.subject`.
     * `crop: focus-right` / `upper` — a named anchor for a cover crop (poster from a landscape still).
+    * `box: [x, y, w, h]` — cut that part of the source first (`mode: cover` only): a person's
+      photograph is the face, not the page it was printed on.
     """
     w, h = size
     mode = recipe.get("mode", "cover")
     anchor = recipe_anchor(recipe)
+    # `box: [x, y, w, h]` in source pixels: the part of the source the recipe is about (a face in a
+    # magazine page), cut out before anything else.
+    box = "crop={2}:{3}:{0}:{1},".format(*recipe["box"]) if "box" in recipe else ""
     if mode == "extend":
         x = "W-w" if anchor == "right" else "(W-w)/2"
         graph = (f"[0:v]format=rgb24,split[a][b];"
@@ -246,7 +265,7 @@ def derive_image(src, dst, size, recipe):
                  f"[b]scale=-2:{h}:flags=lanczos,crop='min(iw,{w})':{h}:'max(iw-{w},0)':0[fg];"
                  f"[bg][fg]overlay=x={x}:y=0,format=yuvj444p[o]")
     else:
-        graph = f"[0:v]format=rgb24,{_cover(w, h, anchor)},format=yuvj444p[o]"
+        graph = f"[0:v]format=rgb24,{box}{_cover(w, h, anchor)},format=yuvj444p[o]"
     _ffmpeg(["-i", str(src), "-filter_complex", graph, "-map", "[o]", "-frames:v", "1",
              "-q:v", "3", "-bitexact", str(dst)])
 
@@ -377,6 +396,27 @@ def item_keys(catalog):
                 yield f"{s['id']}/{season['index']}/{e['index']}", "episode", e
 
 
+def person_key(name):
+    """The derived-file key of one of the catalog's `people`: `person-<slug of the name>`."""
+    return "person-" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def people(catalog):
+    """(derived key, name, record) for every person the catalog gives a photograph."""
+    for name, rec in catalog.get("people", {}).items():
+        yield person_key(name), name, rec
+
+
+def credited_names(catalog):
+    """Every name a title credits: cast, directors, writers, creators."""
+    names = set()
+    for _, _, rec in item_keys(catalog):
+        names.update(c["name"] for c in rec.get("cast", []))
+        for job in ("directors", "writers", "creators"):
+            names.update(rec.get(job, []))
+    return names
+
+
 def derived_dir():
     return cache_dir() / "derived"
 
@@ -391,10 +431,9 @@ DERIVED_EXT = {"logo": "png", "stand-in": "mp4"}
 def derived_parts(assets, rec, role):
     """What decides the bytes of one derived file: the source's hash, the frame it is cut to and the
     recipe less its `subject` (a declaration about the picture, not a step in making it)."""
-    if role in ("poster", "art", "thumb"):
+    if role in SIZES:
         recipe = rec[role]
-        size = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
-        return [assets[recipe["asset"]]["sha256"], list(size), recipe_stamp(recipe)]
+        return [assets[recipe["asset"]]["sha256"], list(SIZES[role]), recipe_stamp(recipe)]
     if role == "logo":
         return [assets[rec["logo"]["asset"]]["sha256"], rec["logo"]]
     if role == "stand-in":
@@ -441,8 +480,13 @@ def derive(assets, catalog):
             elif role == "stand-in":
                 _atomically(dst, lambda t: derive_stand_in(t, rec["minutes"] * 60))
             else:
-                size = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
-                _atomically(dst, lambda t: derive_image(paths[rec[role]["asset"]], t, size, rec[role]))
+                _atomically(dst, lambda t: derive_image(paths[rec[role]["asset"]], t, SIZES[role], rec[role]))
+    for key, _, rec in people(catalog):
+        dst = derived_file(assets, cache_dir(), key, rec, "photo")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        count += 1
+        if not dst.exists():
+            _atomically(dst, lambda t: derive_image(paths[rec["photo"]["asset"]], t, HEADSHOT, rec["photo"]))
     print(f"demo_library: {count} derived files in {out}", flush=True)
     return out
 
@@ -515,6 +559,8 @@ def check(assets, catalog):
                 assert aid in assets, f"{key}: {role} asset {aid!r} is not in assets.json"
                 assert assets[aid].get("kind") != "logo-title-card", \
                     f"{key}: {role} uses a title card, which is a source for a clear logo only"
+                assert assets[aid].get("kind") != "headshot", \
+                    f"{key}: {role} uses a headshot, which is a person's photograph only"
                 used.add(aid)
         check_cited_metadata(key, kind, rec)
         if "media" in rec:
@@ -553,6 +599,7 @@ def check(assets, catalog):
             assert a.get("of") in seen, f"asset {aid}: a title card names the item it belongs to in `of`"
             assert a.get("origin") in TITLE_CARD_ORIGINS, \
                 f"asset {aid}: a title card's `origin` is one of {sorted(TITLE_CARD_ORIGINS)}"
+    check_people(assets, catalog, used)
     check_flags(assets, catalog, seen)
     unused = sorted(set(assets) - used)
     assert not unused, f"assets never used: {unused}"
@@ -848,6 +895,38 @@ def hero_pool(catalog, hero=None):
     return pool[:int(HERO_POOL_PINS["HERO_MAX"][3])]
 
 
+# What a person's portrait may be cut from: a photograph of them, or a frame of a film they are in.
+PORTRAIT_KINDS = frozenset({"headshot", "still", "backdrop"})
+
+
+def check_people(assets, catalog, used):
+    """The catalog's `people` (module docstring): each names someone a title credits, and an asset (a
+    `headshot`, or a film frame: `still`/`backdrop`) with the `box` of it that is the portrait, inside
+    the source and 2:3 to within a pixel (so the cover crop that follows cuts nothing a person did not
+    choose). Adds the assets to `used`."""
+    names = credited_names(catalog)
+    keys = {}
+    for key, name, rec in people(catalog):
+        assert name in names, f"people: {name!r} is credited by no title"
+        assert keys.setdefault(key, name) == name, f"people: {name!r} and {keys[key]!r} derive to one file"
+        photo = rec.get("photo")
+        assert isinstance(photo, dict) and set(photo) == {"asset", "box"}, \
+            f"people: {name}: `photo` is {{asset, box}}"
+        aid = photo["asset"]
+        assert aid in assets, f"people: {name}: photo asset {aid!r} is not in assets.json"
+        assert assets[aid].get("kind") in PORTRAIT_KINDS, \
+            f"people: {name}: a photo is cut from an asset of kind {sorted(PORTRAIT_KINDS)}"
+        box = photo["box"]
+        assert isinstance(box, list) and len(box) == 4 and all(type(v) is int and v >= 0 for v in box), \
+            f"people: {name}: box is [x, y, w, h] in source pixels"
+        x, y, w, h = box
+        assert w > 0 and h > 0 and x + w <= assets[aid]["width"] and y + h <= assets[aid]["height"], \
+            f"people: {name}: box {box} leaves the {assets[aid]['width']}x{assets[aid]['height']} source"
+        assert abs(w * HEADSHOT[1] - h * HEADSHOT[0]) <= max(HEADSHOT), \
+            f"people: {name}: box {w}x{h} is not the portrait's {HEADSHOT[0]}:{HEADSHOT[1]} shape"
+        used.add(aid)
+
+
 def check_flags(assets, catalog, seen):
     """The per-title flags and approval lists (module docstring): `not_hero`, `not_in_video`,
     `poster.still_as_poster` + `still_poster_approved`, `logo_none_approved`."""
@@ -924,7 +1003,7 @@ def hero_report(assets, catalog):
 
 # What a source file IS (`kind` in assets.json), which decides the roles it may fill: a title's
 # poster is a `poster`, its backdrop a `backdrop` or a `still`, an episode's thumbnail a `still`.
-# `media` is a film itself, `headshot` a photograph of a person (none yet), `logo-title-card` a
+# `media` is a film itself, `headshot` a photograph of a person (the catalog's `people`), `logo-title-card` a
 # film's own official title card or a frame of the film, the source of its clear logo.
 ASSET_KINDS = frozenset({"poster", "backdrop", "still", "headshot", "media", "logo-title-card"})
 # Where a `logo-title-card` comes from: the studio's own title card, or a frame of the film itself.
@@ -1064,7 +1143,11 @@ def credits(assets, catalog, dst=CREDITS):
             card = assets[rec["logo"]["asset"]]["kind"] == "logo-title-card"
             where.setdefault(rec["logo"]["asset"], []).append(
                 (key, "logo-card" if card else "logo-fill" if recoloured else "logo"))
+    for _, name, rec in people(catalog):
+        titles[f"person:{name}"] = name
+        where.setdefault(rec["photo"]["asset"], []).append((f"person:{name}", "photo"))
     label = {"poster": "poster", "art": "backdrop", "thumb": "episode still", "media": "video",
+             "photo": "portrait in Cast & Crew",
              "logo-card": "clear logo, the film's own title card",
              "logo": "clear logo, derived from this poster",
              "logo-fill": "clear logo, derived from this poster, lettering recoloured"}
@@ -1085,7 +1168,8 @@ def credits(assets, catalog, dst=CREDITS):
         "poster's licence: its title lettering is cut out onto a transparent ground and nothing is",
         "redrawn; where the table says so, lettering too dark to read over a backdrop is recoloured.",
         "Where the table says a logo is the film's own title card, it is that card (or a frame of the",
-        "film) trimmed to its lettering, under its own licence.",
+        "film) trimmed to its lettering, under its own licence. A performer's portrait is cut to the",
+        "face from a photograph of them or a frame of the film, and resized; nothing else is changed.",
         "",
         "Written by `make screenshots` with the images; do not edit by hand.",
         "",
@@ -1130,7 +1214,9 @@ def _changes(role, recipe):
         text = "Title lettering cut out of the poster onto a transparent ground for the clear logo"
         return text + ("; dark lettering recoloured to read over a backdrop." if any("fill" in k for k in recipe["keys"])
                        else ".")
-    w, h = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
+    if role == "photo":
+        return f"Cut to the performer's face and scaled to a {HEADSHOT[0]}×{HEADSHOT[1]} portrait."
+    w, h = SIZES[role]
     what = {"poster": "poster", "art": "backdrop", "thumb": "episode still"}[role]
     if role == "art" and recipe.get("mode") == "extend":
         return (f"Scaled to fit a {w}×{h} {what}; the sides are filled with a blurred, "
@@ -1196,6 +1282,13 @@ def site_works(assets, catalog):
                     e["roles"] = ["Episode stills"]
             works.append({"id": rec["id"], "kind": kind, "title": rec["title"], "year": rec.get("year"),
                           "entries": entries})
+    # The people a Cast & Crew row shows a photograph of, in the catalog's order.
+    for key, name, rec in people(catalog):
+        a = assets[rec["photo"]["asset"]]
+        who = a["author"] if a["attribution"] in ("", a["author"]) else f"{a['author']}; {a['attribution']}"
+        works.append({"id": key, "kind": "person", "title": name, "year": None, "entries": [
+            {"roles": ["Portrait"], "author": who, "licence": a["licence"], "changes": [_changes("photo", rec["photo"])],
+             "sources": [((), _source_host(a["source_page"]), a["source_page"])]}]})
     return works
 
 
@@ -1244,7 +1337,8 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
     used = [name for name in LICENCE_TEXTS if any(a["licence"] == name for a in assets.values())]
     licences = ", ".join(f'<a href="{esc(LICENCE_TEXTS[n])}" rel="license">{esc(n)}</a>' for n in used)
     repo = "https://github.com/GLinnik21/plx-native/blob/main/"
-    sections = "\n".join(section("film", "Films") + section("series", "Series"))
+    sections = "\n".join(section("film", "Films") + section("series", "Series")
+                         + (section("person", "People") if any(w["kind"] == "person" for w in works) else []))
     page = f"""<!doctype html>
 <!-- Written by `python3 tools/demo_library.py site-credits` (make screenshots) from
      tests/demo_library/assets.json and catalog.json. Do not edit by hand. -->

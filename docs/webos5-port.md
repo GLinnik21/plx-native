@@ -205,7 +205,8 @@ the literal `0` and says why.
 
 **What webOS 5 keeps:** all 15 mangled `StarfishMediaAPIs` / `CustomPipeline` symbols, unchanged,
 through 11.2.0. The BUFFERSTREAM payload is identical but for that one key. So the engine, the
-pump, the feed loop, seek and `pushEOS` are untouched.
+pump, the feed loop and `pushEOS` are untouched; seek takes LG's public `Seek` (see "The public
+`Seek`" in section 4).
 
 **What it deletes, with no replacement:** `setSinkType`, `setMediaId`,
 `setMediaVideoData(<sourceInfo>)` and the `LOADED`/`PLAYING`/`PAUSED` mirroring. Both reference
@@ -243,7 +244,8 @@ could have revealed it except asking.
 > same day). Items 4 and 5 are implicitly settled by the same report — the reviewer browsed,
 > navigated and played with the UI composited over live video. The `UNTESTED PATH` log banners
 > are gone. Note the verification is one firmware (6.5.2): 5.x and 10/11 remain start-verified
-> only, and item 3's in-place seek stays disabled on `VP_EXPORTED`.
+> only. Item 3's private-offset in-place seek stays off on `VP_EXPORTED`: webOS 5+ seeks through LG's
+> public `Seek` instead (see "The public `Seek`" below).
 
 Ranked by how much damage a wrong assumption does. *(Item 1 settled — see above.)*
 
@@ -259,9 +261,12 @@ Ranked by how much damage a wrong assumption does. *(Item 1 settled — see abov
    *Settled by:* `/tmp/plxnative-ffprobe` with a known file on a webOS 5 set; if codec_id, width,
    height and time_base come back sane, the table is right.
 3. **The current slot's `object+0x4c` / `MEDIA_CUSTOM_CONTENT_INFO+0x28` pokes.**
-   Decompile-derived offsets into LG-private C++ objects, used by the in-place seek. No symbol table
-   can confirm them on another firmware, and a field added to `StarfishMediaAPIs` by any 5.x build
-   moves `+0x4c`. Failure is a SIGSEGV, not a wrong answer. *Settled by:* seeking on a webOS 5 set.
+   Decompile-derived offsets into LG-private C++ objects, used by the `Segment` in-place seek
+   (webOS 4.x only). No symbol table can confirm them on another firmware, and a field added to
+   `StarfishMediaAPIs` by any 5.x build moves `+0x4c`. Failure is a SIGSEGV, not a wrong answer.
+   webOS 5+ no longer touches them: it seeks through the public `Seek` (issue #568, "The public
+   `Seek`" below), which assumes no layout. *Still to settle on a webOS 5+ set:* that `Seek` really
+   keeps the picture (no black frame, no DV/HDR badge re-pop) and the first post-seek frame lands.
 4. **The keyboard event offsets.** `app.rs` reads state/wcode/sym at +16/+20/+24 because LG's SDL
    inserts `Uint32 inputSource` after `windowID`. That patch is applied by the openlgtv NDK to
    modern SDL2 as well, so the struct offsets very likely hold — but which value LG writes into
@@ -298,13 +303,62 @@ not to be enough, not a correction.
 `createPipeline`, `requestResource`, `setAppSrcCaps`, `removeAudioBin` and the rest. A class that
 grew that much has almost certainly changed layout, which is the strongest evidence yet that
 `starfish.c`'s current-slot `object+0x4c` → `player+0x04` walk to reach it must not run on those
-firmwares. The in-place seek that depends on it is now disabled on `VP_EXPORTED` for exactly that
-reason.
+firmwares. The private-offset in-place seek that depends on it is disabled on `VP_EXPORTED` for exactly that
+reason; webOS 5+ seeks through the public `Seek` instead.
 
 **The whole of libplayerAPIs+libpf moved a long way**: 2144 exported symbols on 4.10.0, 2736 on
 6.4.0, 2628 on 10.2.0. `FeedStream` even gains a second overload with four more arguments on
 10.2.0. We call none of those directly — `Feed` takes JSON — but it is the scale of the change
 that matters when judging how much a webOS 4 assumption is worth elsewhere.
+
+### The public `Seek` (issue #568)
+
+On webOS 5+ every direct-play seek used to be a full fresh `Load` (black screen, the DV/HDR badge
+re-popping), because the Kodi in-place path was switched off there. It now goes through
+`StarfishMediaAPIs::Seek(const char *millis)` (`_ZN17StarfishMediaAPIs4SeekEPKc`, returns `bool`),
+exported on every firmware 1.2 to 11.2 (`tools/fwcompat.py`) and used by LG's own Chromium MSE
+player in the same buffer-feed mode. The chain below was decompiled from the webOS 4.5
+`libplayerAPIs` and `libpf` (Ghidra, by address). **PROVEN** means the decompiled code shows it;
+**INFERRED** means it rests on stock GStreamer semantics. Nothing here has been checked on webOS 5+.
+
+```
+StarfishMediaAPIs::Seek(const char*)
+  -> AbstractPlayer::seek(ull)  ->  CustomPlayer::seekSpi(ull)  ->  Pipeline::seek(ull)
+  -> CustomPipeline::seekSpi(long long ms)  ->  gst_element_seek(...)
+SEEKDONE: ASYNC_DONE with the pending-seek flag set -> app callback type 25
+```
+
+- **Argument (PROVEN).** The string is tried as JSON first (`{"position":N}`), otherwise parsed as a
+  decimal. The unit is milliseconds; `CustomPipeline::seekSpi` multiplies by exactly 1e6. A negative
+  target does nothing and returns false.
+- **Seek flushes itself (PROVEN).** `gst_element_seek(pipeline, rate, TIME, FLUSH | KEY_UNIT,
+  SET, ms * 1e6, NONE, -1)`, and on success the cached segment is rewritten with `start = time =
+  position = ms * 1e6`. It resets the same feed/EOS counters `flush()` resets. It sends no explicit
+  segment event, touches neither `setTimeToDecode` nor `MEDIA_CUSTOM_CONTENT_INFO`, pauses and
+  resumes nothing, and re-creates no decoder, sink or ACB binding.
+- **`flush()` is a seek to 0 (PROVEN).** `CustomPipeline::flush()` is `gst_element_seek` with
+  `FLUSH | SKIP` and start -1, which INFERRED maps to start 0. So a `flush()` after `Seek` re-anchors
+  the segment at 0 and recreates the stale-segment stall (the sink stops draining about 48 s later:
+  permanent BufferFull and "Playing error"). The app never flushes for a native seek.
+- **Timeline (PROVEN core, INFERRED consequence).** The segment starts at the millis passed, so the
+  PTS fed afterwards must be on that timeline: the app switches to content time (`pts_shift = 0`)
+  and passes the landed keyframe's own PTS. `Feed` parses `pts` as an unsigned 64-bit value, so a
+  negative PTS must never be fed; the app clamps. Whether LG's sink clips frames between the
+  keyframe and the target is NOT determined.
+- **Concurrency (PROVEN).** `Seek` takes the mutex `Play()` takes, but `Feed` and `flush()` take
+  none. The only guard is a plain int in `CustomPlayer` that is zeroed around the gst seek, so a
+  `Feed` during a seek gets an error reply and one already past the check races the flush. The app
+  calls `Seek` from the main thread, the only `Feed` caller, before the landed keyframe is fed.
+- **Refusal (PROVEN).** A failure inside `Pipeline::seek` or `CustomPipeline::seekSpi` returns false
+  with that int left at 0, so every later `Feed` is rejected until a flush or seek succeeds. A
+  refusal before it (negative target, not loaded, stopped state) leaves it alone. Either way a
+  false return makes the app drop the rest of the session to the reload path.
+- **State (PROVEN).** Accepted while loaded and Paused or Playing; refused when stopped.
+- **SEEKDONE (PROVEN).** The type-25 callback arrives on ASYNC_DONE, which INFERRED needs post-seek
+  data to preroll, so the app does not wait for it. The pending flag is a boolean, so overlapping
+  seeks can yield a single callback: never pair them one to one.
+- **Not determined.** Whether LG's decoder or sink re-emits HDR info on the first post-flush frame;
+  the meaning of one more `Pipeline::seek` precondition field; everything on webOS 5+.
 
 ## 5. Things a webOS 5 port must NOT forget
 

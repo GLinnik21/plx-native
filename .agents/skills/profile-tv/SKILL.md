@@ -44,6 +44,13 @@ symbolizing against the wrong build. `wchan` distinguishes a blocked
 sleep/lock from an on-CPU stack; frequency is statistical evidence, not proof that a waiting frame
 consumed CPU.
 
+## Styled-subtitle (libass) cost
+
+With an ASS/SSA track rendering, the event log carries `assperf:` lines (`window_ms` the span the counts cover, render and whole-job p95/max, bytes
+published and uploaded in that window, Normal+Ahead `jobs`, `ahead_hit`, `nwait`, and `worker tid=`) and `FRAMEDROP spans=` gains `assup` (the
+UI-thread GL upload; needs `/tmp/plxnative-framedrop` armed). Read these before attributing a late frame to subtitles; follow the worker
+with `tools/tv-sched-trace.sh --tid <tid>`. See `docs/ass-subtitles.md`.
+
 ## Three graphics layers
 
 For an already-running screen, observe its current present heartbeat and active Mali IRQ rate:
@@ -70,7 +77,11 @@ The bundle has three deliberately different meanings:
 2. **Passive Mali IRQ rate:** virtually no app overhead, but global to the whole GPU. Compare the
    selected-install-closed baseline and active leg; never call it process utilization.
 3. **Mali HWCNT:** phase-attributable JM/tiler/shader/L2 counters. Its `glFinish` boundaries
-   serialize the pipeline, so never quote FPS from this leg.
+   serialize the pipeline, so never quote FPS from this leg. The same goes for late-frame counts:
+   with HWCNT armed, every frame of a busy scene ran 24–27 ms on the T820 (2026-10-17, Watchlist
+   Remove), so a ">25 ms" count from this leg was 15x inflated (76 against 0–5). Use it to compare
+   phases and builds in the same leg; take true late counts from a FRAMEDROP or
+   `tools/tv-sched-trace.sh` run with HWCNT off.
 
 If layer 1 says frames are slow, use `/tmp/plxnative-framedrop` and then
 `/tmp/plxnative-cpuprof` to localize render-thread wall time. Use asynchronous

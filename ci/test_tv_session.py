@@ -469,6 +469,25 @@ class GuestIdentity(unittest.TestCase):
         self.assertNotIn("AFTER:", out)  # cmd_up's `exit 1` must end the process, not just return
         self.assertIn("cannot be combined", out)
 
+    def test_mock_plextv_is_refused_unless_the_boot_is_the_mock_sign_in(self):
+        # --mock-plextv pins the identity to the mock ONLY on the login screen with no stored
+        # session: another screen, --server (stored roster) or --keep (leftover triggers) would
+        # boot the owner's stored session next to a mock plex.tv. Each refuses before any TV contact.
+        for args, why in (
+            ("--screen home", "login"),
+            ("", "login"),
+            ("--screen login --server 1", "--server"),
+            ("--screen login --keep", "--keep"),
+        ):
+            with self.subTest(args=args):
+                rc, out = self._run(
+                    f'cmd_up --mock-plextv=8765 {args}\necho "AFTER:$?"\n',
+                    guest_ok="1",
+                )
+                self.assertEqual(rc, 2, out)
+                self.assertNotIn("AFTER:", out)
+                self.assertIn(why, out)
+
 
 class HeartbeatWords(unittest.TestCase):
     """`assert_route` reads the heartbeat's TWO words, not just the page's.
@@ -679,6 +698,89 @@ class SoundSubcommand(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stdout)
             self.assertNotIn("AFTER:", result.stdout)
             self.assertIn("usage: tv-session.sh sound off|on|status", result.stdout)
+
+
+class LifecycleSubcommand(unittest.TestCase):
+    """`background` / `foreground`: launch a full-screen app, then ours, and ASSERT each took.
+
+    `tv`/`tvq` are stubbed with a tiny fake application manager: a `launch` of an id makes it the
+    foreground app (unless the stub is told the launch is ignored) and `fuser` answers the app pid.
+    """
+
+    def _run(self, call, *, fg="com.beb.plxnative.debug", launch_takes=True, pid_after="4242"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            SoundSubcommand._fake_make(bin_dir)
+            state = root / "fg"
+            state.write_text(fg, encoding="utf-8")
+            pids = root / "pids"
+            pids.write_text("4242", encoding="utf-8")
+            takes = "1" if launch_takes else "0"
+            body = textwrap.dedent(
+                f"""\
+                require_lock() {{ return 0; }}
+                advise_lock() {{ return 0; }}
+                ensure_awake() {{ return 0; }}
+                tvq() {{
+                  case "$1" in
+                    *getForegroundAppInfo*)
+                      printf '{{"appId": "%s", "returnValue": true}}\\n' "$(cat {state})" ;;
+                    fuser*) cat {pids} ;;
+                  esac
+                }}
+                tv() {{
+                  case "$1" in
+                    *applicationManager/launch*)
+                      [ {takes} = 1 ] && printf '%s' "$(printf '%s' "$1" | sed -En 's/.*"id":"([^"]*)".*/\\1/p')" > {state}
+                      printf '%s' {pid_after} > {pids} ;;
+                  esac
+                }}
+                cmd_lifecycle {call}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "lifecycle", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=20,
+            )
+            return result.stdout
+
+    def test_background_launches_the_fullscreen_app_and_keeps_our_pid(self):
+        out = self._run("background")
+        self.assertIn("RC:0", out)
+        self.assertIn("org.webosbrew.hbchannel is the foreground app", out)
+
+    def test_foreground_returns_to_our_app_on_the_same_pid(self):
+        out = self._run("foreground", fg="org.webosbrew.hbchannel")
+        self.assertIn("RC:0", out)
+
+    def test_background_refuses_over_someone_elses_screen(self):
+        out = self._run("background", fg="com.webos.app.youtube")
+        self.assertIn("RC:1", out)
+        self.assertIn("refusing to launch over someone else's screen", out)
+
+    def test_a_launch_that_did_not_take_is_a_failure(self):
+        out = self._run("background", launch_takes=False)
+        self.assertIn("RC:1", out)
+        self.assertIn("the launch did not take", out)
+
+    def test_a_pid_change_is_reported_as_the_app_dying(self):
+        out = self._run("foreground", fg="org.webosbrew.hbchannel", pid_after="9999")
+        self.assertIn("RC:1", out)
+        self.assertIn("app pid changed", out)
 
 
 if __name__ == "__main__":

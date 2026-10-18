@@ -34,6 +34,9 @@ pub mod collections;
 /// Agent-backed subtitle search & download. `docs/pms-api.md` §8 is the verified contract; the
 /// bundled OpenAPI spec is wrong about this endpoint and must not be read as authority for it.
 pub mod subtitles;
+/// The PMS server-sent-event notification feed: the SSE parser, the lenient `playing` models and
+/// the one-connection client. `docs/pms-api.md` §9; the data layer decides when to connect.
+pub mod notify;
 /// The one client-side hub-title override rule (issue #12): shared by Home's whole-catalog merge
 /// (`crate::pms`) and a library's own `/hubs/sections/{id}` shelves (`crate::browse::section_hubs`)
 /// so neither reimplements or drifts from the other's id table.
@@ -83,6 +86,9 @@ pub mod pins;
 // `impl AccountClient` block (same pattern as the PMS op files above).
 pub mod discover;
 
+// The plex.tv Watchlist (discover provider): `impl AccountClient`, contract frozen in watchlist.rs.
+pub mod watchlist;
+
 // The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
 // shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
 // them under their historical names.
@@ -100,6 +106,8 @@ pub use client::urlenc_str;
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
 pub use client::{Client, IpVersion, StreamUrl};
+// `Client::find_by_guids`' vocabulary (library.rs stays private).
+pub use library::{GuidKind, GuidLookupError, GuidMatch, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a
 // `Client` carries; `Scheme` is re-exported beside it because `dev::DevServer` deserializes one
 // straight out of the `plxnative-servers` trigger.

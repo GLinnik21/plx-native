@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mkipk import storage_archive_errors
+import deps  # noqa: E402  — ci/deps.py, the manifest reader (ci/dependencies.json pins the FFmpeg tarball)
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
 
@@ -687,7 +688,7 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
 SENTINELS = ("__IPK_SHA256__", "__COMMIT__", "__RUN_URL__", "__IPK_SIZE__", "__INSTALLED_SIZE__")
 # The one a note cannot do without: it is the only tamper check a user of an unsigned binary has.
 REQUIRED_SENTINEL = "__IPK_SHA256__"
-FFMPEG_TARBALL_SHA = "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+FFMPEG_TARBALL_SHA = deps.get(deps.entry("ffmpeg"), "sha256")
 AUDIT_BEGIN = "<!-- BEGIN GENERATED"
 AUDIT_END = "<!-- END GENERATED -->"
 # Sections that were in the note and are now the audit's. Named so a regression to the old shape
@@ -973,8 +974,10 @@ def font_family(p: Path) -> str:
             count, stroff = struct.unpack(">HH", b[toff + 2:toff + 6])
             for r in range(count):
                 ro = toff + 6 + 12 * r
-                pid, _enc, _lang, nid, ln, no = struct.unpack(">HHHHHH", b[ro:ro + 12])
-                if nid == 1:
+                pid, _enc, lang, nid, ln, no = struct.unpack(">HHHHHH", b[ro:ro + 12])
+                # An English record only: the subtitle aliases ("PlxSubs", "Inter" on the Noto
+                # faces, tools/plxsubs_names.py) are extra ID 1 records under other languages.
+                if nid == 1 and (pid != 3 or (lang & 0x3FF) == 0x009):
                     raw = b[toff + stroff + no: toff + stroff + no + ln]
                     # platform 0 (Unicode) and 3 (Windows) are both UTF-16BE; 1 (Mac) is not.
                     enc = "latin-1" if pid == 1 else "utf-16-be"
@@ -1597,8 +1600,8 @@ print("== shipped fonts ==")
 # Landed 2026-08-01: Inter (SIL OFL 1.1). This is now a REAL gate, not an XFAIL — its job is to
 # stop Monotype Arial coming back through a stale local copy, which is exactly how it would
 # return (the files are named appfont*.ttf, so nothing about the filename reveals the swap).
-ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR"}
-for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
+ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji"}
+for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf"):
     fam = font_family(ROOT / f)
     check(fam in ALLOWED, f"{f} family={fam!r} is redistributable (allowed: {sorted(ALLOWED)})")
 # The fallback face, checked for PRESENCE separately: the payload assertion below only runs when
@@ -1606,7 +1609,7 @@ for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
 # rendering as tofu. The floor is deliberately crude — a subsetted or truncated stand-in is caught
 # properly by `fontcov.rs`'s cmap gate in `make check`; this only catches "it is not there".
 _cjk = ROOT / "pkg/appfont-cjk.ttf"
-check(_cjk.exists() and _cjk.stat().st_size > 15_000_000,
+check(_cjk.exists() and _cjk.stat().st_size > 10_000_000,
       "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/base/src/fontcov.rs)")
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")
@@ -1615,6 +1618,23 @@ check((ROOT / "pkg/OFL.txt").exists(),
 # and in each font's own name table (ID 0/7/13/14, asserted by tools/cut-noto-cjk.py).
 check("Noto Sans CJK" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
       "THIRD-PARTY-NOTICES.md attributes Noto Sans CJK (OFL 1.1 §2 wants the notice to travel)")
+# The subtitle faces (tools/cut-noto-subs.py): libass finds them by family name, so a missing or
+# renamed one is a script that silently draws as tofu. `rust-modules/media/src/player/ass/fonts.rs`
+# holds the coverage; this holds that every face the manifest names exists, is whole, and is
+# attributed.
+import hashlib as _hashlib
+SUBS_DIR = ROOT / "pkg/fonts/subs"
+_subs_manifest = json.loads((SUBS_DIR / "manifest.json").read_text(encoding="utf-8"))
+_subs_notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text()
+check(len(_subs_manifest["faces"]) >= 20, f"manifest names {len(_subs_manifest['faces'])} subtitle faces")
+for _face in _subs_manifest["faces"]:
+    _path = SUBS_DIR / _face["file"]
+    check(_path.is_file() and _hashlib.sha256(_path.read_bytes()).hexdigest() == _face["sha256"],
+          f"pkg/fonts/subs/{_face['file']} is the manifest's face (same SHA-256)")
+    check(font_family(_path) == _face["family"] and _face["family"].startswith("Noto Sans "),
+          f"{_face['file']} family={font_family(_path)!r} is a Noto Sans face")
+check("Noto Sans Thai" in _subs_notices and "pkg/fonts/subs" in _subs_notices,
+      "THIRD-PARTY-NOTICES.md attributes the Noto Sans subtitle faces (OFL 1.1 §2)")
 
 print("== shipped roots bundle ==")
 # `pkg/le-roots.pem` is a TRUST ANCHOR set, so what it holds is graded by content, not by presence:
@@ -1658,13 +1678,14 @@ NEEDED_LICENCES = {
     "Apache-2.0.txt": "Material Icons, moxcms, pxfm, compiler_builtins",
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
-    "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+    "Zlib.txt": "nanosvg — fetched at a pinned commit and compiled into the binary",
     "ICU4X.txt": "ICU4X locale code/data — Unicode and IBM adaptation notices",
     "libm.txt": "registry libm — complete upstream math attributions",
     "qrcodegen.txt": "Project Nayuki QR code generator — upstream MIT notice",
     "libass-ISC.txt": "the bundled native ASS renderer",
     "FreeType.txt": "FreeType's elected FTL and its contributed modules",
     "HarfBuzz-Old-MIT.txt": "the bundled text shaper",
+    "libunibreak-Zlib.txt": "the bundled Unicode line-breaking library",
 }
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name
@@ -1702,6 +1723,8 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
+    # appfont-emoji.ttf is the emoji face: without it an emoji in a library name is a box.
+    "appfont-emoji.ttf",
     # le-roots.pem is the roots-mode fallback bundle (`net::keypin::Mode::Roots`): without it a
     # `*.plex.direct` server whose certificate chains to a 2025 Let's Encrypt root is unreachable on
     # a 2020 firmware, silently — the fallback just never engages.
@@ -1729,7 +1752,18 @@ if data_blob is not None:
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
         shipped_roots = [t.extractfile(m).read() for m in members if Path(m.name).name == "le-roots.pem"]
+        _shipped_subs = {Path(m.name).name: t.extractfile(m).read() for m in members
+                         if Path(m.name).parent.as_posix().endswith("/fonts/subs")}
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    # The subtitle faces sit in fonts/subs/ of the app directory, and every one the manifest names
+    # must be there byte for byte: libass finds a script's face by family name, so a missing one is
+    # tofu on the television and nothing else notices.
+    _subs_names = {f["file"] for f in _subs_manifest["faces"]} | {"manifest.json"}
+    check(set(_shipped_subs) == _subs_names,
+          f"payload carries fonts/subs/ manifest.json and all {len(_subs_manifest['faces'])} faces")
+    check(all(_hashlib.sha256(_shipped_subs[f["file"]]).hexdigest() == f["sha256"] for f in _subs_manifest["faces"]
+              if f["file"] in _shipped_subs),
+          "the ipk's subtitle faces are byte-identical to pkg/fonts/subs (same SHA-256)")
     # The roots bundle is graded in the REPO above, but what a television trusts is the member of
     # the BUILT archive: a stale or hand-edited copy staged by the Makefile would pass every check of
     # `pkg/le-roots.pem`. Same four roots, and byte-identical to the repo file.

@@ -236,6 +236,34 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
 
 ---
 
+## 2d. Which of these guids does this server hold? — `GET /library/all?type=T&guid=a,b,c`
+
+(Measured 2026-10 on PMS 1.43.4 with a per-server token, read-only. The Watchlist's join from a
+Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
+
+- **One request answers many guids.** `guid=<a>,<b>,<c>` in a SINGLE parameter returns every row whose
+  `guid` is listed; a guid the server does not hold is silently absent, there is no error row.
+  Repeated `guid=a&guid=b` keeps only the last. The separator is a literal `,`; each guid is
+  percent-encoded on its own first.
+- **Only the primary `plex://` guid matches.** `plex://movie/<24 hex>` and `plex://show/<24 hex>`.
+  `imdb://`, `tmdb://` and `tvdb://` (which the items carry in `Guid[]` with `includeGuids=1`) answer
+  size 0, so a title with no `plex://` guid cannot be looked up this way.
+- **`type` narrows and must be right.** `type=1` movies, `type=2` shows. A wrong `type` answers
+  size 0, which is indistinguishable from "not held", so the call is made once per kind and the kind
+  comes from the guid's own prefix. Rows carry `librarySectionID` and, when the server has them,
+  `UltraBlurColors`.
+- **The client chunks at 40 guids** (`GUIDS_PER_REQUEST`) to keep the URL short; PMS's own URL limit
+  was not measured, so 40 is a conservative choice rather than a found ceiling. Cost is
+  servers x kinds x ceil(N/40) requests (about 10 to 12 for 200 titles on two servers).
+- **Absence is only proof when the server answered.** `Client::find_by_guids` returns `Err` when any
+  chunk got no readable answer, and the caller must not read that as "absent": a silent share would
+  otherwise turn a playable title into "Not on your servers".
+- The same guid in two libraries is reported once, with the first row's key.
+- A single-guid form `GET /library/all?guid=plex://movie/<hex>[&type=1]` also works and is what
+  "Also available" uses one guid at a time.
+
+---
+
 ## 3. Hubs (home shelves)
 
 ```
@@ -1225,6 +1253,22 @@ names the real selected id and "do not burn" is carried only by the transcode de
 sent `0` at every transcode start until 2026-10-06, which is how a freshly searched subtitle was
 lost at the next playback.
 
+**The track-memory write-back follows that rule and is UNMEASURED against a real server.** When a
+viewer's fresh play of an episode applied a remembered audio or subtitle on a DIRECT PLAY, the app
+sends one `PUT /library/parts/<part>?allParts=1[&audioStreamID=<A>][&subtitleStreamID=<S>]` on the
+landing's first decoded frame (`route::send_parked_write_back`), so the selection the server holds
+matches the screen. Nothing else changes: no watch state, no show- or account-level preference, no
+stream offset. `<S>` is the remembered track, `0` only for a remembered Off over a Part that has a
+subtitle selected; an audio-only write names the Part's own selected subtitle unchanged (which keeps
+a download alive) and omits the field when none is selected, so it never creates an explicit Off.
+Nothing is written for a declined memory, a fall-through pick, a retry or preview, a refused direct
+play, a transcode (its start PUT is the write) or a pick not on screen, and the subtitle selection
+is never moved for a Part that carries a downloaded or external subtitle. That the write lands on the VIEWER's
+own selection (not a household-wide one), that it spares another user's download, and that
+omitting `subtitleStreamID` leaves the subtitle selection alone all rest on the OpenAPI spec and
+the in-tree fake (`selection_pms`) alone; `tests/mock_pms.py`'s selection is global. A real-server
+Guest check is still owed.
+
 The same loss, second sequence (2026-10-06): a download installed and selected mid-playback, playback
 stopped and restarted two seconds later, and the start's `PUT .../parts/<part>?allParts=1&subtitleStreamID=<E>&audioStreamID=<A>`
 named the part's EMBEDDED English track `<E>` (re-picked from the page's pre-playback copy of the
@@ -1237,6 +1281,182 @@ a fetchable sidecar — and is the only place the download may be exercised end 
 is immediate; the real one is asynchronous, as above. It also models the discard above
 (`discard_deselected_downloads`: the stream leaves the part, its `/library/streams/<id>` is a 404, selecting
 it is a 400).
+
+---
+
+## 9. Notifications (SSE) — `/:/eventsource/notifications` (measured on PMS 1.43.4, Guest token; ON for owned servers)
+
+The server pushes what other clients are doing. The app reads it with `plex::notify` (the protocol)
+and `stores::notify` (the policy); both ship on (`NOTIFY_ENABLED = true`) and the feed opens
+only to a server the account OWNS. Notifications are hints about a stranger's playback: they never
+reach a timeline, a stop, an end-of-stream candidate or a resume point.
+
+```
+GET /:/eventsource/notifications?filters=playing%2Ctimeline   (Accept: text/event-stream; X-Plex-Token in the query)
+```
+
+Measured against a local server with a Guest token:
+
+- **The query parameter is `filters`, and the path is `/:/eventsource/`.** `plex-openapi.json`
+  documents the path as `/:/eventsource/notifications` but the parameter as `filter`; the WebSocket
+  twin is `/:/websockets/notifications` on the server and `/:/websocket/notifications` in the spec.
+  The measurements win.
+- **A Guest token receives only `playing` events** (session key, the playing client's
+  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). The app requests `filters=playing,timeline`
+  (the comma sent percent-encoded). The idle measurements below used `filters=playing` alone; a later
+  capture on the owner's own server shows the server **accepts both `filters=playing,timeline` and
+  `filters=playing%2Ctimeline` and then sends `timeline` frames** (the fallback, no `filters`, is not
+  wired and is not needed).
+- **An owner token, watched read-only from the host over loopback HTTP** (one stream at a time, the
+  app's identity headers' client identifier, token in a header, no other request): with
+  `filters=playing`, 601 s: HTTP 200 `text/event-stream`, 60 frames, every one an SSE `ping`
+  (6.0 per minute, about 10 s apart), largest frame 20 bytes, 1320 bytes in all; no `playing` and no
+  other type arrived. Without `filters`, 180 s: 18 frames, again only `ping` (6.0 per minute, largest
+  frame 20 bytes). The server was idle for both windows, so this shows the owner token is accepted,
+  the stream is quiet at rest and no unfiltered type (activity, timeline, status, update) arrived
+  unprompted. It does NOT show whether `filters` suppresses anything, or whether the parser sees a
+  non-`playing` type, because nothing but pings was ever sent; that needs library activity.
+- **A ping about every 10 seconds**, and **no replay**: events missed while disconnected are gone,
+  so a reconnect after a live stream must re-read what the screens show (`resync_epoch`).
+- **Scrobble and unscrobble emit nothing.** The feed does not tell a client that an item became
+  watched; the re-read backstop does.
+- **No `ETag`** on any related read.
+- **One persisted client identifier.** Every new `X-Plex-Client-Identifier` the server sees raises
+  a new-device alert on the account, so the feed sends the same identifier the rest of the app does
+  and never mints one per connection. It sends the identity headers (`Client-Identifier`, `Product`,
+  `Version`, `Platform`, `Platform-Version`, `Device`, `Device-Name`) and no `X-Plex-Provides`: this
+  client is not a controllable player.
+
+What the parser accepts, leniently: a `data` JSON whose `NotificationContainer.type` is `playing`
+(or absent) and whose `PlaySessionStateNotification` array lists the sessions, or whose type is
+`timeline` (below); every field optional,
+ids as strings or numbers, unknown fields and unknown types ignored. A session whose
+`clientIdentifier` is this device's own is dropped before anything else sees it. The envelope's field
+names are the parser's reading and are not yet confirmed by a capture committed here: a verbatim
+frame would carry the session's key, client id and rating key, so it stays out of the repository
+(scrubbed captures hold only the ping cadence).
+
+**`timeline` frames: CAPTURED** (passive, read-only streams on the owner's own server while its library
+scanned; the raw captures hold titles and paths and stay out of the repository). One frame is
+`event: timeline` + `data: {"TimelineEntry":{...}}`: a single OBJECT, not an array, and no
+`NotificationContainer`. Scrubbed shape (synthetic values):
+`{"TimelineEntry":{"identifier":"com.plexapp.plugins.library","sectionID":"1","itemID":"1001","type":1,
+"title":"Movie A","state":5,"metadataState":"processing","updatedAt":1760000001}}`. `sectionID` and
+`itemID` are STRINGS; `type` and `state` are integers; `metadataState` ("queued", "matching",
+"processing", "loading") and `mediaState` ("analyzing") appear on some frames only. `type`: 1 movie, 2
+show, 3 season, 4 episode, 10 track. `state` values seen: 2, 3, 4, 5.
+
+The sequence of one movie or show is `state` 5 + `metadataState` "processing", then 4 + "loading", then
+**5 with no `metadataState`: the finished frame, the last of its sequence**. So state 5 opens AND closes a
+sequence (the first, before the item has metadata, is not "finished"). A season runs 2 ("matching"), 5, 3
+("queued"), 3 ("processing"), 4 ("loading") and a final 5, with its episodes (5, 4, 4, 5 each)
+interleaved; a music track is two state-5 frames, the first with `mediaState` "analyzing". The sequence
+is the same whether the item is new or only refreshed (the captures cannot tell them apart), so a
+"create" is "the item finished processing". **Deletion has NOT been observed** (no delete happened in any
+capture): the community-documented state 9 is kept as the delete value and is UNVERIFIED, as is the rest
+of the delete frame.
+
+The parser keeps an entry only when `itemID`, `type` and `state` are present (numbers as numbers or
+numeric strings), `type` is 1 or 2, the `identifier`, when present, is the library plugin's and
+`state` is 5 with neither `metadataState` nor `mediaState` (created) or 9 (deleted, UNVERIFIED); every
+other frame is dropped. The community `NotificationContainer` envelope with an array is still read.
+An `itemID` is the item's `ratingKey` on that server, not a guid. The fixtures
+(`rust-modules/plex/src/plex/notify/fixtures.rs`) are this shape with synthetic titles and ids.
+
+**Frame rates (measured, owner's server, 12 h).** `timeline`: 53 frames in 720 min = 0.07 per minute
+over the window, 7.6 per minute over the 7 minutes that had any; a scan arrives in bursts, the peak
+60 s window held 20 frames (all within one second, a 10-track music add) and a 36-frame season add held
+18 in its busiest minute. Idle is pings only: 6 per minute (4319 in 720 min), 2 bytes of data each.
+`filters=playing,timeline` costs 53 timeline + 4319 ping frames, 19 KB, in 12 h. **Without `filters`**
+the same 12 h held 27 990 frames and 6.8 MB: `activity` 22 004 frames, mean 30.6 per minute over the
+window, 66.9 over its 329 active minutes, peak 215 in one minute and 62 in one second (437 bytes at most),
+plus `progress` 1 401, `status` 106, `account` 59, `reachability` 47 and `preference` 1. Filtering is what
+keeps the feed quiet; an unfiltered subscription is not an option.
+
+What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
+HOLDS owes that item a read-back of OUR state. A page holds what its store enumerates while the page
+is on the navigation stack, visible or covered: Home's, the Library page's and Search's rows only
+while those pages are on it (a popped page holds nothing), the Watchlist page's matched copies
+on reachable servers inside its hold window (the same rule), a Person, Filmography or Collection page's
+rows, and a Detail page's own item, plus, while it is the loaded Detail, the episodes of its current
+season window (read the owing way) and its related and collection tiles (read quiet). A steady
+`playing` ping owes nothing, `buffering` counts as `playing` and an unknown state is ignored, and two
+clients without a session key are told apart by client id. A `stopped` session also owes its server one
+quiet Home refetch (`RefetchSourceQuiet`, coalesced per server), and, when no page holds the item, one
+`HubsInvalidateServer` for that server only: its section shelves are re-read, behind its failure
+backoff (a hint does not reset it) and at most once per quiet-refetch spacing per section. An item a
+Detail page shows is read the owing way, so the landed row (and, for an episode, its season and show)
+reaches the page through `DetailReconcile` (in place, no focus or scroll move); any other held card is
+read quiet and a Detail on screen is not re-fetched for it. Nothing is spent under the player or while
+a recording or replay is armed: it stays queued. A feed that comes back after a gap forgets what it had
+seen and owes the covered pages their re-read. A hint is never a playback event: it does not queue a
+stop, an end-of-stream candidate or a resume point, so a stranger's `stopped` cannot scrobble our
+other servers.
+
+What a hint does for the Watchlist: a session on a matched title that the page holds owes a read-back like
+any held card. A `timeline` create or delete does not read the item: it owes the Watchlist store ONE re-match
+of that server and kind (a delete of the item a tile is matched to asks again about that guid, a create asks
+again about the kind's titles the server was not seen to hold, `/library/all?type=T&guid=…` at 40 guids to a
+request), deduplicated per pump, at most once per quiet-refetch spacing (5 s) per server and kind, only once
+the Watchlist has loaded and only when `reread_allowed`; it stays queued otherwise. A feed that came back
+after a gap re-asks the server's titles whole. The tile flips when the answer lands (`docs/watchlist.md`,
+*Live-update gaps*); Home, Library and Search are not touched. A watched toggle on another client emits
+nothing, and the plex.tv membership itself has no PMS signal at all.
+
+Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
+5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
+other 4xx and a build that cannot stream (libcurl unbound or only serialised HTTPS) park it for the
+session, while a request the credential gate refused (status 0, a state of the moment) backs off; a background cancels every stream and a foreground reopens them.
+
+TV checks (debug install signed in through `tests/mock_pms.py`'s own plex.tv, so the mock's server
+arrives OWNED and the owned-only rule runs unmodified; `tools/tv-session.sh up --mock-plextv`):
+connects and goes live on an owned server (passed); ten idle minutes with no churn (0 reconnects, 0
+ends in 600 s; passed); the mock stopped and restarted: `Transport` end, escalating Backoff, reconnect,
+exactly one resync (passed); another client's `playing` then `stopped` refetches Continue Watching
+once, and an open Detail re-reads in place with its layout and focus unchanged (passed). Background and foreground
+on the set (2026-10-16; `tv-session.sh background` launches a full-screen app over ours, `foreground`
+launches ours again with the pid unchanged): two WILL/DID background edges each logged one `notify:
+suspend conns=1`; the foreground logged `network changed conns=1`, `resume conns=1`, then ONE
+`connecting` and `live`, with no `resync`, no `ended` and no park line (the page re-read comes from
+`reread.resume`, not from a feed gap) (passed, twice). A profile switch through the who's-watching
+picker on a three-profile mock household: `auth: switch ... ok (per-user server token)`, `plex: 1
+server(s) revoked - profile changed`, then `roster`, `connecting`, `live`: the feed reopened on the
+new profile with no `ended` and no refused-credential line; the empty-token and old-mailbox rules are
+pinned by `notify_tests` (`empty_token_never_connects`, `token_change_reconnects_and_drops_old_mailbox`),
+and the log cannot show which token the stream carried (the mock accepts any non-empty one), so the
+on-set evidence is that it reconnected, not what it sent. Roster rebuilds right after a switch can
+show a second `connecting` before the first `live` (the first connection is cancelled by the new
+key). A silent peer (the mock process SIGSTOPped for 60 s with its socket open, nothing sent):
+two `ended Silent -> Backoff` with their reconnects in 60 s, then on SIGCONT one `resync` and `live`
+(passed). A REAL-LOOKING network loss (2026-10-16; `tools/netloss-proxy.py`, a host-side TCP proxy between the set and the mock, no
+root and no change to the set's network: the mock was started with `--advertise-ip <host LAN IPv4>
+--advertise-port <proxy port>` so every PMS connection the app opened, the feed included, crossed
+it; `tv-session.sh up --mock-plextv` for the owned sign-in, then `POST /_proxy/mode`): the proxy's
+`blackhole` keeps existing connections open and stops forwarding in both directions (no FIN, no
+RST; new connections are accepted and never answered), `reset` RSTs everything and resets each new
+connection on accept. Heartbeat counts are `loop=` lines (about one a second) and every one read
+`dropped=0`. (1) Blackhole 60 s on the idle picker: `ended Silent -> Backoff` twice (the stream was
+silent 25 s each time), two reconnects accepted by the proxy and never answered (+24 s, +54 s), no
+park; 62 heartbeat lines in the 62 s window, so the loop never stalled; on restore ONE `resync epoch=1`
+and `live` (passed). (2) Reset, restored after 30 s: `ended Transport` four times with reconnects at
++2.4, +6.9, +16.7 s (each reset on accept) and +36 s (the first after restore), one `resync`, `live`
+(passed; 33 heartbeat lines in the 32 s of reset). (3) Blackhole 300 s: six `ended Silent` and six reconnects, the gaps
+between connects 29.7, 33.7, 41.6, 59.4, 89.7 s (the 25 s silence plus the 2, 4, 8, 16 ... up to
+60 s backoff), no park; the sixth connection, held since +279 s, went `live` when the link came
+back, with ONE `resync` (passed; 299 heartbeat lines in the 302 s window). (4) Normal requests during a 60 s blackhole
+(re-picking a profile through the who's-watching picker, which re-reads the server): `pms: server 0
+info unavailable (GET / failed)`, `browse: source 0 ... did not answer`, `hubs: source 0 FAILED
+(attempt 1) - retrying in 2s`, `auth: ... probe timed out`; the page showed its "Couldn't load
+libraries / Try again" read-out, BACK and OK were still handled during the loss, and 81 heartbeat
+lines in the 82 s window all read `dropped=0`, with `fps=60` while the spinner ran (passed). A restore that releases
+many held connections at once can overrun the mock's small accept queue (six of 24 were reset by
+it once); the proxy retries its upstream connect, so that is the mock's artefact, not the link's.
+NOT determined: the cases a lit Home would add (only the picker and the library-choice page carry
+PMS traffic without pressing *Start watching*, which this run did not), a loss on the set's own
+route (the proxy is a userland analogue: the TCP stack on the set still sees an ordinary peer that
+went quiet or reset), and a lossy rather than dead link (no partial loss, latency or reordering).
+Also not determined: whether Home focus stays put under a tile update (only the Detail page
+was captured).
 
 ---
 

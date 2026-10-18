@@ -1017,6 +1017,34 @@
       "comment": "The Library's half of home-idle, and it did not exist before the one-scroll rewrite: a settled library must STOP presenting. It is the only scene that can catch either of this screen's two new perpetual animators — the page/grid fade coordinator and the A–Z rail's alpha spring — repainting forever, because every other library scene drives motion on purpose and an fps FLOOR is blind to a frame rate that is too high. loop_floor still grades loop=, which counts loop iterations: the loop must stay responsive at >=30Hz while presenting nothing. warmup_s is 10, longer than home-idle's 8, because this page settles last: its posters, its section hubs and the shelf reveal springs those land into all have to finish."
     },
     {
+      "name": "watchlist-idle",
+      "tier": "ui",
+      "route": "watchlist",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-watchlist": true
+      },
+      "mock": {},
+      "comment": "The Watchlist page settled: plxnative-watchlist boots onto it. The page reads the discover host, not the PMS, so this scene only sees the synthetic watchlist when the television is booted with `tools/tv-session.sh up --guest --mock --mock-plextv=PORT` (which arms plxnative-discover at the mock too); without that tunnel the page settles on its unavailable read-out, which is also a still screen. It never reads a household's list while the mock is armed. search-idle's twin for this page: a landed list with its posters in is a still screen and must take ui::idle's present gate to the keepalive, while loop_floor keeps a wedged loop from passing by presenting nothing. No fps_floor and no key walk yet; the page's own ceiling is a first reading and is to be MEASURED on the television under the TV lock (`./tests/run.py --fps --mock --filter watchlist-idle`, after `make ARM_PROFILE=release deploy`) before it is trusted."
+    },
+    {
+      "name": "catalog-idle",
+      "tier": "ui",
+      "route": "catalog",
+      "loop_floor": 30,
+      "fps_ceiling": 5,
+      "run_secs": 22,
+      "warmup_s": 8,
+      "triggers": {
+        "plxnative-catalog": "5d776808f016bcd974c5a74e"
+      },
+      "mock": {},
+      "comment": "The catalog page settled: plxnative-catalog boots onto the page of the mock Discover fixture's ComingSoon title (index 8, a show no server holds). Like watchlist-idle it reads the discover host, so it only sees that record when the set is booted with `--mock-plextv=PORT` (which arms plxnative-discover at the mock); without it the page settles on its unavailable read-out, also a still screen. MOCK ONLY: the page's pill is a write to the account's list, and the mock is the only account this scene may ever press on. A landed catalog page with its art in is a still screen and must take ui::idle's present gate to the keepalive, while loop_floor keeps a wedged loop from passing by presenting nothing. No fps_floor and no key walk; the ceiling is a first reading, to be MEASURED on the television under the TV lock before it is trusted."
+    },
+    {
       "name": "search-type",
       "tier": "ui",
       "route": "search",
@@ -1434,6 +1462,66 @@
         "plxnative-moreosc": "900"
       },
       "require_log": ["moreosc: depth=1"]
+    },
+    {
+      "name": "fixed-480p-reencode-declaration",
+      "tier": "player",
+      "route": "player",
+      "run_secs": 40,
+      "warmup_s": 9,
+      "quality": "480p_720_kbps",
+      "comment": "Issue #665, second bug, against the SYNTHETIC mock only: a FIXED playback quality (480p) on a 3840x2160 H.264 source that the ceiling denies direct play and remux, so the app re-encodes over progressive start.mkv (TranscodeDelivery::ProgressiveMkv). Before 4f11c1aff `route::sink_max_raster` returned the SOURCE raster on that delivery and ignored the session's ceiling, so the Starfish Load declared `load: v=H264 a=\"AAC\" ... max=3840x2160@60` for a stream that is 854x480; now it is min(source, ceiling) = 854x480, whose H.264 envelope is `max=1920x1080@60`. The dev TV plays the old declaration without complaint, so this scene grades the DECLARATION (expect.load_max, and the set's own `smp_cb type=5` echo of it), not whether playback survives. Run it with `tools/tv-lock.sh with --why \"fixed 480p declaration\" -- ./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration` (guest boot, synthetic mock, panel and sound off; never an account). tests/mock_pms.py is started with `--extra-media <src> --transcode-fixture <clip>`; plxnative-quality=480p_720_kbps (the same word `quality: switch -> ...` prints) pins the rung, an in-memory override that never touches a saved preference. The two files are generated, NOT in the repo, and live under $FIXTURES_OUT (default ~/plxnative-fixtures) in bug665/; the scene is skipped with this reason until they exist. SOURCE (rk 990001, ~10 Mbps, 30 s): `ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -profile:v high -level 5.1 -b:v 10M -minrate 10M -maxrate 10M -bufsize 10M -x264-params nal-hrd=cbr:keyint=60 -c:a aac -b:a 128k -ac 2 src-4k-h264-aac.mkv`. SERVED TRANSCODE (what start.mkv returns, 30 s): `ffmpeg -f lavfi -i testsrc2=size=854x480:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -c:v libx264 -preset veryfast -pix_fmt yuv420p -profile:v main -b:v 700k -maxrate 700k -bufsize 1400k -g 60 -c:a aac -b:a 96k -ac 2 transcode-480p-h264-aac.mkv`. Both carry AAC so the mock's (unmodified, 'direct play OK / copy') /decision answer and the real output agree on the codecs the Load declares. The scene has no loop_floor on purpose: it grades the log, and only needs five post-warmup player heartbeats to prove it reached the player. NOT yet run on a device.",
+      "mock": {
+        "only": true,
+        "rk": 990001,
+        "extra_media": ["bug665/src-4k-h264-aac.mkv"],
+        "transcode_fixture": "bug665/transcode-480p-h264-aac.mkv"
+      },
+      "triggers": {
+        "plxnative-play": "$rk"
+      },
+      "require_log": ["route: quality ceiling P480"],
+      "expect": {
+        "decision": "transcode",
+        "codec": "h264",
+        "video_size": "854x480",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "load_max": "1920x1080@60",
+        "sink_echo": "1920x1080@60",
+        "min_timeline_climb_s": 10
+      }
+    },
+    {
+      "name": "boost-remux-declares-source-rate",
+      "tier": "player",
+      "route": "player",
+      "run_secs": 40,
+      "warmup_s": 9,
+      "comment": "Issue #832, against the SYNTHETIC mock only: with Boost Dialog ON a direct-playable 4K H.264 24p file plays as an ENHANCED REMUX (PMS start.mkv, video COPY, audio re-encoded to AC3). The app used to declare `load: v=H264 a=\"AC3\" fps=0.000 ... max=3840x2160@60` for it (a remux declared no source rate) and the TV presented ~16 fps of a 24p stream; now a remux declares the source rate: `fps=24.000 ... max=3840x2160@24`. This scene grades the DECLARATION (expect.load_fps / load_max, and the set's own `smp_cb type=5` echo of it) and the sink's PRESENTED rate against it (expect.presented_rate, run.py a_presented_rate; it SKIPS a declared fps=0.000, so the pre-fix build cannot pass it). plxnative-audioenh=boost forces Boost Dialog on at boot (dev::scenarios::arm_audio_enhancements; in memory only for the dev-token boot, which never seats a profile, and run_fps_scene clears every plxnative-* trigger before each scene, so no later scene inherits it); fps scenes write no default plxnative-audioenh, so this value is the only one. The mock answers /decision with boostDialog=1 as Part decision transcode, video copy, audio transcode ac3, and `--transcode-fixture` serves the remux bytes. Run it with `tools/tv-lock.sh with --why \"boost remux declaration\" -- ./tests/run.py --fps-player --mock --filter boost-remux-declares-source-rate` (guest boot, synthetic mock; never an account). The two files are generated, NOT in the repo, and live under $FIXTURES_OUT (default ~/plxnative-fixtures) in boost-remux/; the scene is skipped with this reason until they exist. SOURCE (rk 990001, ~10 Mbps, 30 s): `ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=24 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -profile:v high -level 5.1 -b:v 10M -maxrate 10M -bufsize 10M -g 48 -c:a ac3 -b:a 192k -ac 2 src-4k24-h264-ac3.mkv`. SERVED REMUX (what start.mkv returns; video stream-copied from the source, audio re-encoded): `ffmpeg -i src-4k24-h264-ac3.mkv -c:v copy -c:a ac3 -b:a 192k -ac 2 remux-4k24-h264-ac3.mkv`. Both carry AC3 so the mock's /decision answer and the real output agree on the codecs the Load declares; ffprobe reports avg_frame_rate 24/1 for both. NOT yet run on a device.",
+      "mock": {
+        "only": true,
+        "rk": 990001,
+        "extra_media": ["boost-remux/src-4k24-h264-ac3.mkv"],
+        "transcode_fixture": "boost-remux/remux-4k24-h264-ac3.mkv"
+      },
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-audioenh": "boost"
+      },
+      "require_log": ["becomes an enhanced remux"],
+      "expect": {
+        "decision": "transcode",
+        "codec": "h264",
+        "video_size": "3840x2160",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_fps": 24.0,
+        "load_max": "3840x2160@24",
+        "sink_echo": "3840x2160@24",
+        "presented_rate": true,
+        "min_timeline_climb_s": 10
+      }
     },
     {
       "name": "timing-capsule",
@@ -2734,7 +2822,7 @@
       "item": "episode_h264_aac",
       "kind": "episode",
       "title": "episode · h264/aac · 1080p · no subtitle — boots with Normalize Loudness forced ON, then releases it back to Original (issue #266)",
-      "comment": "Retargeted off movie_h264_ac3_1080p (PR4 device run, 2026-09-29) for the same reason as audio_enhancement_normalize above: Guest has a server-selected SRT subtitle on that item, and a shown subtitle withholds the enhancement rows by design, so the case never reached the toggle it exists to exercise. episode_h264_aac has no subtitle selected for Guest. Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality — so a harness that ever turns it on must guarantee every later case starts clean regardless of whether its own pick lands. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot through dev::scenarios::arm_audio_enhancements (the SAME persisting player::set_audio_enhancements call a real pick makes), which also proves the cold-start path: route/plan.rs's cold-start audio branch turns an otherwise direct-playable candidate into an enhanced remux before the first frame, hence expect.decision here is \"transcode\". Picking the SAME derived row again (`settle: \"released\"` selects the release grader) TOGGLES the preference back to NONE through the ordinary commit path — not a second boot trigger — so it re-persists as OFF for real and this case is its own cleanup: no second op, no dependency on run order. Releases straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect), and op_audio_enhancement_release grades where it LANDED: `released to Original direct play`, the next stream line is the /library/parts/ Part, no later start.mkv/start.m3u8 stream line (a failed trial rolls back to the enhanced remux) and no status=503 stream line (PR4's first device run met exactly that refusal; the Part is now admitted before the trial, and a refused one becomes the plain remux, which this case fails). The picked row is still the named `loudness` target (this item carries 2 audio tracks, but the trigger names the row rather than deriving a number from that count) — never hardcoded. **Known gap (device, TV, live PMS 1.43.4, Guest, 2026-09-29):** admitting the Part before the trial did not close this case — with the enhanced start.mkv actually playing first (timelines posted on this same session id), the admission's own Part GET still meets HTTP 503, so the release still lands on the plain codec-copy Original remux, not Direct Play; `enhancement: server refused the Original Part (HTTP 503); restoring Original as a remux` is the honest, expected line, and op_audio_enhancement_release fails the case on it exactly as designed — the grader is not weakened, and this stays XFAIL until the server side of the 503 is understood or worked around. Host probes as Guest against the same server and Part identity could not reproduce it (every Part GET came back 200/206, with the remux encoder live, stopped, or abandoned, same session id, identical header keys) — the difference a host cannot create is the posted timelines, so the leading untested hypothesis is that PMS refuses a raw Part on a session it has already seen post `state=playing` timelines (a `session lacking permission to direct play` style refusal), which is untestable from a host because timelines are real watch-history writes.",
+      "comment": "Retargeted off movie_h264_ac3_1080p (PR4 device run, 2026-09-29) for the same reason as audio_enhancement_normalize above: Guest has a server-selected SRT subtitle on that item, and a shown subtitle withholds the enhancement rows by design, so the case never reached the toggle it exists to exercise. episode_h264_aac has no subtitle selected for Guest. Boost Dialog / Normalize Loudness is a PERSISTED preference (a per-profile setting: a pick is stored in the seated profile's `profile_prefs` record, plex/session/prefs/profile_prefs.rs, with Session::audio_enhancements as the frozen top-level fallback that no pick writes), not an in-memory-only override like plxnative-quality — so a harness that ever turns it on must guarantee every later case starts clean regardless of whether its own pick lands. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot through dev::scenarios::arm_audio_enhancements (the SAME player::set_audio_enhancements call a real pick makes; the harness boots with an injected dev token, which never seats a profile, so this sets the LIVE preference and saves nothing), which also proves the cold-start path: route/plan.rs's cold-start audio branch turns an otherwise direct-playable candidate into an enhanced remux before the first frame, hence expect.decision here is \"transcode\". Picking the SAME derived row again (`settle: \"released\"` selects the release grader) TOGGLES the preference back to NONE through the ordinary commit path — not a second boot trigger — so the live preference goes back to OFF for real (nothing is saved under the dev token) and this case is its own cleanup: no second op, no dependency on run order. Releases straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect), and op_audio_enhancement_release grades where it LANDED: `released to Original direct play`, the next stream line is the /library/parts/ Part, no later start.mkv/start.m3u8 stream line (a failed trial rolls back to the enhanced remux) and no status=503 stream line (PR4's first device run met exactly that refusal; the Part is now admitted before the trial, and a refused one becomes the plain remux, which this case fails). The picked row is still the named `loudness` target (this item carries 2 audio tracks, but the trigger names the row rather than deriving a number from that count) — never hardcoded. **Known gap (device, TV, live PMS 1.43.4, Guest, 2026-09-29):** admitting the Part before the trial did not close this case — with the enhanced start.mkv actually playing first (timelines posted on this same session id), the admission's own Part GET still meets HTTP 503, so the release still lands on the plain codec-copy Original remux, not Direct Play; `enhancement: server refused the Original Part (HTTP 503); restoring Original as a remux` is the honest, expected line, and op_audio_enhancement_release fails the case on it exactly as designed — the grader is not weakened, and this stays XFAIL until the server side of the 503 is understood or worked around. Host probes as Guest against the same server and Part identity could not reproduce it (every Part GET came back 200/206, with the remux encoder live, stopped, or abandoned, same session id, identical header keys) — the difference a host cannot create is the posted timelines, so the leading untested hypothesis is that PMS refuses a raw Part on a session it has already seen post `state=playing` timelines (a `session lacking permission to direct play` style refusal), which is untestable from a host because timelines are real watch-history writes.",
       "covers": [
         "audio-enhancement-cleanup",
         "audio-enhancement-cold-start-remux"
@@ -2765,7 +2853,7 @@
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",
       "title": "movie · h264/ac3 · 1080p · server-selected subtitle — the enhancement burns it in from the first frame instead of withholding the offer (issue #266 M7)",
-      "comment": "Formerly `audio_enhancement_withheld_under_subtitle`, retargeted by M7's 'do it the Plex way' decision: Guest's PMS pre-selects an EMBEDDED subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2` — render_idx is non-negative, i.e. an in-container demuxer ordinal per `route/plan.rs`'s `subtitle_effect_of`, not an external sidecar), so this is exactly the shape the old I6 gate used to withhold the enhancement over. `route::plan::enhancement_availability` no longer answers Hidden or Disabled for an embedded subtitle — it answers `Offered(EnhancementRoute::Burn)` — so `audio_enhancements_boot: \"loudness\"` forcing the PERSISTED preference ON at boot (`dev::scenarios::arm_audio_enhancements`, reset back to \"off\" by the same per-case `plxnative-audioenh` trigger run.py writes for every case, so this case needs no cleanup op of its own) now produces a Burn before the first frame rather than a refusal: one `enhancement: applied boost=0 loudness=1` line, and a stream carrying `subtitleStreamID=2698&subtitles=burn` instead of the ordinary `start.mkv` remux. There is still no menu row to pick — the route decides this at cold start, same as before — so the only operation is `play`, and `op_audio_enhancement_burn` grades the boot log and the resulting stream directly. **This is the one case in this file that actually exercises the M7 burn path against the public synthetic fixture** (`movie_h264_ac3_1080p` already ships 4 embedded SRT tracks in `tests/fixtures/make_fixtures.py`); the newer `audio_enhancement_burns_embedded_subtitle` case below covers the live-pick reconcile instead, but is not runnable yet for want of a subtitle track on its own item. `expect.codec` is `hevc`, not the source's own `h264`: a Burn is a real re-encode (`transcoder.rs`'s cap fields, never `directStreamAudio=1`), and PMS's transcode target list is `hevc,h264` — HEVC first — so the output the demuxer actually opens is HEVC on any server that can encode it. `a_codec` checks one literal string, not a list, so this names the common case rather than accepting either.",
+      "comment": "Formerly `audio_enhancement_withheld_under_subtitle`, retargeted by M7's 'do it the Plex way' decision: Guest's PMS pre-selects an EMBEDDED subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2` — render_idx is non-negative, i.e. an in-container demuxer ordinal per `route/plan.rs`'s `subtitle_effect_of`, not an external sidecar), so this is exactly the shape the old I6 gate used to withhold the enhancement over. `route::plan::enhancement_availability` no longer answers Hidden or Disabled for an embedded subtitle — it answers `Offered(EnhancementRoute::Burn)` — so `audio_enhancements_boot: \"loudness\"` forcing the preference ON at boot (`dev::scenarios::arm_audio_enhancements`, which under the harness's dev token sets the live preference and saves nothing, reset back to \"off\" by the same per-case `plxnative-audioenh` trigger run.py writes for every case, so this case needs no cleanup op of its own) now produces a Burn before the first frame rather than a refusal: one `enhancement: applied boost=0 loudness=1` line, and a stream carrying `subtitleStreamID=2698&subtitles=burn` instead of the ordinary `start.mkv` remux. There is still no menu row to pick — the route decides this at cold start, same as before — so the only operation is `play`, and `op_audio_enhancement_burn` grades the boot log and the resulting stream directly. **This is the one case in this file that actually exercises the M7 burn path against the public synthetic fixture** (`movie_h264_ac3_1080p` already ships 4 embedded SRT tracks in `tests/fixtures/make_fixtures.py`); the newer `audio_enhancement_burns_embedded_subtitle` case below covers the live-pick reconcile instead, but is not runnable yet for want of a subtitle track on its own item. `expect.codec` is `hevc`, not the source's own `h264`: a Burn is a real re-encode (`transcoder.rs`'s cap fields, never `directStreamAudio=1`), and PMS's transcode target list is `hevc,h264` — HEVC first — so the output the demuxer actually opens is HEVC on any server that can encode it. `a_codec` checks one literal string, not a list, so this names the common case rather than accepting either.",
       "covers": [
         "audio-enhancement-subtitle-gate",
         "audio-enhancement-burn"
@@ -3329,6 +3417,45 @@
         "sink_echo": "3840x2160@24"
       },
       "_note": "4K H.264 exists in no real library the maintainer has (every 4K item there is HEVC or AV1 — `library_gaps.video` lists it), so before this fixture the combination had never been played at all. The device's own capability table claims H.264 to 4096x2304@60, so this is inside the envelope, not at its edge."
+    },
+    {
+      "name": "pipe_h264_uhd_30p_ms_timebase",
+      "fixture": "pipe_h264_ac3_2160p30.mkv",
+      "title": "UHD 3840x2160 30p h264 + AC-3, fps 30.303 (1 ms MKV timebase) — issue #665",
+      "covers": [
+        "uhd-2160",
+        "h264-3840x2160",
+        "fps-class-ms-timebase"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 30.303,
+        "source_raster": [
+          3840,
+          2160
+        ]
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "3840x2160",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1,
+        "load_max": "3840x2160@30",
+        "sink_echo": "3840x2160@30"
+      },
+      "_note": "Issue #665 (LG 60UN7310, webOS 5): a 4K H.264 High@5.1 MKV whose 1 ms timebase makes PMS report 30.303 fps. The fps class rounded that up to 50 and the pipeline refused the Load with type=18 num=601; LG's own app direct-plays the file. The declaration must be the 30 class."
     },
     {
       "name": "pipe_res_hevc_sd",

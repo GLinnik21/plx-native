@@ -47,9 +47,42 @@ tools/tv-session.sh shot [out.png]          # panel capture (video plane include
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
 tools/tv-session.sh screen off|on           # blank/restore the PANEL only (app keeps running)
 tools/tv-session.sh sound off|on|status     # mute/unmute the TELEVISION (independent of the panel)
+tools/tv-session.sh background [APPID]      # launch a full-screen app over ours: WILL/DID background (0x103/0x104)
+tools/tv-session.sh foreground              # launch ours again, no close-first: WILL/DID foreground (0x105/0x106)
+tools/tv-session.sh fg                      # read-only: the foreground app id
 tools/tv-session.sh wan off [TTL]|on|status  # cut the SET's uplink (LAN intact), self-restoring
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
+
+`up --mock-plextv=PORT --screen login` signs the debug install in through `tests/mock_pms.py`'s own
+plex.tv (mock started with `--host 0.0.0.0 --advertise-ip <host LAN IPv4> --authorize-after 2`): it
+arms `plxnative-plextv`, opens the reverse ssh tunnel that makes that loopback address real on the
+set, and the mock's server arrives OWNED through the app's normal sign-in, so server-updates
+(owned-only) can be checked without a real account. `down` closes the tunnel (`.tv-plextv.pid`).
+The stored session it leaves on the install is mock-only; clear `state/` under the debug runtime
+root when done.
+
+**Watchlist writes.** The same `--mock-plextv` boot arms `plxnative-discover`, so a Watchlist
+add/remove on the set goes to the mock. Without it a debug build refuses the write and the page header
+says `Debug: watchlist write blocked`. `plxnative-watchlist-live` is the OWNER's switch that lets a
+debug build write to their real plex.tv Watchlist: **never create it, and never pass
+`--arm watchlist-live`, unless the owner asks for it in this same session** (AGENTS.md; the
+`watchlist-live-guard.py` hook refuses both). `up` sweeps every trigger, so an agent run turns it off.
+
+A REAL-LOOKING network loss between the set and the mock needs no root and no change to the set's
+network: `tools/netloss-proxy.py` is a host-side TCP proxy the mock advertises as its own address
+(`tests/mock_pms.py --host 0.0.0.0 --port M --advertise-ip <host LAN IPv4> --advertise-port P
+--home-users 2 --authorize-after 2`, then `tools/netloss-proxy.py --upstream 127.0.0.1:M --listen
+0.0.0.0:P --control-port C`; plex.tv sign-in still reaches the mock directly through the
+`--mock-plextv=M` tunnel, and every PMS connection after it, the SSE feed included, crosses the
+proxy). `curl -X POST -d '{"mode":"blackhole"}' http://127.0.0.1:C/_proxy/mode` then flips it:
+`pass`; `blackhole` (existing connections stay open and go silent in both directions, new ones are
+accepted and never answered: no FIN, no RST, the closest userland analogue to a dead link, and what
+was held is delivered on `pass`); `reset` (RST every connection, RST new ones on accept); `refuse`
+(listener closed). `--schedule blackhole@10,pass@70` flips on a timer for a one-lease run. Every
+mode change and connection is logged with a timestamp. Stopping or SIGSTOPping the mock is NOT
+this: use it when the question is what the app does when the link itself dies. Stop the proxy and
+the mock when the run ends.
 
 `screen off` blanks the picture while the app keeps running and playback keeps decoding — a PANEL
 state, not an app state (see the owner's panel rule below). `sound off`/`on` calls
@@ -70,6 +103,13 @@ v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route c
 (the firmware has no `ip6tables` filter table), and a watchdog on the set restores both after the
 TTL whatever happens to your shell. Read what the APP saw from its own log (`net: curl
 rc=6`, `pinned: … name resolved locally`), not from this command's status lines.
+
+`background`/`foreground` are the sanctioned way to drive the app's lifecycle edges (the Home/launcher
+ribbon is an overlay on this set and delivers none, see the traps below). `background` launches
+`org.webosbrew.hbchannel` (or the id you pass, or `PLX_BG_APP`) through the application manager, refuses
+unless our app is the foreground one, and asserts the launched app took the foreground with our pid
+unchanged; `foreground` launches our own id again WITHOUT closing first and asserts the same. Read the
+edges from the app's log (`suspend`, `resume`, `network changed`), not from this command's lines.
 
 `down` hands back the APP (triggers cleared, app closed and NOT relaunched); `tools/tv-lock.sh release` hands
 back the TELEVISION. Do both, in that order — a released lock with an automated app still on
@@ -239,6 +279,11 @@ settled, because arming it before the launch also makes the boot count as automa
 screen you land on), and `plxnative-signinfail` (`auth::scripted::signinfail_spec` is re-read on
 every sign-in code request and every poll, so *Try again* keeps failing the same way until the file
 is removed).
+
+**`plxnative-drawable=<W>x<H>` (debug builds only) asks for that window size at boot**, e.g.
+`1280x720`, bounded to 640x360..=1920x1080 (anything outside is ignored and logged). It outranks
+Settings > System > Interface resolution, so a TV run can compare sizes without touching the
+stored setting. Like every trigger it marks the boot as automated.
 
 **Two traps that cost real time:**
 

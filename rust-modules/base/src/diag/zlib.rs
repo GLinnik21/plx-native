@@ -5,7 +5,7 @@
 //!
 //! # Why `dlopen` and not a crate
 //!
-//! Adding a compression crate would put a new dependency into a `-Z build-std` cross build for one
+//! Adding a compression crate would put a new dependency into the cross build for one
 //! feature that never ships. zlib is present wherever libcurl and OpenSSL are — which is every
 //! webOS release this app claims, and macOS — and this needs exactly **one** symbol from it.
 //!

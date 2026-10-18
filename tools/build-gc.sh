@@ -129,7 +129,7 @@ incremental = false
 # Checked before landing that nothing else in the nearer config chain already sets this and would
 # make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (only
 # `[profile.release]`) nor `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and
-# `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
+# formerly `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
 # against a config `[profile]` by letting config win, and the nearest config wins over a farther
 # one — both rules favour this file over anything upstream, which is the reason it is safe to add
 # here rather than in the crate manifest.
@@ -1242,7 +1242,7 @@ stale_cache_trees() {
     [ -d "$d" ] || continue
     # Age the LAST-USED MARKER that build-ffmpeg.sh touches on every successful run. A directory's
     # own mtime moves only when its direct children change, so the busiest configuration on the
-    # machine — rebuilt into and copied out of daily, all of it below `ffmpeg-9.0/` — would keep
+    # machine — rebuilt into and copied out of daily, all of it below `ffmpeg-<version>/` — would keep
     # the mtime it was created with and be collected on day thirty. An entry with no marker at all
     # predates that mechanism, and falls back to the directory.
     stamp="$d/.last-used"; [ -f "$stamp" ] || stamp="$d"
@@ -1269,7 +1269,7 @@ cache|all)
       echo "$d" | drop
     elif prune_lock "$d"; then
       # RENAME FIRST, DELETE THE TOMBSTONE AFTER. `rm -rf` on a 122 MB tree is not instantaneous,
-      # and interrupting it leaves `$WORK/ffmpeg-9.0` PRESENT AND PARTIAL — which is precisely the
+      # and interrupting it leaves the extracted `ffmpeg-<version>` tree PRESENT AND PARTIAL — which is precisely the
       # state `ci/build-ffmpeg.sh` reads as "already extracted", so once the abandoned lock is
       # reclaimed every checkout builds against a source tree with holes in it and the
       # configuration stays broken until somebody deletes it by hand. The rename is atomic, so the

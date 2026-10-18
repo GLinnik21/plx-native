@@ -22,21 +22,12 @@ impl DvCapability {
         }
     }
 
-    /// The one-word answer for the diagnostics header, in the UI language.
+    /// The one-word answer for the diagnostics header.
     pub fn compact_display(self) -> &'static str {
         match self {
             Self::Supported => crate::i18n::msg::browse_diagnostics_dv_yes(),
             Self::Unsupported => crate::i18n::msg::browse_diagnostics_dv_no(),
             Self::Unknown => "?",
-        }
-    }
-
-    /// [`Self::label`] in the UI language, for the diagnostics read-out. The log keeps `label`.
-    pub fn display(self) -> &'static str {
-        match self {
-            Self::Supported => crate::i18n::msg::browse_diagnostics_dv_supported(),
-            Self::Unsupported => crate::i18n::msg::browse_diagnostics_dv_unsupported(),
-            Self::Unknown => crate::i18n::msg::browse_diagnostics_unknown(),
         }
     }
 }
@@ -45,6 +36,9 @@ impl DvCapability {
 #[allow(dead_code)] // Configd is native-ARM-only; host/release checks still render the other sources.
 pub enum ProbeSource {
     Configd,
+    /// configd answered, and a platform rule overrode it (`webos::caps::platform_gate`); the
+    /// probe's `reason` names the rule.
+    Platform,
     Override,
     Host,
     Failure,
@@ -69,7 +63,7 @@ impl DvProbe {
             ProbeSource::Configd => "configd",
             ProbeSource::Override => "forced",
             ProbeSource::Host => "host",
-            ProbeSource::Failure => self.reason,
+            ProbeSource::Platform | ProbeSource::Failure => self.reason,
         }
     }
 
@@ -80,7 +74,7 @@ impl DvProbe {
             ProbeSource::Override => crate::i18n::msg::browse_diagnostics_dv_forced(),
             _ => self.provenance(),
         };
-        format!("{} · {source}", self.capability.display())
+        format!("{} · {source}", self.capability.label())
     }
 }
 

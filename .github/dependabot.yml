@@ -1,0 +1,108 @@
+# Dependabot version updates. Every PR it opens is squash-merged like any other (AGENTS.md), so the
+# commit-message prefix below only has to read like the repo's own "Area: change" subjects.
+#
+# What this does NOT cover: the non-Rust dependencies pinned in ci/dependencies.json (FFmpeg, libass
+# and its inputs, Sentry Native, nanosvg, jsmpeg, the webOS NDK; ci/deps.py fetches and verifies them).
+# Those are bumped by .github/workflows/deps-update.yml (ci/deps-update.py), one PR per dependency,
+# weekly, except the entries marked `hold` (the NDK, dev-toolbox-cli), which stay by hand. Also not
+# covered, and bumped by hand with its own notices/ABI review: the Python versions in
+# ci/check-python-steps.txt, ci.yml, build-package.yml, the Makefile and ci/test_ci_workflows.py.
+#
+# The pinned Rust toolchain (`rust-modules/rust-toolchain.toml`, one `channel = "1.x.y"`) IS covered, by
+# the `rust-toolchain` entry below. Nothing else spells the version (ci/test_ci_workflows.py fails on a
+# second copy), so that PR is one line. Its std half is not a lockfile Dependabot knows: the same
+# workflow re-derives it (see below), and the PR still needs the maintainer's eyes on the release notes
+# and the size budget, and `make build-bench` taken before merging (AGENTS.md).
+#
+# A cargo PR also moves versions in THIRD-PARTY-NOTICES.md section 2.4, which is generated from the
+# lockfile. `.github/workflows/dependabot-notices.yml` regenerates it and pushes the result to the
+# PR branch, but only when versions moved; a crate the bump ADDED needs a human licence decision, so
+# that PR stays red with the crate named (see that workflow's header for the trust model).
+# A toolchain PR moves the std dependency snapshot in ci/third-party-crates.json ("toolchain", "std_lock")
+# the same way: that workflow installs the new release with rust-src, runs
+# `ci/gen-third-party-notices.py --derive-toolchain`, regenerates the section and pushes both files; a
+# crate the new std lock ADDED stays red for a human, exactly like a new cargo crate.
+# The licence and copyright columns of that section come from ci/third-party-crates.json, not from the
+# lock, so an auto-regenerated table can carry stale licence text: ci.yml's `--verify-graph` step catches a
+# new or unlisted shipping crate, but on a MAJOR bump re-read the crate's licence and copyright by hand.
+# Concurrent cargo PRs conflict on THIRD-PARTY-NOTICES.md and Cargo.lock once one of them merges. Comment
+# `@dependabot recreate` on the other(s): it is safe, the job re-runs on the rebuilt branch. (Not `rebase`:
+# after the bot's push Dependabot treats the PR as edited and ignores it.)
+version: 2
+updates:
+  # The Rust workspace: one lockfile, crates.io only.
+  - package-ecosystem: cargo
+    directory: /rust-modules
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: Deps
+    groups:
+      # Minor and patch bumps travel together; a major gets a PR of its own.
+      rust-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Exact `=` pins, deliberately held. They were added together with the verbatim upstream licence
+      # texts the notices carry for them (licenses/ICU4X.txt, licenses/qrcodegen.txt; THIRD-PARTY-NOTICES.md
+      # 2.4, #265), and icu_datetime's compiled data is a large part of .rodata (Makefile size notes). A
+      # bump is a deliberate change: re-read the notices, check the size budget, edit Cargo.toml by hand.
+      # (icu_provider is `2.1`, not pinned, and its data crates ride along as lockfile updates.)
+      - dependency-name: icu_locale
+      - dependency-name: icu_plurals
+      - dependency-name: icu_decimal
+      - dependency-name: icu_datetime
+      - dependency-name: icu_calendar
+      - dependency-name: qrcodegen
+
+  # rust-modules/rust-toolchain.toml: the pinned stable release (GitHub, 2025-08-19, "Dependabot now supports
+  # Rust toolchain updates"; it reads a pinned `channel = "1.x.y"`).
+  - package-ecosystem: rust-toolchain
+    directory: /rust-modules
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: Deps
+
+  # Workflows, plus each local composite action (a composite action's own `uses:` is only found
+  # when its directory is listed). Listed one by one: only the workflows directory is scanned for `/`.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/apt-install
+      - /.github/actions/host-rust
+      - /.github/actions/rust-toolchain
+      - /.github/actions/webos-ndk
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: CI
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # tools/requirements-docs.txt, installed by pages.yml.
+  - package-ecosystem: pip
+    directory: /tools
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: Tools
+    groups:
+      python-tools:
+        patterns: ["*"]
+
+  # tools/package.json: the Sentry CLI and the Copilot CLI that the Makefile and workflows run.
+  - package-ecosystem: npm
+    directory: /tools
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: Tools
+    groups:
+      node-tools:
+        patterns: ["*"]

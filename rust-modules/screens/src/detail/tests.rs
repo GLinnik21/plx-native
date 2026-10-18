@@ -153,6 +153,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
         disc_unfurl: [Spring::at(0.0); 3],
+        watchlist: plx_data::catalog::Membership::Unknown, watchlist_flip: Spring::at(0.0), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
@@ -333,6 +334,75 @@ fn refresh_obligation_is_logical_state_without_a_restore_intent() {
     assert!(probe.contains("restore=false") && probe.contains("refresh=Requested"));
 }
 
+/// **A server-driven re-read moves nothing.** `DetailReconcile` is the obligation alone: unlike
+/// `DetailRestore` (the deliberate re-seat after playback) it neither sets a focus-restore intent
+/// nor sends the page back to the top.
+#[test]
+fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
+    for phase in [DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
+        let mut screen = bare(&guard, sid, "show");
+        screen.sync_keys(test_store().view());
+        let focus = episode_key(&screen, 1, episodes::Row::Still).expect("the second episode is keyed");
+        let want = FocusKey { entry: EntryId(7), elem: focus };
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
+        screen.scroll_target = 480.0;
+        screen.scroll.pos = 480.0;
+        let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: phase }), Some(focus));
+        assert_eq!(screen.refresh, phase);
+        assert!(screen.restore_intent.is_none(), "no focus is re-seated ({phase:?})");
+        assert!(!screen.return_pending, "nothing was queued to move focus ({phase:?})");
+        assert_eq!(screen.scroll_target, 480.0, "the page does not scroll to the top ({phase:?})");
+        assert_eq!(screen.scroll.pos, 480.0);
+        assert_eq!(held(&screen), focus, "the obligation leaves the focus where it was ({phase:?})");
+
+        // …and neither does the re-read it asks for, when it lands
+        let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+        {
+            let (state, adapter) = test_store().split_for_test();
+            plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(detail(sid, "show")));
+        }
+        test_store().pump_detail();
+        let _ = step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(focus));
+        assert_eq!(episode_key(&screen, 1, episodes::Row::Still), Some(focus), "the episode keeps its key ({phase:?})");
+        assert_eq!(held(&screen), focus, "the landing leaves the focus where it was ({phase:?})");
+        assert!(screen.restore_intent.is_none() && !screen.return_pending, "and seats nothing ({phase:?})");
+        assert_eq!((screen.scroll_target, screen.scroll.pos), (480.0, 480.0), "the landing does not scroll ({phase:?})");
+    }
+    clear();
+}
+
+#[test]
+fn a_reconcile_landing_holds_the_focus_on_an_episode_past_the_first_page() {
+    let total = 150;
+    let guard = install(long_season(total, &[0, 1]));
+    let sid = ServerId::UNSET;
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let focus = episode_key(&screen, 70, episodes::Row::Still).expect("page 1 is keyed");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let want = FocusKey { entry: EntryId(7), elem: focus };
+    let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
+    assert_eq!(held(&screen), focus);
+
+    let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: DetailRefreshPhase::Requested }), Some(focus));
+    assert_eq!(held(&screen), focus, "the obligation alone moves nothing");
+
+    // the re-read lands: the server's page 0 of the same season
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
+    }
+    test_store().pump_detail();
+    screen.sync_keys(test_store().view());
+    assert_eq!(episode_key(&screen, 70, episodes::Row::Still), Some(focus), "episode 70 keeps the key it had");
+    assert_eq!(held(&screen), focus, "the landing left the focus on episode 70, not on the hero");
+    clear();
+}
+
 #[test]
 fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
     let guard = plx_base::testlock::serial();
@@ -403,7 +473,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
 /// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address.
 ///
 /// Closed by IDENTITY, not synchrony: `DetailScreen::step` has no same-turn boundary the way
-/// `app::content::refresh_content` does for `DetailRestore` (see C1fix, `3b628b23`) — `Cx`
+/// `app::content::reconcile_details` does for `DetailReconcile` (see C1fix, `3b628b23`) — `Cx`
 /// publishes stores as read-only views, so there is no `&mut Stores` here by construction. Rather
 /// than widen `Cx`/`Rig`, `start_reconciliation` now records `self.refresh_gen =
 /// meta.detail_generation()` — the generation that already existed BEFORE this promotion's own
@@ -517,6 +587,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
 fn a_spot_round_trips_through_the_page_it_describes() {
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
+    d.guid = "plex://show/5d776b1d96b655001f2a9c3e".into();
     d.cur_season = 1;
     d.related = (0..6)
         .map(|i| plx_data::pms::PmsMovie {
@@ -530,7 +601,7 @@ fn a_spot_round_trips_through_the_page_it_describes() {
     let measure = plx_ui::fixture::FixtureMeasure;
     for (elem, section, col, text) in [
         (hero::ELEM_PLAY, 0, 0, false),
-        (hero::ELEM_MARK_WATCHED, 0, 1, false),
+        (hero::ELEM_MARK_WATCHED, 0, 2, false),
         (season::elem(1).unwrap(), 1, 1, false),
         (
             episodes::elem(1, episodes::Row::Still).unwrap(),
@@ -1163,12 +1234,14 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 #[test]
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
+        watchlist: true,
         restart: true,
         trailer: false,
         alt: false,
         mark: PosterMark::None,
     };
     let after = hero::HeroSet {
+        watchlist: true,
         alt: true,
         ..before
     };
@@ -1326,6 +1399,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
 fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
+        watchlist: true,
         restart: true,
         trailer: false,
         alt: false,
@@ -1366,6 +1440,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                 for trailer in [false, true] {
                     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(Detail {
                         sid, rk: "hero-hit".into(), kind: "movie".into(), watched,
+                        guid: "plex://movie/5d776b1d96b655001f2a9c3e".into(),
                         resume_ms: if restart { 30_000 } else { 0 }, dur_ms: 120_000,
                         extras: trailer
                             .then(|| plx_data::metadata::Extra {
@@ -1402,7 +1477,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         "the preview path replaced the Trailer disc"
                     );
                     let (controls, n) = hero::hero_ctls(set);
-                    assert_eq!(n, 2 + usize::from(restart) + usize::from(alt));
+                    assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
                         [0.0, 0.0, 0.0],
@@ -1456,7 +1531,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
             }
         }
     }
-    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![2, 3, 4]);
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![3, 4, 5]);
     assert_eq!(cases, 192);
     clear();
     plx_plex::plex::reset_servers_for_test();
@@ -1617,7 +1692,9 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
 
 /// **Regression, 2026-09-18: `preview_tick`'s per-frame path must not read the session file every
 /// frame.** `preview::blocked` (called unconditionally from `preview_tick`, hero-focused or not)
-/// calls `preview::enabled()`, which calls `session::peek()` — and `peek` used to take
+/// calls `preview::enabled()`, which called `session::peek()` (since P1c it reads the seated profile's
+/// trailer cell instead, so this test now guards the REST of the per-frame path: any other `peek()`
+/// reached from `preview_tick`) — and `peek` used to take
 /// `session::IO` on every call, which on the television guards a `recv(2)` round trip to the
 /// storage helper, measured at ~27 ms/frame: the whole gap between 60 fps and the 26 fps the
 /// detail page actually drew. The fix is `session::peek()`'s own live read cache (`session::CACHE`,
@@ -1626,21 +1703,23 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
 /// focused (dwelling toward a preview, same as
 /// `preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back`'s setup)
 /// and asserts the underlying session read never happens after the fixture's own `save` primed the
-/// cache — not even once, let alone once per frame. Watched RED against the original bug: reverting
-/// `session::peek()` to its pre-cache, always-reads-`IO` form fails this with `reads=1` (left) vs
-/// the expected `reads=0` (right).
+/// cache — not even once, let alone once per frame. Watched RED on 2026-09-18, when
+/// `preview::enabled()` still called `session::peek()`: reverting `peek()` to its pre-cache,
+/// always-reads-`IO` form failed this with `reads=1` (left) vs the expected `reads=0` (right). Since
+/// P1c nothing on this path peeks, so that revert no longer turns it red; the peek cache's own guard
+/// is `session_cache_tests`.
 #[test]
 fn preview_tick_does_not_read_the_session_file_every_frame() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
     let mut screen = bare(&_guard, sid, "show");
 
-    // A readable session, so `preview::enabled()`'s `peek()` call has real Ready bytes behind it,
+    // A readable session, so a `peek()` anywhere on this path has real Ready bytes behind it,
     // rather than the trivially-cheap Missing/default path.
     let _session = plx_plex::plex::session::TempSession::new("detail-preview-fps");
     plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-detail-preview-fps".into(),
-        trailer_autoplay: true,
+        prefs: plx_plex::plex::session::Preferences { trailer_autoplay: true, ..Default::default() },
         ..Default::default()
     });
 
@@ -1664,7 +1743,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
         reads, 0,
         "preview_tick must not re-read the session file every frame -- {reads} session reads over \
          30 frames of hero focus reproduces the 60->26 fps regression (2026-09-18); the write-through \
-         cache installs on `save` above, so even the very first frame's peek() must be a hit"
+         cache installs on `save` above, so any peek() reached from here must be a hit"
     );
 
     drop(sink);
@@ -2382,14 +2461,11 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::ViewState,
             plx_data::stores::StoreCmd::ViewState(ViewStateCmd::Request {
-                sid, rk, write, detail, guid,
-            }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
+                sid, rk, write, guid, ..
+            }))) => Some((*sid, rk.as_str(), *write, guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched,
-        Some(&plx_data::stores::viewstate::DetailRefresh {
-            sid, rk: "movie".into(), keep: None,
-        }), "")],
+    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched, "")],
         "Detail must address the typed ViewState command to its owning Bridge");
     assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
@@ -4689,4 +4765,100 @@ fn an_unfocused_related_row_that_fills_the_screen_does_not_ask() {
             "tick {n}: an unfocused row that fills the screen asks for nothing");
     }
     clear();
+}
+
+// ---- the bookmark disc on a DetailScreen (docs/watchlist-plan.md §1.4, §1.8) -----------------
+
+const WL_HEX: [u8; 12] = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
+const WL_GUID: &str = "plex://movie/5d776b1d96b655001f2a9c3e";
+
+fn movie_with_guid(guid: &str) -> Detail {
+    Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        title: "Movie".into(),
+        part: "/library/parts/movie".into(),
+        guid: guid.into(),
+        ..Default::default()
+    }
+}
+
+fn item_menu_acts(effects: &[plx_machine::machine::Stamped<TestHost>]) -> Vec<crate::registry::ItemMenuAction> {
+    effects
+        .iter()
+        .filter_map(|e| match &e.fx {
+            Fx::App(AppFx::ItemMenu(req)) => Some(req.act.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A title the service cannot key (a local agent, personal media) gets NO disc: not drawn, not
+/// focusable, and its element is not placeable in the row.
+#[test]
+fn a_non_plex_guid_has_no_bookmark_disc() {
+    let _guard = install(movie_with_guid("local://1"));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    let set = screen.hero_set(test_store().view());
+    assert!(!set.watchlist);
+    assert!(!hero::hero_ctls(set).0[..hero::hero_ctls(set).1].contains(&hero::HeroCtl::Watchlist));
+    assert!(!hero::visible_ctls(set, false).0[..hero::visible_ctls(set, false).1].contains(&hero::HeroCtl::Watchlist));
+    assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), None);
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert!(item_menu_acts(&fx).is_empty());
+}
+
+/// A `plex://movie` title gets the disc second, and OK on it asks the item menu's own write: Add
+/// from the outline face, Remove (keyed by the guid) from the filled one.
+#[test]
+fn the_bookmark_disc_press_emits_the_item_menu_write() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    let set = screen.hero_set(test_store().view());
+    assert!(set.watchlist);
+    assert_eq!(hero::index_of(set, hero::HeroCtl::Watchlist), Some(1));
+    tick_page(&mut screen, None, 16);
+    assert_eq!(screen.watchlist_hex(), Some(WL_HEX));
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistAdd { hex: WL_HEX }]);
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    let (_, fx) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    assert_eq!(item_menu_acts(&fx), vec![crate::registry::ItemMenuAction::WatchlistRemove(WL_GUID.into())]);
+}
+
+/// The first membership answer is the disc's rest face: no fill/ribbon flip plays on open. A later
+/// change from a known face does animate.
+#[test]
+fn the_first_membership_answer_snaps_and_a_later_change_animates() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    tick_page(&mut screen, None, 16);
+    assert_eq!(screen.watchlist_flip.pos, 1.0, "open on an on-list title draws the filled face at rest");
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    tick_page(&mut screen, None, 16);
+    assert!(
+        (0.0..1.0).contains(&screen.watchlist_flip.pos) && screen.watchlist_flip.pos > 0.0,
+        "a flip from a known face animates"
+    );
+}
+
+/// A flip Off -> On, ticked until idle, rests EXACTLY on the filled face (not 0.999 drawing a clip).
+#[test]
+fn the_bookmark_flip_snaps_to_its_target_at_rest() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    tick_page(&mut screen, None, 16);
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 1.0);
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 0.0);
 }

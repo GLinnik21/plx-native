@@ -294,6 +294,15 @@ pub struct DetailScreen {
     season_pop: CtlPop<1>,
     ctl_pop: CtlPop<5>,
     disc_unfurl: [Spring; 3],
+    /// The bookmark disc's face: what the app last said of the title's membership. Render and
+    /// input state only (never hashed): the Watchlist store owns the truth, this page keeps no copy
+    /// of the list.
+    watchlist: plx_data::catalog::Membership,
+    /// 0 = the outline face at rest, 1 = the filled one; the flip between them is
+    /// [`plx_appkit::watchlist_disc::flip_frame`]. Stepped toward `watchlist` inside `idle::decorative`.
+    watchlist_flip: Spring,
+    /// The loaded item's catalog id (movie or show guid, decoded once), mirrored for the app's feed.
+    watchlist_hex: Option<[u8; 12]>,
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     /// The page's own keyed ground. Deliberately a bare [`AmbientWash`] and not the shared
@@ -490,6 +499,31 @@ impl Drop for LayoutPin<'_> {
 }
 
 impl DetailScreen {
+    /// The loaded item's catalog id, once the page has loaded one with a `plex://movie|show` guid.
+    /// The app reads it to look up the membership it hands back through [`Self::set_watchlist`].
+    pub fn watchlist_hex(&self) -> Option<[u8; 12]> {
+        self.watchlist_hex
+    }
+
+    /// The membership the bookmark disc wears: On draws the filled face, Off and Unknown the outline
+    /// (the PUT is idempotent, so an unknown membership offers Add). A change flips the disc.
+    pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) {
+        if self.watchlist != membership {
+            // The first answer (the list landing, or the page opening on an on-list title) is the
+            // disc's REST face, not a flip: snap. Only a change from a known face animates.
+            if self.watchlist == plx_data::catalog::Membership::Unknown {
+                self.watchlist_flip = Spring::at(f32::from(hero::face(membership) == hero::Face::Filled));
+            }
+            self.watchlist = membership;
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    /// The membership the disc currently wears.
+    pub fn watchlist(&self) -> plx_data::catalog::Membership {
+        self.watchlist
+    }
+
     pub fn new(entry: EntryId, sid: ServerId, rk: String, hubs: plx_data::pms::HubsView<'_>) -> Self {
         let selected = hubs.find(sid, &rk).cloned();
         let mut ground = AmbientWash::flat(theme::SURFACE_APP);
@@ -544,6 +578,9 @@ impl DetailScreen {
             season_pop: CtlPop::new(),
             ctl_pop: CtlPop::new(),
             disc_unfurl: [Spring::at(0.0); 3],
+            watchlist: plx_data::catalog::Membership::Unknown,
+            watchlist_flip: Spring::at(0.0),
+            watchlist_hex: None,
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
             ground,
@@ -803,13 +840,14 @@ impl DetailScreen {
         &self,
         focus: Option<FocusKey<u32>>,
         meta: plx_data::metadata::MetadataView<'_>,
-    ) -> Option<(String, PosterMark)> {
+    ) -> Option<(String, String, i64, PosterMark)> {
         if meta.season_loading() {
             return None;
         }
         let i = self.focused_index(focus, season::SEASON_GROUP, meta)?;
-        let s = self.detail(meta)?.seasons.get(i)?;
-        (!s.rk.is_empty()).then(|| (s.rk.clone(), season::watch_state(s)))
+        let d = self.detail(meta)?;
+        let s = d.seasons.get(i)?;
+        (!s.rk.is_empty()).then(|| (s.rk.clone(), d.rk.clone(), s.index, season::watch_state(s)))
     }
 
     /// The focused card of a poster shelf that is some other item — Related, or the collection
@@ -1897,6 +1935,21 @@ impl DetailScreen {
     }
 }
 
+/// The scope of the hero's Mark watched/unwatched button: a show reaches all its episodes, a season
+/// (reached through a collection's members) the episodes of its own number under its show
+/// ([`Detail::parent_rk`], not `show_rk`, which is the grandparent key and empty for a season),
+/// anything else the one item.
+fn hero_mark_scope(d: &Detail) -> plx_data::viewstate::Scope {
+    use plx_data::viewstate::Scope;
+    if d.is_show {
+        Scope::Show
+    } else if d.kind == "season" && !d.parent_rk.is_empty() {
+        Scope::Season { show_rk: d.parent_rk.clone(), index: d.index }
+    } else {
+        Scope::Leaf
+    }
+}
+
 fn row_move(index: usize, len: usize, dir: Dir) -> Option<usize> {
     match dir {
         Dir::Left if index > 0 => Some(index - 1),
@@ -1970,9 +2023,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // identity still matches. The only thing that suppresses it is a fetch for this
                 // item already in flight. Restored enters (and every other case) keep reusing the
                 // cached detail instead of duplicating a request. A return from the PLAYER is the
-                // one restored enter that is re-read from outside this arm:
-                // `app::content::refresh_after_playback` delivers a `DetailRestore` with a
-                // `Requested` obligation once the stop report has been POSTed (#575), so Play
+                // one restored enter that is re-read from outside this arm: the stop's read-back
+                // (`Stores::stops_landed`) lands the item's facts and
+                // `app::content::reconcile_details` delivers a `DetailReconcile` (#575), so Play
                 // resumes from what the stop committed, not from the `viewOffset` the page
                 // opened with.
                 let fresh_open = matches!(kind, Enter::Fresh { .. });
@@ -2176,30 +2229,26 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 }
                 Handled::No
             }
-            ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
+            // The deliberate re-seat after playback: focus and spot only. A server obligation is
+            // `DetailReconcile`'s alone.
+            ScreenEvent::App(AppMsg::DetailRestore { spot, episode }) => {
                 self.restore_episode(spot, episode.as_deref(), meta);
-                // A focus-only restore (including navigation memory) cannot discharge a newer
-                // write's server obligation. `Requested` on this message means the sender ALREADY
-                // admitted the request: `app::content::refresh_content` runs `RequestDetail`
-                // through `Bridge::metadata_run` in the same synchronous step that emits this
-                // effect, so recording the phase here is a pure observation, not a start. Issuing
-                // the command again from this arm would run the non-idempotent request twice — a
-                // second `begin_detail_request` generation — and reopen the very T2 window the
-                // caller closed. A covered page keeps Deferred until Enter gives it ownership of
-                // the shared Metadata slot.
-                match refresh {
-                    DetailRefreshPhase::None => {}
-                    DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
-                    DetailRefreshPhase::Requested => {
-                        // T2: the sender already admitted this request synchronously (see the
-                        // comment above), so `meta.detail_generation()` here IS our own request's
-                        // generation. The threshold must be the generation that existed before
-                        // that admission, or our own real terminal (landing at this same,
-                        // unchanged generation number) would never look "newer" than itself.
-                        self.refresh_gen = meta.detail_generation().saturating_sub(1);
-                        self.refresh = DetailRefreshPhase::Requested;
-                    }
-                }
+                fx.invalidate(Provenance::Landing(fx.from()));
+                Handled::Yes
+            }
+            // The server's word about this page's item changed: the obligation alone. Nothing is
+            // re-seated and nothing scrolls - the focus key is an identity that survives the
+            // re-read, which `reconcile` resolves against the landed page.
+            //
+            // `Requested` means the sender ALREADY admitted the request
+            // (`app::content::reconcile_details` runs `RequestDetail` through
+            // `Bridge::metadata_run` in the same synchronous step that emits this), so recording
+            // the phase is a pure observation, not a start. Issuing the command again from here
+            // would run the non-idempotent request twice - a second `begin_detail_request`
+            // generation - and reopen the T2 window the caller closed. A covered page keeps
+            // `Deferred` until Enter gives it ownership of the shared Metadata slot.
+            ScreenEvent::App(AppMsg::DetailReconcile { refresh }) => {
+                self.owe_refresh(*refresh, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -2275,9 +2324,9 @@ impl DetailScreen {
     /// **A screen cannot close that window itself**: `Cx` publishes stores as VIEWS, so there is
     /// no `&mut` here by construction, and the engine's `after_step` reconcile runs before the
     /// drain reaches this effect. The one caller that IS a same-turn application boundary —
-    /// `app::content::refresh_content`, which holds the `Bridge` — therefore does not come
+    /// `app::content::reconcile_details`, which holds the `Bridge` — therefore does not come
     /// through here at all: it runs `RequestDetail` through `Bridge::metadata_run` and hands this
-    /// screen an already-backed `Requested` (see the `DetailRestore` arm). What is left on this
+    /// screen an already-backed `Requested` (see the `DetailReconcile` arm). What is left on this
     /// path is the `Enter` promotion of an obligation the page has carried while covered, whose
     /// one observable consequence — the restored focus key — `reconcile` holds on `self.refresh`.
     fn start_reconciliation<H: crate::registry::MetadataLike>(
@@ -2297,6 +2346,25 @@ impl DetailScreen {
             }),
         )));
         self.refresh = DetailRefreshPhase::Requested;
+    }
+
+    /// Record a server obligation the sender has already backed (`Requested`) or that must wait
+    /// for this page to own the Metadata slot again (`Deferred`). The one place the phase is set
+    /// from outside, by `DetailReconcile`.
+    fn owe_refresh(&mut self, refresh: DetailRefreshPhase, meta: plx_data::metadata::MetadataView<'_>) {
+        match refresh {
+            DetailRefreshPhase::None => {}
+            DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
+            DetailRefreshPhase::Requested => {
+                // T2: the sender already admitted this request synchronously, so
+                // `meta.detail_generation()` here IS our own request's generation. The threshold
+                // must be the generation that existed before that admission, or our own real
+                // terminal (landing at this same, unchanged generation number) would never look
+                // "newer" than itself.
+                self.refresh_gen = meta.detail_generation().saturating_sub(1);
+                self.refresh = DetailRefreshPhase::Requested;
+            }
+        }
     }
 
     fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
@@ -2924,6 +2992,8 @@ impl DetailScreen {
                         hero::HeroCtl::Trailer => plx_ui::icons::Icon::Trailer,
                         hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
+                        // At either rest the plain face; only a flip in flight layers the fill.
+                        hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).0,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -2935,6 +3005,11 @@ impl DetailScreen {
                         .scale(scale);
                     if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
+                    }
+                    if ctl == hero::HeroCtl::Watchlist {
+                        if let Some(frame) = plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).1 {
+                            button = button.icon_fill(hero::face_icon(hero::Face::Filled), frame.fill, frame.ribbon_dy);
+                        }
                     }
                     button.draw(&Env::inert(), p);
                 }
@@ -3589,6 +3664,18 @@ impl DetailScreen {
             Some(Located::Hero(c)) => hero::disc_verb(c, self.named_show(meta)).map(|(i, _)| i),
             _ => None,
         };
+        // The bookmark disc's flip, and the identity the app's feed reads. Decorative: it moves
+        // no layout, so it never holds a page image.
+        self.watchlist_hex = self.detail(meta).and_then(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid));
+        let flip_target = plx_appkit::watchlist_disc::target(self.watchlist);
+        plx_machine::idle::decorative(|| {
+            self.watchlist_flip.step(flip_target, plx_ui::widgets::K_DISC_UNFURL, dt);
+        });
+        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
+        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
+        if plx_machine::idle::settled(self.watchlist_flip.pos, flip_target, self.watchlist_flip.vel) {
+            self.watchlist_flip.jump(flip_target);
+        }
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
             spring.step(
                 f32::from(disc == Some(i)),
@@ -3696,7 +3783,8 @@ impl DetailScreen {
         let moving = self.scroll.vel.abs() > 0.01
             || self.episode_scroll.vel.abs() > 0.01
             || self.tab_scroll.vel.abs() > 0.01
-            || self.disc_unfurl.iter().any(|s| s.vel.abs() > 0.01);
+            || self.disc_unfurl.iter().any(|s| s.vel.abs() > 0.01)
+            || self.watchlist_flip.vel.abs() > 0.01;
         if !meta.detail_loading()
             && !meta.season_loading()
             && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta))
@@ -4045,6 +4133,7 @@ impl DetailScreen {
             trailer: false,
             alt: self.alt_available(meta),
             mark,
+            watchlist: self.detail(meta).is_some_and(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid).is_some()),
         }
     }
 
@@ -4227,6 +4316,19 @@ impl DetailScreen {
                     );
                 }
             }
+            // The bookmark disc: the press is the item menu's own write (`Action::WatchlistAdd` /
+            // `WatchlistRemove`), identity captured here. The app queues it on the Watchlist store,
+            // which flips the face at once through the intent ledger and reverts it if plex.tv
+            // refuses. An item with no `plex://movie|show` guid (an episode) presses nothing.
+            hero::HeroCtl::Watchlist => {
+                if let Some(d) = self.detail(meta) {
+                    if let Some(act) = hero::press(&d.guid, self.watchlist).filter(|_| self.watchlist_hex.is_some()) {
+                        fx.push(Fx::App(AppFx::ItemMenu(crate::registry::ItemMenuReq {
+                            act, sid: d.sid, item: None, season: None, loaded_episode: false, from_home: false,
+                        })));
+                    }
+                }
+            }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
                 if let Some(d) = self.detail(meta) {
                     fx.push(Fx::App(AppFx::Store(
@@ -4234,16 +4336,14 @@ impl DetailScreen {
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
                             rk: d.rk.clone(),
+                            // a show's (or season's) hero toggle changes every episode of it,
+                            // wherever held
+                            scope: hero_mark_scope(d),
                             write: if ctl == hero::HeroCtl::MarkWatched {
                                 plx_data::viewstate::Write::Watched
                             } else {
                                 plx_data::viewstate::Write::Unwatched
                             },
-                            detail: Some(plx_data::stores::viewstate::DetailRefresh {
-                                sid: d.sid,
-                                rk: d.rk.clone(),
-                                keep: None,
-                            }),
                             guid: d.guid.clone(),
                         }),
                     )));
@@ -4436,5 +4536,30 @@ mod preview_plane_tests {
             !keyed_ground_over_plane(false, 1, 1.0, false),
             "opaque art covers the wash"
         );
+    }
+}
+
+#[cfg(test)]
+mod hero_mark_scope_tests {
+    use super::{hero_mark_scope, Detail};
+    use plx_data::viewstate::Scope;
+
+    /// A season opened as its own page (a collection's member) marks the episodes of that season
+    /// under its show; before, the hero sent `Leaf` and only the season row itself changed.
+    #[test]
+    fn the_hero_scopes_a_show_a_season_and_a_leaf() {
+        let show = Detail { is_show: true, kind: "show".into(), ..Default::default() };
+        assert_eq!(hero_mark_scope(&show), Scope::Show);
+        let season = Detail {
+            kind: "season".into(),
+            parent_rk: "show-1".into(),
+            index: 4,
+            ..Default::default()
+        };
+        assert_eq!(hero_mark_scope(&season), Scope::Season { show_rk: "show-1".into(), index: 4 });
+        let orphan = Detail { kind: "season".into(), index: 4, ..Default::default() };
+        assert_eq!(hero_mark_scope(&orphan), Scope::Leaf, "no parent key, no season address");
+        let ep = Detail { kind: "episode".into(), show_rk: "show-1".into(), ..Default::default() };
+        assert_eq!(hero_mark_scope(&ep), Scope::Leaf);
     }
 }

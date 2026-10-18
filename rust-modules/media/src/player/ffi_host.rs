@@ -104,6 +104,66 @@ pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+/// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
+/// Every Play / Pause / `set_volume(n)` the sink saw, in order, as `"play"`, `"pause"`,
+/// `"volume:n"`: what a test reads to prove the paused preroll mutes BEFORE its Play and restores
+/// AFTER its re-pause. Cleared by [`reset_volume_probe_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static VERB_ORDER_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+#[cfg(any(test, feature = "test-support"))]
+fn note_verb(verb: String) {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(verb);
+}
+
+/// ACB seam probes (host has no libAcbAPI): `setMediaVideoData` answers -1 (rejected) unless a
+/// test arms [`ACB_VIDEO_DATA_ACCEPT`], and every `acb_start`/`acb_pause`/`acb_resume` is counted,
+/// so a test can read the order and number of plane verbs the pump issued.
+#[cfg(test)]
+pub(super) static ACB_VIDEO_DATA_ACCEPT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static ACB_VIDEO_DATA_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_START_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_PAUSE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_RESUME_CALLS: AtomicU64 = AtomicU64::new(0);
+/// `(setMediaVideoData, acb_start, acb_pause, acb_resume)` call counts. Test-only.
+#[cfg(test)]
+pub(super) fn acb_calls_for_test() -> (u64, u64, u64, u64) {
+    (
+        ACB_VIDEO_DATA_CALLS.load(Relaxed),
+        ACB_START_CALLS.load(Relaxed),
+        ACB_PAUSE_CALLS.load(Relaxed),
+        ACB_RESUME_CALLS.load(Relaxed),
+    )
+}
+/// Zero the ACB counters and choose whether `setMediaVideoData` is accepted. Test-only.
+#[cfg(test)]
+pub(super) fn reset_acb_for_test(accept_video_data: bool) {
+    ACB_VIDEO_DATA_ACCEPT.store(accept_video_data, Relaxed);
+    for c in [&ACB_VIDEO_DATA_CALLS, &ACB_START_CALLS, &ACB_PAUSE_CALLS, &ACB_RESUME_CALLS] {
+        c.store(0, Relaxed);
+    }
+}
+
+/// Every millis `sf_seek_ms` was called with, in order (#568): what a test reads to prove a
+/// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+/// Forced `sf_seek_ms` answer; `i32::MIN` means "behave". `0` is LG refusing the seek.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+/// How many times the sink was flushed: a native seek must not flush (Seek flushes itself, and a
+/// flush after it re-anchors the segment at 0).
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+/// How many times the Segment path's private-offset verbs (`setTimeToDecode`, `setContentInfo`,
+/// `sendSegmentEvent`) were called: on `VP_EXPORTED` they must never be, whatever the seek's fate.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// issue #74 D.1 test seam — real (v0.6.0) `sf_load` publishes `SMP_READY(1)` and then calls the
 /// blocking, synchronous Load, so there is a real window during which every OTHER seam verb is
@@ -156,6 +216,15 @@ pub(super) fn release_load_for_test() {
     *held = false;
     HOLD_LOAD.1.notify_all();
 }
+/// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
+/// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
+/// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
+#[cfg(test)]
+static UNLOAD_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+pub(super) fn delay_unload_for_test(ms: u64) {
+    UNLOAD_DELAY_MS.store(ms, Relaxed);
+}
 #[cfg(test)]
 pub(super) fn in_flight_calls_for_test() -> u32 {
     IN_FLIGHT_CALLS.load(Relaxed)
@@ -183,9 +252,48 @@ pub(super) fn load_in_flight_for_test() -> bool {
 pub(super) fn force_clocksink_for_test(on: bool) {
     FORCE_ENABLED.store(on, Relaxed);
 }
+/// Forget the seek probes (#568) and optionally force LG's `Seek` answer (`Some(0)` = refuse).
+#[cfg(test)]
+pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
+    SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    FORCE_SEEK_RESULT.store(force.unwrap_or(i32::MIN), Relaxed);
+    FLUSH_CALLS.store(0, Relaxed);
+    SEGMENT_CALLS.store(0, Relaxed);
+}
+/// The millis every `Seek` was called with since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn seek_log_for_test() -> Vec<i64> {
+    SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// How many private-offset Segment verbs ran since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn segment_calls_for_test() -> u64 {
+    SEGMENT_CALLS.load(Relaxed)
+}
+/// How many times the sink was flushed since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn flush_calls_for_test() -> u64 {
+    FLUSH_CALLS.load(Relaxed)
+}
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn force_play_result_for_test(result: Option<c_int>) {
     FORCE_PLAY_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
+}
+/// Forget the verb order and put the host pipeline back at its default volume of 100.
+#[cfg(test)]
+pub(super) fn reset_volume_probe_for_test() {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    HOST_VOLUME.store(100, Relaxed);
+}
+/// The Play / Pause / `volume:n` verbs since [`reset_volume_probe_for_test`], in order.
+#[cfg(test)]
+pub(super) fn verb_order_for_test() -> Vec<String> {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// The host pipeline's current volume.
+#[cfg(test)]
+pub(super) fn host_volume_for_test() -> i32 {
+    HOST_VOLUME.load(Relaxed)
 }
 #[cfg(test)]
 pub(super) fn play_calls_for_test() -> u64 {
@@ -380,6 +488,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_LOAD.1.notify_all();
+    UNLOAD_DELAY_MS.store(0, Relaxed);
     Clock::rewind();
 }
 
@@ -447,8 +556,9 @@ impl Clock {
         Self::start_ticker();
     }
 
-    /// Rewind to the start of a fresh stream. A seek on this path is a fresh `Load`
-    /// (`INPLACE_SEEK_OK` is false under `VP_EXPORTED`), so the fed timeline restarts at zero.
+    /// Rewind to the start of a fresh stream (a fresh `Load`, or `sf_flush`, which is itself a seek
+    /// to 0), so the fed timeline restarts at zero. A native `Seek` does not come here: it
+    /// re-anchors at the millis it was given (`sf_seek_ms`).
     fn rewind() {
         PLAYING.store(false, Relaxed);
         BASE_NS.store(0, Relaxed);
@@ -596,6 +706,7 @@ unsafe fn sf_play() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     {
         note_dispatch("sf_play");
+        note_verb("play".into());
         PLAY_CALLS.fetch_add(1, Relaxed);
         let forced = FORCE_PLAY_RESULT.load(Relaxed);
         if forced != i32::MIN {
@@ -612,6 +723,7 @@ unsafe fn sf_pause() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     {
         note_dispatch("sf_pause");
+        note_verb("pause".into());
         let forced = FORCE_PAUSE_RESULT.load(Relaxed);
         if forced != i32::MIN {
             return forced;
@@ -623,13 +735,49 @@ unsafe fn sf_pause() -> c_int {
     Clock::hold();
     1
 }
+unsafe fn sf_set_volume(volume: c_int) -> c_int {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        note_dispatch("sf_set_volume");
+        note_verb(format!("volume:{volume}"));
+        HOST_VOLUME.store(volume, Relaxed);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = volume;
+    c_int::from(enabled())
+}
 unsafe fn sf_flush() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_flush");
+    {
+        note_dispatch("sf_flush");
+        FLUSH_CALLS.fetch_add(1, Relaxed);
+    }
     if !enabled() {
         return 0;
     }
     Clock::rewind();
+    crate::player::sim_video::flush();
+    1
+}
+/// LG's public `Seek(millis)`: refuses a negative target, otherwise flushes the pipeline and
+/// re-anchors the segment (and so the fed-PTS clock) at the millis passed, paused, with nothing fed.
+/// `FORCE_SEEK_RESULT` injects LG's refusal.
+unsafe fn sf_seek_ms(ms: i64) -> c_int {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        note_dispatch("sf_seek_ms");
+        SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(ms);
+        let forced = FORCE_SEEK_RESULT.load(Relaxed);
+        if forced != i32::MIN {
+            return forced;
+        }
+    }
+    if !enabled() || ms < 0 {
+        return 0;
+    }
+    PLAYING.store(false, Relaxed);
+    BASE_NS.store(ms.saturating_mul(1_000_000), Relaxed);
+    FED_MAX_NS.store(i64::MIN, Relaxed);
     crate::player::sim_video::flush();
     1
 }
@@ -640,17 +788,26 @@ unsafe fn sf_push_eos() -> c_int {
 }
 unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_time_to_decode");
+    {
+        note_dispatch("sf_set_time_to_decode");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_content_info");
+    {
+        note_dispatch("sf_set_content_info");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_send_segment() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_send_segment");
+    {
+        note_dispatch("sf_send_segment");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 
@@ -681,6 +838,13 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
 unsafe fn sf_unload() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_unload");
+    #[cfg(test)]
+    {
+        let ms = UNLOAD_DELAY_MS.load(Relaxed);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && OBJECT_READY.load(Relaxed) {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
@@ -793,6 +957,13 @@ unsafe fn acb_bind(_media_id: *const c_char) {
 unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_send_video_data");
+    #[cfg(test)]
+    {
+        ACB_VIDEO_DATA_CALLS.fetch_add(1, Relaxed);
+        if ACB_VIDEO_DATA_ACCEPT.load(Relaxed) {
+            return 0;
+        }
+    }
     -1 // -1 = rejected, per starfish.h
 }
 unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
@@ -803,6 +974,8 @@ unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
 unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_start");
+    #[cfg(test)]
+    ACB_START_CALLS.fetch_add(1, Relaxed);
 }
 unsafe fn acb_unload() {
     #[cfg(any(test, feature = "test-support"))]
@@ -811,10 +984,14 @@ unsafe fn acb_unload() {
 unsafe fn acb_pause() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_pause");
+    #[cfg(test)]
+    ACB_PAUSE_CALLS.fetch_add(1, Relaxed);
 }
 unsafe fn acb_resume() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_resume");
+    #[cfg(test)]
+    ACB_RESUME_CALLS.fetch_add(1, Relaxed);
 }
 
 /// The simulator's [`VideoSink`]: every method is the verb of the same name above.
@@ -836,6 +1013,9 @@ impl VideoSink for HostSink {
     unsafe fn pause(&self, _: &MainThread) -> c_int {
         sf_pause()
     }
+    unsafe fn set_volume(&self, _: &MainThread, volume: c_int) -> c_int {
+        sf_set_volume(volume)
+    }
     unsafe fn flush(&self, _: &MainThread) -> c_int {
         sf_flush()
     }
@@ -851,6 +1031,9 @@ impl VideoSink for HostSink {
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sf_send_segment()
     }
+    unsafe fn seek(&self, _: &MainThread, ms: i64) -> c_int {
+        sf_seek_ms(ms)
+    }
     fn feed_abi_is_cow(&self) -> bool {
         false
     }
@@ -864,7 +1047,7 @@ impl VideoSink for HostSink {
     ) -> c_char {
         sf_feed(p, size, pts, es_data)
     }
-    unsafe fn unload(&self, _: &MainThread) {
+    unsafe fn unload(&self, _: &plx_platform::tv::sink::UnloadTicket) {
         sf_unload()
     }
     unsafe fn callback_gate_retire(&self, _: &MainThread) -> c_int {

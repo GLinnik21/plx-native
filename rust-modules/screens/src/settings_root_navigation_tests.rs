@@ -19,8 +19,7 @@ fn mounting_the_surface_names_its_root_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert_eq!(name(&s), word::SETTINGS);
@@ -36,8 +35,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
@@ -72,8 +70,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -115,8 +112,7 @@ fn right_on_automatically_sign_in_does_not_push() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -162,8 +158,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
@@ -206,8 +201,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
 
@@ -294,8 +288,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
@@ -338,8 +331,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
@@ -402,8 +394,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert!(
@@ -506,8 +497,7 @@ fn the_logical_state_follows_the_inner_stack() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
@@ -704,9 +694,27 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
 
 fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
-        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
+        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto,
         language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
     }
+}
+
+/// **Interface resolution is a signed-in row that cycles Automatic > 1920x1080 > 1600x900 > 1280x720
+/// > 960x540**, and Automatic is the native canvas rather than any smaller size.
+#[test]
+fn the_interface_resolution_row_is_signed_in_only_and_reads_each_option() {
+    let row_value = |signed_in: bool, resolution: UiResolution| -> Option<String> {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&RootInputs { resolution, ..inputs_for(signed_in) }), None);
+        let i = real.index_of(&RootId::Resolution)?;
+        real.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists").value.clone()
+    };
+    assert_eq!(row_value(false, UiResolution::Auto), None, "the signed-out root is the sign-in path's short list");
+    assert_eq!(row_value(true, UiResolution::Auto).as_deref(), Some(plx_platform::i18n::msg::settings_resolution_auto()));
+    assert_eq!(row_value(true, UiResolution::Full1080).as_deref(), Some("1920x1080"));
+    assert_eq!(row_value(true, UiResolution::Hd900).as_deref(), Some("1600x900"));
+    assert_eq!(row_value(true, UiResolution::Hd720).as_deref(), Some("1280x720"));
+    assert_eq!(row_value(true, UiResolution::Sd540).as_deref(), Some("960x540"));
 }
 
 /// **Reordering the root moves no identity.** A form that declares the same rows in a different
@@ -783,8 +791,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
         (RootId::About, SettingsPage::About),
     ] {
         let mut s = RouteSurface::new(
-            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-            plx_data::pms::HubsSnapshot::empty_for_test().view(),
+            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root
         );
         step(&mut s, ScreenEvent::Mount, None);
         let row = FocusKey { entry: EntryId(0), elem: root_key(id.clone()) };

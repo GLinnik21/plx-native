@@ -6,7 +6,9 @@ HUD, Quality picker, queue overlay, Settings tree). Branch `home-ui-polish`, wor
 
 **Scope: movies and TV shows only.** Music, photos, Live TV/DVR and podcasts are out of scope and
 are not counted as gaps. Plex Discover / "Movies & Shows on Plex" is movie/show content but is an
-*adjacent catalog* (plex.tv, not the user's server) and is tagged as such throughout.
+*adjacent catalog* (plex.tv, not the user's server) and is tagged as such throughout. The Watchlist
+began as one of those entries and has since shipped (`docs/watchlist.md`); the entries that still say
+"Watchlist" below record what it closed.
 
 **Method.** Two fan-out audits (14 + 12 agents): one auditor per product domain read our source and
 enumerated the reference feature set against it, then an adversarial verifier tried to *refute* each
@@ -77,8 +79,9 @@ still take focus, and LEFT/RIGHT still walks between them, so the control looks 
    `plex/mod.rs`'s "no callers yet" admission still names `search`; when it no longer does, this gap
    is closed outright and this paragraph should go.
 
-   **Out of scope either way:** results are **server-only**. Plex Discover / Watchlist catalog hits
-   remain their own gap (§ *Adjacent catalog*, below). `GET /hubs/search/voice` is not implemented,
+   **Out of scope either way:** results are **server-only**. Plex Discover catalog hits remain their
+   own gap (§ *Adjacent catalog*, below); the Watchlist is a strip destination of its own, not a
+   search scope (`docs/search.md` §6). `GET /hubs/search/voice` is not implemented,
    and `Client::search` sends `query` + `limit` only — there is no `?sectionId=` scoping, so search is
    account-wide and cannot be narrowed to one library.
 
@@ -144,15 +147,16 @@ Additional same-type libraries are addressed through the Source panel rather tha
 **D. The transport is a scrubber and two discs.** No play/pause button (it is an unlabelled
 fallthrough; the drawn Pause glyph is documented as "a state read-out, not an action toggle"), no
 prev/next episode, no queue glyph, no kebab, no quality badge, no clock. Missing on the rail:
-chapter/marker ticks, buffered extent, BIF scrub thumbnails. And the **Chapters tab never appears for
+chapter/marker ticks, buffered extent, ~~BIF scrub thumbnails~~ (closed 2026-10-15, see below). And the **Chapters tab never appears for
 the main episode-play path** — the response carries `Chapter[]` and it is discarded.
 
 **E. The app now has a Settings surface, but not a playback-preferences system.** The account menu
 opens Settings for Home/server selection, Privacy & data, Legal notices and About. Preferred
 audio/subtitle language, auto-skip intro/credits, subtitle appearance and sync,
 quality-per-network, direct-play policy and version choice remain absent, as does the general
-preference store they would require. Track choices are still forgotten at every item boundary, and
-the server's own per-part selection is written but never read back.
+preference store they would require. An episode's track choices are remembered per show (track memory), a
+movie's are still forgotten at the item boundary, and the server's own per-part selection is written
+but never read back.
 
 **F. The play queue is created and discarded.** Every playback POSTs `/playQueues` with `continuous=1`
 and gets the full `Metadata[]` window back; `plex/timeline.rs:72` keeps **only the successor** and drops
@@ -246,7 +250,7 @@ Worth deciding *not* to build, rather than discovering mid-implementation:
 - **Frame step — no step primitive** in the buffer-feed seam (`src/starfish.c` exposes Play/Pause/flush).
 - **A clock is trivial to draw but the time is not trivial to read** — the app has no luna-service
   client for the system clock.
-- **BIF scrub thumbnails — substantial**: tens of MB of concatenated JPEGs against a 32-bit heap.
+- ~~**BIF scrub thumbnails — substantial**: tens of MB of concatenated JPEGs against a 32-bit heap.~~ Closed 2026-10-15 without touching the BIF: PMS serves single stills at `/library/parts/{id}/indexes/sd/{ms}`, about 10 KB each (`appkit::scrub_preview`).
 - **Plex Companion / remote control — awkward**: there is no HTTP *server* in the app; `stream.rs` is
   client-only.
 
@@ -270,7 +274,10 @@ full-screen sheet, not a centred modal. Construction, from the reference:
 - Reference rows, in order: `Go to Episode` · `Go to Show` — separator — `Remove from Watchlist` ·
   `Mark as Watched` · `Browse Continue Watching`.
 
-Our rows, adapted (Watchlist doesn't exist yet; see the account domain):
+Our rows, adapted. `Add to Watchlist` / `Remove from Watchlist` (a movie) and `Add Show to Watchlist`
+/ `Remove Show...` (an episode or season) sit in the same menu, built from the identity captured when it opened; the
+row is omitted when the card has no catalog id, and shows its Add face when membership is unknown. The
+Watchlist page's own hold menu carries `Remove from Watchlist` (`docs/watchlist.md`):
 
 | Row | Status |
 |---|---|
@@ -338,13 +345,13 @@ the crew credits that are currently parsed and discarded.
 
 ### 5c. The detail-page action row, and watched-state granularity
 
-The reference detail page has **six circular action buttons**; we have two (`detail.rs:88` `NBTN = 2`):
+The reference detail page has **six circular action buttons**; we had two (`detail.rs:88` `NBTN = 2`) when audited; now we have three, Play/Resume, the Watchlist bookmark disc and the watched toggle:
 
 | # | Button | Us |
 |---|---|---|
 | 1 | ▶ Play | ✅ |
 | 2 | ↺ Play from start / restart | ❌ (cheap win #4) |
-| 3 | 🔖 Watchlist | ❌ (plex.tv — see the account domain) |
+| 3 | 🔖 Watchlist | ✅ (unlabelled bookmark disc, second after Play/Resume: outline off the list, filled on it) |
 | 4 | ⊘✓ Mark as watched | ✅ but wrong scope — see below |
 | 5 | ↥ Share | ❌ (plex.tv/social) |
 | 6 | … More | ❌ — and this is the one that matters, because it hosts the rest |
@@ -414,9 +421,10 @@ Corrections to the gap list, all verified live against the PMS on 2026-07-29 unl
 
 - **Remove from Continue Watching.** Not in this spec. `GET /hubs/continueWatching` exists (fetch), but
   no removal action — Plex's own client uses a newer `/actions/…` route this 1.2.2 spec predates.
-- **Watchlist** and everything Discover — plex.tv, not PMS, so it is out of this spec by construction.
+- **Watchlist** and everything Discover — plex.tv, not PMS, so it is out of this spec by construction
+  (the client is documented in `docs/watchlist.md`).
 - **BIF scrub thumbnails** — `GET /library/sections/{id}/indexes` appears; the per-part index path the
-  player would actually stream is not described.
+  player would actually stream is not described. It is `GET /library/parts/{partId}/indexes/sd/{offsetMs}`: one 320×180 JPEG, the nearest still to the offset, 404 when the part has no index (verified live 2026-10-15; `appkit::scrub_preview` uses it).
 
 ## Superseded by owner decisions
 
@@ -471,9 +479,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   Plex Discover/catalog results and optional `sectionId` scoping remain outside that surface.
 
 - **Library sections past the 4th were unreachable from Home** — **closed 2026-09-01.**
-  The global row is `Home`, one pill per type, then `Search`; Movies and TV Shows name
+  The global row is `Home`, one pill per type, the Watchlist bookmark, then `Search`; Movies and TV Shows name
   types rather than individual Plex sections. (Its VOCABULARY is permanent, its LENGTH is not: since
-  2026-09-05 a type with no favourite library draws no pill, so the row holds two to four stops and
+  2026-09-05 a type with no favourite library draws no pill, so the row holds three to five stops (the bookmark and Search always draw) and
   a pill's index is not its identity — store a `Pill`.) The Library Source panel selects additional owned or
   shared sections of that type, so discovery no longer changes the row and no section is hidden by
   a tab cap.
@@ -484,7 +492,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* Confirmed: home.rs:135-145 hero_item() reads pms::hero_pool_item (pool built pms.rs:300-322, capped HERO_MAX=8 at pms.rs:174), never the focused cell; home.rs:790-805 auto-flips on an idle timer; Backdrop::draw gates art on sp<0.996 (home.rs:279-288) and backdrop_art tints alpha 1.0-sp (home.rs:308-322); Env.hero_a = hero_alpha(sp,0.55) (home.rs:747) fades the whole hero group. Partial that DOES exist: the grid is not text-free — draw_focused stamps the focused tile's title plus a caption (home.rs:570-579), focused_caption gives 'S1 • E8'/year (home.rs:584-598) and cw_caption gives 'show · X m
 
 - **No card context menu (long-press / OPTIONS) on home cards** — `major` / `medium`
-  Official Plex TV clients open a per-card context menu from a long press or the OPTIONS key: Mark as watched/unwatched, Remove from Continue Watching, Go to show, Add to Watchlist. We have exactly one card action (OK), so a stale Continue Watching entry can never be dismissed and watched state can only be toggled from the detail page.
+  Official Plex TV clients open a per-card context menu from a long press or the OPTIONS key: Mark as watched/unwatched, Remove from Continue Watching, Go to show, Add to Watchlist. (Update 2026-10: the hold menu now exists and carries the Watchlist rows; the sentence below describes the tree before it.) We have exactly one card action (OK), so a stale Continue Watching entry can never be dismissed and watched state can only be toggled from the detail page.
   *Where:* New rust-modules/src/ui/card_menu.rs on the shared Popover+TableView, a Route::CardMenu-style arm in rust-modules/src/app.rs, and one new client op in rust-modules/src/plex/library.rs: PUT /actions/removeFromContinueWatching?ratingKey= (scrobble/unscrobble already exist at library.rs:90-95).
   *Verified:* Confirmed, and the hook is explicitly reserved-but-dead. press.rs:144 is_long and press.rs:151 was_long BOTH exist with doc comments naming 'a future hold menu' (press.rs:5 and ui/CLAUDE.md:62 repeat it) and have zero callers anywhere in the tree. Worse than 'no menu': app.rs:2292-2294 currently treats a long press as a cancel — `} else if !press::is_active() { ok_armed = false; // long-press / cancelled — disarm without activating }` — so holding OK on a card today silently does nothing. No OPTIONS-style wcode is mapped (the wcode set lives in ui/consts.rs; app.rs's home arm has only the OK/p
 
@@ -494,10 +502,18 @@ player, transport and tracks auditors, and is counted once in the themes above.
   without blocking the frame loop, and stale same-slot landings are rejected by client lifecycle,
   token generation, hub generation and sequence.
 
-- **Watchlist is absent (adjacent catalog: plex.tv Discover)** — `major` / `large`
-  The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. This is a plex.tv Discover feature rather than a PMS library feature, but it is a first-class movie/show surface in the reference client. We have no watchlist state, screen, or API binding.
-  *Where:* New rust-modules/src/plex/discover.rs (metadata.provider.plex.tv / discover.provider.plex.tv over net.rs's libcurl TLS transport, since stream.rs cannot do DNS/TLS) + a new rust-modules/src/ui/watchlist.rs screen and a rail entry in rust-modules/src/ui/widgets.rs.
-  *Verified:* Confirmed: case-insensitive grep for 'watchlist' over rust-modules/src returns nothing, and over docs/ nothing. plex/account.rs is only PIN create/poll (account.rs:60-80), GET /api/v2/resources (account.rs:83-90), GET /api/v2/home/users and POST .../switch (account.rs:92-110) — no discover.provider.plex.tv or metadata.provider.plex.tv client. One correction in the fix plan's favour: the TLS transport already exists and is already used for plex.tv — net.rs (libcurl) is what AccountClient rides on, precisely because stream.rs does no DNS/TLS — so a Discover client is a new module over an existin
+> **Watchlist live-update note (2026-10).** The Watchlist page is a held page: a session hint on a
+> title it shows (matched, reachable, inside its hold window) owes a quiet read-back, and a resume or
+> long cover re-reads it (`app/reread.rs`); the catalog page owes the same re-match for its title
+> (`Action::CatalogRead`). One gap remains: a watched toggle on another
+> client emits nothing. A library add or delete on an owned server flips a tile live (W-notify, built;
+> the `timeline` frame shape is UNVERIFIED, not captured live); a shared server has no feed and is
+> re-matched on the next trigger. `docs/watchlist.md`, *Live-update gaps*.
+
+- **Watchlist add action absent (adjacent catalog: plex.tv Discover)** — `major` / `medium` — **closed 2026-10.**
+  The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. Shipped: a plex.tv Discover client, `data::watchlist`, a Watchlist strip destination (the bookmark tab) and page, the add and remove actions on the Detail and Home heroes (a bookmark disc), the item hold menu and the catalog page, and the catalog page for titles no server holds.
+  *Where:* rust-modules/plex/src/plex/watchlist.rs and discover.rs (the Discover client), rust-modules/data/src/stores/watchlist.rs (`WatchlistStore`) and stores/catalog.rs (`CatalogStore`), rust-modules/screens/src/watchlist/ (the page), catalog.rs (the catalog page), item_menu/watchlist.rs (the rows), detail/hero.rs (the disc) and rust-modules/src/app/watchlist.rs (the application wiring).
+  *Verified:* The strip tab is `TAB_KEY_WATCHLIST` in rust-modules/ui/src/widgets.rs; `Action::WatchlistAdd` / `WatchlistRemove` / `GoToCatalog` exist in `screens::item_menu` and `app::input::apply_item_action` queues the write and pulses the tab. Still open: the catalog page has no Trailer button (an owner default), the match table is not persisted, and a card whose row carries no guid is offered Add one menu later (`watchlist_card_face` asks `WatchlistStore::want_hex`; the first menu omits the row), never when the server did not answer or the item has no portable id. See `docs/watchlist.md`.
 
 - **No persistent left navigation rail** — `minor` / `large`
   The official client has an always-present left sidebar, collapsed to icons and expanding to labels on focus, holding avatar/username, Search, Home, Watchlist, libraries, Playlists, On Plex, Discover and More. We have a centered top pill row instead, and in grid view it is not reachable by D-pad at all: LEFT at column 0 is a no-op and UP at row 0 snaps back to the hero, so global navigation requires leaving the grid first.
@@ -529,7 +545,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* Confirmed: the data layer is one PMS Client keyed to host/port/token (plex/client.rs install/client, installed only from app.rs:349/412 and the auth take_ready path); every screen resolves items through pms.rs/browse.rs, which call only that client. route.rs's stream URL builder is built on a PMS part key + PMS session (plex/library.rs:115 direct_play_url), and the whole playback decision chain (transcoder.rs /video/:/transcode/universal/decision) is PMS-only. If anything 'large' understates it: beyond a catalog screen it needs a second content-source abstraction through route.rs AND an ad-sup
 
 - **Discover top tabs (Trending / Activity / Find Friends / Profile) are absent (adjacent social surfaces)** — `minor` / `large`
-  The official content area carries a top tab bar of Home | Trending | Activity | Find Friends | Profile, where everything but Home is a plex.tv Discover/social surface. Our top row is Home | Movies | TV Shows | Search.
+  The official content area carries a top tab bar of Home | Trending | Activity | Find Friends | Profile, where everything but Home is a plex.tv Discover/social surface. Our top row is Home | Movies | TV Shows | bookmark (Watchlist) | Search.
   *Where:* rust-modules/src/ui/widgets.rs draw_tab_row (tab model) + new screens under rust-modules/src/ui/, backed by a new plex.tv Discover client (see the Watchlist gap).
   *Verified:* Still open: no Trending, Activity, Find Friends or Profile destinations exist. The
   local tab vocabulary is fixed and no longer coupled to the discovered section count.
@@ -592,7 +608,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED, and slightly worse than described. ui/detail.rs:1179-1181 is `if is_show() { play_episode_at(0) }`; fetch_full (metadata.rs:632-651) leaves cur_season at Default 0 and fills d.episodes from d.seasons.first(). fetch_seasons (metadata.rs:549-563) filters kind=="season" and preserves server order, so seasons[0] is whatever /children returns first — on a show with a Specials season (index 0) that is a SPECIAL, not even S1E1. Zero hits for onDeck/on_deck/viewedLeafCount-per-season anywhere outside plex/models.rs:151-153 and the show-level watched test at metadata.rs:330. Label is the con
 
 - **No "play from start" / restart control** — `major` / `small`
-  The reference action row's second circular button is restart (↺) — start the item from 00:00 even when a resume point exists. We have exactly two hero controls, Play and the watched toggle, and Play unconditionally applies the resume rule, so an item with a viewOffset can only be resumed from the detail page.
+  The reference action row's second circular button is restart (↺) — start the item from 00:00 even when a resume point exists. We have no restart control (the hero holds Play, the Watchlist disc and the watched toggle), and Play unconditionally applies the resume rule, so an item with a viewOffset can only be resumed from the detail page.
   *Where:* ui/detail.rs (`NBTN`, `draw_buttons`, `on_ok`, `set_resume` — a restart arm just passes 0); a `Restart`/`Replay` icon must be added to ui/icons.rs + assets/icons (the enum at ui/icons.rs:13 has no such mask).
   *Verified:* CONFIRMED absent — grepped restart|Restart|from_start|play_from|Replay across the crate; the only hits are transcode-encode restarts (route.rs:225, player/engine.rs:447-460) and unrelated prose. ui/detail.rs:88 NBTN=2; draw_buttons (ui/detail.rs:824-849) draws exactly Play + the watched disc; both play arms call set_resume (ui/detail.rs:1191-1194, 1389) which applies metadata::resume_ns unconditionally, and last_resume_ns is the only value start_playback arms (app.rs:677-679). icons.rs:13-31 has 13 icons, none of them a replay/restart glyph, and assets/icons/ holds exactly those 13 SVGs. Sever
 
@@ -653,10 +669,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* plex/models.rs (`Tag.id`), metadata.rs (`Cast.id`), ui/detail.rs (`on_ok` section 4), and a results screen — the Library grid could host it via `section_items_query` with an `actor=<id>` filter (plex/params.rs `SectionQuery.filters` already takes arbitrary key/value pairs).
   *Verified:* CONFIRMED. ui/detail.rs:1217 is literally `_ => false, // cast (4): headshots are not actionable`. Cast (metadata.rs:38-42) is tag/role/thumb; fetch_detail (metadata.rs:343-347) drops everything else off the Role[] entry, and plex/models.rs Tag (the struct with tag/role/thumb) has no id field to drop in the first place — so the gap starts at the DTO. SectionQuery.filters (plex/params.rs:38) is indeed `&[(String,String)]` appended verbatim, so an actor=<id> filter needs no new param plumbing. minor/large confirmed — the 'large' is the results screen, since ui/library.rs is entered by section in
 
-- **No Watchlist button (adjacent-catalog / Plex Discover feature)** — `minor` / `large`
-  The reference action row includes a bookmark = Add to Watchlist. This is a plex.tv Discover-graph action (`PUT https://discover.provider.plex.tv/actions/addToWatchlist?ratingKey=…`), not a PMS one, and nothing in the app talks to that host. Marked as an adjacent-catalog feature rather than a library feature.
-  *Where:* plex/account.rs or a new plex/discover.rs (the Discover host + the watchlist add/remove actions, over net.rs's libcurl TLS path), plus a control in ui/detail.rs `draw_buttons`.
-  *Verified:* CONFIRMED. Grepped watchlist case-insensitively across rust-modules/src — zero hits. plex/account.rs's only plex.tv methods are new/create_pin/poll_pin/resources/home_users/switch_user (+ is_server/local_connection helpers); there is no Discover provider host anywhere, and the only non-PMS hosts in the crate are plex.tv's account endpoints. minor/large confirmed as an adjacent-catalog feature. One correction to the hosting note: net.rs's libcurl TLS path already exists and is what account.rs uses (the raw-socket stream.rs cannot do DNS/TLS), so a new plex/discover.rs would reuse it rather than
+- **No Watchlist button (adjacent-catalog / Plex Discover feature)** — `minor` / `large` — **closed 2026-10.**
+  The reference action row includes a bookmark = Add to Watchlist. It is a plex.tv Discover-graph action (`PUT https://discover.provider.plex.tv/actions/addToWatchlist?ratingKey=<hex>`), not a PMS one.
+  *Where:* `rust-modules/screens/src/detail/hero.rs`: the hero's second control (`ELEM_WATCHLIST`, `HeroCtl::Watchlist`), an unlabelled disc after Play/Resume; the write goes through `WatchlistStore` (`rust-modules/data/src/stores/watchlist.rs`) and `app/watchlist.rs`.
+  *Verified:* The disc is outline off the list and filled on it, fills from the bottom with a 3 px ribbon drop on a flip, and draws the Add face while membership is unknown. Its press is `Action::WatchlistAdd { hex }` or `Action::WatchlistRemove(guid)`; a record whose guid is not `plex://movie|show/<24 hex>` has no disc.
 
 - **No Share button and no "Activity by You" row (adjacent-catalog / social)** — `polish` / `large`
   The reference has a Share (↥) action and an "Activity by You" row showing the user's avatar and their review/watch activity. Both are Plex's social/Discover graph, not PMS. Nothing of the sort exists here. Flagged as adjacent-catalog, not a library feature.
@@ -698,10 +714,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* rust-modules/src/ui/detail.rs:824 (draw_buttons: label swap + a progress rail under the hero text, ui/fmt.rs:time_left for the caption). No new endpoint.
   *Verified:* Confirmed as a PRESENTATION-only gap, which the auditor undersells. ui/detail.rs:833 `Button::new(c"Play".as_ptr(), …)` is unconditional and NBTN=2 (detail.rs:88); draw_hero (743-822) draws title/meta/synopsis/date/buttons/Starring and no rail. But the BEHAVIOUR is already correct: detail.rs:1191-1194 set_resume feeds metadata::resume_ns(resume_ms, dur_ms) and app.rs seeks there, so pressing Play on a half-watched movie already resumes — it just lies about it. Both halves of the fix exist one call away: home.rs:425 does the exact label swap (`if hero.resume_ms > 0 { c"Continue" } else { c"Play
 
-- **Watchlist button** — `major` / `medium`
-  The official hero action row has Watchlist (add/remove) as a primary control. We have exactly two hero controls and no watchlist concept.
-  *Where:* rust-modules/src/plex/account.rs (PUT/DELETE https://metadata.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey={guid}, and the item's Guid[] must first be parsed in plex/models.rs — it is not), rust-modules/src/metadata.rs (Detail.on_watchlist), rust-modules/src/ui/detail.rs:824 + :1148 (third control + on_ok arm)
-  *Verified:* Confirmed. ui/detail.rs:824-849 draw_buttons draws exactly two controls (Play pill + Check disc) and detail.rs:88 NBTN=2; crate-wide grep for watchlist/Watchlist returns nothing. plex/account.rs exposes only new/create_pin/poll_pin/resources/home_users/switch_user (lines 29-104) — no metadata.provider.plex.tv surface. The Guid[] the watchlist API keys on is also unparsed (plex/models.rs Metadata 114-187 has no guid field; docs/pms-api.md:182 lists Guid[] as one of the arrays we ignore), so this needs a DTO addition before the mutation. crate::net (libcurl HTTPS) is indeed already the working p
+- **Watchlist button** — `major` / `medium` — **closed 2026-10.**
+  The official hero action row has Watchlist (add/remove) as a primary control. The Detail hero now has it as its second control, after Play/Resume (see *No Watchlist button* above); `Guid` and `grandparentGuid` are parsed (`Metadata::guid_hex`, `show_guid_hex`) and `PmsMovie` carries `guid` and `show_guid`.
+  *Where:* rust-modules/screens/src/detail/hero.rs, rust-modules/plex/src/plex/watchlist.rs, rust-modules/data/src/stores/watchlist.rs.
+  *Verified:* Hero control tables and the press table are host tests (`detail/hero_watchlist_tests.rs`); the earlier two-control count (Play pill and Check disc) and the crate-wide "zero hits" no longer describe the tree.
 
 - **Director / Writer / Producer credits are parsed but never surfaced — the "Cast & Crew" shelf has no crew** — `major` / `small`
   The official page lists directors and writers in the metadata block and mixes crew into the Cast & Crew shelf. We parse Director[] and Writer[] off the wire and then throw them away; our shelf is titled "Cast & Crew" but only ever contains Role[] actors.
@@ -843,24 +859,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   Movies and TV Shows are permanent type destinations; every matching library remains selectable
   through the Source panel. There is no longer a one-pill-per-section cap.
 
-- **Adjacent catalog: no Plex Discover / "Movies & Shows on Plex" and no Watchlist** — `major` / `large`
-  The official client's sidebar carries the free ad-supported Movies & Shows catalog and the user's Watchlist, and its search returns catalog + Discover results alongside server results. We have zero support: no discover.provider.plex.tv client, no watchlist read/toggle, and our search op (unused anyway) is server-only. Flagged as an adjacent-catalog feature, not a library one.
-  **Still open, and the half of the search story that stays open even once §1.1 closes**
-  (2026-08-14): the Search screen is server-only **by decision**, not by omission — "unused anyway"
-  stops being true the moment `search.rs`'s fetch lands, but "server-only" does not.
-  Catalog + Discover hits need DNS and TLS and
-  therefore `net.rs`/libcurl, their own client, their own store and their own failure modes; adding
-  them is a separate feature, not a wider `limit=` on `/hubs/search`. `docs/search.md` §6.
-  NB the partial that does exist: `plex/discover.rs` was added for person bios (see *Superseded by
-  owner decisions*), so the transport question is already answered — what is missing is the catalog
-  and watchlist surface, not a way to reach plex.tv.
-  *Where:* Extend `plex/discover.rs`'s `DiscoverClient` beside `plex/account.rs` (HTTPS via
-  `net.rs`/libcurl; `stream.rs` is the plaintext raw-socket arm), add a Watchlist store, and add a
-  new `ui/` screen plus `Route` arm in `app.rs`. Endpoints:
-  `https://discover.provider.plex.tv/library/sections/…`,
-  `https://metadata.provider.plex.tv/library/search`, and `PUT/DELETE`
-  `https://discover.provider.plex.tv/actions/addToWatchlist`.
-  *Verified:* CONFIRMED. `rg -ni "watchlist|discover|provider\.plex\.tv"` over rust-modules/src returns zero watchlist hits and zero provider hits; every `discover` hit is LAN server discovery or an unrelated comment — auth.rs:3/25-26/295/297/307/314/375/462 (`Phase::Discovering`, `discover_and_store`), plex/account.rs:1/10/83, plex/session.rs:2/45, browse.rs:29/201, app.rs:354/2299, lib.rs:8. plex/mod.rs:27 confirms `account.rs` is the ONLY non-PMS surface (plex.tv login / server discovery / home-users), and plex/hubs.rs:23-29 `search` goes through `Client::get_json`, i.e. the local PMS host. Severity/effo
+- **Adjacent catalog: no Plex Discover / "Movies & Shows on Plex"** — `major` / `large` — **the Watchlist half closed 2026-10.**
+  The official client's sidebar carries the free ad-supported Movies & Shows catalog and the user's Watchlist, and its search returns catalog + Discover results alongside server results. The Watchlist now exists (the bookmark tab, its page, the Discover client and the catalog page for a Discover-only title; `docs/watchlist.md`). **Still open:** the "Movies & Shows on Plex" catalog, which needs a second content-source abstraction through `route.rs`, and catalog + Discover hits in Search. The Search screen is server-only **by decision**: those hits need their own client, store and failure modes, not a wider `limit=` on `/hubs/search` (`docs/search.md` §6).
+  *Where:* `plex/discover.rs` (person bios and the Watchlist's transport) and `plex/watchlist.rs` exist beside `plex/account.rs`; a catalog browser would be a new screen plus a playback source branch in `route.rs`, whose stream URL builder assumes a PMS part key.
+  *Verified:* The playback decision chain (`transcoder.rs` `/video/:/transcode/universal/decision`) is PMS-only and nothing models a non-PMS content source; the catalog page plays nothing.
 
 - **Folder views remain unavailable** — `minor` / `medium`
   Libraries offer a Type selector in All: TV libraries list TV Shows, Seasons, Episodes and
@@ -883,7 +885,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   The official client remembers each library's sort and filter between sessions, and so do we now:
   the sort and its direction, the Unwatched switch, the genre and the listing type (Movies /
   Collections, Shows / Seasons / Episodes / Collections) are remembered per profile per library in
-  ONE view record (`Session::library_views`, still stored on disk as `library_sorts` so a rollback
+  ONE view record (`Preferences::library_views`, still stored on disk as `library_sorts` so a rollback
   reads it). The sort (#278) and the genre are re-checked against the server before they are sent:
   a sort the menu no longer offers, or a genre the library's genre list no longer has, falls back
   silently to the default (a check that could not be read at all leaves the saved value in the
@@ -898,7 +900,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`
   In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.
   *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/screens/src/library/`, and the missing hub-heading activation in the owned Home/app path.
-  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The grid opens in the per-profile saved view (`Session::library_views`, #441), which is the viewer's own last choice, never a hub's preset; no `See All` effect or preset-query entry point exists. A tree-wide search finds no `See All` implementation.
+  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The grid opens in the per-profile saved view (`Preferences::library_views`, #441), which is the viewer's own last choice, never a hub's preset; no `See All` effect or preset-query entry point exists. A tree-wide search finds no `See All` implementation.
 
 - **Grid posters carry a title/year only while focused** — `polish` / `small`
   The reference grid labels every poster with an ellipsized title and the year underneath. Ours draws bare posters and puts the title + year only under the single focused card, so scanning an unfamiliar library means walking focus cell by cell — noticeably worse for shows whose posters don't carry the name.
@@ -926,7 +928,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   fallback is a queued full per-source Home refresh.
 
 - **No "Play from Start" anywhere outside the player, and the detail Play button silently resumes** — `major` / `small`
-  The reference offers Resume and Play from Start as two distinct rows. Our detail hero has exactly two controls (Play + the watched disc), the Play label is the hard-coded literal c"Play" regardless of resume state, and it always applies the resume rule — so an item with a viewOffset can only be resumed, never restarted, until you are already inside playback and open the Info card. The home hero does relabel to "Continue" but likewise offers no restart.
+  The reference offers Resume and Play from Start as two distinct rows. Our detail hero has no start-over control (Play, the Watchlist disc and the watched disc), the Play label is the hard-coded literal c"Play" regardless of resume state, and it always applies the resume rule — so an item with a viewOffset can only be resumed, never restarted, until you are already inside playback and open the Info card. The home hero does relabel to "Continue" but likewise offers no restart.
   *Where:* ui/detail.rs (NBTN/draw_buttons/on_ok — relabel to Resume + add a start-over control or route it through the new item menu), ui/item_menu.rs (the Resume / Play from Start rows), app.rs's start_playback call sites which already take a `resume_ns` argument (pass 0). No new PMS endpoint.
   *Verified:* CONFIRMED verbatim. detail.rs:88 NBTN=2; detail.rs:833 is the literal `Button::new(c"Play".as_ptr(), …)` with no resume branch (grep of detail.rs for Continue/Resume finds only comments at :29/:1156); detail.rs:1191-1194 unconditionally set_resume(d.resume_ms, d.dur_ms), and the episode path does the same at detail.rs:1389 (set_resume(ep.resume_ms, ep.dur_ms)) — so an episode can't be restarted either. home.rs:425 does relabel (`if hero.resume_ms > 0 { c"Continue" } else { c"Play" }`) but offers no restart. The lone restart is info_panel.rs:49 "From Beginning", and note it is a request_seek(0)
 
@@ -941,10 +943,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* ui/item_menu.rs (the row), ui/detail.rs (episode-row context action + an Episode.watched field parsed in metadata.rs's episode fetch), ui/home.rs / ui/library.rs (context menu on a grid card), plex/library.rs:90/:95 scrobble/unscrobble already take any rating key.
   *Verified:* CONFIRMED, with a useful partial: the DATA layer already carries per-card watched state, only the toggle is missing. pms.rs:36 `PmsMovie.unwatched` is parsed for every catalog item including episodes (pms.rs:115-119, viewCount for movie/episode, viewedLeafCount for show/season) and widgets.rs:50-53 already DRAWS the unwatched dot on home and library grid cards — so grid cards display watch state they cannot change. What is genuinely unmodelled is the detail EPISODE row: metadata.rs:64-78 `struct Episode` carries resume_ms but no watched/view_count field (detail.rs:963-965 draws only a resume b
 
-- **No Watchlist (add / remove) — and no Plex Discover integration at all** — `major` / `large`
-  "Remove Show from Watchlist" is row 6 of the reference context menu. We have no watchlist state on any item, no add/remove call, and no plex.tv Discover surface whatsoever (the adjacent free ad-supported catalog and the social graph). Our plex.tv client covers only pins, resources and Home users. NOTE: the Discover catalog half is an adjacent-catalog feature, not a library feature; the Watchlist rows are the part the context menu needs.
-  *Where:* plex/account.rs (PUT/DELETE https://discover.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey={guid} over crate::net's libcurl HTTPS — the PMS raw socket can't do TLS/DNS), plex/models.rs (add `guid` + a userState block), metadata.rs (carry the flag onto Detail), ui/item_menu.rs (the row).
-  *Verified:* CONFIRMED. plex/account.rs is exactly create_pin(:73)/poll_pin(:79)/resources(:88)/home_users(:96)/switch_user(:104) against https://plex.tv (:17) — nothing else; grep for watchlist/discover/userState/guid/slug over rust-modules/src returns only server-DISCOVERY comments in auth.rs/plex/session.rs and browse.rs's section discovery. plex/models.rs:113-190 Metadata has no `guid`, no `userState`, no `watchlistedAt`, so the client cannot even tell whether an item is watchlisted. CORRECTION to the auditor's plan: crate::net exposes only https_get (net.rs:140) and https_post (net.rs:144) — there is
+- **No Watchlist (add / remove) — and no Plex Discover integration at all** — `major` / `large` — **Watchlist closed 2026-10.**
+  "Remove Show from Watchlist" is row 6 of the reference context menu. The item hold menu now offers Add and Remove rows (a movie: `Add to Watchlist` / `Remove from Watchlist`; an episode or season: `Add Show to Watchlist` / `Remove Show...`), the Watchlist page's hold menu removes, and the Discover client exists. The adjacent free ad-supported catalog and the social graph stay open (above).
+  *Where:* `rust-modules/screens/src/item_menu/watchlist.rs` (the rows; `Face` is captured when the menu opens), `rust-modules/src/app/input.rs` (`apply_item_action`), `rust-modules/data/src/stores/watchlist.rs`.
+  *Verified:* The row builders are host-tested for movie, episode, season and catalog across member, non-member and unknown membership, and for plex.tv unreachable (row omitted). A card whose row carries no decoded guid shows no Add row.
 
 - **No "Shuffle Season" / shuffle play** — `minor` / `medium`
   The in-player More menu offers Shuffle Season. Our PlayQueue creation hard-codes `shuffle=0` and there is no UI entry point for a shuffled queue anywhere (season tabs, detail hero, player).
@@ -1001,7 +1003,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* rust-modules/src/app.rs:1408 (delete the empty branch). No PMS endpoint needed.
   *Verified:* CONFIRMED verbatim. rust-modules/src/app.rs:1405 `if vis && hud_nav.focus == 1 && !ctrl.is_discs()`, :1409 `} else if vis && hud_nav.focus == 1 {` with an EMPTY body, :1410 the identical condition guarding `track_menu::open_tab` at :1411 — line 1410's arm can never be entered, so OK on a focused disc is a no-op. `git diff rust-modules/src/app.rs` shows both 1409 and 1410 as `+` lines added with the ControlSlot dispatch, so this is a working-tree regression, not a design gap: the feature itself is fully built (ui/track_menu.rs, opened correctly by the pointer path at app.rs:1685-1687, and LEFT/
 
-- **No thumbnail (BIF) preview while scrubbing** — `major` / `large`
+- ~~**No thumbnail (BIF) preview while scrubbing**~~ — `major` / `large` — **closed 2026-10-15:** `appkit::scrub_preview` floats the still at the knob's position above it while scrubbing, one `/library/parts/{id}/indexes/sd/{ms}` JPEG at a time through the poster source and the render cache (never the BIF itself, never the disk tier), and draws nothing for a part with no index.
   The official client shows a still from the video at the scrub position, following the playhead as you seek. We draw only a moving clock label under the knob. Nothing in the codebase fetches or renders a BIF index or a preview frame.
   *Where:* rust-modules/src/ui/player_hud.rs (a preview tile above the knob, fed from the scrub fraction), a new fetch in rust-modules/src/plex/library.rs, and the decode/cache in rust-modules/src/posters.rs. PMS: GET /library/parts/{partId}/indexes/sd/{offsetMs} (and the BIF index itself at /library/parts/{partId}/indexes/sd).
   *Verified:* CONFIRMED — nothing exists, not even in the data layer. `grep -rniE 'bif|indexes|preview'` over rust-modules/src returns only unrelated hits (remote.rs comments about string indexing, ff.rs:1449, and player_hud.rs:401's *scrub position* preview, which is a number not an image). ui/player_hud.rs:394-432 draws track/fill/knob/two clock labels only. plex/library.rs has no `/indexes` endpoint, plex/client.rs only has `image_transcode_path` (/photo/:/transcode) for posters. posters.rs/img.rs have no per-offset frame path. major/large is correct; note the lift is bigger than it looks because there i
@@ -1035,7 +1037,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   **PARTLY LANDED 2026-08-24** — `route::Quality` is an Original-plus-five-fixed-rungs ladder in the player's `…` popover, with gated Auto support; `TranscodeSpec` carries `Ceiling`, and `route::transcode_spec` passes it. The selection now persists. Read the rest of this row as the gap it WAS. See §2 G.
   The official in-player menu has a Settings entry driving playback quality (Original / capped bitrates), which changes the transcode decision. Ours hardcoded a single quality and had no user-facing control (see the note above — the ladder landed); still true is that the bottom tab row offers only Info and Chapters. The same missing surface is where 'auto-play next episode on/off' would live.
   *Where:* rust-modules/src/plex/params.rs + rust-modules/src/plex/transcoder.rs:79 (a quality field on TranscodeSpec), rust-modules/src/ui/player_hud.rs:455 (a third tab) plus a new settings panel next to ui/track_menu.rs, and a persisted preference alongside rust-modules/src/plex/session.rs.
-  *Verified:* UPDATED 2026-08-24. Quality persistence is now explicit in `plex/session.rs`; `route::set_quality` writes through the session's locked read-modify-write seam and the boot/credential handoff restores it. Literal legacy files with no field remain Original. The separate full Settings surface and its other preferences remain absent; quality intentionally stays in the existing in-player overflow popover.
+  *Verified:* UPDATED 2026-08-24. Quality persistence is now explicit in `plex/session.rs`; `route::set_quality` writes through the session's locked read-modify-write seam (into the seated profile's own record since the per-profile work) and the seat change restores it (boot holds the fallback until a profile is seated). Literal legacy files with no field remain Original. The separate full Settings surface and its other preferences remain absent; quality intentionally stays in the existing in-player overflow popover.
 
 - **No subtitle appearance controls (size / position / style)** — `major` / `medium`
   The official client lets the user set subtitle size, position and style. Size and vertical
@@ -1128,15 +1130,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   mechanism this bullet is actually verifying (Settings gets first look at input) is unchanged,
   only the file and the dispatch shape are. There is still no general-purpose prefs module.
 
-- **No Watchlist — not readable, not addable, not removable** — `major` / `large`
-  The official client has Watchlist as a first-class sidebar destination spanning owned-library and Discover-only titles, plus an add/remove action on every detail page. We have none of it: no watchlist fetch, no watchlist shelf or grid, and no watchlist control on the detail page.
-  *Where:* Extend `plex/discover.rs` for
-  `GET https://discover.provider.plex.tv/library/sections/watchlist/all` and `PUT|DELETE`
-  `https://discover.provider.plex.tv/actions/addToWatchlist|removeFromWatchlist?ratingKey=…`;
-  `net::request` already supports body-less custom verbs. Add a third control in `ui/detail.rs`
-  `draw_buttons`/`on_ok`, plus a Watchlist tab and a grid reusing `ui/library.rs`.
-  *Verified:* Still open. The Home/Movies/TV Shows/Search row (whose type pills follow the favourite set since 2026-09-05) has no Watchlist destination,
-  and the detail action row has no Watchlist mutation.
+- **No Watchlist — not readable, not addable, not removable** — `major` / `large` — **closed 2026-10.**
+  The official client has Watchlist as a first-class sidebar destination spanning owned-library and Discover-only titles, plus an add/remove action on every detail page. All of it exists: the bookmark tab and a 6-column grid page with Sort & Filter, the Detail disc, the hold-menu rows and the catalog page for a title no server holds.
+  *Where:* `docs/watchlist.md` maps the modules.
+  *Verified:* The strip is Home, one pill per favourite type, the bookmark, Search (`app/chrome.rs` `strip_keys`).
 
 - **No user-facing server picker when the account has several servers** — `major` / `medium`
   The official client shows a server list when the account has more than one and lets you switch at any time. We select an owned-first primary and expose same-type alternatives through the Library Source panel, but there is no global manual primary-server chooser. A transport failure may automatically re-probe and re-point that same machine after a Wi-Fi/LAN transition; that recovery is not a user choice and cannot select a different grant as the primary.
@@ -1168,9 +1165,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No subtitle appearance settings (size, colour, background)** — `minor` / `medium`
   The official client exposes subtitle size, position, colour and background/outline. Background/outline are still compile-time constants; size, position and tone now have viewer controls.
-  *Partly landed 2026-09-17, size/position landed 2026-09-30:* the caption's TONE is a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted install-wide in the session preferences and applied to text cues as ink and to image cues as a tint. SIZE and POSITION are now Settings > Playback pickers (`plex::session::SubtitleSize`/`SubtitlePosition`, `route::subtitle_size`/`subtitle_position`, applied in `ui::player_hud::draw_subtitle_message`), persisted the same way. Background/outline are still the constants described here, and a server-BURNED subtitle is pixels none of these can reach.
+  *Partly landed 2026-09-17, size/position landed 2026-09-30:* the caption's TONE is a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted per profile in the session preferences (a profile that has not picked reads the install's older key) and applied to text cues as ink and to image cues as a tint. SIZE and POSITION are now Settings > Playback pickers (`plex::session::SubtitleSize`/`SubtitlePosition`, `route::subtitle_size`/`subtitle_position`, applied in `ui::player_hud::draw_subtitle_message`), persisted the same way. Background/outline are still the constants described here, and a server-BURNED subtitle is pixels none of these can reach.
   *Where:* ui/player_hud.rs (parameterise background from a preference too) and the image-subtitle composite at ui/player_hud.rs for scaling. Server-side burn size already has a knob we hardcode at plex/transcoder.rs (`subtitleSize=100`).
-  *Verified:* UPDATED 2026-09-30. `draw_subtitle_message` scales its face size and line pitch by `subtitle_size_scale(route::subtitle_size())` and shifts its baseline by `subtitle_position_lift(route::subtitle_position())`; the outline stays a fixed 4-offset 2px `theme::scrim_black(0.85)`. `draw_subtitle_bitmap`'s image-subtitle composite is unaffected by either preference, same as native ASS/SSA. The server-side burn size is still pinned at plex/transcoder.rs (`subtitleSize=100`). minor/medium is right for what remains (background/outline, image-subtitle position).
+  *Verified:* UPDATED 2026-09-30. `draw_subtitle_message` scales its face size and line pitch by `text_style::size_scale(route::subtitle_size())` and shifts its baseline by `text_style::position_lift(route::subtitle_position())`; the outline stays a fixed 4-offset 2px `theme::scrim_black(0.85)`. `draw_subtitle_bitmap`'s image-subtitle composite is unaffected by either preference, same as native ASS/SSA. The server-side burn size is still pinned at plex/transcoder.rs (`subtitleSize=100`). minor/medium is right for what remains (background/outline, image-subtitle position).
 
 - **No video-quality setting for local vs remote playback** — `minor` / `medium`
   The official client lets you cap streaming quality separately for local and remote playback (e.g. "Original" on LAN, 8 Mbps remote). Our capability profile and transcode caps are compile-time constants — the user cannot lower quality to fight buffering or raise a cap.
@@ -1286,7 +1283,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Device:* Drawing is free. The one cost is fill-rate: these are extra small quads over the transparent UI plane composited above the video, and ui-fillrate work on this Mali part has already been a tuning problem — batch them into the existing rail pass rather than issuing a draw per tick.
   *Verified:* CONFIRMED. player_hud.rs:412 (track), 414-418 (fill), 421-431 (knob) is the entire rail draw — no ticks, no segment bands. `rg chapters ui/player_hud.rs` hits only the `has_chapters()` tab gate at line 468. Both data sets confirmed in memory during playback: markers via `metadata::playing_markers()` (metadata.rs:441-443, read every frame through `active_marker()` at 172-179 → `player_hud::slot()` at 271), chapters via `metadata::current().chapters` (metadata.rs:231, chapters_panel.rs:34/44/91/116). IMPORTANT CORRECTION that raises the effort above 'draw-only': the auditor's own note says chapt
 
-- **No scrub preview thumbnails** — `minor` / `large`
+- ~~**No scrub preview thumbnails**~~ — `minor` / `large` — **closed 2026-10-15:** `appkit::scrub_preview` floats the still at the knob's position above it while scrubbing, one `/library/parts/{id}/indexes/sd/{ms}` JPEG at a time through the poster source and the render cache (never the BIF itself, never the disk tier), and draws nothing for a part with no index. The GL-upload cost point (2) below is not measured on the set.
   Plex clients show a preview frame above the scrubber while seeking (from the server's BIF index). We show only a numeric clock at the playhead — a blind fixed-step tap (the Skip interval, 10 s by default) or a 140x hold-scrub with no visual target. On a device whose seeks are expensive (each is a stream reopen + prime), a preview is worth more here than on a client that can seek instantly.
   *Where:* A new fetch beside plex/transcoder.rs's image_transcode_path (GET /library/parts/{partId}/indexes/sd/{ms}, or the BIF index), the part id already lives in route.rs::cur_part_id (route.rs:88-90), and a preview card drawn above the knob in ui/player_hud.rs:419-431 via ui/widgets.rs::resolve_tex.
   *Device:* Substantial. (1) Our HTTP client is a raw-socket, Content-Length/close-delimited GET with no chunked decoding (stream.rs) — a BIF blob or per-offset JPEG must be fetched off the SDL loop through the poster worker, never inline, or every scrub tick parks the frame loop. (2) Each preview is a fresh GL texture upload on the Mali part WHILE the video plane is decoding, and synchronous poster uploads are already the documented cause of scroll judder (the /tmp/plxnative-framedrop breakdown exists for exactly this). (3) The preview index does not exist unless the server generated it, so the control must degrade silently.
@@ -1321,7 +1318,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 *Already implemented here: 14 reference features.*
 
 - **~~There is no Quality picker anywhere in the app~~ — LANDED 2026-08-23 (PR #57)** — was `blocker` / `medium`
-  **Read the row below as the gap it WAS.** The picker exists: `route::Quality`, Auto plus five rungs, reached from the existing `…` overflow popover (`ui/more_menu.rs`) as a root "Quality ›" row, above Options, that opens a Quality page of rungs (a page push inside the popover) rather than a second modal. The choice persists as `Session::playback_quality`; legacy sessions remain Original and fresh installs start on Auto. Fixed rungs continue through the proven progressive path. Auto first preserves Original on Local or on a direct Remote whose completed bounded actual-file sample sustains source consumption; no fixed bitrate-headroom multiplier is applied. Otherwise it uses segmented HLS, measures transfer rate, segment-production ratio and normalized A/V buffer duration, and transactionally replaces one fixed-rendition PMS encoder with another without issuing a new Starfish Load. LG #43 CASE1 is device-passing; see `docs/lg-self-checklist.md`.
+  **Read the row below as the gap it WAS.** The picker exists: `route::Quality`, Auto plus five rungs, reached from the existing `…` overflow popover (`ui/more_menu.rs`) as a root "Quality ›" row, above Options, that opens a Quality page of rungs (a page push inside the popover) rather than a second modal. The choice persists per profile (`profile_prefs`; a profile that has not picked reads the install's older `Session::playback_quality`); legacy sessions remain Original and fresh installs start on Auto. Fixed rungs continue through the proven progressive path. Auto first preserves Original on Local or on a direct Remote whose completed bounded actual-file sample sustains source consumption; no fixed bitrate-headroom multiplier is applied. Otherwise it uses segmented HLS, measures transfer rate, segment-production ratio and normalized A/V buffer duration, and transactionally replaces one fixed-rendition PMS encoder with another without issuing a new Starfish Load. LG #43 CASE1 is device-passing; see `docs/lg-self-checklist.md`.
 
   Plex HTPC opens a full-screen Quality modal from the transport and lets the user pick a bitrate/resolution tier mid-playback. We have no such screen, no such control, and no such concept: the in-player overlays are exactly Menu (audio/subs), Info and Chapters, and the transport's right-hand control row holds exactly two focusable discs (Subtitles, Audio).
   *Where:* New ui/quality_menu.rs composed from ui/popover.rs + ui/table.rs (exactly the pattern ui/track_menu.rs uses); a fifth `Overlay::Quality` in app.rs:579-584 with its key/pointer arms alongside app.rs:1216-1330 and app.rs:2142-2160; the commit routed into route.rs beside `commit_audio_selection` (route.rs:922-935). No new PMS endpoint — it re-registers through the existing `/video/:/transcode/universal/decision` + `start.mkv` (plex/transcoder.rs:129-137).
@@ -1380,10 +1377,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* host controller, parser, transport-deadline, timestamp and lifecycle tests pass — and the rewrite's model (estimators, starvation arithmetic, end-to-end acquisition non-double-counting, the terminal-floor exception, all three Original exits, the recovery confidence ladder, hysteresis, the bootstrap table) is host-graded too. On the television, 512 Kbps / 1 Mbps / 7 Mbps / 17.5 Mbps settled at 320 Kbps / 720 Kbps / 4 Mbps / 8 Mbps with actual decoded rasters changing accordingly, inside one Starfish Load — **on the six-rung ladder of that day**; the 17.5 Mbit/s leg would land on the 10 Mbps rung today, which is the one settle value the rewrite is expected to change and has NOT been re-measured on a device. Full duration, seek, A/V priming and a live high-to-512 Kbps collapse were also exercised. Protocol evidence and limitations are in `docs/pms-hls-protocol-probe.md`.
 
 - **~~No quality preference is persisted~~, and no local-vs-remote distinction** — `minor` / `small`
-  Plex clients keep separate local and remote quality preferences. We now persist one install-wide mode (Auto / Original / fixed rung) and apply it to future plays, but do not keep separate local and remote choices.
+  Plex clients keep separate local and remote quality preferences. We now persist one mode per profile (Auto / Original / fixed rung; a profile that has not picked reads the install's older key) and apply it to future plays, but do not keep separate local and remote choices.
   *Where:* Add a `prefs` field to the serde `Session` at plex/session.rs:39-56 (it already round-trips through `load`/`save` at plex/session.rs:109-150, so this is nearly free); read it in `build_stream` (route.rs:523-652) when constructing the first `TranscodeSpec`; the local/remote branch keys on `Connection.local` (plex/account.rs:177).
   *Device:* None known. The session file already survives reinstall by living outside the app dir (plex/session.rs:32-37), so a pref stored there behaves the same. One TV-specific caution: the file is written on the dev partition and a launch can race a deploy, so the pref read must tolerate a missing/partial file exactly as `load` already does.
-  *Verified:* UPDATED 2026-08-24. `Session.playback_quality` is soft-deserialized and distinguishes an old missing field from a fresh explicit default; `route::set_quality` persists it and boot restores it. The remaining gap is the single global value: connection tier is still not a preference key.
+  *Verified:* UPDATED 2026-08-24. `Session.playback_quality` is soft-deserialized and distinguishes an old missing field from a fresh explicit default (it is the frozen fallback now: `route::set_quality` persists the seated profile's own pick in `profile_prefs`, the seat change restores it, and boot holds the fallback until a profile is seated). The remaining gap is that the value is one per profile, not one per connection tier: connection tier is still not a preference key.
 
 - **The advertised transcode target is HEVC/AC3 only — the low rungs of any ladder have no h264 fallback** — `minor` / `small`
   Plex's ladder produces h264 at the lower tiers (4/3/2 Mbps 720p, 1.5 Mbps 480p). Our profile advertises exactly one transcode target, HEVC+AC3, so every tier we could ask for would be requested as HEVC — the most expensive thing the server can encode, and the one thing a mis-set server preference silently refuses.
@@ -1525,12 +1522,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No subtitle appearance settings (size, position, colour, background)** — `major` / `small`
   The reference client's Subtitles submenu carries size / position / colour / background. Every one of ours is a compile-time constant: size 36, line height 48, pure white, a 4-offset black outline instead of a background box, a fixed baseline that only knows two states (HUD up / HUD down), and a wrap fixed at 42 characters and 3 lines maximum.
-  *Partly landed 2026-09-17:* the caption's TONE is now a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted install-wide in the session preferences and applied to text cues as ink and to image cues as a tint. It exists for HDR, where graphics white is mapped uncomfortably bright. Size, position and background are still the constants described here, and a server-BURNED subtitle is pixels the tone cannot reach.
+  *Partly landed 2026-09-17:* the caption's TONE is now a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted per profile in the session preferences (a profile that has not picked reads the install's older key) and applied to text cues as ink and to image cues as a tint. It exists for HDR, where graphics white is mapped uncomfortably bright. Size, position and background are still the constants described here, and a server-BURNED subtitle is pixels the tone cannot reach.
   *Where:* ui/player_hud.rs:62-102 (draw_subtitles) reading a prefs struct; the char-count `wrap` at ui/player_hud.rs:38-57 should be replaced by ui::text_view::TextView's pixel wrap before size becomes variable, or a larger size will overflow the 42-char assumption. The image-subtitle path (ui/player_hud.rs:109-139) composites at the PGS 1920x1080 canvas coords and can only honour a position offset, not a size.
   *Device:* None known — this is pure UI on the GLES plane. Two device-specific notes: the caption is one of exactly two documented carve-outs from the theme::size ladder (ui/player_hud.rs:22-25), so a size setting should be expressed as a small offset scale over that carve-out rather than a new raw literal; and a real background box is cheaper on this fill-bound Mali than the current 5x text draw per line.
   *Verified:* CONFIRMED absent; every constant is where claimed, in the current working tree: ui/player_hud.rs:73 `wrap(seg, 42)`, :74 `lines.len() < 3`, :82 `let sz = 36`, :83 `let lh = 48.0`, :87 `baseline = if hud_up { SCR_H-300 } else { SCR_H-100 }`, :89 pure-white, :90 `theme::scrim_black(0.85)` drawn as 4 offset outline passes (:95-97) — so a line costs 5 text draws. `draw_subtitles(hud_up)` takes ONE bool and nothing else; no prefs are plumbed from any caller (app.rs:2438). The image path (ui/player_hud.rs:104-137) composites `bitmap_by_key`'s own (x,y,w,h) rect, so as stated it can honour a position
 
-- **Playback preference persistence implemented.** Quality and Direct Play mode are saved on the television; account audio/subtitle preferences sync with Plex. Individual features listed elsewhere retain their own scope.
+- **Playback preference persistence implemented.** Quality and Direct Play mode are saved on the television per profile (each Plex Home profile keeps its own pick; a profile that has not chosen reads the install's older value); account audio/subtitle preferences sync with Plex. Individual features listed elsewhere retain their own scope.
 
 - **Preferred audio/subtitle settings implemented by #217/#222/#223.** The Settings page uses the full Plex account language catalog and writes the active profile. Explicit show settings precede account defaults, and PMS selections remain authoritative. The live preference-propagation measurement still requires a throwaway account.
 
@@ -1606,14 +1603,14 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Sidecar (external) subtitle streams are unreachable on the direct-play path — i.e. on almost every item** — `major` / `medium`
   Plex HTPC lists embedded AND sidecar subtitles together; a downloaded .srt beside the file just works. Here the menu filters external streams out unless the item is already transcoding, because the client renderer only sees streams inside the container the demuxer opened. Since this client is direct-play-first (MKV + H264/HEVC + AAC/AC3/EAC3 direct-play), the common case is a direct-played file whose only subtitles are sidecars — the user opens the picker and sees just "Off", or a list missing the language they have. There is no path to enable them at all: they can't be picked, so they can't even force the transcode that would burn them.
-  *Landed 2026-09-18 for TEXT sidecars:* `player::sidecar` fetches the file once (`/library/streams/{id}?encoding=utf-8&format=srt`, falling back to encoding-only and then the bare key), parses SubRip/WebVTT into its own whole-file store (ASS/SSA now retains the complete script for native libass rendering, without the SubRip conversion) — `SHARED.sub_cues` is a 2 s / 512-cue window a backward seek would empty — and `ui::player_hud::draw_subtitles` asks it before the embedded store. The menu lists a renderable sidecar on direct play with an EXTERNAL badge, a server-selected one is restored on a direct-play start, and a failed fetch says so on screen. Device-confirmed with Hungarian `.srt` files on one set (on the v0.6.6 line). IMAGE sidecars (`.idx`/`.sub`, `.sup`) are still transcode-only, and there is still no subtitle delay control.
+  *Landed 2026-09-18 for TEXT sidecars:* `player::sidecar` fetches the file once (`/library/streams/{id}?encoding=utf-8&format=srt`, falling back to encoding-only and then the bare key), parses SubRip/WebVTT into its own whole-file store (ASS/SSA now retains the complete script for native libass rendering, without the SubRip conversion) — `SHARED.sub_cues` is a 2 s / 512-cue window a backward seek would empty — and `ui::player_hud::draw_subtitles` asks it before the embedded store. (Superseded: SRT/VTT now convert to an `Origin::Text` ASS script and render through libass, see `docs/ass-subtitles.md`; only the failure notice is still drawn by the HUD.) The menu lists a renderable sidecar on direct play with an EXTERNAL badge, a server-selected one is restored on a direct-play start, and a failed fetch says so on screen. Device-confirmed with Hungarian `.srt` files on one set (on the v0.6.6 line). IMAGE sidecars (`.idx`/`.sub`, `.sup`) are still transcode-only, and there is still no subtitle delay control.
   *Where:* rust-modules/src/ui/track_menu.rs:65-79 (stop filtering), a new sidecar fetch+parse feeding rust-modules/media/src/player/mod.rs:209 `push_subtitle_text`, and rust-modules/src/plex/library.rs (new `GET /library/streams/{id}` client method). PMS endpoint: /library/streams/{id} (the spec's /library/streams/{id}.{ext}).
   *Device:* Lower than the brief suggests: stream.rs DOES decode chunked transfer-encoding (rust-modules/src/stream.rs:116-160 `hs_next_chunk`, 368-370, 388-400), so the "no chunked decoding" line in the former root guide (now `docs/agent-reference.md`) is stale and a sidecar GET can use the existing numeric-IP raw-socket client on a worker thread. Real risks: (a) memory [[soft-subs-during-transcode]] records /library/streams/{id}.vtt returning 501 — request the raw sidecar form and verify on device first; (b) cue times must be pushed on the CONTENT-time ns axis the fed video PTS uses (player/mod.rs:204-232), which is easy for a whole-file sidecar but must survive the transcode's `disp_base` offset rebase; (c) nothing here goes near Starfish/ACB or the video plane.
   *Verified:* CONFIRMED, but MORE partial machinery exists than the auditor found. What already exists: (a) the filter is exactly rust-modules/src/ui/track_menu.rs:68-79 `!s.external || crate::route::is_transcoding()` — so sidecars ARE listed, pickable and server-BURNED while transcoding (commit_subtitle_selection → route.rs:948 put_selection / request_transcode_refresh), i.e. the feature works on the transcode path and only the direct-play path is dark; (b) external is derived at metadata.rs:390-391 from `stream_type == 3 && !s.key.is_empty()`, and plex/models.rs:234-236 documents the delivery key as `/lib
 
 - **No subtitle appearance settings — size, position, colour, background/shadow are all hard-coded** — `major` / `medium`
   Plex HTPC exposes subtitle size, position/vertical offset, text colour and background/shadow. Ours renders one fixed style: 36px, pure white, a 4-offset dark outline, bottom-centre at a fixed baseline, 48px line height. Nothing is user-adjustable and the Settings shell has no subtitle section. On the transcode/burn path the server-side size is likewise pinned at subtitleSize=100.
-  *Partly landed 2026-09-17:* the caption's TONE is now a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted install-wide in the session preferences and applied to text cues as ink and to image cues as a tint. It exists for HDR, where graphics white is mapped uncomfortably bright. Size, position and background are still the constants described here, and a server-BURNED subtitle is pixels the tone cannot reach.
+  *Partly landed 2026-09-17:* the caption's TONE is now a viewer preference — a **Color** section under the tracks in the player's Subtitles menu (`ui::track_menu`), white plus a five-rung gray ladder (`plex::session::SubtitleTone`, inks in `theme::SUBTITLE_INKS`), persisted per profile in the session preferences (a profile that has not picked reads the install's older key) and applied to text cues as ink and to image cues as a tint. It exists for HDR, where graphics white is mapped uncomfortably bright. Size, position and background are still the constants described here, and a server-BURNED subtitle is pixels the tone cannot reach.
   *Where:* rust-modules/src/ui/player_hud.rs:62-102 (parameterise), a new preference store beside rust-modules/src/plex/session.rs's on-disk save, plus a settings UI on the shared ui/table.rs TableView; the burn size rides plex/transcoder.rs:87.
   *Device:* None for the direct-play path — this is our own GLES text renderer and the values are already locals at player_hud.rs:82-89. The burned-in transcode path can only honour a size percentage (subtitleSize), never colour/position, so the two paths would диverge visually; that asymmetry is inherent to burn-on-server, not to this device.
   *Verified:* CONFIRMED exactly as described. rust-modules/src/ui/player_hud.rs:82 `let sz = 36;` (self-described carve-out from theme::size), :83 `let lh = 48.0f32`, :87 `let baseline = if hud_up { SCR_H - 300.0 } else { SCR_H - 100.0 }`, :89 `let white = [1.0,1.0,1.0,1.0]`, :90 outline `theme::scrim_black(0.85)` drawn at 4 fixed ±2px offsets (:94). Burn size pinned at rust-modules/src/plex/transcoder.rs:87 `.int("subtitleSize", 100)`. The current Settings screen has no subtitle controls and there is no general preference store in the crate. The single dynamic aspect is
@@ -1627,6 +1624,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Track choices are forgotten at every item boundary — nothing is remembered per show/series** — `major` / `medium`
   Plex HTPC remembers the audio/subtitle choice per series, so binge-watching in Japanese-audio/English-subs keeps working episode to episode. Here every new playback zeroes both stream ids and turns subtitles off, then re-runs the English-preference auto-pick. Auto-advancing to the next episode through Up Next goes through the same path, so the subtitle track the user just chose vanishes the moment the credits roll.
+  *Landed (track memory):* an explicit pick in the track menu on an episode is remembered for its show by the seated profile (`route::commit_audio_pick` / `commit_subtitle_pick`, `plex/session/prefs/track_memory.rs`), and the next episode, by Up Next or from a shelf, resolves to the same pick by descriptor and not by stream id (`route/track_memory.rs`). A movie, an unseated boot and an automatic choice remember nothing. The text below describes the code as it was.
   *Where:* rust-modules/src/route.rs:738-756 (consult a remembered choice keyed by grandparentRatingKey before resetting) + a small store beside rust-modules/src/metadata.rs's playing-item state; the pick would then flow through the existing route::commit_* / pick_dp_audio path.
   *Device:* none known — pure route/metadata state on the main thread. The only wrinkle is that the remembered subtitle must be re-resolved by language/stream identity on the NEW leaf (ids differ per episode), not by raw id.
   *Verified:* CONFIRMED. rust-modules/src/route.rs:745-746 `CUR_AUDIO_SID.write(0)` / `CUR_SUB_SID.write(0)` then `player::reset_audio_track()` + `player::reset_subtitle()` at the top of `request_play`; player/mod.rs `reset_subtitle` stores -1. `request_play_up_next` (route.rs:797-802) funnels straight into `request_play`, so the auto-advance chain inherits the wipe. No per-show map exists: `grandparent` appears only as display data (metadata.rs:204-205 show_title/show_rk, route.rs:370/413). TWO PARTIALS worth recording. (1) Within one item the choice IS sticky and deliberately so — player/mod.rs's `reset_s
@@ -1653,7 +1651,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Long subtitle cues are silently truncated: a 42-CHARACTER wrap and a hard 3-line cap that DROPS the rest** — `minor` / `small`
   The plain-text subtitle renderer word-wraps by character count (42) rather than by pixels, then keeps only the first three lines and discards the remainder without an ellipsis. 42 characters at 36px is roughly 750px — under 40% of the panel width — so ordinary long sentences (SDH captions, Cyrillic dubs) wrap to four or more lines and the tail of the sentence is simply never shown. The codebase already owns a pixel word-wrapping primitive that the HUD does not use here.
-  **Fixed:** the 3-line cap is gone. `rust-modules/appkit/src/player_hud.rs` keeps every wrapped line (`CaptionPlan`) and `CaptionPager` pages a caption taller than the panel.
+  **Fixed:** the 3-line cap is gone. `rust-modules/appkit/src/player_hud.rs` keeps every wrapped line (`CaptionPlan`) and `CaptionPager` pages a caption taller than the panel. (Superseded: every text track now renders through libass and `CaptionPlan`/`CaptionPager` are deleted, see `docs/ass-subtitles.md`.)
   *Where:* rust-modules/src/ui/player_hud.rs:38-102 — either widen/measure with crate::text::text_width or move the caption onto ui/text_view.rs's TextView (noting the renderer is a documented immediate-mode carve-out, ui/CLAUDE.md).
   *Device:* none known — main-thread GLES text drawing that already runs every frame; TTF_SizeUTF8 measurement is memoised elsewhere in the same file (player_hud.rs:171-191) if per-frame measuring is a concern on the Mali budget.
   *Verified:* CONFIRMED. rust-modules/src/ui/player_hud.rs:38-57 `fn wrap(s: &str, max: usize)` counts `chars()`, called at :73 as `wrap(seg, 42)`; :73-77 `for l in wrap(seg, 42) { if lines.len() < 3 { lines.push(l); } }` — the 4th line and beyond are dropped with no ellipsis and no marker. The pixel-accurate alternative exists and is used elsewhere in the same screen family: rust-modules/src/ui/text_view.rs (greedy pixel word-wrap at :132-157, `max_lines` with an ellipsized last line at :83-85/:142-158, `measure_h`), consumed by info_panel.rs and detail.rs:1512/1582. minor/small is right. device_risk 'none
@@ -1703,7 +1701,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Device:* Most of it is cheap: the direct-play/transcode verdict, the codecs actually fed to the Load payload, fps, queue bytes and duration are already in-process. Two fields are genuinely hard on this device. (1) DROPPED FRAMES: nothing counts them - sf_on_event only increments SHARED.frames on a type=0 "presented" callback (player/mod.rs:357-363) and the Starfish/ACB seam in src/starfish.c exposes no decoder-statistics symbol, so a drop count would have to be inferred from fed-vs-presented PTS deltas rather than measured. (2) DECODER hw/sw is a constant here - buffer-feed always decodes on the panel's hardware, so the field is honest but uninteresting. "Buffer ahead" is also nearly meaningless as drawn elsewhere: MAX_FEED_AHEAD_NS is 1.6 s (player/engine.rs:673) with an 8 MB video AU queue (player/engine.rs:39), so the real number is single-digit seconds, not the tens-of-seconds Plex shows. Adding Media width/height/bitrate to the DTO is free (plex/models.rs is all `#[serde(default)]`); a /status/sessions GET for transcodeReason is one more JSON round trip through the existing client and safe.
   *Historical audit evidence:* the cited grep and overlay enum described the earlier tree; current reachability is pinned by `app::diagnostics` and menu tests.
 
-- **No BIF thumbnail preview while scrubbing** — `major` / `large`
+- ~~**No BIF thumbnail preview while scrubbing**~~ — `major` / `large` — **closed 2026-10-15:** `appkit::scrub_preview` floats the still at the knob's position above it while scrubbing, one `/library/parts/{id}/indexes/sd/{ms}` JPEG at a time through the poster source and the render cache (never the BIF itself, never the disk tier), and draws nothing for a part with no index.
   Plex floats a still from the scrub position above the scrubber, served from /library/parts/<id>/indexes/sd. Our scrubber draws a bar, a knob and two clock labels and nothing else - scrubbing 40 minutes forward is done blind against a frozen picture.
   *Where:* ui/player_hud.rs (a preview tile above the bar, fed from the same `dispos` the clocks already use at :400-411), a new BIF fetcher/parser module beside posters.rs, and a new plex/library.rs method for GET /library/parts/{id}/indexes/sd. The part id is already parsed and stored (route.rs:710-718 part_id_of, CUR_PART_ID at route.rs:845).
   *Device:* Two real device constraints. (1) MEMORY: a BIF for a feature film is tens of MB of concatenated JPEGs and pkg/appinfo.json declares requiredMemory 160, against a measured 152 MiB peak - a whole-file download would be an allocation abort, not a caught panic (see img.rs:1-12 on why catch_unwind cannot save an alloc failure). The workable shape is a Range GET of the BIF header/index, then a Range GET of one frame's byte extent; stream.rs supports exactly this (ff.rs:988-992 already does Range reopens), and the JPEG decoder in img.rs can decode the extracted frame. (2) stream.rs DOES decode chunked transfer (`hs_next_chunk`), so the framing was never the question - its only disqualifiers are DNS and TLS. This line claimed the opposite, which is the exact false claim the former root guide (now `docs/agent-reference.md`) holds up as this repo's archetype. Also note the server must have generated video preview thumbnails at all - many libraries have them off, so the feature needs a clean absent-index fallback.

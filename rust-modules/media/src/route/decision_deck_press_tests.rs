@@ -1,6 +1,8 @@
-//! The Continue Watching press persistence seam: durable-first, live only once the write lands.
+//! The Continue Watching press persistence seam: durable-first, live only once the write lands. The
+//! pick is the seated profile's own (P1a), so each test signs a profile in.
+use super::prefs_characterisation_tests::{picked, sign_in};
 use super::*;
-use plx_plex::plex::session::DeckPress;
+use plx_plex::plex::session::{DeckPress, DeckPressPref};
 
 struct Restore(DeckPress);
 impl Drop for Restore {
@@ -13,25 +15,27 @@ impl Drop for Restore {
 #[test]
 fn a_durable_pick_is_live_and_persisted() {
     let _g = plx_base::testlock::serial();
-    let _session = plx_plex::plex::session::TempSession::new("deck-press-set");
+    let session = plx_plex::plex::session::TempSession::new("deck-press-set");
+    sign_in(&session);
     let _restore = Restore(deck_press());
     restore_deck_press(DeckPress::Details);
     assert_eq!(deck_press(), DeckPress::Details, "the shipped default opens the page");
 
     assert!(set_deck_press(DeckPress::Play));
     assert_eq!(deck_press(), DeckPress::Play);
-    assert_eq!(plx_plex::plex::session::load().deck_press(), DeckPress::Play);
+    assert_eq!(picked::<DeckPressPref>(), Some(DeckPress::Play));
 
-    // choosing the default again removes the key from the file
+    // choosing the default again is the profile's own value, not an absent key
     assert!(set_deck_press(DeckPress::Details));
-    assert_eq!(plx_plex::plex::session::load().deck_press(), DeckPress::Details);
+    assert_eq!(picked::<DeckPressPref>(), Some(DeckPress::Details));
 }
 
 /// **A failed write claims nothing**: the live value stays.
 #[test]
 fn a_failed_write_changes_nothing() {
     let _g = plx_base::testlock::serial();
-    let _session = plx_plex::plex::session::TempSession::new("deck-press-failed");
+    let session = plx_plex::plex::session::TempSession::new("deck-press-failed");
+    sign_in(&session);
     let _restore = Restore(deck_press());
     restore_deck_press(DeckPress::Details);
     // the session file's parent is a regular file, so no write can land

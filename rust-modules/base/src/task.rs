@@ -151,11 +151,27 @@ fn refused(what: &str, e: &io::Error) {
     ));
 }
 
+/// Longest thread name Linux keeps: `TASK_COMM_LEN` is 16 including the NUL.
+const THREAD_NAME_MAX: usize = 15;
+
+/// The OS thread name for the worker labelled `what`: `what` cut to [`THREAD_NAME_MAX`] bytes at a
+/// char boundary, with NULs dropped (`Builder::spawn` panics on an interior NUL, and a label must
+/// never be able to make a spawn fail). It shows in `/proc/<pid>/task/*/comm`, kernel scheduler
+/// traces and `tools/plxnative-sample`, so a label meant for those is kept to 15 bytes and
+/// distinct from its neighbours in its first 15 bytes; a longer one is cut, not rejected.
+fn thread_name(what: &str) -> String {
+    let mut name = String::with_capacity(THREAD_NAME_MAX);
+    for c in what.chars().filter(|&c| c != '\0') {
+        if name.len() + c.len_utf8() > THREAD_NAME_MAX {
+            break;
+        }
+        name.push(c);
+    }
+    name
+}
+
 fn try_spawn(what: &str, stack: Option<usize>, f: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
-    // `what` names the worker for the host tests' drain report; the shipping build has no use for it.
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = what;
-    let mut b = Builder::new();
+    let mut b = Builder::new().name(thread_name(what));
     if let Some(n) = stack {
         b = b.stack_size(n);
     }
@@ -384,8 +400,9 @@ mod tests {
     /// page — `stack_size + page_size - 1` — and on `usize::MAX` that addition overflows, so a
     /// debug-assertions build panics *inside std* before `pthread_create` is ever reached. The
     /// test then fails claiming the very thing it exists to prove. It is toolchain-dependent
-    /// (green on 1.96 stable, red on 1.98-nightly) and this crate is nightly-only for
-    /// `-Z build-std`, so `make check` was the one that saw it.
+    /// (green on 1.96 stable, red on 1.98-nightly; the ARM build was nightly-only for
+    /// `-Z build-std` then, so `make check` was the one that saw it, and one pinned stable release
+    /// now serves both).
     ///
     /// Half the address space is just as unsatisfiable — no allocator anywhere will find 8 EiB —
     /// while leaving room for the page rounding to land, and it stays correct on the 32-bit
@@ -397,6 +414,47 @@ mod tests {
             h.is_none(),
             "a spawn that cannot succeed must report, not hand back a handle"
         );
+    }
+
+    /// Workers carry their label as the thread name (what a scheduler trace and
+    /// `plxnative-sample` print), cut to 15 bytes at a char boundary; a label too long, or with a
+    /// NUL in it, still spawns.
+    #[test]
+    fn workers_carry_their_names_and_an_over_long_label_still_spawns() {
+        fn name_of(what: &'static str) -> Option<String> {
+            let (tx, rx) = mpsc::channel();
+            let h = super::spawn(what, move || {
+                tx.send(std::thread::current().name().map(str::to_owned)).unwrap();
+            })
+            .expect("spawn");
+            h.join().unwrap();
+            rx.recv().unwrap()
+        }
+        assert_eq!(name_of("ass-render").as_deref(), Some("ass-render"));
+        assert_eq!(name_of("exactly15bytes!").as_deref(), Some("exactly15bytes!"));
+        assert_eq!(name_of("a label that is much too long").as_deref(), Some("a label that is"));
+        // 'é' is two bytes: the cut lands inside it and backs off to the boundary.
+        assert_eq!(name_of("abcdefghijklmné").as_deref(), Some("abcdefghijklmn"));
+        assert_eq!(name_of("nul\0inside").as_deref(), Some("nulinside"));
+        let (tx, rx) = mpsc::channel();
+        let h = super::spawn_small_keeping("small-worker", move || {
+            tx.send(std::thread::current().name().map(str::to_owned)).unwrap();
+        })
+        .expect("spawn");
+        h.join().unwrap();
+        assert_eq!(rx.recv().unwrap().as_deref(), Some("small-worker"));
+    }
+
+    /// The kernel's own record of the name, which is what a scheduler trace reads.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_kernel_comm_matches_the_name() {
+        let (tx, rx) = mpsc::channel();
+        super::spawn("comm-probe", move || {
+            tx.send(std::fs::read_to_string("/proc/thread-self/comm").unwrap()).unwrap();
+        })
+        .expect("spawn");
+        assert_eq!(rx.recv().unwrap().trim_end(), "comm-probe");
     }
 
     /// [`super::MainThread`] earns its keep entirely by NOT being `Send` — that absence is what

@@ -30,8 +30,24 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
 
-- `engine.rs` — the **main-thread-confined** session object. All ACB/Starfish *control* calls happen
-  on the main thread; `engine` spawns the workers below.
+- `engine.rs` — the **main-thread-confined** session object. Every ACB/Starfish *control* call
+  happens on the main thread except two Starfish verbs: `Load` (on `load_thread`) and a real stop's
+  `Unload` (on the `sf-unload` worker, below). `engine` spawns the workers below.
+- **A real stop's `Unload` runs off the frame (`engine::PendingRelease`).** Measured on the dev set
+  2026-10-15 (release build, mock, Guest): `StarfishMediaAPIs::Unload` alone held the frame that
+  handled BACK for 113-150 ms on every return (`teardown spans:` line, `sf_unload:`); the sched
+  trace put the main thread in D state in `ioctl` (~31 ms), then in `futex` (~74 ms), inside that
+  call. `teardown` (real stop only: `for_reload == false`) now moves the native phase to
+  `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
+  worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
+  `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
+  `settle_release`: on the first frame after the Unload returns (`run.rs` → `poll_release`), or
+  at once, blocking, from `start_bufferfeed_inner`, `pa.mt()`, `pa.split()` and `shutdown`, so
+  nothing reaches the seam or builds a new object while the old one is still inside Unload. While
+  `Releasing`, only that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence) and no
+  native session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`)
+  keep the synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released
+  X ms after the stop`, with `(a caller waited for it)` when a blocking caller had to wait.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
@@ -48,8 +64,11 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
-television; `ffi_host.rs`'s `HostSink` is the simulator's. Every method but three takes a
-`task::MainThread` — a `!Send` ZST the application mints once. Since phase 9 it mints exactly one
+television; `ffi_host.rs`'s `HostSink` is the simulator's. Every verb but `load` and `unload`
+takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
+take nothing); `unload` takes an `UnloadTicket`, which only a `&MainThread` can issue and which is
+`Send`, so the main thread decides when an Unload happens and a worker may carry it out.
+`MainThread` is a `!Send` ZST the application mints once. Since phase 9 it mints exactly one
 and `boot` MOVES it into `player::adapter::PlayerAdapter` (`App.adapters.player`), which also owns
 the native session that was the `static mut ENGINE`: the seam is reached as `pa.mt()`, the session as `pa.engine()` / `pa.split()`, and a function that
 touches the session takes `pa: &mut PlayerAdapter` where it used to take `mt: &MainThread`. Moving
@@ -57,7 +76,8 @@ any of it onto a thread stops compiling (the closure captures a `&MainThread`, w
 rejects), and two live `&mut` to the session no longer needs a convention — it does not compile,
 which is what turned `pump`'s "reload REPLACES the ENGINE, so `eng` dangles" comment into a rule
 the borrow checker keeps. Two intentional holes, both worth knowing: `load` takes **no** token
-because `load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an
+because `load_thread` runs it off-main by design (and `unload` takes only a ticket, for the
+`sf-unload` worker), and `MainThread::assume()` is callable — so an
 `unsafe` block inside a worker still defeats this. The rule for new code: take the token **iff**
 you reach the seam, the adapter **iff** you reach the session, so a signature keeps meaning
 something.
@@ -84,7 +104,7 @@ something.
   `num=601 Resource Allocation Error`, while the identical envelope carrying `"H265"` played in the
   same session, and a 1920x1080 H.264 declaration loaded in 117 ms. The rule now is exactly that
   measurement and no more: HEVC keeps 4K60; H.264 declares 1920x1080@60 when the session's widest
-  raster (`route::sink_max_raster` — source for direct play, the ceiling for a fixed quality, the
+  raster (`route::sink_max_raster` — source for direct play, min(source, ceiling) for any fixed-quality delivery (HLS or progressive), the
   catalog's widest feasible actuator for Auto, since a rung commit never re-Loads) fits FHD, and
   stays 4K60 otherwise; the device table's per-codec row (`devcaps::Caps::{h264_row,hevc_row}`,
   frame rate included) clamps it only when the table was actually read. The `load:` line carries
@@ -92,14 +112,25 @@ something.
   grades both (`load_max`, `sink_echo`). **Also since 2026-09-03: a `type=18` before any picture
   publishes `load_failed`** (`sf_on_event_inner`), so an asynchronous refusal reaches the failure
   read-out instead of parking the player in Connecting on a black screen (lab report §3.5).
+  **After a picture, one number acts too (2026-10-13): `type=18 num=600`, "VDEC resource is
+  released by policy action".** A paused direct play left until the screensaver came on got it with
+  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
+  `decoder_revoked`; the app loop parks the session exactly as an app switch does
+  (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
+  claim that rebuilds it at the saved spot and clock. Every other `type=18` after a picture is
+  still only logged.
   **And the frame rate IS a discriminator, measured on the dev set the same day:** a 4K H.264 24p
   direct play declared at 60 makes the pipeline announce `frameRate:24` and then `:30` for the same
   stream (a 24p picture on a 30 fps lattice — the judder the maintainer saw on the Auto 4K rung);
   declared at 24 or 30 it announces 24 once and holds it — and the sink's displayed-frame counter
   measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
   declares the stream's rate class
-  (`fps_class`), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
-  keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
+  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a stream with no known rate
+  keeps 60. A REMUX (the enhanced `start.mkv`, `directStream=1`: video copied, audio re-encoded) copies the
+  source's video stream, so it declares the SOURCE rate (`route::video_copy_fps`, from `Plan::src_fps` /
+  `PlaybackSession::src_fps`) exactly as direct play does — until 2026-10-18 it carried 0, declared 60 and
+  presented ~16 fps on a 4K H.264 24p file; a real video re-encode (an HLS rung, `no_video_copy`, a forced
+  burn) still has no known rate and keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
   clamped by `Caps::av1_row`; the clamp is unmeasured (one owner reports AV1 playing on a webOS 10.3.1 set, with no log). `/tmp/plxnative-sinkmax=WxH@F`
   overrides the envelope for the legs still unrun on 10.3.1.
 - **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
@@ -149,7 +180,35 @@ something.
   (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
-  claim time). An engine failure during the flight publishes `Failed` at once
+  claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
+  session with `frames == 0` behind a shut feed gate; `pump::settle_paused_seek` opens the bounded
+  paused-seek preroll for exactly that state (paused, no claim-hold pause, no flight, no pending
+  seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
+  instead of showing "Buffering…" over a blank plane. Where the preroll cannot open (the clock is
+  not held yet), the pump ladder still never publishes Buffering for a paused, idle player with no
+  picture (`pump::paused_and_idle`): Buffering means work is happening, and Playing means a frame
+  is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
+  `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
+  and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
+  **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
+  (`pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
+  `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
+  showed. A preroll re-paused on the first tick left the panel black ("no signal" on a VIDEO-only
+  capture) until Resume, because the pause stops the ticks the bind waits on and
+  `acb_mirror_playstate` does nothing below `Streaming`. So the re-pause waits for the bind plus
+  one tick after it (`Engine::bound_at_frames`), and, while a preroll is open, the bind gate is one
+  tick instead of the normal two (`acb_bind_frames_needed`; the preroll's Play window is audible,
+  so `try_prime` mutes the pipeline first: `mute_for_preroll` calls
+  `setVolume({"volume":0})` and logs `preroll: volume set 0 ...`; `getVolume` is NOT bound (it
+  returns an int on 4.5 where the NDK header says `const char *`: SIGSEGV), so the volume is
+  restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
+  (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
+  for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
+  volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
+  4.10.0), `AcbAPI_startMute` or the system mute). An `acb_start` that runs under a really-paused pipeline (no preroll
+  open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
+  `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
+  An engine failure during the flight publishes `Failed` at once
   (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
   The encoder a claim replaces is NOT stopped by the worker: the pump retires it
   (`route::retire_superseded_encoder`) after the reload.
@@ -227,21 +286,38 @@ something.
   transcode decision. For ADTS/HE-AAC, use the **CORE** sample rate from the AudioSpecificConfig (SBR
   doubles it). See `[[audio-payload-codecs]]`.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
-  unreachable in buffer-feed. Plain text and image (PGS/VobSub) subs are decoded and drawn by
-  us; styled ASS/SSA uses the bundled libass worker (`ass.rs`, `ass_source.rs`) with original
-  headers, events and attached fonts. Sidecar ASS keeps the complete script rather than requesting
-  a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
+  unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
+  ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker
+  (`ass.rs`, `ass_source.rs`): ASS with its original headers, events and attached fonts, a text track
+  with a header `text_ass::header` synthesizes from the viewer's size/position picks and cues
+  `text_ass::convert` turns into events (`ass_source::push_text`, `Origin::Text`; the cue's raw key is
+  its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
+  of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).
+  The old caption path is gone: there is no `SHARED.sub_cues`, no `active_subtitle*` and no appkit
+  `draw_subtitles`/`caption_page`; every text cue lives in `ass_source`. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
   is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
-  demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
-  store — not `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would
-  empty. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
+  demuxer never sees it, so it is fetched whole from PMS and kept in its OWN store — not
+  `ass_source`'s window of demuxer cues, which the demuxer refills and a backward seek would empty. SubRip
+  and WebVTT are charset-decoded (`sub_charset`) and converted on the fetch worker by
+  `text_ass::script_from_srt`/`_vtt` to one ASS script (the synthesized header, `Origin::Text`, then
+  the `Dialogue:` lines), which `sidecar::ass_source` hands to the same libass worker as an embedded
+  text track; a pick change re-synthesizes the header lazily there (revision bump, identity kept). A
+  script past `ass_script::WINDOW_EVENTS` lines OR `WINDOW_BYTES` is fed to libass a window at a time,
+  and a script loaded in windows is exempt from the 8 MiB whole-script bound (a 4 MiB TIS-620 file is
+  ~12 MiB once decoded to UTF-8); each window stays within it, except a single line larger than the bound, which the renderer refuses. The only thing the sidecar still
+  draws itself is the on-screen failure notice (`sidecar::notice()`, `notice_shown()`; 6 s), drawn by the
+  player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
+  the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps.
+  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. Which sidecar
+  starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
+  track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
+  playing item).
 - **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to
@@ -253,9 +329,24 @@ something.
   survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
   seek under test usually had nowhere to go (fixed 2026-07-28; see the
   `docs/agent-reference.md` testing note).
-- **Seeks are in-place** (Kodi-style): flush + `av_seek_frame` to the target,
-  then on the first post-seek keyframe `feed_stream` re-anchors the GStreamer segment
-  (`setTimeToDecode` + `sendSegmentEvent`) — no reload/decoder re-init. A transcode seek instead
+- **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
+  `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
+  `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
+  post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
+  `Segment` (webOS 4.x) is Kodi-style: pump `flush()`, then `setTimeToDecode` + `sendSegmentEvent`
+  through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+; issue #568) is
+  LG's PUBLIC `StarfishMediaAPIs::Seek(millis)` (`sink().seek`, `sf_seek_ms`): it flushes itself, so
+  the pump does NOT `flush()` and nothing may flush after it (a `flush()` is a seek to 0 and re-creates
+  the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds
+  content-time PTS (`pts_shift = 0`) and calls `Seek(max(kf_pts,0) / 1e6)` before feeding the landed
+  keyframe — on the main thread, the only Feed caller, so it cannot race a Feed. A refused Seek
+  (rv 0) drops the session to `Reload`, re-posts this seek for the pump's `reload_at` (the stuck
+  watchdog goes straight to `reload_at` in `Reload` mode, and a flushed keyframe in a non-`Segment`
+  mode anchors nothing: the private Segment offsets never run on webOS 5+), and latches
+  `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
+  a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
+  (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
+  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
   registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).
@@ -285,6 +376,37 @@ something.
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
+- **A remembered track choice is written back to PMS on the first decoded frame, never at the
+  landing.** `route::apply_plan` only PARKS it (`PlaybackSession.write_back`: installing a URL is not
+  evidence the television accepted it, and a refused direct play's rescue PUTs its own selection);
+  `pump`'s `frames > 0` branch calls `route::on_decoded_frame`, whose last step is
+  `route::send_parked_write_back`: it `take`s the value (one write per play), drops it when
+  `parked_write_stale` says so (the route changed: another URL, any transcode; or the selection on
+  screen moved), and otherwise only QUEUES one `PUT /library/parts` on the serial selection worker,
+  so the frame never waits on the server. The queue stamps each request with the slot client's
+  `(instance_gen, grant_epoch)` and the worker drops it when either moved: a profile switch re-tokens
+  the SAME slot, so without the stamp a request queued under one profile would go out under the next
+  (manual picks share the queue). A failed PUT is logged and never retried. "The selection on screen"
+  is read from the SESSION once the landing has restored the server's sidecar, not from the plan.
+  A subtitle change before the send that is not the viewer's pick (the first-frame container-name
+  re-match, FO) re-points the parked write with `route::repoint_parked_subtitle` and queues no PUT
+  of its own: a PUT of its own would move the selection under the parked write, which would then be
+  dropped, and would reach PMS without W5 and W7. That re-match is
+  `route::rematch_subtitle_with_names`, and the order of the `frames > 0` steps is load-bearing:
+  re-match FIRST (the demuxer's track names exist only once the file is open), `send_parked_write_back`
+  second, so one PUT names the remembered audio and the re-matched subtitle together. The order lives
+  in ONE function, `route::on_decoded_frame`, which the pump and the write-back tests both call, so
+  a swap there is graded (the two-step tests go red); do not re-inline the steps in `pump`.
+  `repoint_parked_subtitle` runs BEFORE the commit, because the commit changes `cur_sub_sid` under the
+  parked pair, and it asks the SAME staleness predicate the send asks (`parked_write_stale`) before it
+  touches the write: a write the send would drop (route replaced in place, an audio pick before the
+  first frame) is dropped there and logged, `repoint_parked_subtitle` returns `false`, and the re-match
+  commits with its own PUT, so the server always hears the subtitle on screen. That PUT, parked or not,
+  is W5-gated: over a Part that carries an external stream the re-match commit PUTs nothing (the
+  selection moving off a download makes PMS discard it). With nothing parked it otherwise commits with
+  its own PUT as before. It holds itself to the
+  subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
+  `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
 - **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
   transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
   the `docs/agent-reference.md` gotchas): OS

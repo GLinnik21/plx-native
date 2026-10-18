@@ -1439,6 +1439,85 @@
    "author": "Nina Paley",
    "attribution": "Nina Paley",
    "notes": "Frame at 2120 s of the film's Commons video file (CC0 on its file page), served by its stable 1280 px seek-thumbnail URL; Sita herself, centred, so a 2:3 centre crop is a portrait of her."
+  },
+  "tears-of-steel-frame-01": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/1/18/Tears_of_Steel_frame_01_2a.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_01_2a.jpg",
+   "sha256": "6afd33f29f600fb4feae27d9a1afc4073f7a52c142249b2e63422a86dd62b8c7",
+   "bytes": 5376707,
+   "kind": "still",
+   "width": 3840,
+   "height": 1600,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation / Project Mango",
+   "attribution": "Blender Foundation / Project Mango",
+   "notes": "A frame of the film, from its press kit on Commons, whose file page names Denise Rebergen and Vanja Rukavina. The source of their portraits (catalog `people`)."
+  },
+  "tears-of-steel-frame-04": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/4/44/Tears_of_Steel_frame_04_3e.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_04_3e.jpg",
+   "sha256": "04b27638165fe1e9d2c54ffe61e07eb7d51e1f064e09528ea940d32387a8e79f",
+   "bytes": 5540936,
+   "kind": "still",
+   "width": 3840,
+   "height": 1600,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation / Project Mango",
+   "attribution": "Blender Foundation / Project Mango",
+   "notes": "A frame of the film, from its press kit on Commons, whose file page names Derek de Lint, Rogier Schippers and Jody Bhe. The source of the portraits of the last two (catalog `people`)."
+  },
+  "derek-de-lint-2012": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/64/Derek-de-lint-1340646708.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Derek-de-lint-1340646708.jpg",
+   "sha256": "2a8e8e1b3b3313b120a1643862be5483942364c5aa6aabfb80b5af5df0a03790",
+   "bytes": 1841747,
+   "kind": "headshot",
+   "width": 2743,
+   "height": 4122,
+   "licence": "CC BY 3.0",
+   "author": "Jerome de Lint",
+   "attribution": "Jerome de Lint; Wikiportret",
+   "tags": [
+    "Cc-by-3.0",
+    "Cc-by-layout",
+    "License migration",
+    "License template tag",
+    "PermissionTicket"
+   ],
+   "notes": "A portrait of the actor released through Wikiportret; Commons records CC BY 3.0 with a confirmed VRTS permission ticket and no personality-rights tag."
+  },
+  "sergio-hasselbaink-2012": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/2/24/Sergio-hasselbaink.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Sergio-hasselbaink.jpg",
+   "sha256": "0f7daf0a89067c16f5a195f9c773463b01c472ff8ba57b6a4b09f158593d0725",
+   "bytes": 3260555,
+   "kind": "headshot",
+   "width": 3840,
+   "height": 2880,
+   "licence": "CC BY 3.0",
+   "author": "Roel Wijnants",
+   "attribution": "Roel Wijnants; Wikiportret",
+   "tags": [
+    "Cc-by-3.0",
+    "Cc-by-layout",
+    "License migration",
+    "License template tag",
+    "PermissionTicket"
+   ],
+   "notes": "The actor photographed on the set of Sonny Boy (2011), background edited by the photographer; released through Wikiportret. Commons records CC BY 3.0 with a confirmed VRTS permission ticket and no personality-rights tag."
+  },
+  "tears-of-steel-frame-04b": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/f/fe/Tears_of_Steel_frame_04_5h.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_04_5h.jpg",
+   "sha256": "6f7d4dd306d7c0281a49a5e94a98094ffe3c0aa36265421321f55c6c8b2b6c68",
+   "bytes": 2355760,
+   "kind": "still",
+   "width": 3840,
+   "height": 1600,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation / Project Mango",
+   "attribution": "Blender Foundation / Project Mango",
+   "notes": "A frame of the film, from its press kit on Commons, whose file page names Chris Haley. The source of his portrait (catalog `people`)."
   }
  }
 }

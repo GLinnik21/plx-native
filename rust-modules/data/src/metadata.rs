@@ -32,6 +32,31 @@ impl<'a> MetadataView<'a> {
     pub fn current(&self) -> Option<&'a Detail> {
         self.state.current.as_ref()
     }
+    /// The episodes the loaded Detail lists in its current season window, when the loaded item IS
+    /// `(sid, rk)`. The store is single-current, so the identity check keeps a covered Detail page
+    /// from naming the episodes of the one that replaced it. An episode's change moves the season's
+    /// and the show's counts and the hero's on-deck episode, none of which can be patched from a
+    /// facts row, so the page owes itself a re-read for each.
+    pub fn held_episodes(&self, sid: plx_plex::plex::ServerId, rk: &str) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(d) = self.current().filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))) else { return keys };
+        for (_, episode) in d.episodes.iter_loaded() {
+            crate::stores::push_held(&mut keys, d.sid, &episode.rk);
+        }
+        keys
+    }
+
+    /// The Related tiles and collection-member tiles the loaded Detail shows, when it IS
+    /// `(sid, rk)`. Their rows are patched from a facts row, so a read-back of them is quiet.
+    pub fn held_tiles(&self, sid: plx_plex::plex::ServerId, rk: &str) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(d) = self.current().filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))) else { return keys };
+        let members = d.collection.iter().flat_map(|c| c.members.iter());
+        for tile in d.related.iter().chain(members) {
+            crate::stores::push_held(&mut keys, tile.sid, &tile.rk);
+        }
+        keys
+    }
     pub fn now_playing(&self) -> Option<&'a NowPlaying> {
         self.state.now.as_ref()
     }
@@ -115,6 +140,10 @@ pub struct Playhead {
 /// [`MetadataAdapter`].
 #[derive(Default)]
 pub struct MetadataState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// Where in that order the detail read now out was issued ([`MetadataCmd::RequestDetail`]).
+    detail_stamp: crate::viewledger::Stamp,
     current: Option<Detail>,
     now: Option<NowPlaying>,
     playing: Option<PlayingItem>,
@@ -689,15 +718,6 @@ impl DvPresentation {
             Self::NotDv => "base-layer",
             Self::Declare(_) => "declare",
             Self::Refuse(_) => "refuse",
-        }
-    }
-
-    /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
-    pub fn display(&self) -> &'static str {
-        match self {
-            Self::NotDv => plx_platform::i18n::msg::browse_diagnostics_dv_base_layer(),
-            Self::Declare(_) => plx_platform::i18n::msg::browse_diagnostics_dv_declare(),
-            Self::Refuse(_) => plx_platform::i18n::msg::browse_diagnostics_dv_refuse(),
         }
     }
 
@@ -1551,6 +1571,14 @@ pub struct Detail {
     pub kind: String, // this item's own type: movie | episode | show | season
     pub show_title: String, // grandparentTitle — the show name, when this item is an episode
     pub show_rk: String, // grandparentRatingKey — the show's rk (episode → its show)
+    /// A SEASON's show (`parentRatingKey`), else empty. Separate from [`Detail::show_rk`], which is
+    /// the GRAND-parent key and so stays empty for a season: its readers (the resolve's language
+    /// settings, the episode-row matching in `set_watched_local`) mean "my show, via my season".
+    ///
+    /// Not serialized while empty, so the committed replay recordings (which predate it, and carry
+    /// no season page) still round-trip canonically (`record::validate`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent_rk: String,
     pub season: i64,  // parentIndex — season number, when an episode
     pub index: i64,   // index — episode number, when an episode
     pub title: String,
@@ -1807,10 +1835,11 @@ pub fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
 /// THREE things can be about the item, and all three are updated:
 /// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
 /// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
-///   show `CURRENT` holds. Its season's `viewedLeafCount` moves with it, because the season tab's
-///   tick is derived from that count ([`Season::watched`]) and a tick that disagreed with the
-///   episode row beneath it is precisely the "two surfaces describing one item two ways" this page
-///   already refuses elsewhere.
+///   show `CURRENT` holds. Its season's `viewedLeafCount` steps by one with a real flip, because the
+///   season tab's tick is derived from that count ([`Season::watched`]) and a tick that disagreed
+///   with the episode row beneath it is the "two surfaces describing one item two ways" this page
+///   refuses elsewhere. The step is a guess: the re-read the read-back asks for replaces it with
+///   the server's number.
 /// * **a tile of the RELATED shelf** — a different item entirely, which is what makes it the odd
 ///   one out: it is matched on its OWN `sid` (each row carries one, see [`Related`]) rather than on
 ///   the page's, and it is checked unconditionally rather than as one arm of a chain. Since
@@ -1823,65 +1852,137 @@ pub fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
 /// episode keeping its old `viewOffset` would still draw its resume bar and no check.
 ///
 /// The landed refresh is the truth and silently corrects any of this; see [`crate::viewstate`].
-fn set_watched_local(state: &mut MetadataState, sid: plx_plex::plex::ServerId, rk: &str, on: bool) -> bool {
-    {
-        let Some(d) = state.current.as_mut() else {
-            return false;
-        };
-        // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
-        // OTHER items, so it is neither the loaded item nor one of its episodes and must not be
-        // reached through either of their early returns below. A related tile is also the one the
-        // press most often came FROM (its context menu is why this page can mark a third item
-        // watched at all), and left out, the tile kept its old tick and bar until a refetch.
-        //
-        // Not `else`-chained with the two arms under it for a subtler reason as well: the same
-        // title can legitimately be BOTH the loaded item and a row of some other page's shelf, and
-        // a hub that lists an item alongside itself is not something this function should trust
-        // itself to rule out.
-        let mut hit = false;
-        // The collection shelf's members are other items' tiles too (the loaded item's own tile
-        // among them), so they move with the same pass.
-        let members = d.collection.iter_mut().flat_map(|c| c.members.iter_mut());
-        for m in d.related.iter_mut().chain(members) {
-            if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-                // the shared three-field flip (`watched`/`unwatched`/`resume_ms` move together, or
-                // the tile wears the progress bar it had before and shows no tick at all)
-                crate::pms::set_watched(m, on);
-                hit = true;
-            }
+fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, on: bool) -> bool {
+    let edit = crate::viewstate::ViewEdit::Watched(on);
+    let Some(d) = state.current.as_mut() else {
+        return false;
+    };
+    // The RELATED shelf first, and unconditionally — it is the one store here whose rows are
+    // OTHER items, so it is neither the loaded item nor one of its episodes and must not be
+    // reached through either of their early returns below. A related tile is also the one the
+    // press most often came FROM (its context menu is why this page can mark a third item
+    // watched at all), and left out, the tile kept its old tick and bar until a refetch.
+    //
+    // Not `else`-chained with the arms under it for a subtler reason as well: the same title can
+    // legitimately be BOTH the loaded item and a row of some other page's shelf, and a hub that
+    // lists an item alongside itself is not something this function should trust itself to rule
+    // out.
+    let mut hit = false;
+    // The collection shelf's members are other items' tiles too (the loaded item's own tile
+    // among them), so they move with the same pass.
+    let members = d.collection.iter_mut().flat_map(|c| c.members.iter_mut());
+    for m in d.related.iter_mut().chain(members) {
+        if at.covers(m) {
+            // the shared three-field flip (`watched`/`unwatched`/`resume_ms` move together, or
+            // the tile wears the progress bar it had before and shows no tick at all)
+            edit.apply(m);
+            hit = true;
         }
-        if plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)) {
-            d.watched = on;
-            d.resume_ms = 0;
-            return true;
-        }
-        // An episode is only ever a leaf of the loaded show, so it is matched on the PAGE's server —
-        // `Episode` carries no `sid` of its own precisely because it cannot come from anywhere else.
-        // Both misses below return `hit` rather than `false`: the Related pass above may already
-        // have changed this page, and reporting "nothing here was about that item" after editing a
-        // tile would be this function contradicting itself. (`viewstate` only logs the verdict, but
-        // a false negative is the kind that goes unnoticed until something starts trusting it.)
-        if d.sid != sid {
-            return hit;
-        }
-        let Some(was) = d.episodes.position(rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
-            return hit;
-        };
-        d.episodes.edit(rk, |e| {
-            e.watched = on;
-            e.resume_ms = 0;
-        });
-        if was != on {
-            let cur = d.cur_season;
-            if let Some(s) = d.seasons.get_mut(cur) {
-                // clamped to the season's own leaf count: a server that sent none leaves this 0, and
-                // `Season::watched` reads `leaf_count > 0` first, so an unknown season stays unknown
-                let step = if on { 1 } else { -1 };
-                s.viewed_leaf_count = (s.viewed_leaf_count + step).clamp(0, s.leaf_count.max(0));
-            }
-        }
-        true
     }
+    // The loaded item itself: the addressed item, or an episode the show/season scope reaches
+    // (a page opened on one episode while its show is marked from a card elsewhere).
+    let kind = match d.kind.as_str() {
+        "show" => 1,
+        "season" => 2,
+        "episode" => 3,
+        _ => 0,
+    };
+    if at.covers_parts(d.sid, &d.rk, kind, &d.show_rk, d.season) {
+        d.watched = on;
+        d.resume_ms = 0;
+        hit = true;
+    }
+    // Everything below is about the loaded SHOW's episodes, which are matched on the PAGE's server
+    // — `Episode` carries no `sid` of its own precisely because it cannot come from anywhere else.
+    // Both early returns hand back `hit` rather than `false`: the passes above may already have
+    // changed this page, and reporting "nothing here was about that item" after editing a tile
+    // would be this function contradicting itself.
+    if d.sid != at.sid {
+        return hit;
+    }
+    // A show- or season-scoped change that names THIS show reaches its episodes and the season
+    // tabs' counts as a whole: the server scrobbles every leaf, so the strip must not keep ticks
+    // the user just cleared (or lack ones they just set).
+    let whole = match &at.scope {
+        crate::viewstate::Scope::Show if at.rk == d.rk => Some(None),
+        crate::viewstate::Scope::Season { show_rk, index } if *show_rk == d.rk => Some(Some(*index)),
+        _ => None,
+    };
+    if let Some(season) = whole {
+        // A show page whose one season was just unmarked is no longer "all watched"; marking one
+        // season watched proves nothing about the others, so only the clearing direction moves it.
+        if !on {
+            d.watched = false;
+            hit = true;
+        }
+        let rks: Vec<String> = d.episodes.iter_loaded()
+            .filter(|(_, e)| season.is_none_or(|i| e.season == i))
+            .map(|(_, e)| e.rk.clone())
+            .collect();
+        for rk in &rks {
+            d.episodes.edit(rk, |e| {
+                e.watched = on;
+                e.resume_ms = 0;
+            });
+        }
+        for s in d.seasons.iter_mut().filter(|s| season.is_none_or(|i| s.index == i)) {
+            s.viewed_leaf_count = if on { s.leaf_count } else { 0 };
+        }
+        return hit || !rks.is_empty();
+    }
+    let Some(was) = d.episodes.position(&at.rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
+        return hit;
+    };
+    d.episodes.edit(&at.rk, |e| {
+        e.watched = on;
+        e.resume_ms = 0;
+    });
+    // The OPTIMISTIC layer of the season tab's count, so the tab and the hero read the press before
+    // any answer: stepped only on a real FLIP (a repeat or a replay of the same press moves
+    // nothing) and clamped to the season's own leaf count. A server that sent none leaves that 0,
+    // and `Season::watched` reads `leaf_count > 0` first, so an unknown season stays unknown. It is
+    // a guess about one season: the read-back's re-read of this page (`app::content::
+    // reconcile_details`) lands the server's number over it.
+    if was != on {
+        let cur = d.cur_season;
+        if let Some(s) = d.seasons.get_mut(cur) {
+            let step = if on { 1 } else { -1 };
+            s.viewed_leaf_count = (s.viewed_leaf_count + step).clamp(0, s.leaf_count.max(0));
+        }
+    }
+    true
+}
+
+/// The server's `Facts`/`Offset` for the Related shelf and the collection shelf's members: other
+/// items' tiles, edited in place. Only a row the edit would CHANGE counts, so a read-back that
+/// agrees with what is drawn raises no notice; the shelves keep their order and length, so nothing
+/// moves under the cursor. Returns whether any tile changed. **MAIN THREAD.**
+fn patch_tiles(state: &mut MetadataState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    let Some(d) = state.current.as_mut() else { return false };
+    let members = d.collection.iter_mut().flat_map(|c| c.members.iter_mut());
+    let mut hit = false;
+    for m in d.related.iter_mut().chain(members) {
+        if at.covers(m) && edit.changes(m) {
+            edit.apply(m);
+            hit = true;
+        }
+    }
+    hit
+}
+
+/// A stop's resume point on the LOADED item, or on the loaded show's episode, whose (server, key)
+/// is exactly the edit's. Only a value that differs counts, so a read-back that agrees raises no
+/// notice. Episodes are matched on the page's server (`Episode` carries no `sid`). **MAIN THREAD.**
+fn patch_loaded_offset(state: &mut MetadataState, at: &crate::viewstate::ViewAt, ms: i64) -> bool {
+    let Some(d) = state.current.as_mut() else { return false };
+    if plx_plex::plex::same_item((d.sid, &d.rk), (at.sid, &at.rk)) {
+        return std::mem::replace(&mut d.resume_ms, ms) != ms;
+    }
+    if d.sid != at.sid || d.episodes.position(&at.rk).and_then(|i| d.episodes.get(i)).is_none_or(|e| e.resume_ms == ms) {
+        return false;
+    }
+    d.episodes.edit(&at.rk, |e| e.resume_ms = ms);
+    true
 }
 
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
@@ -2138,7 +2239,8 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),
         show_rk: it.grandparent_rating_key.clone(),
-        season: it.parent_index,
+        parent_rk: if it.kind == "season" { it.parent_rating_key.clone() } else { String::new() },
+        season: it.parent_index.unwrap_or(0),
         index: it.index,
         title: it.title.clone(),
         year: it.year,
@@ -2498,11 +2600,10 @@ pub struct PlayingItem {
     pub dovi: Dovi,
     pub markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
-    /// The played leaf's own `UltraBlurColors` corners (tl, tr, br, bl), or `None` when the server
-    /// sent no usable envelope. What the player's panels dim WITH: GL cannot read the video plane,
-    /// so this is the one honest source of "the light under the panel" there
-    /// (`screen::Scrim::over_video`).
-    pub blur: Option<[[f32; 3]; 4]>,
+    /// The played leaf's video stream is HDR: a PQ or HLG transfer, or Dolby Vision
+    /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
+    /// keeps it true, so the HDR overlay dim also asks the route (`route::overlay_gain`).
+    pub hdr: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2524,7 +2625,7 @@ impl PlayingItem {
             dovi: Default::default(),
             markers: Vec::new(),
             chapters: Vec::new(),
-            blur: None,
+            hdr: false,
         }
     }
 }
@@ -2572,7 +2673,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
-            blur: d.has_blur.then_some(d.blur),
+            hdr: d.hdr,
         })
 }
 
@@ -2606,7 +2707,7 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
-    let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
+    let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
         .map(|it| it.grandparent_rating_key.clone())
@@ -2617,10 +2718,6 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
         .unwrap_or((0, 0, 0));
-    let blur = it
-        .as_ref()
-        .and_then(|it| it.ultra_blur_colors)
-        .and_then(|u| u.corners());
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -2636,7 +2733,7 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         dovi,
         markers,
         chapters,
-        blur,
+        hdr,
     }
 }
 
@@ -2731,7 +2828,7 @@ pub fn audio_ordinal(audio: &[Stream], i: usize) -> i32 {
 }
 
 /// The external subtitle the SERVER already has selected for this part and that this client can
-/// draw itself — the one `player::sidecar::restore_server_selection` switches on at a direct-play
+/// draw itself — the one `player::sidecar::restore_selection` switches on at a direct-play
 /// landing. ONE definition, because two readers must agree on it: the restore that turns it on,
 /// and `route::subtitle_effect_of`, which the Plex Pass audio enhancement (issue #266 I6) reads to
 /// tell an unaffected sidecar apart from an embedded subtitle a remux would drop (M4/M7). A route
@@ -3164,7 +3261,7 @@ fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
     Episode {
         rk: x.rating_key.clone(),
         index: x.index,
-        season: x.parent_index,
+        season: x.parent_index.unwrap_or(0),
         title: x.title.clone(),
         summary: x.summary.clone(),
         aired: x.originally_available_at.clone(),
@@ -3781,6 +3878,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
     match cmd {
         MetadataCmd::RequestDetail { sid, rk } => {
             let prefer = selected_season_number(state, sid, &rk);
+            state.detail_stamp = state.ledger.stamp();
             request_detail(adapter, sid, &rk, prefer);
             true
         }
@@ -3812,7 +3910,22 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             set_now_playing(state, np);
             true
         }
-        MetadataCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
+        MetadataCmd::ApplyView { at, edit } => match edit {
+            crate::viewstate::ViewEdit::Watched(on) => set_watched_local(state, &at, on),
+            // the loaded item has no deck to leave
+            crate::viewstate::ViewEdit::LeftDeck => false,
+            // The server's word reaches the other items' tiles on this page (Related, the
+            // collection shelf). The loaded item, its episodes and seasons are re-read whole by
+            // the application when the read-back lands (`app::content::reconcile_details`); only
+            // a stop's Offset (below) also lands on the item and episode itself.
+            crate::viewstate::ViewEdit::Facts { .. } => patch_tiles(state, &at, edit),
+            // A stop's position also reaches the loaded item and its episode, matched exactly:
+            // whether the server took the stop or not, the page must not wait for a read.
+            crate::viewstate::ViewEdit::Offset { ms } => {
+                let tiles = patch_tiles(state, &at, edit);
+                patch_loaded_offset(state, &at, ms) | tiles
+            }
+        },
         MetadataCmd::InstallPlaying(p) => {
             install_playing(state, p);
             true
@@ -3920,11 +4033,25 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     let mut d = d;
     if let Some(old) = state.current.as_ref() {
         carry_related_window(old, &mut d);
+        carry_episode_window(old, &mut d);
     }
     state.current = Some(d);
+    // The read describes the server from when it was requested: the edits published since are
+    // made again on the page it installed (`crate::viewledger`).
+    replay_views(state, state.detail_stamp);
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
     true
+}
+
+/// Make every watched edit published after `since` again on the loaded page, through the same
+/// [`set_watched_local`] the press itself used.
+fn replay_views(state: &mut MetadataState, since: crate::viewledger::Stamp) {
+    for (at, edit) in state.ledger.since(since) {
+        if let crate::viewstate::ViewEdit::Watched(on) = edit {
+            set_watched_local(state, &at, on);
+        }
+    }
 }
 
 /// A re-read of the page already loaded (a return from the player, a watched toggle) lands with
@@ -3955,6 +4082,21 @@ fn carry_related_window(old: &Detail, d: &mut Detail) {
     (t.positions, t.hubs, t.row) = (positions, was.hubs.clone(), was.row.clone());
     (t.offset, t.end, t.total, t.more) = (was.offset, was.end, was.total, was.more);
     d.related.extend(cards);
+}
+
+/// The EPISODE twin of [`carry_related_window`]: a long season keeps only the 60-row pages the
+/// strip reached, and a re-read of the page lands with page 0 alone, so the episode the viewer
+/// stands on (page 1 and beyond) would lose its row, and the focus its key, until that page is
+/// asked for and lands again. Held only for the same item AND the same season (same rk, same
+/// length); anything else starts at page 0 as a first load does. The rows carried are the ones last
+/// read: the watched edits published since are made again on them by [`replay_views`], a stop's
+/// position reaches them as an `Offset`, and the next slide of the strip evicts and re-reads what it
+/// no longer needs.
+fn carry_episode_window(old: &Detail, d: &mut Detail) {
+    if !plx_plex::plex::same_item((old.sid, &old.rk), (d.sid, &d.rk)) { return; }
+    let season = |x: &Detail| x.seasons.get(x.cur_season).map(|s| s.rk.clone());
+    if season(old).is_none() || season(old) != season(d) { return; }
+    d.episodes.carry_pages_from(&old.episodes);
 }
 
 // ---- "Also available": the same film on the OTHER sources ------------------------------------
@@ -4598,6 +4740,8 @@ struct SeasonResult {
     idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
     eps: Option<EpisodeList>, // None = the fetch failed or panicked — the row keeps its episodes
+    /// Where in the view-state publish order this fetch was requested ([`crate::viewledger`]).
+    stamp: crate::viewledger::Stamp,
 }
 
 /// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
@@ -4613,6 +4757,7 @@ fn land_season(
     idx: usize,
     prev: usize,
     eps: Option<EpisodeList>,
+    stamp: crate::viewledger::Stamp,
 ) {
     let mut slot = adapter.season_result.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
@@ -4623,6 +4768,7 @@ fn land_season(
             idx,
             prev,
             eps,
+            stamp,
         });
     }
 }
@@ -4663,6 +4809,8 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     if let Some(d) = state.current.as_mut() {
         d.cur_season = idx;
     }
+    // Stamped at THIS request, not at the page's install: the season may be asked for long after.
+    let stamp = state.ledger.stamp();
     let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let adapter_worker = std::sync::Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("season", move || {
@@ -4670,7 +4818,7 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
         // and otherwise season_loading() would report an in-flight fetch forever
         let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
-        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps);
+        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps, stamp);
     });
     if !spawned {
         // no worker means nothing will ever land: catch DONE up or the episode row keeps its
@@ -4708,6 +4856,8 @@ struct EpLanded {
     /// `None` = the GET failed or panicked: nothing installs, and the page is asked for again by
     /// the next [`want_episodes`].
     rows: Option<Vec<Episode>>,
+    /// Where in the view-state publish order the job that fetched this page was requested.
+    stamp: crate::viewledger::Stamp,
 }
 
 /// Record what the screen needs of the selected season's episodes and fetch the pages of it that
@@ -4751,12 +4901,13 @@ fn want_episodes(
     let worker = std::sync::Arc::clone(adapter);
     let job = want.clone();
     let season_job = season.clone();
+    let stamp = state.ledger.stamp(); // at the request, before any page of the job is read
     let spawned = plx_base::task::spawn_small("episode-pages", move || {
         for page in job {
             let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
             let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
             ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
-            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows });
+            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows, stamp });
         }
     });
     if !spawned {
@@ -4778,16 +4929,22 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     };
     let Some(d) = state.current.as_mut() else { return false };
     let mut changed = false;
+    // the oldest request among the pages installed: every edit after it is made again
+    let mut since = crate::viewledger::Stamp::MAX;
     for page in landed {
         let ours = plx_plex::plex::same_item((d.sid, &d.rk), (page.sid, &page.show))
             && d.seasons.get(d.cur_season).is_some_and(|s| s.rk == page.season);
         if let (true, Some(rows)) = (ours, page.rows) {
             d.episodes.set_page(page.page, rows);
+            since = since.min(page.stamp);
             changed = true;
         }
     }
     if let (true, Some(keep)) = (changed, keep) {
         d.episodes.evict(&keep);
+    }
+    if changed {
+        replay_views(state, since);
     }
     changed
 }
@@ -4821,6 +4978,8 @@ struct RelLanded {
     /// stands (the shelf at either edge; `pump_seek` in the detail screen for a restore).
     window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
         crate::stores::paging::RowState)>,
+    /// Where in the view-state publish order this read was requested ([`crate::viewledger`]).
+    stamp: crate::viewledger::Stamp,
 }
 
 /// One page of the tail positions `start..start+size`: the hubs' listings past their previews end
@@ -4924,6 +5083,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         rel.withdrawn = false;
         rel.out = Some((d.sid, d.rk.clone(), seen, before, seek_at));
     }
+    let stamp = state.ledger.stamp(); // at the request, before the worker reads
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     // A seek opens its window on the listing alone: the window it replaces is not an overlap to
@@ -4957,7 +5117,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         rel.inflight = false;
         rel.out = None;
         if std::mem::take(&mut rel.withdrawn) { return; }
-        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
+        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window, stamp });
     });
     if !spawned {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
@@ -4994,6 +5154,7 @@ pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), ne
     let info = crate::stores::paging::PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.push(RelLanded {
         sid: next.sid, rk: next.rk.clone(), from, window: Some((rows, info, t.hubs.clone(), t.row.clone())),
+        stamp: 0,
     });
 }
 
@@ -5007,6 +5168,7 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     };
     let Some(d) = state.current.as_mut() else { return false };
     let mut changed = false;
+    let mut since = crate::viewledger::Stamp::MAX;
     for l in landed {
         let t = &mut d.related_tail;
         if !plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)) || (t.offset, t.end) != l.from {
@@ -5017,7 +5179,11 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         t.positions = rows.iter().map(|(position, _)| *position).collect();
         d.related.extend(rows.into_iter().map(|(_, m)| std::sync::Arc::try_unwrap(m).unwrap_or_else(|m| (*m).clone())));
         (t.offset, t.end, t.total, t.more, t.hubs, t.row) = (info.offset, info.end, info.total, info.more, hubs, state);
+        since = since.min(l.stamp);
         changed = true;
+    }
+    if changed {
+        replay_views(state, since);
     }
     changed
 }
@@ -5073,6 +5239,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
             // the old list's wanted range means nothing to the new one
             adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner()).keep = None;
             d.cur_season = r.idx;
+            replay_views(state, r.stamp);
             true
         }
         None => {

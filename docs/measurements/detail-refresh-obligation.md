@@ -63,7 +63,7 @@ to that verification overlap.
 
 ## Atomic visible start follow-up (2026-09-13)
 
-Review found a second ordering hole in the first fix: `refresh_content` queued
+Review found a second ordering hole in the first fix (`refresh_content`, since replaced by `reconcile_details`, which keeps the same ordering): it queued
 `DetailRestore(Requested)` before the `AppFx::Store(RequestDetail)` that started its request. The
 dispatcher could therefore expose Requested while the addressed metadata status still described
 the previous settled request. A queued Tick or StoreChanged could consume the obligation before

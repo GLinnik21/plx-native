@@ -1,9 +1,39 @@
 //! Library operations (impl Client): sections, section items (`section_items_query`), metadata,
 //! children (`children`, `children_paged`), related (`related`) — plus the two part-level playback ops (stream selection, direct-play target).
-use super::client::{Client, QueryBuilder, StreamUrl};
+use super::client::{urlenc_str, Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::paging::{paged_path, PageReq};
 use super::params::{SectionQuery, StreamSelection};
+
+/// Largest number of guids one `find_by_guids` request carries.
+pub const GUIDS_PER_REQUEST: usize = 40;
+
+/// The Plex `type` a `find_by_guids` call filters on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GuidKind {
+    /// `type=1`
+    Movie,
+    /// `type=2`
+    Show,
+}
+
+/// One guid this server holds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuidMatch {
+    pub guid: String,
+    /// This server's own ratingKey for it.
+    pub rating_key: String,
+    pub library_section_id: Option<i64>,
+    /// The row's `UltraBlurColors` corners (`UltraBlurColors::corners`) when the server sent them.
+    pub blur: Option<[[f32; 3]; 4]>,
+}
+
+/// Why `find_by_guids` could not answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidLookupError {
+    /// The server did not answer (or answered unreadably) for at least one chunk.
+    Unanswered,
+}
 
 fn sidecar_key_allowed(key: &str) -> bool {
     let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
@@ -69,6 +99,37 @@ impl Client {
             q = q.int("type", t);
         }
         self.get_json(&q.build())
+    }
+
+    /// Which of `guids` does THIS server hold? One `GET /library/all?type=T&guid=a,b,c` per chunk
+    /// of at most [`GUIDS_PER_REQUEST`], `T` = 1 (movie) or 2 (show) from `kind`. Only `plex://`
+    /// guids are sent; anything else is skipped, never matched. A guid the server does not hold is
+    /// simply absent from the result; `Err` means a chunk could not be answered at all, which the
+    /// caller must NOT read as "absent" (docs/watchlist-plan.md §1.5).
+    ///
+    /// A guid the server holds in two libraries is reported once (the first row); the caller wants
+    /// "this server has it, under this key", not a per-library listing.
+    pub fn find_by_guids(&self, kind: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
+        let mut found: Vec<GuidMatch> = Vec::new();
+        for (paths, chunk) in guid_lookup_paths(kind, guids) {
+            let Some(mc) = self.get_json(&paths) else {
+                return Err(GuidLookupError::Unanswered);
+            };
+            for item in mc.metadata {
+                if chunk.contains(&item.guid)
+                    && !item.rating_key.is_empty()
+                    && !found.iter().any(|m| m.guid == item.guid)
+                {
+                    found.push(GuidMatch {
+                        blur: item.ultra_blur_colors.and_then(|c| c.corners()),
+                        library_section_id: (item.library_section_id != 0).then_some(item.library_section_id),
+                        guid: item.guid,
+                        rating_key: item.rating_key,
+                    });
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Sorted/filtered/paged section listing — the Library browse grid's one fetch.
@@ -288,15 +349,18 @@ impl Client {
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
     /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
-    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
-    /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
-    /// only when the user switched. Returns the HTTP status (route logs it).
+    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is sent
+    /// whenever the selection names one — `Some(0)` keeps subs OFF (suppresses a default-selected
+    /// burn) — and omitted for `None` (an audio-only write that must not move the subtitle);
+    /// `audioStreamID` only when the user switched, or when an applied remembered audio is written
+    /// back. Returns the HTTP status (route logs it).
     #[track_caller]
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
-        let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
-            .int("allParts", 1)
-            .int("subtitleStreamID", sel.subtitle_stream_id)
-            .opt_int("audioStreamID", sel.audio_stream_id);
+        let mut q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id)).int("allParts", 1);
+        if let Some(subtitle) = sel.subtitle_stream_id {
+            q = q.int("subtitleStreamID", subtitle);
+        }
+        let q = q.opt_int("audioStreamID", sel.audio_stream_id);
         self.put(&q.build())
     }
 
@@ -327,6 +391,32 @@ impl Client {
     }
 }
 
+/// The request paths `find_by_guids` issues: only `plex://` guids, de-duplicated in order, in
+/// chunks of at most [`GUIDS_PER_REQUEST`]. Each guid is percent-encoded on its own and the chunk is
+/// joined with a literal `,` — the one separator PMS splits the `guid` param on (measured,
+/// docs/watchlist-plan.md); an encoded comma inside a guid cannot occur, since ids are hex. Each
+/// entry pairs the path with the guids that chunk asked for, so a reply row is matched to a guid
+/// that was actually requested. Empty input yields no request at all.
+fn guid_lookup_paths(kind: GuidKind, guids: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut wanted: Vec<&String> = Vec::new();
+    for g in guids {
+        if g.starts_with("plex://") && g.len() > "plex://".len() && !g.contains(',') && !wanted.contains(&g) {
+            wanted.push(g);
+        }
+    }
+    let t = match kind {
+        GuidKind::Movie => 1,
+        GuidKind::Show => 2,
+    };
+    wanted
+        .chunks(GUIDS_PER_REQUEST)
+        .map(|chunk| {
+            let joined = chunk.iter().map(|g| urlenc_str(g)).collect::<Vec<_>>().join(",");
+            (format!("/library/all?type={t}&guid={joined}"), chunk.iter().map(|g| (*g).clone()).collect())
+        })
+        .collect()
+}
+
 /// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
 /// the one thing about an item a guid states outright.
 ///
@@ -343,6 +433,10 @@ fn guid_type(guid: &str) -> Option<i64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "library_guid_tests.rs"]
+mod library_guid_tests;
 
 #[cfg(test)]
 mod tests {
@@ -442,6 +536,63 @@ mod tests {
             client.sidecar_subtitle_detailed("/library/streams/1?x=1", "srt").unwrap_err(),
             "key refused (not /library/streams/<id>[.ext])"
         );
+    }
+
+    /// **The selection PUT's wire shape** (write-back, W5): `subtitleStreamID` rides the PUT only
+    /// when the selection names one — `0` is the viewer's Off and is still sent — and an
+    /// audio-only write that has no subtitle to keep omits it, so it cannot create an explicit Off.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn select_streams_sends_the_subtitle_only_when_the_selection_names_one() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        let cases: [(i64, Option<i64>, &[(&str, &str)], &[&str]); 4] = [
+            (36015, Some(55001), &[("audioStreamID", "36015"), ("subtitleStreamID", "55001")], &[]),
+            (36015, Some(0), &[("audioStreamID", "36015"), ("subtitleStreamID", "0")], &[]),
+            (36015, None, &[("audioStreamID", "36015")], &["subtitleStreamID"]),
+            (0, Some(55001), &[("subtitleStreamID", "55001")], &["audioStreamID"]),
+        ];
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let expected = cases.len();
+        let server = std::thread::spawn(move || {
+            let (mut requests, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(5));
+            while requests.len() < expected && Instant::now() < deadline {
+                let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = [0; 8192];
+                let n = socket.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..n]).into_owned();
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                requests.push(request.lines().next().unwrap_or("").to_owned());
+            }
+            requests
+        });
+        let client = Client::new(
+            crate::plex::ServerId::UNSET, "fixture",
+            crate::plex::Origin::http("127.0.0.1", port as i32), "", "cid",
+        );
+        for (audio, subtitle, _, _) in cases {
+            let status = client.select_streams(&StreamSelection { part_id: 77, audio_stream_id: audio, subtitle_stream_id: subtitle });
+            assert_eq!(status, 200);
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), cases.len(), "{requests:?}");
+        for (line, (_, _, present, absent)) in requests.iter().zip(cases) {
+            assert!(line.starts_with("PUT /library/parts/77?"), "{line}");
+            assert!(line.contains("allParts=1"), "{line}");
+            let query = line.split_once('?').unwrap().1.split_whitespace().next().unwrap();
+            for (key, value) in present {
+                assert!(query.split('&').any(|pair| pair == format!("{key}={value}")), "{key}={value} missing: {line}");
+            }
+            for key in absent {
+                assert!(!query.split('&').any(|pair| pair.starts_with(&format!("{key}="))), "{key} must be omitted: {line}");
+            }
+        }
     }
 
     #[test]

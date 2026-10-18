@@ -131,7 +131,7 @@ jobs:
       needs_stills: ${{ steps.stills.outputs.needs_stills }}
     steps:
       # The dispatched ref's own checkout, full history: the tag's commit must be asked about main.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -222,7 +222,7 @@ jobs:
     steps:
       # The dispatched ref's own checkout (no `ref:`): a tag for a release, main or a branch for a manual run. The
       # job holds `contents: read` and no secret, and its caches are those of the ref it runs on.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -248,16 +248,13 @@ jobs:
       - name: Cache the host libass stack
         # Same entry as simulators.yml's Linux job: `make site-video-sim` needs only libass, staged
         # by the same recipe, so a hit there is a hit here (the key names every input of the recipe).
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
-      - name: Cache the libass source tarballs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: vendor/libass-sources
-          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # `make site-video-sim`'s own target dir (`SITE_VIDEO_TDIR`, which `site_video.py` also expects).
           workspaces: rust-modules -> target-sim-video
@@ -268,7 +265,7 @@ jobs:
       - name: Cache the demo library's source images
         # Pinned downloads (tests/demo_library/assets.json carries every sha256): one key per manifest.
         # Only the sources are cached.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.PLXNATIVE_DEMO_CACHE }}/src
           key: demo-src-${{ hashFiles('tests/demo_library/assets.json') }}
@@ -409,7 +406,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the deliverables
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site-video-${{ github.sha }}
           path: out/deliver/
@@ -417,7 +414,7 @@ jobs:
           retention-days: 30
       - name: Upload the evidence of a failed run
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site-video-failure-${{ github.sha }}
           path: |
@@ -449,7 +446,7 @@ jobs:
       CHROME_ARGS: --no-sandbox
     steps:
       # The dispatched ref's own checkout, exactly like `render`: no `ref:`, no credential, the caches of its own ref.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -469,16 +466,13 @@ jobs:
         name: Identify the host toolchain
         run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
       - name: Cache the host libass stack
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
-      - name: Cache the libass source tarballs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: vendor/libass-sources
-          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rust-modules -> target-sim-shots
           key: site-stills
@@ -500,7 +494,7 @@ jobs:
           test -f pkg/libavformat-plx.so.63 -a -f pkg/libavcodec-plx.so.63 -a -f pkg/libavutil-plx.so.61
 
       - name: Cache the demo library's source images
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.PLXNATIVE_DEMO_CACHE }}/src
           key: demo-src-${{ hashFiles('tests/demo_library/assets.json') }}
@@ -542,7 +536,7 @@ jobs:
         run: |
           xvfb-run -a -s '-screen 0 1920x1080x24' python3 tools/site_stills.py manifest out/stills
       - name: Upload the stills
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site-stills-${{ github.sha }}
           path: out/stills/
@@ -581,14 +575,14 @@ jobs:
       # is the only way a branch can prove the adopt it carries.
       - name: Check out main (a publish)
         if: env.PUBLISH == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
           persist-credentials: true
       - name: Check out the dispatched ref (a dry run)
         if: env.PUBLISH != 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -599,13 +593,13 @@ jobs:
           packages: ffmpeg
       - name: Download the film (data)
         if: needs.render.result == 'success'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: site-video-${{ needs.decide.outputs.sha }}
           path: ${{ runner.temp }}/artifact
       - name: Download the stills (data)
         if: needs.stills.result == 'success'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: site-stills-${{ needs.decide.outputs.sha }}
           path: ${{ runner.temp }}/stills

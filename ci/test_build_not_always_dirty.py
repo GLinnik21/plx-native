@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from rust_toolchain import pinned
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST = ROOT / "rust-modules"
@@ -63,7 +64,7 @@ PACKAGE = "plxnative-modules"  # the package's name, as it appears in a package_
 # always-dirty either, or every crate above it would rebuild with it.
 PLATFORM_CRATE = "plx_platform"
 GFX_CRATE = "plx_gfx"
-NIGHTLY = os.environ.get("RUST_NIGHTLY", "nightly")
+NIGHTLY = pinned()  # the repo's one toolchain (historic name)
 
 
 # The invocation `make check`'s lab line runs (Makefile, "cargo check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features
@@ -299,7 +300,7 @@ class MarkerStillTriggersTests(unittest.TestCase):
         (crate / "Cargo.toml").write_text(STUB_MANIFEST)
         shutil.copy(RUST / "Cargo.lock", crate / "Cargo.lock")
         # Inputs the script reads but this test never edits.
-        for name in ("src", "vendor"):
+        for name in ("src", "vendor", "ci"):
             (repo / name).symlink_to(ROOT / name)
         self.repo, self.crate = repo, crate
         vcs(repo, "init", "-q", "-b", "trunk")

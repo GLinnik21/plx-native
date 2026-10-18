@@ -3,8 +3,8 @@
 //! here, never in a screen constructor or step.
 use plx_media::route::{choose, Choice, How};
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
-use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
-    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref};
+use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref,
+    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, TrailerAutoplayPref};
 use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 use std::sync::mpsc::Sender;
 
@@ -17,8 +17,10 @@ fn choose_setting(choice: Choice, reply: Sender<bool>) {
         Choice::NextEpisode(v) => choose::<NextEpisodeModePref>(v, How::settings::<NextEpisodeModePref>(reply)),
         Choice::SkipInterval(v) => choose::<SkipIntervalPref>(v, How::settings::<SkipIntervalPref>(reply)),
         Choice::DeckPress(v) => choose::<DeckPressPref>(v, How::settings::<DeckPressPref>(reply)),
+        Choice::TrailerAutoplay(v) => choose::<TrailerAutoplayPref>(v, How::settings::<TrailerAutoplayPref>(reply)),
         Choice::SubtitleSize(v) => choose::<SubtitleSizePref>(v, How::settings::<SubtitleSizePref>(reply)),
         Choice::SubtitlePosition(v) => choose::<SubtitlePositionPref>(v, How::settings::<SubtitlePositionPref>(reply)),
+        Choice::HdrOverlayBrightness(v) => choose::<HdrOverlayBrightnessPref>(v, How::settings::<HdrOverlayBrightnessPref>(reply)),
     }
 }
 
@@ -34,14 +36,14 @@ pub(super) fn execute(command: PreferenceCmd) {
             };
             // A refused spawn drops the reply sender. The screen reports its disconnected
             // receipt as retryable without claiming that an account call ran.
-            plx_base::task::spawn_small("account preferences", move || {
+            plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.load();
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
                 plx_machine::idle::invalidate();
             });
         }
         PreferenceCmd::Save { request, base, update, reply } => {
-            plx_base::task::spawn_small("account preferences", move || {
+            plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.save(&base, update);
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
                 plx_machine::idle::invalidate();

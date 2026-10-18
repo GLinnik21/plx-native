@@ -24,7 +24,7 @@
 //! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
-use crate::family::SettingsPage;
+pub use crate::family::SettingsPage;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -58,6 +58,10 @@ pub enum AppFx {
     /// Library-page semantic requests. The bridge owns navigation/player/item-menu execution.
     Library(LibraryReq),
     Search(SearchReq),
+    /// The Watchlist page's and its Sort & Filter menu's requests (plan §2.4 W45): everything the
+    /// page asks of the app that has no existing effect spelling.
+    Watchlist(crate::watchlist::page::WatchlistOut),
+    Catalog(crate::catalog::CatalogOut),
     /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
     /// loop, because the thing being asked for needs the `MainThread` token, the route or the
     /// trail (§14). Executed by `app/playback.rs`'s drain.
@@ -92,6 +96,10 @@ pub enum PreferenceCmd {
 /// app declines a menu with and the card screens' hold hint is gated by. The screens reach it
 /// here, never by naming the sibling `item_menu`.
 pub use crate::item_menu::has_actions as item_has_menu;
+/// The item menu's action vocabulary, for a screen that builds one (the Detail disc's press).
+pub use crate::item_menu::Action as ItemMenuAction;
+/// Re-exported so a screen's test host names its init through the registry.
+pub use crate::family::NoInit;
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
@@ -131,6 +139,10 @@ pub struct ItemMenuReq {
     pub act: crate::item_menu::Action,
     pub sid: plx_plex::plex::ServerId,
     pub item: Option<plx_data::pms::PmsMovie>,
+    /// The detail page's season tab the menu was opened on, as `(show_rk, season index)`
+    /// ([`ItemMenuKind::Season`]); `None` for every other entry point. It is what a Mark
+    /// watched/unwatched row scopes its write to when `item` carries no row to read the scope off.
+    pub season: Option<(String, i64)>,
     pub loaded_episode: bool,
     pub from_home: bool,
 }
@@ -157,18 +169,20 @@ pub enum PlayerReq {
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
     /// neither and is carried as `None`.
     Transport(Option<bool>),
-    /// Seek to this position in ns and resume if paused — the Chapters strip's OK.
+    /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
+    /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
     /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
-    /// a viewer who picked a chapter asked to watch it. A scrub does not: the transport's bar is
-    /// how a PAUSED film is moved, and starting it there is a behaviour nobody asked for. Holding
-    /// the pause across the seek needs three pieces of state that are the loop's and no screen's —
-    /// `App::repause_at`, `TX.resume_pend` and the bounded seek-preroll feed override that lets
-    /// the pipeline decode the landed frame without publishing a viewer Resume — which is why this
-    /// is a request rather than something `PlayerScreen` performs.
+    /// a viewer who picked a chapter asked to watch it. A pointer drag does not: its release on the
+    /// bar is how a PAUSED film is moved (a KEY scrub never commits by itself — OK or PLAY takes its
+    /// target with `SeekTo`, playing or paused), and starting it there is a behaviour nobody asked for. Holding
+    /// the pause across the seek is the media layer's: the pump opens the bounded seek-preroll feed
+    /// override when it arms the seek, decodes the landed frame without publishing a viewer
+    /// Resume, and re-pauses on the landing — which is why this is a request rather than something
+    /// `PlayerScreen` performs.
     CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
     More(plx_appkit::more_menu::Action),
@@ -238,6 +252,8 @@ pub enum HomeTab {
     Home,
     Movies,
     Shows,
+    /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
+    Watchlist,
     Search,
 }
 
@@ -297,6 +313,28 @@ impl plx_machine::machine::LogicalState for LibraryMenuArg {
     fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
 }
 
+/// **The Watchlist's Sort & Filter menu** (`screens::watchlist::menu`): an anchored surface whose
+/// whole subject is the value it edits and the pill it grows from, both decided by the press that
+/// opened it — [`LibraryMenuArg`]'s shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatchlistMenuArg {
+    /// The page entry the menu hangs off.
+    pub host: plx_machine::machine::EntryId,
+    /// The value the rows open on.
+    pub options: crate::watchlist::options::WatchlistOptionsState,
+    /// The pill's drawn rect, bit-preserving ([`LibraryMenuArg::anchor`]'s rule).
+    pub anchor: [u32; 4],
+}
+
+impl plx_machine::machine::LogicalState for WatchlistMenuArg {
+    fn write(&self, c: &mut plx_machine::machine::Canon) {
+        c.u32(self.host.0);
+        self.options.write_canon(c);
+        for value in self.anchor { c.u32(value); }
+    }
+    fn probe(&self, out: &mut String) { out.push_str("watchlist_menu_arg"); }
+}
+
 /// **What the item context menu is about**, captured at the moment it is presented and never
 /// re-resolved (`screens::item_menu`). [`LibraryMenuArg`] is the precedent: an anchored `Compact`
 /// surface whose whole subject is decided by the press that opened it.
@@ -326,6 +364,25 @@ pub struct ItemMenuArg {
     pub anchor: [u32; 4],
     pub loaded_episode: bool,
     pub from_home: bool,
+    /// The catalog title a [`ItemMenuKind::Catalog`] menu is about (a Watchlist tile with no
+    /// playable copy); `None` for every PMS kind.
+    pub catalog: Option<CatalogRef>,
+    /// What the Watchlist knew of the menu's title when it opened (captured, never re-read): the
+    /// catalog id, the membership and whether the rows say "Show". `None` when the item has no
+    /// catalog id or plex.tv could not be reached, and the Watchlist row is then omitted. Not part
+    /// of the argument's identity or canonical form: it is a fact about the title, not a second
+    /// menu.
+    pub watchlist: Option<crate::item_menu::watchlist::Face>,
+}
+
+/// **A discover-catalog title**, the subject of an [`ItemMenuKind::Catalog`] menu: identity only,
+/// captured when the menu opened. No `Debug`: the title is a household's viewing.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CatalogRef {
+    /// `plex://movie|show/<24 hex>`.
+    pub guid: String,
+    pub kind: plx_data::watchlist::model::Kind,
+    pub title: String,
 }
 
 /// Which of the three menus this is, and the data its row set is built from.
@@ -349,8 +406,14 @@ pub enum ItemMenuKind {
     /// `ep_state` that draws the still's own state line, so the tile and the menu opened on it
     /// cannot describe one episode two ways.
     Episode { mark: plx_ui::widgets::PosterMark },
-    /// The detail page's season tabs.
-    Season { mark: plx_ui::widgets::PosterMark },
+    /// The detail page's season tabs. `show_rk` is the show the page has loaded and `index` the
+    /// tab's season number (`Season::index`): together the address of the season's episodes, which
+    /// is all a season-scoped write reaches them by (`viewstate::Scope::Season`).
+    Season { mark: plx_ui::widgets::PosterMark, show_rk: String, index: i64 },
+    /// A Watchlist tile that is not playable on a reachable server (plan §1.9): no PMS item, so
+    /// `sid` is `UNSET` and `rk` empty; the subject is [`ItemMenuArg::catalog`] and `state` picks the
+    /// rows (`item_menu::hold::rows_for`).
+    Catalog { state: plx_data::watchlist::model::TileState },
 }
 
 /// **Identity, not contents.** `PmsMovie` is a wire DTO with no `PartialEq` of its own, and one
@@ -364,7 +427,9 @@ impl PartialEq for ItemMenuKind {
             (Self::Card { row: a, from_deck: da }, Self::Card { row: b, from_deck: db }) =>
                 da == db && a.sid == b.sid && a.rk == b.rk && a.kind == b.kind,
             (Self::Episode { mark: a }, Self::Episode { mark: b }) => a == b,
-            (Self::Season { mark: a }, Self::Season { mark: b }) => a == b,
+            (Self::Season { mark: a, show_rk: sa, index: ia }, Self::Season { mark: b, show_rk: sb, index: ib }) =>
+                a == b && sa == sb && ia == ib,
+            (Self::Catalog { state: a }, Self::Catalog { state: b }) => a == b,
             _ => false,
         }
     }
@@ -376,7 +441,7 @@ impl PartialEq for ItemMenuArg {
         self.sid == other.sid && self.rk == other.rk && self.kind == other.kind
             && self.host == other.host && self.focus == other.focus
             && self.anchor == other.anchor && self.loaded_episode == other.loaded_episode
-            && self.from_home == other.from_home
+            && self.from_home == other.from_home && self.catalog == other.catalog
     }
 }
 impl Eq for ItemMenuArg {}
@@ -387,12 +452,14 @@ impl plx_machine::machine::LogicalState for ItemMenuArg {
         match &self.kind {
             ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
             ItemMenuKind::Episode { mark } => { c.u32(1).u32(*mark as u32); }
-            ItemMenuKind::Season { mark } => { c.u32(2).u32(*mark as u32); }
+            ItemMenuKind::Season { mark, show_rk, index } => { c.u32(2).u32(*mark as u32).str(show_rk).u64(*index as u64); }
+            ItemMenuKind::Catalog { state } => { c.u32(3).u32(*state as u32); }
         }
         c.u32(self.host.0);
         c.option(self.focus, |c, key| { c.u32(key.entry.0).u32(key.elem); });
         for value in self.anchor { c.u32(value); }
         c.bool(self.loaded_episode).bool(self.from_home);
+        c.option(self.catalog.as_ref(), |c, r| { c.str(&r.guid); });
     }
     fn probe(&self, out: &mut String) { out.push_str("item_menu_arg"); }
 }
@@ -770,6 +837,11 @@ pub struct HomeMemory {
     pub scroll_y: f32,
     /// Stable group keys, not row ordinals: provider reorder must not transfer a viewport.
     pub row_scroll: Vec<(u32, f32)>,
+    /// The Continue Watching cards the page showed when it left, as `(element, server, rating key,
+    /// show)`, and the window offset they were read at: what lets a return to a changed row hand a
+    /// show's element to the card that replaced its episode (`HomeScreen::adopt_shows`).
+    pub cw_shows: Vec<(u32, plx_plex::plex::ServerId, String, String)>,
+    pub cw_offset: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1166,10 +1238,14 @@ pub enum AppMsg {
     DetailRestore {
         spot: plx_data::metadata::Spot,
         episode: Option<String>,
-        /// Deferred retains the obligation while covered; Requested tells the visible Detail to
-        /// synchronously start the request before publishing that phase as logical state.
-        refresh: DetailRefreshPhase,
     },
+    /// The server said something new about this Detail page's item, its season or its show (a
+    /// read-back landed, `app::content::reconcile_details`): owe it a re-read. **Obligation only** -
+    /// it records the phase and nothing else, so it never re-seats focus, never touches a pending
+    /// restore intent and never moves the scroll (`DetailRestore` does all three). `refresh` is
+    /// `Requested` (the sender admitted the request synchronously) for the page on top and
+    /// `Deferred` for a covered one; `None` is ignored.
+    DetailReconcile { refresh: DetailRefreshPhase },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
     /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.
@@ -1572,6 +1648,9 @@ pub enum AppArg {
     /// were between them doing. There is no host to NAME because the host is the top page, which
     /// the container already knows and does not replace.
     ItemMenu(ItemMenuArg),
+    /// The Watchlist page's Sort & Filter menu (`screens::watchlist::menu`), presented over the
+    /// page it edits. Everything it is about travels on the argument.
+    WatchlistMenu(WatchlistMenuArg),
     /// One of the player's panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
     /// It carries only which panel: the host is the page it is presented over, which the container
     /// already knows, and the panel's own state is the instance's.
@@ -1617,6 +1696,10 @@ pub enum AppArg {
     /// The Search screen. A PEER of Home and the Library, not a stacking page: it is reached from
     /// the strip's last pill and BACK from it returns to Home. What it OPENS stacks; it does not.
     Search,
+    /// The Watchlist page (`screens::watchlist`): a PEER of Home and Search on the strip, reached
+    /// from the bookmark mark. It carries nothing — the list is the store's, the order is the
+    /// store's sort and filter.
+    Watchlist,
     /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
     Player,
@@ -1631,12 +1714,13 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
-     ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32}},\
-     host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool}}";
+     ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
+     host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
+     WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
@@ -1657,6 +1741,8 @@ impl LogicalState for AppArg {
             // menus; 6/7 are the two Detail panels above.
             Self::AccountMenu => { c.u32(8); }
             Self::ItemMenu(arg) => { c.u32(9); arg.write(c); }
+            // 13, after the About/Bio/Collection sheets' 10-12: allocated forward.
+            Self::WatchlistMenu(arg) => { c.u32(13); arg.write(c); }
             // The seven PAGE variants keep the canon bytes `Legacy(Route)` wrote — a `0` tag and
             // then the route's own — so a recording taken before the fold and one taken after are
             // byte-comparable at every page frame. Only the SHAPE STRING moved, which is what the
@@ -1667,6 +1753,8 @@ impl LogicalState for AppArg {
             Self::Home => { c.u32(0).u32(3); }
             Self::Library => { c.u32(0).u32(6); }
             Self::Search => { c.u32(0).u32(9); }
+            // 11, after Player's 10: a page tag is a screen's identity in a recording, allocated forward.
+            Self::Watchlist => { c.u32(0).u32(11); }
             Self::Player => { c.u32(0).u32(10); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
@@ -1684,7 +1772,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
     /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Home | AppArg::Library | AppArg::Search => Chrome::TabBar,
+            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
             AppArg::Login
             | AppArg::Profiles
             | AppArg::Onboard
@@ -1695,6 +1783,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             | AppArg::LibraryMenu(_)
             | AppArg::AccountMenu
             | AppArg::ItemMenu(_)
+            | AppArg::WatchlistMenu(_)
             | AppArg::PlayerOverlay(_)
             | AppArg::AltSources(_)
             | AppArg::TracksPanel(_)
@@ -1726,6 +1815,9 @@ impl plx_ui::screen::ScreenArg for AppArg {
             // three row sets of ONE screen, and `same_instance` must never let the container think
             // it is holding two of them.
             AppArg::ItemMenu(_) => 20,
+            // 25 and 26, forward of Collection's 24: the Watchlist page and its Sort & Filter menu.
+            AppArg::Watchlist => 25,
+            AppArg::WatchlistMenu(_) => 26,
             // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
             // screen's identity in a recorded state and in `same_instance`, so they are allocated
             // forward and a fold may not renumber them. 5 and 6 are vacant (the two popover routes
@@ -1745,6 +1837,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Person { .. }) => 9,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
             AppArg::Content(ContentArg::Collection(_)) => 23,
+            // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
+            AppArg::Content(ContentArg::Catalog { .. }) => 27,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -1840,7 +1934,9 @@ where
         match arg {
             AppArg::LibraryMenu(arg) => Box::new(crate::library::menu::LibraryMenu::new(entry, arg.clone())),
             AppArg::AccountMenu => Box::new(crate::account_menu::AccountMenuScreen::new(entry)),
-            AppArg::ItemMenu(arg) => Box::new(crate::item_menu::ItemMenuScreen::new(entry, arg.clone())),
+            AppArg::ItemMenu(arg) => Box::new(
+                crate::item_menu::ItemMenuScreen::new(entry, arg.clone()).with_watchlist(arg.watchlist)),
+            AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
             AppArg::PlayerOverlay(arg) => Box::new(
                 crate::player::overlay::PlayerOverlayScreen::new_with(
                     H::session(cx), H::metadata(cx), entry, arg.kind, H::subtitle_search(cx).is_some()),
@@ -1893,10 +1989,11 @@ where
                 if let PageMemory::Collection(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            AppArg::Content(ContentArg::Catalog { hex }) => Box::new(crate::catalog::CatalogScreen::new(entry, *hex)),
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
-                entry, H::directory(cx), H::hubs(cx))),
+                entry, H::directory(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1929,6 +2026,9 @@ where
                 if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            // The list is the store's: the page mounts on "loading" and the application feeds it
+            // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
+            AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
@@ -1952,14 +2052,13 @@ where
             // match is exhaustive over pages that can really mount and there is no unreachable
             // arm left to keep honest.
             AppArg::Settings(root) => {
-                Box::new(RouteSurface::new(entry, id, Family::Settings, *root, H::hubs(cx)))
+                Box::new(RouteSurface::new(entry, id, Family::Settings, *root))
             }
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
                 id,
                 Family::FirstRunConsent,
                 SettingsPage::ConsentStage(*stage),
-                H::hubs(cx),
             )),
         }
     }
@@ -2001,6 +2100,13 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             anchor: [0; 4],
             loaded_episode: false,
             from_home: false,
+            catalog: None,
+            watchlist: None,
+        }),
+        AppArg::WatchlistMenu(WatchlistMenuArg {
+            host: EntryId(0),
+            options: crate::watchlist::options::WatchlistOptionsState::default(),
+            anchor: [0; 4],
         }),
         // The Detail page's own two panels. Presented over Home here like every other
         // non-player surface: `Screen::name` is a constant of the screen, so the word it
@@ -2027,6 +2133,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             AppArg::LibraryMenu(_)
             | AppArg::AccountMenu
             | AppArg::ItemMenu(_)
+            | AppArg::WatchlistMenu(_)
             | AppArg::AltSources(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
@@ -2043,6 +2150,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::Home
             | AppArg::Library
             | AppArg::Search
+            | AppArg::Watchlist
             | AppArg::Player
             | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")
@@ -2097,9 +2205,15 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::tracks_panel::SHAPE,
     crate::about_panel::SHAPE,
     crate::person_bio::SHAPE,
+    // Descriptive only, and already behind the shipped list (no fr, no it): never generate this
+    // from the language registry, or every added language moves SCREEN_SHAPES_PIN and forces the
+    // replay fixtures to be re-recorded.
     "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::preferences::SHAPE,
     crate::preferences::PICKER_SHAPE,
+    crate::watchlist::page::WatchlistScreen::SHAPE,
+    crate::watchlist::menu::SHAPE,
+    crate::catalog::CatalogScreen::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2213,7 +2327,35 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // About panel scroll: `AboutPanelScreen{}` gains the synopsis viewport's cursor and spring
 // (`page:usize,scroll:Spring{pos:f32,vel:f32}`, person_bio's shape); the previous pin was
 // 0x7435_d234_b769_60c2.
-const SCREEN_SHAPES_PIN: u64 = 0x6a55_c53a_d931_3acf;
+// Scrub click-to-confirm: a key scrub never commits by itself, so the player's tap-commit debounce
+// is gone and `PlayerScreen`'s shape loses `scrub.commit_at:u32`; the previous pin was
+// 0x6a55_c53a_d931_3acf. Replay fixtures need `tools/plxnative-rec rerecord`.
+// The Watchlist page and its Sort & Filter surface (W45D): `SCREEN_SHAPES` gains
+// `WatchlistScreen::SHAPE` and `watchlist::menu::SHAPE` (appended after the preferences picker).
+// The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
+// item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
+// pin covers those AppArg / menu-arg changes too; the previous pin was 0xedcd_d7d2_87ac_4e6a
+// (main's scrub click-to-confirm, above).
+// Watchlist Bump B (W6, Detail + catalog + menus; 0xdb5b_e029_dd4f_0a88 ->
+// 0x7c51_bee4_bc22_94ab, via 0xd479_d84f_2093_4143, the re-pin before landing when ARG_SHAPE and item_menu::SHAPE gained
+// the Catalog/hex fields): the Detail hero gains the bookmark disc (`ELEM_WATCHLIST`; the
+// `DetailScreen` SHAPE is unchanged, because membership and the flip spring are not hashed),
+// `ARG_SHAPE` gains `Content::Catalog{hex}` (canonical tag 4 plus the hex string),
+// `item_menu::SHAPE`'s `Action` gains `WatchlistAdd`'s trailing hex string, the item-menu Catalog
+// kind's identity is captured at open, and `SCREEN_SHAPES` gains `CatalogScreen::SHAPE`. One bump
+// for the whole of W6; the three replay fixtures were re-recorded against it. `WatchlistRemove` /
+// `GoToCatalog` stay guid-string keyed.
+// Home hero bookmark disc: `HomeScreen`'s hero control pop grows a third spring
+// (`hero_pop:{sp:[Spring;3]..}`, Play / Info / the disc; the disc's membership and flip are
+// not hashed, as on Detail). One bump; the three replay fixtures were re-recorded against it;
+// the previous pin was 0x7c51_bee4_bc22_94ab.
+// Merged tree (wl-home-hero onto the zero-tick held-surface work, 8d8098110): that re-anchored the
+// Settings and Filmography fixtures without touching any hashed shape, so the Home-hero bump is the
+// only change and the pin stands; the three fixtures were re-recorded on the merged tree.
+// Merged tree (origin/main's scrub click-to-confirm and Home-hero successor into the Watchlist
+// branch): both sides' shape changes stand; the pin below is the value the pin test reported for
+// the merged tree, and the three replay fixtures were re-recorded on it.
+const SCREEN_SHAPES_PIN: u64 = 0x07c8_d161_c006_f959;
 
 #[cfg(test)]
 mod arg_tests {
@@ -2280,7 +2422,7 @@ mod arg_tests {
     /// stated as a rule.
     #[test]
     fn the_profile_chip_is_offered_on_exactly_the_bar_wearing_pages() {
-        for r in [AppArg::Home, AppArg::Library, AppArg::Search] {
+        for r in [AppArg::Home, AppArg::Library, AppArg::Search, AppArg::Watchlist] {
             assert!((r.chrome() == Chrome::TabBar), "a bar-wearing page carries the chip");
         }
         for r in [

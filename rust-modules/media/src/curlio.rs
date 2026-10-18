@@ -206,7 +206,6 @@ const CURLOPT_WRITEDATA: c_int = 10001;
 const CURLOPT_URL: c_int = 10002;
 const CURLOPT_RANGE: c_int = 10007;
 const CURLOPT_WRITEFUNCTION: c_int = 20011;
-const CURLOPT_USERAGENT: c_int = 10018;
 const CURLOPT_LOW_SPEED_LIMIT: c_int = 19;
 const CURLOPT_LOW_SPEED_TIME: c_int = 20;
 const CURLOPT_HEADERDATA: c_int = 10029;
@@ -613,7 +612,6 @@ pub struct CurlSource {
     /// a chain, whatever a `Location` spelled for a later one. Held for the life of the attempt, as
     /// `range` is.
     hop_url: CString,
-    ua: CString,
     range: Option<CString>,
     /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
     /// of that attempt like `range`: `keypin::apply`'s contract is that the string outlives the
@@ -818,7 +816,6 @@ impl CurlSource {
         let (origin, _) = plx_plex::plex::origin::split(url);
         let resolve_entry = resolve_entry_for(&origin)?;
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
-        let ua = CString::new(plx_plex::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
         if multi.is_null() {
             return Err(OpenErr::Local);
@@ -829,7 +826,6 @@ impl CurlSource {
             easy: std::ptr::null_mut(),
             hop_url: url_c.clone(),
             url: url_c,
-            ua,
             range: None,
             key_pin: None,
             roots_path: None,
@@ -1081,11 +1077,9 @@ impl CurlSource {
                 header_cb as *const c_void,
             );
             plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERDATA, xp);
-            plx_net::net::curl_easy_setopt_ptr(
-                easy,
-                CURLOPT_USERAGENT,
-                self.ua.as_ptr() as *const c_void,
-            );
+            // The process's one name, installed at boot; none in a host test that never booted,
+            // where libcurl then sends none either.
+            plx_net::net::apply_user_agent(easy);
             if let Some(r) = &self.range {
                 plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
             }

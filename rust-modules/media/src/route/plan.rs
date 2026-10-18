@@ -4,11 +4,21 @@
 //! `QUALITY`, or calls `task::spawn*` — that is what makes [`build_stream`] safe to run on the
 //! resolve worker. Everything else in the former `route.rs` (session state, the synchronized
 //! `PlayerControl`, PMS/native I/O, the encoder/scrobble/timeline machinery) lives in
-//! [`super::decision`]. `ci/check-deps.sh`'s `wall` gate holds this file to zero
+//! [`super::decision`]. `ci/check-deps.sh`'s `wall` gate holds this file, and its child
+//! module `plan_memory.rs` (the track memory's pure helpers), to zero
 //! `Instant::now`/`SystemTime::now`/`.elapsed()`; a function that needs wall time is not pure and
 //! belongs in `decision.rs`.
 
 use plx_data::metadata::lang_matches;
+use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
+use super::track_memory::{blank_lang, match_audio, memory_subtitle, Miss, SubMode, TrackContext};
+
+// The track memory's pure helpers (the show's entry, the write-back a landing owes, the resolve's
+// `track-memory:` line), a child module so this file keeps the route plan and the ladder.
+#[path = "plan_memory.rs"]
+mod memory;
+pub(super) use memory::external_on_part;
+use memory::{consulted_memory, landed_sub_mode, memory_log, memory_subtitle_id, show_memory, write_back_of};
 use plx_plex::plex::ServerId;
 use std::sync::atomic::Ordering;
 
@@ -285,14 +295,15 @@ impl AutoOriginalCandidate {
     /// is `None` for Off and `Some(render ordinal)` for a pick; an external sidecar pick has no
     /// demuxer ordinal (`-1`), which is stored as `None` because `player::sidecar` draws it once
     /// the route is direct and `request_subtitle(-1)` never touches that renderer. A pick the
-    /// client cannot draw would need a burn, which the Original route by definition does not do:
-    /// `false`, and the caller drops the candidate.
-    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>, client_renderable: bool) -> bool {
-        if ordinal.is_some() && !client_renderable {
-            return false;
-        }
+    /// client cannot draw (an image sidecar, a pick with no ordinal and no sidecar key) is KEPT
+    /// with `None` too: the Original route never shows it client-side, and the server burns it
+    /// wherever the route is enhanced (M7's Burn). That is a deliberate mid-play behaviour, not
+    /// parity with a cold start (an image sidecar selected at cold start plays with the subtitle
+    /// off). Releasing or recovering to a route that would silently drop it is prevented by
+    /// `candidate_shows_selected_subtitle`, not here. Unlike the audio sibling this cannot fail,
+    /// so the candidate is never dropped by a subtitle pick.
+    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>) {
         self.subtitle_ordinal = ordinal.filter(|o| *o >= 0);
-        true
     }
 }
 
@@ -413,7 +424,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 }
 
 
-pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -590,6 +601,44 @@ pub(super) struct EnhancementFacts<'a> {
     pub(super) subtitle_effect: SubtitleEffect,
     /// This playback's server already refused or ignored the params once.
     pub(super) refused: bool,
+    /// The quality in force: the picker's value (what the HUD's Quality row reads) on the live
+    /// session, the resolve's own copy at resolve time. Only a quality that is NOT Original may
+    /// be blamed with [`DisabledReason::NotOriginalQuality`].
+    pub(super) quality: Quality,
+    /// Why `base` is `None` when the resolve (or a mid-play pick) is the reason; `None` for a
+    /// fixed rung, which never asks for an Original candidate.
+    pub(super) declined: Option<OriginalDeclined>,
+}
+
+/// **Why no [`AutoOriginalCandidate`] exists** — recorded where it is not built or is dropped, so
+/// the menu can say the true reason instead of blaming the quality picker. Behaviour never reads
+/// it; only [`enhancement_availability`] and the decline log line do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OriginalDeclined {
+    /// Settings > Force Direct Play is on: the server never gets to copy the video.
+    ForcedDirectPlay,
+    /// The link is a Plex relay, which never carries an Original candidate.
+    Relay,
+    /// The video cannot be copied as it is (the television cannot decode it, or the server must
+    /// convert it).
+    VideoNeedsConverting,
+    /// No file path or no measured link to build the candidate from.
+    NoSource,
+    /// A mid-play audio or subtitle pick the candidate could not follow dropped it.
+    TrackPickDropped,
+}
+
+impl OriginalDeclined {
+    /// One short word-phrase for the decline log line.
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Self::ForcedDirectPlay => "forced direct play",
+            Self::Relay => "relay link",
+            Self::VideoNeedsConverting => "video needs converting",
+            Self::NoSource => "no part or link",
+            Self::TrackPickDropped => "track pick dropped it",
+        }
+    }
 }
 
 /// What the enhancement, once offered, actually asks the server for — the one fork the menu, the
@@ -624,10 +673,20 @@ pub enum DisabledReason {
     /// the DV video regardless of a burn request and silently dropping the subtitle — neither half
     /// of the ask is honoured, so it is never sent.
     DolbyVisionSubtitle,
-    /// The live route is not Direct or Remux (a fixed quality rung, HLS, a relay…), or no Original
-    /// candidate was ever computed for it (I5's exclusion list) — the enhanced route is always an
-    /// uncapped Original.
+    /// The quality in force is not Original (a fixed rung, or Auto currently on HLS) — picking
+    /// Original is the way in. Never used while Original is the quality in force.
     NotOriginalQuality,
+    /// Settings > Force Direct Play is on, so the server cannot add the enhancement.
+    ForcedDirectPlay,
+    /// Original is picked but the route does not copy the video (the live session's
+    /// `original_is_converted`): the Quality row reads "Original · Converted" and this note says the
+    /// same fact. A burn route is also `Converted` (its picture is re-encoded) yet the Audio tab
+    /// explains its own state there (the burn note): the row states the picture fact, the tab its own.
+    ServerConverting,
+    /// Original is in force and the route copies the video, but no Original candidate exists to
+    /// decorate (a relay link, a video that had to be converted, a track pick the Original route
+    /// could not follow). The viewer cannot act on the differences, so one reason.
+    NotCopyable,
     /// This playback's server already refused or ignored the params once.
     ServerRefused,
 }
@@ -651,15 +710,32 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     if f.refused {
         return Disabled(DisabledReason::ServerRefused);
     }
-    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it
-    // (forced direct play, a fixed rung, relay, a non-Original MDE… all read the same to a viewer:
-    // "only at Original quality").
-    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
-        return Disabled(DisabledReason::NotOriginalQuality);
-    }
-    let Some(base) = f.base else {
-        return Disabled(DisabledReason::NotOriginalQuality);
+    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it.
+    // The reason is the true one: "only at Original quality" is said ONLY when the quality in
+    // force is not Original (a fixed rung, Auto on HLS) — saying it under "Quality: Original"
+    // contradicts the Quality row. A missing candidate names why it is missing.
+    let converting = f.quality == Quality::Original && !matches!(target, RouteFamily::Direct | RouteFamily::Remux);
+    let not_original = f.quality != Quality::Original;
+    let unreachable = || {
+        Disabled(match f.declined {
+            Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
+            _ if converting => DisabledReason::ServerConverting,
+            // A pick the Original route could not follow dropped the candidate; under Auto or a
+            // rung the quality in force is the honest thing to name.
+            Some(OriginalDeclined::TrackPickDropped) | None if not_original => DisabledReason::NotOriginalQuality,
+            _ => DisabledReason::NotCopyable,
+        })
     };
+    let Some(base) = f.base else {
+        return unreachable();
+    };
+    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
+        return Disabled(if converting {
+            DisabledReason::ServerConverting
+        } else {
+            DisabledReason::NotOriginalQuality
+        });
+    }
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.
     if base.dovi.base_layer_unusable() {
         return Disabled(DisabledReason::DolbyVisionUnusable);
@@ -730,7 +806,7 @@ pub(super) fn desired_audio(
 
 /// Will a subtitle be on screen for this item, and which way (issue #266 I6)? The explicit pick,
 /// or the sidecar the direct-play landing restores on its own (`metadata::server_selected_sidecar`
-/// — the same predicate `player::sidecar::restore_server_selection` switches it on with).
+/// — the same predicate `player::sidecar::restore_selection` switches it on with).
 /// `sub_pick`'s ordinal is `metadata::sub_render_ordinal`'s own: negative = external sidecar,
 /// non-negative = an embedded demuxer ordinal. Mid-play the fact is read off the session instead
 /// (`route::decision::facts`); this is the resolve-time half.
@@ -1072,6 +1148,15 @@ pub struct ResolveEnv {
     /// A retry whose selection was KNOWN (`RetryContext::selection`) carries the viewer's explicit
     /// Off as well as a positive subtitle id; a retry with nothing landed leaves this `None`.
     pub subtitle_override: Option<i64>,
+    /// The subtitle MODE the retry's selection was in ([`SubMode`]), so a re-resolve of Forced only
+    /// stays Forced only: `subtitle_override` alone is a stream id, which cannot say so. `Track`
+    /// for a fresh play, and meaningful only beside an override.
+    pub sub_mode: SubMode,
+    /// The language Forced only fell back to on the landing this resolve replaces
+    /// ([`TrackContext`]'s `forced_lang`, read at the request). A retry of Forced only (`sub_mode`
+    /// beside an override) consults no memory, so the memo that supplied the language is not in the
+    /// resolve; this seeds the new landing's context with it. Read only for such a retry.
+    pub forced_lang: String,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<plx_data::metadata::PlayingItem>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
@@ -1104,6 +1189,21 @@ pub struct ResolveEnv {
     /// `serverinfo::subscription_of(sid)` at the request — for the OFFERING of the enhancement only
     /// (I1/I8), never a flavour or profile input.
     pub pass: plx_plex::plex::serverinfo::Subscription,
+    /// **What this profile remembered on this server** (`track_memory`, the whole list for the
+    /// profile and server: a play raised off a shelf does not know its show until the item is
+    /// fetched, so the worker picks the entry by `playing.show_rk`). Captured on the main thread
+    /// like everything here, and EMPTY for a known retry: that selection is the viewer's own
+    /// pick of this playback and outranks any memory (`apply_retry`). Read only for an episode.
+    pub memory: Vec<TrackMemoryEntry>,
+    /// This resolve is a viewer's fresh play of an item, as against a retry, a rescue, an in-flight
+    /// re-resolve or a preview (W4). Only a fresh play may carry a [`Plan::write_back`]. Defaults to
+    /// `false` and is set in exactly one place, `request_env` (which `request_play_inner` builds
+    /// every environment through), so nothing can default it on.
+    pub fresh_play: bool,
+    /// Test-only account subtitle preferences `(language, mode, forced)`, standing in for the
+    /// plex.tv call a unit test cannot make.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) account_subtitles: Option<(Option<String>, i64, i64)>,
     /// Test-only replacement for the process cache. Capability is an explicit policy input in
     /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
     #[cfg(any(test, feature = "test-support"))]
@@ -1211,6 +1311,11 @@ pub struct Plan {
     /// only one half is recorded. Equal to `vcodec`/`acodec` for a direct play and for a remux.
     pub src_vcodec: String,
     pub src_acodec: String,
+    /// The SOURCE file's video frame rate (0 = unknown), whichever route carries it. Beside
+    /// `src_*` and not beside `fps`: `fps` is what the Load declares for THIS stream (direct play
+    /// and remux, whose video is the source's own elementary stream; 0 on a re-encode), while this
+    /// stays the file's, so a later rebuild of the route ([`video_copy_fps`]) can decide again.
+    pub src_fps: f64,
     pub fps: f64,
     /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
     /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
@@ -1265,6 +1370,9 @@ pub struct Plan {
     /// A measured Remote can begin on HLS and later recover. Preserve the exact no-video-encode
     /// source declaration even when this plan's immediate output is H264/AAC HLS.
     pub(super) auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None` (see [`OriginalDeclined`]); `None` while a candidate exists
+    /// and for a fixed rung, which never asks for one.
+    pub(super) original_declined: Option<OriginalDeclined>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle selected for this part or by the show preference (0 = none/off), so the
@@ -1279,6 +1387,10 @@ pub struct Plan {
     pub sub_pref_lang: Option<String>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<plx_data::metadata::PlayingItem>,
+    /// `playing` came from a FRESH `GET /library/metadata/{rk}` this resolve made, not from
+    /// `ResolveEnv::cached_item` (a detail page that may predate an earlier write). The write-back
+    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (W7).
+    pub playing_fresh: bool,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
     /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
     /// that is how it fails, on the same path as every other unresolvable plan — and the sentence
@@ -1289,6 +1401,47 @@ pub struct Plan {
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `queue`)
     pub queue: Vec<plx_plex::plex::QueueRow>,
+    /// **What a remembered choice applied here that the server does not have yet** (W1-W3): set
+    /// only on the direct-play return of a fresh play (the one route that sends no selection PUT of
+    /// its own), and only for a memory rung. `None` for a declined memory, a fall-through, a retry
+    /// and a preview. `apply_plan` parks it ([`super::decision::ParkedWriteBack`]) and the first
+    /// decoded frame sends it (W6).
+    pub write_back: Option<WriteBack>,
+    /// A remembered subtitle was chosen but this route shows none: a copy remux the app cannot draw.
+    /// Q-TOP (b) burns only on a route that already re-encodes video, so no burn rides it. The menu
+    /// will say why once C4 reads this; the log says `not shown (copy remux)`.
+    pub memory_note: bool,
+    /// **The remembered sidecar this resolve chose to draw** (C5): the stream id of THIS episode's
+    /// same-language external file that the profile's remembered external subtitle meant
+    /// ([`memory_subtitle`]). `None` for every other plan, including a remembered
+    /// embedded track and a server-selected sidecar (which the landing finds on its own). The landing restores it
+    /// exactly as it restores the server's selection (`player::sidecar::restore_selection`: the key
+    /// and codec are looked up in the playing item), on the routes where the app draws a sidecar.
+    pub memory_sidecar: Option<i64>,
+    /// Which of the three subtitle states this landing is in ([`SubMode`]): Forced only when the
+    /// profile remembered it for the show (or a retry carried it), so an audio switch re-points it.
+    pub sub_mode: SubMode,
+    /// What the audio follow and the first-frame names re-match need of the playing item (they
+    /// cannot read the store), with the re-match owed on a direct play. `None` without an item.
+    pub track_ctx: Option<TrackContext>,
+}
+
+/// What a remembered choice would write to the server (`PUT /library/parts`): an audio stream id
+/// and/or a subtitle selection. Each half exists only when its rung applied AND is what is on
+/// screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteBack {
+    pub audio: Option<i64>,
+    pub subtitle: Option<SubWrite>,
+}
+
+/// The subtitle half of a [`WriteBack`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubWrite {
+    /// Select this stream.
+    Id(i64),
+    /// `subtitleStreamID=0`: the remembered Off (or Forced only with no forced track).
+    Off,
 }
 
 
@@ -1366,6 +1519,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         .cached_item
         .clone()
         .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
+    plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
+    plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
         // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -1535,9 +1690,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         },
         None => AccountAudioLanguage::NoCredential,
     };
+    // A unit test has no plex.tv to ask, so it states the account's subtitle rule itself.
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(forced) = env.account_subtitles.clone() {
+        account_subtitles = Some(forced);
+    }
+    // **What this profile remembered for the show** (track memory, the read path): only an episode
+    // of a known show has any, and the env of a known retry carries none (`apply_retry`).
+    let memory_entry = plan.playing.as_ref().and_then(|p| show_memory(&env.memory, p));
+    let memory_sub = memory_entry.and_then(|e| e.subtitle.as_ref());
+    let audio_memory = memory_entry
+        .and_then(|e| e.audio.as_ref())
+        .map(|memo| match_audio(tracks, memo, |i| audio_is_commentary(tracks, i)));
     // every audio pick below (direct play, remux, re-encode) ranks against these same prefs
-    let audio_prefs = AudioLangPrefs { show: show_prefs.audio.as_deref(),
-        account: account_audio.language() };
+    let audio_prefs = AudioLangPrefs {
+        remembered: audio_memory.as_ref().and_then(|m| m.as_ref().ok().copied()),
+        ..AudioLangPrefs::new(show_prefs.audio.as_deref(), account_audio.language())
+    };
     // The audio the TV will DECODE, decided in two steps so the subtitle pick (which reads the
     // audio's language) sits between them:
     //   1. here: the intended track. Unless the copy is blocked (forced direct play, or a video
@@ -1603,20 +1772,42 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         .or_else(|| account_subtitles.as_ref().and_then(|(language, _, _)| language.clone()));
     // ONE subtitle decision for the three places below (MDE handshake, the Original candidate,
     // the direct-play plan), so they cannot disagree about what will be on screen.
-    let sub_pick = plan
-        .playing
-        .as_ref()
-        .and_then(|p| {
-            let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
-                language: language.as_deref(), mode: *mode, forced: *forced,
-            }).unwrap_or_default();
-            if let Some(id) = env.subtitle_override {
-                p.subs.iter().position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
-                    .and_then(|i| (id > 0).then_some((id, plx_data::metadata::sub_render_ordinal(&p.subs, i))))
-            } else {
-                pick_dp_subtitle_account(&p.subs, &show_prefs, account, &audio_lang)
-            }
-        });
+    let sub_decision = plan.playing.as_ref().map(|p| {
+        let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
+            language: language.as_deref(), mode: *mode, forced: *forced,
+        }).unwrap_or_default();
+        pick_subtitle(p, &show_prefs, account, &audio_lang, env.subtitle_override, memory_sub)
+    });
+    // The ladder's pick is an EMBEDDED track unless its ordinal is negative: a remembered sidecar
+    // (`track_memory::memory_subtitle`). A sidecar is never a `sub_pick` below (it has no container
+    // ordinal): it takes the same road as a sidecar the server selected, `sidecar_id`.
+    let ladder_pick = sub_decision.as_ref().and_then(|d| d.pick);
+    let sub_pick = ladder_pick.filter(|&(_, ord)| ord >= 0);
+    let memory_sidecar = ladder_pick.filter(|&(_, ord)| ord < 0).map(|(id, _)| id);
+    // FO: which of the three subtitle states this landing is in, and what the audio follow
+    // and the first-frame names re-match need of the item (neither can read the metadata store).
+    let consulted_memo = plan.playing.as_ref().and_then(|p| {
+        consulted_memory(p, env.subtitle_override, memory_sub)
+    });
+    plan.sub_mode = landed_sub_mode(sub_decision.as_ref(), consulted_memo, env);
+    plan.track_ctx = plan.playing.as_ref().map(|p| {
+        let mut ctx = TrackContext::of_landing(p, &audio_lang, consulted_memo);
+        if env.subtitle_override.is_some() && env.sub_mode == SubMode::ForcedOnly {
+            ctx.keep_forced_lang(&env.forced_lang);
+        }
+        ctx
+    });
+    // The ONE `track-memory:` line of this resolve. What the route did with a remembered subtitle
+    // (shown by a direct play, drawn, burned, or not shown on a copy remux) is known only once the
+    // route is, so the line is spoken once the plan's subtitle is settled (after `memory_unshown`
+    // below) or at the earlier forced-failure exit.
+    let log_memory = |not_shown: bool| {
+        if let Some(line) = memory_log(
+            audio_memory.as_ref(), tracks, memory_sub, sub_decision.as_ref(), not_shown,
+        ) {
+            crate::player::log(&line);
+        }
+    };
     if sub_pick.is_some()
         && show_prefs.subtitle.is_some()
         && !plan.playing.as_ref().is_some_and(|p| p.subs.iter().any(|s| s.selected))
@@ -1650,15 +1841,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         client.link() == Some(plx_plex::plex::probe::Location::Local),
         source_transport_kbps,
     );
-    // **A sidecar the server has selected and the app will draw itself** over a remux (the landing's
-    // `restore_server_selection`). PMS discards a DOWNLOADED subtitle the moment the part's selection
-    // moves off it (docs/pms-api.md, 2026-10-06), so the selection PUT must keep naming it; "do not
-    // burn" is the wire's `subtitles=none` alone. Not when the viewer's own Off rides this resolve
-    // (`subtitle_override`), a burn is already carried, or an embedded pick took the slot.
-    let server_sidecar_id = (env.sub_sid == 0 && env.subtitle_override.is_none() && sub_pick.is_none())
-        .then(|| plan.playing.as_ref().and_then(plx_data::metadata::server_selected_sidecar).map(|s| s.id))
+    // **A sidecar the app will draw itself** over a remux (the landing's `restore_selection`): the
+    // one the server has selected, or the one the profile's memory chose (`memory_sidecar`; the
+    // ladder consults memory only when the server selected none, so they never both exist). PMS
+    // discards a DOWNLOADED subtitle the moment the part's selection moves off it (docs/pms-api.md,
+    // 2026-10-06), so the selection PUT must keep naming it; "do not burn" is the wire's
+    // `subtitles=none` alone. Not when the viewer's own Off rides this resolve (`subtitle_override`),
+    // a burn is already carried, or an embedded pick took the slot.
+    let sidecar_id = (env.sub_sid == 0 && env.subtitle_override.is_none() && sub_pick.is_none())
+        .then(|| {
+            memory_sidecar.or_else(|| {
+                plan.playing.as_ref().and_then(plx_data::metadata::server_selected_sidecar).map(|s| s.id)
+            })
+        })
         .flatten();
-    let probe_drawn_sub_sid = if side_draws { sub_pick.map_or(0, |(id, _)| id) } else { server_sidecar_id.unwrap_or(0) };
+    // What the landing restores besides the server's own selection.
+    plan.memory_sidecar = memory_sidecar.filter(|&id| sidecar_id == Some(id));
+    let probe_drawn_sub_sid = if side_draws { sub_pick.map_or(0, |(id, _)| id) } else { sidecar_id.unwrap_or(0) };
     // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
     // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
     // be shown, a non-commentary stand-in direct-plays (the client draws the subtitle). That is a
@@ -1666,7 +1865,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // the route is known), else the encoder carries the intended track. With only a commentary to
     // stand in, the subtitle is shown by the Burn shape instead — decided below, once the route is
     // known to be the remux it replaces. A sidecar is never a `sub_pick` (it has no container
-    // ordinal), so it stays on the remux path.
+    // ordinal, remembered or server-selected), so it stays on the remux path.
     let mut stand_in_provisional = false;
     let mut commentary_only_stand_in = false;
     if audio_sel.is_none() && stand_in_retry(copy_blocked, sub_pick.is_some(), side_draws, !tracks.is_empty(), !rk.is_empty()) {
@@ -1725,8 +1924,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // force a burn. MDE and the remux probe always name `carry_audio_id`: the direct-play
         // sibling when there is one (a copy cannot carry TrueHD/DTS), else the intended track,
         // which the server converts. The play-path PUT and start.mkv use `encode_audio_id`: remux
-        // names the same; a re-encode walks the `audio_intents` ranking (the PMS selection, then
-        // show/account language, then the direct-play pick), so 720p does not copy a foreign AC3.
+        // names the same; a re-encode walks the `audio_intents` ranking (the remembered pick, then
+        // the PMS selection, then show/account language, then the direct-play pick), so 720p does
+        // not copy a foreign AC3.
         if forced { forced_server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
         else { server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
     };
@@ -1747,6 +1947,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             else { None };
         if let Some(failure) = failure {
             plan.verdict = Some(PlayVerdict::Forced(failure));
+            log_memory(false);
             return plan;
         }
     }
@@ -1809,13 +2010,27 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             audio_converted: false,
             subtitle_ordinal,
         });
+    } else if matches!(playback_quality, Quality::Auto | Quality::Original) {
+        // Record WHY Original is unreachable, so the audio-enhancement note can say the true
+        // reason; behaviour never reads this. A fixed rung is not a decline: it never asks.
+        let why = if forced {
+            OriginalDeclined::ForcedDirectPlay
+        } else if location == Some(plx_plex::plex::probe::Location::Relay) {
+            OriginalDeclined::Relay
+        } else if !(directplay || remux_candidate) {
+            OriginalDeclined::VideoNeedsConverting
+        } else {
+            OriginalDeclined::NoSource
+        };
+        plan.original_declined = Some(why);
+        crate::player::log(&format!("original: no candidate ({})", why.log_name()));
     }
     // Issue #266: the audio enhancement decorates the Original route only (I5), so it is judged
     // against the candidate captured above — its DV facts (I7), its carried track, and the family
     // it would play as. `env.sub_sid` is an already-active burn, which reads as Embedded too.
     let subtitle_effect = if env.sub_sid > 0 {
         if env.sub_drawn.is_some() { SubtitleEffect::Sidecar } else { SubtitleEffect::Embedded }
-    } else if side_draws {
+    } else if side_draws || plan.memory_sidecar.is_some() {
         SubtitleEffect::Sidecar
     } else {
         subtitle_effect_of(plan.playing.as_ref(), sub_pick)
@@ -1834,6 +2049,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 carried: $candidate.and_then(|c| c.audio.as_ref()),
                 subtitle_effect,
                 refused: false,
+                quality: env.quality,
+                declined: plan.original_declined,
             }
         };
     }
@@ -2010,7 +2227,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // — the ordinary enhanced remux drops it (M4). `enhancement_policy`'s `remux` half denies the
     // uncapped-remux flavour on exactly this route, same as it already denies direct play whenever
     // any enhancement is wanted.
-    let force_burn = matches!(route, Some(EnhancementRoute::Burn));
+    // `route` is what the enhancement WOULD take where it is offered, whether or not the viewer
+    // turned one on, so the forced re-encode is spent only when an audio param is actually asked for
+    // (`audio.any()`, the same condition `OriginalRecoveryPlan::force_burn_for` applies): with both
+    // toggles off the route stays the remux it was, rather than demoting a copy to a burn.
+    let force_burn = audio.any() && matches!(route, Some(EnhancementRoute::Burn));
     // Remembered for the fallback: a refused enhancement restores the route it decorated.
     let enhanced_from_direct = audio.any() && directplay;
     if audio.any() {
@@ -2043,16 +2264,27 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     source_transport_kbps,
                 )
         });
-    let client_draws = remux && (side_draws || carried_draw || server_sidecar_id.is_some());
+    let client_draws = remux && (side_draws || carried_draw || sidecar_id.is_some());
     // A server transcode that is not a copy (a capped or HLS re-encode) cannot leave the app to draw
     // the sidecar, and moving the selection to 0 would make PMS discard a downloaded one: it stays
     // selected and the encoder burns it (the same request a carried sidecar pick makes).
-    let reencode_burns_sidecar = server_sidecar_id.is_some() && !remux && !directplay && !rk.is_empty();
-    let burn_sub_sid = if force_burn {
+    let reencodes = reencodes_video(directplay, remux, rk);
+    let reencode_burns_sidecar = sidecar_id.is_some() && reencodes;
+    // **Q-TOP (b): a remembered subtitle is burned only on a route that already re-encodes video**
+    // (`force_burn` and `burn_for_audio` have rebound `remux` above, so they count). It never forces
+    // a re-encode for a subtitle: a copy remux the app cannot draw shows nothing and says so below.
+    // A remembered pick is the profile's choice, not a burn the session was already carrying
+    // (`env.sub_sid`), and the ladder only reports it when the server has no sidecar selected.
+    let memory_burn = memory_subtitle_id(sub_decision.as_ref()).filter(|_| env.sub_sid == 0 && reencodes);
+    let burn_sub_sid = if let Some(id) = memory_burn {
+        // First, ahead of `force_burn`: that arm names the profile-advertised id, 0 for a codec the
+        // app draws but PMS is not told about, which would drop a remembered pick it can burn.
+        id
+    } else if force_burn {
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
-    } else if let Some(id) = server_sidecar_id.filter(|_| client_draws || reencode_burns_sidecar) {
+    } else if let Some(id) = sidecar_id.filter(|_| client_draws || reencode_burns_sidecar) {
         id
     } else if client_draws && env.sub_sid == 0 {
         // The pick itself, not `subtitle_id`: that is the profile-advertised id the MDE handshake
@@ -2063,15 +2295,30 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     };
     if client_draws {
         // An embedded track: the landing tells the renderer which ordinal the reader decodes. (A
-        // sidecar is restored from the server selection by the landing itself.)
+        // sidecar is restored by the landing itself: the server's selection, or `memory_sidecar`.)
         let ordinal = if env.sub_sid == 0 { sub_pick.map(|(_, ord)| ord) } else { env.sub_drawn };
         plan.sub_render_ordinal = ordinal.filter(|ord| *ord >= 0);
     }
-    if burn_for_audio || force_burn || client_draws || reencode_burns_sidecar {
-        // The subtitle burned in IS the session's subtitle: the menu checkmark, the timeline and
-        // every later rebuild (a seek, a track pick) read it back from the plan.
+    // A burn rides the wire when the spec below names `burn_sub_sid` on a real re-encode. The id
+    // that rides is the session's subtitle: the menu checkmark, the timeline and every later
+    // rebuild (a seek, an ABR rung change, a track pick) read it back from the plan (N2: a carried
+    // `env.sub_sid` and a remembered burn used to be forgotten by the first rebuild). A copy remux
+    // is excluded: `transcode_spec` rewrites a remux contract's id to `(0, client_subtitles)`, so
+    // reporting the id there would make the first rebuild switch the burn off while the menu still
+    // named it. That route keeps main's plan; carrying a burn across a remux seek is a follow-up.
+    let burn_rides_wire = burn_sub_sid > 0 && reencodes;
+    if burn_for_audio || force_burn || client_draws || reencode_burns_sidecar || burn_rides_wire {
         plan.sub_sid = burn_sub_sid;
     }
+    // A remembered subtitle this route shows nothing of: not a direct play, the app does not draw
+    // it and no burn rides it (a copy remux, the one route Q-TOP (b) will not re-encode for it).
+    // The menu says why (C4) and the single `track-memory:` line says `not shown (copy remux)`.
+    let memory_unshown = memory_subtitle_id(sub_decision.as_ref())
+        .filter(|id| env.sub_sid == 0 && !directplay && !rk.is_empty() && plan.sub_sid != *id);
+    if memory_unshown.is_some() {
+        plan.memory_note = true;
+    }
+    log_memory(memory_unshown.is_some());
     if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
         crate::player::log("preview: refused — not a direct play");
         plan.url.clear();
@@ -2081,6 +2328,20 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
         // them (h264/hevc + the chosen audio track's codec).
         fill_direct_plan(&mut plan, client, part, &session, vcodec, acodec, audio_sel.as_ref(), dovi, dv_decision, sub_pick);
+        // The one route that sends no selection PUT of its own (the others PUT before they start),
+        // so the one where a remembered choice is something the server does not have yet (W3).
+        // The enhancement fallback's direct play below follows that route's PUT and sets nothing.
+        plan.write_back = write_back_of(env, rk, audio_memory.as_ref(), audio_sel.as_ref(), sub_decision.as_ref(), plan.playing.as_ref());
+        // Only a direct play has the demuxer's own track names (an MP4 part's PMS streams carry no
+        // `title`), and only once the file is open: the first decoded frame re-matches the
+        // remembered subtitle with them (`rematch_subtitle_with_names`). The plan's subtitle is only
+        // the placeholder for what the landing shows: `apply_plan` replaces it with the session's own
+        // once the sidecar restore is done (`decision::memory::settle_landing_selection`), because the plan
+        // names no sidecar the restore puts on screen.
+        let landed_sub = plan.sub_sid;
+        if let Some(ctx) = plan.track_ctx.as_mut() {
+            ctx.owe_rematch(consulted_memo, landed_sub);
+        }
         return plan;
     }
     if forced {
@@ -2165,6 +2426,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.contract.remux = remux;
     plan.contract.no_video_copy = no_video_copy;
+    // A remux's video is the source's own elementary stream, so the Load declares the source's rate
+    // (a 4K H.264 24p stream declared at the 60 an unknown rate keeps is presented at ~13 fps).
+    plan.fps = video_copy_fps(&plan.contract, plan.src_fps);
     // `plan.contract.ceiling` is NOT set here — it was set for every flavour up at the decision,
     // which is what the direct-play branch needed too. Spending it below is the third reader of
     // the same reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild
@@ -2172,11 +2436,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // full 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: `carry_audio_id`, which MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
-    // `encode_audio_id` (the PMS selection, else show/account language, else that sibling).
+    // `encode_audio_id` (the remembered pick, else the PMS selection, else show/account language,
+    // else that sibling).
     // Subtitle stays
     // `burn_sub_sid`: a positive id here is a burn, and Original client-renders instead. It is
     // `env.sub_sid` (an already-active burn) unless THIS route is the one that just started one
-    // (M7's Burn, forced by an embedded subtitle plus the audio enhancement).
+    // (M7's Burn, forced by an embedded subtitle plus the audio enhancement; rule 3's commentary
+    // stand-in; a remembered pick on a route that already re-encodes, Q-TOP (b)).
     put_selection(off, env.sid, plan.part_id, encode_audio, burn_sub_sid);
     if remux_probed && adaptive {
         // Probe registered start.mkv on this playback identity. HLS `/decision` reuses it;
@@ -2228,8 +2494,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             &session,
             plx_plex::plex::TranscodeOffset::Fresh,
             encode_audio,
-            // the audio enhancement was refused, not the burn rule 3 chose: keep that subtitle
-            if client_draws { 0 } else if burn_for_audio { burn_sub_sid } else { env.sub_sid },
+            // the audio enhancement was refused, not the burn rule 3 or a remembered pick chose:
+            // keep that subtitle
+            if client_draws { 0 } else if burn_for_audio || memory_burn.is_some() { burn_sub_sid } else { env.sub_sid },
             client_draws,
             plan.contract,
         );
@@ -2279,6 +2546,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     plan
 }
 
+
+/// The video frame rate the Load may declare for a route with this contract: the SOURCE's own when
+/// the server copies the video stream (a remux, so direct play's rule holds there too), 0 (unknown)
+/// when it re-encodes it (an HLS rung, `no_video_copy`, a burned subtitle) — the encoder owns that
+/// rate and nothing here knows it. The one place the rule lives: the plan, the recovery install and
+/// the retranscode landing all ask it.
+pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
+    if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
 
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
 /// them (h264/hevc + the chosen audio track's codec). If a specific track was picked (aidx >= 0),
@@ -2357,10 +2633,11 @@ fn fill_direct_plan(
     // → `None`, the param is omitted and the server shows the part default).
     let ordinal = plan.feed_audio_ordinal.unwrap_or(-1);
     plan.audio = plan_track(plan.playing.as_ref().map_or(&[][..], |p| &p.audio[..]), asid, ordinal, true);
-    // honour a subtitle the server already has selected for this part (chosen on another
-    // client, or by this app in an earlier session), else the SHOW's subtitle settings —
-    // free here, since the direct-play path renders subtitles itself. apply_plan installs it
-    // on the main thread.
+    // the subtitle `pick_subtitle` decided: this playback's own pick, what the profile remembered
+    // for the show, a subtitle the server already has selected for this part (chosen on another
+    // client, or by this app in an earlier session), else the SHOW's and the account's subtitle
+    // settings — free here, since the direct-play path renders subtitles itself. apply_plan
+    // installs it on the main thread.
     if let Some((ssid, ord)) = sub_pick {
         plan.sub_sid = ssid;
         plan.sub_render_ordinal = Some(ord);
@@ -2383,6 +2660,12 @@ pub(super) struct AudioLangPrefs<'a> {
     pub show: Option<&'a str>,
     /// The active Plex profile's `defaultAudioLanguage`, e.g. `"fr"`.
     pub account: Option<&'a str>,
+    /// The track of THIS file the profile's remembered audio pick means (`track_memory::match_audio`):
+    /// an index into the very `tracks` slice these prefs are used with, resolved once by
+    /// `build_stream`. [`audio_intents`] ranks it right after the session pick, above PMS's own
+    /// selection, so every walk over the intents — the direct-play pick, the remux and re-encode
+    /// pick, the language the subtitle rules judge — inherits it.
+    pub remembered: Option<usize>,
 }
 
 /// What happened while resolving the active profile's plex.tv audio preference. Keeping this
@@ -2446,7 +2729,7 @@ fn account_audio_language_log(
             let outcome = if picked_language {
                 "playing that track"
             } else if direct_playable_match {
-                "outranked by the PMS selection or show preference"
+                "outranked by the remembered pick, the PMS selection or show preference"
             } else if tracks.iter().any(matching_track) {
                 "a track in it exists but is not direct-playable; asking the server to convert it"
             } else {
@@ -2458,6 +2741,11 @@ fn account_audio_language_log(
 }
 
 impl<'a> AudioLangPrefs<'a> {
+    /// The Plex preferences alone, with no remembered pick.
+    pub(super) const fn new(show: Option<&'a str>, account: Option<&'a str>) -> Self {
+        AudioLangPrefs { show, account, remembered: None }
+    }
+
     /// The preferences in precedence order, the unset ones dropped.
     fn in_order(self) -> impl Iterator<Item = &'a str> {
         self.show
@@ -2475,8 +2763,10 @@ impl<'a> AudioLangPrefs<'a> {
 /// differently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioIntent<'a> {
-    /// PMS's selection (`Stream.selected` on a stream that is NOT the file's `default`). It may be
-    /// a manual pick OR PMS's automatic account-language pick; the wire cannot distinguish them.
+    /// A specific track: this playback's own pick, the profile's remembered pick
+    /// ([`AudioLangPrefs::remembered`]), or PMS's selection (`Stream.selected` on a stream that is
+    /// NOT the file's `default`). PMS's may be a manual pick OR its automatic account-language pick;
+    /// the wire cannot distinguish them.
     Selection(usize),
     /// A Plex language preference the item has a track in.
     Language(&'a str),
@@ -2495,7 +2785,9 @@ enum StandIn {
     SameKind,
 }
 
-/// Order: a PMS per-part selection > the Plex language preferences in [`AudioLangPrefs`] order (a
+/// Order: this playback's own pick (the session pick) > what the profile REMEMBERED for the show
+/// ([`AudioLangPrefs::remembered`], a deliberate pick on an earlier episode) > a PMS per-part
+/// selection > the Plex language preferences in [`AudioLangPrefs`] order (a
 /// preference with no track in it is left out) > the file's default. A path that cannot carry an
 /// entry moves on to the NEXT one — a French DTS pick with no direct-playable French sibling
 /// falls to the show's language before the file's default, not straight to the default.
@@ -2507,9 +2799,10 @@ enum StandIn {
 /// A selected stream that is ALSO the file default carries no extra intent and resolves through
 /// [`AudioIntent::FileDefault`] unless a more specific readable preference points elsewhere.
 ///
-/// A PMS selection ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
-/// takes a direct-playable sibling in its language, a re-encode encodes the track itself). A
-/// preference below it therefore never wins just because the pick is a DTS.
+/// A specific-track pick (the session's, the remembered one, or PMS's) ranks above any language
+/// preference, whatever its codec: the paths differ only in how they CARRY it (direct play takes a
+/// direct-playable sibling in its language, a re-encode encodes the track itself). A preference
+/// below it therefore never wins just because the pick is a DTS.
 fn audio_intents<'a>(
     tracks: &[plx_data::metadata::Stream], prefs: AudioLangPrefs<'a>, session_pick: i64,
 ) -> Vec<AudioIntent<'a>> {
@@ -2517,13 +2810,15 @@ fn audio_intents<'a>(
         .then(|| tracks.iter().position(|s| s.id == session_pick))
         .flatten()
         .map(AudioIntent::Selection);
+    let remembered = prefs.remembered.filter(|&i| i < tracks.len()).map(AudioIntent::Selection);
     let selection = tracks.iter().position(|s| s.selected && !s.default)
         .map(AudioIntent::Selection);
     let langs = prefs
         .in_order()
         .filter(|l| tracks.iter().any(|s| lang_matches(l, &s.lang_code)))
         .map(AudioIntent::Language);
-    session.into_iter().chain(selection).chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
+    session.into_iter().chain(remembered).chain(selection).chain(langs)
+        .chain(std::iter::once(AudioIntent::FileDefault)).collect()
 }
 
 
@@ -2648,13 +2943,12 @@ fn pick_dp_audio_eligible(
 /// way, or an untagged / `und` side (an unlabelled copy is assumed to be a copy of the same
 /// audio — [`lang_matches`] alone matches nothing on an empty tag).
 fn same_audio_language(a: &str, b: &str) -> bool {
-    let blank = |l: &str| l.trim().is_empty() || l.trim().eq_ignore_ascii_case("und");
-    blank(a) || blank(b) || lang_matches(a, b) || lang_matches(b, a)
+    blank_lang(a) || blank_lang(b) || lang_matches(a, b) || lang_matches(b, a)
 }
 
 /// Whether track `i` is a commentary: titled one AND not the only track of its language (a film
 /// whose single English track is titled "Director's Commentary" is just its audio).
-fn audio_is_commentary(tracks: &[plx_data::metadata::Stream], i: usize) -> bool {
+pub(super) fn audio_is_commentary(tracks: &[plx_data::metadata::Stream], i: usize) -> bool {
     plx_data::metadata::track_label::is_commentary(&tracks[i].title)
         && tracks.iter().enumerate().any(|(j, s)| {
             j != i
@@ -2815,6 +3109,17 @@ fn reference_default(tracks: &[plx_data::metadata::Stream], default_acodec: &str
     })
 }
 
+/// The subtitle this app can draw from a resolve's own streams: embedded, keyed, and a codec the
+/// demuxer renders. What a remembered subtitle is matched against
+/// ([`memory_subtitle`]) and what every later re-match of it (`track_memory`) matches
+/// against, so the embedded candidates cannot disagree. One memo is wider at the resolve: a
+/// remembered EXTERNAL track also carries this file's renderable sidecars
+/// (`track_memory::memory_subtitle`), which a re-match over container names never sees; a landing
+/// that shows such a sidecar is therefore left alone by the re-match
+/// (`decision::rematch_subtitle_with_names`).
+pub(super) fn drawable_embedded(s: &plx_data::metadata::Stream) -> bool {
+    !s.external && s.id > 0 && embedded_subtitle_renderable(&s.codec)
+}
 
 /// Whether the client can render this embedded subtitle codec.
 fn embedded_subtitle_renderable(codec: &str) -> bool {
@@ -2825,7 +3130,8 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 }
 
 /// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
-/// selection — returning (stream id, embedded-subtitle ordinal for the client renderer), or
+/// selection (rung 4 of [`pick_subtitle`]'s ladder: a remembered pick outranks it) — returning
+/// (stream id, embedded-subtitle ordinal for the client renderer), or
 /// None to start with subtitles off (the shipped behaviour when the server has no selection).
 ///
 /// This is the read-back half of `put_selection`: we have always written the user's pick to
@@ -2850,21 +3156,32 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     still require a server burn.
 ///   - this is the direct-play path only. A transcode start PUTs `subtitleStreamID=0` only when
 ///     the viewer chose Off or nothing is selected; a sidecar the server has selected keeps its
-///     real id (`server_sidecar_id`): the app draws it over a remux (only the decision/start wire
+///     real id (`sidecar_id`): the app draws it over a remux (only the decision/start wire
 ///     says `subtitles=none`) and the server burns it on a re-encode (`reencode_burns_sidecar`),
 ///     because PMS discards a downloaded subtitle once the selection moves off it
 ///     (`docs/pms-api.md` §8). Honouring an EMBEDDED selection on a transcode means a server-side
-///     BURN, i.e. a re-encode carrying a picture-quality cost, which is a trade to put behind the
-///     settings surface explicitly rather than to make silently at every play. Once a
-///     direct-played item DOES go to the transcoder mid-session (an unsupported DTS/TrueHD audio
-///     pick), the seeded `cur_sub_sid` rides along, so the subtitle already on screen keeps
-///     burning. The read-back is therefore ONE-WAY on that path: an item that starts as a
-///     transcode with an embedded pick still PUTs `subtitleStreamID=0`, which suppresses the burn
-///     and moves the server's selection off that track for everyone.
-///     The one cold start that DOES burn is the Burn shape's own: a subtitle to show, the intended
-///     audio one the TV cannot decode, a direct-playable commentary the only stand-in, and a route
-///     that would otherwise have been the plain remux (`burn_for_audio` in `build_stream`). A
-///     file with no stand-in at all, a fixed rung, a relay and HLS keep the unburned request.
+///     BURN, i.e. an overlay on the encode, and for a copy that would be a re-encode carrying a
+///     picture-quality cost: a trade to put behind the settings surface explicitly rather than to
+///     make silently at every play. Once a direct-played item DOES go to the transcoder
+///     mid-session (an unsupported DTS/TrueHD audio pick), the seeded `cur_sub_sid` rides along, so
+///     the subtitle already on screen keeps burning. The read-back is therefore ONE-WAY on that
+///     path: an item that starts as a transcode with an embedded PMS selection (or an account
+///     rule's pick) still PUTs `subtitleStreamID=0`, which suppresses the burn and moves the
+///     server's selection off that track for everyone, unless one of the burns below applies.
+///     A direct play is the other direction: a remembered pick it applies is written to the server
+///     once, on the landing's first decoded frame (`send_parked_write_back`, WB;
+///     `media/src/player/CLAUDE.md`).
+///     Cold starts DO burn an embedded track through `burn_sub_sid`'s arms in `build_stream`: the
+///     Burn shape's own (a subtitle to show, the intended audio one the TV cannot decode, a
+///     direct-playable commentary the only stand-in, and a route that would otherwise have been the
+///     plain remux: `burn_for_audio`), M7's forced burn (`force_burn`: the audio enhancement plus
+///     an embedded subtitle), and a REMEMBERED pick (Q-TOP (b)) on a route that already re-encodes
+///     video (`reencodes_video`: a fixed rung, a relay, HLS, a Dolby
+///     Vision base layer, a forced burn): the overlay rides an encode that runs anyway. The memory
+///     rung itself never asks for a re-encode; on a copy remux it is not shown, `Plan::memory_note`
+///     is set for the Subtitles menu to say why, and the log says `not shown (copy remux)`. (The
+///     audio enhancement is the one rule that re-encodes for an embedded subtitle, remembered or
+///     not.) A file with no stand-in at all keeps the unburned request.
 pub(super) fn pick_dp_subtitle(subs: &[plx_data::metadata::Stream]) -> Option<(i64, i32)> {
     let i = subs.iter().position(|s| s.selected && !s.external)?;
     let ord = plx_data::metadata::sub_render_ordinal(subs, i);
@@ -2876,6 +3193,17 @@ pub(super) fn pick_dp_subtitle(subs: &[plx_data::metadata::Stream]) -> Option<(i
         return None;
     }
     Some((subs[i].id, ord))
+}
+
+/// **Does this route already re-encode video?** The one definition of "a burn costs nothing more":
+/// not a direct play, not the codec-copy remux and a Part to encode. Read after `build_stream` has
+/// rebound `remux` for `force_burn` and `burn_for_audio`, it is true for every encode flavour: a
+/// fixed rung (the ceiling denies the remux), adaptive HLS, a relay, a Dolby Vision base layer
+/// (`no_video_copy`), an MDE video `transcode` veto, M7's forced burn and the commentary stand-in's
+/// burn. A server sidecar (`reencode_burns_sidecar`) and a remembered subtitle (Q-TOP (b)) are
+/// burned on exactly such a route; neither asks for a re-encode itself.
+fn reencodes_video(directplay: bool, remux: bool, rk: &str) -> bool {
+    !directplay && !remux && !rk.is_empty()
 }
 
 /// Stream id named on the MDE `/decision` handshake, or `0`.
@@ -2904,8 +3232,10 @@ fn mde_subtitle_id_of(subs: &[plx_data::metadata::Stream], pick: Option<(i64, i3
 
 
 /// Account subtitle defaults; each explicit show field overrides its inherited counterpart.
-/// PMS per-part selection always wins. Automatic picks stay embedded/client-rendered: selecting
-/// an account default never requests a subtitle burn on the transcode path.
+/// PMS per-part selection wins over both, and what the profile remembered for the show wins over
+/// that selection ([`pick_subtitle`] orders the rungs). Automatic picks stay embedded/client-rendered:
+/// selecting an account default never requests a subtitle burn on the transcode path. (Only a
+/// remembered pick burns, and only where the route re-encodes video anyway: Q-TOP (b).)
 #[derive(Clone, Copy, Default)]
 pub(super) struct SubtitleLangPrefs<'a> {
     pub language: Option<&'a str>,
@@ -2959,6 +3289,79 @@ fn pick_dp_subtitle_account(
                 && tier(&subs[i]))
             .find_map(embedded)
     })
+}
+
+/// Which rung of the subtitle ladder decided what is on screen ([`pick_subtitle`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SubPickSource {
+    /// Rung 1: this playback's own pick (a known retry).
+    Override,
+    /// Rung 3: what the profile remembered for the show (a track, Off, or Forced only).
+    Memory,
+    /// Rungs 2 and 4: what PMS has selected on the part (a sidecar the landing restores itself, or
+    /// an embedded track).
+    Server,
+    /// Rung 5: the show's own subtitle settings.
+    Show,
+    /// Rungs 6 and 7: the account's rule, and Off when it wants nothing.
+    Account,
+}
+
+/// The answer of the subtitle ladder: the track to draw (`sub_pick`'s `(stream id, ordinal)`, `None`
+/// is Off), the rung that decided it, and why a record that was consulted matched nothing. The
+/// ordinal is `sub_render_ordinal`'s: negative only for a remembered sidecar (the one pick that is
+/// no container track), which `build_stream` routes as a sidecar and never as an embedded pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SubDecision {
+    pub pick: Option<(i64, i32)>,
+    pub source: SubPickSource,
+    /// Memory was consulted and declined: no track of this file satisfied the hard constraint named.
+    pub miss: Option<Miss>,
+}
+
+/// **The subtitle ladder**, read top-down; a rung applies when its record exists and matches, and
+/// otherwise falls through to the next. Never to Off, except a remembered Off and Forced only (the
+/// forced track or nothing): those two never fall through themselves, but they are memory like a
+/// remembered track, so rungs 1 and 2 outrank all three alike.
+///   1. this playback's own pick (`override_id`, a known retry);
+///   2. a subtitle the SERVER has selected and the app draws itself
+///      (`metadata::server_selected_sidecar`): memory is not consulted, and the server's pick stands;
+///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`; a
+///      remembered sidecar picks this file's same-language sidecar, see [`memory_subtitle`]), Off, or
+///      Forced only (`track_memory::match_forced_only`, judged by the language of the audio that
+///      is PLAYING);
+///   4-7. PMS's embedded selection, the show's settings, the account's, else Off
+///      ([`pick_dp_subtitle_account`]).
+///
+/// PURE, and the one subtitle decision of a resolve: the MDE handshake, the Original candidate and
+/// the direct-play plan all read this answer.
+pub(super) fn pick_subtitle(
+    item: &plx_data::metadata::PlayingItem, prefs: &plx_plex::plex::ShowLangPrefs,
+    account: SubtitleLangPrefs<'_>, audio_lang: &str, override_id: Option<i64>, memory: Option<&SubtitleMemo>,
+) -> SubDecision {
+    let subs = &item.subs;
+    if let Some(id) = override_id {
+        let pick = subs
+            .iter()
+            .position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
+            .and_then(|i| (id > 0).then_some((id, plx_data::metadata::sub_render_ordinal(subs, i))));
+        return SubDecision { pick, source: SubPickSource::Override, miss: None };
+    }
+    let mut miss = None;
+    if let Some(memo) = consulted_memory(item, override_id, memory) {
+        match memory_subtitle(subs, memo, audio_lang) {
+            Ok(pick) => return SubDecision { pick, source: SubPickSource::Memory, miss: None },
+            Err(reason) => miss = Some(reason),
+        }
+    }
+    let source = if subs.iter().any(|s| s.selected) {
+        SubPickSource::Server
+    } else if prefs.subtitle.is_some() {
+        SubPickSource::Show
+    } else {
+        SubPickSource::Account
+    };
+    SubDecision { pick: pick_dp_subtitle_account(subs, prefs, account, audio_lang), source, miss }
 }
 
 /// Software feed formats and Dolby Vision declaration support. Forced mode bypasses device bounds
@@ -3289,6 +3692,10 @@ mod quality_ceiling_tests;
 #[cfg(test)]
 #[path = "plan_track_selection_tests.rs"]
 mod track_selection_tests;
+
+#[cfg(test)]
+#[path = "plan_track_memory_tests.rs"]
+mod track_memory_tests;
 
 #[cfg(test)]
 #[path = "plan_dolby_vision_tests.rs"]

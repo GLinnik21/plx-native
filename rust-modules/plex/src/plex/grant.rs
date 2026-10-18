@@ -105,7 +105,7 @@ static NETWORK: AtomicU64 = AtomicU64::new(1);
 /// already in flight when the person said no finds its capture stale and mints nothing back.
 static CONSENT: AtomicU64 = AtomicU64::new(1);
 /// Answers given THIS launch, under the current identity, overlaying the persisted ones
-/// (`Session::plaintext_consent`) — so a *Connect* is honoured by the retry it triggers even
+/// (`Preferences::plaintext_consent`) — so a *Connect* is honoured by the retry it triggers even
 /// before (or without) the session write landing. Cleared with the identity; never a grant.
 static ANSWERS: Mutex<Vec<Answer>> = Mutex::new(Vec::new());
 /// Refusals recorded this launch whose write has not yet been confirmed on disk — see [`record`].
@@ -707,7 +707,7 @@ impl PlaintextAsk {
     pub fn capture(account_token: &str) -> Self {
         let session = super::session::peek();
         let consent = CONSENT.load(Ordering::Acquire);
-        Self { scope: scope(), consent, choices: choices(&session.plaintext_consent, account_token) }
+        Self { scope: scope(), consent, choices: choices(&session.prefs.plaintext_consent, account_token) }
     }
 
     /// The generations this capture may mint and offer under.
@@ -1173,7 +1173,7 @@ mod tests {
             plx_base::storage_worker::drain_for_test();
         }
         let after = crate::plex::session::peek();
-        assert_eq!(after.plaintext_consent, next.plaintext_consent,
+        assert_eq!(after.prefs.plaintext_consent, next.prefs.plaintext_consent,
             "the previous account's refusal was written into the new session");
         assert_eq!(after.account_token, "new-acct");
         reset_for_test();

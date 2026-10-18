@@ -276,8 +276,9 @@ predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym i
 build's configured upload trigger (`crate::labcfg::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
-out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, a webOS-only SDL
-symbol, and a host test that reaches it fails at `ld` rather than at an assertion.
+out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
+whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
+host's SDL rather than the press.
 
 **The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'
@@ -291,6 +292,21 @@ physical key: without it, a held unsupported key's auto-repeats would each arriv
 The D-pad cursor gate is already narrower than `is_bound` — it takes the four plain direction syms
 and nothing else. And the caller's `last_input` stamp is a local, read only by arms that run in the
 same loop iteration, so an unbound press cannot carry it anywhere.
+
+**OK under a transparent pointer is a click, and is turned back into OK.** Where LG's
+`SDL_webOSCursorVisibility` is missing (webOS 3.9.3's SDL 2.0.4), the D-pad gate hides the pointer by
+swapping in a transparent cursor. The system still thinks its pointer is up, so the Magic Remote's
+OK arrives as a pointer click at the invisible pointer's position, not as an OK key: arrow to a
+control, press OK, and the click lands on whatever is under the hidden pointer (in the player, the
+picture, which toggles pause). `app/input.rs::click_is_ok` names the case: D-pad mode on a
+transparent-cursor set, and either less than `DPAD_MOTION_GATE` of pointer travel since the last
+arrow press or a click that lands on no control. The loop then pushes an OK key-down for the button-down and an OK key-up for its
+button-up. It is not keyed on the pointer being hidden: pressing OK jiggles the remote, any motion
+shows the pointer again, and a version keyed on "hidden" never fired on the set. Nor on travel
+alone: travel is summed since the last arrow press, so a hand holding the remote drifts past any
+gate (159–600 px measured between arrowing to a disc and pressing OK), and over full-screen video
+the player never leaves D-pad mode. A click that lands on a control after real travel is still
+that control's, so pointing at a button and clicking it keeps working.
 
 **The one place it deliberately over-approximates.** The digits count as bound *everywhere*, because
 the who's-watching PIN keypad types from them, so a number press on Home or during playback still

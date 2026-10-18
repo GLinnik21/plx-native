@@ -1,0 +1,8 @@
+# count: 5
+# The files allowed to hold a hand-written list of several UI languages, one `path<TAB>reason` line each (ci/check-language-lists.py).
+# Every other "each language" loop reads `plx_platform::i18n::SHIPPED`. An entry here is a PINNED, reviewed table: it iterates its own rows, a new language may add a row and is never forced to, and it must not fall back with `_ =>`. The gate compares this list to the tree as an exact set.
+rust-modules/appkit/src/track_menu.rs	ICU decimal plus unit per language and region (a reviewed spot check)
+rust-modules/data/src/browse/mod.rs	reviewed per-language browse wording
+rust-modules/data/src/metadata_credits_tests.rs	reviewed per-language credit wording
+rust-modules/screens/src/login_text_fit_tests.rs	reviewed per-language sign-in wording
+rust-modules/screens/src/settings_language_tests.rs	the persisted Settings row identity of each language a release has shipped

@@ -11,6 +11,8 @@
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
 #   tv-session.sh sound off|on|status
 #                                mute/unmute the TELEVISION, independent of the panel (see below)
+#   tv-session.sh background [APPID]|foreground|fg
+#                                send the app to the background / bring it back (see below)
 #   tv-session.sh wan off [TTL]|on|status
 #                                cut the TELEVISION's route to the internet, LAN intact (see below)
 #   tv-session.sh down           hand the TV back: strip automation, close the app (no relaunch)
@@ -56,6 +58,19 @@
 #   --arm NAME[=VAL]  also arm trigger plxnative-NAME (repeatable), written with the screen's own
 #                     triggers BEFORE the launch, which is the only time a boot trigger is read.
 #                     For a scene's extras, e.g. `--arm menu=1 --arm submenuosc=900 --arm framedrop=25`
+#   --mock-plextv=PORT
+#                     sign the TV in through tests/mock_pms.py's own plex.tv (the mock must be
+#                     serving on THIS host at PORT, started with `--host 0.0.0.0 --advertise-ip
+#                     <this host's LAN IPv4> --authorize-after 2`, so its resources row names a
+#                     LAN address the set can reach). Debug install only. Arms
+#                     `plxnative-plextv=http://127.0.0.1:PORT` and opens the reverse ssh tunnel
+#                     that makes that loopback address real ON THE DEVICE (the trigger accepts only
+#                     loopback, deliberately). Implies --no-token; pair it with `--screen login`:
+#                     the QR sign-in authorizes itself on the 2nd poll and the mock's server arrives
+#                     OWNED, so the owned-only rules (server updates) run unmodified. Refuses
+#                     --guest/--owner, any screen but login, --server, --keep, and a mock whose
+#                     identity is not the synthetic one. The
+#                     tunnel lives in `.tv-plextv.pid`; `down` (and the next `up`) closes it.
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
 # SCREEN OFF is a panel state, not an app state. `luna://com.webos.service.tvpower/power/
@@ -186,6 +201,9 @@ STREAM_PID_FILE="$REPO/.tv-stream.pid"
 # for is the one failure mode here that is silent AND outward-facing.
 DPAD_PID_FILE="$REPO/.tv-dpad.pid"
 TUNNEL_PID_FILE="$REPO/.tv-tunnel.pid"
+# --mock-plextv's reverse ssh tunnel (device 127.0.0.1:PORT -> this host's mock). Not outward-facing,
+# but it is a long-lived process holding a port on the set, so `down` closes it like the rest.
+PLEXTV_PID_FILE="$REPO/.tv-plextv.pid"
 REMOTE_URL_FILE="$REPO/.tv-remote-url"
 DPAD_PASS_FILE="$REPO/.tv-dpad-pass"
 
@@ -197,7 +215,7 @@ DPAD_PASS_FILE="$REPO/.tv-dpad-pass"
 # `venc: N frm ...`), the TS goes to the dead socket, and the new streamer sees ZERO bytes while
 # every log line says the pipeline is healthy. So this runs BEFORE the relaunch, not after.
 stop_viewers() {
-  for f in "$TUNNEL_PID_FILE" "$DPAD_PID_FILE" "$STREAM_PID_FILE"; do
+  for f in "$PLEXTV_PID_FILE" "$TUNNEL_PID_FILE" "$DPAD_PID_FILE" "$STREAM_PID_FILE"; do
     [ -f "$f" ] && { kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; }
   done
   pkill -f 'stream-screen.py --port' 2>/dev/null
@@ -662,10 +680,36 @@ await_direct_screen() {
   return 1
 }
 
+# `up --mock-plextv=PORT`: prove the host side is tests/mock_pms.py (its synthetic identity, the
+# same two answers tools/mock-guest.py demands) and then open the reverse tunnel that makes
+# 127.0.0.1:PORT on the DEVICE reach it. The host-side check is what refuses a real server on that
+# port; the device-side probe only proves the tunnel carries.
+open_mock_plextv() {
+  local port="$1" ident user
+  ident=$(curl -s -m 5 -H 'Accept: application/json' "http://127.0.0.1:$port/identity" 2>/dev/null)
+  user=$(curl -s -m 5 -H 'Accept: application/json' "http://127.0.0.1:$port/api/v2/user" 2>/dev/null)
+  case "$ident" in *1.41.0.0000-synthetic*) ;; *) bad "nothing synthetic answers on 127.0.0.1:$port — start tests/mock_pms.py first"; return 1 ;; esac
+  case "$user" in *'"demo-user"'*) ;; *) bad "127.0.0.1:$port is not the mock's plex.tv"; return 1 ;; esac
+  [ -f "$PLEXTV_PID_FILE" ] && { kill "$(cat "$PLEXTV_PID_FILE")" 2>/dev/null; rm -f "$PLEXTV_PID_FILE"; }
+  (nohup env PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh -N -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 -R "$port:127.0.0.1:$port" tv \
+      > /dev/null 2>&1 </dev/null & echo $! > "$PLEXTV_PID_FILE") ; disown 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if tv "curl -s -m 3 http://127.0.0.1:$port/identity" 2>/dev/null | grep -q 1.41.0.0000-synthetic; then
+      ok "mock plex.tv reachable on the device at 127.0.0.1:$port (reverse tunnel, pid file .tv-plextv.pid)"
+      return 0
+    fi
+  done
+  bad "the reverse tunnel did not come up (the device cannot reach the mock on 127.0.0.1:$port)"
+  return 1
+}
+
 # ------------------------------------------------------------ commands -------
 cmd_up() {
   local screen=home guest=0 mock=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
-  local direct_kind="" direct_rk="" direct_marker="" extra_arm=()
+  local direct_kind="" direct_rk="" direct_marker="" extra_arm=() mock_plextv=""
   local identity_desc="" push_guest=0 push_owner=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -684,6 +728,7 @@ cmd_up() {
       --remote=*) remote="${1#*=}"; shift ;;
       --no-token) no_token=1; shift ;;
       --keep) keep=1; shift ;;
+      --mock-plextv=*) mock_plextv="${1#*=}"; shift ;;
       --arm) [ $# -ge 2 ] || { bad "--arm needs NAME[=VALUE]"; exit 2; }
              extra_arm+=("$2"); shift 2 ;;
       --arm=*) extra_arm+=("${1#*=}"); shift ;;
@@ -702,6 +747,22 @@ cmd_up() {
   if [ "$guest" = 1 ] && [ "$no_token" = 1 ]; then
     echo "--guest and --no-token are mutually exclusive: --no-token boots the stored session (or the who's-watching picker), which is a THIRD identity, distinct from both --guest and --owner" >&2
     exit 2
+  fi
+  if [ -n "$mock_plextv" ]; then
+    case "$mock_plextv" in ''|*[!0-9]*) bad "--mock-plextv=PORT needs a port number"; exit 2 ;; esac
+    if [ "$guest" = 1 ] || [ "$owner" = 1 ]; then
+      bad "--mock-plextv signs in through the mock's plex.tv; it cannot be combined with --guest or --owner"; exit 2
+    fi
+    if [ "$FLAVOR" != debug ]; then bad "--mock-plextv requires the debug install"; exit 2; fi
+    # The mock identity is pinned only by the QR sign-in on a boot with no stored session. Any
+    # other screen, --server (stored roster) or --keep (triggers left by an earlier boot) would
+    # reach the owner's stored session beside a mock plex.tv, so each is refused, not dropped.
+    if [ "$screen" != login ]; then bad "--mock-plextv requires --screen login (the mock sign-in is the only boot it pins)"; exit 2; fi
+    if [ "$server_set" = 1 ]; then bad "--mock-plextv cannot be combined with --server (that boots the stored roster)"; exit 2; fi
+    if [ "$keep" = 1 ]; then bad "--mock-plextv cannot be combined with --keep (leftover triggers could select another identity)"; exit 2; fi
+    no_token=1
+    extra_arm+=("plextv=http://127.0.0.1:$mock_plextv")
+    extra_arm+=("discover=http://127.0.0.1:$mock_plextv")
   fi
   configure_direct_screen || exit 2
   # --remote is --stream plus a front door: there is nothing to publish without a stream, so it
@@ -845,6 +906,8 @@ cmd_up() {
   elif [ "$push_owner" = 1 ]; then
     push_token || info "continuing without a token — expect the QR sign-in screen"
   fi
+
+  if [ -n "$mock_plextv" ]; then open_mock_plextv "$mock_plextv" || exit 1; fi
 
   PREV_PIDS=$(app_pids)
   relaunch
@@ -1173,6 +1236,51 @@ cmd_screen() {
   fi
 }
 
+# Send the app to the BACKGROUND and bring it back: the lifecycle edges (SDL WILL/DID enter
+# background `0x103`/`0x104`, WILL/DID enter foreground `0x105`/`0x106`) as the OS delivers them.
+# On this webOS 4.5 set the LG launcher/Home/Settings are OVERLAYS and deliver NO edge (see the
+# skill), so `background` launches a real full-screen app through the application manager instead
+# (default `org.webosbrew.hbchannel`, override with an argument or PLX_BG_APP) and asserts it is now
+# the foreground app. `foreground` launches THIS flavour's own id again -- the same call `up` makes,
+# but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
+# a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
+# changed and nothing is injected; `fg` only reads the foreground app (read-only, advisory lock).
+fg_app() {
+  tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
+    | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
+}
+launch_app() {  # $1 = app id. -i keeps the subscriber open for the launch to take (see relaunch).
+  tv "luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$1\"}' >/dev/null 2>&1 & \
+      LP=\$!; sleep 5; kill \$LP 2>/dev/null" >/dev/null 2>&1
+}
+cmd_lifecycle() {
+  local what="${1:-}" target pid before after
+  case "$what" in
+    fg) advise_lock "tv-session fg"; ensure_awake || exit 1; info "foreground app: $(fg_app)"; return 0 ;;
+    background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
+    foreground) target="$APPID" ;;
+    *) echo "usage: tv-session.sh background [APPID] | foreground | fg" >&2; exit 2 ;;
+  esac
+  require_lock "tv-session $what"
+  ensure_awake || exit 1
+  pid=$(app_pids)
+  [ -n "$pid" ] || { bad "$APPID is not running; nothing to $what"; return 1; }
+  before=$(fg_app)
+  if [ "$what" = background ] && [ "$before" != "$APPID" ]; then
+    bad "$APPID is not the foreground app ($before); refusing to launch over someone else's screen"; return 1
+  fi
+  info "foreground before: $before; launching $target (pid $pid)"
+  launch_app "$target"
+  after=$(fg_app)
+  if [ "$after" != "$target" ]; then
+    bad "foreground is '$after', not $target: the launch did not take"; return 1
+  fi
+  if [ "$(app_pids)" != "$pid" ]; then
+    bad "app pid changed ($pid -> $(app_pids)): the app died or restarted instead of $what"; return 1
+  fi
+  ok "$what: $target is the foreground app; $APPID still pid $pid"
+}
+
 # Mute/unmute the TELEVISION's own audio (see SOUND in the header), or just read the flag back.
 # `off`/`on` call setMuted and then RE-READ getVolume to confirm rather than trusting setMuted's
 # own returnValue -- the same discipline ensure_binary already uses for a deploy; `status` only
@@ -1342,6 +1450,7 @@ case "${1:-}" in
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
   sound)  shift; cmd_sound "$@" ;;
+  background|foreground|fg) cmd_lifecycle "$@" ;;
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;

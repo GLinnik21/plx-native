@@ -317,6 +317,11 @@ impl<'a> PersonView<'a> {
 /// Main-thread logical state for one Person owner. Generation, retry ladders and the dev-seed
 /// latch move with the model instead of selecting process state.
 pub struct PersonState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// Where in that order each filmography read now out (by mailbox slot) was issued; its landing
+    /// is made again with every edit published since.
+    stamps: std::collections::BTreeMap<usize, crate::viewledger::Stamp>,
     current: Option<Person>,
     generation: u32,
     /// The content counter [`PersonView::revision`] reads.
@@ -332,6 +337,8 @@ pub struct PersonState {
 impl Default for PersonState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
+            stamps: Default::default(),
             current: None,
             generation: 0,
             revision: 0,
@@ -856,8 +863,8 @@ fn resettle(p: &mut Person) {
     p.landed = p.srcs.iter().any(Src::has_content) || p.srcs.iter().all(Src::settled);
 }
 
-/// Flip `(sid, rk)`'s watched state on this person's shelves — the optimistic half of a view-state
-/// write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
+/// Apply a view-state change to the rows of this person's shelves it covers — the optimistic half of
+/// a view-state write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
 /// HOME hubs alone, so a film marked watched from a filmography tile's context menu kept its old
 /// mark until a refetch.
 ///
@@ -866,7 +873,9 @@ fn resettle(p: &mut Person) {
 /// undone by the next landing.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool) -> bool {
+fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    // A person's tiles have no deck: a removal from Continue Watching changes nothing here.
+    if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
     let Some(p) = state.current.as_mut() else {
         return false;
     };
@@ -877,8 +886,9 @@ fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool)
         .flat_map(|s| s.shelves.iter_mut())
         .flat_map(|sh| sh.items.iter_mut())
     {
-        if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-            crate::pms::set_watched(m, on);
+        // `changes`: the server's `Facts`/`Offset` that agree with the tile touch nothing
+        if at.covers(m) && edit.changes(m) {
+            edit.apply(m);
             hit = true;
         }
     }
@@ -1094,9 +1104,7 @@ impl PersonState {
                 reset(self, adapter);
                 true
             }
-            PersonCmd::SetWatchedLocal { sid, rk, on } => {
-                set_watched_local(self, sid, &rk, on)
-            }
+            PersonCmd::ApplyView { at, edit } => apply_view(self, &at, edit),
         }
     }
 }
@@ -1356,6 +1364,10 @@ fn src_of(p: &Person, i: usize) -> Option<(ServerId, usize)> {
 
 /// Install ONE landing on the open person. Returns whether anything actually changed.
 fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
+    // The stamp is the request's. A landing with none recorded was not requested through this
+    // path, so there is no earlier moment to replay from: the answer stands (never `0`, which
+    // would make every edit ever published replay over it).
+    let (ledger, stamp) = (state.ledger.clone(), state.stamps.get(&i).copied().unwrap_or_else(|| state.ledger.stamp()));
     let Some(p) = state.current.as_mut() else {
         return false;
     };
@@ -1423,10 +1435,13 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             resettle(p);
             true
         }
-        Landing::Media(Some(MediaLanding { shelves, matches })) => {
+        Landing::Media(Some(MediaLanding { mut shelves, matches })) => {
             let Some((sid, si)) = src_of(p, i) else {
                 return false;
             };
+            // The read describes the server from when it was issued: edits published since are
+            // made again on its rows (`crate::viewledger`).
+            ledger.patch(stamp, shelves.iter_mut().flat_map(|shelf| shelf.items.iter_mut()));
             {
                 let s = &mut p.srcs[si];
                 plx_base::eventlog::log(&format!(
@@ -1660,6 +1675,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
         return;
     }
     adapter.mailbox(i).claim(generation);
+    state.stamps.insert(i, state.ledger.stamp());
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::stores::tape::admit(serde_json::json!({
         "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
@@ -1743,10 +1759,12 @@ fn fetch_credits(_guid: &str, _session: &plx_plex::plex::session::Session) -> Op
     None
 }
 
-/// HOST SUITE: this is the crate's TLS seam, and the dev Mac has no libcurl to satisfy it — a test
-/// that merely *reaches* this function fails to **link**, not to assert (the boundary the root
-/// `docs/agent-reference.md` calls structural limit #1, and the reason `ff.rs` cfg-gates its `#[link]`s). `pump`
-/// is called by tests, so the reference has to be cut here rather than avoided by discipline.
+/// HOST SUITE: this is the crate's TLS seam. libcurl is bound at run time through `plx_base::dynlib!`
+/// (nothing is linked, so a test that reaches this function still LINKS), which means a test that
+/// calls the real fetch would either take `dlopen`'s `None` branch where the host has no libcurl or,
+/// where it has one, put a real plex.tv request on the wire from a unit test. Neither is a test of
+/// anything, and `pump` is called by tests, so the reference is cut here rather than avoided by
+/// discipline (`docs/agent-reference.md`, host suite structural limit #1, describes the boundary).
 /// Everything downstream of the request — the mailbox, the generation guard, the unknown-vs-failed
 /// distinction and the roles mapping — is exercised directly through the adapter landing,
 /// [`PersonState::pump`] and [`roles_line`],
@@ -2413,6 +2431,93 @@ mod tests {
             .iter()
             .all(|s| s.items.is_empty()));
 
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A filmography read goes out, the user presses Mark Watched on one of its tiles, and the read
+    /// lands with the tile as the server described it before the press. The ledger makes the press
+    /// again on it — for the read requested before the press, and for that one only. The stamp is
+    /// taken by the REAL request (`open`, which spawns the read), not assigned.
+    #[test]
+    fn a_filmography_read_in_flight_across_a_watched_edit_lands_watched() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-ledger", "127.0.0.1", 1, "a", "cid");
+        let slot = fx(a, K_MEDIA).unwrap();
+        let tile = |rk: &str| PmsMovie { unwatched: true, resume_ms: 9, ..movie_on(a, rk) };
+        let landed = |owner: &Owner| {
+            let items = &owner.current().unwrap().srcs[0].shelves[0].items;
+            items.iter().map(|m| (m.rk.clone(), m.watched)).collect::<Vec<_>>()
+        };
+
+        let older = owner.state.ledger.record(&ViewAt::leaf(a, "3"), ViewEdit::Watched(true));
+        owner.state.ledger.landed(older); // before the request: the server has it
+        owner.open(a, "7", "plex://person/7", "Actor", ""); // the read goes out…
+        owner.pump();
+        assert!(owner.state.stamps.contains_key(&slot), "the request site stamped it");
+        owner.state.ledger.record(&ViewAt::leaf(a, "4"), ViewEdit::Watched(true)); // …then the press
+        owner.apply(slot, media(vec![tile("3"), tile("4")], Vec::new()));
+        assert_eq!(landed(&owner), [("3".to_string(), false), ("4".to_string(), true)],
+            "the pressed tile stays watched; the server's own earlier answer is not made again");
+        plx_base::task::drain_workers_for_test();
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The server's word (`Facts`, `Offset`) patches a filmography tile in place, only where it
+    /// differs from what is drawn.
+    #[test]
+    fn the_servers_facts_and_offset_patch_a_filmography_tile_only_where_they_differ() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-facts", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        owner.state.install_for_test(
+            vec![PmsMovie { unwatched: true, resume_ms: 9, ..movie_on(a, "3") }, PmsMovie { unwatched: true, ..movie_on(a, "4") }],
+            Vec::new());
+        let run = |owner: &mut Owner, rk: &str, edit| {
+            let (adapter, at) = (owner.adapter.clone(), ViewAt::leaf(a, rk));
+            owner.state.run(&adapter, crate::stores::person::PersonCmd::ApplyView { at, edit })
+        };
+        let marks = |owner: &Owner| {
+            owner.current().unwrap().srcs[0].shelves[0].items.iter()
+                .map(|m| (m.rk.clone(), m.watched, m.unwatched, m.resume_ms)).collect::<Vec<_>>()
+        };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        assert!(run(&mut owner, "3", facts));
+        assert!(!run(&mut owner, "3", facts), "facts that agree with the tile change nothing");
+        assert_eq!(marks(&owner), [("3".into(), true, false, 0), ("4".into(), false, true, 0)]);
+        assert!(run(&mut owner, "4", ViewEdit::Offset { ms: 777 }));
+        assert!(!run(&mut owner, "4", ViewEdit::Offset { ms: 777 }));
+        assert_eq!(marks(&owner)[1], ("4".into(), false, true, 777), "an offset leaves the watched state alone");
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A landing with no recorded request stamp (a slot nothing requested) is not made to replay the
+    /// whole ledger: the server's answer stands.
+    #[test]
+    fn a_landing_without_a_request_stamp_replays_nothing() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-ledger-nostamp", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        let slot = fx(a, K_MEDIA).unwrap();
+        owner.state.stamps.remove(&slot);
+        owner.state.ledger.record(&ViewAt::leaf(a, "4"), ViewEdit::Watched(true));
+        owner.apply(slot, media(vec![PmsMovie { unwatched: true, ..movie_on(a, "4") }], Vec::new()));
+        assert!(!owner.current().unwrap().srcs[0].shelves[0].items[0].watched);
+        plx_base::task::drain_workers_for_test();
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }

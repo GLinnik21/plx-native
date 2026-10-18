@@ -5,15 +5,6 @@ use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-/// The exact Detail page a completed burst must reconcile. `keep` is the episode whose filmstrip
-/// position survives the reload; `None` is the page hero's own watch toggle.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DetailRefresh {
-    pub sid: ServerId,
-    pub rk: String,
-    pub keep: Option<String>,
-}
-
 /// Every mutation of the view-state write store.
 #[derive(Clone)]
 pub enum ViewStateCmd {
@@ -21,8 +12,8 @@ pub enum ViewStateCmd {
         sid: ServerId,
         rk: String,
         write: crate::viewstate::Write,
-        /// The originating Detail page, if this press should reconcile one after the burst.
-        detail: Option<DetailRefresh>,
+        /// How far down the library the press reaches: a show's or season's episode rows too.
+        scope: crate::viewstate::Scope,
         /// Portable item identity when the caller has the exact item's guid; empty asks the worker
         /// to resolve it from `(sid, rk)`.
         guid: String,
@@ -51,6 +42,11 @@ impl Default for ViewStateStore {
 }
 
 impl ViewStateStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -117,8 +113,35 @@ impl ViewStateStore {
             metadata)
     }
 
-    pub fn take_detail_refresh(&mut self) -> Option<DetailRefresh> {
-        self.state.take_detail_refresh()
+    /// Hold the terminal hub refetch while the player is on top; see
+    /// [`crate::viewstate::ViewStateState::hold_refresh`].
+    pub fn set_hold_refresh(&mut self, on: bool) {
+        self.state.hold_refresh = on;
+    }
+
+    /// Fan an end-of-stream watch out to the title's other copies; see
+    /// [`crate::viewstate::ViewStateState::fan_out_origin_watched`].
+    pub fn fan_out_origin_watched(&mut self, sid: ServerId, rk: &str) -> bool {
+        let queued = self.state.fan_out_origin_watched(&self.adapter, sid, rk);
+        if queued {
+            self.bump();
+        }
+        queued
+    }
+
+    /// Items whose landed write is owed a read-back (`stores::viewreconcile`).
+    pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
+        self.state.take_reread()
+    }
+
+    /// Is a write queued or in flight?
+    pub fn is_busy(&self) -> bool {
+        self.state.is_busy()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_busy_for_test(&self) -> bool {
+        self.state.is_busy()
     }
 
     #[cfg(any(test, feature = "test-support"))]

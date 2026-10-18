@@ -724,11 +724,22 @@ impl SessionAdapter {
         self.live_completion.take()
     }
 
-    pub(crate) fn publish_profile(&mut self, publication: plx_session::auth::owner::ProfilePublication) {
+    /// Publish the owner's profile, and say which seat the PROCESS occupies because of it: `None` for a
+    /// publication a controlled replay keeps to itself (it seats nobody in the process).
+    pub(crate) fn publish_profile(&mut self, publication: plx_session::auth::owner::ProfilePublication)
+        -> Option<plx_plex::plex::session::Seat> {
+        let seat = plx_plex::plex::session::Seat::of(publication.profile.as_ref(), &publication.stamp);
         match &mut self.resources {
-            Resources::Live { publisher } => publisher.publish(publication.profile, publication.scope.0),
+            Resources::Live { publisher } => {
+                let seats_the_process = !publisher.is_scoped();
+                publisher.publish(publication.profile, publication.scope.0, publication.stamp);
+                seats_the_process.then_some(seat)
+            }
             #[cfg(test)]
-            Resources::Fixture(resources) => resources.profile = Some(publication),
+            Resources::Fixture(resources) => {
+                resources.profile = Some(publication);
+                Some(seat)
+            }
         }
     }
 

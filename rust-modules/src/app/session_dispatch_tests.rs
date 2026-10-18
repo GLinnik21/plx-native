@@ -22,7 +22,7 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
     let before = rig.chrome.labels();
-    assert!(before.labels.iter().any(|label| label == "TV Shows"));
+    assert!(before.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let before_gen = before.generation;
 
     rig.stores.browse.borrow_mut().run(
@@ -31,14 +31,14 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     rig.capture_chrome(&mut pages);
     let changed = rig.chrome.labels();
     assert!(changed.generation > before_gen);
-    assert!(!changed.labels.iter().any(|label| label == "TV Shows"));
+    assert!(!changed.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let changed_gen = changed.generation;
 
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
     assert_eq!(rig.chrome.labels().generation, changed_gen,
         "capturing again must not republish the owner's old tab generation");
-    assert!(!rig.chrome.labels().labels.iter().any(|label| label == "TV Shows"));
+    assert!(!rig.chrome.labels().faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -138,6 +138,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
 
 #[test]
 fn session_boot_picker_publishes_captured_profile_without_ready_handoff() {
+    let _serial = plx_base::testlock::serial();
     let stored = plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         server: plx_plex::plex::session::ServerRef { machine_id: "synthetic-server".into(),
@@ -163,6 +164,7 @@ fn session_boot_picker_publishes_captured_profile_without_ready_handoff() {
 
 #[test]
 fn session_stored_boot_publishes_before_handoff_without_saving_credentials() {
+    let _serial = plx_base::testlock::serial();
     let stored = plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), account_token: "synthetic-account".into(),
         server: plx_plex::plex::session::ServerRef { machine_id: "synthetic-server".into(),

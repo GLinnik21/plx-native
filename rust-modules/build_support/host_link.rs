@@ -14,7 +14,7 @@ use std::process::Command;
 pub fn emit(repo: &Path) {
     // The television target is the one build cargo does not link, so it is the one that wants
     // none of this. It is identified by ARCHITECTURE rather than by the full triple: the target is
-    // `arm-unknown-linux-gnueabi` (32-bit ARM, `target_arch = "arm"`), while every host that runs
+    // `armv7-unknown-linux-gnueabi` (32-bit ARM, `target_arch = "arm"`), while every host that runs
     // this crate's tests is `aarch64` or `x86_64` — including CI's `ubuntu-24.04-arm` runner, whose
     // own arch is `aarch64` and which only ever asks for the ARM32 target explicitly.
     //
@@ -58,6 +58,32 @@ pub fn emit(repo: &Path) {
     compile_svg(repo);
 }
 
+/// Put the pinned nanosvg headers in `vendor/nanosvg` (gitignored): they are not in the repository.
+///
+/// `ci/deps.py` returns at once when every header is already there and matches its sha256 in
+/// `ci/dependencies.json` (offline, whatever `vendor/downloads` holds). Otherwise it takes them from
+/// `vendor/downloads`, then from the machine-wide store under `$PLX_BUILD_CACHE` (default
+/// `~/.cache/plxnative`) that every worktree shares, and only then downloads them at the pinned
+/// commit, checking each against its sha256 and filling both caches.
+/// Several build scripts (this crate's, `plx_gfx`'s, ...) can run it at once: every write is a
+/// rename of a private file, so none sees another's partial download. The directory is relative to
+/// the repository, not `$HOME`, because some `make check` steps run with an empty home.
+fn stage_nanosvg(repo: &Path) {
+    // Both exist in every checkout, so `rerun-if-changed` can never name a missing path.
+    println!("cargo:rerun-if-changed={}", repo.join("ci/dependencies.json").display());
+    println!("cargo:rerun-if-changed={}", repo.join("ci/deps.py").display());
+    let status = Command::new("python3")
+        .arg(repo.join("ci/deps.py"))
+        .args(["stage", "nanosvg", "--into"])
+        .arg(repo.join("vendor/nanosvg"))
+        .status()
+        .unwrap_or_else(|e| panic!("host link: could not run python3 to fetch nanosvg: {e}"));
+    assert!(
+        status.success(),
+        "host link: fetching the pinned nanosvg headers failed ({status}); see ci/deps.py"
+    );
+}
+
 /// Build `src/svg.c` (the nanosvg rasterizer) for the host.
 ///
 /// On the television the Makefile compiles this alongside `main.c` and `starfish.c` and links all
@@ -69,6 +95,7 @@ pub fn emit(repo: &Path) {
 /// one translation unit with two include paths, and the crate's dependency list is deliberately
 /// short — a build-dep would be fetched for the ARM build too, which never runs this function.
 fn compile_svg(repo: &Path) {
+    stage_nanosvg(repo);
     let src = repo.join("src/svg.c");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join("svg.o");
     println!("cargo:rerun-if-changed={}", src.display());

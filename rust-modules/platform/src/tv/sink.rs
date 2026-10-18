@@ -15,18 +15,44 @@ pub const VP_NONE: c_int = 0;
 pub const VP_ACB: c_int = 1;
 pub const VP_EXPORTED: c_int = 2;
 
+/// **Exclusive ownership of the constructed native object for its `Unload`, movable off the main
+/// thread.** `unload` is the one control verb that takes this instead of a `&MainThread`: on the dev
+/// set it blocks for 110-150 ms (measured 2026-10-15, release build: a ~35 ms driver `ioctl` in D
+/// state, then a ~70 ms wait for the pipeline thread), so a real stop issues it on a worker
+/// (`player::engine`'s off-frame release) rather than on the frame that handled BACK.
+///
+/// Only the main thread can [`issue`](Self::issue) one, and it does so at the moment it gives the
+/// object up: the Engine has been taken out of the adapter, every worker that touched the object has
+/// been joined, the Rust callback epoch is closed to all but UNLOADCOMPLETED, and nothing else may
+/// reach the seam until the release is finished (the adapter is that fence). The precedent is
+/// `load`, which already runs on a worker with the object exclusively its own. Not `Clone`: one
+/// ticket is one Unload.
+#[derive(Debug)]
+pub struct UnloadTicket(());
+
+impl UnloadTicket {
+    pub fn issue(_mt: &MainThread) -> Self {
+        UnloadTicket(())
+    }
+}
+
+/// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
+/// 100 when the property is absent): what the paused preroll restores after muting.
+pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
+
 /// **Starfish-shaped.** One method per verb of the webOS seam (`src/starfish.h`): a Load payload,
 /// `feed`, and the ACB bind verbs `pump` walks. Another TV OS cannot implement this as is; the
 /// OS-neutral sink is step L15b (docs/module-layers.md).
 ///
 /// Same arguments and C return values as the seam; `&MainThread` on every method but `load` (the
-/// media worker calls it), `window_mode` and `window_id` (memoized reads).
+/// media worker calls it), `unload` (an [`UnloadTicket`], so a worker may issue it), `window_mode`
+/// and `window_id` (memoized reads).
 ///
 /// # Safety
 /// Every `unsafe fn` here forwards to a C verb that wants the arguments `src/starfish.h` documents:
 /// a payload or id pointer must be a valid NUL-terminated string for the call, and `feed`'s
-/// `p`/`size` a readable buffer. Apart from `load`, the verbs must be called on the main thread
-/// (which `&MainThread` witnesses), in the order the player's pump drives them.
+/// `p`/`size` a readable buffer. Apart from `load` and `unload`, the verbs must be called on the
+/// main thread (which `&MainThread` witnesses), in the order the player's pump drives them.
 pub trait VideoSink: Sync {
     /// # Safety
     /// Unlike every other verb, `load` runs off the main thread (the media worker calls it, after
@@ -37,16 +63,30 @@ pub trait VideoSink: Sync {
     unsafe fn is_load_completed(&self, mt: &MainThread) -> c_int;
     unsafe fn play(&self, mt: &MainThread) -> c_int;
     unsafe fn pause(&self, mt: &MainThread) -> c_int;
+    /// This pipeline's output volume, 0..100 (`StarfishMediaAPIs::setVolume`), applied at once. The
+    /// paused-preroll mute; the library's bool proves nothing. Per pipeline, so a fresh `load`
+    /// starts at [`PIPELINE_DEFAULT_VOLUME`] again. There is no getter: `getVolume` returns an int
+    /// on 4.5 against the NDK header's `const char *` (see `src/starfish.c`), so it is not bound.
+    unsafe fn set_volume(&self, mt: &MainThread, volume: c_int) -> c_int;
     unsafe fn flush(&self, mt: &MainThread) -> c_int;
     unsafe fn push_eos(&self, mt: &MainThread) -> c_int;
     unsafe fn set_time_to_decode(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn set_content_info(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn send_segment(&self, mt: &MainThread) -> c_int;
+    /// LG's public `StarfishMediaAPIs::Seek(millis)` (issue #568): a flushing seek whose new segment
+    /// starts at `ms`, so the PTS fed afterwards must be on that same timeline. It flushes itself,
+    /// so the caller must not `flush` around it (a `flush` is a seek to 0), and it must not race a
+    /// `feed`. `ms` is never negative. Returns 0 when refused, which also means `feed` may now be
+    /// rejected until a seek or flush succeeds.
+    unsafe fn seek(&self, mt: &MainThread, ms: i64) -> c_int;
     /// True when the library's `Feed` is the pre-C++11 copy-on-write-string build (webOS 3.x).
     /// A memoized read, so it takes no `MainThread`.
     fn feed_abi_is_cow(&self) -> bool;
     unsafe fn feed(&self, mt: &MainThread, p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
-    unsafe fn unload(&self, mt: &MainThread);
+    /// # Safety
+    /// May run off the main thread, on the strength of `owner`: the caller holds the only route to
+    /// the object until the release that issued the ticket has finished (see [`UnloadTicket`]).
+    unsafe fn unload(&self, owner: &UnloadTicket);
     unsafe fn callback_gate_retire(&self, mt: &MainThread) -> c_int;
     unsafe fn callback_intercepts(&self, mt: &MainThread) -> u32;
     unsafe fn destroy(&self, mt: &MainThread) -> c_int;
@@ -89,16 +129,18 @@ impl VideoSink for NoSink {
     unsafe fn is_load_completed(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn play(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn pause(&self, _mt: &MainThread) -> c_int { 0 }
+    unsafe fn set_volume(&self, _mt: &MainThread, _volume: c_int) -> c_int { 0 }
     unsafe fn flush(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn push_eos(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn set_content_info(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn send_segment(&self, _mt: &MainThread) -> c_int { 0 }
+    unsafe fn seek(&self, _mt: &MainThread, _ms: i64) -> c_int { 0 }
     fn feed_abi_is_cow(&self) -> bool { false }
     unsafe fn feed(&self, _mt: &MainThread, _p: *const u8, _size: c_uint, _pts: i64, _es_data: c_int) -> c_char {
         b'e' as c_char
     }
-    unsafe fn unload(&self, _mt: &MainThread) {}
+    unsafe fn unload(&self, _owner: &UnloadTicket) {}
     unsafe fn callback_gate_retire(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn callback_intercepts(&self, _mt: &MainThread) -> u32 { 0 }
     unsafe fn destroy(&self, _mt: &MainThread) -> c_int { 0 }

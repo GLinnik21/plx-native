@@ -55,6 +55,18 @@
     "value": "After a moment on a title, play its trailer with sound.",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
   },
+  "settings.resolution.title": {
+    "value": "Interface resolution",
+    "description": "Settings row: the size the interface is drawn at; lower is smoother but the text is softer"
+  },
+  "settings.resolution.detail": {
+    "value": "Lower is smoother. Applies after restarting.",
+    "description": "Settings detail line under settings.resolution.title; the choice takes effect at the next launch"
+  },
+  "settings.resolution.auto": {
+    "value": "Automatic",
+    "description": "Value of settings.resolution.title: the native 1920x1080 size, the same on every TV"
+  },
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
@@ -68,7 +80,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.about.detail"
   },
   "settings.root.copy": {
-    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback defaults and the app language apply to this television.",
+    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback settings belong to each profile, and the app language applies to this television.",
     "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
   },
   "settings.libraries.count": {
@@ -657,6 +669,10 @@
   },
   "settings.playback.subtitle_size.extra_large": {
     "value": "Extra Large",
+    "description": "Subtitle size picker option: a larger client-rendered caption size, one step below Huge."
+  },
+  "settings.playback.subtitle_size.huge": {
+    "value": "Huge",
     "description": "Subtitle size picker option: the largest client-rendered caption size."
   },
   "settings.playback.subtitle_position": {
@@ -674,6 +690,22 @@
   "settings.playback.subtitle_position.high": {
     "value": "High",
     "description": "Subtitle position picker option: the caption sits near the top of the safe area."
+  },
+  "settings.playback.hdr_overlay": {
+    "value": "HDR overlay brightness",
+    "description": "Settings row title and picker title: how bright the player's controls and subtitles are drawn while the picture is HDR or Dolby Vision."
+  },
+  "settings.playback.hdr_overlay.full": {
+    "value": "100%",
+    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at full brightness during HDR, as in SDR (no dimming)."
+  },
+  "settings.playback.hdr_overlay.three_quarters": {
+    "value": "75%",
+    "description": "HDR overlay brightness picker option (the default): the controls and subtitles are drawn at three quarters of full brightness during HDR."
+  },
+  "settings.playback.hdr_overlay.half": {
+    "value": "50%",
+    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at half brightness during HDR."
   },
   "settings.playback.next_episode": {
     "value": "Next episode",
@@ -745,9 +777,23 @@
     "value": "Saved to this Plex profile and shared with your other Plex apps. Changes may take time to affect playback; selections already made for an item still take priority.",
     "description": "Settings, consent or sign-in UI: settings.audio.account_note"
   },
-  "settings.playback.copy": {
-    "value": "Playback defaults for this television. Changes here apply to the next playback.",
-    "description": "Explanation under the title of the Video & playback page itself. Each picker opened from it has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting."
+  "settings.playback.copy_profile": {
+    "value": "Playback settings for {profile}. Changes here apply to the next playback.",
+    "description": "Explanation under the title of the Video & playback page itself while a profile is seated. {profile} is that profile's name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide. Each picker opened from the page has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.copy_profile_forced": {
+    "value": "Playback settings for {profile}.",
+    "description": "The profile sentence of the Video & playback page's explanation while a profile is seated AND Force Direct Play is on. It is a full sentence ending in a period, and settings.playback.force_note follows it as the next sentence of the same paragraph (the text view draws no line break, so nothing here may rely on one). It is settings.playback.copy_profile without its second sentence, which does not fit the column beside the Force note for a long profile name in the longer languages. It is the only place Settings names the profile under Force. {profile} is the name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.unseated": {
+    "value": "Choose a profile to change this",
+    "description": "Explanation under the title of the Video & playback page while NO profile is seated (a normal session always has one, because Settings is opened through a profile; a developer-token run and a controlled replay have none, see session::Seat): replaces settings.playback.copy_profile. The page's rows then show the values every profile starts from, dimmed and unopenable, because a pick must belong to a profile; 'this' is those rows."
   },
   "settings.playback.quality.copy": {
     "value": "The highest quality a video plays at. Larger files are converted by your Plex server to fit. Also available in the player's More menu.",
@@ -764,6 +810,10 @@
   "settings.playback.subtitle_position.copy": {
     "value": "How high subtitles sit on the picture. Picture and styled subtitles keep their own position. Also under Style in the player's Subtitles menu.",
     "description": "Explanation under the title of the Subtitle position picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Position row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.hdr_overlay.copy": {
+    "value": "How bright the player's controls and subtitles are during HDR and Dolby Vision, when the TV draws them much brighter. Lower it if they dazzle. 100% leaves them as they are.",
+    "description": "Explanation under the title of the HDR overlay brightness picker. A television raises graphics white in an HDR picture, so the on-screen controls and the subtitles look far brighter than in SDR; this scales their colours down, only while the playing picture is HDR or Dolby Vision. It never changes an SDR picture."
   },
   "settings.playback.next_episode.copy": {
     "value": "Up Next countdown shows a Next episode button when the credits start. After credits lets them play, then starts the next episode. Off closes the player instead.",
@@ -987,11 +1037,13 @@
   },
   "settings.login.unknown_device": {
     "value": "unknown set",
-    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the device model when the TV did not report one. Codes only; shown in English."
   },
   "settings.login.your_servers": {
     "value": "your servers",
-    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+    "translate": false,
+    "description": "Support line on a failure or sign-in screen: the server scope of the failed request. Codes only; shown in English."
   },
   "settings.language.saving": {
     "value": "Saving language…",

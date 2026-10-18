@@ -1,6 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "quiet_refetch": "app/bootstrap/effects.rs encodes HubsCmd::RefetchSourceQuiet as {\"hubs\":{\"refetch_source_quiet\":<server>}}: the quiet Home refetch of app/reread.rs.",
     "localization": "ui/table.rs TableView draw elides each section header (uppercased, at CAPTION) through the Measure, so the Settings root's eight headers (Playback, Privacy, Legal, System, About, Information, Reporting, On this TV, from locales/en/settings.json) enter the measurement table in capitals; locales/en/settings.json names the Language destination (Language, its detail line and System default); locales/en/browse.json browse.person.credits pluralises the Filmography count, measured word by word as it wraps; i18n/mod.rs LocaleContext formats dates as ICU YMD short with a full year, and controlled System resolves to en-US, so tests/mock_pms.py's 2011-03-14 reads 3/14/2011.",
     "playback_settings": "plex/session.rs DirectPlayMode serializes auto/forced/disabled. screens/settings.rs supplies the added Playback destinations, detail lines and root copy.",
     "controlled_content": "app/bootstrap/effects.rs and stores/tape.rs name content/metadata; metadata.rs MarkerKind/RatingArt; person.rs seed_dev_credits and filmography name the finite departments. tests/mock_pms.py builds people thumb paths, plex GUIDs from sname, two-sname mkv filenames, a four-sname tagline and en/eng/srt/mkv media values. ContentReq::PreviewStop and ContentPanel::{About,Bio} serialize preview_stop/about/bio; the other preview/panel discriminators are object keys.",
@@ -16,7 +17,8 @@
     "subtitle_preferences": "rust-modules/plex/src/plex/session.rs: SubtitleTone::White serializes as white and is the captured default in every synthetic session.",
     "session_persistence": "rust-modules/plex/src/plex/session.rs: SaveAuthority::Routine (also PublicOnly, FreshReauthentication — already covered/unused in controlled recordings); rust-modules/plex/src/plex/session/async_persistence.rs: PersistencePurpose::Background; rust-modules/src/auth/owner.rs: CommitAdmission::RegistryOnly. These serialize into every controlled session commit/plan once a store owns its own persistence (cleanup/ownership), so a synthetic recording now always carries them.",
     "related_hub_key": "rust-modules/plex/src/plex/hubs.rs is_pageable_hub_key: the Related hub of a Detail page is paged through its own key, /library/metadata/{digits}/similar (tests/mock_pms.py serves it); a recorded Detail page names it in its page request.",
-    "hold_hint": "ui/src/hold_hint.rs measures the three runs of Home's \"Hold OK for options\" capsule when a recorded Home rests on a shelf tile: locales/en/widgets.json widgets.hint.hold_options (pre and post words, split at the key placeholder) and KEY (the OK cap)."
+    "hold_hint": "ui/src/hold_hint.rs measures the three runs of Home's \"Hold OK for options\" capsule when a recorded Home rests on a shelf tile: locales/en/widgets.json widgets.hint.hold_options (pre and post words, split at the key placeholder) and KEY (the OK cap).",
+    "watchlist_fixture_guids": "tests/mock_pms.py DiscoverFixture.bind: the first movies/shows of the library take the Watchlist fixture's guids (`plex://<kind>/<hex>`, hex = `5d7768` + the title's index + 16 md5 digits of `watchlist-fixture-<index>`), so a PMS item's guid and the Media matches of Detail carry these 14 strings. Listed literally, one per held fixture title; a general 24-hex pattern would admit a household's real Plex guids and is not permitted."
   },
   "patterns": [
     "/library/metadata/people/[0-9]+/thumb/1",
@@ -117,7 +119,7 @@
     "",
     "hubs",
     "127.0.0.1", "controlled=home version=1", "Idle", "Boot", "local",
-    "ActivateDevBootstrap", "AlreadyInstalled", "Request", "discovery", "reset", "refetch", "retry",
+    "ActivateDevBootstrap", "AlreadyInstalled", "Request", "discovery", "reset", "refetch", "refetch_source_quiet", "retry",
     "Routine", "Background", "RegistryOnly",
     "owned", "Sdl", "RemoteFifo", "Script", "Replay", "Up", "Down", "Left", "Right", "Ok", "Back", "Repeat", "activate",
     "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile",
@@ -273,6 +275,20 @@
     "pageup",
     "playpause",
     "rewind",
-    "select"
+    "select",
+    "5d7768001b4f365e2fadd234",
+    "plex://movie/5d7768001b4f365e2fadd234",
+    "5d77680135a8fc45188ba331",
+    "plex://show/5d77680135a8fc45188ba331",
+    "5d77680292b88c7620a13edf",
+    "plex://movie/5d77680292b88c7620a13edf",
+    "5d776803750616ccc3ef0b36",
+    "plex://show/5d776803750616ccc3ef0b36",
+    "5d77680436a92e0a97bdd40c",
+    "plex://movie/5d77680436a92e0a97bdd40c",
+    "5d776805d5ce05c5416f24a9",
+    "plex://movie/5d776805d5ce05c5416f24a9",
+    "5d77680689a097bc6e38b0f0",
+    "plex://movie/5d77680689a097bc6e38b0f0"
   ]
 }

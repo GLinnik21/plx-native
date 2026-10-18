@@ -13,6 +13,7 @@ fn content(arg: &plx_screens::registry::ContentArg) -> Value {
         ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
         ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
         ContentArg::Collection(id) => json!({"collection":[id.sid.raw(),id.rk,id.sec,id.tag,id.name]}),
+        ContentArg::Catalog { hex } => json!({"catalog":plx_data::watchlist::encode_hex(hex)}),
     }
 }
 fn argument(arg: &plx_screens::registry::AppArg) -> Result<Value, &'static str> {
@@ -28,7 +29,8 @@ fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {
         HomeCmd::FocusGrid { row,col } => json!({"focus_grid":[row,col]}),
         HomeCmd::Hero => json!("hero"),
         HomeCmd::FocusStrip(tab) => json!({"focus_strip":match tab {
-            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search" }}),
+            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
+            HomeTab::Watchlist => "watchlist" }}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::PinHero(index) => json!({"pin_hero":index}),
@@ -224,6 +226,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
             json!({"hubs":{"cancel_page":[sid.raw(),id,key]}}),
         StoreCmd::Hubs(HubsCmd::Hold { lo, hi }) => json!({"hubs":{"hold":[lo,hi]}}),
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
+        StoreCmd::Hubs(HubsCmd::RefetchSourceQuiet { sid }) => json!({"hubs":{"refetch_source_quiet":sid.raw()}}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
         StoreCmd::Browse(BrowseCmd::Discovery(result)) => plx_data::browse::record::encode(result),
         StoreCmd::Metadata(cmd) => {
@@ -254,7 +257,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
                 CollectionCmd::Restore { total, counts } => json!({"restore":[total,counts]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
-                CollectionCmd::SetWatchedLocal { .. } => return Err("unsupported controlled collection command"),
+                CollectionCmd::ApplyView { .. } => return Err("unsupported controlled collection command"),
             }})
         }
         _ => return Err("unsupported Home store command"),
@@ -396,6 +399,44 @@ mod tests {
             assert!(!encoded.contains(&actual), "distinct requests must stay distinct");
             encoded.push(actual);
         }
+    }
+
+    /// The quiet Home refetch a covered or resumed Home owes (`app/reread.rs`) is a named, replayable
+    /// effect: it encodes to its source and nothing else, distinct per source.
+    #[test]
+    fn the_quiet_home_refetch_encodes_its_source() {
+        use plx_screens::registry::AppFx;
+        use plx_data::stores::{hubs::HubsCmd, StoreCmd, StoreId};
+        use serde_json::json;
+        let quiet = |raw| encode(&Fx::App(AppFx::Store(StoreId::Hubs,
+            StoreCmd::Hubs(HubsCmd::RefetchSourceQuiet { sid: plx_plex::plex::ServerId::from_raw(raw) }))));
+        let (a, b) = (quiet(2).unwrap(), quiet(3).unwrap());
+        assert_eq!(a["command"], json!({"hubs":{"refetch_source_quiet":2}}));
+        assert_ne!(a, b, "one effect per source");
+    }
+
+    /// A profile publication that carries no account stamp (no account token, which is every
+    /// controlled bootstrap) encodes to the bytes the committed recordings hold:
+    /// `tests/fixtures/replay/*` pin `{"epoch":1,"profile":null,"scope":1}` for the boot
+    /// publication, and the replay grades a regenerated effect as complete canonical JSON. `stamp`
+    /// joined `ProfilePublication` after they were recorded, so an empty one must not appear on
+    /// the wire (it carried nothing, and writing `"stamp":""` made every fixture diverge by one
+    /// effect). A stamp that names an account still appears, and the old form still reads back.
+    #[test]
+    fn profile_publication_without_a_stamp_keeps_the_recorded_wire_form() {
+        use plx_screens::registry::AppFx;
+        use plx_session::auth::owner::{ProfilePublication, ProfileScope, SessionFx};
+        use serde_json::json;
+        let publish = |stamp: &str| encode(&Fx::App(AppFx::SessionEffect(SessionFx::PublishProfile(
+            ProfilePublication { epoch: 1, profile: None, scope: ProfileScope(1), stamp: stamp.into() }))))
+            .unwrap();
+        assert_eq!(publish(""), json!({"session_effect":{"PublishProfile":
+            {"epoch":1,"profile":null,"scope":1}}}));
+        assert_eq!(publish("0011223344556677"), json!({"session_effect":{"PublishProfile":
+            {"epoch":1,"profile":null,"scope":1,"stamp":"0011223344556677"}}}));
+        let old: ProfilePublication = serde_json::from_value(
+            json!({"epoch":1,"profile":null,"scope":1})).unwrap();
+        assert_eq!(old.stamp, "");
     }
 
     /// `NavOp::SelectTab` was carved out of the old combined `Root`/`SelectTab` arm (TV

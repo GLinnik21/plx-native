@@ -254,7 +254,7 @@ fn choosing_the_default_order_forgets_the_entry() {
     land_page_with_sorts(&mut browse, vec![]);
     commit(&mut browse, "titleSort", false);
     assert_eq!(held(&browse), None, "the default order needs no record");
-    assert!(plx_plex::plex::session::peek().library_views.is_empty(),
+    assert!(plx_plex::plex::session::peek().prefs.library_views.is_empty(),
         "and a profile with nothing remembered leaves no empty record behind");
     // A Collections view's sort is that view's menu, not the library's: recorded as the
     // LISTING's sort, with the library's own sort left alone.

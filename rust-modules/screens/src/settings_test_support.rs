@@ -120,6 +120,15 @@ pub fn scratch_session(tag: &str) -> plx_plex::plex::session::TempSession {
     plx_plex::plex::session::TempSession::new(tag)
 }
 
+/// [`scratch_session`] with a profile SEATED. Settings > Playback lists its Profile rows read-only
+/// while nobody is seated, so a test that opens one of its pickers needs a seat. The caller holds
+/// `testlock::serial()`.
+pub fn seated_scratch_session(tag: &str) -> plx_plex::plex::session::TempSession {
+    let t = scratch_session(tag);
+    t.seated("seated-scratch", "seated-scratch-account");
+    t
+}
+
 pub fn multi_user_session(tag: &str) -> plx_plex::plex::session::TempSession {
     let t = plx_plex::plex::session::TempSession::new(tag);
     plx_plex::plex::session::save(&plx_plex::plex::session::Session {

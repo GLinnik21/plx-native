@@ -26,8 +26,8 @@
 #              9: `route/` (both halves of the split — `plan.rs`, the pure selection half, and
 #              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
 #              `screens/`/`app/` (zero hits at the split, so green on day one; the `wall` rule below
-#              is the one that distinguishes the halves: it gates `route/plan.rs` and exempts
-#              `route/decision.rs`). Phase 10 adds `dev/`: the dev-trigger arms that used to live
+#              is the one that distinguishes the halves: it gates `route/plan.rs` (and its child
+#              `route/plan_memory.rs`) and exempts `route/decision.rs`). Phase 10 adds `dev/`: the dev-trigger arms that used to live
 #              in `app/{boot,run,content,mod}.rs` moved to `dev/scenarios.rs`, and a mutator call
 #              that moved with them must not launder itself out of this gate's scan. **This was a
 #              CALL-SITE gate alone through phase 10, and D3's census (2026-09-10/11) found the
@@ -42,7 +42,7 @@
 #              the only door BY CONSTRUCTION, not by nobody having tried the other one yet. The
 #              two gates are independent and both must be green: a name absent from
 #              `mutators-visibility`'s per-file list (a PUMP/landing door like `pump`/`tick`/
-#              `land`/`discover_pump`/`take_detail_refresh`, which stays `pub(crate)` BY DESIGN as
+#              `land`/`discover_pump`/`take_landed_views`/`take_landed`, which stays `pub(crate)` BY DESIGN as
 #              the sanctioned door between a store and its owning module — see
 #              `docs/stores-as-machines.md`) can still be caught calling FROM a screen by the
 #              call-site half, and a name whose declaration IS private can still, in principle, be
@@ -461,8 +461,8 @@ fi
 # viewstate-owner: ViewState's physical state, Arc transport and notice live on ViewStateStore.
 # Zero tolerance, no allowlist: a free facade or storage/transport static can only select process
 # state, which would silently reconnect separate Bridges and let a retired worker cross reset.
-viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_detail_refresh|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
-viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|WANT_DETAIL|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
+viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_landed_views|take_landed|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
+viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|LANDED|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
 viewstate_owner_matches=$({
   owner_declarations "$viewstate_facades" "$viewstate_selectors" \
     'ViewStateState|ViewStateAdapter|ViewStateStore|Req|Completion|Done' \
@@ -592,7 +592,7 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_SCREENS" "$SRC_DATA/stores"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -626,8 +626,8 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # names are `save_cursor`/`set_unwatched`), and `load_detail_now` for a function D1 deleted
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
-# `apply_landing`, `take_detail_refresh`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_detail_refresh)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+# `apply_landing`, `take_landed_views`/`take_landed`.
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -660,7 +660,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 # a bare `pub`/`pub(crate)`, so a `pub(super)` declaration is correctly invisible to it.
 #
 # Deliberately EXCLUDED, both documented here rather than silently absent:
-#   - PUMP/landing doors (`pump`, `tick`, `land`, `discover_pump`, `take_detail_refresh`) stay
+#   - PUMP/landing doors (`pump`, `tick`, `land`, `discover_pump`, `take_landed_views`/`take_landed`) stay
 #     `pub(crate)` BY DESIGN — the sanctioned door between a store and the module `stores::<store>`
 #     wraps, not a mutator a screen has any business calling (`docs/stores-as-machines.md`).
 #   - `metadata::alt_stand_in` — the census flagged it as "MUTATOR-adjacent" by name alone; it

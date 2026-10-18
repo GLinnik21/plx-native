@@ -125,6 +125,7 @@ pub(crate) mod input;
 pub(crate) mod bridge;
 pub(crate) mod chrome;
 pub(crate) mod content;
+pub(crate) mod reread;
 pub(crate) mod run;
 use self::boot::*;
 use self::events::*;
@@ -270,6 +271,9 @@ pub(crate) struct App {
     /// `player::engine::ENGINE` together with the main-thread token that confines it.
     pub(crate) adapters: Adapters,
     repause_at: i64,
+    /// The playing session is parked because the pipeline took its video decoder back, not
+    /// because the app left the screen; the next press restores it (`run::park_on_decoder_release`).
+    decoder_parked: bool,
     pub(crate) ok_armed: bool,
     last_route_reported: &'static str,
     pub(crate) ptr: Pointer,
@@ -286,13 +290,19 @@ pub(crate) struct App {
     /// `pump_detail()` (`app/run.rs`).
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
-    pub(crate) refresh_hubs_at: u32,
-    /// The Detail page a playback returned to, waiting for the stop report to land so it can
-    /// re-read the item (`content::refresh_after_playback`).
-    pub(crate) refresh_detail: Option<plx_data::stores::viewstate::DetailRefresh>,
+    /// A playback exit is owed a re-read of Home's hubs and every library's shelves. Armed by
+    /// `exit_player`; spent by `playback_tick` once the stop's `stopped` POST has landed
+    /// (`route::timeline_stop_landed`) and the player is off the route (never by a timer: a read
+    /// that beats the stop's POST sees the old resume point).
+    pub(crate) refresh_hubs: bool,
+    /// The return from the player to Home waiting on that refetch (`playback::ReturnHold`).
+    pub(crate) return_hold: playback::ReturnHold,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
     pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,
+    /// The re-read of covered pages and of the visible one on resume, stepped once per loop
+    /// iteration beside the view-state pumps (`app/reread.rs`).
+    pub(crate) reread: reread::Reread,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.

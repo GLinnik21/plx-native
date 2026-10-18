@@ -1,15 +1,15 @@
-// src/svg.c — runtime SVG rasterizer (nanosvg, vendored header-only, zlib licence).
+// src/svg.c — runtime SVG rasterizer (nanosvg, header-only, fetched by ci/deps.py, zlib licence).
 //
 // NOT public domain, which this line said until 2026-08-02. nanosvg is zlib-licensed,
-// Copyright (c) 2013-14 Mikko Mononen — see vendor/nanosvg/nanosvg.h. It is compiled INTO the
-// shipped binary, so it is the one vendored C dependency that carries a real attribution
+// Copyright (c) 2013-14 Mikko Mononen — see the nanosvg.h that ci/deps.py fetches into vendor/nanosvg. It is compiled INTO the
+// shipped binary, so it is the one third-party C dependency that carries a real attribution
 // obligation, and a notices file generated from this comment would have omitted him entirely.
 //
 // Ships vector icon *assets* that rasterize to an RGBA mask at the exact pixel size we
 // draw them — the way iOS renders vector assets. Called from Rust (crate::svg) which
 // uploads the result as a GL texture and tints it per state. Kept in C (like starfish.c)
 // so nanosvg is compiled by the NDK's ARM gcc — pure-Rust SVG crates pull heavy SIMD
-// deps that clash with this target's -neon / build-std constraints.
+// deps that clash with this target's -neon constraint.
 #include <stdlib.h>
 #include <string.h>
 

@@ -10,6 +10,12 @@ regenerate into a scratch directory). Regenerating with a different GEOS is not 
 byte for byte, and a mismatch alone is not evidence anything is wrong — diff the rendered shape,
 not the path data.
 
+The same machinery also bakes a few INLINE marks (`INLINE` below): marks drawn at control size
+(~24-36px) beside the stroked 2.2-weight family (search, restart, info), so they use that weight,
+not the read-out's 1.8. They are baked rather than hand-stroked for the same reason as the badges:
+a filled twin (`bookmark-fill`) must share the outline's exact silhouette, and a slash's knockout
+(`server-slash`, like `wifi-slash`) is a boolean.
+
 Regenerate with: python3 tools/readout-glyphs.py assets/icons"""
 import math, re, sys, os
 from shapely.geometry import LineString, LinearRing, Point, Polygon, MultiPolygon
@@ -127,6 +133,29 @@ def wifi_slash():
     slash = LineString([(4, 3.6), (20.4, 20)])
     return unary_union([arcs.difference(slash.buffer(HW + 1.1, cap_style='round')), slash.buffer(HW, cap_style='round')])
 
+HW_INLINE = 1.1     # stroke 2.2 — the inline family's weight
+BOOKMARK = "M7.5 3h9a2 2 0 0 1 2 2v15.3l-6.5-4.5-6.5 4.5V5a2 2 0 0 1 2-2z"
+
+def server_slash():
+    base = unary_union([stroke(rrect(3, 3.5, 18, 7, 2) + rrect(3, 13.5, 18, 7, 2), HW_INLINE),
+                        dot(6.9, 7, 1.15), dot(6.9, 17, 1.15)])
+    slash = LineString([(4, 2.6), (20, 21.4)])
+    return unary_union([base.difference(slash.buffer(HW_INLINE + 1.0, cap_style='round')),
+                        slash.buffer(HW_INLINE, cap_style='round')])
+
+INLINE = {  # the Watchlist's marks: Icon::{Bookmark, BookmarkFill, Clock, ServerSlash, CircleSlash} in ui/src/icons.rs
+  # Not on the watchlist / the tab: an outline ribbon with the inline weight.
+  "bookmark":      lambda: stroke(BOOKMARK, HW_INLINE),
+  # On the watchlist: the outline's own silhouette filled, so the state flip never moves an edge.
+  "bookmark-fill": lambda: Polygon(parse(BOOKMARK)[0][0]).buffer(HW_INLINE, quad_segs=16),
+  # Coming soon: the read-out's clock base at the inline weight.
+  "clock":         lambda: stroke(circ(12, 12, 9) + "M12 7.2V12l3.1 1.9", HW_INLINE),
+  # Its server is offline: the read-out's server base, slashed the way wifi-slash is.
+  "server-slash":  server_slash,
+  # Not on any of your servers: the universal "unavailable" ring-and-bar, at the inline weight.
+  "circle-slash":  lambda: stroke(circ(12, 12, 9) + "M5.64 5.64 18.36 18.36", HW_INLINE),
+}
+
 def fmt(v): s = f"{v:.2f}".rstrip('0').rstrip('.'); return "0" if s in ("-0", "") else s
 def ring(coords):
     c = list(coords)[:-1]
@@ -155,4 +184,6 @@ out = sys.argv[1]; os.makedirs(out, exist_ok=True)
 for name, (b, m) in ICONS.items():
     open(f"{out}/{name}.svg", "w").write(to_svg(badged(b, m)))
 open(f"{out}/wifi-slash.svg", "w").write(to_svg(wifi_slash()))
+for name, build in INLINE.items():
+    open(f"{out}/{name}.svg", "w").write(to_svg(build()))
 for f in sorted(os.listdir(out)): print(f, os.path.getsize(f"{out}/{f}"))

@@ -37,7 +37,7 @@
 //! ## What it reads
 //!
 //! Only the sfnt table directory and the `cmap` table, by seek — never the whole file. That
-//! matters: `pkg/appfont-cjk.ttf` is 21 MB and its cmap is 233 KB. Unicode subtable formats 4, 6,
+//! matters: `pkg/appfont-cjk.ttf` is 13 MB and its cmap is 233 KB. Unicode subtable formats 4, 6,
 //! 12 and 13 are decoded and **unioned**; a mapping to glyph 0 is not coverage and is excluded,
 //! which is the difference between "the cmap has an entry" and "the font can draw it".
 
@@ -91,6 +91,27 @@ impl Coverage {
         // candidate. `partition_point` is the standard spelling of "how many start <= cp".
         let k = self.sup.partition_point(|&(s, _)| s <= cp);
         k > 0 && self.sup[k - 1].1 >= cp
+    }
+
+    /// The position of astral `cp` among this font's astral codepoints, in ascending order: 0 for
+    /// the lowest one above U+FFFF. `None` when the font does not map `cp`, or `cp` is in the BMP.
+    ///
+    /// `pkg/appfont-emoji.ttf` mirrors its i-th astral codepoint at U+E000 + i
+    /// (`tools/cut-noto-emoji.py`), because the television's SDL2_ttf keys glyphs on 16 bits and
+    /// cannot draw above U+FFFF. `text.rs` computes that mirror from this rank, out of the font's
+    /// own cmap, so the mapping cannot drift from the file.
+    pub fn astral_rank(&self, cp: u32) -> Option<u32> {
+        if cp <= 0xFFFF || !self.contains(cp) {
+            return None;
+        }
+        let mut rank = 0;
+        for &(lo, hi) in &self.sup {
+            if cp <= hi {
+                return Some(rank + (cp - lo));
+            }
+            rank += hi - lo + 1;
+        }
+        None
     }
 
     /// How many codepoints this font maps to a real glyph. The gate quotes it, and `text.rs` logs
@@ -276,7 +297,7 @@ fn parse_format6(t: &[u8], cov: &mut Coverage) -> Option<()> {
 fn parse_format12_13(t: &[u8], many_to_one: bool, cov: &mut Coverage) -> Option<()> {
     let n = be32(t, 12)? as usize;
     // The bounds check is done in u64, and that is load-bearing rather than tidy: **`usize` is
-    // 32 BITS on `arm-unknown-linux-gnueabi`**, the only target that ships. A `numGroups` of
+    // 32 BITS on `armv7-unknown-linux-gnueabi`**, the only target that ships. A `numGroups` of
     // 357_913_941 makes `n * 12` exactly 0xFFFF_FFFC, so `16 + n * 12` WRAPS to 12 — which is
     // ≤ `t.len()` — and the indexing below then panics out of the SDL main thread on the second
     // group. Release builds have overflow checks off, so it wraps silently rather than aborting.
@@ -377,21 +398,23 @@ pub fn of_file(path: &Path) -> Result<Coverage, CovErr> {
 ///
 /// Two reasons, both measured on the way in. The fallback's cmap is 233 KB and its format-4 walk
 /// is the most expensive thing this module does; and every `of_file` holds a descriptor, so
-/// fourteen tests reading three fonts in parallel moved the PROCESS-wide descriptor count enough
+/// fourteen tests reading the shipped fonts in parallel moved the PROCESS-wide descriptor count enough
 /// to trip `stream.rs`'s fd-leak assertion — whose slack is +8 over whatever the rest of the suite
 /// happens to be holding, and which then fails naming a leak that does not exist. Parsing once
-/// turns fourteen concurrent opens into three sequential ones.
+/// turns fourteen concurrent opens into one sequential open per font.
 #[cfg(any(test, feature = "test-support"))]
 pub fn shipped(name: &str) -> &'static Result<Coverage, String> {
     use std::sync::OnceLock;
     static REG: OnceLock<Result<Coverage, String>> = OnceLock::new();
     static BOLD: OnceLock<Result<Coverage, String>> = OnceLock::new();
     static CJK: OnceLock<Result<Coverage, String>> = OnceLock::new();
+    static EMOJI: OnceLock<Result<Coverage, String>> = OnceLock::new();
     let slot = match name {
         "appfont.ttf" => &REG,
         "appfont-bold.ttf" => &BOLD,
         "appfont-cjk.ttf" => &CJK,
-        other => panic!("no shipped-font slot for {other:?} — add one beside the other three"),
+        "appfont-emoji.ttf" => &EMOJI,
+        other => panic!("no shipped-font slot for {other:?} — add one beside the others"),
     };
     slot.get_or_init(|| {
         // The fonts are repository payload, not crate data — `pkg/` sits beside `rust-modules/`.
@@ -721,6 +744,46 @@ mod tests {
         );
     }
 
+    /// Table (offset, length) for `tag` in a plain sfnt, by seek.
+    fn table_span(f: &mut File, tag: &[u8; 4]) -> (u64, u64) {
+        let head = read_at(f, 0, 12).unwrap();
+        let num = be16(&head, 4).unwrap() as usize;
+        let dir = read_at(f, 12, num * 16).unwrap();
+        for i in 0..num {
+            let rec = &dir[i * 16..];
+            if &rec[0..4] == tag {
+                return (be32(rec, 8).unwrap() as u64, be32(rec, 12).unwrap() as u64);
+            }
+        }
+        panic!("no {} table", String::from_utf8_lossy(tag));
+    }
+
+    /// **Every shipped face must open under the OLDEST FreeType a television ships.** FreeType
+    /// 2.4.11 through 2.7.0 reject a font whose `loca` is `>= 0x40000` bytes (`ttpload.c`,
+    /// `table_len >= 0x40000L` -> `Invalid_Table`); a long `loca` holds `numGlyphs + 1` four-byte
+    /// offsets, so 65535 glyphs is exactly 0x40000 and fails with error 8 while 65534 opens.
+    /// SDL2_ttf then reports a face that "cannot be opened" and the whole fallback link is dead.
+    /// No host FreeType here is that old, so the bound is checked on the bytes.
+    #[test]
+    fn shipped_faces_open_under_old_freetype() {
+        for name in ["appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf"] {
+            let p = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg")).join(name);
+            let mut f = File::open(&p).unwrap();
+            let (maxp, _) = table_span(&mut f, b"maxp");
+            let n = be16(&read_at(&mut f, maxp + 4, 2).unwrap(), 0).unwrap();
+            let (head, _) = table_span(&mut f, b"head");
+            let fmt = be16(&read_at(&mut f, head + 50, 2).unwrap(), 0).unwrap();
+            let (_, loca_len) = table_span(&mut f, b"loca");
+            assert!(n <= 65_534, "{name}: {n} glyphs; FreeType <= 2.7.0 needs <= 65534");
+            if fmt == 1 {
+                assert!(
+                    loca_len < 0x40000,
+                    "{name}: long loca is {loca_len} bytes; FreeType 2.4.11-2.7.0 rejects >= 0x40000"
+                );
+            }
+        }
+    }
+
     /// The whole point: the chain, not any one link. This is the assertion that would have
     /// failed on 2026-08-22 and passed on 2026-08-23.
     #[test]
@@ -738,6 +801,39 @@ mod tests {
         }
     }
 
+    /// LINK 3: `appfont-emoji.ttf` (monochrome Noto Emoji, cut by tools/cut-noto-emoji.py). The
+    /// emoji people put in library names, and the mirror that lets the television draw them.
+    const LINK3_CHARS: &[(&str, u32)] = &[
+        ("clapper board", 0x1F3AC),
+        ("teddy bear", 0x1F9F8),
+        ("baby", 0x1F476),
+        ("child", 0x1F9D2),
+        ("star (BMP)", 0x2B50),
+        ("heart (BMP)", 0x2764),
+        ("grinning face", 0x1F600),
+        ("television", 0x1F4FA),
+    ];
+
+    /// Pins the cut, and checks the Private Use Area mirror `text.rs` relies on: every astral
+    /// emoji's rank lands on a mapped U+E000 + rank, and nothing past the last rank is mapped.
+    #[test]
+    fn bundled_emoji_face_is_the_pinned_cut_with_its_bmp_mirror() {
+        let c = cov("appfont-emoji.ttf");
+        for &(what, cp) in LINK3_CHARS {
+            assert!(c.contains(cp), "pkg/appfont-emoji.ttf cannot draw the {what} U+{cp:04X}");
+        }
+        let astral = (0x1_0000..=0x10_FFFF).filter(|&cp| c.contains(cp)).count() as u32;
+        assert_eq!(astral, 1_275, "pkg/appfont-emoji.ttf maps {astral} astral codepoints, not the \
+            1275 of @fontsource/noto-emoji 5.3.2. If the pin moved on purpose, move this number and \
+            tools/cut-noto-emoji.py's together.");
+        assert_eq!(c.len(), 1_464 + 1_275, "the 1464 emoji codepoints plus their 1275 mirrors");
+        for cp in (0x1_0000..=0x10_FFFF).filter(|&cp| c.contains(cp)) {
+            let rank = c.astral_rank(cp).expect("a mapped astral codepoint has a rank");
+            assert!(c.contains(0xE000 + rank), "U+{cp:05X} has no mirror at U+{:04X}", 0xE000 + rank);
+        }
+        assert!(!c.contains(0xE000 + astral), "a mirror past the last astral codepoint");
+    }
+
     /// **RTL is out of scope, and this is where that is written down as a test rather than a
     /// comment.** Neither shipped face carries Hebrew or Arabic — and neither does the television's
     /// own `/usr/share/fonts/DroidSansFallback.ttf` (measured on webOS 4.10.0, 2026-08-23: 11172
@@ -753,9 +849,12 @@ mod tests {
     /// So this test asserts the ABSENCE, deliberately: it fails the moment someone adds an RTL
     /// face, and the failure message is the reason not to. **Checklist #6 / #48 must not be marked
     /// Pass for RTL content on the strength of this unit.**
+    /// This is about the UI chain (`appfont.ttf`, `appfont-cjk.ttf`) only. The subtitle faces
+    /// (`pkg/fonts/subs/`, Arabic, Hebrew, Thaana) do carry RTL scripts, safely: libass runs
+    /// HarfBuzz and a bidi pass over them, which `text.rs` does not.
     #[test]
     fn rtl_is_out_of_scope_and_stays_that_way() {
-        for name in ["appfont.ttf", "appfont-cjk.ttf"] {
+        for name in ["appfont.ttf", "appfont-cjk.ttf", "appfont-emoji.ttf"] {
             let c = cov(name);
             for (script, lo, hi) in [("Hebrew", 0x05D0u32, 0x05EAu32), ("Arabic", 0x0620, 0x064A)] {
                 let n = count(&c, lo, hi);
@@ -857,6 +956,17 @@ mod tests {
             c.len(),
             (0x2_A6DF - 0x2_0000 + 1) + (0x1_F64F - 0x1_F600 + 1)
         );
+    }
+
+    #[test]
+    fn astral_rank_counts_across_ranges_and_refuses_what_is_not_mapped() {
+        let f = sfnt(&cmap1(3, 10, &format12(&[(0x1_F600, 0x1_F602, 1), (0x1_F9F8, 0x1_F9F8, 9)])));
+        let c = of_reader(&mut Cursor::new(f)).expect("decodes");
+        assert_eq!(c.astral_rank(0x1_F600), Some(0));
+        assert_eq!(c.astral_rank(0x1_F602), Some(2));
+        assert_eq!(c.astral_rank(0x1_F9F8), Some(3));
+        assert_eq!(c.astral_rank(0x1_F603), None, "not mapped");
+        assert_eq!(c.astral_rank(0x41), None, "the BMP has no rank");
     }
 
     /// Format 4's second addressing mode (`idRangeOffset != 0`) indexes a trailing glyph array by

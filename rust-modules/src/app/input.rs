@@ -30,7 +30,7 @@ use super::*;
 /// that gate to click at all).
 pub(crate) struct Pointer {
     pub(crate) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
-    pub(crate) cur_hidden: bool, // the LG cursor is hidden right now
+    pub(crate) cur_hidden: bool, // the pointer is hidden right now (LG's hide or the transparent cursor)
     pub(crate) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
     pub(crate) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
     pub(crate) prev_my: f32,
@@ -46,6 +46,9 @@ pub(crate) struct Pointer {
     /// decides whether a motion event is dispatched as `InputKind::Pointer` or `InputKind::Drag`.
     pub(crate) button_down: bool,
     pub(crate) last_wheel: u32,  // last wheel tick, for the wheel's own debounce
+    /// The button now held went DOWN as an OK key, not a click ([`click_is_ok`]), so its up must
+    /// be an OK key-up too.
+    pub(crate) ok_from_click: bool,
 }
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
@@ -58,8 +61,36 @@ impl Pointer {
         last_motion: 0,
         button_down: false,
         last_wheel: 0,
+        ok_from_click: false,
     };
 }
+
+/// **Is this pointer click really the remote's OK button?**
+///
+/// On a set without LG's `SDL_webOSCursorVisibility` (webOS 3.9.3's SDL 2.0.4, issue #642) the
+/// app hides the pointer by swapping in a transparent cursor (`boot::hide_cursor`). The system
+/// still believes its pointer is up, so the Magic Remote's OK arrives as a CLICK at wherever that
+/// invisible pointer sits, never as an OK key: the viewer arrows to the `…` disc, presses OK, and
+/// the click lands on the picture and toggles pause. (Measured on an OLED55B7V-Z, 3.9.3,
+/// 2026-10-15: Up, Right, Right, no OK key in the event log, and the player paused.) Where LG's
+/// call exists the system hides its own pointer and OK arrives as a key, so the click never comes.
+///
+/// So while the D-pad owns focus on a transparent-cursor set, a click is the OK key on the focused
+/// control when either the pointer has not travelled far enough to leave D-pad mode
+/// ([`DPAD_MOTION_GATE`]) or it lands on no control at all. **Not "while the pointer is
+/// hidden"**: pressing OK jiggles a Magic Remote, any motion at all shows the pointer again, and a
+/// fix keyed on `cur_hidden` never fired on the device. **Nor travel alone**: travel is summed
+/// since the last D-pad press, so a hand simply holding the remote drifts past any gate — measured
+/// 600 px between Up, Right, Right and OK over full-screen video, where the player never leaves
+/// D-pad mode, and the click paused the film under a lit `…` disc. A click that lands ON a control
+/// after real travel is still that control's.
+pub(crate) fn click_is_ok(dpad_mode: bool, motion_since_dpad: f32, on_control: bool, transparent_cursor: bool) -> bool {
+    dpad_mode && transparent_cursor && (motion_since_dpad < DPAD_MOTION_GATE || !on_control)
+}
+
+/// Pointer travel, in logical px accumulated since the last D-pad press, that hands focus back to
+/// the pointer: below it, motion is the hand holding the remote, not a deliberate move.
+pub(crate) const DPAD_MOTION_GATE: f32 = 120.0;
 
 // `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
 // the legacy `ui::home` module when phase 8 made Home an owned `Screen` — its job (trail reset,
@@ -483,7 +514,7 @@ mod activate_card_tests {
         for (card, expect, season_index) in [(&show, "show-1", None), (&season, "show-1", Some(4))] {
             let mut menu_play_await = None;
             let req = |act, item| plx_screens::registry::ItemMenuReq {
-                act, sid, item, loaded_episode: false, from_home: false };
+                act, sid, item, season: None, loaded_episode: false, from_home: false };
             // a key that is not the captured row's: nothing happens
             unsafe { apply_item_action(&mut ps, &mut pa, req(Action::Play("other".into()), Some(card.clone())),
                 &mut pages, &mut bridge, &mut crate::app::playback::LivePlaybackResources,
@@ -557,6 +588,22 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
     }
 }
 
+/// The [`Scope`](plx_data::viewstate::Scope) of a Mark watched/unwatched row: the captured row's own
+/// ([`Scope::of_row`](plx_data::viewstate::Scope::of_row)), or the season tab the menu was opened
+/// on when the item is no catalog row. Anything else is the one leaf it names.
+fn mark_scope(
+    rk: &str,
+    item: Option<&plx_data::pms::PmsMovie>,
+    season: Option<&(String, i64)>,
+) -> plx_data::viewstate::Scope {
+    use plx_data::viewstate::Scope;
+    match (item.filter(|m| m.rk == rk), season) {
+        (Some(row), _) => Scope::of_row(row),
+        (None, Some((show_rk, index))) => Scope::Season { show_rk: show_rk.clone(), index: *index },
+        (None, None) => Scope::Leaf,
+    }
+}
+
 /// Perform an item-menu [`Action`](plx_screens::item_menu::Action) — the ONE dispatch, drained
 /// from `AppFx::ItemMenu` after every dispatcher frame (`content::content_requests`). The menu
 /// itself only reports the choice; every route flip, server call and refresh is here.
@@ -594,7 +641,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
 ) {
     let mut playback = LiveItemPlayback(resources);
     use plx_screens::item_menu::Action;
-    let plx_screens::registry::ItemMenuReq { act, sid, item, loaded_episode, from_home } = req;
+    let plx_screens::registry::ItemMenuReq { act, sid, item, season, loaded_episode, from_home } = req;
     // `sid` is WHICH SERVER this menu's rows are about, captured when the panel was presented.
     // Every arm below turns an rk into a fetch, a scrobble or a play, and resolving one against
     // `plex::current_server()` is the reported bug itself: on a merged Continue Watching shelf,
@@ -607,6 +654,22 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         Action::GoToItem(rk) => {
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);
+        }
+        // The Watchlist hold menu's Remove: the store flips the tile at once, the page plays its
+        // removal landing and a refused write puts the tile back with no toast (Q8).
+        Action::WatchlistRemove(guid) => {
+            let from_page = super::bridge::Bridge::watchlist_page_on_top(pages);
+            bridge.watchlist_remove(&guid, from_page);
+        }
+        // The write is queued on the Watchlist store (the ledger flips the face at once and puts it
+        // back if plex.tv refuses) and the strip's bookmark pulses: the APP owns that, not the menu.
+        Action::WatchlistAdd { hex } => bridge.watchlist_add(hex),
+        // The hold menu's Go to row: the catalog page of the title, by the identity captured when
+        // the menu opened (a guid with no catalog id has no page).
+        Action::GoToCatalog(guid) => {
+            if let Some(hex) = super::bridge::hex_of_guid(&guid) {
+                super::bridge::open_catalog(pages, hex, None);
+            }
         }
         Action::GoToShow(show_rk, season) => {
             super::bridge::open_detail(pages, bridge, sid, &show_rk, (season > 0).then_some(season), None);
@@ -635,29 +698,19 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // panic here unwinds out of the SDL loop and kills the app. If a third write row
             // is ever added to this pattern without a verb, it does nothing instead.
             let Some(w) = a.watch_write() else { return };
-            // Only the FILMSTRIP's host re-reads the page: its rk is an episode of the loaded
-            // season, so the tab ticks, the checks and the hero's own discs all change with it. A
-            // RELATED tile is a different item — the page it is drawn on says nothing about it, and
-            // asking for a refetch here would re-read the mounted show for a write that never
-            // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
+            // This press re-reads nothing: the page learns the server's numbers from the read-back
+            // of the item, its season and its show (`content::reconcile_details`), after the write
+            // has landed. A RELATED tile's own tick is flipped by `metadata::set_watched_local`,
             // which walks the Related shelf for exactly this case.
-            let detail = loaded_episode.then(|| ()).and_then(|()| {
-                let entry = pages.nav.top_page()?;
-                let plx_screens::registry::AppArg::Content(
-                    plx_screens::registry::ContentArg::Detail { sid, rk: detail_rk },
-                ) = &entry.arg else { return None };
-                Some(plx_data::stores::viewstate::DetailRefresh {
-                    sid: *sid,
-                    rk: detail_rk.clone(),
-                    keep: Some(rk.clone()),
-                })
-            });
             // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
             // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
+            // A show or season row also changes every episode row under it, wherever one is held
+            // (a Search result, a Continue Watching card): the scope is read off the row in hand.
+            let scope = mark_scope(rk, item.as_ref(), season.as_ref());
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
-                sid, rk: rk.to_string(), write: w, detail, guid: String::new(),
+                sid, rk: rk.to_string(), write: w, scope, guid: String::new(),
             });
         }
         Action::RemoveFromDeck(rk) => {
@@ -666,7 +719,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // left off. That is why this is NOT `unscrobble`, which would throw the position
             // away. See `plex::Client::remove_from_continue_watching`.
             //
-            // The card leaves the deck on THIS frame (`pms::LocalEdit::LeftTheDeck` — it must
+            // The card leaves the deck on THIS frame (`ViewEdit::LeftDeck` — it must
             // not still sit under the user's cursor after they removed it) and the refetch
             // follows the write. The shelf is sourced from `/hubs/continueWatching`, which is
             // the hub this action actually affects — built from `/hubs`'s `home.continue` it
@@ -678,7 +731,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
-                detail: None, guid: String::new(),
+                scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
             });
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from
@@ -816,7 +869,7 @@ mod item_menu_player_return_tests;
 /// answering `HitSource::Engine`, and which arms its own `TAP_COMMIT_MS` debounce on
 /// `Edge::Up` — so the two together issued TWO seeks for one tap. The commit, the debounce and
 /// the reveal-cancel are `screens::player::PlayerScreen::key_scrub_release`'s now, and
-/// `repause_at` reaches `commit_seek` through `PlayerReq::CommitSeek` instead of through here.
+/// the commit reaches `commit_seek` through `PlayerReq::CommitSeek` instead of through here.
 pub(crate) fn on_key_up(
     sym: c_uint,
     ok_armed: bool,
@@ -918,11 +971,10 @@ pub(crate) unsafe fn begin_fresh_press(
 /// **The two GLOBAL effects of a fresh press, and the guard that decides whether they happen** —
 /// the half of [`begin_fresh_press`] that LG checklist item 40 is about, and its only caller.
 ///
-/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which names a
-/// webOS-only SDL symbol, so a host test that reaches it fails at `ld` rather than at an assertion
-/// (the boundary the testing section of `docs/agent-reference.md` describes — the crate links today only
-/// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
-/// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
+/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which acts on whatever
+/// pointer calls the process's SDL exports (resolved at run time, `app/boot.rs`), so a host test
+/// that reached it would be grading the host's SDL rather than the press. This half touches no SDL
+/// at all, so the invariant is gradeable by `make check` instead of only by a television.
 pub(crate) fn note_global_press(
     ps: &plx_media::route::PlaybackSession,
     sym: c_uint,
@@ -1512,12 +1564,12 @@ pub(crate) unsafe fn key_ok(
 pub(crate) fn key_back(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::nav_cancel(pages) {
     } else if super::bridge::player(pages).is_some() {
-        exit_player(ps, pa, refresh_hubs_at, pages);
+        exit_player(ps, pa, refresh_hubs, pages);
     } else if matches!(pages.top_arg(), Some(AppArg::Content(_))) {
         // The two stacking screens, through the page transition. All three
         // halves of the pop — the outgoing page's teardown, the trail move and
@@ -1580,4 +1632,53 @@ pub(crate) fn back_at_root() {
 /// host left for a fade to run over (what `settings::hide()` used to say).
 pub(crate) fn delete_all_local_data_and_sign_out(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::EraseLocal);
+}
+
+#[cfg(test)]
+mod mark_scope_tests {
+    use super::mark_scope;
+    use plx_data::viewstate::Scope;
+
+    /// The detail page's season tab has no catalog row, so the scope a Mark watched press
+    /// publishes comes from the season the menu carries: without it the write was `Leaf`, the
+    /// season's other episodes kept their ticks until a refetch, and the page's own tab counts
+    /// never moved. A card row still reads its scope off the row.
+    #[test]
+    fn a_season_tab_marks_its_season_and_a_card_its_own_row() {
+        let season = ("show-1".to_string(), 4);
+        assert_eq!(
+            mark_scope("season-9", None, Some(&season)),
+            Scope::Season { show_rk: "show-1".into(), index: 4 },
+            "the season strip's menu carries no row; its address is the scope"
+        );
+        let show = plx_data::pms::PmsMovie { rk: "show-1".into(), kind: 1, ..Default::default() };
+        assert_eq!(mark_scope("show-1", Some(&show), None), Scope::Show);
+        let ep = plx_data::pms::PmsMovie { rk: "e1".into(), kind: 3, ..Default::default() };
+        assert_eq!(mark_scope("e1", Some(&ep), None), Scope::Leaf);
+        assert_eq!(mark_scope("e1", None, None), Scope::Leaf, "the filmstrip: one leaf");
+    }
+}
+
+#[cfg(test)]
+mod click_is_ok_tests {
+    use super::click_is_ok;
+
+    /// Issue #642's set: arrows hid the pointer by the transparent cursor, so OK arrives as a
+    /// click — it is the OK key, including after the jiggle a press itself causes. Anywhere else a
+    /// click is a click: the pointer was moved on purpose (past the gate, or out of D-pad mode),
+    /// or LG's own hide made OK a real key already.
+    #[test]
+    fn a_click_in_dpad_mode_on_a_transparent_cursor_set_is_ok_unless_the_pointer_moved_onto_a_control() {
+        assert!(click_is_ok(true, 0.0, true, true));
+        assert!(click_is_ok(true, 6.0, true, true), "the jiggle of pressing OK is still OK");
+        assert!(click_is_ok(true, 600.0, false, true), "drift onto bare video is still OK");
+        for (dpad, motion, on_control, transparent) in [
+            (true, super::DPAD_MOTION_GATE, true, true),
+            (true, 500.0, true, true),
+            (false, 0.0, false, true),
+            (true, 0.0, false, false),
+        ] {
+            assert!(!click_is_ok(dpad, motion, on_control, transparent), "{dpad} {motion} {on_control} {transparent}");
+        }
+    }
 }

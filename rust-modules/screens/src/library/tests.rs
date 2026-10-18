@@ -732,6 +732,66 @@ fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
         "the store must fetch the just-committed query while the compact menu remains open");
 }
 
+/// The page asks Browse to re-run a listing whose membership a read-back made stale ONLY once a
+/// PAGE has buried it (`WillLeave(Deeper)`, then `Cover`): not on the notice that makes it stale
+/// while it is visible, not under a compact menu (which leaves the page visible and ticking), and
+/// not again once the re-query has cleared the flag.
+#[test]
+fn a_stale_listing_is_requeried_when_a_page_buries_it_never_while_visible() {
+    use plx_machine::machine::Leave;
+    let _guard = plx_base::testlock::serial();
+    let requeries = |stale: bool, events: Vec<ScreenEvent<HostFixture>>| {
+        let mut fixture = Fixture::new();
+        if stale { fixture.listing = fixture.listing.clone().with_membership_stale(); }
+        let mut page = fixture.screen();
+        page.wanted_kind = None;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
+        for ev in &events { page.step(ev, &fixture.cx(None), &mut fx); }
+        drop(fx);
+        out.iter().filter(|effect| matches!(&effect.fx, Fx::App(AppFx::Store(StoreId::Browse,
+            StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Requery, .. }))))).count()
+    };
+    let notice = || ScreenEvent::StoreChanged(StoreId::ViewReconcile.ord(), 1);
+    let buried = || vec![ScreenEvent::WillLeave(Leave::Deeper), ScreenEvent::Cover];
+    assert_eq!(requeries(true, vec![notice(), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 })]), 0,
+        "a visible page never re-queries under the cursor");
+    assert_eq!(requeries(true, buried()), 1, "a page push re-queries once");
+    let mut and_back = buried();
+    and_back.extend([ScreenEvent::Uncover, ScreenEvent::Enter(Enter::Restored)]);
+    assert_eq!(requeries(true, and_back), 1, "Uncover never does");
+    let mut and_notice = buried();
+    and_notice.push(notice());
+    assert_eq!(requeries(true, and_notice), 2,
+        "a notice that finds the buried listing still stale asks again; the store clears the flag on the first");
+    assert_eq!(requeries(false, buried()), 0, "a listing whose membership is current is left alone");
+    let mut returned = buried();
+    returned.extend([ScreenEvent::Uncover, ScreenEvent::Enter(Enter::Restored), notice()]);
+    assert_eq!(requeries(true, returned), 1, "back on top, a notice no longer re-queries");
+}
+
+/// A compact menu (Sort, Filter, the item menu) covers the page without burying it: the page stays
+/// visible and ticking, so a read-back that arrives under it never re-queries the grid beneath.
+#[test]
+fn a_compact_menu_over_a_stale_listing_never_requeries_it() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_membership_stale();
+    let mut page = fixture.screen();
+    page.wanted_kind = None;
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
+    for ev in [ScreenEvent::Cover, ScreenEvent::StoreChanged(StoreId::ViewReconcile.ord(), 1),
+        ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 })] {
+        page.step(&ev, &fixture.cx(None), &mut fx);
+    }
+    drop(fx);
+    assert_eq!(out.iter().filter(|effect| matches!(&effect.fx, Fx::App(AppFx::Store(StoreId::Browse,
+        StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Requery, .. }))))).count(), 0);
+}
+
 #[test]
 fn published_library_projection_and_layout_enter_canonical_state() {
     let _guard = plx_base::testlock::serial();
@@ -1188,7 +1248,10 @@ fn shelf_return_follows_the_film_then_its_last_published_slot() {
             let memory = page.page_memory();
             let item = fixture.hubs.view().shelves()[0].items[if remove_focused { 3 } else { 0 }].clone();
             let stores = fixture.stores.as_ref().unwrap();
-            assert!(stores.browse_run(BrowseCmd::LeftTheDeck { sid: item.sid, rk: item.rk }));
+            assert!(stores.browse_run(BrowseCmd::ApplyView {
+                at: plx_data::viewstate::ViewAt::leaf(item.sid, &item.rk),
+                edit: plx_data::viewstate::ViewEdit::LeftDeck,
+            }));
             let publication = stores.capture_browse(&mut fixture.directory);
             fixture.hubs = publication.section_hubs;
             if evict {

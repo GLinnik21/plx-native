@@ -95,6 +95,11 @@ pub trait Source {
     fn logo_failed(&self, _srv: u16, _rk: &str) -> bool {
         false
     }
+    /// [`logo_failed`](Self::logo_failed) for any keyed art at an explicit size: has
+    /// `(srv, path, w, h, png)` SETTLED as a miss? The same pure peek, and the same default.
+    fn failed(&self, _srv: u16, _path: &str, _w: i32, _h: i32, _png: bool) -> bool {
+        false
+    }
     /// The render cache cannot keep this key resident: its decoded result was rejected, an
     /// already-resident texture was released under count/byte pressure, or a brand-new arrival was
     /// refused outright because pressure left nothing evictable that was not on screen a moment
@@ -319,6 +324,13 @@ pub fn logo_src(srv: u16, rk: &str) -> Option<(u32, f32, f32)> {
 /// An item's clearLogo has settled as a miss: it will never arrive (see [`Source::logo_failed`]).
 pub fn logo_failed(srv: u16, rk: &str) -> bool {
     with_source(|s| s.logo_failed(srv, rk), false)
+}
+
+/// Keyed art has settled as a miss: it will never arrive (see [`Source::failed`]). What lets a
+/// caller that asks for art the server may simply not have — a scrub-preview still — tell
+/// "absent" from "not here yet" without drawing a placeholder for either.
+pub fn failed_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
+    !path.is_empty() && with_source(|s| s.failed(srv, path, w, h, png), false)
 }
 
 pub fn logo_warm(srv: u16, rk: &str) -> Warm {

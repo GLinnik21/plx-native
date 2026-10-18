@@ -1,0 +1,209 @@
+name: Dependency updates
+
+# Dependabot reads package manifests, not ci/dependencies.json (the FFmpeg, Sentry Native, libass
+# font stack, NDK, nanosvg, jsmpeg and toolbox pins), so this workflow does the same job for it.
+#
+#   propose  weekly and on demand: `ci/deps-update.py --list-outdated` names every entry whose
+#            upstream (its `update` object in the manifest) has a newer release and is not held.
+#            For each, ONE pull request on `deps/<name>-<version>` carries the bump
+#            (`--bump`: new asset downloaded, sha256 recomputed, version and URLs rewritten, the entry's
+#            rows of THIRD-PARTY-NOTICES.md rewritten, patches never touched, a patch's pinned `result`
+#            digests recomputed). A patch that no longer applies (strict `git apply`, as the build
+#            does) or a notices row that is not found makes the bump exit 3: the manifest is still
+#            committed and the PR is opened as a DRAFT whose body says why, so the failure is visible
+#            in the PR and not only in a red scheduled run. An open PR of this workflow for an older
+#            version of the same dependency is closed in favour of the new one (its branch deleted
+#            only if every commit on it is the bot's, author and committer). A branch with a person's
+#            commits is never overwritten, one already holding the same tree is not pushed again, and
+#            a bump whose PR was closed unmerged is not proposed again (set `update.hold` to stop
+#            tracking the entry). Bumps are always based on the default branch.
+#   graph    on every push to main that changes the manifest, and weekly: submits the manifest to the
+#            dependency graph (GitHub's dependency submission API) so the pins show up in Insights >
+#            Dependency graph and in Dependabot alerts for the github purls.
+#
+# TOKEN AND CI. Both jobs use the workflow's GITHUB_TOKEN with the permissions each declares (the
+# default is none). A push or a pull request made with GITHUB_TOKEN does not start `pull_request` or
+# `push` workflows (docs: "Triggering a workflow from a workflow"), except `workflow_dispatch`. So,
+# exactly like dependabot-notices.yml, each branch is pushed and then `gh workflow run ci.yml --ref
+# <branch>` dispatches ci.yml (hence `actions: write`); its checks attach to the branch head and show
+# in the PR. That run tests the branch head, not the merge with main. `contents: write` is needed to
+# push the branch, `pull-requests: write` to open and close PRs. Repository setting required:
+# Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests".
+#
+# NOTHING UNTRUSTED IS EXECUTED OR INTERPOLATED. The checkout is this repository's own default
+# branch; upstream-controlled strings (a release's tag) are validated by the script (letters,
+# digits, `.`, `_`, `-`) before they become a branch name and reach the shell only through `env:`
+# or a file. Downloaded archives are hashed and, for the patch check, unpacked in a temp directory
+# and read by `git apply`; nothing from them runs.
+#
+# Tested by ci/test_deps_update.py (WorkflowShape).
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ci/dependencies.json
+
+permissions: {}
+
+concurrency:
+  group: deps-update-${{ github.event_name == 'push' && 'graph' || 'propose' }}
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: open dependency bump pull requests
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      # The default branch, whatever ref started this run: bumps are always based on it, and the
+      # script that makes them is its copy. Full history, for the ownership test on existing branches.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Open or update one pull request per outdated dependency
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -uo pipefail
+          bot_email="41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "$bot_email"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          g() { git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" "$@"; }
+          base="origin/${DEFAULT_BRANCH}"
+          g fetch -q --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" || {
+            echo "::error title=Cannot fetch the default branch::origin/${DEFAULT_BRANCH}"; exit 1; }
+          # owned REF: true when REF holds at least one commit beyond the default branch and every such
+          # commit has this workflow's bot as author AND committer. A person's amend or rebase keeps the
+          # author, not the committer; their own commits have neither.
+          owned() {
+            [ -n "$(git rev-list -1 "${base}..$1" 2>/dev/null)" ] || return 1
+            # Read the whole log before judging it. An early-exit reader (`grep -q`) in this pipefail
+            # shell leaves git log to die of SIGPIPE (141), which a leading `!` would read as "owned".
+            local log foreign
+            log=$(git log --format='%ae %ce' "${base}..$1") || return 1
+            foreign=$(printf '%s\n' "$log" | grep -v -x -F "${bot_email} ${bot_email}" || true)
+            [ -z "$foreign" ]
+          }
+          # declined BRANCH: true when a pull request for that head was closed without being merged.
+          declined() {
+            [ "$(gh pr list --head "$1" --state closed --json mergedAt --jq '[.[] | select(.mergedAt == null)] | length')" != 0 ]
+          }
+          body="$RUNNER_TEMP/body.md"
+          bumped="$RUNNER_TEMP/bump.out"
+          python3 -I ci/deps-update.py --report || true
+          python3 -I ci/deps-update.py --list-outdated > outdated.tsv || echo "::warning::some upstream lookups failed (see the report above)"
+          failed=0
+          while IFS=$'\t' read -r name version; do
+            [ -n "$name" ] || continue
+            if declined "deps/${name}-${version}"; then
+              echo "::notice title=Bump declined::deps/${name}-${version} was closed without merging; not proposing it again. To stop tracking ${name}, set update.hold in ci/dependencies.json."
+              continue
+            fi
+            git checkout -q -f -B deps/work "$base" || { failed=1; continue; }
+            status=0
+            python3 -I ci/deps-update.py --bump "$name" --body-file "$body" > "$bumped" || status=$?
+            if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+              echo "::error title=Bump of ${name} failed::ci/deps-update.py --bump ${name} exited ${status}"
+              failed=1
+              continue
+            fi
+            # The script's first output line is the version it actually bumped to (the release can have
+            # moved since the listing); it has already refused anything outside [A-Za-z0-9._-].
+            used=$(sed -n 1p "$bumped")
+            if ! [[ "$used" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error title=Bump of ${name} failed::no usable version in the output"
+              failed=1
+              continue
+            fi
+            branch="deps/${name}-${used}"
+            if [ "$used" != "$version" ] && declined "$branch"; then
+              echo "::notice title=Bump declined::${branch} was closed without merging; not proposing it again (update.hold)."
+              continue
+            fi
+            draft=()
+            if [ "$status" -eq 3 ]; then
+              echo "::error title=Bump needs a person::${name} ${used}: a pinned patch does not apply or THIRD-PARTY-NOTICES.md could not be updated; opening a draft PR that says so"
+              draft=(--draft)
+              failed=1
+            fi
+            git add ci/dependencies.json THIRD-PARTY-NOTICES.md
+            git commit -q -m "Dependencies: ${name} -> ${used}" || { failed=1; continue; }
+            # A branch someone else has pushed to (a person rebasing a patch on it) is never overwritten,
+            # and one that already holds this exact tree is left as it is (no new commit every week).
+            if g ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              g fetch -q --no-tags origin "+refs/heads/${branch}" || { failed=1; continue; }
+              if ! owned FETCH_HEAD; then
+                echo "::warning title=Branch left alone::${branch} has commits that are not this workflow's; not overwriting it"
+                continue
+              fi
+              if git diff --quiet FETCH_HEAD HEAD; then
+                echo "${branch} is already up to date"
+                continue
+              fi
+            fi
+            g push --force origin "HEAD:refs/heads/${branch}" || { failed=1; continue; }
+            title="Dependencies: ${name} -> ${used}"
+            if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+              gh pr edit "$branch" --title "$title" --body-file "$body"
+              if [ "$status" -eq 3 ]; then gh pr ready "$branch" --undo || true; fi
+            else
+              gh pr create --head "$branch" --base "$DEFAULT_BRANCH" --title "$title" --body-file "$body" "${draft[@]}"
+            fi
+            # A GITHUB_TOKEN push starts no pull_request run; workflow_dispatch is the exception (see the header).
+            gh workflow run ci.yml --ref "$branch"
+            # An open pull request of this workflow for an older version of this dependency is superseded.
+            # Its branch is deleted only when it passes the same ownership test; a person's is kept.
+            gh pr list --state open --limit 100 --json number,headRefName,author \
+                --jq ".[] | select(.author.login == \"app/github-actions\" or .author.login == \"github-actions[bot]\") | select(.headRefName | startswith(\"deps/${name}-\")) | select(.headRefName != \"${branch}\") | [.number, .headRefName] | @tsv" > superseded.tsv
+            while IFS=$'\t' read -r old oldref; do
+              [ -n "$old" ] || continue
+              if g fetch -q --no-tags origin "+refs/heads/${oldref}" && owned FETCH_HEAD; then
+                gh pr close "$old" --delete-branch --comment "Superseded by ${branch}."
+              else
+                gh pr close "$old" --comment "Superseded by ${branch}. The branch ${oldref} has commits that are not this workflow's, so it was kept."
+              fi
+            done < superseded.tsv
+          done < outdated.tsv
+          exit "$failed"
+
+  graph:
+    name: submit the manifest to the dependency graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # The default branch's head, whatever ref started this run: the snapshot below is labelled with
+      # that branch and with the sha checked out here, so the two always agree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Submit ci/dependencies.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          GITHUB_RUN_ID="$RUN_ID" python3 -I ci/deps-update.py --snapshot --sha "$sha" --ref "$DEFAULT_REF" > snapshot.json
+          gh api --method POST "repos/${GH_REPO}/dependency-graph/snapshots" --input snapshot.json

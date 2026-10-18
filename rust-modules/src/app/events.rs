@@ -180,8 +180,8 @@ pub(crate) fn encode_key_repeat(sym: c_uint, wcode: c_uint) -> [u8; 128] {
 ///
 /// THE one place event coordinates enter the UI, so the conversion cannot be forgotten at a new
 /// call site — there are nine, and patching them individually is how the tenth ends up wrong.
-/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is on every
-/// television seen so far.
+/// `surface::to_logical` is the identity while the drawable is 1920x1080, which it is 1:1 unless
+/// the owner picks a smaller Interface resolution.
 pub(crate) fn ptr_xy(ev: &[u8]) -> (f32, f32) {
     plx_base::surface::to_logical(rd_i32(ev, 20) as f32, rd_i32(ev, 24) as f32)
 }
@@ -276,7 +276,7 @@ fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
 /// SDL pointer bytes shared by clicks, held-pointer FIFO edges and recorded-event replay.
 /// The inverse of `ptr_xy`: convert authored coordinates exactly once, including window scaling
 /// and letterboxing. Replay may carry a real off-canvas motion, so only the token parser clamps.
-/// ABI: `include/SDL2/SDL_events.h` and the NDK's matching mouse-event declarations put four
+/// ABI: SDL's `SDL_events.h` (stock and the NDK's) mouse-event declarations put four
 /// Uint32 fields before button@16/state@17 and Sint32 x@20/y@24. ARM32 NDK syntax-only
 /// `offsetof` assertions verified these offsets; see `docs/testing-player-pointer.md`.
 fn encode_pointer(et: u32, x: i32, y: i32) -> [u8; 128] {

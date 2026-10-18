@@ -262,11 +262,17 @@ impl SearchScreen {
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        if let Some(tab) = elem.checked_sub(plx_ui::dispatch::STRIP_BASE) {
-            let request = match tab {
-                0 => SearchReq::Tab(HomeTab::Home), 1 => SearchReq::Tab(HomeTab::Movies),
-                2 => SearchReq::Tab(HomeTab::Shows), 3 => return Handled::Yes,
-                4 => SearchReq::Account, _ => return Handled::No,
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        if elem >= plx_ui::dispatch::STRIP_BASE {
+            let request = match elem {
+                TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
+                TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
+                TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
+                TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
+                // The Search mark is the page the user is already on: nothing to request.
+                TAB_KEY_SEARCH => return Handled::Yes,
+                TAB_KEY_CHIP => SearchReq::Account,
+                _ => return Handled::No,
             };
             self.keyboard(false, true, fx);
             fx.push(Fx::App(AppFx::Search(request)));
@@ -400,7 +406,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     }
                     if *key == Key::Up && cx.focus.current == Some(self.key(FIELD)) {
                         self.keyboard(false, true, fx);
-                        self.reseat(FocusTarget::Elem(self.key(plx_ui::dispatch::STRIP_BASE + 3)), fx);
+                        self.reseat(FocusTarget::Elem(self.key(plx_ui::widgets::TAB_KEY_SEARCH)), fx);
                         return Handled::Yes;
                     }
                     if *key == Key::Back {

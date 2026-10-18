@@ -331,7 +331,9 @@ let sel = crate::plex::StreamSelection {
 let st = crate::plex::client().select_streams(&sel);
 ```
 `select_streams(&StreamSelection) -> i32` (HTTP status, used in the log). Sends `subtitleStreamID`
-always (0 = off) and `audioStreamID` only when `>0` — identical to today.
+always (0 = off) and `audioStreamID` only when `>0` — identical to today. (Historical: since the
+track-memory write-back `StreamSelection.subtitle_stream_id` is an `Option<i64>` and `None` omits
+the field; see `docs/pms-api.md`, "A downloaded subtitle is discarded".)
 
 ### R6 — `retranscode` decision + start — `route.rs:314-324`
 Current: builds `transcode_base(&rk,cfg)` → sets TBASE/TSESSION → `put_selection` → `&offset=` →

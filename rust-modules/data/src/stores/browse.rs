@@ -82,16 +82,13 @@ pub enum BrowseCmd {
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
     HubsInvalidateAll,
-    /// The optimistic half of a view-state write, on the grid and the shelves.
-    SetWatchedLocal {
-        sid: ServerId,
-        rk: String,
-        on: bool,
-    },
-    LeftTheDeck {
-        sid: ServerId,
-        rk: String,
-    },
+    /// One server's section shelves may have moved (a notification, never a press): only its
+    /// sections are re-read, behind its failure ladder and spaced like the quiet Home refetch.
+    HubsInvalidateServer { sid: ServerId },
+    /// The optimistic half of a view-state change (`viewstate::publish_view`), on the grid and the
+    /// shelves: a watched edit reaches the listing and the section shelves, a deck removal the
+    /// section shelves' Continue Watching.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 /// The production owner of Browse's main-thread state, worker transport and notice generation.
@@ -117,6 +114,11 @@ impl Default for BrowseStore {
 }
 
 impl BrowseStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -131,9 +133,11 @@ impl BrowseStore {
     }
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
+        use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
-        });
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
+                | LibraryWork::Requery, ..
+        }) || matches!(&cmd, BrowseCmd::ApplyView { edit: ViewEdit::Facts { .. } | ViewEdit::Offset { .. }, .. });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
@@ -184,6 +188,17 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
         self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
+    }
+
+    /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
+    pub fn held_keys(&self, target: SectionAddress) -> super::HeldKeys {
+        self.state.held_keys(target)
+    }
+
+    /// Is a membership re-query's first page still out with no Library page on top to pump it? The
+    /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
+    pub fn requery_owed(&self) -> bool {
+        self.state.requery_owed()
     }
 
     pub fn listing_snapshot(&mut self) -> ListingSnapshot {
@@ -506,6 +521,13 @@ pub enum LibraryWork {
         hi: usize,
     },
     Retry,
+    /// Re-fetch the current section's query if a read-back made its membership stale (the Unwatched
+    /// switch, ordering by last viewed). The Library page asks once a PAGE has been pushed over it,
+    /// never while it is visible or under a modal (a compact menu): the reader's ground does not
+    /// move under the cursor, and the listing is fresh when the page is shown again. It is the
+    /// same query refreshed, so [`crate::browse::view::ListingId::query`] does not move and the
+    /// page keeps its scroll and focus.
+    Requery,
 }
 
 impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
@@ -608,6 +630,32 @@ mod contract_tests {
         }
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
+    }
+
+    /// `held_keys` is the Library page's hold: the shelf rows inside the hold window and the grid
+    /// rows inside the wanted window of the current section, deduplicated; a stale address holds nothing.
+    #[test]
+    fn held_keys_match_hold_window() {
+        let _guard = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut browse = BrowseStore::default();
+        browse.seed_two_source_table_for_test();
+        browse.seed_items_for_test(30);
+        browse.seed_shelves_for_test(0, &["a", "b"], 2);
+        let id = browse.hubs_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        let rks = |keys: &super::super::HeldKeys| keys.iter().map(|(_, k)| k.clone()).collect::<Vec<_>>();
+        // No grid window yet: only the shelves (both rows sit inside the default hold).
+        let shelf_only = browse.held_keys(target);
+        assert_eq!(shelf_only.len(), 4, "two shelves of two cards: {:?}", rks(&shelf_only));
+        browse.run(BrowseCmd::Addressed { target, work: LibraryWork::Want { lo: 3, hi: 6, focus: None } });
+        let held = browse.held_keys(target);
+        let grid: Vec<_> = rks(&held).into_iter().filter(|k| k.parse::<usize>().is_ok_and(|n| (4..=6).contains(&n))).collect();
+        assert_eq!(grid, ["4", "5", "6"], "the grid window is items 3..6: {:?}", rks(&held));
+        assert!(shelf_only.iter().all(|k| held.contains(k)), "shelf keys stay held alongside the grid");
+        assert_eq!(held.len(), shelf_only.len() + 3, "the shelves plus the three grid items: {:?}", rks(&held));
+        assert!(!rks(&held).contains(&"7".to_string()), "past the window");
+        assert!(browse.held_keys(SectionAddress { epoch: target.epoch + 1, ..target }).is_empty(), "a stale address holds nothing");
     }
 
     #[test]

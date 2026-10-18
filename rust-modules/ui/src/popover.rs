@@ -5,6 +5,13 @@
 //!
 //! ## The host page is part of the choreography, and since 2026-09-02 it is part of THIS module
 //!
+//! **One exception: a menu that lets its page reflow** (`Screen::lets_host_reflow`, the Watchlist's
+//! Sort & Filter menu). The page is then drawn live under the glass while its cards move
+//! ([`host::set_reflow`]: none of the snapshot's doors run, nothing is captured per frame and
+//! `page_epoch` stands still), the host is retaken once when they stop, and the old look
+//! (copied on the last live frame) fades out over the new ground in [`host::CROSSFADE_S`]. The
+//! rest of this document is the non-reflowing case.
+//!
 //! A modal stands on a page that is not moving, and on a tile-based GPU redrawing that page is the
 //! whole cost of having the modal up. Measured on the television at commit `c75d50ae`: the detail
 //! page under an open track panel presented every frame at `draw≈75 ms` — `loop=30` while paging —
@@ -29,10 +36,13 @@
 //!   scrim included. The scrim and the [`Opener`] lift stay LIVE above the quad, which they must:
 //!   the scrim ramps with the appear spring, and a lift baked into the snapshot would then be
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
-//! - **A panel's ground reads no framebuffer at all.** It is the latched underlay field (the one
-//!   the modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost — see
-//!   [`crate::widgets::panel_ground`] — so nothing about the snapshot constrains it, and nothing
-//!   about it constrains the snapshot.
+//! - **A MENU's ground is glass on the frozen host (DS6), a sheet's ground never is glass, and
+//!   neither reads the framebuffer.** [`crate::widgets::panel_ground`] draws `popover_glass` for a
+//!   [`Ground::Menu`](crate::widgets::Ground): its body shows the latched underlay field (the one
+//!   the modal dim draws, `ui::underlay`) and its rim refracts the page this snapshot holds, so the
+//!   snapshot must be the undimmed page (above); the frame's dim is applied to both at composite.
+//!   With no latched field it falls back to the sheet's ground — that same field sampled at the
+//!   panel's own rect under the frost, which constrains nothing.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
@@ -252,6 +262,16 @@ pub struct Opener {
     pub redraw: fn(),
 }
 
+/// The two ways a popover panel can arrive; the ONE selector is [`Popover::morphing`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenStyle {
+    /// The shared fade+slide on [`K_APPEAR`] — what every popover did before the morph existed.
+    #[default]
+    Appear,
+    /// The glass opener's morph (`popover_morph`): the panel grows out of the opener's rect.
+    Morph,
+}
+
 /// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
 /// [`Opener::NONE`] can be a `const`.
 fn draw_nothing() {}
@@ -287,6 +307,16 @@ pub enum HostPolicy {
     Cached,
 }
 
+/// [`Popover::ground`]'s answer: where the ground goes, its alpha on the content painter, and its
+/// shadow's factor on top of that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct MorphGround {
+    pub(crate) rect: Rect,
+    pub(crate) radius: f32,
+    pub(crate) alpha: f32,
+    pub(crate) shadow: f32,
+}
+
 pub struct Popover {
     open: bool,
     /// [`dismiss`](Self::dismiss) ran and the appear spring is still on its way back to 0: the
@@ -303,10 +333,20 @@ pub struct Popover {
     host_held: bool,
     /// Counted in [`HOST_CLOSING`]: held AND dismissed. Cleared by a re-open or by the release.
     host_closing: bool,
+    /// How the panel arrives: the shared fade+slide, or the glass opener's morph.
+    style: OpenStyle,
+    /// The morph's springs; stepped only under [`OpenStyle::Morph`].
+    morph: crate::popover_morph::Morph,
+    /// The opener's rect the morph grows from ([`open_from`](Self::open_from)); `None` = the
+    /// fade+scale fallback.
+    from: Option<Rect>,
 }
 impl Popover {
     pub const fn new() -> Self {
         Popover {
+            style: OpenStyle::Appear,
+            morph: crate::popover_morph::Morph::new(),
+            from: None,
             open: false,
             closing: false,
             appear: Spring::at(0.0),
@@ -328,9 +368,41 @@ impl Popover {
         self.host = HostPolicy::Cached;
         self
     }
+    /// Arrive by the glass opener's MORPH ([`crate::popover_morph`]) instead of the shared
+    /// fade+slide. Opt-in like [`caching_host`](Self::caching_host); the scrim still ramps on the
+    /// appear spring, and every popover that does not call this is unchanged.
+    pub const fn morphing(mut self) -> Self {
+        self.style = OpenStyle::Morph;
+        self
+    }
+    /// This popover's open style.
+    pub const fn open_style(&self) -> OpenStyle {
+        self.style
+    }
+    /// The morph's draw state for the opener rect `from` and the settled `panel` rect; `None` for
+    /// a popover that is not [`morphing`](Self::morphing).
+    ///
+    /// `rad` is the panel's own corner radius: the morph ends on it.
+    pub fn morph_frame(
+        &self,
+        from: Option<Rect>,
+        panel: Rect,
+        rad: f32,
+    ) -> Option<crate::popover_morph::Frame> {
+        (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel, rad))
+    }
+    /// [`open`](Self::open) for a [`morphing`](Self::morphing) popover whose opener has a measured
+    /// rect: the panel grows out of `from` (the pill). Pass [`Opener::rect`]; `None` is the
+    /// fade+scale fallback, which is what a plain `open` gives.
+    pub fn open_from(&mut self, from: Option<Rect>) {
+        self.open();
+        self.from = from;
+    }
     /// (re)open: restart the fade+slide from 0.
     pub fn open(&mut self) {
+        self.from = None;
         self.appear = Spring::at(0.0);
+        self.morph.reset();
         self.closing = false;
         // A re-open DURING the fade-out: the held user stops being a closing one.
         self.leave_closing();
@@ -360,6 +432,7 @@ impl Popover {
         self.release_host();
         self.closing = false;
         self.appear = Spring::at(0.0);
+        self.morph.reset();
     }
     /// The bookkeeping half of a close: input modality ends NOW, whether the
     /// panel then vanishes or fades. The host freeze is NOT in here — see
@@ -418,6 +491,9 @@ impl Popover {
     fn step_appear(&mut self, target: f32, dt: f32) -> bool {
         let scope = plx_machine::idle::MotionScope::open();
         self.appear.step(target, K_APPEAR, dt);
+        if self.style == OpenStyle::Morph {
+            self.morph.step(target > 0.5, dt);
+        }
         scope.close()
     }
     /// Close with the appear choreography played backwards: the panel stops being OPEN this frame
@@ -452,9 +528,10 @@ impl Popover {
         } else if self.closing {
             self.step_appear(0.0, dt);
             // the same visual-arrival tolerance as `appear_settled`, at the other end
-            if self.appear.pos <= 0.001 {
+            if self.appear.pos <= 0.001 && (self.style != OpenStyle::Morph || self.morph.closed()) {
                 self.closing = false;
                 self.appear = Spring::at(0.0);
+                self.morph.reset();
                 self.release_host();
             }
         }
@@ -472,16 +549,31 @@ impl Popover {
     /// Its callers: [`ground_done`](Self::ground_done), which captures the host's GROUND stage only
     /// once the ramp is over, and `DecisionAlert::settled`, which gates pointer hits on it.
     pub fn appear_settled(&self) -> bool {
-        self.appear.pos >= 0.999
+        (self.style != OpenStyle::Morph || self.morph.settled()) && self.appear.pos >= 0.999
     }
 
     /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
     /// caller that draws the dim as part of its host page — see that method for why one does.
     pub fn content_painter(&self, rise: f32) -> Painter {
+        self.content_painter_on(Painter::root(), rise)
+    }
+    /// [`content_painter`](Self::content_painter) on `base` rather than a fresh root: a surface's
+    /// own frame painter, so a held surface's walk (the text recorder) reaches it like any other.
+    pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
+        if self.style == OpenStyle::Morph {
+            // The morph owns the panel's arrival, part by part: the ground (`panel`), the opener's
+            // face (`morph_face`) and the rows (`morph_rows`) each take their own alpha from the
+            // one morph clock. Nothing slides; `rise` is the appear style's. The CONTAINER's
+            // appear is not on this painter either: the surface begins and ends as the opener,
+            // which is not faded in or out.
+            return base.alpha(crate::nav::page_alpha());
+        }
         let a = self.appear();
-        Painter::root()
-            .alpha(a * crate::nav::page_alpha())
-            .translate(0.0, rise * (1.0 - a))
+        let p = base.alpha(a * crate::nav::page_alpha());
+        if rise == 0.0 {
+            return p;
+        }
+        p.translate(0.0, rise * (1.0 - a))
     }
     /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
     /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
@@ -571,15 +663,95 @@ impl Popover {
     ///
     /// **Not for the player's panels.** Behind those is punch-through alpha to the hardware video
     /// plane, which GL cannot read; they keep `p.rect(…, PANEL_TOP, PANEL_BOT, …)` on purpose.
+    ///
+    /// `ground` is the caller's explicit choice of material ([`widgets::Ground`](crate::widgets::Ground)):
+    /// glass for a MENU, the pre-DS6 field ground for a sheet or an alert.
     pub fn panel(
         &self,
         p: Painter,
         r: Rect,
         rad: f32,
         field: Option<&crate::underlay::UnderlayField>,
+        ground: crate::widgets::Ground,
     ) {
-        crate::widgets::panel_ground(p, r, rad, field);
+        if let Some(g) = self.ground(r, rad) {
+            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow);
+        }
         self.ground_done();
+    }
+
+    /// Draw a MORPHING popover's opener FACE: the opener's own fill (`fill`, the focused pill's
+    /// plate) at the morph's rect and radius, then `label` (the opener's label, with no fill of
+    /// its own) clipped to that rect, the plate at [`Frame::pill_alpha`](crate::popover_morph::Frame::pill_alpha), the label at [`Frame::label_alpha`](crate::popover_morph::Frame::label_alpha).
+    /// Call it after [`panel`](Self::panel) and before [`morph_rows`](Self::morph_rows): the
+    /// plate fades OFF the glass laid under it.
+    ///
+    /// This is the opener's only copy while the surface is up (the page leaves it out,
+    /// `Screen::opener`), and it is drawn whatever the popover's state: at rest before the open
+    /// and after the close it is the opener exactly, at the opener's rect and radius, so the
+    /// surface's first and last frames are the page's own pill. Nothing is drawn for a popover
+    /// that does not morph or has no opener rect.
+    pub fn morph_face(&self, p: Painter, panel: Rect, rad: f32, fill: [f32; 4], label: impl FnOnce(Painter)) {
+        if self.style != OpenStyle::Morph || self.from.is_none() {
+            return;
+        }
+        let f = self.morph.frame(self.from, panel, rad);
+        if f.pill_alpha <= 0.0 && f.label_alpha <= 0.0 {
+            return;
+        }
+        if f.pill_alpha > 0.0 {
+            p.alpha(f.pill_alpha).rrect(f.rect, f.radius, f.radius, fill);
+        }
+        if f.label_alpha > 0.0 {
+            let p = p.alpha(f.label_alpha);
+            let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+            label(p.clipped(f.rect));
+        }
+    }
+
+    /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
+    ///
+    /// - the rows are **clipped to the current surface rect** ([`ClipScope`](crate::screen::ClipScope),
+    ///   which nests with a table's own clip), so nothing draws outside it;
+    /// - they are **scaled about the panel anchor** ([`popover_morph::rows_anchor`](crate::popover_morph::rows_anchor))
+    ///   by the row spring, 0.82 -> 1 (and back on close);
+    /// - they are drawn at [`Frame::content_alpha`](crate::popover_morph::Frame::content_alpha), which
+    ///   is 0 until the glass has replaced the opener's fill. A frame on which they are invisible
+    ///   does not draw them, except through the text recorder (a held surface's walk), which is
+    ///   what makes their text resident before the first frame that shows them.
+    ///
+    /// `p` should come from [`content_painter`](Self::content_painter); `panel` and `rad` are the
+    /// same arguments as [`panel`](Self::panel). Anything but an unsettled morph (the fade+slide,
+    /// or a morph at rest) draws through `p` as it always did.
+    pub fn morph_rows(&self, p: Painter, panel: Rect, rad: f32, draw: impl FnOnce(Painter)) {
+        if self.style != OpenStyle::Morph || self.morph.settled() {
+            return draw(p);
+        }
+        let f = self.morph.frame(self.from, panel, rad);
+        if f.content_alpha <= 0.0 && !p.records() {
+            return;
+        }
+        let p = p.alpha(f.content_alpha);
+        let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+        let zoom = crate::popover_morph::rows_zoom(self.from, panel, f.rows_scale);
+        draw(p.clipped(f.rect).zoomed(zoom));
+    }
+
+    /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
+    /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
+    /// an opener: the morphing rect and radius, the glass at FULL strength (the opener's plate
+    /// fades off it, `morph_face`) once the fill has begun to cross, and its shadow on the fill's
+    /// share. The fallback: the glass fades in on the fill's share.
+    fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
+        if self.style != OpenStyle::Morph || self.morph.settled() {
+            return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
+        }
+        let f = self.morph.frame(self.from, r, rad);
+        if f.ground_alpha <= 0.0 {
+            return None;
+        }
+        let (alpha, shadow) = if self.from.is_some() { (1.0, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
+        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow })
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].
@@ -845,6 +1017,99 @@ pub mod host {
         GROUND_DEFERRED.store(defer, Relaxed);
     }
 
+    /// **Reflow mode: the page moves under a glass menu that lets it** (the Watchlist's Sort & Filter
+    /// menu, [`Screen::lets_host_reflow`](crate::screen::Screen::lets_host_reflow)). The held
+    /// snapshot would show the page as it was, so while the cards reflow the page is drawn LIVE
+    /// under the menu and none of the snapshot's doors run: no refresh on page damage
+    /// ([`begin_frame`]), no frozen quad or capture redirect ([`page_pass`]), no ground quad
+    /// ([`live`]), no ground capture ([`ground_drawn`]). The stale `HELD`/`CACHE` are left alone,
+    /// so [`page_epoch`], [`page_tex`] and the dim field's latch keep their open-time values and
+    /// nothing is captured per frame. When the reflow ends, ONE [`invalidate`] makes the next frame
+    /// take the page (epoch + 1, the field is read again) and then the ground, once.
+    static REFLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The reflow ended: `1` the next drawn frame is its EXIT frame (still drawn live, with the
+    /// old look; it takes the copy the crossfade fades away from), `2` that frame is being drawn,
+    /// `0` neither. [`begin_frame`] moves it on and, after the exit frame, makes the ONE invalidate.
+    static REFLOW_EXIT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+    /// Seconds the old look takes to give way to the new ground.
+    pub const CROSSFADE_S: f32 = 0.15;
+
+    /// The retained copy of the old look is there to fade (its slot in [`CACHE`] holds it), and how
+    /// far the fade has got: `f32` bits of `b`, 0 (all old) to 1 (all new, the copy is released).
+    static FADE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static FADE_B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// The page is being drawn live under the surface this frame (a reflow, or its exit frame).
+    fn reflow_draws() -> bool {
+        REFLOW.load(Relaxed) || REFLOW_EXIT.load(Relaxed) != 0
+    }
+
+    /// The host is following a reflowing page ([`set_reflow`]).
+    pub fn reflowing() -> bool {
+        reflow_draws()
+    }
+
+    /// How far the crossfade from the old look to the new ground has got, 0 to 1; `None` when no
+    /// old look is kept.
+    pub fn crossfade() -> Option<f32> {
+        FADE_ON.load(Relaxed).then(|| f32::from_bits(FADE_B.load(Relaxed)))
+    }
+
+    /// The app's statement, once per frame after the screens have ticked, of whether the page is
+    /// reflowing under a surface that lets it (`Dispatcher::host_reflow`), and the frame's `dt`
+    /// in seconds. The reflow's end is the host's one recapture; the crossfade of the old look
+    /// into the new ground runs on `dt`, never a wall clock.
+    pub fn set_reflow(on: bool, dt: f32) {
+        if FADE_ON.load(Relaxed) && matches!(held(), Held::Ground(_)) {
+            // the new ground exists: the old look gives way to it
+            let b = (f32::from_bits(FADE_B.load(Relaxed)) + dt / CROSSFADE_S).min(1.0);
+            FADE_B.store(b.to_bits(), Relaxed);
+            if b >= 1.0 {
+                end_fade();
+            }
+        }
+        if on {
+            if !REFLOW.swap(true, Relaxed) {
+                // reflowing again before the last fade ended: that fade is moot
+                REFLOW_EXIT.store(0, Relaxed);
+                end_fade();
+            }
+        } else if REFLOW.swap(false, Relaxed) {
+            REFLOW_EXIT.store(1, Relaxed);
+        }
+    }
+
+    /// Forget reflow mode and any old look kept (the last surface went, or the app is torn down).
+    pub fn reset_reflow() {
+        REFLOW.store(false, Relaxed);
+        REFLOW_EXIT.store(0, Relaxed);
+        end_fade();
+    }
+
+    fn end_fade() {
+        FADE_ON.store(false, Relaxed);
+        FADE_B.store(0, Relaxed);
+        unsafe { (*std::ptr::addr_of_mut!(CACHE)).release_prev() };
+    }
+
+    /// Draw the old look over what is on the frame, at `1 - b`: the crossfade's one extra quad.
+    /// Held to the visible pass; asks for the next frame while it runs.
+    fn overlay_prev() {
+        if !FADE_ON.load(Relaxed)
+            || plx_gfx::gfx::blur_source_pass()
+            || crate::frame::backdrop::discovering()
+        {
+            return;
+        }
+        let b = f32::from_bits(FADE_B.load(Relaxed));
+        if unsafe { (*std::ptr::addr_of!(CACHE)).draw_prev(1.0 - b) } {
+            let _own = plx_machine::idle::OwnScope::open();
+            plx_machine::idle::invalidate();
+        }
+    }
+
     /// How many open popovers want a frozen host.
     fn users() -> u32 {
         HOST_USERS.load(Relaxed)
@@ -945,6 +1210,14 @@ pub mod host {
         GROUND_DRAWN.store(true,Relaxed);
     }
 
+    /// The head of EVERY frame, whatever the route: forget the modal dims the last frame drew.
+    /// [`begin_frame`] cannot carry this alone, because the player and a preview-bound page never
+    /// call it (a hardware plane has no host to snapshot), so a stale count would survive into the
+    /// first popover frame after them. `app/run.rs` calls this at the top of each iteration.
+    pub fn clear_dims() {
+        crate::popover_glass::clear_dims();
+    }
+
     /// Open the frame: take the page's damage count and decide whether the snapshot survives them.
     ///
     /// **The host-damage test is route-agnostic on purpose.** It is `idle::take_page_damage` —
@@ -958,6 +1231,11 @@ pub mod host {
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
     pub fn begin_frame(page_moving: bool) {
+        // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's dims to its
+        // frozen pictures). `app/run.rs` already cleared it at the head of the iteration through
+        // [`clear_dims`], which the player and preview routes need because they never get here;
+        // this clears it again for any other caller that opens a popover frame.
+        crate::popover_glass::clear_dims();
         // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
         // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through
         // hole. The player path already did not call this (`app/run.rs`'s player branch says so);
@@ -980,14 +1258,33 @@ pub mod host {
         GROUND_DRAWN.store(false, Relaxed);
         GROUND_DEFERRED.store(false, Relaxed);
         if users() == 0 {
+            reset_reflow();
             if !TRANSITION_OWNS.load(Relaxed) { invalidate(); }
             return;
+        }
+        match REFLOW_EXIT.load(Relaxed) {
+            1 => REFLOW_EXIT.store(2, Relaxed),
+            2 => {
+                // the exit frame is drawn: take the page and the ground again, ONCE, and fade the
+                // old look (copied on the exit frame) into them
+                REFLOW_EXIT.store(0, Relaxed);
+                if unsafe { (*std::ptr::addr_of!(CACHE)).has_prev() } {
+                    FADE_B.store(0, Relaxed);
+                    FADE_ON.store(true, Relaxed);
+                }
+                invalidate();
+            }
+            _ => {}
         }
         // Modal snapshots contain chrome and possibly a dim. A page-only transition image
         // must never be mistaken for that prefix when a surface interrupts navigation.
         if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
         let moving = plx_machine::idle::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
+        // a reflowing page is drawn live: its damage is not a reason to retake the snapshot
+        if reflow_draws() {
+            return;
+        }
         if super::host_refresh(fading_only(), page_dirty, moving) {
             invalidate();
         }
@@ -1017,6 +1314,9 @@ pub mod host {
                 was_frozen: plx_gfx::gfx::page_frozen(),
                 own: None,
             };
+        }
+        if reflow_draws() {
+            return PagePass { was_frozen: plx_gfx::gfx::page_frozen(), own: None };
         }
         let served = match held() {
             // The ground quad is one draw for the whole frame and belongs to the first `live`,
@@ -1099,10 +1399,17 @@ pub mod host {
             };
         }
         if plx_gfx::gfx::blur_source_pass() {
-            let ground = matches!(held(), Held::Ground(_));
+            let ground = matches!(held(), Held::Ground(_)) && !reflow_draws();
             if ground && held_ceiling().is_some_and(crate::frame::backdrop::claim_snapshot) { draw_held(); }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(ground && freezes_current_layer()),
+                own: plx_machine::idle::OwnScope::open(),
+            };
+        }
+        if reflow_draws() {
+            // the page is live under the surface; nothing of the snapshot is drawn or taken
+            return Live {
+                was_frozen: plx_gfx::gfx::set_page_frozen(false),
                 own: plx_machine::idle::OwnScope::open(),
             };
         }
@@ -1111,6 +1418,8 @@ pub mod host {
             // one quad. Stay FROZEN through them — `Popover::panel` lifts for the foreground.
             if !GROUND_DRAWN.swap(true, Relaxed) {
                 draw_held();
+                // the old look fades out over the new ground
+                overlay_prev();
             }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(freezes_current_layer()),
@@ -1151,6 +1460,14 @@ pub mod host {
             plx_gfx::gfx::set_page_frozen(false);
             return;
         }
+        if reflow_draws() {
+            // The exit frame: the page has stopped, the glass still wears the look it had while
+            // it moved. Keep this frame as the look the new ground fades in from.
+            if REFLOW_EXIT.load(Relaxed) == 2 && !plx_gfx::gfx::blur_source_pass() {
+                unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture_prev() };
+            }
+            return;
+        }
         if settled
             && held() == Held::Page
             && !plx_gfx::gfx::blur_source_pass()
@@ -1160,6 +1477,9 @@ pub mod host {
                 hold_ground();
             }
         }
+        // Until the new ground exists (and on the frame it is taken) the old look covers the new
+        // look; after, the ground quad is served in `live` and carries it.
+        overlay_prev();
     }
 
     impl Drop for Live {

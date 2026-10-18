@@ -234,10 +234,6 @@ pub struct PlayerOverlayScreen {
     /// hardware's ~50 ms `Edge::Repeat` instead, so the surface applies the cadence itself
     /// ([`PANEL_REPEAT_MS`]).
     repeat: RepeatGate,
-    /// The playing item's UltraBlur corners, read once at open — what this panel's dim inherits
-    /// ([`Scrim::over_video`](plx_ui::screen::Scrim::over_video)): the page under it is the
-    /// hardware video plane, which GL cannot sample.
-    corners: Option<[[f32; 3]; 4]>,
     /// The panel draws nothing this frame (a FAILED playback hides the content panels with the
     /// transport), so it must ask for no dim either. Resolved in `prepare`, which runs before the
     /// page pass the container paints dims in; `draw` is too late for that.
@@ -325,7 +321,6 @@ impl PlayerOverlayScreen {
             kind,
             panel,
             repeat: RepeatGate::IDLE,
-            corners: meta.playing().and_then(|p| p.blur),
             suppressed: false,
         }
     }
@@ -1051,17 +1046,17 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
     /// **The panel's dim, through the container like every other surface's.** It used to be
     /// hand-drawn at the top of each panel's `draw`; the container paints it now, at the end of the
     /// player's page pass — the same z-order (over the transport and subtitles, under the panel) —
-    /// through the stack's one field, latched from the playing item's UltraBlur corners because
-    /// the page under it is the video plane. The Info card and the Chapters strip deliberately ask
-    /// for none: they sit in the transport's own band and dim nothing.
+    /// through the stack's one field, which has no page to read over the video plane and so stays the
+    /// flat neutral ink (`Scrim::over_video`) — the artwork's colour never casts on the player.
+    /// The Info card and the Chapters strip deliberately ask for none: they sit in the transport's own band and dim nothing.
     fn scrim(&self) -> plx_ui::screen::Scrim {
         use plx_ui::theme::underlay::{DIM_PLAYER, DIM_SHEET};
         if self.suppressed {
             return plx_ui::screen::Scrim::NONE;
         }
         match self.panel {
-            Panel::Tracks(_) => plx_ui::screen::Scrim::over_video(DIM_PLAYER, self.corners),
-            Panel::More(_) => plx_ui::screen::Scrim::over_video(DIM_SHEET, self.corners),
+            Panel::Tracks(_) => plx_ui::screen::Scrim::over_video(DIM_PLAYER),
+            Panel::More(_) => plx_ui::screen::Scrim::over_video(DIM_SHEET),
             // The capsule sits over the video like the Info card and the Chapters strip — no dim.
             Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => plx_ui::screen::Scrim::NONE,
         }

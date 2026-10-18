@@ -1414,6 +1414,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
+        sub_mode: SubMode::Track,
     };
     reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
@@ -1474,6 +1475,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
             selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
+            sub_mode: SubMode::Track,
         },
         "a rescue must not silently restore the server-default tracks",
     );
@@ -2354,9 +2356,10 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let session = plx_plex::plex::session::TempSession::new("subtitle-offset-resume");
-    session.watching("u-resume");
+    // The memory door needs a seat (P-d11): a profile signed in and published under its account stamp.
+    session.seated("u-resume", "acct-resume");
     // The memory the player reads is seeded at a restore (boot, the credentials handoff).
-    seed_memory_for_test::<SubtitleOffsetEntry>(&plx_plex::plex::session::peek());
+    seed_memory_for_test::<plx_plex::plex::session::SubtitleOffsetEntry>(&plx_plex::plex::session::peek());
     let sid = plx_plex::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");
     apply_plan(&mut ps, Plan::default(), "rk-resume-a");
     swap_cur_sid_for_test(&mut ps, sid);

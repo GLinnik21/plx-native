@@ -342,6 +342,12 @@
     const flowQuery = window.matchMedia
       ? window.matchMedia("(max-width: 759px), (max-height: 559px) and (orientation: landscape)")
       : null;
+    // The stack scene is pinned on phones too (a swipe would race through it
+    // in the flow); only a short landscape window, where it cannot fit, plays
+    // in the flow. styles.css lays it out by the same media query.
+    const stackFlowQuery = window.matchMedia
+      ? window.matchMedia("(max-height: 559px) and (orientation: landscape)")
+      : null;
     let refused = false;
     let still = false;
     const holdStill = () => {
@@ -400,7 +406,7 @@
       });
       bigs.forEach((b) => (b.top = docTop(b.el)));
       if (stack && stackSticky && stackStage) {
-        L.stackFlow = !!(flowQuery && flowQuery.matches);
+        L.stackFlow = !!(stackFlowQuery && stackFlowQuery.matches);
         L.stackTop = docTop(stack);
         L.stackH = stack.offsetHeight;
         L.stackStickyTop = parseFloat(getComputedStyle(stackSticky).top) || 0;
@@ -540,8 +546,8 @@
         set(b.el, "transform", `scale(${(1 + s0 - s0 * t).toFixed(4)})`);
       });
 
-      // The stack scene, p = 0..1: pinned on wide screens, over the scroll
-      // that the pin lasts; in the flow (phones), from when the stack's middle
+      // The stack scene, p = 0..1: pinned, over the scroll that the pin
+      // lasts; in the flow (short landscape windows), from when the stack's middle
       // is at 85% of the window's height until it reaches 40%, so all of it
       // plays on screen.
       //   0.00–0.18  the typical app, one closed block, opens up…

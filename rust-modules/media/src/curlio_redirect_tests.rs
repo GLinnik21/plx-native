@@ -376,6 +376,9 @@ fn the_body_of_a_redirect_is_not_the_body_the_open_returns() {
 fn the_token_in_the_original_url_never_reaches_a_cross_host_redirect_target_but_the_user_agent_does() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
+    // Boot's install, which the player reads rather than naming the client itself.
+    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent())
+        .expect("the client's own name");
     // One CA for both hosts: the household's `*.plex.direct` name and the CDN's address.
     let cert = leaf(&[PLEX_DIRECT, "127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "redirect-token");
@@ -396,10 +399,56 @@ fn the_token_in_the_original_url_never_reaches_a_cross_host_redirect_target_but_
     assert_eq!(arrived.len(), 1);
     assert_eq!(arrived[0].lines().next().unwrap_or_default(), "GET /cdn/video.mkv?sig=abc HTTP/1.1", "the hop is the Location, and only the Location");
     assert!(!arrived[0].to_ascii_lowercase().contains("x-plex-token") && !arrived[0].contains(TOKEN), "no trace of the token on the hop: {:?}", arrived[0]);
-    let agent = plx_plex::plex::identity::user_agent();
+    let agent = plx_net::net::user_agent().expect("installed before the open");
     assert!(!agent.is_empty());
-    assert_eq!(header(&asked[0], "user-agent").as_deref(), Some(agent.as_str()));
-    assert_eq!(header(&arrived[0], "user-agent").as_deref(), Some(agent.as_str()), "the User-Agent follows the request to the next host");
+    assert_eq!(header(&asked[0], "user-agent").as_deref(), Some(agent), "the player sends the installed User-Agent");
+    assert_eq!(header(&arrived[0], "user-agent").as_deref(), Some(agent), "the User-Agent follows the request to the next host");
+}
+
+/// Every request the player's HTTPS source makes names the client with the installed `User-Agent`,
+/// the first and each same-origin hop alike (one easy handle per hop, each applying it), and a
+/// source opened before boot installs one sends no `User-Agent` at all, as libcurl does by default.
+/// Runs in a child process: the value is a `OnceLock` and another test of this binary installs it.
+#[test]
+fn a_media_open_sends_the_installed_user_agent_on_every_hop_and_none_before_one_is_installed() {
+    if !plx_base::testlock::fresh_process(module_path!(), "a_media_open_sends_the_installed_user_agent_on_every_hop_and_none_before_one_is_installed") {
+        return;
+    }
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    assert_eq!(plx_net::net::user_agent(), None, "the child must start with nothing installed");
+    let cert = leaf(&["127.0.0.1"]);
+    let _ca = TestCaGuard::install(&cert.pem, "ua-wire-media");
+    let served = spawn_scripted(
+        cert,
+        [("/start", Reply::redirect(302, "/video.mkv")), ("/video.mkv", Reply::ok(media_body()))],
+    );
+    let _watch = watch("127.0.0.1", served.port);
+
+    for (path, hops) in [("/video.mkv", 1), ("/start", 2)] {
+        let mut src = CurlSource::open(&url_of("127.0.0.1", served.port, path), 0).expect("opens");
+        assert_eq!(read_to_end(&mut src), media_body());
+        let asked = requests(&served);
+        assert_eq!(asked.len(), hops, "{asked:?}");
+        for request in &asked {
+            assert_eq!(header(request, "user-agent"), None, "nothing installed, nothing sent: {request:?}");
+        }
+        served.requests.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent()).expect("the client's own name");
+    let agent = plx_net::net::user_agent().expect("installed");
+    for (path, hops) in [("/video.mkv", 1), ("/start", 2)] {
+        let mut src = CurlSource::open(&url_of("127.0.0.1", served.port, path), 0).expect("opens");
+        assert_eq!(read_to_end(&mut src), media_body());
+        let asked = requests(&served);
+        assert_eq!(asked.len(), hops, "{asked:?}");
+        for request in &asked {
+            let agents: Vec<_> = request.lines().filter(|l| l.to_ascii_lowercase().starts_with("user-agent:")).collect();
+            assert_eq!(agents, [format!("User-Agent: {agent}")], "exactly one, on every hop: {request:?}");
+        }
+        served.requests.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
 }
 
 #[test]

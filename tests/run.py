@@ -1121,14 +1121,23 @@ def triggers_for_case(case, url_base=None):
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
         files.append(("plxnative-gstlog", gst_debug))
-    # issue #266 PR4 review: force the PERSISTED Boost Dialog / Normalize Loudness preference at
-    # boot on EVERY case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements`
-    # calls the real persisting setter, so a case's starting preference is a property of the
-    # manifest instead of of whatever a PREVIOUS case's (or a real person's) toggle left behind. A
+    # issue #266 PR4 review: force the Boost Dialog / Normalize Loudness preference at boot on EVERY
+    # case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements` calls the
+    # real setter (it sets the live preference and, for a seated profile, saves it; the injected dev
+    # token never seats one, so a token boot sets the live preference alone), so a case's starting
+    # preference is a property of the manifest instead of of whatever a PREVIOUS case's (or a real
+    # person's) toggle left behind. A
     # case opts into a non-off start with `"audio_enhancements_boot": "loudness"` (used by the
     # reset case below to prove the cold-start "a saved preference forces a remux" path);
     # everything else gets `"off"`.
     files.append(("plxnative-audioenh", case.get("audio_enhancements_boot", "off")))
+    # Track memory (the per-show audio/subtitle pick a track-menu choice on an episode writes to the
+    # SEATED profile): forget it at the seat on EVERY case, for the same reason as the line above. A
+    # case's `menupick` is a viewer's pick and is remembered, so without this the next case that plays
+    # the same show would start from the previous case's tracks. `dev::scenarios::arm_track_memory`
+    # runs once at the first seat (`app::bridge::SeatWatch`); a dev-token boot never seats, writes no
+    # memory, and so has nothing to clear.
+    files.append(("plxnative-trackmemory", "clear"))
     # Arbitrary extra dev triggers, `{"name": content}` → `plxnative-<name>` in the runtime root
     # (`null` for a bare flag). For the one-run experiments a trigger exists for — `sinkmax`,
     # `nofps` — without teaching the harness a key per knob; the case's own triggers above win on
@@ -3832,16 +3841,18 @@ def op_audio_enhancement(lines):
 
 def op_audio_enhancement_release(lines):
     """The `audio_enhancement_normalize_reset` case's own settle grade: this case boots with
-    `plxnative-audioenh=loudness` forcing the PERSISTED preference ON before the first frame (via
+    `plxnative-audioenh=loudness` forcing the preference ON before the first frame (via
     `dev::scenarios::arm_audio_enhancements` -> `player::set_audio_enhancements`, the SAME real
-    setter a person's pick calls) — proving the cold-start `route/plan.rs` path (a saved
+    setter a person's pick calls; the injected dev token never seats a profile, so this sets the LIVE
+    preference and saves nothing) — proving the cold-start `route/plan.rs` path (a saved
     preference turns an otherwise direct-playable candidate into an enhanced remux before route
     ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
     ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
     playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
     -> `plan_original_recovery(.. EnhancementReleased)` on the frame, `run_original_recovery` on a flight worker). Because the toggle goes through the
-    ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
-    real — the case ends idempotent with no second op needed.
+    ordinary commit path (not a second boot trigger), it also puts the live preference back to OFF
+    for real — the case ends idempotent with no second op needed (under the dev token the toggle is
+    live-only too: the write door refuses to save for nobody).
 
     Graded on where the release actually LANDED, not on the line announcing it: `enhancement:
     released to Original direct play`, then the next `stream: .. path=` is the item's
@@ -5188,8 +5199,8 @@ def do_build(tv, timing=False):
     Functional runs keep the fast default. The profile that actually landed is checked afterwards by
     `require_release_binary`, which also covers a binary deployed without this flag.
     """
-    # The Makefile owns the whole build (it drives cargo +nightly with the load-bearing
-    # cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
+    # The Makefile owns the whole build (it drives cargo on the pinned stable toolchain with the
+    # load-bearing cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
     # copy of the toolchain invocation (the old hand-rolled zigbuild here did exactly that).
     profile_args = ["ARM_PROFILE=release"] if timing else []
     print("=== BUILD: make -> make deploy" + (" (ARM_PROFILE=release: timing run)" if timing else "") + " ===")
@@ -5879,6 +5890,49 @@ def grade_required_log(scene, lines):
     return True, " | required log line(s) present: " + ", ".join(repr(w) for w in want)
 
 
+def grade_scene_expect(scene, lines):
+    """`expect`: a scene's own log assertions, the playback cases' functions on the playback cases'
+    keys. For a player scene that exists to say what the app DECLARED or ROUTED (issue #665: a fixed
+    480p re-encode of a 4K file must declare the 1080p envelope, not the source's 4K60), where the
+    frame-rate gates above grade nothing it cares about. `no_error` is always checked. Returns
+    (ok, detail_suffix); a scene without `expect` passes untouched.
+
+    Keys: decision, codec (+ min_video_width / video_size), load_video, load_audio, load_fps,
+    load_max, sink_echo (all `a_load_decl`'s), min_timeline_climb_s, presented_rate (+
+    presented_rate_tol_pct; `a_presented_rate`). Anything else is a typo and
+    FAILS rather than being ignored: an assertion that silently does not run is the false pass this
+    function exists to prevent.
+    """
+    exp = scene.get("expect")
+    if not exp:
+        return True, ""
+    known = {"decision", "codec", "min_video_width", "video_size", "min_timeline_climb_s",
+             "presented_rate", "presented_rate_tol_pct"}
+    load_keys = {"load_video", "load_audio", "load_fps", "load_max", "sink_echo"}
+    unknown = sorted(set(exp) - known - load_keys)
+    if unknown:
+        return False, f" | unknown expect key(s): {', '.join(unknown)}"
+    results = []
+    if "decision" in exp:
+        results.append(("decision", *a_decision(lines, exp["decision"])))
+    if "codec" in exp:
+        results.append(("codec", *a_codec(
+            lines, exp["codec"], exp.get("min_video_width", 0), exp.get("video_size"))))
+    if load_keys & set(exp):
+        results.append(("load", *a_load_decl(lines, exp)))
+    if "min_timeline_climb_s" in exp:
+        results.append(("timeline_climb", *a_timeline_climb(lines, exp["min_timeline_climb_s"])))
+    if exp.get("presented_rate"):
+        # the sink's presented rate against the declared one (#832): `presented_rate: true` opts a
+        # scene IN; `presented_rate_tol_pct` widens the band exactly as on a playback case
+        results.append(("presented_rate", *a_presented_rate(lines, exp)))
+    results.append(("no_error", *a_no_error(lines)))
+    ok = all(r[1] for r in results)
+    detail = " | expect: " + "; ".join(
+        f"{'ok' if good else 'FAIL'} {label}: {why}" for label, good, why in results)
+    return ok, detail
+
+
 def fps_scene_needs_token(scene, has_shared_server=False):
     """Whether this scene must cross the signed-in boot gate.
 
@@ -6140,6 +6194,9 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok_r, detail_r = grade_required_log(scene, lines)
     ok = ok and ok_r
     detail += detail_r
+    ok_e, detail_e = grade_scene_expect(scene, lines)
+    ok = ok and ok_e
+    detail += detail_e
     detail += walk_detail
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
@@ -6742,6 +6799,8 @@ def main():
                 gates = f"loop_floor={s['loop_floor']}"
             elif s.get("bench"):
                 gates = f"bench_missed_max={s.get('bench_missed_max', 0)}"
+            elif s.get("expect"):
+                gates = f"expect={','.join(s['expect'])}"
             else:
                 gates = "gate=?"
             if s.get("fps_floor") is not None:
@@ -6758,6 +6817,8 @@ def main():
             if mock_fps.scene_mock(s) is not None:
                 mark += "  [mock-only]" if s["mock"].get("only") else "  [mock ok]"
             mark += f"  [SKIP: {s['skip']}]" if s.get("skip") else ""
+            if mock_fps.scene_mock(s) is not None and mock_fps.missing_mock_fixtures(s):
+                mark += f"  [mock SKIP: {mock_fps.missing_mock_fixtures(s)}]"
             print(f"fps:{s['name']:28s} tier={s.get('tier','ui'):6s} {tag:16s} {gates}{mark}")
         print(f"\ninstall: {APPID} [{FLAVOUR}] — runtime root {RUNDIR}")
         # Offline, so this reports what the OVERLAY says — nothing is resolved and plex.tv is not

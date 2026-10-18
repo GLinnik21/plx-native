@@ -49,6 +49,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `[port webos]` to `webos`, `keymanager`, `system`, `player::ffi` or `port`. Fix the reference
   (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
   adding a (file, member) pair to `ci/allow/layers.txt`, which is empty and only shrinks.
+- **Re-basing a stacked PR after the one below it squashes:** on the upper branch, `git merge
+  <lower's final head>`, `git merge <squash>^`, `git merge -s ours <squash>`, then
+  `git merge origin/main`. `-s ours` on the squash alone drops whatever `main` gained before it.
+- `gh pr merge --auto --squash --match-head-commit <sha>` can fail just after a push with "expected
+  head oid does not match"; wait ~15 s and retry. It is a race, not a real mismatch.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,
@@ -89,12 +94,16 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   takes ALL the slots (`--exclusive`)
   and no new check starts once it has asked. Never launch `make check` in the foreground with a
   short tool timeout — a queued run can wait a long time before it even starts building.
+- Two `make check` traps: `ci/check-deps.sh`'s libm lint reads any `.log(` call as `f64::ln`, so
+  don't name a method `log`; every new `MAX_*` / `*_MAX_*` constant needs a classification in
+  `ci/list-caps.ini`.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
 - `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
   (`app/run.rs` `lifecycle_regression_tests`, the player-return rig) run as `cd rust-modules &&
   CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> PLXNATIVE_RUNTIME_DIR=$(mktemp -d)
-  cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`; a filter that
+  cargo test --lib -p plxnative-modules --features hostsim -- <filter>` (a bare `cargo` inside
+  `rust-modules/` reads the pin in `rust-toolchain.toml`); a filter that
   matches nothing reports `0 tests` and still exits 0. Keep that target dir OUTSIDE the checkout
   and `git add` explicit paths: an untracked `rust-modules/target-*` is not ignored, and
   `git add -A rust-modules` commits it.
@@ -105,6 +114,8 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `.github/workflows/` or the module layout pastes a before/after `make build-bench` table in its
   body (`docs/agent-reference.md`, build section); the tool takes the `make check` lock exclusively
   (every slot), so it waits for running checks and nothing else builds while it measures.
+  Dependabot PRs (`.github/dependabot.yml`) are exempt: a bot cannot run it, so whoever merges a grouped
+  bump measures first when it changes the toolchain or the dependency set the build compiles.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - A plain local `make` / `make deploy` compiles the ARM library with the fast `tvdev` cargo profile
@@ -115,7 +126,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tvdev` binary (`make deploy` records the profile on the set); build with `make ARM_PROFILE=release
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
-  `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+  `CARGO_INCREMENTAL=0 cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml --lib
   --no-default-features` when the Claude-only release hook did not run. Keep the
   `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,
   so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
@@ -159,15 +170,28 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   line in the log before sending any key; never press `ok` on a card whose `ratingKey` you have not
   read from the log; reopen a screen by relaunching with `--screen` rather than walking Home. A
   Continue Watching tile resumes playback on OK whenever Settings > Playback > Continue Watching
-  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set,
-  so never assume which one a given install has. In the default the card's hold menu opens ON a
+  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
+  PER PROFILE (a profile that never chose reads the install's older value), so never assume which
+  one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
   Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.
+  So is the plex.tv Watchlist: a debug build refuses every add/remove unless the mock's discover
+  stand-in is armed or `plxnative-watchlist-live` exists in the install's runtime root. **Never
+  create that file unless the owner asks for it in that same session** — with it, a debug build
+  writes to the owner's real Watchlist. `.claude/hooks/watchlist-live-guard.py` refuses a command
+  that would (`docs/watchlist.md`, "The live switch").
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
   queue behind it.
+- A dev-token boot (`--guest --mock`) registers its server undescribed, so `owned` is false and
+  owned-only features (the PMS notification feed) stay dark. Test them with `tools/tv-session.sh up
+  --mock-plextv=PORT --screen login`, which signs in through the mock's plex.tv; never vouch the
+  rule in code.
+- `tools/mock-guest.py` can refuse a freshly started LAN mock ("configured PMS must answer as
+  tests/mock_pms.py") for a few minutes while loopback already answers; retry rather than debugging
+  the app.
 - The tracked default is `FLAVOR=debug`. Any stable install, package, deploy, or release action
   must name `FLAVOR=stable` explicitly and follow the `cut-release` skill. Do not bypass the stable
   guard or the TV lock unless the user explicitly directs the exceptional action.
