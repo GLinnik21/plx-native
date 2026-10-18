@@ -37,7 +37,19 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 
 /// The Under posters setting as the caption policy every Library grid card and band follows.
 pub(super) fn caption_policy() -> CaptionPolicy {
+    #[cfg(test)]
+    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
+        return crate::registry::caption_policy_of(setting);
+    }
     crate::registry::caption_policy_of(plx_media::route::under_posters())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A per-thread Under posters setting for a test, so it never writes the process-wide cell the other
+    /// library tests read through [`caption_policy`].
+    pub(super) static TEST_UNDER_POSTERS: std::cell::Cell<Option<plx_plex::plex::session::UnderPosters>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The facts of a catalog row a caption policy words its lines from.
