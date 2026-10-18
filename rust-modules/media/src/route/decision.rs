@@ -4118,8 +4118,10 @@ pub(super) struct AutoHlsInstalled {
 impl AutoHlsInstalled {
     /// The fields the install wrote to the session, on a projection: the reducer's restore point of
     /// a claim must describe the stream the landing installed ([`advance_claim_snapshot`]). HLS is
-    /// a full H.264/AAC encode: source FPS, Dolby Vision and E-AC3 JOC/Atmos belong to the Original
-    /// elementary streams and may not survive this route transition.
+    /// a full H.264/AAC encode that never copies the video (`transcode_query`: `copy_ok = !hls && …`,
+    /// so `directStream=0`): source FPS and E-AC3 JOC/Atmos belong to the Original elementary
+    /// streams and do not survive this route transition, and an HLS rung carries no Dolby Vision
+    /// declaration.
     pub(super) fn apply_to_projection(&self, p: &mut AppliedRouteProjection) {
         p.auto_original_watched = false;
         p.contract.remux = false;
@@ -5423,23 +5425,6 @@ pub fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecisio
     ps.stream_dv_decision
 }
 
-/// The Dolby Vision declaration a server-built stream feeds, as the raw record and its frozen
-/// decision (always paired, so a route mutation cannot clear one and leave a stale `Declare` of
-/// the other for Load). A re-encode carries no client-frozen source declaration, and neither does
-/// a copy of a base layer that is wrong undeclared (`no_video_copy`, the Profile 5 refusal). A
-/// copy of a usable one is still the file's stream, DOVI configuration record included, so it
-/// keeps what the direct play would have declared.
-fn copied_video_dv(
-    copies_video: bool,
-    src_dovi: plx_data::metadata::Dovi,
-    src_dv_decision: plx_data::metadata::DvDecision,
-) -> (plx_data::metadata::Dovi, plx_data::metadata::DvDecision) {
-    if copies_video && !src_dovi.base_layer_unusable() {
-        (src_dovi, src_dv_decision)
-    } else {
-        (plx_data::metadata::Dovi::NONE, plx_data::metadata::DvDecision::NONE)
-    }
-}
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -8635,9 +8620,10 @@ fn prepare_original_remux(
         let _ = c.transcode_stop(&replacement);
         return None;
     }
-    // A server that did not answer is assumed to copy: this is the remux contract, which copies.
+    // A server that did not answer follows the contract: a remux copies, a forced burn re-encodes.
     let (dovi, dv_decision) = copied_video_dv(
-        decision.as_ref().is_none_or(|mc| decision_copies_video(mc, true)),
+        decision.as_ref(),
+        &enhanced_remux_contract(audio, force_burn),
         plan.src_dovi,
         plan.src_dv_decision,
     );
@@ -9065,7 +9051,8 @@ pub(super) fn request_retranscode(
     }
     let output_codecs = decision_codecs(&decision).unwrap_or((fallback_vcodec, fallback_acodec));
     let (dovi, dv_decision) = copied_video_dv(
-        !contract.no_video_copy && decision_copies_video(&decision, contract.remux),
+        Some(&decision),
+        &contract,
         inputs.src_dovi,
         inputs.src_dv_decision,
     );

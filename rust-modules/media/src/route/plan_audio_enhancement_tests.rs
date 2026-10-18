@@ -235,7 +235,8 @@ fn named_unfetched_audio_keeps_its_id_and_fails_closed() {
 /// A declared Dolby Vision source whose base layer IS self-displayable (P7/P8) gets the
 /// enhancement too, and the remux keeps the declaration: the server copies the video, so the
 /// elementary stream still carries the DOVI configuration record the Load payload describes.
-/// (Measured on a Jellyfin DirectStream, `-codec:v copy`, whose log shows the record surviving.)
+/// (Measured on the dev PMS, `docs/pms-api.md` M9: the copied output keeps the DOVI record; a
+/// Jellyfin DirectStream, `-codec:v copy`, showed the same.)
 #[test]
 #[cfg(feature = "devtriggers")]
 fn dv_declared_p8_usable_base_is_enhanced_remux_that_keeps_dv() {

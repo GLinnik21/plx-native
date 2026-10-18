@@ -525,11 +525,12 @@ impl Dovi {
     /// - the direct-play gate **when no node will be sent** (`presentation` is written in terms of
     ///   this, so the two can never contradict each other), and
     /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
-    ///   hands us the identical elementary stream one container down, and the Load payload built
-    ///   for that path declares nothing. `route::build_stream` reads it for both
-    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
-    ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
-    ///   file, so the same pixels arriving by another route are as wrong as they ever were.
+    ///   hands us the identical elementary stream one container down. A copy of a usable base
+    ///   layer keeps the file's declaration (the DOVI record travels in the stream, so the Load
+    ///   payload describes it as a direct play's would), but a copy of an unusable one (Profile 5)
+    ///   is refused and never declared. `route::build_stream` reads it for both
+    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate): the same pixels
+    ///   arriving by another route are as wrong as they ever were.
     ///
     /// Two disqualifiers, and they are found by different fields:
     /// - **an enhancement layer** (`el_present`) — one elementary stream is all the pipeline

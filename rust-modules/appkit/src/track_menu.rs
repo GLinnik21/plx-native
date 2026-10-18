@@ -3444,7 +3444,7 @@ mod enhancement_menu_tests {
 
     /// M7: a usable-base-layer Dolby Vision source is offered the plain remux, with no
     /// Dolby-Vision-off note: whether the copied remux keeps DV is settled by its `/decision`
-    /// (`decision_copies_video`), and a copy keeps it.
+    /// (`copied_video_dv`), and a copy keeps it.
     #[test]
     fn enh_rows_offered_dv_is_plain_remux() {
         let _g = plx_base::testlock::serial();

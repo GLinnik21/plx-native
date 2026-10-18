@@ -4,6 +4,8 @@
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::*;
+use plx_data::metadata::{Dovi, DvDecision};
+use plx_platform::devcaps::dv::DvCapability;
 
 #[test]
 fn p8_without_confirmed_dv_support_uses_base_layer() {
@@ -718,4 +720,58 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         ),
         "the pipeline cannot feed it at any size"
     );
+}
+
+/// A `/decision` body whose video lane carries this `decision` text (empty = the lane is present
+/// but silent), or no video lane at all.
+fn decision_body(video_lane: Option<&str>) -> plx_plex::plex::MediaContainer {
+    let stream = match video_lane {
+        Some(d) => format!(r#"[{{"streamType":1,"decision":"{d}"}},{{"streamType":2,"decision":"transcode"}}]"#),
+        None => r#"[{"streamType":2,"decision":"transcode"}]"#.to_string(),
+    };
+    serde_json::from_str(&format!(
+        r#"{{"Metadata":[{{"Media":[{{"Part":[{{"decision":"transcode","Stream":{stream}}}]}}]}}]}}"#
+    ))
+    .expect("a decision body")
+}
+
+fn contract(remux: bool, no_video_copy: bool) -> plx_plex::plex::EncodeContract {
+    plx_plex::plex::EncodeContract { remux, no_video_copy, ..Default::default() }
+}
+
+/// The lane's own word wins; only a lane that says nothing follows the contract.
+#[test]
+fn decision_copies_video_follows_the_lane_then_the_contract() {
+    assert!(decision_copies_video(&decision_body(Some("copy")), false), "copy is a copy under any contract");
+    assert!(!decision_copies_video(&decision_body(Some("transcode")), true), "transcode re-encodes even for a remux");
+    for lane in [Some(""), None] {
+        assert!(decision_copies_video(&decision_body(lane), true), "a silent lane follows a remux");
+        assert!(!decision_copies_video(&decision_body(lane), false), "a silent lane follows a re-encode");
+    }
+}
+
+/// The one rule every server-built route asks: the file's declaration rides a COPY of a usable
+/// base layer, and nothing else. A missing `/decision` follows the contract, so a burn re-encode
+/// whose decision failed never declares Dolby Vision over a stream the server re-encoded.
+#[test]
+fn copied_video_dv_declares_only_a_copy_of_a_usable_base_layer() {
+    let none = (Dovi::NONE, DvDecision::NONE);
+    let sentinel = DvDecision { capability: DvCapability::Supported, ..DvDecision::NONE };
+    let src = (p8(), sentinel);
+    let copy = decision_body(Some("copy"));
+    let reencode = decision_body(Some("transcode"));
+
+    assert_eq!(copied_video_dv(Some(&copy), &contract(true, false), src.0, src.1), src, "a copy keeps the declaration");
+    assert_eq!(copied_video_dv(Some(&reencode), &contract(true, false), src.0, src.1), none, "a re-encode declares nothing");
+    assert_eq!(copied_video_dv(Some(&copy), &contract(true, true), src.0, src.1), none, "no_video_copy overrides a copy answer");
+    assert_eq!(copied_video_dv(Some(&copy), &contract(true, false), p5(), sentinel), none, "a Profile 5 copy is never declared");
+
+    // No decision: the contract alone decides.
+    assert_eq!(copied_video_dv(None, &contract(true, false), src.0, src.1), src, "a remux contract copies");
+    assert_eq!(
+        copied_video_dv(None, &contract(false, false), src.0, src.1),
+        none,
+        "a burn re-encode with no decision body must not declare (prepare_original_remux used to assume remux=true)",
+    );
+    assert_eq!(copied_video_dv(None, &contract(true, true), src.0, src.1), none);
 }
