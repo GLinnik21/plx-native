@@ -423,6 +423,7 @@ pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
     let dir = host_ffmpeg_dir();
     for (what, verdict) in [
         ("avutil", avutil::load(Some(&dir))),
+        ("swresample", swresample::load(Some(&dir))),
         ("avcodec", avcodec::load(Some(&dir))),
         ("avformat", avformat::load(Some(&dir))),
     ] {

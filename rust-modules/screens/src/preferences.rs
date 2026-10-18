@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use plx_plex::plex::session::{DolbyVisionMode, InstantDpadSeeking, UiResolution};
 use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
-use plx_media::route::{Choice, DeckPress, DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize, HdrOverlayBrightness};
+use plx_media::route::{AudioConversion, Choice, DeckPress, DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize, HdrOverlayBrightness};
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -44,6 +44,7 @@ pub enum Kind { Playback, AudioSubtitles }
 impl PickerKind {
     fn title(self) -> &'static str { match self {
         Self::Quality => plx_platform::i18n::msg::settings_playback_quality(), Self::DirectPlay => plx_platform::i18n::msg::settings_playback_direct_play(),
+        Self::AudioConversion => plx_platform::i18n::msg::settings_playback_audio_conversion(),
         Self::SubtitleSize => plx_platform::i18n::msg::settings_playback_subtitle_size(), Self::SubtitlePosition => plx_platform::i18n::msg::settings_playback_subtitle_position(),
         Self::HdrOverlay => plx_platform::i18n::msg::settings_playback_hdr_overlay(),
         Self::NextEpisode => plx_platform::i18n::msg::settings_playback_next_episode(),
@@ -60,6 +61,7 @@ impl PickerKind {
     fn copy(self) -> &'static str { match self {
         Self::Quality => plx_platform::i18n::msg::settings_playback_quality_copy(),
         Self::DirectPlay => plx_platform::i18n::msg::settings_playback_direct_play_copy(),
+        Self::AudioConversion => plx_platform::i18n::msg::settings_playback_audio_conversion_copy(),
         Self::SubtitleSize => plx_platform::i18n::msg::settings_playback_subtitle_size_copy(),
         Self::SubtitlePosition => plx_platform::i18n::msg::settings_playback_subtitle_position_copy(),
         Self::HdrOverlay => plx_platform::i18n::msg::settings_playback_hdr_overlay_copy(),
@@ -74,7 +76,7 @@ impl PickerKind {
     /// The field-list page this field belongs to; `None` for a field the Settings root lists itself.
     fn kind(self) -> Option<Kind> {
         match self {
-            Self::Quality | Self::DirectPlay | Self::SubtitleSize | Self::SubtitlePosition | Self::HdrOverlay | Self::NextEpisode | Self::DeckPress | Self::SkipInterval | Self::InstantDpadSeeking | Self::DolbyVision => Some(Kind::Playback),
+            Self::Quality | Self::DirectPlay | Self::AudioConversion | Self::SubtitleSize | Self::SubtitlePosition | Self::HdrOverlay | Self::NextEpisode | Self::DeckPress | Self::SkipInterval | Self::InstantDpadSeeking | Self::DolbyVision => Some(Kind::Playback),
             Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => Some(Kind::AudioSubtitles),
             Self::UiResolution => None,
         }
@@ -95,7 +97,7 @@ impl Kind {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Value { InstantDpadSeeking(InstantDpadSeeking), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), Language(String), Mode(i64), Forced(i64) }
+enum Value { InstantDpadSeeking(InstantDpadSeeking), DolbyVision(DolbyVisionMode), Quality(Quality), DirectPlay(DirectPlayMode), AudioConversion(AudioConversion), SubtitleSize(SubtitleSize), SubtitlePosition(SubtitlePosition), HdrOverlay(HdrOverlayBrightness), NextEpisode(NextEpisodeMode), DeckPress(DeckPress), SkipInterval(SkipInterval), UiResolution(UiResolution), Language(String), Mode(i64), Forced(i64) }
 
 /// The hashed half of a transaction: what the page shows while a load or save is in flight.
 struct Io { busy: bool, status: String }
@@ -257,6 +259,7 @@ impl Txn {
         let command = match value {
             Value::Quality(quality) => PreferenceCmd::Choose(Choice::Quality(quality), reply),
             Value::DirectPlay(mode) => PreferenceCmd::Choose(Choice::DirectPlay(mode), reply),
+            Value::AudioConversion(place) => PreferenceCmd::Choose(Choice::AudioConversion(place), reply),
             Value::SubtitleSize(size) => PreferenceCmd::Choose(Choice::SubtitleSize(size), reply),
             Value::SubtitlePosition(position) => PreferenceCmd::Choose(Choice::SubtitlePosition(position), reply),
             Value::HdrOverlay(brightness) => PreferenceCmd::Choose(Choice::HdrOverlayBrightness(brightness), reply),
@@ -346,6 +349,7 @@ impl FormId for RowId {
             Self::Field(PickerKind::InstantDpadSeeking) => 10,
             Self::Field(PickerKind::DolbyVision) => 11,
             Self::PlayerHud => 12,
+            Self::Field(PickerKind::AudioConversion) => 13,
             Self::Retry => 6,
         })
     }
@@ -381,6 +385,7 @@ pub struct PreferencesPage {
     /// The next-episode mode, deck press and skip interval the rows were last built from (not
     /// canonical state, like `look`).
     next_episode: NextEpisodeMode,
+    audio_conversion: AudioConversion,
     deck_press: DeckPress,
     skip_interval: SkipInterval,
     instant_dpad_seeking: InstantDpadSeeking,
@@ -396,7 +401,7 @@ impl PreferencesPage {
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(), values: Vec::new() },
             copy: String::new(), txn: Txn::new(false),
             look: (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::route::hdr_overlay_brightness()),
-            next_episode: plx_media::route::next_episode_mode(), deck_press: plx_media::route::deck_press(),
+            next_episode: plx_media::route::next_episode_mode(), audio_conversion: plx_media::route::audio_conversion(), deck_press: plx_media::route::deck_press(),
             skip_interval: plx_media::route::skip_interval(), instant_dpad_seeking: plx_media::route::instant_dpad_seeking(),
             dolby_vision: plx_media::route::dolby_vision_mode(), whose: Whose::now() };
         s.rebuild(None);
@@ -424,6 +429,7 @@ impl PreferencesPage {
         self.state.direct_play = plx_media::route::direct_play_mode();
         self.look = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::route::hdr_overlay_brightness());
         self.next_episode = plx_media::route::next_episode_mode();
+        self.audio_conversion = plx_media::route::audio_conversion();
         self.deck_press = plx_media::route::deck_press();
         self.skip_interval = plx_media::route::skip_interval();
         self.instant_dpad_seeking = plx_media::route::instant_dpad_seeking();
@@ -462,7 +468,7 @@ impl PreferencesPage {
 /// Which fields `kind`'s list shows: Audio & Subtitles has none until a snapshot has loaded.
 fn fields_of(inputs: &FieldListInputs<'_>) -> &'static [PickerKind] {
     match inputs.kind {
-        Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision],
+        Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::AudioConversion, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision],
         Kind::AudioSubtitles if inputs.prefs.is_some() => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
         _ => &[],
     }
@@ -473,6 +479,7 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
     match field {
         PickerKind::Quality => Value::Quality(quality),
         PickerKind::DirectPlay => Value::DirectPlay(direct_play),
+        PickerKind::AudioConversion => Value::AudioConversion(plx_media::route::audio_conversion()),
         PickerKind::SubtitleSize => Value::SubtitleSize(plx_media::route::subtitle_size()),
         PickerKind::SubtitlePosition => Value::SubtitlePosition(plx_media::route::subtitle_position()),
         PickerKind::HdrOverlay => Value::HdrOverlay(plx_media::route::hdr_overlay_brightness()),
@@ -496,6 +503,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .map(|q| (q.label().into(), Value::Quality(*q))).collect(),
         PickerKind::DirectPlay => [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled]
             .into_iter().map(|m| (mode_label(m).into(), Value::DirectPlay(m))).collect(),
+        PickerKind::AudioConversion => AudioConversion::LADDER.into_iter()
+            .map(|c| (audio_conversion_label(c).into(), Value::AudioConversion(c))).collect(),
         PickerKind::SubtitleSize => SubtitleSize::LADDER.into_iter()
             .map(|s| (subtitle_size_label(s).into(), Value::SubtitleSize(s))).collect(),
         PickerKind::SubtitlePosition => SubtitlePosition::LADDER.into_iter()
@@ -593,6 +602,12 @@ fn mode_label(mode: DirectPlayMode) -> &'static str {
     match mode { DirectPlayMode::Auto => plx_platform::i18n::msg::settings_playback_auto(), DirectPlayMode::Forced => plx_platform::i18n::msg::settings_playback_forced(), DirectPlayMode::Disabled => plx_platform::i18n::msg::settings_playback_disabled() }
 }
 use plx_appkit::track_menu::{subtitle_position_label, subtitle_size_label};
+fn audio_conversion_label(place: AudioConversion) -> &'static str {
+    match place {
+        AudioConversion::Server => plx_platform::i18n::msg::settings_playback_audio_conversion_server(),
+        AudioConversion::Tv => plx_platform::i18n::msg::settings_playback_audio_conversion_tv(),
+    }
+}
 fn hdr_overlay_label(brightness: HdrOverlayBrightness) -> &'static str {
     match brightness {
         HdrOverlayBrightness::Full => plx_platform::i18n::msg::settings_playback_hdr_overlay_full(),
@@ -678,6 +693,7 @@ impl Machine<InnerHost> for PreferencesPage {
                     || self.state.direct_play != plx_media::route::direct_play_mode()
                     || self.look != (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::route::hdr_overlay_brightness())
                     || self.next_episode != plx_media::route::next_episode_mode()
+                    || self.audio_conversion != plx_media::route::audio_conversion()
                     || self.deck_press != plx_media::route::deck_press()
                     || self.skip_interval != plx_media::route::skip_interval()
                     || self.instant_dpad_seeking != plx_media::route::instant_dpad_seeking()

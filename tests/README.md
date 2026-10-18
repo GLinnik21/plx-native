@@ -76,7 +76,9 @@ DTS requires an explicit capability row with a channel ceiling. The implemented 
 are `H264`/`H265` (and `AV1` / `VP9` only on a set whose codec table lists that decoder) and
 `AAC`/`AC3`/`AC3 PLUS`/`DTS`, plus `OPUS`, and `PCM` for the app-decoded FLAC / ALAC / LPCM, on a set whose per-firmware exclusions and learned
 refusals have not removed them (`devcaps.rs`). DTS-HD packets feed only their core;
-TrueHD and other unsupported feed formats still require server conversion. This is the
+TrueHD and other unsupported feed formats still require server conversion unless the profile's
+Convert audio is On the TV, in which case the file direct-plays and `ff_audio.rs` feeds AC3 (the
+audio-transcode cases assume the default). This is the
 implemented format set, not the complete vocabulary accepted by LG's firmware.
 
 | | AC3 | AC3 PLUS | AAC | DTS |

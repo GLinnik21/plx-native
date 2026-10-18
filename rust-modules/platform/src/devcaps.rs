@@ -278,6 +278,77 @@ pub fn app_decode_mixes_down(channels: i64) -> bool {
     !(1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
 }
 
+/// **"Convert audio: on the TV"** (Settings > Playback): the audio codecs the app decodes itself
+/// and re-encodes to AC3 (`plx_media`'s `ff_audio.rs`) when the viewer picked that, spelled as PMS's
+/// profile and `Stream.codec` spell them. None is in [`DP_AUDIO_CODECS`]: they are exactly what the
+/// pipeline cannot take, so by default the server converts the file.
+pub const TV_CONVERTED_AUDIO_CODECS: &str = "truehd,flac,alac,opus,vorbis,pcm";
+
+/// The FFmpeg the app ships can convert: `ff::boot` found the `ac3` encoder and the decoders.
+/// False until it has looked, which is every host test.
+static TV_AUDIO_CONVERTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The seated profile picked "on the TV" (written by the media layer's live cell for
+/// `AudioConversion`, which is where the choice lives; this copy is for the readers below it).
+static TV_AUDIO_CONVERSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `ff::boot`'s answer: can the bundled FFmpeg convert?
+pub fn set_tv_audio_converter(available: bool) {
+    TV_AUDIO_CONVERTER.store(available, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The seated profile's choice, published with its live cell.
+pub fn set_tv_audio_conversion(on: bool) {
+    TV_AUDIO_CONVERSION.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The viewer asked for conversion on the TV AND the app can do it. Either alone changes nothing:
+/// a profile offering TrueHD to a build that cannot decode it would refuse the file instead of
+/// letting the server convert it.
+pub fn tv_audio_conversion() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    TV_AUDIO_CONVERSION.load(Relaxed) && TV_AUDIO_CONVERTER.load(Relaxed)
+}
+
+/// One of [`TV_CONVERTED_AUDIO_CODECS`], in any case. PCM is matched in FFmpeg's `pcm_<format>`
+/// spellings too (`pcm_s24le`, `pcm_bluray`), which is how a Jellyfin server names it.
+pub fn tv_convertible(codec: &str) -> bool {
+    let codec = codec.to_ascii_lowercase();
+    TV_CONVERTED_AUDIO_CODECS.split(',').any(|c| c == codec) || codec.starts_with("pcm_")
+}
+
+/// This codec direct-plays because the app converts it: [`tv_audio_conversion`] and
+/// [`tv_convertible`].
+pub fn converted_on_tv(codec: &str) -> bool {
+    tv_audio_conversion() && tv_convertible(codec)
+}
+
+/// This track direct-plays because the app converts it, over an explicit capability value and
+/// conversion choice: `conversion`, [`tv_convertible`], and the set does not take THIS track
+/// itself (`caps` lists the codec at its channel count, and within the PCM path's limits where the
+/// app decodes it). A set that plays stereo Opus natively converts a 5.1 one and not a stereo one.
+pub fn converted_with(caps: &Caps, conversion: bool, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    conversion
+        && tv_convertible(codec)
+        && !(caps.audio_supports(&codec.to_ascii_lowercase(), channels) && audio_track_fits(codec, channels, sample_rate))
+}
+
+/// The `audioCodec` list of a direct-play profile: `decoded` (what the TV's own decoder takes, and
+/// what the app feeds it as PCM), followed, while `converting`, by the codecs of
+/// [`TV_CONVERTED_AUDIO_CODECS`] not already in it (FLAC is in both on a set whose table was read).
+pub fn direct_play_audio(decoded: &str, converting: bool) -> String {
+    if converting {
+        let mut list = decoded.split(',').filter(|c| !c.is_empty()).collect::<Vec<_>>();
+        for codec in TV_CONVERTED_AUDIO_CODECS.split(',') {
+            if !list.contains(&codec) {
+                list.push(codec);
+            }
+        }
+        list.join(",")
+    } else {
+        decoded.to_string()
+    }
+}
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// One native-audio combination that is **measured broken** on a firmware family, and so is not
@@ -2456,6 +2527,23 @@ mod tests {
         let unbounded = parse(&REAL.replace("\"channels\" : 6", "\"channels\" : 0")).unwrap();
         assert!(!unbounded.audio_has("dts"));
         assert!(!Caps::assumed().audio_supports("truehd", 6));
+    }
+
+    #[test]
+    fn the_codecs_converted_on_the_tv_are_the_ones_it_cannot_decode() {
+        for codec in ["truehd", "TrueHD", "flac", "alac", "opus", "vorbis", "pcm", "pcm_s24le", "pcm_bluray"] {
+            assert!(tv_convertible(codec), "{codec}");
+        }
+        for codec in ["aac", "ac3", "eac3", "dts", "mp3", "", "pcmx"] {
+            assert!(!tv_convertible(codec), "{codec}");
+        }
+        // Opus is both: the TV decodes it in stereo and the app converts the wider tracks
+        // (`converted_with` asks the set about the track first).
+        for codec in DP_AUDIO_CODECS.split(',').filter(|&c| c != "opus") {
+            assert!(!TV_CONVERTED_AUDIO_CODECS.split(',').any(|c| c == codec), "{codec} is the TV's own");
+        }
+        assert_eq!(direct_play_audio("aac,ac3,eac3", false), "aac,ac3,eac3");
+        assert_eq!(direct_play_audio("aac,ac3,eac3", true), "aac,ac3,eac3,truehd,flac,alac,opus,vorbis,pcm");
     }
 
     /// The merge is per-AXIS min, not a pick of the smaller row: a table whose duplicate rows

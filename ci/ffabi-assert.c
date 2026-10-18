@@ -145,6 +145,18 @@ SAME(AV_SAMPLE_FMT_S32P, 7, "speed_audio::SampleFormat::from_av S32P");
 SAME(AV_SAMPLE_FMT_FLTP, 8, "speed_audio::SampleFormat::from_av FLTP");
 SAME(AV_SAMPLE_FMT_DBLP, 9, "speed_audio::SampleFormat::from_av DBLP");
 SAME64(offsetof(AVFrame, pts), 136, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment) [host]");
+/* --- AVFrame: the audio converter's reads (decoded frames) and writes (encoder input),
+   `ff_audio.rs`. `ch_layout` is the AVChannelLayout ff.rs models beside AVCodecParameters. --- */
+SAME32(offsetof(AVFrame, extended_data), 64, "OFF_FRAME_EXTENDED_DATA != 64");
+SAME64(offsetof(AVFrame, extended_data), 96, "OFF_FRAME_EXTENDED_DATA != 64 [host]");
+SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_FRAME_NB_SAMPLES != 76");
+SAME64(offsetof(AVFrame, nb_samples), 112, "OFF_FRAME_NB_SAMPLES != 76 [host]");
+SAME32(offsetof(AVFrame, sample_rate), 132, "OFF_FRAME_SAMPLE_RATE != 132");
+SAME64(offsetof(AVFrame, sample_rate), 180, "OFF_FRAME_SAMPLE_RATE != 132 [host]");
+SAME32(offsetof(AVFrame, best_effort_timestamp), 208, "OFF_FRAME_BEST_EFFORT_TS != 208");
+SAME64(offsetof(AVFrame, best_effort_timestamp), 304, "OFF_FRAME_BEST_EFFORT_TS != 208 [host]");
+SAME32(offsetof(AVFrame, ch_layout), 256, "OFF_FRAME_CH_LAYOUT != 256");
+SAME64(offsetof(AVFrame, ch_layout), 384, "OFF_FRAME_CH_LAYOUT != 256 [host]");
 
 /* --- AVPacket: modelled field-by-field in ff.rs. Never allocated by us (av_packet_alloc does),
        but a short model would be a silent overread. sizeof went 72 -> 80 at FFmpeg 5.0:
@@ -207,6 +219,19 @@ SAME64(offsetof(AVCodecParameters, sample_rate), 152, "AVCodecParameters.sample_
 SAME32(offsetof(AVCodecParameters, ch_layout), 112, "AVCodecParameters.ch_layout moved");
 SAME64(offsetof(AVCodecParameters, ch_layout), 128, "AVCodecParameters.ch_layout moved [host]");
 SAME(offsetof(AVChannelLayout, nb_channels), 4, "AVChannelLayout.nb_channels moved");
+/* The audio converter (ff_audio.rs) builds AVChannelLayouts on its own stack for
+   swr_alloc_set_opts2 and av_channel_layout_default, so the SIZE is ABI too, and so are the two
+   enum values it compares and passes. */
+SAME(sizeof(AVChannelLayout), 24, "sizeof(AVChannelLayout) != 24");
+SAME(offsetof(AVChannelLayout, order), 0, "AVChannelLayout.order moved");
+SAME(offsetof(AVChannelLayout, u), 8, "AVChannelLayout.u moved");
+SAME(AV_CHANNEL_ORDER_UNSPEC, 0, "AV_CHANNEL_ORDER_UNSPEC != 0");
+SAME(AV_SAMPLE_FMT_FLTP, 8, "AV_SAMPLE_FMT_FLTP != 8");
+/* AVCodecContext.sample_fmt: the audio converter's AC3 encoder needs FLTP set before
+   avcodec_open2, and libavcodec's option table has no `sample_fmt` (only the decoders'
+   `request_sample_fmt`), so it is the one encoder field set by offset. */
+SAME32(offsetof(AVCodecContext, sample_fmt), 304, "OFF_CTX_SAMPLE_FMT != 304");
+SAME64(offsetof(AVCodecContext, sample_fmt), 348, "OFF_CTX_SAMPLE_FMT != 304 [host]");
 
 /* --- AVPacketSideData: one entry of the list above. `size` is a size_t, so the whole struct is
        12 bytes on 32-bit ARM and 24 on the 64-bit host — ff.rs spells that field `usize` so the

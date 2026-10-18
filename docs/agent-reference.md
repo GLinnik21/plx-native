@@ -981,12 +981,13 @@ kills the process at `exec()` — before `main`, before the event log exists. So
 its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONAME moves,
 55→57→58→59→60", which is the wrong mental model to carry into any FFmpeg change today.
 `ci/build-ffmpeg.sh` cross-compiles FFmpeg **9.0** with the NDK — shared, LGPL-clean (no
-`--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libavcodec-plx.so.63`,
-`libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
+`--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libswresample-plx.so.7`,
+`libavcodec-plx.so.63`, `libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
 ship those `.so` files **beside the binary**, and `ff.rs::load_libraries` opens them by **absolute
 path out of `paths::app_dir()`**, in dependency order under `RTLD_GLOBAL` (they carry no rpath —
 FFmpeg's configure evals its flags and `$ORIGIN` does not survive), after which `boot()` refuses to
-demux unless the majors are exactly **63/63/61**. Both the suffix and the absolute path are
+demux unless the majors are exactly **avformat 63 / avcodec 63 / avutil 61 / swresample 7** (libswresample
+is checked although libavcodec's DT_NEEDED names it, because the audio converter calls it directly). Both the suffix and the absolute path are
 load-bearing: webOS 11.2.0 ships FFmpeg 6 itself, so a bare SONAME could open the *television's*
 copy, and "which libavformat did we actually get" is precisely the question that cannot be answered
 over ssh. The reason to bundle was never the SONAME drift, which was survivable — it is that

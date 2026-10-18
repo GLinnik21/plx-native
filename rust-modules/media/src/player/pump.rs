@@ -3438,6 +3438,22 @@ mod flight_tests {
         crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
     }
 
+    /// A progressive remux from a server that writes the container live (Jellyfin's `stream.mkv`)
+    /// has no Duration, so the demuxer publishes none. The item's runtime stands in, and a seek
+    /// restarts the stream at the target instead of being dropped.
+    #[test]
+    fn a_stream_without_a_duration_seeks_on_the_items_runtime() {
+        let mut rig = Rig::new(120);
+        SHARED.duration_ns.store(0, Relaxed);
+        SHARED.duration_hint_ns.store(7_200_000_000_000, Relaxed);
+        assert!(SHARED.adopt_duration_hint(), "the demuxer read no duration, the hint stands in");
+        assert_eq!(SHARED.duration_ns.load(Relaxed), 7_200_000_000_000);
+        crate::player::request_seek(SEEK_TARGET_NS);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the seek must restart the stream, not be dropped");
+        rig.flight.wait_for("the rebuild's request", |f| f.decisions() == 1);
+    }
+
     /// Taps that arrive during a seek's flight coalesce to the LAST one: the first landing is
     /// outdated and discarded (its replacement stopped), and exactly one more flight runs, at the
     /// newest target.

@@ -9,12 +9,12 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{DolbyVisionModePref, AudioConversionPref, InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
-    DolbyVisionMode, InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
+    DolbyVisionMode, AudioConversion, InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
     HdrOverlayBrightness, HoldHintTaught, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
@@ -104,6 +104,7 @@ where
 fn every_marker_names_its_own_field() {
     check_row::<QualityPref>(PlaybackQuality::P720);
     check_row::<DirectPlayModePref>(DirectPlayMode::Forced);
+    check_row::<AudioConversionPref>(AudioConversion::Tv);
     check_row::<SubtitleTonePref>(SubtitleTone::Grey);
     check_row::<SubtitleSizePref>(SubtitleSize::Large);
     check_row::<SubtitlePositionPref>(SubtitlePosition::High);
@@ -127,7 +128,7 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 18 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
+    assert_eq!(DESCRIPTORS.len(), 19 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -217,6 +218,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     for (key, settings) in [
         ("playback_quality", Some(Confirm)),
         ("direct_play_mode", Some(Confirm)),
+        ("audio_conversion", Some(Confirm)),
         ("next_episode_mode", Some(Confirm)),
         ("skip_interval", Some(Confirm)),
         ("instant_dpad_seeking", Some(Confirm)),
@@ -328,6 +330,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
     vec![
         ("playback_quality", generic()),
         ("direct_play_mode", generic()),
+        ("audio_conversion", generic()),
         ("subtitle_tone", generic()),
         ("subtitle_size", generic()),
         ("subtitle_position", generic()),

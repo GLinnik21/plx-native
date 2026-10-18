@@ -35,8 +35,12 @@ pub use plx_platform::devcaps::DP_AUDIO_CODECS;
 ///
 /// The value is an argument, never a read of the process-wide `devcaps::caps()`: the profile the
 /// server is sent ([`TranscodeSpec::caps`]) and the plan that chose the track come from the same one.
+///
+/// A codec the app converts itself ("Convert audio: on the TV", `devcaps::converted_on_tv`)
+/// direct-plays at any channel count: the conversion folds 7.1 to 5.1.
 pub fn is_dp_audio_track_with(caps: &plx_platform::devcaps::Caps, codec: &str, channels: i64, sample_rate: i64) -> bool {
-    caps.audio_supports(codec, channels) && plx_platform::devcaps::audio_track_fits(codec, channels, sample_rate)
+    (caps.audio_supports(codec, channels) && plx_platform::devcaps::audio_track_fits(codec, channels, sample_rate))
+        || plx_platform::devcaps::converted_with(caps, plx_platform::devcaps::tv_audio_conversion(), codec, channels, sample_rate)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -220,6 +224,11 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
 fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery) -> String {
+    profile_for_delivery_with(caps, delivery, plx_platform::devcaps::tv_audio_conversion())
+}
+
+/// [`profile_for_delivery`] over an explicit "Convert audio: on the TV" choice (`tv_audio`).
+fn profile_for_delivery_with(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery, tv_audio: bool) -> String {
     let dp_video = direct_play_video_codecs(caps).join(",");
     // The table-gated copy codecs, in list order. Each one is advertised only when the table
     // carries ITS row, and each brings the row's own bound (see `row_limits`).
@@ -279,7 +288,12 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             caps.vp9_bit_depth
         ));
     }
-    let dp_audio = caps.audio.split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
+    // The TV's own audio decoders, then, while "Convert audio: on the TV" is in force (`tv_audio`),
+    // the codecs the app converts itself. Only the direct-play profile grows: the transcode target
+    // below is what a server ENCODES to, and the converted codecs carry no channel limitation
+    // because the conversion folds 7.1 to 5.1.
+    let dp_audio = plx_platform::devcaps::direct_play_audio(&caps.audio, tv_audio)
+        .split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
     // opus is only ever a copy lane: last, so it can never be the encode head. The fixed HLS
     // rendition is AAC whatever the caps list, so its rate bound below must not depend on them.
@@ -344,13 +358,18 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
 }
 
 fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
-    profile_for_delivery(caps, TranscodeDelivery::ProgressiveMkv)
+    profile_for_delivery_with(caps, TranscodeDelivery::ProgressiveMkv, false)
 }
 
 /// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
 /// target. `vp9` and `av1` join the video list only when the device table lists their rows (issue
 /// #593); a forced start never widens the codec set past what the table says the panel decodes.
 fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
+    forced_direct_profile_with(caps, plx_platform::devcaps::tv_audio_conversion())
+}
+
+/// [`forced_direct_profile_for`] over an explicit "Convert audio: on the TV" choice (`tv_audio`).
+fn forced_direct_profile_with(caps: &plx_platform::devcaps::Caps, tv_audio: bool) -> String {
     let mut video = "h264,hevc".to_string();
     if caps.vp9 {
         video.push_str(",vp9");
@@ -363,7 +382,7 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     // pipeline cannot decode. The lossy app-decoded ids the policy admits follow (those not already
     // listed: DTS is, where the table has the row): the app decodes them, so a set with no decoder for
     // one still gets a direct-play answer for it instead of a transcode (`Caps::app_may_decode_lossy`).
-    let audio = DP_AUDIO_CODECS
+    let fed = DP_AUDIO_CODECS
         .split(',')
         .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
         .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy).map(|c| c.id))
@@ -374,7 +393,9 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
             }
             seen
         })
-        .into_iter()
+        .join(",");
+    let audio = plx_platform::devcaps::direct_play_audio(&fed, tv_audio)
+        .split(',')
         .map(profile_codec_name)
         .collect::<Vec<_>>()
         .join(",");
@@ -1819,6 +1840,22 @@ mod tests {
             "{p}"
         );
         assert!(!target_of(&p).contains("av1"), "{p}");
+    }
+
+    /// "Convert audio: on the TV": the direct-play profile offers the codecs the app converts after
+    /// the TV's own, with no channel limitation of their own, and the transcode target (what a
+    /// server encodes to) is unchanged.
+    #[test]
+    fn converting_on_the_tv_offers_the_converted_codecs_for_direct_play_only() {
+        let caps = Caps::assumed();
+        let off = super::profile_for_delivery_with(&caps, TranscodeDelivery::ProgressiveMkv, false);
+        let on = super::profile_for_delivery_with(&caps, TranscodeDelivery::ProgressiveMkv, true);
+        assert_eq!(list_of(&off, "audioCodec="), ["aac", "ac3", "eac3"]);
+        assert_eq!(list_of(&on, "audioCodec="), ["aac", "ac3", "eac3", "truehd", "flac", "alac", "opus", "vorbis", "pcm"]);
+        assert_eq!(target_of(&on), target_of(&off));
+        assert!(!on.contains("scopeName=truehd"), "{on}");
+        assert_eq!(list_of(&super::forced_direct_profile_with(&caps, true), "audioCodec="),
+            ["aac", "ac3", "eac3", "truehd", "flac", "alac", "opus", "vorbis", "pcm"]);
     }
 
     /// The forced profile is the engine's own formats with no device limits: its literal is

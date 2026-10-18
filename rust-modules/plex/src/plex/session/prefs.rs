@@ -1,6 +1,6 @@
 //! **The preference keys, declared once.**
 //!
-//! [`Preferences`] is the ten player scalars and the hero trailer autoplay switch (PER PROFILE
+//! [`Preferences`] is the per-profile player scalars and the hero trailer autoplay switch (PER PROFILE
 //! since the seat work: each is read from the seated profile's own record in `profile_prefs`,
 //! falling back to the frozen install-wide key beside it, see [`profile_prefs`]), and since A5
 //! every other preference key of the
@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    DolbyVisionMode, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
+    DolbyVisionMode, AudioConversion, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
     PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -85,6 +85,11 @@ pub struct Preferences {
     /// fallback of `profile_prefs`); malformed/future values remain automatic.
     #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
     pub direct_play_mode: DirectPlayMode,
+    /// **Where audio this television cannot decode is converted** — see [`AudioConversion`]. A
+    /// frozen fallback like [`Preferences::subtitle_tone`]. Absence is Server, what every build before
+    /// the field did. Skipped at the default for the same reason as [`Preferences::subtitle_size`].
+    #[serde(default, deserialize_with = "de_soft_audio_conversion", skip_serializing_if = "is_default_audio_conversion")]
+    pub audio_conversion: AudioConversion,
     /// **How bright the client-rendered subtitles are drawn** — white, or a rung of the grey
     /// ladder under it. A frozen install-wide fallback like [`Preferences::playback_quality`]; each
     /// profile keeps its own pick in `profile_prefs`. (It was install-wide because an HDR picture maps
@@ -370,7 +375,7 @@ pub struct Preferences {
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
-/// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
+/// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the eleven player
 /// scalars, the hero trailer autoplay switch, the chosen HUD's package id ([`HudSelectionPref`], a `String` row) (each
 /// with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
@@ -514,6 +519,8 @@ impl Setting for QualityPref {
 
 setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(AudioConversionPref: AudioConversion = audio_conversion, "audio_conversion", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
@@ -643,6 +650,7 @@ impl Descriptor {
 pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<QualityPref>(),
     Descriptor::of::<DirectPlayModePref>(),
+    Descriptor::of::<AudioConversionPref>(),
     Descriptor::of::<SubtitleTonePref>(),
     Descriptor::of::<SubtitleSizePref>(),
     Descriptor::of::<SubtitlePositionPref>(),
@@ -1306,6 +1314,22 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_subtitle_position(position: &SubtitlePosition) -> bool {
     *position == SubtitlePosition::default()
+}
+
+/// Where audio is converted is a preference too: a spelling this build does not know degrades to the server.
+fn de_soft_audio_conversion<'de, D>(d: D) -> Result<AudioConversion, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(AudioConversion::default());
+    };
+    Ok(serde_json::from_value::<AudioConversion>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_audio_conversion(c: &AudioConversion) -> bool {
+    *c == AudioConversion::default()
 }
 
 /// The HDR overlay brightness is a preference too: a spelling this build does not know degrades to the default (75%).

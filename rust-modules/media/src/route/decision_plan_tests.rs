@@ -148,6 +148,39 @@ fn a_new_request_ends_the_standing_error_of_a_released_engine() {
     reset_session(&mut ps);
 }
 
+/// The item's runtime stands in for the length of a live server stream, and for nothing else:
+/// a transcode or remux plan installs it as the duration hint, a direct play installs none, so a
+/// direct-play file with no duration of its own still shows as the bug it is.
+#[test]
+fn apply_plan_hints_the_items_runtime_for_a_server_stream_only() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let playing = || {
+        Some(plx_data::metadata::PlayingItem { duration_ms: 5_400_000, ..plx_data::metadata::PlayingItem::with_subs(Vec::new()) })
+    };
+    apply_plan(
+        &mut ps,
+        Plan {
+            url: "https://example.invalid/stream.mkv?static=false".into(),
+            tsession: "enc-1".into(),
+            playing: playing(),
+            ..Default::default()
+        },
+        "rk-live",
+    );
+    assert_eq!(crate::player::SHARED.duration_hint_ns.load(std::sync::atomic::Ordering::Relaxed), 5_400_000_000_000);
+    apply_plan(
+        &mut ps,
+        Plan { url: "https://example.invalid/f.mkv".into(), playing: playing(), ..Default::default() },
+        "rk-direct",
+    );
+    assert_eq!(
+        crate::player::SHARED.duration_hint_ns.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a direct play never adopts the item's runtime"
+    );
+}
+
 /// Issue #266: `apply_plan` is the ONE place a resolve's audio facts enter the session. The
 /// contract's `audio` (what the URL asked for), the outcome (what the decision did with it) and
 /// the carried track (what the pipeline feeds) are installed exactly as the plan built them —

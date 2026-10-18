@@ -328,7 +328,7 @@ impl ConsentMachine {
 /// **The one trigger of the per-profile player cells**: the seat they were last restored for.
 ///
 /// A seat changes only by a profile publication, so the bridge's `SessionFx::PublishProfile` arm
-/// shows every new seat to [`SeatWatch::arrive`], which restores the ten cells
+/// shows every new seat to [`SeatWatch::arrive`], which restores the per-profile cells
 /// (`route::restore_profile_rows`) when the seat is not the one already restored. That covers every
 /// path (a stored boot, the boot picker's pick, a change of profile, a fresh sign-in, a sign-out) and
 /// puts the restore before the `Ready` of the same step, which is why `follow_auth_landing` no longer

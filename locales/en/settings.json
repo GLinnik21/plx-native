@@ -807,6 +807,22 @@
     "value": "Auto plays the original file when this television can; otherwise your Plex server converts it. Disabled always converts. Force skips every check: for troubleshooting only.",
     "description": "Explanation under the title of the Direct Play picker. Names its three modes in order: Auto, Disabled and Force (the picker's third option, 'Force Direct Play (advanced)'). While Force is on the Force note replaces it."
   },
+  "settings.playback.audio_conversion": {
+    "value": "Convert audio",
+    "description": "Settings row title and picker title: where audio this television cannot decode itself (Dolby TrueHD, FLAC, ALAC, Opus, Vorbis, PCM) is converted into a format it plays."
+  },
+  "settings.playback.audio_conversion.server": {
+    "value": "On the server",
+    "description": "Convert audio picker option (the default): the Plex server converts audio the TV cannot decode, which means it converts the whole file."
+  },
+  "settings.playback.audio_conversion.tv": {
+    "value": "On the TV",
+    "description": "Convert audio picker option: the file still plays directly and this app converts the sound itself, to Dolby Digital (AC3)."
+  },
+  "settings.playback.audio_conversion.copy": {
+    "value": "For audio this TV cannot play itself, such as Dolby TrueHD, FLAC or Opus. On the server converts the file there. On the TV plays it directly and turns the sound into Dolby Digital here.",
+    "description": "Explanation under the title of the Convert audio picker. It names the two options by their picker labels (On the server, On the TV); keep those words identical to settings.playback.audio_conversion.server and .tv. Dolby TrueHD, FLAC, Opus and Dolby Digital are format names and stay as they are."
+  },
   "settings.playback.subtitle_size.copy": {
     "value": "How large subtitle text is. Picture and styled subtitles keep their own size. Also under Style in the player's Subtitles menu.",
     "description": "Explanation under the title of the Subtitle size picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Size row under Style on the Subtitles tab of the player's track menu."

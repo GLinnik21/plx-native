@@ -1646,6 +1646,11 @@ fn playable_buffer_ms(
     )
 }
 
+/// The Load's audio code (`Diag::load_a`) for an AC3 the app encodes itself from a track the
+/// pipeline cannot take ("Convert audio: on the TV", `ff_audio.rs`), so the read-out can name it
+/// apart from a file's own AC3 (code 1).
+pub const DG_LOAD_A_CONVERTED_AC3: u8 = 7;
+
 impl Diag {
     /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
     #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
@@ -1669,6 +1674,8 @@ impl Diag {
             4 => "DTS",
             5 => "PCM (decoded in the app)",
             6 => "OPUS",
+            // An AC3 the app encodes itself ("Convert audio: on the TV").
+            DG_LOAD_A_CONVERTED_AC3 => "AC3",
             _ => "NONE (needAudio:false)",
         }
     }

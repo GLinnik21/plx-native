@@ -444,7 +444,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 }
 
 
-pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub use plx_plex::plex::session::{PlaybackQuality as Quality, AudioConversion, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -3138,8 +3138,19 @@ pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
+    audio_direct_plays_for(caps, plx_platform::devcaps::tv_audio_conversion(), mode, codec, channels, sample_rate)
+}
+
+/// [`audio_direct_plays_with`] with the "Convert audio: on the TV" choice passed in, so the rule
+/// is decidable from values alone: what the set decodes, what the app decodes to PCM, or what the
+/// app converts to AC3 itself (`devcaps::converted_with`).
+pub(super) fn audio_direct_plays_for(
+    caps: &plx_platform::devcaps::Caps, conversion: bool, mode: DirectPlayMode, codec: &str, channels: i64,
+    sample_rate: i64,
+) -> bool {
     audio_natively_plays_with(caps, mode, codec, channels, sample_rate)
         || caps.app_decodes_lossy_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
+        || plx_platform::devcaps::converted_with(caps, conversion, codec, channels, sample_rate)
 }
 
 /// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass and last

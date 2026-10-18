@@ -9122,6 +9122,17 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // The remembered choice this landing applied and the server may not have (W6). Computed here
     // because the playing item moves into the store just below, and only for a playable landing.
     let write_back = parked_write_back(&plan);
+    // The item's runtime stands in for the length of a LIVE server stream, which never carries one
+    // (the demuxer adopts it, `Shared::adopt_duration_hint`). Only a transcode or remux plan gets
+    // it: a direct-play file with no duration of its own is a bug to see, not to paper over.
+    // Replaced by every plan: it describes this item.
+    crate::player::SHARED.duration_hint_ns.store(
+        plan.playing
+            .as_ref()
+            .filter(|_| !plan.tsession.is_empty())
+            .map_or(0, |p| p.duration_ms.max(0).saturating_mul(1_000_000)),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     meta.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));

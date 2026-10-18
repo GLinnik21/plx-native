@@ -55,7 +55,7 @@ use super::probe::Location;
 mod playback_options;
 pub use playback_options::{DolbyVisionMode, InstantDpadSeeking};
 
-pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioEnhancementsPref,
+pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioConversionPref, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
@@ -1431,6 +1431,37 @@ impl UiResolution {
     }
 }
 
+/// **Where audio this television cannot decode is converted** (Settings > Playback > Convert
+/// audio) — one per profile, like [`DirectPlayMode`]. The TV's own decoder takes AC3, E-AC3, AAC
+/// and DTS; TrueHD, FLAC, ALAC, Opus, Vorbis and PCM are none of them. `Server`, the default and
+/// what every build before the setting did, leaves those out of the direct-play profile, so the
+/// server converts the file. `Tv` offers them for direct play and the app decodes the sound itself
+/// and re-encodes it to AC3 (`plx_media`'s `ff_audio.rs`), whenever the FFmpeg it ships can
+/// (`devcaps::converted_on_tv`).
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioConversion {
+    #[default]
+    #[serde(rename = "server")]
+    Server,
+    #[serde(rename = "tv")]
+    Tv,
+}
+
+impl AudioConversion {
+    /// Both places, the default first — the order the picker lists them in.
+    pub const LADDER: [AudioConversion; 2] = [AudioConversion::Server, AudioConversion::Tv];
+
+    /// An in-memory index back to a value — out of range is the default, for the reason
+    /// [`SubtitleTone::from_index`] gives.
+    pub fn from_index(i: u8) -> AudioConversion {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&c| c == self).unwrap_or(0) as u8
+    }
+}
+
 /// **How bright the player's overlay and captions are drawn while the picture is HDR** — one per
 /// profile, like [`SubtitleTone`]. A television maps graphics white in an HDR picture to a far
 /// brighter level than the same white in SDR (the HUD and the captions are graphics; the panel
@@ -2601,6 +2632,10 @@ impl Session {
 
     pub fn hdr_overlay_brightness(&self) -> HdrOverlayBrightness {
         self.prefs.hdr_overlay_brightness
+    }
+
+    pub fn audio_conversion(&self) -> AudioConversion {
+        self.prefs.audio_conversion
     }
 
     pub fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {

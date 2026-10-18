@@ -17,7 +17,7 @@
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PREFIX="$ROOT/vendor/ffmpeg-prefix-host"
-LIBS='libavutil-plx.61 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10'
+LIBS='libavutil-plx.61 libswresample-plx.7 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10'
 name=$1
 
 src=$(ls "$PREFIX/lib/$name".*.*.dylib 2>/dev/null | head -1)

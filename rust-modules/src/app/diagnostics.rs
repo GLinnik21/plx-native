@@ -711,6 +711,9 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     if plx_media::route::stream_immersive(ps) {
         audio.push_str(" · Dolby Atmos");
     }
+    if d.load_a == plx_media::player::DG_LOAD_A_CONVERTED_AC3 {
+        audio.push_str(" · converted on the TV");
+    }
     // Issue #266: only when the server DEMONSTRABLY applied the DSP — `Unverified`/`Refused`/`Off`
     // say nothing was provably added to this stream, so the row must not claim it.
     let applied = plx_media::route::applied_audio_enhancements(ps);

@@ -86,10 +86,12 @@ which is the point.
 
 Consequences to check in any FFmpeg-touching diff:
 
-* the candidate lists are `libavformat-plx.so.63`, `libavcodec-plx.so.63`, `libavutil-plx.so.61`,
-  `libswscale-plx.so.10`, and `ff::boot()` refuses to demux unless the majors are exactly
-  **`(63, 63, 61)`**. A diff that changes the FFmpeg build must change both, together.
-* **load order is `avutil` → `avcodec` → `avformat`, under `RTLD_GLOBAL`, and it is load-bearing**
+* the required candidate lists are `libavutil-plx.so.61`, `libswresample-plx.so.7`,
+  `libavcodec-plx.so.63`, `libavformat-plx.so.63` (`libswscale-plx.so.10` is optional), and
+  `ff::boot()` refuses to demux unless the majors are exactly **`(63, 63, 61, 7)`**. A diff that
+  changes the FFmpeg build must change both, together.
+* **load order is `avutil` → `swresample` → `avcodec` → `avformat`, under `RTLD_GLOBAL`, and it is
+  load-bearing** (libavcodec NEEDs libswresample)
   — these libraries carry no rpath, so a dependency loaded first is what the next one finds
   instead of the television's copy.
 * **swscale is deliberately NOT required.** `RELEASE=1` drops it from the package (only the dev

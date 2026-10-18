@@ -34,7 +34,7 @@ they no longer do, because the TV's version moves with the firmware (libavformat
 
 | Shipped file | Upstream | Licence |
 |---|---|---|
-| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0.2**, unmodified | LGPL-2.1-or-later |
+| `libavutil-plx.so.61`, `libswresample-plx.so.7`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0.2**, unmodified | LGPL-2.1-or-later |
 
 **These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
 complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
@@ -54,7 +54,7 @@ has always done).
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
 component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
-LGPL audio decoders the app runs itself are enabled — video and, in the ordinary case, audio are
+LGPL audio decoders the app runs itself and the AC3 encoder behind Settings > Playback > Convert audio are enabled — video and, in the ordinary case, audio are
 decoded by the television's hardware, not by FFmpeg. FLAC, ALAC and LPCM are decoded by the app
 because the television's player has no input for them; the result is fed to it as PCM. The DTS core is decoded
 by the app (`dca`) where Force Direct Play has no native path for it or a refused open falls back to it. The one external library enabled is **zlib**,

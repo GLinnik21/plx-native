@@ -1173,3 +1173,46 @@ fn an_attempt_without_dts_picks_the_ac3_sibling_while_the_wider_attempt_keeps_th
     assert_eq!(pick(&a), Some((0, "dca".into(), 11)), "the set with a DTS row direct-plays its default");
     assert_eq!(pick(&b), Some((1, "ac3".into(), 12)), "without the row the same-language AC3 plays instead");
 }
+
+/// The C1: Opus is listed but limited to stereo (`opus<=2`), the shape `devcaps` leaves it in.
+fn c1_opus_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts,flac,opus".into(),
+        audio_channels: [("opus".into(), 2), ("flac".into(), 2)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    }
+}
+
+/// **"Convert audio: on the TV" makes a track the app converts a direct-play pick in Auto**, as it
+/// does in Forced: the original file is played and the TV converts the audio. Without it Opus 5.1
+/// (beyond the C1's stereo limit) read as not direct-playable, the planner asked the server for
+/// a remux, and the live stream it returned has no duration, so every seek was dropped.
+#[test]
+fn auto_direct_plays_audio_the_app_converts_on_the_tv() {
+    let caps = c1_opus_caps();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(audio_direct_plays_for(&caps, true, mode, "opus", 6, 0), "{mode:?}: converted on the TV");
+        assert!(audio_direct_plays_for(&caps, true, mode, "opus", 2, 0), "{mode:?}: stereo is the set's own");
+    }
+    assert!(!audio_direct_plays_for(&caps, false, DirectPlayMode::Auto, "opus", 6, 0), "conversion off: the server converts");
+    assert!(audio_direct_plays_for(&caps, false, DirectPlayMode::Auto, "opus", 2, 0), "stereo Opus stays native");
+    assert!(!audio_direct_plays_for(&caps, true, DirectPlayMode::Auto, "dts", 8, 0), "DTS is not one the app converts");
+    assert!(audio_direct_plays_for(&caps, true, DirectPlayMode::Auto, "truehd", 8, 0), "TrueHD is");
+}
+
+/// The planner's pick follows it: a lone Opus 5.1 track is picked with conversion on and left to
+/// the server with it off.
+#[test]
+fn the_planner_picks_an_opus_51_track_only_when_the_tv_converts_it() {
+    let caps = c1_opus_caps();
+    let mut opus = server_selected(trk(7, "opus", "por", true));
+    opus.channels = 6;
+    let tracks = [opus];
+    let pick = |conversion: bool| {
+        pick_dp_audio_eligible(&tracks, "opus", AudioLangPrefs::default(), 0, StandIn::Any,
+            |c, n, r| audio_direct_plays_for(&caps, conversion, DirectPlayMode::Auto, c, n, r))
+            .map(|(_, _, id)| id)
+    };
+    assert_eq!(pick(true), Some(7));
+    assert_eq!(pick(false), None);
+}

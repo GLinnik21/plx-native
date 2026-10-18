@@ -1221,6 +1221,8 @@ fn parse_sinkmax(spec: &str) -> Option<SinkEnvelope> {
 /// LG's buffer-feed vocabulary. libpf CustomPipeline::parseOptionStringSpi accepts DTS;
 /// getAudioCaps selects audio/x-dts and setAdecSinkInfo_ES configures dts-seamless (issue #221).
 /// Unsupported formats must never be mislabeled as AC3: that can stall the audio master clock.
+use crate::player::DG_LOAD_A_CONVERTED_AC3;
+
 fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
     // PMS names DTS `dca`; the shared canonicaliser maps every spelling onto the pipeline's.
     match plx_platform::devcaps::audio_codec_id(codec).as_ref() {
@@ -1987,6 +1989,8 @@ fn start_bufferfeed_inner(
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
     let no_audio = super::no_audio_armed();
     crate::ff::set_feed_audio(!no_audio);
+    // Off unless the audio arm below declares a converted AC3.
+    crate::ff::set_convert_audio(false);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
     // one through `sink_envelope_now` — so a new arm that forgets it fails to compile.
@@ -2049,8 +2053,27 @@ fn start_bufferfeed_inner(
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
             let codec = crate::route::stream_acodec(ps);
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
-            // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps)) {
+            // exactly that.
+            let app_pcm = app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps));
+            // "Convert audio: on the TV": a codec the pipeline cannot take at this track's channel
+            // count (stereo Opus goes to the TV's own decoder, `ff_native_audio.rs`), and that the
+            // app's PCM path does not carry either (FLAC in mono or stereo at a rate `pcmInfo` can
+            // name goes as PCM, `devcaps::audio_track_fits`), is declared AC3 and the demuxer
+            // converts it (`ff_audio.rs`), from this one answer. Never at a speed: there the speed
+            // decoder feeds every codec as PCM.
+            let pcm_carries = matches!(&app_pcm, Some(Ok(f))
+                if plx_platform::devcaps::audio_track_fits(&codec, i64::from(f.channels), i64::from(f.sample_rate)));
+            let decoded_natively = !plx_platform::devcaps::is_pcm_codec(&codec)
+                && plx_platform::devcaps::caps().audio_supports(&codec, crate::route::stream_achannels(ps));
+            let converted = session_rate == super::RATE_NORMAL
+                && !pcm_carries
+                && !decoded_natively
+                && plx_platform::devcaps::converted_on_tv(&codec);
+            crate::ff::set_convert_audio(converted);
+            // Missing facts refuse a PCM Load — a guessed rate plays at the wrong pitch. A converted
+            // track is AC3 whatever its facts, and opens no PCM decoder.
+            let pcm = match app_pcm {
+                _ if converted => None,
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
@@ -2062,9 +2085,14 @@ fn start_bufferfeed_inner(
             // Dev trigger `pcmavoffset=<ms>` (debug builds, read per Load): how the lead is measured
             // on an output the default was not filmed on.
             let lead_override = plx_base::devtrig::read("pcmavoffset");
-            let Some(audio) = load_audio(
-                &codec, session_rate, pcm.as_ref(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
-            ) else {
+            let declared = if converted {
+                Some(converted_load_audio())
+            } else {
+                load_audio(
+                    &codec, session_rate, pcm.as_ref(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
+                )
+            };
+            let Some(audio) = declared else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
@@ -3709,6 +3737,12 @@ fn settle_pcm_lead(eng: &mut Engine) -> bool {
     eng.pcm_sink_lead_ns = ns;
     eng.pcm_lead_pending = false;
     true
+}
+
+/// The Load's audio for a track the demuxer converts to AC3 (`devcaps::converted_on_tv`): the
+/// pipeline's own AC3, which is not PCM and so carries no sink lead.
+fn converted_load_audio() -> LoadAudio {
+    LoadAudio { name: "AC3", diagnostic: DG_LOAD_A_CONVERTED_AC3, lead: PcmLead::Off }
 }
 
 fn hls_candidate_snapshot_stable(start: u64, end: u64) -> bool {
@@ -8015,6 +8049,12 @@ mod sink_envelope_tests {
         for codec in ["truehd", "", "unknown", "pcm_f32le", "pcm_bluray", "pcm_u8"] {
             assert_eq!(audio_payload_codec(codec), None);
         }
+        // Converted on the TV, those are AC3 the app made; the TV's own codecs never are.
+        let converted = converted_load_audio();
+        assert_eq!((converted.name, converted.diagnostic), ("AC3", DG_LOAD_A_CONVERTED_AC3));
+        assert!(matches!(converted.lead, PcmLead::Off), "AC3 is not PCM and carries no lead");
+        assert!(load_audio("truehd", crate::player::RATE_NORMAL, None, None, AudioStack::Other).is_none());
+        assert_eq!(load_audio("eac3", crate::player::RATE_NORMAL, None, None, AudioStack::Other).map(|a| a.name), Some("AC3 PLUS"));
         let ps = crate::route::PlaybackSession::IDLE;
         let payload = build_av_payload(&ps, "H264", "DTS", ENVELOPE_FHD60);
         assert!(payload.contains(r#""audio":"DTS""#));

@@ -34,8 +34,8 @@
 # NO RPATH, DELIBERATELY. The obvious way to make our libavformat find our libavcodec is
 # -Wl,-rpath,$ORIGIN, and it does not survive: FFmpeg's configure evals its flags, so `$$ORIGIN`
 # becomes the shell's PID and `\$$ORIGIN` becomes nothing. Both produce a library that silently
-# loads a DIFFERENT libavcodec. Instead ff.rs dlopens the four in dependency order with
-# RTLD_GLOBAL — libavutil, then libavcodec, then libavformat — so each is already in the global
+# loads a DIFFERENT libavcodec. Instead ff.rs dlopens them in dependency order with
+# RTLD_GLOBAL — libavutil, libswresample, libavcodec, libavformat (then the optional libswscale) — so each is already in the global
 # scope by SONAME when the next one names it. That is ordinary loader behaviour, it needs no build
 # flag to survive quoting, and unlike an rpath it can be asserted from inside the app.
 #
@@ -167,7 +167,7 @@ fi
 #   parsers    needed by avformat_find_stream_info to fill AVCodecParameters.
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
 #   decoders   SUBTITLES, and AUDIO decoded in the app. Video is decoded by the TV's hardware via
-#              Starfish; FFmpeg here never touches a video frame. The audio decoders run in two
+#              Starfish; FFmpeg here never touches a video frame. The audio decoders run in three
 #              cases. (1) FLAC, ALAC and LPCM at 1x: libpf has no input for them, so the app decodes
 #              them and feeds the TV PCM (`devcaps::APP_DECODED` names the decoders, and a test
 #              holds that list to this one); DTS (`dca`) joins them in a release build where Force Direct Play
@@ -176,8 +176,15 @@ fi
 #              TV has measured what each costs. (2) Every audio format, those included, while the viewer has picked a speed
 #              other than 1x: LG's pipeline cannot change rate itself (see
 #              docs/parity-gaps.md, Playback Speed), so the app decodes the sound, time-stretches
-#              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. All are LGPL; the
-#              AC-3 patents have expired.
+#              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. (3) "Convert audio:
+#              on the TV" (Settings > Playback; `ff_audio.rs`): TrueHD/MLP, FLAC, ALAC, Opus,
+#              Vorbis and the PCM flavours the three containers carry, which the TV's own decoder
+#              does not take, are decoded here and re-encoded with the `ac3` ENCODER below, through
+#              libswresample (sample format, rate, and 7.1 folded to 5.1; the Opus decoder needs it
+#              too). All are LGPL; the AC-3 patents have expired.
+#   parsers    mlp/flac/opus/vorbis fill those tracks' parameters in find_stream_info (mpegts
+#              parses every audio stream, matroska parses the headers of all but AAC).
+#   encoder    ac3 (float), the target of the conversion above; in RELEASE builds too.
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
 #
@@ -221,16 +228,18 @@ set -- "$@" \
   --enable-shared --disable-static --enable-pic \
   --extra-cflags='-Dstatic_assert=_Static_assert' \
   --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
-  --disable-network --disable-swresample \
+  --disable-network \
   --disable-debug --enable-small \
   --disable-everything \
   --disable-autodetect \
   --enable-zlib \
   --enable-demuxer=matroska,mov,mpegts,h264,hevc \
-  --enable-parser=h264,hevc,aac,ac3,flac,dvdsub,dvbsub \
+  --enable-parser=h264,hevc,aac,ac3,flac,dvdsub,dvbsub,mlp,opus,vorbis \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
   --enable-decoder=pgssub,dvdsub,dvbsub,ass,srt,subrip,text,mov_text,webvtt \
   --enable-decoder=aac,ac3,eac3,dca,mp3,mp2,flac,opus,vorbis,truehd,mlp,alac,pcm_s16le,pcm_s24le,pcm_s16be,pcm_s24be,pcm_s32le,pcm_s32be \
+  --enable-decoder=pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,pcm_s8,pcm_u8,pcm_bluray,pcm_dvd \
+  --enable-encoder=ac3 \
   --enable-protocol=file
 
 if [ "${RELEASE:-}" = "1" ]; then
@@ -493,7 +502,7 @@ mkdir -p "$PREFIX"
 cp -R "$WORK/destdir/plx/." "$PREFIX/"
 # Strip each real ELF, then prove the exact strip transformation against its link receipt.
 if [ -z "$HOST" ]; then
-  for elf in "$SRC"/libavutil/libavutil-plx.so.* "$SRC"/libavcodec/libavcodec-plx.so.* "$SRC"/libavformat/libavformat-plx.so.* "$SRC"/libswscale/libswscale-plx.so.*; do
+  for elf in "$SRC"/libavutil/libavutil-plx.so.* "$SRC"/libavcodec/libavcodec-plx.so.* "$SRC"/libavformat/libavformat-plx.so.* "$SRC"/libswresample/libswresample-plx.so.* "$SRC"/libswscale/libswscale-plx.so.*; do
     case "$elf" in *.link.*) continue ;; esac
     [ -f "$elf" ] && [ ! -L "$elf" ] || continue
     target="$PREFIX/lib/$(basename "$elf")"

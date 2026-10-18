@@ -81,9 +81,10 @@ looking at:
   provides no authenticated-encryption operation. The file is always created 0600 through
   `open(2)`'s own mode argument. A downgrade of an existing encrypted file, a way to read it from
   another process, or a way to make the app write it somewhere world-readable is in scope.
-- **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers and subtitle
-  decoders only — it is fed untrusted bytes from the network, so parser bugs reachable through
-  `ff.rs` are in scope. Report FFmpeg's own bugs upstream as well.
+- **The bundled FFmpeg.** Built from unmodified FFmpeg 9.0 with demuxers, parsers, subtitle
+  decoders, and the audio decoders and AC3 encoder of Settings > Playback > Convert audio — it is
+  fed untrusted bytes from the network, so parser and decoder bugs reachable through `ff.rs` and
+  `ff_audio.rs` are in scope. Report FFmpeg's own bugs upstream as well.
 
 ## What is not in scope
 

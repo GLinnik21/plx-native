@@ -2635,6 +2635,9 @@ pub struct PlayingItem {
     /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
     /// keeps it true, so the HDR overlay dim also asks the route (`route::overlay_gain`).
     pub hdr: bool,
+    /// The item's own runtime in ms (0 = the server did not say). The player publishes it as the
+    /// duration of a stream that carries none of its own (a live-written container).
+    pub duration_ms: i64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2657,6 +2660,7 @@ impl PlayingItem {
             markers: Vec::new(),
             chapters: Vec::new(),
             hdr: false,
+            duration_ms: 0,
         }
     }
 }
@@ -2705,6 +2709,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
             hdr: d.hdr,
+            duration_ms: d.dur_ms,
         })
 }
 
@@ -2799,6 +2804,7 @@ fn playing_item_of(
     // the frame size rides the same version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
     let (width, height, bitrate) = media.map_or((0, 0, 0), |m| (m.width, m.height, m.bitrate));
+    let duration_ms = it.map_or(0, |it| it.duration);
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -2815,6 +2821,7 @@ fn playing_item_of(
         markers,
         chapters,
         hdr,
+        duration_ms,
     }
 }
 

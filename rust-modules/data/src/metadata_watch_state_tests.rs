@@ -338,6 +338,15 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
     clear(test_state(), test_adapter());
 }
 
+/// The item's runtime rides to the player, which publishes it as the length of a stream that
+/// carries none; an absent item has none.
+#[test]
+fn the_playing_item_carries_its_runtime() {
+    let it: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({ "duration": 5_964_000 })).unwrap();
+    assert_eq!(playing_item_from(SRV_A, "42", Some(&it)).duration_ms, 5_964_000);
+    assert_eq!(playing_item_from(SRV_A, "42", None).duration_ms, 0);
+}
+
 /// `PlayingItem.kind` is the played item's own Plex type, read from the same wire `type` the
 /// detail page reads. The three kinds the player meets (episode, movie, track) must each survive
 /// the conversion from the server's item, and an absent item has no type.

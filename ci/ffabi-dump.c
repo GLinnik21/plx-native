@@ -66,6 +66,8 @@ DUMP(off_fmt_start_time, offsetof(AVFormatContext, start_time))
 DUMP(off_ctx_width,   offsetof(AVCodecContext, width))
 DUMP(off_ctx_height,  offsetof(AVCodecContext, height))
 DUMP(off_ctx_pix_fmt, offsetof(AVCodecContext, pix_fmt))
+/* AVCodecContext.sample_fmt — the one encoder field with no AVOption (ff_audio.rs pokes it). */
+DUMP(off_ctx_sample_fmt, offsetof(AVCodecContext, sample_fmt))
 
 /* AVFrame — poked directly by the encode path. */
 DUMP(off_frame_data,     offsetof(AVFrame, data))
@@ -74,6 +76,12 @@ DUMP(off_frame_width,    offsetof(AVFrame, width))
 DUMP(off_frame_height,   offsetof(AVFrame, height))
 DUMP(off_frame_format,   offsetof(AVFrame, format))
 DUMP(off_frame_pts,      offsetof(AVFrame, pts))
+/* AVFrame — read and poked by the audio converter (ff_audio.rs). */
+DUMP(off_frame_extended_data, offsetof(AVFrame, extended_data))
+DUMP(off_frame_nb_samples,    offsetof(AVFrame, nb_samples))
+DUMP(off_frame_sample_rate,   offsetof(AVFrame, sample_rate))
+DUMP(off_frame_best_effort_timestamp, offsetof(AVFrame, best_effort_timestamp))
+DUMP(off_frame_ch_layout,     offsetof(AVFrame, ch_layout))
 
 /* Structs ff.rs models field-by-field with #[repr(C)]. A short model is a stack smash for the
  * two it allocates (AVCodecParameters, AVSubtitle), so these sizes are load-bearing. */

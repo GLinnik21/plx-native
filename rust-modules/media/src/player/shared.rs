@@ -771,6 +771,11 @@ pub struct Shared {
     /// therefore does not mistake the firmware's ~5 Hz position tick for video cadence.
     pub video_fps_milli: AtomicI64,
     pub duration_ns: AtomicI64, // was g_mkv.duration_ns (published)
+    /// The item's own runtime in ns (0 = none), installed with the plan of a server transcode or
+    /// remux only, whose live stream carries no length of its own. Not part
+    /// of the session reset: it describes the ITEM, and the next plan replaces it. The demuxer
+    /// adopts it as `duration_ns` when the stream it opened carries none ([`Self::adopt_duration_hint`]).
+    pub duration_hint_ns: AtomicI64,
     /// Latest normalized timestamps successfully enqueued for each elementary stream. HLS writes
     /// its segment-normalized zero-based timeline; progressive Original writes absolute movie
     /// PTS. Their consumers apply the matching display-base rule. These are content-time facts
@@ -1152,6 +1157,7 @@ impl Shared {
             video_aspect: AtomicU64::new(0),
             video_fps_milli: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
+            duration_hint_ns: AtomicI64::new(0),
             hls_video_tail_ns: AtomicI64::new(-1),
             hls_audio_tail_ns: AtomicI64::new(-1),
             hls_audio_expected: AtomicBool::new(false),
@@ -1731,6 +1737,19 @@ impl Shared {
     /// The demuxer re-publishes duration when it reopens, a few hundred ms
     /// later, and until then a zero here is a playbar drawn at position ÷ 0 (`engine::teardown`
     /// has the account).
+    /// The stream has no duration of its own (a live-written container: Jellyfin's progressive
+    /// `stream.mkv`): publish the item's runtime in its place, so the playbar, the end-of-stream
+    /// test and a seek all have a length. `false` when the item gave none or a duration is already
+    /// published.
+    pub fn adopt_duration_hint(&self) -> bool {
+        let hint = self.duration_hint_ns.load(Ordering::Relaxed);
+        hint > 0
+            && self
+                .duration_ns
+                .compare_exchange(0, hint, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
     pub fn reset_session_for_reload(&self) {
         let duration_ns = self.duration_ns.load(Ordering::Relaxed);
         self.reset_session_inner(true);
@@ -2961,6 +2980,18 @@ pub enum Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_items_runtime_stands_in_only_for_a_stream_with_no_duration() {
+        let s = Shared::new();
+        assert!(!s.adopt_duration_hint(), "no hint, nothing to adopt");
+        s.duration_hint_ns.store(5_400_000_000_000, Ordering::Relaxed);
+        assert!(s.adopt_duration_hint());
+        assert_eq!(s.duration_ns.load(Ordering::Relaxed), 5_400_000_000_000);
+        s.duration_ns.store(5_300_000_000_000, Ordering::Relaxed);
+        assert!(!s.adopt_duration_hint(), "a duration the container published wins");
+        assert_eq!(s.duration_ns.load(Ordering::Relaxed), 5_300_000_000_000);
+    }
 
     #[test]
     fn a_worker_consumes_a_complete_hidden_pause_cycle_as_one_event() {

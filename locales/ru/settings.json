@@ -352,5 +352,9 @@
   "settings.trace.exported": "Сохранено",
   "settings.trace.unavailable": "Недоступно",
   "settings.trace.failed": "Ошибка",
-  "settings.trace.saving": "Сохранение"
+  "settings.trace.saving": "Сохранение",
+  "settings.playback.audio_conversion": "Преобразование звука",
+  "settings.playback.audio_conversion.server": "На сервере",
+  "settings.playback.audio_conversion.tv": "На телевизоре",
+  "settings.playback.audio_conversion.copy": "Для звука, который этот телевизор не воспроизводит сам, например Dolby TrueHD, FLAC или Opus. «На сервере» преобразует файл там. «На телевизоре» воспроизводит его напрямую и преобразует звук здесь в Dolby Digital."
 }

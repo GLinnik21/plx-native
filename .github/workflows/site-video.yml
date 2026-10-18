@@ -489,9 +489,9 @@ jobs:
         # directory (`pkg/`); without them every stream ends at once ("ff: avformat is MISSING from the app
         # directory ... EOS pushed at true EOF") and the player scenes have no picture.
         run: |
-          cp -L vendor/ffmpeg-prefix-host/lib/lib*-plx.so.[0-9][0-9] pkg/
+          cp -L vendor/ffmpeg-prefix-host/lib/lib*-plx.so.[0-9] vendor/ffmpeg-prefix-host/lib/lib*-plx.so.[0-9][0-9] pkg/
           ls -l pkg/lib*-plx.so.*
-          test -f pkg/libavformat-plx.so.63 -a -f pkg/libavcodec-plx.so.63 -a -f pkg/libavutil-plx.so.61
+          test -f pkg/libavformat-plx.so.63 -a -f pkg/libavcodec-plx.so.63 -a -f pkg/libavutil-plx.so.61 -a -f pkg/libswresample-plx.so.7
 
       - name: Cache the demo library's source images
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
