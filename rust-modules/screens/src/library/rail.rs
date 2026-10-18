@@ -1,7 +1,7 @@
 //! Fixed-band rail owned by MasterDetail. Only Input owns its focused/remembered letter.
 use std::ffi::CString;
 use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
-use super::layout::{rail_geom, rail_scroll_target, RAIL_CAP_PAD, RAIL_PITCH, RAIL_TRACK_W};
+use super::layout::{rail_geom, rail_pitch, rail_scroll_target, RAIL_CAP_PAD, RAIL_TRACK_W};
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::consts::K_SCROLL;
 use plx_ui::frame::Budget;
@@ -11,7 +11,7 @@ use plx_ui::screen::{Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind,
 use plx_ui::{Rect, Spring, theme};
 
 /// The focus disc behind a letter: two pixels inside the letter pitch.
-const FOCUS_DISC: f32 = RAIL_PITCH - 2.0;
+fn focus_disc(pitch: f32) -> f32 { pitch - 2.0 }
 /// A letter with no titles shows at this fraction of its ink and focus steps over it.
 pub(super) const EMPTY_LETTER_ALPHA: f32 = 0.25;
 /// The scroll speed (px/s of the page's scroll spring) above which the rail shows itself: a
@@ -34,6 +34,31 @@ impl RailHint {
     pub(super) fn wants_rail(self, in_rail: bool) -> bool {
         in_rail || self.right_edge || self.scroll_vel.abs() > FAST_SCROLL_VEL
     }
+}
+
+/// **The letters the rail shows**: the library's script alphabet merged with what the server
+/// listed (`/firstCharacter` omits a letter nothing starts with), so an absent letter is on the
+/// rail with count 0 (dimmed, and focus skips it) instead of missing from it.
+///
+/// A Latin listing (every label `#` or a Latin letter) is `#` (only when the server reported
+/// non-letter titles) then A to Z, followed by any other Latin label (an accented letter) in the
+/// server's order. Any other script (Cyrillic, Greek, digits, ...) is the server's own list as
+/// given: no alphabet is invented for a script the app does not know the order of.
+pub(super) fn alphabet(server: &[(String, i64)]) -> Vec<(String, i64)> {
+    let latin = !server.is_empty() && server.iter().all(|(label, _)| {
+        let mut chars = label.chars();
+        matches!((chars.next(), chars.next()), (Some(c), None) if c == '#' || c.is_ascii_alphabetic()
+            || ('\u{C0}'..='\u{24F}').contains(&c))
+    });
+    if !latin { return server.to_vec(); }
+    let count_of = |wanted: &str| server.iter().find(|(label, _)| label.eq_ignore_ascii_case(wanted)).map_or(0, |(_, n)| *n);
+    let mut out = Vec::with_capacity(27);
+    if server.iter().any(|(label, n)| label == "#" && *n > 0) { out.push(("#".to_owned(), count_of("#"))); }
+    out.extend(('A'..='Z').map(|c| (c.to_string(), count_of(&c.to_string()))));
+    out.extend(server.iter().filter(|(label, _)| {
+        label != "#" && !(label.len() == 1 && label.as_bytes()[0].is_ascii_alphabetic())
+    }).cloned());
+    out
 }
 
 pub(super) struct RailPart {
@@ -80,11 +105,17 @@ impl RailPart {
         self.elems.clear(); self.labels.clear(); self.starts.clear();
         if view.total() <= 0 || !view.rail_available() { self.clear_projection(); return; }
         let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
-        for (index, (label, _)) in view.letters().iter().enumerate() {
-            self.starts.push(view.letter_start(index));
+        // The jump offsets are prefix sums of the counts, so a letter with no titles adds 0.
+        let mut start = 0usize;
+        for (index, (label, count)) in alphabet(view.letters()).iter().enumerate() {
+            self.starts.push(start);
+            start = start.saturating_add((*count).max(0) as usize);
             self.elems.push(keys.register(LibraryIdentity::Rail { section: section.clone(), label: label.clone() }, self.group, index));
             self.labels.push(CString::new(label.as_str()).unwrap_or_default());
         }
+        // One entry past the last letter: where the listing ends, so a letter at the END of the
+        // alphabet that nothing starts with reads as empty like any other.
+        self.starts.push(start);
         let (y, cx, height, max) = rail_geom(self.elems.len());
         self.rect = Rect::new(cx - RAIL_TRACK_W * 0.5, y, RAIL_TRACK_W, height);
         self.scroll_target = self.scroll_target.clamp(0.0, max);
@@ -118,15 +149,16 @@ impl RailPart {
         self.alpha.step(if active { 1.0 } else { 0.0 }, K_SCROLL, dt);
     }
 
-    /// A letter no title starts with: the next letter begins at the same item. (The last letter
-    /// cannot be told from here without the total, which the rail does not keep; a listing only
-    /// ends on a letter that has titles.)
-    fn letter_empty(&self, index: usize) -> bool {
+    /// A letter no title starts with (the server did not list it): the next letter, or the end of
+    /// the listing, begins at the same item. Dimmed, and focus steps over it.
+    pub(super) fn letter_empty(&self, index: usize) -> bool {
         match (self.starts.get(index), self.starts.get(index + 1)) {
             (Some(a), Some(b)) => a == b,
             _ => false,
         }
     }
+
+    fn pitch(&self) -> f32 { rail_pitch(self.elems.len()) }
 
     /// The nearest letter with titles at or before `index`, else the first one after it.
     fn skip_empty(&self, index: usize) -> usize {
@@ -136,7 +168,9 @@ impl RailPart {
     }
 
     pub(super) fn letter_for_item(&self, index: usize) -> usize {
-        self.starts.iter().enumerate().rev().find(|(_, start)| **start <= index).map(|(i, _)| i).unwrap_or(0)
+        // (the trailing entry is the listing's end, not a letter)
+        let letters = self.elems.len();
+        self.starts.iter().take(letters).enumerate().rev().find(|(_, start)| **start <= index).map(|(i, _)| i).unwrap_or(0)
     }
 
     pub(super) fn start_for_elem(&self, elem: u32) -> Option<usize> {
@@ -148,15 +182,15 @@ impl RailPart {
             At::Drawn => self.scroll.pos,
             At::SpringTarget => rail_scroll_target(self.scroll.pos, index, self.elems.len()),
         };
-        Rect::new(self.rect.x, self.rect.y + index as f32 * RAIL_PITCH - scroll, RAIL_TRACK_W, RAIL_PITCH)
+        Rect::new(self.rect.x, self.rect.y + index as f32 * self.pitch() - scroll, RAIL_TRACK_W, self.pitch())
     }
 
     fn letter_alpha(&self, index: usize) -> f32 {
         let rel = self.slot(index, At::Drawn).cy() - self.rect.y;
         let max = rail_geom(self.elems.len()).3;
         let mut alpha = 1.0f32;
-        if self.scroll.pos > 0.5 { alpha = alpha.min(rel / RAIL_PITCH); }
-        if self.scroll.pos < max - 0.5 { alpha = alpha.min((self.rect.h - rel) / RAIL_PITCH); }
+        if self.scroll.pos > 0.5 { alpha = alpha.min(rel / self.pitch()); }
+        if self.scroll.pos < max - 0.5 { alpha = alpha.min((self.rect.h - rel) / self.pitch()); }
         alpha.clamp(0.0, 1.0)
     }
 
@@ -187,8 +221,9 @@ impl RailPart {
             let slot = self.slot(index, At::Drawn);
             let focused = f.focus.current == Some(FocusKey { entry: self.entry, elem: self.elems[index] });
             let ink = if focused {
-                let disc = Rect::new(slot.cx() - FOCUS_DISC * 0.5, slot.cy() - FOCUS_DISC * 0.5, FOCUS_DISC, FOCUS_DISC);
-                q.rect(disc, FOCUS_DISC * 0.5, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
+                let size = focus_disc(self.pitch());
+                let disc = Rect::new(slot.cx() - size * 0.5, slot.cy() - size * 0.5, size, size);
+                q.rect(disc, size * 0.5, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
                 plx_ui::ACCENT_INK
             } else if current == Some(index) { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
             plx_ui::label::Label::new(label.as_ptr(), theme::size::MICRO, ink).bold()
@@ -278,7 +313,7 @@ mod tests {
             let target = rail.slot(drive, At::SpringTarget);
             let drawn = rail.slot(drive, At::Drawn);
             assert_ne!(drawn.y, target.y);
-            let margin = if drive == 29 { 0.0 } else { RAIL_PITCH };
+            let margin = if drive == 29 { 0.0 } else { rail.pitch() };
             assert!(target.y >= rail.rect.y + margin - 0.01);
             assert!(target.y + target.h <= rail.rect.y + rail.rect.h - margin + 0.01);
             rail.step_motion(Some(drive), true, 0.016);
@@ -288,7 +323,8 @@ mod tests {
     fn with_starts(starts: &[usize]) -> RailPart {
         let mut rail = model();
         rail.elems = (0..starts.len() as u32).collect();
-        rail.starts = starts.to_vec();
+        // the listing ends one title past the last letter's start
+        rail.starts = starts.iter().copied().chain([starts.last().map_or(0, |last| last + 1)]).collect();
         rail
     }
 
@@ -340,6 +376,78 @@ mod tests {
         let leading_empty = with_starts(&[10, 10, 20]);
         assert!(leading_empty.letter_empty(0));
         assert_eq!(leading_empty.seat(leading_empty.group, placed(5), &cx), FocusKey { entry: leading_empty.entry, elem: leading_empty.elems[1] });
+    }
+
+    #[test]
+    fn a_letter_at_the_end_of_the_alphabet_with_no_titles_is_empty_too() {
+        // A and B have titles, C and D do not: the listing ends where C would begin.
+        let mut rail = RailPart::new(EntryId(1), GroupId(2));
+        rail.elems = (0..4).collect();
+        rail.starts = vec![0, 3, 5, 5, 5];
+        assert!(!rail.letter_empty(0) && !rail.letter_empty(1) && rail.letter_empty(2) && rail.letter_empty(3));
+        assert_eq!(rail.letter_for_item(4), 1, "the last item belongs to B, never to an empty trailing letter");
+        assert_eq!(rail.skip_empty(3), 1);
+    }
+
+    fn server(letters: &[(&str, i64)]) -> Vec<(String, i64)> {
+        letters.iter().map(|(l, n)| ((*l).to_owned(), *n)).collect()
+    }
+
+    /// The server's letters with the counts of the alphabet it was merged into.
+    fn labels_of(list: &[(String, i64)]) -> String { list.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("") }
+
+    #[test]
+    fn a_latin_listing_is_the_whole_alphabet_with_absent_letters_at_zero() {
+        // What PMS answers for a small library: only the letters something starts with.
+        let list = alphabet(&server(&[("B", 3), ("C", 2), ("E", 1), ("S", 4), ("W", 5)]));
+        assert_eq!(labels_of(&list), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "no # when the server reported no non-letter titles");
+        assert_eq!(list.len(), 26);
+        let count = |l: &str| list.iter().find(|(x, _)| x == l).unwrap().1;
+        assert_eq!((count("A"), count("B"), count("D"), count("S"), count("Z")), (0, 3, 0, 4, 0));
+        assert_eq!(list.iter().map(|(_, n)| n).sum::<i64>(), 15, "no title is invented or lost");
+    }
+
+    #[test]
+    fn a_hash_is_kept_first_only_when_the_server_reported_non_letter_titles() {
+        let list = alphabet(&server(&[("#", 2), ("A", 1), ("Z", 1)]));
+        assert_eq!(labels_of(&list), "#ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        assert_eq!(list.len(), 27);
+        assert_eq!(list[0], ("#".to_owned(), 2));
+    }
+
+    #[test]
+    fn a_script_other_than_latin_is_the_servers_own_letters_and_nothing_is_invented() {
+        let cyrillic = server(&[("А", 3), ("Б", 1), ("Я", 2)]);
+        assert_eq!(alphabet(&cyrillic), cyrillic);
+        let digits = server(&[("0", 1), ("1", 1)]);
+        assert_eq!(alphabet(&digits), digits);
+        assert!(alphabet(&[]).is_empty());
+    }
+
+    #[test]
+    fn jump_offsets_are_prefix_sums_that_an_empty_letter_adds_nothing_to() {
+        let list = alphabet(&server(&[("B", 3), ("E", 2)]));
+        let mut start = 0usize;
+        let starts: Vec<usize> = list.iter().map(|(_, n)| { let s = start; start += *n as usize; s }).collect();
+        // A B C D E F: A has none, B starts at 0, C and D have none (3), E starts at 3, F at 5.
+        assert_eq!(&starts[..6], &[0, 0, 3, 3, 3, 5]);
+        assert_eq!(starts[25], 5);
+    }
+
+    #[test]
+    fn every_alphabet_fits_between_the_grid_top_and_the_screen_bottom_without_scrolling() {
+        use super::super::layout::{RAIL_MIN_PITCH, RAIL_PITCH};
+        for n in [9usize, 26, 27] {
+            let (y, _, h, max) = rail_geom(n);
+            let pitch = rail_pitch(n);
+            assert_eq!(max, 0.0, "{n} letters: the whole alphabet stands, no scrolling");
+            assert!((h - n as f32 * pitch).abs() < 0.01);
+            assert!(y + h + RAIL_CAP_PAD <= plx_ui::consts::SCR_H - plx_ui::consts::MARGIN_Y + 0.01, "{n} letters end inside the bottom margin");
+            assert!((RAIL_MIN_PITCH..=RAIL_PITCH).contains(&pitch));
+        }
+        assert_eq!(rail_pitch(9), RAIL_PITCH, "a short alphabet keeps the full pitch");
+        assert!(rail_pitch(27) < RAIL_PITCH, "27 letters are scaled down only as far as it takes");
+        assert!(rail_geom(60).3 > 0.0, "a script too long even at the least pitch still scrolls");
     }
 
     #[test]

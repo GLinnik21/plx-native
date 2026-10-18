@@ -17,7 +17,7 @@ pub(super) struct Header {
     stops: Vec<(u32, usize)>,
     /// The Collections page's row: the crumb in place of the library names. `None` on every
     /// other page.
-    crumb: Option<(plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout)>,
+    pub(super) crumb: Option<(plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout)>,
 }
 
 impl Header {
@@ -262,7 +262,8 @@ impl LibraryScreen {
         // Only the collections' own declared sorts count: until the store has switched the section
         // to the collections listing, `sorts()` is still the films' list.
         let declared = if self.listed == plx_data::browse::LibraryType::Collections { H::listing(cx).sorts().len() } else { 0 };
-        let row = super::collections_page::header(self.kind, declared, &self.sort_value(cx), SCR_W, cx.measure);
+        let library = self.view_section(cx).map(|index| self.library_label(index, cx)).unwrap_or_default();
+        let row = super::collections_page::header(&library, self.kind, declared, &self.sort_value(cx), SCR_W, cx.measure);
         let stops = if row.sort.is_some() { vec![(SORTFILTER, 0)] } else { Vec::new() };
         self.collections_sort = row.sort.is_some();
         self.header = Some(Header { page: row.page, layout: row.layout, stops, crumb: Some((row.crumb, row.crumb_layout)) });

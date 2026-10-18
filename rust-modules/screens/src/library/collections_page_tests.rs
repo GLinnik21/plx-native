@@ -20,14 +20,14 @@ fn sort_is_hidden_unless_the_server_declares_two_or_more() {
     assert!(sort_visible(2));
     assert!(sort_visible(5));
     let m = ShippedMeasure;
-    assert!(header(SecKind::Movie, 1, "Title", 1920.0, &m).sort.is_none());
-    let h = header(SecKind::Movie, 2, "Title", 1920.0, &m);
+    assert!(header("Movies", SecKind::Movie, 1, "Title", 1920.0, &m).sort.is_none());
+    let h = header("Movies", SecKind::Movie, 2, "Title", 1920.0, &m);
     assert!(h.sort.is_some());
 }
 
 #[test]
 fn the_sort_control_ends_at_the_header_row_edge() {
-    let h = header(SecKind::Movie, 2, "Title", 1920.0, &ShippedMeasure);
+    let h = header("Movies", SecKind::Movie, 2, "Title", 1920.0, &ShippedMeasure);
     let sort = h.sort.unwrap();
     assert!(sort.focusable);
     // Text edge 1771 less the fold glyph (10 gap + 22): the run's own end is the row's edge.
@@ -42,12 +42,15 @@ fn the_section_sync_does_not_run_on_the_collections_page() {
 }
 
 #[test]
-fn the_crumb_reads_films_then_collections_and_shows_for_a_show_library() {
+fn the_crumb_root_is_the_librarys_own_name_then_collections() {
     let _g = language_on_this_thread_for_test(Preference::from_tag("en"));
     let m = ShippedMeasure;
-    let h = header(SecKind::Movie, 1, "Title", 1920.0, &m);
-    assert_eq!((h.crumb.root.as_str(), h.crumb.page.as_str()), ("Films", "Collections"));
-    assert_eq!(header(SecKind::Show, 1, "Title", 1920.0, &m).crumb.root, "Shows");
+    let h = header("Movies", SecKind::Movie, 1, "Title", 1920.0, &m);
+    assert_eq!((h.crumb.root.as_str(), h.crumb.page.as_str()), ("Movies", "Collections"));
+    assert_eq!(header("Anime Films", SecKind::Show, 1, "Title", 1920.0, &m).crumb.root, "Anime Films");
+    // Only a directory with no section to name falls back to what the library holds.
+    assert_eq!(header("", SecKind::Movie, 1, "Title", 1920.0, &m).crumb.root, "Films");
+    assert_eq!(header("", SecKind::Show, 1, "Title", 1920.0, &m).crumb.root, "Shows");
     assert_eq!(h.crumb_layout.root_text.x, 96.0);
     assert!(h.crumb_layout.page_plate.x > h.crumb_layout.root_plate.x + h.crumb_layout.root_plate.w - 8.0);
 }
@@ -59,7 +62,7 @@ fn the_crumb_and_the_sort_control_never_meet_in_any_shipped_language() {
     for l in Language::SHIPPED {
         let _g = language_on_this_thread_for_test(Preference::from_tag(l.tag()));
         for kind in [SecKind::Movie, SecKind::Show] {
-            let h = header(kind, 2, "Title added (newest first)", 1920.0, &m);
+            let h = header("Movies", kind, 2, "Title added (newest first)", 1920.0, &m);
             let gap = h.sort.unwrap().plate.x - h.crumb_layout.right();
             if gap < page_header::CLUSTER_GAP { bad.push(format!("{}: {gap:.0}px between crumb and Sort", l.tag())); }
         }

@@ -24,7 +24,10 @@ pub(super) const GRID_PITCH: f32 = plx_ui::consts::CARD_H
     + plx_ui::cards::LABEL_BAND_COLLAPSED
     + plx_ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
+/// The letter pitch of a short alphabet (the most a letter is given).
 pub(super) const RAIL_PITCH: f32 = 34.0;
+/// The least a letter is squeezed to: an alphabet that does not fit even at this pitch scrolls.
+pub(super) const RAIL_MIN_PITCH: f32 = 26.0;
 pub(super) const RAIL_CAP_PAD: f32 = 10.0;
 pub(super) const RAIL_BAND: f32 = RAIL_TRACK_W + theme::space::XS;
 pub(super) const GRID_RIGHT: f32 = SCR_W - MARGIN_X - RAIL_BAND;
@@ -203,22 +206,38 @@ impl Layout {
 
 }
 
+/// The rail's top: the grid's top (the first tile row).
+const RAIL_TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
+/// The height the letters may take, between the grid's top and the bottom margin (less the track's cap).
+const RAIL_AVAIL: f32 = SCR_H - MARGIN_Y - RAIL_TOP - RAIL_CAP_PAD;
+
+/// The pitch of `n` letters: [`RAIL_PITCH`], scaled down only as far as it takes (never below
+/// [`RAIL_MIN_PITCH`]) for the whole alphabet (a Latin one is 27 letters with `#`) to stand
+/// between the grid's top and the screen's bottom without scrolling.
+pub(super) fn rail_pitch(n: usize) -> f32 {
+    (RAIL_AVAIL / n.max(1) as f32).clamp(RAIL_MIN_PITCH, RAIL_PITCH)
+}
+
 /// The original fixed rail band: it never follows the scrolling first grid row.
+/// `(top, centre x, window height, scroll range)`; the range is 0 when all `n` letters fit.
 pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
     // The rail's top follows the grid's top (the first tile row). The board draws the track at
     // x 1822..1866; that leaves the 5% safe area (`inside_safe`, right edge 1824), which the shipped
     // layout keeps, so the track stays flush with the safe edge.
-    const TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
-    let visible = ((SCR_H - MARGIN_Y - TOP - RAIL_CAP_PAD) / RAIL_PITCH).floor().max(1.0);
-    let height = visible.min(n as f32) * RAIL_PITCH;
-    (TOP, SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5, height, (n as f32 * RAIL_PITCH - height).max(0.0))
+    let pitch = rail_pitch(n);
+    let all = n as f32 * pitch;
+    let x = SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5;
+    if all <= RAIL_AVAIL + 0.01 { return (RAIL_TOP, x, all, 0.0); }
+    let height = (RAIL_AVAIL / pitch).floor().max(1.0) * pitch;
+    (RAIL_TOP, x, height, all - height)
 }
 
 pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
     let (_, _, height, max) = rail_geom(n);
+    let pitch = rail_pitch(n);
     let drive = drive.min(n.saturating_sub(1)) as f32;
-    plx_ui::cards::reveal(scroll, (drive + 2.0) * RAIL_PITCH - height,
-        (drive - 1.0) * RAIL_PITCH, max)
+    plx_ui::cards::reveal(scroll, (drive + 2.0) * pitch - height,
+        (drive - 1.0) * pitch, max)
 }
 
 #[cfg(test)]

@@ -161,3 +161,31 @@ fn a_tucked_page_draws_the_capsule_on_its_own_frozen_ground() {
         "at the top there is no capsule, so no glass");
     assert!(!page.capsule_field.is_latched(), "back at the top the next scrolled stay latches afresh");
 }
+
+/// **The top fade is drawn**: a tucked page lays the 72 px ground gradient over the top edge, after
+/// the grid and under the capsule, and a resting page draws none. The unit test of `draw_top_fade`
+/// alone could not see a page that never called it, or called it under the grid.
+#[test]
+fn a_tucked_page_draws_the_72px_top_fade_over_the_grid_and_under_the_capsule_and_a_resting_page_none() {
+    let _g = plx_base::testlock::serial();
+    let _upload = plx_ui::underlay::stand_in_upload_for_test(9_762);
+    let fixture = super::tests::Fixture::new();
+    let mut page = fixture.screen();
+    let is_fade = |p: &std::rc::Rc<plx_ui::frame::backdrop::Paint>| {
+        p.kind() == "rect" && p.placed() == [0.0, 0.0, super::SCR_W, scroll_capsule::FADE_H]
+    };
+
+    let at_rest = declared_by_a_draw(&fixture, &mut page);
+    assert!(!at_rest.iter().any(is_fade), "no fade at the top of the page");
+
+    let pitch = page.layout.grid_pitch();
+    page.scroll.jump(pitch);
+    page.scroll_target = pitch;
+    let tucked = declared_by_a_draw(&fixture, &mut page);
+    let at = tucked.iter().position(is_fade).expect("a tucked page draws the top fade");
+    assert_eq!(tucked.iter().filter(|p| is_fade(p)).count(), 1, "exactly one fade");
+    let capsule = tucked.iter().position(|p| p.kind() == "glass_frozen").expect("the capsule");
+    assert!(at < capsule, "the fade goes under the capsule (fade {at}, capsule {capsule})");
+    assert!(tucked[..at].iter().any(|p| p.placed()[1] > 0.0 && p.placed()[3] > 0.0),
+        "and over the grid: the page's own paints come before it");
+}

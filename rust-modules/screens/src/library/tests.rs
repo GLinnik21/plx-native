@@ -377,8 +377,34 @@ fn owned_rail_keeps_the_fixed_grid_top_origin_and_short_window() {
         let rail = groups.first().expect("the fixture has a real rail").extent;
         assert_eq!(rail.y, 244.0, "the rail is not attached to the scrolling first grid row, and starts at the grid's top");
         if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
-        else { assert!(rail.h < n as f32 * layout::RAIL_PITCH, "long alphabets scroll at the same pitch"); }
+        else { assert!(rail.h < n as f32 * layout::rail_pitch(n), "an alphabet too long even squeezed scrolls"); }
     }
+}
+
+#[test]
+fn the_rail_lists_the_whole_alphabet_and_letters_the_server_omitted_are_empty() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    // PMS answers only the letters something starts with.
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+        (0..6).map(|i| Some(plx_data::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+        vec![("B".into(), 2), ("C".into(), 1), ("E".into(), 3)]);
+    let page = fixture.screen();
+    let rail = &page.pair.master;
+    assert_eq!(rail.elems.len(), 26, "A to Z, not the three the server listed");
+    let empty: Vec<usize> = (0..26).filter(|i| rail.letter_empty(*i)).collect();
+    assert_eq!(empty.len(), 23, "every letter but B, C and E is dimmed and skipped by focus");
+    assert!(!empty.contains(&1) && !empty.contains(&2) && !empty.contains(&4));
+    assert_eq!(rail.letter_for_item(0), 1);
+    assert_eq!(rail.letter_for_item(2), 2);
+    assert_eq!(rail.letter_for_item(3), 4, "the jump offsets are the prefix sums: E starts at item 3");
+    let (_, _, h, max) = layout::rail_geom(26);
+    assert_eq!(max, 0.0);
+    let mut groups = Vec::new();
+    page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
+    let extent = groups.first().expect("the rail is a group").extent;
+    assert!((extent.h - h).abs() < 0.01 && extent.y + extent.h < 1080.0, "the whole alphabet stands on screen");
 }
 
 #[test]

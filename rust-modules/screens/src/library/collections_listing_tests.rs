@@ -84,6 +84,20 @@ fn the_header_is_the_crumb_not_the_library_header() {
 }
 
 #[test]
+fn the_crumb_names_the_library_the_header_strip_names() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = as_collections(3);
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        plx_data::browse::view::SectionView { sid: Some(plx_plex::plex::ServerId::from_raw(0)), key: 1,
+            kind: SecKind::Movie, row: plx_data::browse::SrcRow { section: 0, title: "Movies".into(),
+                pinned: true, current: true, ..Default::default() } }]);
+    let mut page = collections_page();
+    run(&mut page, &fixture, ScreenEvent::Mount);
+    let (crumb, _) = page.header.as_ref().and_then(|h| h.crumb.as_ref()).expect("the crumb");
+    assert_eq!(crumb.root, "Movies", "the library's own name, not a hard-coded 'Films'");
+}
+
+#[test]
 fn a_tile_is_captioned_with_its_member_count_and_a_smart_one_is_marked() {
     let _guard = plx_base::testlock::serial();
     let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::from_tag("en"));
