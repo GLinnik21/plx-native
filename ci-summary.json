@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-18T14:38:55Z",
+ "generated": "2026-10-18T14:39:44Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -46.6,
-   "change7_pct": 47.0,
+   "change7_pct": 46.5,
    "d30": 908.0,
    "delta30": -423.0,
-   "delta7": 155.0,
+   "delta7": 154.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 258,
-   "n_prev": 196,
+   "n_now": 256,
+   "n_prev": 197,
    "now": 485.0,
-   "prev7": 330.0,
+   "prev7": 331,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -729,7 +729,7 @@
    "to": 460.5
   },
   {
-   "change_pct": 47.0,
+   "change_pct": 46.5,
    "commits": [
     {
      "pr": 831,
@@ -752,7 +752,7 @@
      "title": "webOS 1-3: opt-in Interface resolution; native 1080p stays the default"
     }
    ],
-   "from": 330.0,
+   "from": 331,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-18",
