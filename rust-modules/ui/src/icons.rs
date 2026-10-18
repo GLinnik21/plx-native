@@ -25,7 +25,6 @@
 //! sub-255 pixel more than 2px inside the ink except where the geometry really is notched (it
 //! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
-use plx_gfx::gfx::upload_rgba;
 use crate::{Painter, Rect};
 use std::os::raw::c_uint;
 use std::ptr::addr_of_mut;
@@ -401,11 +400,37 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
         let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {
                 let small = downsample_alpha(&rgba, hi, SS);
-                upload_rgba(0, target, target, small.as_ptr())
+                upload(target, &small)
             }
             None => 0,
         };
         cache.push(Entry { id, px: raster_px, tex });
+        tex
+    }
+}
+
+/// Upload a rasterized mask, or — in a HOST TEST — do not.
+///
+/// The same seam, and the same reason, as `underlay::upload`: the test binary LINKS OpenGL but
+/// never creates a context, so `glGenTextures` dereferences a null dispatch table and takes the
+/// whole binary down. A host test that draws a whole page descriptively (`frame::backdrop::discover`)
+/// reaches this through the page header's icons; it is handed a stand-in name per cache entry,
+/// specced in `gfx::tex_ledger` as the real upload would be, so the paint the icon declares still
+/// carries a texture and the cache keeps its one-entry-per-size shape.
+fn upload(side: i32, px: &[u8]) -> c_uint {
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        plx_gfx::gfx::upload_rgba(0, side, side, px.as_ptr())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let _ = px;
+        /// Far above any name a test hand-picks for its own stand-in fields.
+        const STAND_IN_BASE: u32 = 0x4943_0000;
+        static NEXT: AtomicU32 = AtomicU32::new(STAND_IN_BASE);
+        let tex = NEXT.fetch_add(1, Ordering::Relaxed);
+        plx_gfx::gfx::tex_ledger::specified(tex, side, side);
         tex
     }
 }

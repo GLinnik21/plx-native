@@ -212,8 +212,9 @@ impl UnderlayField {
     }
 
     /// A field that holds texture `tex` as if a latch had uploaded it — a host test links GL but
-    /// has no context, so [`upload`] never mints a name there. Its re-latch is a
-    /// `tex_ledger::specified(tex, ..)` call, which is exactly what a real upload records.
+    /// has no context, so [`upload`] mints no name there unless [`stand_in_upload_for_test`] is
+    /// armed. Its re-latch is a `tex_ledger::specified(tex, ..)` call, which is exactly what a
+    /// real upload records.
     #[cfg(test)]
     pub(crate) fn latched_for_test(tex: u32) -> Self {
         Self { tex, latched: true, ..Self::new() }
@@ -438,7 +439,10 @@ impl Drop for UnderlayField {
 /// binary LINKS OpenGL but never creates a context, so the driver's per-thread dispatch table is a
 /// null vtable and `glTexImage2D` dereferences a fixed offset into it — an immediate SIGSEGV that
 /// takes the whole test binary down. Everything a test wants to grade about this module is the
-/// arithmetic above the upload, and it is all reachable with `tex` left at 0.
+/// arithmetic above the upload, and it is all reachable with `tex` left at 0 — except the one
+/// thing downstream of [`ground_tex`](UnderlayField::ground_tex): a host test that must see the
+/// glass an owner draws ON a field it latched through the production path arms
+/// [`stand_in_upload_for_test`], and the latch records that name as a real upload would.
 fn upload(prev: u32, px: &[u8]) -> u32 {
     #[cfg(not(any(test, feature = "test-support")))]
     {
@@ -447,7 +451,41 @@ fn upload(prev: u32, px: &[u8]) -> u32 {
     #[cfg(any(test, feature = "test-support"))]
     {
         let _ = px;
-        prev
+        let tex = if prev != 0 { prev } else { STAND_IN_UPLOAD.with(|t| t.get()) };
+        if tex != 0 {
+            gfx::tex_ledger::specified(tex, TEX_W as i32, TEX_H as i32);
+        }
+        tex
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static STAND_IN_UPLOAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// **A host test's stand-in for the upload a latch cannot perform.** While the guard lives, a
+/// latch on this thread that would mint a texture name adopts `tex` instead and specs it in
+/// `gfx::tex_ledger` exactly as `upload_rgba` would — so a field latched through its owner's
+/// production path answers [`ground_tex`](UnderlayField::ground_tex), and the frozen glass the
+/// owner stands on it (`popover_glass::draw`) is declared, not the flat fallback. A field that
+/// already holds a name keeps it. Dropping the guard disarms; the field's own `Drop` retires the
+/// name from the ledger as on the device.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stand_in_upload_for_test(tex: u32) -> StandInUpload {
+    assert!(tex != 0, "0 is 'no texture': a stand-in needs a name");
+    STAND_IN_UPLOAD.with(|t| t.set(tex));
+    StandInUpload(())
+}
+
+/// The guard [`stand_in_upload_for_test`] returns.
+#[cfg(any(test, feature = "test-support"))]
+pub struct StandInUpload(());
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for StandInUpload {
+    fn drop(&mut self) {
+        STAND_IN_UPLOAD.with(|t| t.set(0));
     }
 }
 

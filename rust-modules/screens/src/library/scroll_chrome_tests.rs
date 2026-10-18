@@ -109,3 +109,55 @@ fn the_capsule_field_latches_only_when_tucked() {
     screen.capsule_field.reset();
     assert!(screen.capsule_glass_field().is_none(), "a reset field is handed on no longer");
 }
+
+/// The paints one descriptive draw of `page` declares (`frame::backdrop::discover`: primitives are
+/// recorded, GL is never reached), as `popover_glass::tests::declared_all` records a menu's.
+fn declared_by_a_draw(fixture: &super::tests::Fixture, page: &mut crate::library::LibraryScreen)
+    -> Vec<std::rc::Rc<plx_ui::frame::backdrop::Paint>>
+{
+    use plx_ui::screen::Screen;
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let cx = fixture.cx(None);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        page.draw(&mut frame);
+    }
+    let paints = sources.borrow().paints.clone();
+    paints
+}
+
+/// **The draw itself hands the capsule the page's frozen ground.** A page scrolled one grid pitch
+/// (tuck 1) latches its field on that frame and declares exactly one `glass_frozen` — the capsule
+/// on the latched field — and never a `backdrop` (no live blur: owner policy). Back at the top the
+/// capsule is gone and the field is re-armed. The `capsule_glass_field` seam is graded above; this
+/// is the call site in `draw_page`: hand it `None` and the tucked page stays on the flat tint.
+///
+/// The host cannot upload the latch (no GL context), so `stand_in_upload_for_test` plays the
+/// texture name the device's `upload_rgba` would mint; everything else is the production path.
+#[test]
+fn a_tucked_page_draws_the_capsule_on_its_own_frozen_ground() {
+    let _g = plx_base::testlock::serial();
+    let _upload = plx_ui::underlay::stand_in_upload_for_test(9_761);
+    let fixture = super::tests::Fixture::new();
+    let mut page = fixture.screen();
+    let pitch = page.layout.grid_pitch();
+    assert_eq!(tuck(pitch, pitch), 1.0);
+    page.scroll.jump(pitch);
+    page.scroll_target = pitch;
+    assert!(!page.capsule_field.is_latched(), "nothing latched before the first tucked draw");
+
+    let tucked = declared_by_a_draw(&fixture, &mut page);
+    assert!(page.capsule_field.is_latched(), "the tucked draw latches the page's own ground");
+    assert_eq!(tucked.iter().filter(|p| p.kind() == "glass_frozen").count(), 1,
+        "one frozen glass: the capsule, on the field `draw` hands it");
+    assert!(tucked.iter().all(|p| p.kind() != "backdrop"), "never a live blur source");
+
+    page.scroll.jump(0.0);
+    page.scroll_target = 0.0;
+    let at_rest = declared_by_a_draw(&fixture, &mut page);
+    assert!(at_rest.iter().all(|p| p.kind() != "glass_frozen" && p.kind() != "backdrop"),
+        "at the top there is no capsule, so no glass");
+    assert!(!page.capsule_field.is_latched(), "back at the top the next scrolled stay latches afresh");
+}
