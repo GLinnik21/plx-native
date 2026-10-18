@@ -62,9 +62,12 @@ struct Cfg {
     /// numbered ones an agent was told to read — which is exactly what a default of 150 did to the
     /// `ui-sim` skill's own interactive recipe.
     frame: Option<u32>,
-    /// `Some(quiet_ms)` arms the settled capture — see the module doc.
+    /// `Some(quiet_ms)` arms the settled capture — see the module doc. Read only by [`tick`]
+    /// (simulator); on the television the field is set but never read.
+    #[cfg_attr(not(feature = "hostsim"), allow(dead_code))]
     settle: Option<u32>,
-    /// Earliest settled capture, in ms after the first frame.
+    /// Earliest settled capture, in ms after the first frame. Simulator-only, like `settle`.
+    #[cfg_attr(not(feature = "hostsim"), allow(dead_code))]
     after: u32,
     exit: bool,
     alpha: bool,
@@ -101,14 +104,20 @@ static FRAMES: AtomicU32 = AtomicU32::new(0);
 static ON_DEMAND: AtomicBool = AtomicBool::new(false);
 
 /// Set by [`tick`] when the settled capture is due; taken by the next [`maybe_capture`].
+/// Simulator-only (the television never runs `tick`, which is what sets it).
+#[cfg(feature = "hostsim")]
 static SETTLED: AtomicBool = AtomicBool::new(false);
-/// The settled capture has been asked for once; it never repeats in one process.
+/// The settled capture has been asked for once; it never repeats in one process. Simulator-only.
+#[cfg(feature = "hostsim")]
 static SETTLE_FIRED: AtomicBool = AtomicBool::new(false);
-/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`.
+/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`. Simulator-only.
+#[cfg(feature = "hostsim")]
 static FIRST_TICK: OnceLock<u32> = OnceLock::new();
 
+
 /// Is the settled capture due? `quiet` is how long nothing has changed, `age` how long since the
-/// first frame, `busy` whether work is queued that will change the picture.
+/// first frame, `busy` whether work is queued that will change the picture. Simulator-only.
+#[cfg(feature = "hostsim")]
 fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> bool {
     !busy && age >= after && quiet >= settle
 }
@@ -116,6 +125,10 @@ fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> boo
 /// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
 /// the screen has been at rest long enough. A settled screen does not present, so this invalidates
 /// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
+///
+/// Simulator-only: it reads `plx_machine::idle::last_change_ms()`, which is gated to hostsim
+/// (nothing on the television tracks the settled-capture clock).
+#[cfg(feature = "hostsim")]
 pub(crate) fn tick(now: u32, busy: bool) {
     let cfg = cfg();
     let Some(settle) = cfg.settle else { return };
@@ -149,6 +162,7 @@ pub(crate) fn request() {
     // frame that never comes. Observed as a token that logged nothing at all.
     plx_machine::idle::invalidate();
 }
+
 
 /// `dir/stem-N.ext`, N counting up per on-demand shot within this process.
 fn numbered(base: &std::path::Path) -> std::path::PathBuf {
@@ -245,7 +259,12 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
 pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
+    // The settled flag is simulator-only: the television never runs `tick`, which is what sets it,
+    // so it is read only in hostsim builds (a `false` here is the television's constant).
+    #[cfg(feature = "hostsim")]
     let settled = SETTLED.swap(false, Ordering::Relaxed);
+    #[cfg(not(feature = "hostsim"))]
+    let settled = false;
     let cfg = cfg();
     if !on_demand && !settled && cfg.frame != Some(n) {
         return false;
@@ -286,8 +305,12 @@ fn ends_run(exit: bool, on_demand: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ends_run, settled_due};
+    use super::ends_run;
 
+    #[cfg(feature = "hostsim")]
+    use super::settled_due;
+
+    #[cfg(feature = "hostsim")]
     #[test]
     fn the_settled_capture_waits_for_quiet_age_and_idle_work() {
         assert!(settled_due(800, 3_000, 3_000, 800, false));

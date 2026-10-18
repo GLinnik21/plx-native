@@ -339,6 +339,7 @@ pub(crate) fn token_is_direct(tok: &str) -> bool {
         || tok == "diagnostics"
         || tok.starts_with("pat:")
         || tok.starts_with("txt:")
+        || tok.starts_with("api:") // the command API's verbs perform on the spot (api.rs)
 }
 
 /// Synthesize a full remote-key press (key-down then key-up) and push both onto SDL's

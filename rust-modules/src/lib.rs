@@ -9,6 +9,7 @@
 //! `plx_sentry_spool_external`, and forwards the two Starfish callbacks (`sf_on_event`/
 //! `acb_on_event`, `plx_media`'s player/mod.rs). Everything else is Rust-internal (the per-module `repr(C)`
 //! shapes are migration legacy, not ABI).
+mod api; // command API: unconditional local HTTP surface for an agent (an LLM over SSH) — see the module doc
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
