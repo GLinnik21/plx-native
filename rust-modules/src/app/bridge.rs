@@ -777,11 +777,11 @@ impl Bridge {
         Some(page.listed())
     }
 
-    /// The Library page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
+    /// The Recommended page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
     pub(crate) fn library_shelf_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::RecommendedScreen>())?;
         page.shelf_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
