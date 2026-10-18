@@ -565,13 +565,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   collection, its linked heading a stop of its own, then More Like This) to the About section at its
   foot, with no `ok` anywhere on the page (each one there opens another page or a reader), `back`
   (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the profile chip and
-  on to the Movies tab, `ok` for the Movies library (STALE since the Library redesign: the page is now
-  the full grid under one header row, with no shelves and no All heading, so the walk below through
-  four shelves to the Type and Filter chips no longer matches the page and `feel.json` needs a re-walk), six quick `down`s through its four shelves (the
-  two collection shelves' linked headings are stops of their own) to the All heading's Type chip,
-  `right` `right` to Filter, `down` into the poster grid and three more moves inside its columns 2 to
-  4, eight `up`s back to the first shelf (as many as there were `down`s: the page is left from its
-  top), `back` (Home), then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
+  on to the Movies tab, `ok` for the Movies library. The film's Movies leg predates the Library redesign: the page is now one
+  header row over the full poster grid, with no shelves and no All heading, so the recorded presses
+  through shelves to Type and Filter chips no longer match it and `feel.json` needs a re-walk (header
+  row, then `down` into the grid and a few moves inside its columns, then back to the top) before the
+  film is re-rendered; the page is left from its top, `back` (Home), then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
   page jumps it to its top first; that jump is NOT filmed, because its first Linux render wrote
   different frames under the hold-injection gate (104 of 1734, from the press to the end of the
   return Home), so it is a motion the dump cannot yet vouch for. Keys of one
