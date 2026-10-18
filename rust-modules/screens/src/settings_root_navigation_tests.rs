@@ -694,9 +694,31 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
 
 fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
-        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
+        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto,
         language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
     }
+}
+
+/// **Interface resolution is a signed-in row that opens its picker** (Automatic, 1600x900, 1280x720,
+/// 960x540), and Automatic is the native canvas rather than any smaller size.
+#[test]
+fn the_interface_resolution_row_is_signed_in_only_and_reads_each_option() {
+    let row_value = |signed_in: bool, resolution: UiResolution| -> Option<String> {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&RootInputs { resolution, ..inputs_for(signed_in) }), None);
+        let i = real.index_of(&RootId::Resolution)?;
+        real.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists").value.clone()
+    };
+    assert_eq!(row_value(false, UiResolution::Auto), None, "the signed-out root is the sign-in path's short list");
+    assert_eq!(row_value(true, UiResolution::Auto).as_deref(), Some(plx_platform::i18n::msg::settings_resolution_auto()));
+    assert_eq!(row_value(true, UiResolution::Hd900).as_deref(), Some("1600x900"));
+    assert_eq!(row_value(true, UiResolution::Hd720).as_deref(), Some("1280x720"));
+    assert_eq!(row_value(true, UiResolution::Sd540).as_deref(), Some("960x540"));
+    let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+    real.set(root_form(&inputs_for(true)), None);
+    let i = real.index_of(&RootId::Resolution).expect("the row exists");
+    assert_eq!(real.binding_at(i).expect("bound").kind.clone(), RowKind::Nav(SettingsPage::Picker(PickerKind::UiResolution)),
+        "OK opens the picker like every other multi-value setting; it does not cycle");
 }
 
 /// **Reordering the root moves no identity.** A form that declares the same rows in a different

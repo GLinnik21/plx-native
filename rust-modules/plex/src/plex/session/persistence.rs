@@ -32,7 +32,8 @@ pub enum CanonicalRead {
     },
     Cleared {
         revision: u64,
-        language: plx_platform::i18n::Preference,
+        /// The install-wide choices a sign-out keeps (language, Interface resolution).
+        kept: super::Retained,
     },
     /// Preferences remain available while credentials and offline profile activation stay closed.
     Locked {
@@ -142,7 +143,7 @@ fn load_legacy_json_at(root: PathBuf) -> CanonicalRead {
                     },
                     RecordState::Cleared => CanonicalRead::Cleared {
                         revision: record.revision,
-                        language: super::install_preferences::load().unwrap_or_default(),
+                        kept: super::install_preferences::load().unwrap_or_default(),
                     },
                 },
                 Err(error) => CanonicalRead::Blocked(error),
@@ -191,7 +192,7 @@ pub fn load() -> CanonicalRead {
                 },
                 RecordState::Cleared => CanonicalRead::Cleared {
                     revision: record.revision,
-                    language: super::install_preferences::load().unwrap_or_default(),
+                    kept: super::install_preferences::load().unwrap_or_default(),
                 },
             },
             Err(error) => CanonicalRead::Blocked(error),
@@ -231,7 +232,7 @@ pub fn load_helper_with(transport: &mut dyn client::Transport) -> CanonicalRead 
             if snapshot.state.status == Status::Cleared {
                 return CanonicalRead::Cleared {
                     revision: snapshot.state.revision,
-                    language: super::public_session(&snapshot.state.public).language,
+                    kept: super::Retained::of(&super::public_session(&snapshot.state.public)),
                 };
             }
             if snapshot.state.migrations.session.progress != MigrationProgress::Complete {

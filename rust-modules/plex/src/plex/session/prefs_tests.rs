@@ -12,11 +12,11 @@ use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Sco
 use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
-    TrailerAutoplayPref};
+    TrailerAutoplayPref, UiResolutionPref};
 use super::{
     CanonicalSessionPreferences, DeckPress, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
-    HdrOverlayBrightness, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
+    HdrOverlayBrightness, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
 use serde::de::{self, Deserializer, Visitor};
 use serde_json::{json, Value};
@@ -116,13 +116,14 @@ fn every_marker_names_its_own_field() {
     check_row::<AutoSignInPref>(true);
     check_row::<TrailerAutoplayPref>(true);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
-    // The table lists exactly these thirteen `Setting` rows, the four list rows below, the two
+    check_row::<UiResolutionPref>(UiResolution::Hd720);
+    // The table lists exactly these fourteen `Setting` rows, the four list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 13 + 4 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 14 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -240,6 +241,7 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
     for (key, scope, bound, parse) in [
         ("auto_sign_in", Scope::Install, false, Parse::BoolOff),
         ("last_hero_blur", Scope::Install, false, Parse::OptionalSoft),
+        ("ui_resolution", Scope::Install, false, Parse::Soft),
         ("plaintext_consent", Scope::Account, true, Parse::SoftVec),
         ("server_key_pins", Scope::Account, true, Parse::SoftVec),
         ("last_library", Scope::Profile, true, Parse::SoftVec),
@@ -293,6 +295,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("audio_enhancements", generic()),
         // A5. A switch's garbage excludes the booleans, which are VALID values for it.
         ("auto_sign_in", not_a_bool()),
+        ("ui_resolution", generic()),
         ("trailer_autoplay", not_a_bool()),
         ("last_hero_blur", vec![Value::Null, json!("zzz"), json!(17), json!([1, "x"]), json!([[1, 2, 3]]), json!({"unexpected": 1})]),
         // A list's garbage is anything that is not an array; a mixed array is driven separately.

@@ -55,6 +55,18 @@
     "value": "After a moment on a title, play its trailer with sound.",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
   },
+  "settings.resolution.title": {
+    "value": "Interface resolution",
+    "description": "Settings row: the size the interface is drawn at; lower is smoother but the text is softer"
+  },
+  "settings.resolution.detail": {
+    "value": "Lower is smoother. Applies after restarting.",
+    "description": "Settings detail line under settings.resolution.title; the choice takes effect at the next launch"
+  },
+  "settings.resolution.auto": {
+    "value": "Automatic",
+    "description": "Value of settings.resolution.title: the native 1920x1080 size, the same on every TV"
+  },
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"
