@@ -472,6 +472,8 @@ skipped with the ffmpeg commands' location), and whose `expect` block reuses a p
 `quality` pins the rung (`480p_720_kbps`). Run it: `tools/tv-lock.sh with --why "fixed 480p declaration" --
 ./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration`.
 
+`boost-remux-declares-source-rate` (#832) is the second such scene: `plxnative-audioenh=boost` turns a direct-playable 4K H.264 24p file into an enhanced remux, and it grades `load_fps: 24.0`, `load_max: 3840x2160@24`, the set's echo, and (`presented_rate: true`, optionally `presented_rate_tol_pct`) the sink's presented rate against the declared one. Fixtures live in `boost-remux/` under the same root; the ffmpeg commands are in the scene's `comment`. Run it: `tools/tv-lock.sh with --why "boost remux declaration" -- ./tests/run.py --fps-player --mock --filter boost-remux-declares-source-rate`.
+
 `home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
 only sweeps about nine rows either side of the top, so it instead presses **Down once per landed
 row** at about three keys a second, rests, and presses **Up** back, through one ssh paced from the

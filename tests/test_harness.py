@@ -6532,7 +6532,8 @@ class FpsMock(unittest.TestCase):
                                  "library-idle", "collection-page", "person-page", "search-type",
                                  "show-detail", "home-hold", "collection-hold", "home-tap",
                                  "collection-tap",
-                                 "fixed-480p-reencode-declaration"})
+                                 "fixed-480p-reencode-declaration",
+                                 "boost-remux-declares-source-rate"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
@@ -6546,10 +6547,11 @@ class FpsMock(unittest.TestCase):
                                                    *self.PAGING_SURFACES,
                                                    "library-shelves-deep", "library-burst",
                                                    "library-hold",
-                                                   "fixed-480p-reencode-declaration"])
+                                                   "fixed-480p-reencode-declaration",
+                                                   "boost-remux-declares-source-rate"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 9 - len(self.PAGING_SURFACES))
+        self.assertEqual(len(runnable), len(self.scenes) - 10 - len(self.PAGING_SURFACES))
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
@@ -6559,7 +6561,8 @@ class FpsMock(unittest.TestCase):
                     self.assertIsInstance(s["mock"].get("rk"), int, s["name"])
                 self.assertNotIn("needs_shared_server", s, s["name"])
                 # the one player-tier mock scene plays a served file and grades its own `expect`
-                want = "player" if s["name"] == "fixed-480p-reencode-declaration" else "ui"
+                want = ("player" if s["name"] in ("fixed-480p-reencode-declaration",
+                                                  "boost-remux-declares-source-rate") else "ui")
                 self.assertEqual(s.get("tier", "ui"), want, s["name"])
 
     def test_the_press_scenes_drive_a_real_press_and_never_a_plain_ok(self):
@@ -6726,6 +6729,46 @@ class FpsMock(unittest.TestCase):
         self.assertTrue(args[1].endswith("bug665/src-4k-h264-aac.mkv"))
         self.assertEqual(args[2], "--transcode-fixture")
         self.assertTrue(args[3].endswith("bug665/transcode-480p-h264-aac.mkv"))
+
+    # --- boost-remux-declares-source-rate (#832) ---------------------------------------
+    def test_boost_remux_scene_forces_boost_on_and_grades_the_source_rate(self):
+        sc = self.scenes["boost-remux-declares-source-rate"]
+        self.assertTrue(sc["mock"]["only"])
+        ran = self.mf.mock_scene(sc)
+        files = dict(run.fps_trigger_files(ran))
+        self.assertEqual(files["plxnative-play"], "990001")
+        self.assertEqual(files["plxnative-audioenh"], "boost")
+        self.assertEqual(sc["expect"]["load_fps"], 24.0)
+        self.assertEqual(sc["expect"]["load_max"], "3840x2160@24")
+        self.assertTrue(sc["expect"]["presented_rate"])
+        args = self.mf.mock_server_args(sc)
+        self.assertTrue(args[1].endswith("boost-remux/src-4k24-h264-ac3.mkv"))
+        self.assertTrue(args[3].endswith("boost-remux/remux-4k24-h264-ac3.mkv"))
+
+    def test_boost_remux_scene_fails_the_pre_fix_declaration(self):
+        sc = self.scenes["boost-remux-declares-source-rate"]
+
+        def log(fps, mx):
+            return [
+                "enhancement: boost_dialog=true normalize_loudness=false \u2014 direct play becomes an enhanced remux",
+                "stream: path=/video/:/transcode/universal/start.mkv?x=1",
+                "ff: v=#0 codec=h264 codec_id=27 3840x2160 a=#1",
+                f'load: v=H264 a="AC3" fps={fps} dv=present:0 P0/0 el:0 atmos:0 max={mx}',
+                f"smp_cb type=5 num=0 str=video/x-h264 (null) (null) 3840 2160 (null) {mx.split('@')[1]}.000000",
+                "SMP loadCompleted", "player: pos=2s", "player: pos=15s"]
+        with mock.patch.object(run, "a_timeline_climb", return_value=(True, "climbed")), \
+                mock.patch.object(run, "a_presented_rate", return_value=(True, "ok")):
+            good, why = run.grade_scene_expect(sc, log("24.000", "3840x2160@24"))
+            self.assertTrue(good, why)
+            # the declaration #832 fixed: a remux declared no rate and the 60 fps ceiling
+            bad, why = run.grade_scene_expect(sc, log("0.000", "3840x2160@60"))
+            self.assertFalse(bad)
+            self.assertIn("declared fps=0.000", why)
+        # and the sink's presented rate is graded when the scene opts in (unmocked: no counter lines)
+        with mock.patch.object(run, "a_timeline_climb", return_value=(True, "climbed")):
+            bad, why = run.grade_scene_expect(sc, log("24.000", "3840x2160@24"))
+            self.assertFalse(bad)
+            self.assertIn("presented_rate", why)
 
     def test_mock_fixture_names_must_be_relative_and_inside_the_root(self):
         for bad in ("/etc/x.mkv", "../x.mkv", "a/../../x.mkv", ""):

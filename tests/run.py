@@ -5898,14 +5898,16 @@ def grade_scene_expect(scene, lines):
     (ok, detail_suffix); a scene without `expect` passes untouched.
 
     Keys: decision, codec (+ min_video_width / video_size), load_video, load_audio, load_fps,
-    load_max, sink_echo (all `a_load_decl`'s), min_timeline_climb_s. Anything else is a typo and
+    load_max, sink_echo (all `a_load_decl`'s), min_timeline_climb_s, presented_rate (+
+    presented_rate_tol_pct; `a_presented_rate`). Anything else is a typo and
     FAILS rather than being ignored: an assertion that silently does not run is the false pass this
     function exists to prevent.
     """
     exp = scene.get("expect")
     if not exp:
         return True, ""
-    known = {"decision", "codec", "min_video_width", "video_size", "min_timeline_climb_s"}
+    known = {"decision", "codec", "min_video_width", "video_size", "min_timeline_climb_s",
+             "presented_rate", "presented_rate_tol_pct"}
     load_keys = {"load_video", "load_audio", "load_fps", "load_max", "sink_echo"}
     unknown = sorted(set(exp) - known - load_keys)
     if unknown:
@@ -5920,6 +5922,10 @@ def grade_scene_expect(scene, lines):
         results.append(("load", *a_load_decl(lines, exp)))
     if "min_timeline_climb_s" in exp:
         results.append(("timeline_climb", *a_timeline_climb(lines, exp["min_timeline_climb_s"])))
+    if exp.get("presented_rate"):
+        # the sink's presented rate against the declared one (#832): `presented_rate: true` opts a
+        # scene IN; `presented_rate_tol_pct` widens the band exactly as on a playback case
+        results.append(("presented_rate", *a_presented_rate(lines, exp)))
     results.append(("no_error", *a_no_error(lines)))
     ok = all(r[1] for r in results)
     detail = " | expect: " + "; ".join(
