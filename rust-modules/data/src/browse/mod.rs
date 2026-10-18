@@ -552,6 +552,9 @@ struct SecState {
     /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
     letters: Arc<Vec<(String, i64)>>,
     letters_done: bool,
+    /// The grid's own view (sort, genre, menus, letters), set aside while the section is on the
+    /// Collections listing and put back when it returns to the type it was on ([`LoanedView`]).
+    loaned: Option<LoanedView>,
     /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
     /// A field here rather than a store of its own because this struct is already the per-section
     /// aggregate; `section_hubs`' module doc argues it, and `reset()` clearing it on a profile
@@ -566,6 +569,25 @@ struct SecState {
     /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
     /// is right. Cleared by any re-query.
     membership_stale: bool,
+}
+
+/// What the Collections page borrows the section's single query from: the grid's sort, genre and
+/// the menus and letter counts that describe them. `set_library_type` resets all of it for the
+/// new type, so the page that listed Films, sorted by Date Added and filtered to Drama, would
+/// come back title-sorted and unfiltered; the loan hands it back whole instead.
+#[derive(Clone)]
+struct LoanedView {
+    library_type: LibraryType,
+    sort_idx: usize,
+    sort_desc: bool,
+    genre: Option<Arc<GenreEntry>>,
+    sorts: Arc<Vec<SortEntry>>,
+    genres: Arc<Vec<GenreEntry>>,
+    genres_done: bool,
+    sort_resolved: bool,
+    genre_resolved: bool,
+    letters: Arc<Vec<(String, i64)>>,
+    letters_done: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -740,6 +762,7 @@ impl Default for SecState {
             genre_resolved: true,
             letters: Arc::default(),
             letters_done: false,
+            loaned: None,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
@@ -1216,7 +1239,34 @@ impl BrowseState {
         if state.library_type == library_type {
             return true;
         }
+        let from = state.library_type;
         state.library_type = library_type;
+        // The Collections page borrows the listing: the view it borrowed it from comes back as it
+        // was, on the way out, and is set aside on the way in.
+        if library_type == LibraryType::Collections {
+            state.loaned = Some(LoanedView {
+                library_type: from, sort_idx: state.sort_idx, sort_desc: state.sort_desc,
+                genre: state.genre.clone(), sorts: state.sorts.clone(), genres: state.genres.clone(),
+                genres_done: state.genres_done, sort_resolved: state.sort_resolved,
+                genre_resolved: state.genre_resolved, letters: state.letters.clone(),
+                letters_done: state.letters_done,
+            });
+        } else if from == LibraryType::Collections {
+            if let Some(view) = state.loaned.take().filter(|view| view.library_type == library_type) {
+                state.sort_idx = view.sort_idx;
+                state.sort_desc = view.sort_desc;
+                state.genre = view.genre;
+                state.sorts = view.sorts;
+                state.genres = view.genres;
+                state.genres_done = view.genres_done;
+                state.sort_resolved = view.sort_resolved;
+                state.genre_resolved = view.genre_resolved;
+                state.letters = view.letters;
+                state.letters_done = view.letters_done;
+                self.requery();
+                return true;
+            }
+        }
         // Menus and letter counts describe a metadata type. Never reuse the show's menus
         // or offsets for episodes, and never send a sort key the new type hasn't advertised.
         state.sorts = Arc::default();

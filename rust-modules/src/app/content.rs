@@ -876,7 +876,10 @@ fn library_requests(app: &mut App, now: u32) {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
         if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
-            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && app.route() == AppArg::Library {
+            // The grid and the Recommended page both publish: the hubs are the Recommended page's
+            // whole content, so its route must be let through too.
+            if app.pages.nav.top_page().is_some_and(|page| page.id == entry)
+                && matches!(app.route(), AppArg::Library | AppArg::LibraryRecommended { .. }) {
                 // Apply through the store vocabulary at this boundary. The press check and commit
                 // are adjacent; no queued boolean can outlive an input arm created later.
                 app.bridge.browse_run(library_publication_command(

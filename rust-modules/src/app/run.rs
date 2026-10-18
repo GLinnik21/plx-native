@@ -6296,6 +6296,28 @@ mod lifecycle_regression_tests {
         assert_eq!(requests_matching(&rig, "/:/scrobble", 0), 0, "no second scrobble on the origin");
     }
 
+    /// The Recommended page's rows ARE the server's hubs, and nothing else fetches them: a page
+    /// mounted on `LibraryRecommended` (no shelf seeded by the test) must reach the server's
+    /// `/hubs/sections/{id}`. The publish request it sends was once dropped because only the
+    /// full grid's route was let through.
+    #[test]
+    fn the_recommended_page_fetches_the_sections_hubs() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(true) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        assert_eq!(requests_matching(&rig, "/hubs/sections/", 0), 0, "premise: the grid page alone asks for no hubs");
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::LibraryRecommended { section: 0 });
+        settle(&mut rig.app, &mut t);
+        assert!(matches!(rig.app.route(), AppArg::LibraryRecommended { .. }), "premise: the Recommended page is on top");
+        poll_until("the Recommended page never fetched the section's hubs", || {
+            step(&mut rig.app, &mut t, vec![]);
+            requests_matching(&rig, "/hubs/sections/", 0) > 0
+        });
+    }
+
     /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
     /// the server's answer still parked, and the answer then agrees with it.
     #[test]
