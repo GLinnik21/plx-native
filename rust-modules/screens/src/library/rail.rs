@@ -10,6 +10,32 @@ use plx_ui::screen::{Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind,
     GroupKind, GroupSpec, Hover, Part, Placed, Seat, Step, Stop};
 use plx_ui::{Rect, Spring, theme};
 
+/// The focus disc behind a letter: two pixels inside the letter pitch.
+const FOCUS_DISC: f32 = RAIL_PITCH - 2.0;
+/// A letter with no titles shows at this fraction of its ink and focus steps over it.
+pub(super) const EMPTY_LETTER_ALPHA: f32 = 0.25;
+/// The scroll speed (px/s of the page's scroll spring) above which the rail shows itself: a
+/// held D-pad crossing several rows, not a single row step.
+pub(super) const FAST_SCROLL_VEL: f32 = 3000.0;
+
+/// What the page tells the rail each frame so it can decide whether to be on screen: the rail is
+/// hidden at rest and appears only on a fast scroll or when focus reaches the right edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct RailHint {
+    /// The page's scroll spring velocity.
+    pub scroll_vel: f32,
+    /// Focus is on the grid's last column (one Right press from the rail).
+    pub right_edge: bool,
+}
+
+impl RailHint {
+    /// Whether the rail should be shown for this hint; `in_rail` is focus already on a letter,
+    /// which always keeps it up.
+    pub(super) fn wants_rail(self, in_rail: bool) -> bool {
+        in_rail || self.right_edge || self.scroll_vel.abs() > FAST_SCROLL_VEL
+    }
+}
+
 pub(super) struct RailPart {
     entry: EntryId,
     group: GroupId,
@@ -74,11 +100,14 @@ impl RailPart {
     }
 
     /// Grid index is a current-only projection passed from the same engine key, never retained.
-    pub(super) fn advance<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, grid_index: Option<usize>, live: bool, dt: f32) {
+    pub(super) fn advance<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, grid_index: Option<usize>, hint: RailHint, live: bool, dt: f32) {
         let drive = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.elems.iter().position(|elem| *elem == key.elem))
             .or_else(|| grid_index.map(|index| self.letter_for_item(index)));
-        self.step_motion(drive, live && !self.elems.is_empty() && self.in_region(cx), dt);
+        let in_rail = cx.focus.current.filter(|key| key.entry == self.entry)
+            .is_some_and(|key| region_of_elem(key.elem) == Some(KeyRegion::Rail));
+        let active = live && !self.elems.is_empty() && self.in_region(cx) && hint.wants_rail(in_rail);
+        self.step_motion(drive, active, dt);
     }
 
     fn step_motion(&mut self, drive: Option<usize>, active: bool, dt: f32) {
@@ -87,6 +116,23 @@ impl RailPart {
         }
         self.scroll.step(self.scroll_target, K_SCROLL, dt);
         self.alpha.step(if active { 1.0 } else { 0.0 }, K_SCROLL, dt);
+    }
+
+    /// A letter no title starts with: the next letter begins at the same item. (The last letter
+    /// cannot be told from here without the total, which the rail does not keep; a listing only
+    /// ends on a letter that has titles.)
+    fn letter_empty(&self, index: usize) -> bool {
+        match (self.starts.get(index), self.starts.get(index + 1)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The nearest letter with titles at or before `index`, else the first one after it.
+    fn skip_empty(&self, index: usize) -> usize {
+        (0..=index.min(self.elems.len().saturating_sub(1))).rev().find(|i| !self.letter_empty(*i))
+            .or_else(|| (index..self.elems.len()).find(|i| !self.letter_empty(*i)))
+            .unwrap_or(index)
     }
 
     pub(super) fn letter_for_item(&self, index: usize) -> usize {
@@ -118,7 +164,7 @@ impl RailPart {
         if !f.records_stops() { return; }
         if !self.in_region(f.cx) { return; }
         for (index, &elem) in self.elems.iter().enumerate() {
-            if self.letter_alpha(index) <= 0.5 { continue; }
+            if self.letter_alpha(index) <= 0.5 || self.letter_empty(index) { continue; }
             let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) else { continue };
             f.stop(f.painter, Stop { key: FocusKey { entry: self.entry, elem },
                 rect: placed.rect, rest_rect: placed.rest_rect, clip: placed.clip,
@@ -134,17 +180,18 @@ impl RailPart {
         let _clip = (rail_geom(self.elems.len()).3 > 0.5).then(|| f.clip(p, self.rect));
         let current = grid_index.map(|index| self.letter_for_item(index));
         for (index, label) in self.labels.iter().enumerate() {
-            let alpha = self.letter_alpha(index);
+            let alpha = self.letter_alpha(index)
+                * if self.letter_empty(index) { EMPTY_LETTER_ALPHA } else { 1.0 };
             if alpha <= 0.0 { continue; }
             let q = p.alpha(alpha);
             let slot = self.slot(index, At::Drawn);
             let focused = f.focus.current == Some(FocusKey { entry: self.entry, elem: self.elems[index] });
             let ink = if focused {
-                let disc = Rect::new(slot.cx() - 19.0, slot.cy() - 19.0, 38.0, 38.0);
-                q.rect(disc, 19.0, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
+                let disc = Rect::new(slot.cx() - FOCUS_DISC * 0.5, slot.cy() - FOCUS_DISC * 0.5, FOCUS_DISC, FOCUS_DISC);
+                q.rect(disc, FOCUS_DISC * 0.5, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
                 plx_ui::ACCENT_INK
             } else if current == Some(index) { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-            plx_ui::label::Label::new(label.as_ptr(), theme::size::CAPTION, ink).bold()
+            plx_ui::label::Label::new(label.as_ptr(), theme::size::MICRO, ink).bold()
                 .h(plx_ui::label::HAlign::Center).draw(q, slot);
         }
         self.record_stops(f);
@@ -164,8 +211,11 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
         let Some(index) = self.elems.iter().position(|elem| *elem == key.elem) else { return Step::Edge };
-        let next = match dir { Dir::Up => index.checked_sub(1),
-            Dir::Down => (index + 1 < self.elems.len()).then_some(index + 1), _ => None };
+        let next = match dir {
+            Dir::Up => (0..index).rev().find(|i| !self.letter_empty(*i)),
+            Dir::Down => (index + 1..self.elems.len()).find(|i| !self.letter_empty(*i)),
+            _ => None,
+        };
         next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: self.entry, elem: self.elems[i] }))
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
@@ -180,7 +230,7 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
         }
     }
     fn seat(&self, _: GroupId, from: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
-        let index = self.letter_for_item(from.index.unwrap_or(0) as usize);
+        let index = self.skip_empty(self.letter_for_item(from.index.unwrap_or(0) as usize));
         FocusKey { entry: self.entry, elem: self.elems.get(index).copied().unwrap_or(0) }
     }
 }
@@ -232,6 +282,50 @@ mod tests {
             assert!(target.y + target.h <= rail.rect.y + rail.rect.h - margin + 0.01);
             rail.step_motion(Some(drive), true, 0.016);
         }
+    }
+
+    fn with_starts(starts: &[usize]) -> RailPart {
+        let mut rail = model();
+        rail.elems = (0..starts.len() as u32).collect();
+        rail.starts = starts.to_vec();
+        rail
+    }
+
+    #[test]
+    fn a_letter_with_no_titles_is_skipped_by_focus_and_dimmed() {
+        // A B C D: B and C have no titles (their successors start at the same item).
+        let rail = with_starts(&[0, 10, 10, 10]);
+        assert!(!rail.letter_empty(0) && rail.letter_empty(1) && rail.letter_empty(2) && !rail.letter_empty(3));
+        assert_eq!(EMPTY_LETTER_ALPHA, 0.25);
+        let none = |i: usize| rail.skip_empty(i);
+        assert_eq!(none(1), 0, "an empty letter resolves to the one before it");
+        assert_eq!(rail.letter_for_item(10), 3, "an item lands on the letter that owns it");
+        assert_eq!(rail.letter_for_item(9), 0);
+        let down = (0 + 1..rail.elems.len()).find(|i| !rail.letter_empty(*i));
+        assert_eq!(down, Some(3), "Down from A steps over B and C");
+        let up = (0..3).rev().find(|i| !rail.letter_empty(*i));
+        assert_eq!(up, Some(0), "Up from D steps back over C and B");
+    }
+
+    #[test]
+    fn the_rail_is_hidden_at_rest_and_shows_on_fast_scroll_or_the_right_edge() {
+        let rest = RailHint::default();
+        assert!(!rest.wants_rail(false));
+        assert!(rest.wants_rail(true), "focus on a letter keeps it up");
+        assert!(RailHint { right_edge: true, ..rest }.wants_rail(false));
+        assert!(RailHint { scroll_vel: FAST_SCROLL_VEL + 1.0, ..rest }.wants_rail(false));
+        assert!(RailHint { scroll_vel: -(FAST_SCROLL_VEL + 1.0), ..rest }.wants_rail(false), "either direction");
+        assert!(!RailHint { scroll_vel: FAST_SCROLL_VEL - 1.0, ..rest }.wants_rail(false), "a single row step is not fast");
+    }
+
+    #[test]
+    fn a_hidden_rail_at_rest_requests_no_frames() {
+        let _guard = plx_base::testlock::serial();
+        let mut rail = model();
+        for _ in 0..400 { rail.step_motion(Some(0), RailHint::default().wants_rail(false), 0.016); }
+        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(0), false, 0.016));
+        assert!(!moving);
+        assert!(rail.alpha.pos.abs() < 0.001);
     }
 
     #[test]
