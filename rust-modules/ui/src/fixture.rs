@@ -831,7 +831,7 @@ impl Screen<FixtureHost> for FixtureModal {
         self.last_draw_alpha = f.page_alpha;
         self.last_navigation = super::screen::NavPresentation {
             page_alpha: f.page_alpha, chrome_alpha: f.chrome_alpha,
-            view_tab: f.view_tab, blur_amount: f.blur_amount,
+            view_tab: f.view_tab, blur_amount: f.blur_amount, chrome_lift: 0.0,
         };
         let p = f.painter;
         // One string, so a test can see whether this surface's text reached the glyph cache or
@@ -1075,7 +1075,7 @@ impl Rig<FixtureHost> for FixtureRig {
         self.navigation_reads.set(self.navigation_reads.get() + 1);
         super::screen::NavPresentation {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
-            view_tab: self.view_tab, blur_amount: self.blur_amount,
+            view_tab: self.view_tab, blur_amount: self.blur_amount, chrome_lift: 0.0,
         }
     }
     fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,

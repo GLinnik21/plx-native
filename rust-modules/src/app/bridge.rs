@@ -1789,7 +1789,7 @@ impl Rig<AppHost> for Bridge {
         glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
         if !Self::draws_chrome_for(arg) { return; }
         let Some(glass) = glass else { return };
-        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha);
+        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha).translate(0.0, -nav.chrome_lift);
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         self.strip.draw(chrome.labels, p, glass.tab_band_mut());
         plx_ui::widgets::profile_chip_with(
@@ -1812,6 +1812,7 @@ impl Rig<AppHost> for Bridge {
             chrome_alpha: plx_ui::nav::chrome_alpha(),
             view_tab: u32::try_from(plx_ui::nav::view_tab(-1)).ok(),
             blur_amount: plx_ui::nav::blur_amount(),
+            chrome_lift: 0.0,
         }
     }
     fn surface_scope(&mut self) -> Option<plx_ui::popover::host::Live> {

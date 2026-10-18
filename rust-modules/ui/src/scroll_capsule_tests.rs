@@ -64,6 +64,17 @@ fn the_tuck_fades_the_chrome_out() {
 }
 
 #[test]
+fn the_tuck_lifts_the_chrome_as_well_as_fading_it() {
+    use crate::screen::{chrome_lift, NavPresentation};
+    let nav = NavPresentation::default();
+    assert_eq!(nav.chrome_lift, 0.0, "every other page rests at offset 0");
+    assert_eq!(nav.tucked(0.0).chrome_lift, 0.0);
+    assert_eq!(nav.tucked(1.0).chrome_lift, crate::widgets::TOP_BAR_BOTTOM);
+    assert_eq!(chrome_lift(0.5), crate::widgets::TOP_BAR_BOTTOM * 0.5);
+    assert_eq!(nav.tucked(9.0).chrome_lift, crate::widgets::TOP_BAR_BOTTOM, "clamped");
+}
+
+#[test]
 fn a_latched_field_makes_the_capsule_frozen_glass_not_the_flat_tint() {
     use crate::popover_glass::tests::declared_all;
     let _g = plx_base::testlock::serial();

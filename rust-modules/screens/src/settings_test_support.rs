@@ -101,6 +101,7 @@ impl Screen<InnerHost> for DrawProbe {
             chrome_alpha: f.chrome_alpha,
             view_tab: f.view_tab,
             blur_amount: f.blur_amount,
+            chrome_lift: 0.0,
         }));
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }

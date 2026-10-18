@@ -242,6 +242,7 @@ impl<H: LibraryLike> Part<H> for RailPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::{AppFx, AppMsg, PageMemory};
 
     fn model() -> RailPart {
         let mut rail = RailPart::new(EntryId(1), GroupId(2));
@@ -291,20 +292,54 @@ mod tests {
         rail
     }
 
+    struct RailHost;
+    #[derive(Clone, Copy)]
+    struct NoViews<'a> {
+        listing: plx_data::stores::browse::ListingView<'a>,
+        directory: plx_data::stores::browse::DirectoryView<'a>,
+        hubs: plx_data::stores::browse::HubsView<'a>,
+    }
+    impl plx_machine::machine::Host for RailHost {
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = AppMsg;
+        type Elem = u32;
+        type Views<'a> = NoViews<'a>;
+        type Init = plx_ui::fixture::FixtureArg;
+        type Memory = PageMemory;
+    }
+    impl LibraryLike for RailHost {
+        fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
+        fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
+        fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
+    }
+
     #[test]
     fn a_letter_with_no_titles_is_skipped_by_focus_and_dimmed() {
+        use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
         // A B C D: B and C have no titles (their successors start at the same item).
         let rail = with_starts(&[0, 10, 10, 10]);
         assert!(!rail.letter_empty(0) && rail.letter_empty(1) && rail.letter_empty(2) && !rail.letter_empty(3));
         assert_eq!(EMPTY_LETTER_ALPHA, 0.25);
-        let none = |i: usize| rail.skip_empty(i);
-        assert_eq!(none(1), 0, "an empty letter resolves to the one before it");
-        assert_eq!(rail.letter_for_item(10), 3, "an item lands on the letter that owns it");
-        assert_eq!(rail.letter_for_item(9), 0);
-        let down = (0 + 1..rail.elems.len()).find(|i| !rail.letter_empty(*i));
-        assert_eq!(down, Some(3), "Down from A steps over B and C");
-        let up = (0..3).rev().find(|i| !rail.letter_empty(*i));
-        assert_eq!(up, Some(0), "Up from D steps back over C and B");
+        let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
+        let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
+        let cx = Cx::<RailHost> {
+            views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
+            tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
+            focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
+        };
+        let key = |i: usize| FocusKey { entry: rail.entry, elem: rail.elems[i] };
+        assert!(matches!(rail.neighbour(key(0), Dir::Down, &cx), Step::Move(k) if k == key(3)), "Down from A steps over B and C");
+        assert!(matches!(rail.neighbour(key(3), Dir::Up, &cx), Step::Move(k) if k == key(0)), "Up from D steps back over C and B");
+        assert!(matches!(rail.neighbour(key(3), Dir::Down, &cx), Step::Edge));
+        let placed = |item: u32| Placed { rect: rail.rect, rest_rect: rail.rect, clip: rail.rect, index: Some(item) };
+        assert_eq!(rail.seat(rail.group, placed(10), &cx), key(3), "an item lands on the letter that owns it");
+        assert_eq!(rail.seat(rail.group, placed(9), &cx), key(0));
+        // A seat that lands on an empty letter (an item before the first start) resolves forward
+        // to the first letter that has titles.
+        let leading_empty = with_starts(&[10, 10, 20]);
+        assert!(leading_empty.letter_empty(0));
+        assert_eq!(leading_empty.seat(leading_empty.group, placed(5), &cx), FocusKey { entry: leading_empty.entry, elem: leading_empty.elems[1] });
     }
 
     #[test]

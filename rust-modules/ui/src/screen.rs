@@ -785,20 +785,29 @@ pub struct NavPresentation {
     pub chrome_alpha: f32,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
+    /// How far the top chrome sits above its rest position, in px (0 at rest; a tucked page lifts
+    /// it by up to [`widgets::TOP_BAR_BOTTOM`] while it fades). The chrome pass translates by it.
+    pub chrome_lift: f32,
 }
 
 impl Default for NavPresentation {
     fn default() -> Self {
-        Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0 }
+        Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0, chrome_lift: 0.0 }
     }
+}
+
+/// The distance the top chrome rises at `tuck` (0 shown .. 1 gone): none at rest, the whole chrome
+/// band ([`widgets::TOP_BAR_BOTTOM`]) once fully tucked.
+pub fn chrome_lift(tuck: f32) -> f32 {
+    crate::widgets::TOP_BAR_BOTTOM * tuck.clamp(0.0, 1.0)
 }
 
 impl NavPresentation {
     /// This presentation with the top chrome tucked away by `tuck` ([`Screen::chrome_tuck`]):
-    /// the chrome's alpha falls to 0 as the tuck reaches 1. The dispatcher hands the chrome pass
+    /// the chrome's alpha falls to 0 and it lifts by [`chrome_lift`] as the tuck reaches 1. The dispatcher hands the chrome pass
     /// this value for the page that answers a tuck; every other page answers 0 and is unchanged.
     pub fn tucked(self, tuck: f32) -> Self {
-        Self { chrome_alpha: self.chrome_alpha * (1.0 - tuck.clamp(0.0, 1.0)), ..self }
+        Self { chrome_alpha: self.chrome_alpha * (1.0 - tuck.clamp(0.0, 1.0)), chrome_lift: self.chrome_lift + chrome_lift(tuck), ..self }
     }
 }
 
@@ -911,6 +920,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             page_alpha: self.page_alpha,
             chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab,
+            chrome_lift: 0.0,
             blur_amount: self.blur_amount,
         }
     }
@@ -1214,6 +1224,7 @@ mod draw_frame_tests {
             chrome_alpha: 1.0,
             view_tab: None,
             blur_amount: 0.0,
+            chrome_lift: 0.0,
         };
         let mut f = DrawFrame::with_navigation(&cx, Painter::root(), navigation);
         assert_eq!(f.nav_page_alpha, 0.42);

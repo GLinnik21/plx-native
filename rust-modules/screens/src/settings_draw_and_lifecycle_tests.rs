@@ -44,7 +44,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
     use std::{cell::RefCell, rc::Rc};
 
     let navigation = NavPresentation {
-        page_alpha: 0.21, chrome_alpha: 0.37, view_tab: Some(2), blur_amount: 0.63,
+        page_alpha: 0.21, chrome_alpha: 0.37, view_tab: Some(2), blur_amount: 0.63, chrome_lift: 0.0,
     };
     let cases: &[(&str, f32, f32, bool, &[u32])] = &[
         ("rest after pop", 0.0, 0.0, false, &[2]),

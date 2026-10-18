@@ -118,7 +118,7 @@ so still asks only from focus; Detail's Related and Search's rows are not gated.
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
 `.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or
 episode grid), and `.external()` selects `ScrollMode::External`, for a grid inside a document whose page scroll
-another owner drives: the Library's All grid runs under the Library's scroll and every grid section
+another owner drives: the Library's grid runs under the Library's scroll and every grid section
 of a `cards::Stack` under the stack's. Both shipped grids are external; `ScrollMode::Own` is the
 default a spec is built with and no screen runs it, so a scroll fault on a stack page is in
 `cards/stack.rs`, not in `Grid`. An external grid never steps a scroll: the owner calls
@@ -649,7 +649,7 @@ placeholders are; read the count as zero or
 non-zero only; wait out reveal springs and the dip alpha after arrival (an `Xfade` In ramp plays in a
 dump as in the product, under the dip: a dump films a pushed page live, never as a held image,
 `plx_gfx::dump`'s one picture-changing page rule); cover
-late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Library shelves, an
+late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Recommended-page shelves, an
 `Xfade` Hold) with the landing predicate, since neither oracle sees an absent section; fail fast on
 `Frame::absent` and on an entry whose key is `""` instead of holding; scan connected components
 against exactly (255,0,254), never scanline runs, and report as COUNTER-ONLY the reasons no pixel

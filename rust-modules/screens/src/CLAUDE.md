@@ -66,13 +66,14 @@ that mixes async content with a live cursor:
   reloading" — so `Layout::grid_head` stays true while a grid-scoped transition is in flight.
 - **A seat nobody chose follows the head.** A page that seats its own focus on its document's
   first block must re-seat when a landing changes what that block is, until the user moves. The
-  Library's grid is usually prepared before its shelves land, so its first seat was the grid's
-  heading; the shelves then committed above it and the first DOWN went on into the grid
-  (`LibraryScreen::provisional`). A restore is only what the reader chose: the engine remembers
+  Library's grid was prepared before its hub shelves landed (they have since moved to the
+  Recommended page), so its first seat was the grid's heading; the shelves then committed above it
+  and the first DOWN went on into the grid (`LibraryScreen::provisional` keeps the rule for any
+  block that lands late). A restore is only what the reader chose: the engine remembers
   the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
   and Person and Detail keep no self-seat for a landing to strand.
-- **The grid absorbs an index landing, the page shifts its scroll.** The Library's All grid is a
+- **The grid absorbs an index landing, the page shifts its scroll.** The Library's grid is a
   `cards::Grid` in `ScrollMode::External`: when the focused element's index changes with no
   `FocusMoved` (an insert or reorder before it) the grid moves its pop with the element and
   `Grid::landed_shift()` is the document shift that keeps the tile where it was on screen;
@@ -191,4 +192,4 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
 `SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
 Libraries, which now has two rows (Favorite libraries, Under posters). `settings::caption_policy_of`
 maps the stored `UnderPosters` to the ui `CaptionPolicy`. The Library page is the full grid under one
-header row (`library/header.rs`); the hub shelves are compiled but not mounted in production.
+header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.

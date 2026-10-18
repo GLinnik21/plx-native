@@ -117,13 +117,17 @@ native review. Only `under_posters.genre` (from `browse.library.genre`) and the 
 змаўчанні" part of `under_posters.reset` (from `watchlist.filter.sort_default`) reuse
 existing catalog wording.
 
+Dictionary correction (2026-10-19): the first draft wrote the word for "poster" as "пастар", which
+is "pastor" (skarnik.by: "пастор — церк. пастар"). The correct word is **постэр** (verbum.by,
+Булыка, "Слоўнік іншамоўных слоў": по́стэр, англ. poster); every form below uses it.
+
 `locales/be/under_posters.json`:
 
 | Key suffix | String |
 | --- | --- |
-| `title` | Пад пастарамі |
-| `detail` | Што паказана пад пастарам. |
-| `copy` | Выберыце, што паказвае пад сабой выбраны пастар. Подпіс адкрываецца толькі пад выбраным пастарам, астатнія застаюцца чыстымі. |
+| `title` | Пад постэрамі |
+| `detail` | Што паказана пад постэрам. |
+| `copy` | Выберыце, што паказвае пад сабой выбраны постэр. Подпіс адкрываецца толькі пад выбраным постэрам, астатнія застаюцца чыстымі. |
 | `title_row` | Назва |
 | `title_detail` | Паказваць назву над звесткамі. |
 | `details_section` | Звесткі |
