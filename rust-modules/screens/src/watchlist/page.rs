@@ -1118,10 +1118,10 @@ impl WatchlistScreen {
                 let column = focus.and_then(|key| self.page.cell_of(key.elem)).map_or(0, |index| index % COLS);
                 match self.page.cells.get(column).or_else(|| self.page.cells.last()) {
                     Some(cell) => self.seat_own(FocusTarget::Elem(FocusKey { entry: self.page.entry, elem: cell.elem }), fx),
-                    None => self.seat_own(FocusTarget::FirstInGroupAnimated(HEADER_GROUP), fx),
+                    None => self.seat_own(FocusTarget::ContainerGroup(HEADER_GROUP), fx),
                 }
             }
-            BackStep::Content => self.seat_own(FocusTarget::FirstInGroupAnimated(GRID_GROUP), fx),
+            BackStep::Content => self.seat_own(FocusTarget::ContainerGroup(GRID_GROUP), fx),
             BackStep::Header => self.seat_own(FocusTarget::ContainerGroup(HEADER_GROUP), fx),
             BackStep::Nav => self.seat_own(FocusTarget::ContainerGroup(plx_ui::containers::tabs::STRIP), fx),
             BackStep::Leave => self.route(WatchlistOut::Back, fx),
