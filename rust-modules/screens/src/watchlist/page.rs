@@ -135,7 +135,7 @@ pub enum WatchlistIn {
 /// The grid's first row of posters: 96 under the header row's top, as the Library's (244).
 pub const GRID_TOP: f32 = header::HEADER_TOP + header::BLOCK_H;
 /// The line a scrolled row snaps to: clear of the scroll capsule (the Library's settle rule).
-const CONTENT_TOP: f32 = plx_ui::scroll_chrome::SETTLE_MIN_Y;
+const CONTENT_TOP: f32 = 120.0;
 /// Six columns of 250 posters from the row's text edge, 285 apart: the gap that puts the last
 /// column's right edge on the row's right text edge.
 const COLS: usize = 6;
@@ -1132,13 +1132,7 @@ impl WatchlistScreen {
             ListState::Ready { total } => total.max(self.page.tiles.len()),
             _ => self.page.tiles.len(),
         };
-        let (name, count) = plx_ui::scroll_chrome::capsule_parts(
-            plx_platform::i18n::msg::watchlist_page_title(),
-            total as i64,
-            f32::INFINITY,
-            |s| f.measure.width_str(s, theme::size::BODY, true),
-            |s| f.measure.width_str(s, theme::size::CAPTION, false),
-        );
+        let (name, count) = plx_ui::scroll_chrome::capsule_parts(plx_platform::i18n::msg::watchlist_page_title(), total as i64);
         plx_ui::scroll_capsule::draw(p, &name, &count, tuck, f.measure);
     }
 

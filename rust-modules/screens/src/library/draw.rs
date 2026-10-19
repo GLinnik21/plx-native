@@ -111,14 +111,14 @@ impl LibraryScreen {
             }),
         });
         // The page's own top edge once the chrome has tucked away.
-        let tuck = super::scroll_chrome::tuck(self.scroll.pos, layout_pitch);
+        let tuck = plx_ui::scroll_chrome::tuck(self.scroll.pos, layout_pitch);
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
             let p = f.painter.alpha(f.page_alpha);
             plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
-            if super::scroll_chrome::capsule_shown(self.libraries.len()) {
+            if plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) {
                 if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
-                    let (name, count) = super::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total());
+                    let (name, count) = plx_ui::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total());
                     plx_ui::scroll_capsule::draw(p, &name, &count, tuck, f.measure);
                 }
             }

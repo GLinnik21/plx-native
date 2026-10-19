@@ -16,8 +16,8 @@
 //! **The whole name fits.** The capsule is as wide as the name and the count need, never shortened
 //! with an ellipsis.
 //!
-//! Pure geometry and colour live here and are tested without a frame; the library's choice of WHEN
-//! to show them (`screens::library::scroll_chrome`) stays with the screen.
+//! Pure geometry and colour live here and are tested without a frame; the choice of WHEN to show
+//! them (`scroll_chrome`) is shared by every page that scrolls a long grid.
 use std::ffi::CStr;
 
 use plx_machine::machine::Measure;

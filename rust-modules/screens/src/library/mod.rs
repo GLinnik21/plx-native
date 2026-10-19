@@ -7,7 +7,6 @@ pub use recommended::RecommendedScreen;
 mod lookahead;
 mod parts;
 mod rail;
-mod scroll_chrome;
 #[cfg(test)] mod scroll_chrome_tests;
 #[cfg(test)]
 mod rail_tests;
@@ -1111,7 +1110,7 @@ impl LibraryScreen {
                 }
                 let current_grid = cx.focus.current.filter(|key| key.entry == self.entry)
                     .and_then(|key| self.pair.detail.index_of(key.elem));
-                self.pair.master.advance(cx, current_grid, rail::RailHint { scroll_vel: self.scroll.vel, right_edge: scroll_chrome::on_last_column(current_grid, self.layout.cols()) }, self.live && self.readout == Readout::Grid, tick.dt());
+                self.pair.master.advance(cx, current_grid, rail::RailHint { scroll_vel: self.scroll.vel, right_edge: rail::on_last_column(current_grid, self.layout.cols()) }, self.live && self.readout == Readout::Grid, tick.dt());
                 if let Some(kind) = self.wanted_kind {
                     let directory = H::directory(cx);
                     if let Some(target) = directory.kind_address(kind) {
@@ -1355,7 +1354,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str { "library" }
-    fn chrome_tuck(&self) -> f32 { scroll_chrome::tuck(self.scroll.pos, self.layout.grid_pitch()) }
+    fn chrome_tuck(&self) -> f32 { plx_ui::scroll_chrome::tuck(self.scroll.pos, self.layout.grid_pitch()) }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) { self.pair.prepare(b, cx); }

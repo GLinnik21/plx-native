@@ -36,6 +36,12 @@ impl RailHint {
     }
 }
 
+/// Focus on the grid's last column, one Right press from the rail: the rail shows itself ahead of
+/// the press (`RailHint::right_edge`).
+pub(super) fn on_last_column(grid_index: Option<usize>, cols: usize) -> bool {
+    cols > 0 && grid_index.is_some_and(|index| index % cols == cols - 1)
+}
+
 /// **The letters the rail shows**: the library's script alphabet merged with what the server
 /// listed (`/firstCharacter` omits a letter nothing starts with), so an absent letter is on the
 /// rail with count 0 (dimmed, and focus skips it) instead of missing from it.

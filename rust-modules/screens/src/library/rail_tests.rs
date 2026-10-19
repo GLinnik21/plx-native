@@ -1,5 +1,6 @@
 //! Original fixed-pitch and reveal assertions, exercised against the production rail geometry.
 use super::layout::{rail_geom, rail_pitch, rail_scroll_target, RAIL_PITCH};
+use super::rail::on_last_column;
 use plx_ui::consts::SCR_H;
 
     #[test]
@@ -57,3 +58,13 @@ use plx_ui::consts::SCR_H;
             assert_eq!(rail_scroll_target(0.0, drive, 9), 0.0);
         }
     }
+
+#[test]
+fn the_right_edge_is_the_last_column_of_whatever_the_grid_has() {
+    assert!(!on_last_column(None, 6));
+    assert!(!on_last_column(Some(0), 6));
+    assert!(on_last_column(Some(5), 6));
+    assert!(on_last_column(Some(11), 6));
+    assert!(on_last_column(Some(3), 4), "the episode grid has four columns");
+    assert!(!on_last_column(Some(3), 0));
+}

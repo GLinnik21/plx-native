@@ -1,70 +1,98 @@
-//! **What a scrolled card page does with the chrome around it**, for the pages other than the
-//! Library: the top chrome tucks away once the first row has gone, a capsule keeps the page's name
-//! and size on screen, a 72 px fade of the page's ground takes the top edge, and rows settle clear
-//! of the capsule ([`SETTLE_MIN_Y`], a grid's snap edge).
+//! **What a scrolled card page does with the chrome around it** — ONE set of rules for every page
+//! that scrolls a long grid (the Library, its Collections page, the Watchlist): the top chrome
+//! tucks away once the first row has gone, a 72 px fade of the page's ground takes the top edge,
+//! and a capsule restating the library's name and size appears only where the page's header names
+//! libraries ([`capsule_shown`]).
 //!
-//! These are the Library's rules (`screens::library::scroll_chrome`, whose functions are private to that
-//! page): the same two constants and the same two pure functions, so a page drawn with them tucks
-//! and shortens its name exactly as the Library does. The pixels are [`crate::scroll_capsule`].
+//! Everything here is a pure function of the scroll position and the page's row pitch, so it adds
+//! no state to a screen (the tuck follows the scroll spring the page already owns, and a resting
+//! page asks for no further frames). The pixels are [`crate::scroll_capsule`] (the nav pill's live
+//! glass); this file owns WHEN and WHAT.
+//!
 //! The module lives here, not in `plx_screens`, because a screen family may not name a sibling
 //! module of the crate (`ci/check-deps.sh`, "sibling").
 use std::ffi::CString;
 
-/// A row's top edge never rests above this y: it stays clear of the capsule (y 54 + 64 = 118).
-pub const SETTLE_MIN_Y: f32 = 120.0;
 /// The scroll distance over which the chrome tucks, ending when the first row has gone.
 pub const TUCK_RAMP: f32 = 120.0;
 
-/// How far the top chrome is tucked at `scroll` (0 shown .. 1 gone). `gone_at` is the scroll at which
-/// whatever stands under the chrome at rest has scrolled off: the Library passes its first row's
-/// pitch (its rows snap one at a time, so the first scrolled rest is a whole row down), a page whose
-/// grid rests on its FIRST snap (the first row at the content edge) passes the distance to that snap.
-/// The tuck completes there and starts [`TUCK_RAMP`] before it, so scroll 0 is always 0 and
-/// everything past `gone_at` is 1.
+/// How far the top chrome is tucked at `scroll` (0 shown .. 1 gone). `gone_at` is the scroll at
+/// which whatever stands under the chrome at rest has scrolled off: the first row's pitch, since a
+/// scrolled grid rests a whole row down at the first rest. The tuck completes there and starts
+/// [`TUCK_RAMP`] before it, so scroll 0 is always 0 and everything past `gone_at` is 1.
 pub fn tuck(scroll: f32, gone_at: f32) -> f32 {
     let end = gone_at.max(TUCK_RAMP);
     ((scroll - (end - TUCK_RAMP)) / TUCK_RAMP).clamp(0.0, 1.0)
 }
 
-/// The capsule's two runs: the page's name, shortened (with an ellipsis) until the name, the gap and
-/// the count fit `budget`, and the count (never cut). `name_w` measures a name at its own size and
-/// weight, `count_w` the count at its.
-pub fn capsule_parts(name: &str, total: i64, budget: f32, name_w: impl Fn(&str) -> f32,
-    count_w: impl Fn(&str) -> f32) -> (CString, CString)
-{
+/// Does the page show the capsule? It restates the library the header row names, so only a header
+/// that names libraries to choose between (`selectable`: the names in its row, the `+N` overflow
+/// stop counted) has anything to restate. A one-library page and a page whose header names none
+/// (the Watchlist) draw no capsule, though their chrome still tucks and their top fade stays.
+pub fn capsule_shown(selectable: usize) -> bool {
+    selectable >= 2
+}
+
+/// The capsule's two runs: the library's whole name (never shortened: the capsule grows to hold
+/// it) and the count.
+pub fn capsule_parts(name: &str, total: i64) -> (CString, CString) {
     let count = plx_platform::i18n::current().number(total);
-    let room = budget - crate::scroll_capsule::NAME_COUNT_GAP - count_w(&count);
-    let mut chars: Vec<char> = name.chars().collect();
-    let mut text = name.to_owned();
-    while !chars.is_empty() && name_w(&text) > room {
-        chars.pop();
-        let cut: String = chars.iter().collect();
-        text = format!("{}\u{2026}", cut.trim_end());
-    }
-    (CString::new(text).unwrap_or_default(), CString::new(count).unwrap_or_default())
+    (CString::new(name).unwrap_or_default(), CString::new(count).unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const PITCH: f32 = 480.0;
+
     #[test]
-    fn the_tuck_matches_the_librarys_ramp() {
-        const PITCH: f32 = 480.0;
+    fn the_tuck_is_zero_at_rest_and_one_once_the_first_row_has_gone() {
         assert_eq!(tuck(0.0, PITCH), 0.0);
-        assert_eq!(tuck(PITCH - TUCK_RAMP, PITCH), 0.0);
+        assert_eq!(tuck(PITCH - TUCK_RAMP, PITCH), 0.0, "the ramp starts exactly one ramp before");
         assert_eq!(tuck(PITCH, PITCH), 1.0);
-        assert_eq!(tuck(0.0, 40.0), 0.0, "a short pitch still leaves scroll zero untucked");
-        assert!(SETTLE_MIN_Y >= crate::scroll_capsule::Y + crate::scroll_capsule::H);
+        assert_eq!(tuck(PITCH * 5.0, PITCH), 1.0);
+        let mid = tuck(PITCH - TUCK_RAMP * 0.5, PITCH);
+        assert!(mid > 0.0 && mid < 1.0);
+        let mut last = 0.0;
+        for s in 0..=PITCH as i32 {
+            let t = tuck(s as f32, PITCH);
+            assert!(t >= last, "monotonic in scroll");
+            last = t;
+        }
     }
 
     #[test]
-    fn the_name_shortens_and_the_count_survives() {
-        let w = |s: &str| s.chars().count() as f32 * 10.0;
-        let (name, count) = capsule_parts("Watchlist", 1284, 320.0, w, w);
-        assert_eq!(name.to_str().unwrap(), "Watchlist");
-        let (long, count2) = capsule_parts("A Very Long Watchlist Name Indeed", 1284, 200.0, w, w);
-        assert!(long.to_str().unwrap().contains('\u{2026}'));
-        assert_eq!(count, count2);
+    fn a_short_pitch_still_leaves_scroll_zero_untucked() {
+        assert_eq!(tuck(0.0, 40.0), 0.0);
+        assert_eq!(tuck(0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_resting_page_has_a_constant_tuck_so_it_asks_for_no_frames() {
+        let (a, moving) = plx_machine::idle::scoped_motion(|| tuck(PITCH * 3.0, PITCH));
+        assert_eq!(a, 1.0);
+        assert!(!moving, "the tuck is derived from the scroll spring; it animates nothing itself");
+    }
+
+    #[test]
+    fn the_capsule_runs_are_the_whole_name_then_the_count() {
+        let (name, count) = capsule_parts("Films", 1284);
+        assert_eq!(name.to_str().unwrap(), "Films");
+        assert!(count.to_str().unwrap().contains("284"), "{count:?}");
+        let long = "Documentaries and Concerts of the Century, Remastered In Full";
+        let (name, count) = capsule_parts(long, 1284);
+        assert_eq!(name.to_str().unwrap(), long, "never shortened, no ellipsis");
+        assert!(count.to_str().unwrap().contains('1'));
+    }
+
+    /// One predicate for every page: a header that names no library (the Watchlist, a one-library
+    /// page) and a header that names exactly one has nothing to restate; two or more do.
+    #[test]
+    fn the_capsule_shows_only_where_the_header_names_two_or_more_libraries() {
+        assert!(!capsule_shown(0), "a header that names none has nothing to restate");
+        assert!(!capsule_shown(1), "one name is not a choice between libraries");
+        assert!(capsule_shown(2));
+        assert!(capsule_shown(8));
     }
 }
