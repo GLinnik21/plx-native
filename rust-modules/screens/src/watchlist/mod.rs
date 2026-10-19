@@ -23,3 +23,6 @@ pub(crate) mod cards_harness;
 mod page_tests;
 #[cfg(test)]
 mod reflow_tests;
+
+#[cfg(test)]
+mod opening_tests;
