@@ -316,12 +316,17 @@ class TombstonesAndSeed(unittest.TestCase):
         t = db.Tree("/elsewhere/x.tombstone.7", "leftover", private_bytes=GIB, last_built=NOW, tombstone=True)
         self.assertTrue(db.never(t, inv(t)))
 
-    def test_the_seed_goes_only_after_a_week_unused(self):
-        young = db.Tree("/cache/cargo-seed/target", "seed", private_bytes=GIB, last_built=NOW - 3 * 86400)
-        old = db.Tree("/cache/cargo-seed/target-release", "seed", private_bytes=GIB, last_built=NOW - 9 * 86400)
-        actions, kept = db.ladder(inv(young, old), TH, ME, NOW)
-        self.assertEqual([(a.rung, a.tree) for a in actions], [(5, "/cache/cargo-seed/target-release")])
-        self.assertIn("used", kept["/cache/cargo-seed/target"])
+    def test_the_cargo_seed_is_never_planned_at_any_age(self):
+        # Lanes cloned from the seed share its blocks (measured 12K private against 478M by `du`): deleting it
+        # frees almost nothing and every new lane's first build is cold. `build-gc.sh --seed` is the manual prune.
+        for days in (3, 9, 400):
+            with self.subTest(days=days):
+                seed = db.Tree("/cache/cargo-seed/target", "seed", private_bytes=GIB, last_built=NOW - days * 86400)
+                actions, kept = db.ladder(inv(seed), TH, ME, NOW)
+                self.assertEqual(actions, [])
+                self.assertIn("shares its blocks", kept["/cache/cargo-seed/target"])
+                pl = run_plan(inv(seed), free=1 * GIB)
+                self.assertEqual(pl.actions, ())
 
     def test_a_locked_seed_stays(self):
         old = db.Tree("/cache/cargo-seed/target", "seed", private_bytes=GIB, last_built=NOW - 9 * 86400,
@@ -391,15 +396,27 @@ class Rung6AndRefusal(unittest.TestCase):
         self.assertIn("cannot free enough", pl.reason)
         self.assertIn("23.0 GiB", pl.reason)            # need + reserve is in the reason
 
-    def test_an_unsized_stale_sweep_keeps_the_verdict_open_instead_of_refusing(self):
-        # The main checkout's `--stale` sweep cannot be sized ahead of time, so the planner cannot honestly say
-        # the build is doomed: it plans the sweep, says so, and the eviction PR re-reads free space after it.
+    def test_an_unsized_stale_sweep_counts_as_zero_so_a_refusal_stays_reachable(self):
+        # The main checkout's `--stale` sweep cannot be sized ahead of time. Treating it as "might free enough"
+        # made a refusal unreachable whenever a main checkout existed (every real machine), so it counts as 0
+        # in the verdict: the plan still carries the sweep, in its rung-5 slot, and `settle` judges the free
+        # space `build-gc.sh --evict` re-reads after running it.
         i = inv(self.main, self.mine, self.building, self.small)
         pl = run_plan(i, free=1 * GIB, need=20 * GIB)
-        self.assertEqual(pl.verdict, "reclaim")
+        self.assertEqual(pl.verdict, "refuse")
         self.assertTrue(pl.uncertain)
+        self.assertIn((5, "stale"), {(a.rung, a.scope) for a in pl.actions})
         self.assertLess(pl.projected, 23 * GIB)
         self.assertIn("--stale", pl.reason)
+        self.assertIn("settle", pl.reason)
+
+    def test_settle_judges_the_free_space_read_after_the_plan_ran(self):
+        need, reserve = int(3.4 * GIB), 3 * GIB
+        self.assertEqual(db.settle(need, reserve, int(6.4 * GIB))[0], "ok")
+        verdict, why = db.settle(need, reserve, int(6.3 * GIB))
+        self.assertEqual(verdict, "refuse")
+        self.assertIn("6.4 GiB", why)
+        self.assertEqual(db.settle(0, reserve, 3 * GIB)[0], "ok")
 
     def test_refusal_names_the_biggest_live_trees(self):
         busy = tree("/w/busy/rust-modules/target", gib=9, age=9, live=live(builder_cwd="cargo"))
@@ -434,8 +451,8 @@ class Estimates(unittest.TestCase):
         self.assertEqual(db.estimate_need("/x/target", 0, {"PLX_DISK_NEED_GIB": "junk"}), int(3.4 * GIB))
 
     def test_thresholds_come_from_the_environment_build_gc_already_reads(self):
-        th = db.thresholds_from_env({"PLX_GC_MIN_FREE_GIB": "30", "PLX_MIN_FREE_MB": "1024", "PLX_SEED_MAX_DAYS": "2"})
-        self.assertEqual((th.comfort, th.reserve, th.seed_secs), (30 * GIB, 1024 * MIB, 2 * 86400))
+        th = db.thresholds_from_env({"PLX_GC_MIN_FREE_GIB": "30", "PLX_MIN_FREE_MB": "1024"})
+        self.assertEqual((th.comfort, th.reserve), (30 * GIB, 1024 * MIB))
         self.assertEqual(th.hysteresis, 4 * GIB)
         d = db.thresholds_from_env({})
         self.assertEqual((d.comfort, d.hysteresis, d.reserve), (20 * GIB, 4 * GIB, 3 * GIB))
@@ -864,7 +881,9 @@ class Report(Repo):
         cargo_tree(os.path.join(self.tmpr, "theirs"), ours=False, hours=30)
         cargo_tree(os.path.join(self.main, "rust-modules", "target"), hours=1)
         before = snapshot_files(self.tmp)
-        out = self.run_report(8 * 1024 * 1024)
+        # A /tmp tree's age is the later of its mtime and its ctime, and a ctime cannot be backdated: the trees
+        # above (their mtimes set to 30 hours ago) read as minutes old, so the clock is moved three days on.
+        out = self.run_report(8 * 1024 * 1024, PLX_GC_TEST_NOW=str(NOW_REAL + 3 * 86400))
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(changed(before, snapshot_files(self.tmp)), [], "report must not create, delete or touch anything")
         text = out.stdout
@@ -885,6 +904,296 @@ class Report(Repo):
         out = self.run_report(1 * 1024 * 1024, extra=("--need-gib", "30"))
         self.assertIn("WOULD REFUSE", out.stdout)
         self.assertEqual(out.returncode, 0, "a report is information, never a failing exit")
+
+
+# ---------------------------------------------------------------------------------------------------
+# The plan as `build-gc.sh --evict` reads it, and the probes it asks again before every rename.
+# ---------------------------------------------------------------------------------------------------
+class EmittedPlan(unittest.TestCase):
+    def setUp(self):
+        self.main = tree("/main/rust-modules/target", kind="main", checkout="/main", owner="main", gib=6, incr=2.5, age=9)
+        self.lane = tree("/w/a/rust-modules/target", gib=4, incr=1, age=9)
+        self.orphan = tree("/fleet/gone/target", kind="fleet", owner="gone", gib=2, age=9, orphan=True)
+        self.tmp_old = tree("/tmp/old", kind="tmp", gib=3, age=40)
+        self.mine = tree("/work/me/rust-modules/target-fast", gib=3, incr=1.5, age=9, checkout=ME, owner="me")
+
+    def emitted(self, *trees, free=1 * GIB, need=int(3.4 * GIB), **kw):
+        pl = run_plan(inv(*trees), free=free, need=need, **kw)
+        lines = db.emit(pl).split("\n")
+        return pl, lines, [l.split("\t") for l in lines if l and not l.startswith("#")]
+
+    def test_the_header_names_the_format_and_carries_the_budget(self):
+        pl, lines, _ = self.emitted(self.lane)
+        self.assertEqual(lines[0], "# plx-disk-plan v1")
+        header = db.read_plan_header("\n".join(lines))
+        self.assertEqual(header["verdict"], pl.verdict)
+        self.assertEqual((int(header["need_kib"]), int(header["reserve_kib"])), (int(3.4 * GIB) // 1024, 3 * GIB // 1024))
+        self.assertEqual(int(header["goal_kib"]), pl.goal // 1024)
+        self.assertEqual(int(header["free_kib"]), GIB // 1024)
+
+    def test_one_tab_separated_line_per_path_in_ladder_order_with_the_estimate_on_the_first(self):
+        _, _, rows = self.emitted(self.orphan, self.tmp_old, self.lane)
+        self.assertTrue(all(len(r) == 8 for r in rows), rows)
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows],
+                         [("evict", "0", "tree"), ("evict", "0", "tree"), ("evict", "2", "incremental"),
+                          ("evict", "4", "tree")])
+        by_path = {r[7]: r for r in rows}
+        self.assertEqual(by_path["/fleet/gone/target"][3], str(2 * GIB // 1024))
+        self.assertEqual(by_path["/fleet/gone/target"][4], "gone")
+        self.assertEqual(by_path["/w/a/rust-modules/target"][6], "normal")
+
+    def test_the_age_gate_each_action_needs_the_executor_to_find_again_is_in_minutes(self):
+        _, _, rows = self.emitted(self.orphan, self.tmp_old, self.lane)
+        idle = {r[7]: int(r[5]) for r in rows}
+        self.assertEqual(idle["/fleet/gone/target"], 0)              # an orphan: nothing refers to it
+        self.assertEqual(idle["/tmp/old"], 24 * 60)                  # /tmp garbage: a day
+        self.assertEqual(idle["/w/a/rust-modules/target"], 15)       # an idle lane's tree: the idle window
+
+    def test_the_stale_sweep_is_one_line_at_its_rung_5_slot(self):
+        _, _, rows = self.emitted(self.main, self.lane, need=20 * GIB)
+        stale = [r for r in rows if r[0] == "stale"]
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0][1], "5")
+        rungs = [int(r[1]) for r in rows]
+        self.assertEqual(rungs, sorted(rungs), "the plan must be in rung order")
+
+    def test_rung_6_in_the_current_checkout_is_marked_current_and_the_main_one_is_not(self):
+        _, _, rows = self.emitted(self.main, self.mine, free=0, need=20 * GIB)
+        modes = {r[7]: r[6] for r in rows if r[1] == "6"}
+        self.assertEqual(modes["/work/me/rust-modules/target-fast/debug/incremental"], "current")
+        self.assertEqual(modes["/main/rust-modules/target/debug/incremental"], "normal")
+
+    def test_a_path_with_a_control_character_is_left_out_not_split(self):
+        odd = tree("/w/odd\tname/rust-modules/target", gib=4, age=9, checkout="/w/odd\tname")
+        _, lines, rows = self.emitted(odd)
+        self.assertEqual(rows, [])
+        self.assertTrue(any(l.startswith("# skipped") for l in lines))
+
+
+class Seams(unittest.TestCase):
+    def test_the_clock_moves_only_when_the_tmp_roots_are_named(self):
+        self.assertAlmostEqual(db.clock({}), __import__("time").time(), delta=5)
+        self.assertAlmostEqual(db.clock({"PLX_GC_TEST_NOW": "5"}), __import__("time").time(), delta=5,
+                               msg="a pretend clock over the default roots would age the owner's real trees")
+        self.assertEqual(db.clock({"PLX_GC_TEST_NOW": "5", "PLX_GC_TMP_ROOTS": "/x"}), 5.0)
+        self.assertAlmostEqual(db.clock({"PLX_GC_TEST_NOW": "junk", "PLX_GC_TMP_ROOTS": "/x"}),
+                               __import__("time").time(), delta=5)
+
+    def test_a_pretend_emergency_over_a_default_root_is_refused(self):
+        roots = {"PLX_GC_TMP_ROOTS": "/x", "PLX_FLEET_DIR": "/y", "PLX_BUILD_CACHE": "/z"}
+        self.assertEqual(db.refuse_pretend_emergency(roots), "")
+        self.assertEqual(db.refuse_pretend_emergency({}), "", "no override: nothing to refuse")
+        for override in ({"PLX_GC_TEST_FREE_KIB": "1"}, {"PLX_GC_TEST_NOW": "9"}):
+            self.assertEqual(db.refuse_pretend_emergency({**roots, **override}), "")
+            for missing in roots:
+                env = {**roots, **override}
+                del env[missing]
+                self.assertIn(missing, db.refuse_pretend_emergency(env), (override, missing))
+        # an empty PLX_FLEET_DIR is a choice ("no fleet"), not a default
+        self.assertEqual(db.refuse_pretend_emergency({**roots, "PLX_FLEET_DIR": "", "PLX_GC_TEST_FREE_KIB": "1"}), "")
+
+
+class Subcommands(Repo):
+    """`reclaim --emit`, `tmp-trees`, `probe` and `settle` as processes, against real directories."""
+
+    def run_tool(self, *args, env=None, lsof_body="#!/bin/sh\nprintf 'p1\\ncsh\\nfcwd\\nn/\\n'\nexit 1\n", plain=False):
+        bin_dir = tempfile.TemporaryDirectory(prefix="disk-budget-bin-")
+        self.addCleanup(bin_dir.cleanup)
+        lsof = os.path.join(bin_dir.name, "lsof")
+        with open(lsof, "w") as fh:
+            fh.write(lsof_body)
+        os.chmod(lsof, 0o755)
+        e = clean_env()
+        e.update(self.env)
+        e.update(PATH=bin_dir.name + os.pathsep + e.get("PATH", ""), PYTHONDONTWRITEBYTECODE="1", HOME=self.tmp)
+        e.update(env or {})
+        return subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True, env=e)
+
+    def ours(self, name="ours", hours=30):
+        path = os.path.join(self.tmpr, name)
+        cargo_tree(path, hours=hours)
+        return path
+
+    # -- reclaim --emit ----------------------------------------------------------------------------
+    def test_reclaim_emit_prints_a_plan_build_gc_can_read(self):
+        old = self.ours()
+        cargo_tree(os.path.join(self.fleet, "gone", "target"), hours=6)
+        out = self.run_tool("reclaim", "--to", "20", "--no-build", "--root", self.main, "--emit",
+                            env={"PLX_GC_TEST_FREE_KIB": str(10 * 1024 * 1024), "PLX_GC_TEST_NOW": str(NOW_REAL + 3 * 86400)})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = out.stdout.split("\n")
+        self.assertEqual(lines[0], "# plx-disk-plan v1")
+        rows = [l.split("\t") for l in lines if l.startswith(("evict", "stale"))]
+        paths = {r[7] for r in rows}
+        self.assertIn(db.real(old), paths)
+        self.assertIn(db.real(os.path.join(self.fleet, "gone", "target")), paths)
+        self.assertEqual(db.read_plan_header(out.stdout)["goal_kib"], str(24 * 1024 * 1024))
+
+    def test_reclaim_refuses_to_plan_a_pretend_emergency_over_the_real_roots(self):
+        for override in ({"PLX_GC_TEST_FREE_KIB": "1"}, {"PLX_GC_TEST_NOW": "9999999999"}):
+            for missing in ("PLX_GC_TMP_ROOTS", "PLX_FLEET_DIR", "PLX_BUILD_CACHE"):
+                with self.subTest(override=list(override), missing=missing):
+                    e = dict(self.env)
+                    e.update(override)
+                    out = subprocess.run([sys.executable, SCRIPT, "reclaim", "--to", "20", "--no-build",
+                                          "--root", self.main, "--emit"], capture_output=True, text=True,
+                                         env={**clean_env(), **{k: v for k, v in e.items() if k != missing},
+                                              "HOME": self.tmp, "PYTHONDONTWRITEBYTECODE": "1"})
+                    self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+                    self.assertEqual(out.stdout, "", "a refused plan must print nothing a caller could run")
+                    self.assertIn(missing, out.stderr)
+
+    def test_a_tmp_tree_with_a_backdated_mtime_is_never_a_candidate(self):
+        # `utime` backdates the mtime; the ctime is the kernel's. The tree below was written minutes ago.
+        path = self.ours(hours=30 * 24)
+        i = self.collect()
+        t = self.by_path(i)[db.real(path)]
+        self.assertGreater(t.last_built, NOW_REAL - 300, "the tree reads as old: its ctime was not consulted")
+        actions, kept = db.ladder(i, TH, None, NOW_REAL)
+        self.assertNotIn(t.path, {a.tree for a in actions})
+        self.assertIn("built", kept[t.path])
+        # the same tree with the clock three days on is old garbage
+        later, _ = db.ladder(i, TH, None, NOW_REAL + 3 * 86400)
+        self.assertIn((0, t.path), {(a.rung, a.tree) for a in later})
+
+    def test_newest_mtime_with_ctime_is_the_later_of_the_two(self):
+        path = self.ours(hours=48)
+        self.assertLess(db.newest_mtime(path), NOW_REAL - 40 * 3600)
+        self.assertGreater(db.newest_mtime(path, ctime=True), NOW_REAL - 300)
+
+    # -- tmp-trees ----------------------------------------------------------------------------------
+    def test_tmp_trees_lists_ours_and_skips_worktrees_the_fleet_dir_and_foreign_trees(self):
+        ours = self.ours()
+        cargo_tree(os.path.join(self.tmpr, "theirs"), ours=False)
+        lane = self.lane("lane-a")
+        cargo_tree(os.path.join(lane, "rust-modules", "target"))
+        # a tmp root that contains a worktree and the fleet dir: neither is a /tmp tree
+        inside = os.path.join(self.tmpr, "wt")
+        git(self.main, "worktree", "add", "-q", "-b", "wt", inside)
+        cargo_tree(os.path.join(inside, "target"))
+        env = {"PLX_GC_TMP_ROOTS": os.pathsep.join([self.tmpr, self.fleet])}
+        cargo_tree(os.path.join(self.fleet, "gone", "target"))
+        out = self.run_tool("tmp-trees", "--root", self.main, env=env)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.split(), [db.real(ours)])
+
+    # -- probe --------------------------------------------------------------------------------------
+    def probe(self, path, klass="lane", *extra, env=None, **kw):
+        return self.run_tool("probe", "--root", self.main, "--tree", path, "--class", klass, *extra, env=env, **kw)
+
+    def test_probe_says_idle_for_a_quiet_lane_tree(self):
+        lane = self.lane("lane-a")
+        path = os.path.join(lane, "rust-modules", "target")
+        cargo_tree(path)
+        out = self.probe(path, "lane", "--checkout", lane)
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "idle"), out.stderr)
+
+    def test_probe_refuses_a_tree_that_holds_a_tracked_file(self):
+        lane = self.lane("lane-a")
+        path = os.path.join(lane, "rust-modules", "target-kept")
+        cargo_tree(path)
+        git(lane, "add", "-f", os.path.join("rust-modules", "target-kept", "CACHEDIR.TAG"))
+        git(lane, "commit", "-q", "-m", "tracked")
+        out = self.probe(path, "lane", "--checkout", lane)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("git tracks", out.stdout)
+
+    def test_probe_sees_a_held_cargo_lock_and_an_open_file(self):
+        import fcntl
+        lane = self.lane("lane-a")
+        path = os.path.join(lane, "rust-modules", "target")
+        cargo_tree(path)
+        lock = os.path.join(path, "debug", ".cargo-lock")
+        write(lock, 0)
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            out = self.probe(path, "lane", "--checkout", lane)
+        finally:
+            os.close(fd)
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("cargo lock", out.stdout)
+        opened = self.probe(path, "lane", "--checkout", lane,
+                            lsof_body="#!/bin/sh\nprintf 'p7\\ncrustc\\nf9\\nn%s\\n'\nexit 0\n" % os.path.join(path, "debug", "deps", "x.o"))
+        self.assertEqual(opened.returncode, 1, opened.stdout)
+
+    def test_probe_treats_an_lsof_that_says_nothing_as_live(self):
+        lane = self.lane("lane-a")
+        path = os.path.join(lane, "rust-modules", "target")
+        cargo_tree(path)
+        out = self.probe(path, "lane", "--checkout", lane, lsof_body="#!/bin/sh\nexit 1\n")
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("unknown", out.stdout)
+
+    def test_probe_applies_the_current_checkouts_rule_only_when_told(self):
+        lane = self.lane("lane-a")
+        path = os.path.join(lane, "rust-modules", "target-fast")
+        cargo_tree(path)
+        cwd_in_lane = "#!/bin/sh\nprintf 'p424242\\ncmake\\nfcwd\\nn%s\\n'\nexit 0\n" % lane
+        other = self.probe(path, "lane", "--checkout", lane, lsof_body=cwd_in_lane)
+        self.assertEqual(other.returncode, 1, "a builder in another lane's checkout must protect its tree")
+        current = self.probe(path, "lane", "--checkout", lane, "--current", lsof_body=cwd_in_lane)
+        self.assertEqual(current.returncode, 0, "`make` itself runs in the current checkout: " + current.stdout)
+
+    def test_probe_holds_a_tmp_tree_to_its_ctime_not_its_mtime(self):
+        path = self.ours(hours=30 * 24)
+        young = self.probe(path, "tmp")
+        self.assertEqual(young.returncode, 1, "a fixture with a backdated mtime is not old: " + young.stdout)
+        self.assertIn("changed", young.stdout)
+        older = self.probe(path, "tmp", env={"PLX_GC_TEST_NOW": str(NOW_REAL + 3 * 86400)})
+        self.assertEqual((older.returncode, older.stdout.strip()), (0, "idle"), older.stderr)
+        # and the age the plan asks for cannot be talked below the idle window
+        below = self.probe(path, "tmp", "--min-age-secs", "0", env={"PLX_GC_TEST_NOW": str(NOW_REAL + 60)})
+        self.assertEqual(below.returncode, 1, below.stdout)
+
+    def test_probe_leaves_a_young_seed_leftover_and_takes_an_old_one_or_a_tombstone(self):
+        seeds = os.path.join(self.cache, "cargo-seed")
+        fresh = os.path.join(seeds, "target.tmp.77")
+        stale = os.path.join(seeds, "target.old.77")
+        tomb = os.path.join(seeds, "target.tombstone.77.1")
+        for d in (fresh, stale, tomb):
+            write(os.path.join(d, "x"), 16)
+        age_all(stale, 3 * 24)
+        self.assertEqual(self.probe(fresh, "leftover").returncode, 1)
+        self.assertEqual(self.probe(stale, "leftover").returncode, 0)
+        self.assertEqual(self.probe(tomb, "leftover").returncode, 0, "an interrupted delete is never in flight")
+
+    # -- settle -------------------------------------------------------------------------------------
+    def test_settle_exits_0_when_the_free_space_covers_the_plans_budget_and_3_when_it_does_not(self):
+        plan = os.path.join(self.tmp, "plan.tsv")
+        with open(plan, "w") as fh:
+            fh.write("# plx-disk-plan v1\n# need_kib %d\n# reserve_kib %d\n" % (4 << 20, 3 << 20))
+        ok = self.run_tool("settle", "--plan", plan, "--free-kib", str(8 << 20))
+        self.assertEqual((ok.returncode, ok.stdout.split(":")[0]), (0, "ok"), ok.stderr)
+        short = self.run_tool("settle", "--plan", plan, "--free-kib", str(6 << 20))
+        self.assertEqual((short.returncode, short.stdout.split(":")[0]), (3, "REFUSE"), short.stderr)
+        with open(plan, "w") as fh:
+            fh.write("# plx-disk-plan v1\n")
+        self.assertEqual(self.run_tool("settle", "--plan", plan, "--free-kib", "1").returncode, 0)
+
+
+class IndexIsNeverRefreshed(Repo):
+    def test_collecting_the_inventory_does_not_rewrite_a_lanes_index(self):
+        # `git status` refreshes (rewrites) the index when a tracked file's stat data went stale unless
+        # GIT_OPTIONAL_LOCKS=0: a read-only report that did so would race the lane's own `git add`. The control
+        # shows this fixture CAN see the write. The lane is squash-landed because only a MERGED lane is asked
+        # whether it is clean (`git status`), the one call here that can refresh an index.
+        lane = self.lane("lane-a", {"a.txt": "a"})
+        self.squash_into_origin(lane)
+        cargo_tree(os.path.join(lane, "rust-modules", "target"))
+        index = git(lane, "rev-parse", "--path-format=absolute", "--git-path", "index")
+        later = NOW_REAL + 120
+        os.utime(os.path.join(lane, "a.txt"), (later, later))
+        def state():
+            with open(index, "rb") as fh:
+                return fh.read(), os.stat(index).st_mtime_ns
+        before = state()
+        subprocess.run(["git", "-C", lane, "status", "--porcelain"], env=clean_env(), check=True, capture_output=True)
+        self.assertNotEqual(before, state(), "the control `git status` did not refresh the index: this test cannot fail")
+        os.utime(os.path.join(lane, "a.txt"), (later + 60, later + 60))
+        before = state()
+        self.collect()
+        self.assertEqual(before, state(), "collect() refreshed a lane's index")
 
 
 if __name__ == "__main__":

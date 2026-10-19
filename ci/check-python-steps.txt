@@ -39,6 +39,11 @@ python3 ci/test_build_bench.py
 # one record per day (a same-day re-run replaces it), nothing written for a failed benchmark, a red `check` costing only
 # its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
 python3 ci/test_build_history.py
+# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every reclaim mode refuses under a held FFmpeg lock, a
+# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window),
+# `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
+# names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an
+# FFmpeg lock, and never takes a /tmp tree that only looks old. `--evict` runs only inside the fixture's own directories.
 python3 ci/test_build_gc.py
 python3 ci/test_check_elf.py
 # Nothing that runs at once may collide: two checkouts running the scratch-writing steps (test-compat.py,
@@ -290,6 +295,8 @@ python3 ci/check-vfp.py --skip-if-missing
 # tools/disk-budget.py, the disk budget's inventory and planner (docs/disk-budget.md): the ladder's order, stopping at the line,
 # refusing only when the whole ladder cannot free the build's estimate plus the reserve, and NEVER planning the current checkout
 # below rung 6 (nor, there, the tree being built), a live, tracked, pkg/, vendor/ or non-PlxNative tree; private-byte accounting under hard links; `origin/main` merged detection
-# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing. Synthetic inventories plus
-# private temp repositories, no lsof, no real /tmp scan.
+# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing; the plan file `build-gc.sh --evict`
+# reads (format, order, the stale slot, rung-6 `current`), `settle`, the cargo seed never planned, a /tmp tree aged by ctime so a
+# backdated fixture is never a candidate, the probes (`probe`, `tmp-trees`), and that collecting an inventory never rewrites a
+# lane's index. Synthetic inventories plus private temp repositories, a stubbed lsof, no real /tmp scan.
 python3 ci/test_disk_budget.py

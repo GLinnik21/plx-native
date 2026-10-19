@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """The disk budget: inventory of every derived build tree, and the planner that orders their eviction.
 
-    disk-budget.py report [--root DIR] [--tree DIR] [--need-gib N]
+    disk-budget.py report    [--root DIR] [--tree DIR] [--need-gib N]
+    disk-budget.py reclaim   --to GIB [--emit] [--no-build] [--idle-min N] [--root DIR] [--tree DIR] [--need-gib N]
+    disk-budget.py tmp-trees [--root DIR]
+    disk-budget.py probe     --tree DIR --class lane|fleet|tmp|leftover [...]
 
 WHY THIS EXISTS. Nothing checks, or makes room, when a build starts: the only build-time check refuses
 below 3 GiB for two targets, and the cleanup that exists runs on a clock (hourly, and at the end of a
 session). Between two ticks a fleet of lanes writes 3-8 GB each, and the cargo trees agents leave in
 `/tmp` were visible to no tool at all. `docs/disk-budget.md` is the design record: the measurements, the
-ladder below, the safety rules and the PR plan. THIS FILE IS PR 1 OF THAT PLAN: the inventory, the pure
-planner and the read-only `report`. It deletes nothing and has no subcommand that could; the one
-deleting path (`build-gc.sh --evict`) is a later PR, so the owner can read the verdicts for a few days
-before anything acts on them. `make disk` prints this report after build-gc's own table.
+ladder below, the safety rules and the PR plan. This file is the inventory, the pure planner and the
+read-only questions asked of them; it deletes nothing and has no subcommand that could. The one deleting
+path is `build-gc.sh --evict`, which takes the plan `reclaim --emit` prints and re-checks every path
+against the live machine immediately before it renames it away. `make disk` prints `report` after
+build-gc's own table; `build-gc.sh --auto` takes its order from `reclaim`.
 
 THE PLANNER IS A PURE FUNCTION. `plan(inv, free, need, th, me, now, build_tree)` does no I/O: it is the one
 place where order and safety are decided, and `ci/test_disk_budget.py` feeds it synthetic inventories.
@@ -25,14 +29,19 @@ THE LADDER (docs/disk-budget.md; LRU, least recently built first, within each ru
     2  incremental dirs of OTHER idle lanes (the main checkout waits for rung 6)
     3  younger PlxNative `/tmp` trees, idle >= 15 min
     4  whole derived trees of OTHER idle lanes
-    5  the main checkout's `--stale` sweep (not sized here; planned only when the report runs from another
-       checkout, since the current one waits for rung 6) and the cargo seed once unused for a week
+    5  the `--stale` sweep (not sized; planned only when the main checkout is not the current one)
     6  budget-critical only: the main checkout's incremental dirs, then the CURRENT checkout's
        incremental dirs in trees other than the one being built
 
-A reclaim starts below the comfort line (20 GiB free, `PLX_GC_MIN_FREE_GIB`), runs rungs 0-5 until free
-space is back over comfort + 4 GiB, and touches rung 6 only if the build would otherwise be refused,
-i.e. free space is still below the build's estimate plus the 3 GiB reserve (`PLX_MIN_FREE_MB`).
+A reclaim starts below the comfort line (20 GiB free, `PLX_GC_MIN_FREE_GIB`; `reclaim --to` sets it), runs
+rungs 0-5 until free space is back over comfort + 4 GiB, and touches rung 6 only if the build would otherwise
+be refused, i.e. free space is still below the build's estimate plus the 3 GiB reserve (`PLX_MIN_FREE_MB`).
+
+THE REFUSAL RULE. The `--stale` sweep cannot be sized ahead, so the verdict counts it as ZERO: when the sized
+actions cannot reach need + reserve the verdict is `refuse`, whether or not the sweep is in the plan. The
+sweep stays in the action list (`uncertain`), it runs in its rung-5 slot, and the caller decides on the free
+space it RE-READS afterwards: `build-gc.sh --evict` prints that as `settle: ok|REFUSE`. A refusal is thus
+reachable from every checkout, and a sweep that rescues the build is not wasted.
 
 WHAT A DELETION FREES is the tree's PRIVATE bytes: on APFS a clone shares its blocks, `du` counts them in
 full in every tree that holds them, and deleting one of a pair frees nothing. Bytes are summed per inode
@@ -45,16 +54,23 @@ with a tracked file, a live tree (a builder's cwd in its checkout, an open file 
 lock, a held `make check` lock, or an `lsof` that could not answer), the current checkout (except rung 6,
 and there never the tree being built), the main checkout (except its `--stale` sweep at rung 5 and its
 incremental dirs at rung 6), anything under a checkout's `pkg/` or `vendor/` and the shared FFmpeg cache's
-live entries (its `.tombstone.` leftovers are rung 0), a tree on another volume, and any cargo tree without
+live entries (its `.tombstone.` leftovers are rung 0), a tree on another volume, any cargo tree without
 a PlxNative marker (`CACHEDIR.TAG` alone proves nothing: two `rs-matter` trees belong to another project
-and are reported "not ours").
+and are reported "not ours"), and the cargo seed (its blocks are shared with the lanes cloned from it, so
+deleting it frees almost nothing: measured 12K private against 478M by `du`).
+
+A `/tmp` TREE'S AGE is the later of its mtime and its ctime. An mtime can be set to anything (a test
+fixture, `cp -p`, a restore from an archive); a ctime cannot, so a backdated tree reads as freshly built
+and is never "garbage that nobody wrote to for a day".
 
 Environment: PLX_GC_MIN_FREE_GIB (comfort, default 20), PLX_MIN_FREE_MB (reserve, default 3072),
-PLX_DISK_NEED_GIB (the build's estimate), PLX_SEED_MAX_DAYS (7), PLX_FLEET_DIR (default ~/plx-fleet),
-PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories to look for
-`/tmp` trees in; default /tmp and $TMPDIR), PLX_GC_TEST_FREE_KIB (test-only free-space override, the name
-build-gc.sh already uses: the ladder always prints, this shows which of its rungs a reclaim would take on a
-machine that has room).
+PLX_DISK_NEED_GIB (the build's estimate), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
+~/plx-fleet), PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories
+to look for `/tmp` trees in; default /tmp and $TMPDIR), and two TEST-ONLY overrides: PLX_GC_TEST_FREE_KIB
+(free space, the name build-gc.sh already uses) and PLX_GC_TEST_NOW (the clock, honoured only when
+PLX_GC_TMP_ROOTS is set). `reclaim --emit` REFUSES to run with either override while PLX_GC_TMP_ROOTS,
+PLX_FLEET_DIR or PLX_BUILD_CACHE is left to its default: a pretend emergency over the real default roots
+is how a test would delete the owner's real trees.
 """
 import argparse
 import ctypes
@@ -81,7 +97,6 @@ HYSTERESIS_GIB = 4               # about one cold host `target`, so the next bui
 DEFAULT_RESERVE_MIB = 3072       # `make disk-preflight`'s PLX_MIN_FREE_MB: the ENOSPC floor
 IDLE_SECS = 15 * 60              # a tree written in the last 15 minutes is somebody's current work
 TMP_GARBAGE_SECS = 24 * 3600     # a PlxNative /tmp tree this old is nobody's current work
-DEFAULT_SEED_DAYS = 7            # `build-gc.sh --seed`'s age
 LEFTOVER_SECS = 24 * 3600        # cargo-seed's own LEFTOVER_MAX_AGE
 MIN_NEED_GIB = 0.5
 
@@ -107,6 +122,8 @@ LEFTOVER_MARKS = (".tmp.", ".restore.", ".old.", ".tombstone.")   # cargo-seed.p
 KINDS = ("lane", "main", "fleet", "tmp", "seed", "leftover")
 
 SKIPPED_RUNGS = {1: "content dedup is a later PR; the rung is skipped until it lands"}
+SEED_KEPT = ("the cargo seed shares its blocks with the lanes cloned from it: deleting it frees almost nothing "
+             "(measured 12K private against 478M by du); `build-gc.sh --seed` is the manual, age-gated prune")
 
 
 # --- records -----------------------------------------------------------------------------------------
@@ -117,7 +134,6 @@ class Thresholds:
     reserve: int = DEFAULT_RESERVE_MIB * MIB
     idle_secs: int = IDLE_SECS
     tmp_garbage_secs: int = TMP_GARBAGE_SECS
-    seed_secs: int = DEFAULT_SEED_DAYS * 86400
 
 
 @dataclass(frozen=True)
@@ -181,7 +197,7 @@ class Inventory:
 @dataclass(frozen=True)
 class Action:
     rung: int
-    scope: str                            # "tree" | "incremental" | "stale" | "seed"
+    scope: str                            # "tree" | "incremental" | "stale"
     tree: str
     paths: Tuple[str, ...]
     frees: int
@@ -190,6 +206,7 @@ class Action:
     why: str
     last_built: float
     group: int = 0                        # rung 6 only: 0 = the main checkout, 1 = the current one
+    idle_secs: int = 0                    # the executor must find the owner idle for this long, 0: no age gate
 
 
 @dataclass(frozen=True)
@@ -225,7 +242,9 @@ def never(tree: Tree, inv: Inventory) -> str:
         return "not ours: no PlxNative marker"
     if inv.volume_dev and tree.dev and tree.dev != inv.volume_dev:
         return "on another volume than the build"
-    if tree.kind in ("seed", "leftover"):
+    if tree.kind == "seed":
+        return SEED_KEPT
+    if tree.kind == "leftover":
         if not inv.cache_root or not under(tree.path, inv.cache_root):
             return "not under the build cache"
         return ""
@@ -252,13 +271,13 @@ def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now:
     handles = list(tree.live.reasons(current=True))
     handles = [r for r in handles if not r.startswith("cargo lock")]   # only open files / unknown
 
-    def whole(rung: int, text: str, group: int = 0) -> Action:
+    def whole(rung: int, text: str, group: int = 0, idle_secs: int = 0) -> Action:
         return Action(rung, "tree", tree.path, (tree.path,), tree.private_bytes, True, owner, text,
-                      tree.last_built, group)
+                      tree.last_built, group, idle_secs)
 
-    def incremental(rung: int, text: str, group: int = 0) -> Action:
+    def incremental(rung: int, text: str, group: int = 0, idle_secs: int = 0) -> Action:
         return Action(rung, "incremental", tree.path, tree.incr_paths, tree.incr_bytes, True, owner, text,
-                      tree.last_built, group)
+                      tree.last_built, group, idle_secs)
 
     def worth(actions: List[Action], kept: str) -> Tuple[List[Action], str]:
         kept_actions = [a for a in actions if not a.sized or a.frees > 0]
@@ -270,14 +289,6 @@ def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now:
         if tree.live.reasons(current=True):
             return [], "in use: " + "; ".join(tree.live.reasons(current=True))
         return worth([whole(0, "leftover of an interrupted delete or seed run")], "")
-    if tree.kind == "seed":
-        if tree.live.reasons(current=True):
-            return [], "in use: " + "; ".join(tree.live.reasons(current=True))
-        if now - tree.last_built < th.seed_secs:
-            return [], "the cargo seed was used %s ago" % age_text(now - tree.last_built)
-        return worth([Action(5, "seed", tree.path, (tree.path,), tree.private_bytes, True, "-",
-                             "the cargo seed, unused for %s" % age_text(now - tree.last_built),
-                             tree.last_built)], "")
     if tree.tombstone:
         if handles:
             return [], "in use: " + "; ".join(handles)
@@ -311,13 +322,15 @@ def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now:
     if tree.kind == "fleet" and tree.orphan:
         return worth([whole(0, "orphaned fleet tree: its worktree is gone")], "")
     if tree.kind in ("lane", "fleet") and tree.merged and tree.clean and not tree.locked and idle:
-        return worth([whole(0, "its lane is already on %s" % (inv.base_ref or "main"))], "")
+        return worth([whole(0, "its lane is already on %s" % (inv.base_ref or "main"), idle_secs=th.idle_secs)], "")
     if tree.kind == "tmp":
         if now - tree.last_built >= th.tmp_garbage_secs:
-            return worth([whole(0, "PlxNative /tmp tree untouched for %s" % age_text(now - tree.last_built))], "")
+            return worth([whole(0, "PlxNative /tmp tree untouched for %s" % age_text(now - tree.last_built),
+                                idle_secs=th.tmp_garbage_secs)], "")
         if not idle:
             return [], "built %s ago" % age_text(now - tree.last_built)
-        return worth([whole(3, "PlxNative /tmp tree, idle %s" % age_text(now - tree.last_built))], "")
+        return worth([whole(3, "PlxNative /tmp tree, idle %s" % age_text(now - tree.last_built),
+                            idle_secs=th.idle_secs)], "")
 
     if not idle:
         return [], "%s %s ago (< %d min)" % ("built" if built == tree.last_built else "its lane built",
@@ -325,9 +338,10 @@ def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now:
     acts = []
     incr_taken = 0
     if tree.incr_bytes > 0:
-        acts.append(incremental(2, "idle lane's incremental cache"))
+        acts.append(incremental(2, "idle lane's incremental cache", idle_secs=th.idle_secs))
         incr_taken = tree.incr_bytes
-    acts.append(replace(whole(4, "idle lane's derived tree"), frees=max(0, tree.private_bytes - incr_taken)))
+    acts.append(replace(whole(4, "idle lane's derived tree", idle_secs=th.idle_secs),
+                        frees=max(0, tree.private_bytes - incr_taken)))
     return worth(acts, "")
 
 
@@ -357,6 +371,11 @@ def plan(inv: Inventory, free: int, need: int, th: Thresholds, me: Optional[str]
     Below the comfort line the ladder's rungs 0-5 run until projected free space reaches comfort +
     hysteresis. Rung 6 is added only if that still leaves less than need + reserve, and stops at
     need + reserve. A refusal means the whole ladder cannot free the build's estimate plus the reserve.
+
+    The `--stale` sweep cannot be sized ahead, so it counts as ZERO here: a plan whose sized actions fall
+    short is a refusal even when the sweep is in it. The sweep stays in the action list, and the caller
+    runs it in its rung-5 slot, re-reads free space and asks `settle` (a sweep that rescues the build
+    turns the refusal into `ok` there, on measured numbers instead of a guess).
     """
     wanted = need + th.reserve
     if free >= max(th.comfort, wanted):
@@ -387,11 +406,9 @@ def plan(inv: Inventory, free: int, need: int, th: Thresholds, me: Optional[str]
         return Plan("ok", (), free, need, th.reserve, th.comfort, goal, free, False,
                     "%s free is below the comfort line (%s) but nothing is eligible to evict, and the build "
                     "fits (%s with the reserve)" % (gib(free), gib(th.comfort), gib(wanted)))
-    if projected >= wanted or uncertain:
+    if projected >= wanted:
         reason = "%d action(s) free %s, taking %s free to %s" % (
             len(chosen), gib(projected - free), gib(free), gib(projected))
-        if projected < wanted:
-            reason += " (short of %s: the `--stale` sweep is not sized, re-read free space after it)" % gib(wanted)
         return Plan("reclaim", tuple(chosen), free, need, th.reserve, th.comfort, goal, projected, uncertain,
                     reason)
     live = sorted(((t.path, t.private_bytes, "; ".join(t.live.reasons())) for t in inv.trees
@@ -399,8 +416,21 @@ def plan(inv: Inventory, free: int, need: int, th: Thresholds, me: Optional[str]
     reason = ("cannot free enough: the build needs ~%s plus a %s reserve (%s), %s is free and the whole "
               "ladder frees at most %s more" % (gib(need), gib(th.reserve), gib(wanted), gib(free),
                                                  gib(projected - free)))
-    return Plan("refuse", tuple(chosen), free, need, th.reserve, th.comfort, goal, projected, False, reason,
+    if uncertain:
+        reason += ("; the `--stale` sweep is in the plan but not sized (counted as 0), so a real run may still "
+                   "make room: run the plan and let `settle` judge the free space it re-reads")
+    return Plan("refuse", tuple(chosen), free, need, th.reserve, th.comfort, goal, projected, uncertain, reason,
                 tuple(live))
+
+
+def settle(need: int, reserve: int, free_after: int) -> Tuple[str, str]:
+    """The verdict on free space RE-READ after a plan ran: `ok` once the build's estimate plus the reserve
+    fits, else `refuse`. The one rule shared by `make disk`'s promise and `build-gc.sh --evict`'s last line."""
+    wanted = need + reserve
+    if free_after >= wanted:
+        return "ok", "%s free covers the build's %s plus the %s reserve" % (gib(free_after), gib(need), gib(reserve))
+    return "refuse", "%s free is short of the build's %s plus the %s reserve (%s)" % (
+        gib(free_after), gib(need), gib(reserve), gib(wanted))
 
 
 # --- formatting helpers ------------------------------------------------------------------------------
@@ -458,7 +488,6 @@ def thresholds_from_env(env) -> Thresholds:
     return Thresholds(
         comfort=int_env(env, "PLX_GC_MIN_FREE_GIB", DEFAULT_COMFORT_GIB) * GIB,
         reserve=int_env(env, "PLX_MIN_FREE_MB", DEFAULT_RESERVE_MIB) * MIB,
-        seed_secs=int_env(env, "PLX_SEED_MAX_DAYS", DEFAULT_SEED_DAYS) * 86400,
     )
 
 
@@ -623,23 +652,30 @@ def has_plx_marker(tree: str) -> bool:
     return False
 
 
-def newest_mtime(tree: str) -> float:
+def newest_mtime(tree: str, ctime: bool = False) -> float:
     """When cargo last wrote in `tree`: directory-entry stats of deps/.fingerprint/build/incremental in
     each profile dir, no full walk. A directory's own mtime does not move while a compiler rewrites a
-    file inside it, hence the entries."""
+    file inside it, hence the entries.
+
+    With `ctime`, the later of each entry's mtime and ctime. An mtime can be set to anything (`os.utime`,
+    `cp -p`, a restore from an archive, a test fixture); a ctime is the kernel's and cannot be set, so a
+    tree that was merely touched back into the past still reads as recently changed."""
+    def stamp(st: os.stat_result) -> float:
+        return max(st.st_mtime, st.st_ctime) if ctime else st.st_mtime
+
     try:
-        newest = os.lstat(tree).st_mtime
+        newest = stamp(os.lstat(tree))
     except OSError:
         return 0.0
     for profile in profile_dirs(tree):
         for sub in PROFILE_SUBDIRS:
             d = os.path.join(profile, sub)
             try:
-                newest = max(newest, os.lstat(d).st_mtime)
+                newest = max(newest, stamp(os.lstat(d)))
                 with os.scandir(d) as it:
                     for e in it:
                         try:
-                            newest = max(newest, e.stat(follow_symlinks=False).st_mtime)
+                            newest = max(newest, stamp(e.stat(follow_symlinks=False)))
                         except OSError:
                             pass
             except OSError:
@@ -716,11 +752,16 @@ def discover_tmp_trees(roots: Sequence[str], skip: Sequence[str]) -> List[str]:
     are enumerated through git."""
     found: List[str] = []
     seen = set()
+    skipped = [real(x) for x in skip]
     for root in roots:
         root = real(root)
         if root in seen or not os.path.isdir(root):
             continue
         seen.add(root)
+        # a root that IS, or lies inside, a skipped tree (the fleet directory, a registered checkout) is
+        # somebody else's inventory
+        if any(root == x or root.startswith(x + os.sep) for x in skipped):
+            continue
         stack = [(root, 0)]
         while stack:
             directory, depth = stack.pop()
@@ -737,11 +778,35 @@ def discover_tmp_trees(roots: Sequence[str], skip: Sequence[str]) -> List[str]:
                 if e.name in (".git", "node_modules"):
                     continue
                 try:
-                    if e.is_dir(follow_symlinks=False) and real(e.path) not in skip:
+                    if e.is_dir(follow_symlinks=False) and real(e.path) not in skipped:
                         stack.append((e.path, depth + 1))
                 except OSError:
                     continue
     return sorted(found)
+
+
+def tmp_roots(env) -> List[str]:
+    """Where PlxNative cargo trees outside any checkout are looked for: PLX_GC_TMP_ROOTS (an os.pathsep
+    list; an empty value means the defaults), else /tmp and $TMPDIR."""
+    explicit = [p for p in (env.get("PLX_GC_TMP_ROOTS") or "").split(os.pathsep) if p]
+    return explicit or ["/tmp"] + ([env["TMPDIR"]] if env.get("TMPDIR") else [])
+
+
+def fleet_dir(env) -> str:
+    """$PLX_FLEET_DIR, which may be set to the empty string to mean "no fleet"; unset means ~/plx-fleet."""
+    value = env.get("PLX_FLEET_DIR")
+    return os.path.expanduser("~/plx-fleet") if value is None else value
+
+
+def build_cache(env) -> str:
+    return real(env.get("PLX_BUILD_CACHE") or os.path.expanduser("~/.cache/plxnative"))
+
+
+def tmp_candidates(env, checkouts: Sequence[str]) -> List[str]:
+    """Every cargo-tagged directory under the tmp roots that is not a checkout, nor inside the fleet dir."""
+    fleet = fleet_dir(env)
+    skip = list(checkouts) + ([real(fleet)] if fleet and os.path.isdir(fleet) else [])
+    return discover_tmp_trees(tmp_roots(env), skip)
 
 
 def flock_held(path: str) -> bool:
@@ -865,11 +930,8 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
         wts.append(Worktree(root, "", "(detached)", False))
     ref = base_ref(root)
     names = {w.path: ("main" if w.path == main else os.path.basename(w.path)) for w in wts}
-    cache = real(env.get("PLX_BUILD_CACHE") or os.path.expanduser("~/.cache/plxnative"))
-    fleet = env.get("PLX_FLEET_DIR")
-    fleet = os.path.expanduser("~/plx-fleet") if fleet is None else fleet
-    tmp_roots = [p for p in (env.get("PLX_GC_TMP_ROOTS") or "").split(os.pathsep) if p] or \
-        ["/tmp"] + ([env["TMPDIR"]] if env.get("TMPDIR") else [])
+    cache = build_cache(env)
+    fleet = fleet_dir(env)
     volume_dev = os.stat(root).st_dev
 
     def owning(path: str) -> Optional[str]:
@@ -893,8 +955,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
                 if os.path.basename(d).startswith("target"):
                     owner = lane_names.get(os.path.basename(lane))
                     seen.setdefault(real(d), ("fleet", owner, os.path.basename(lane), owner is None))
-    skip = [w.path for w in wts] + ([real(fleet)] if fleet and os.path.isdir(fleet) else [])
-    for d in discover_tmp_trees(tmp_roots, skip):
+    for d in tmp_candidates(env, [w.path for w in wts]):
         seen.setdefault(real(d), ("tmp", owning(real(d)), "", False))
 
     for kind_dir in ("ffmpeg", "cargo-seed"):
@@ -916,7 +977,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
                 st = os.lstat(path)
             except OSError:
                 continue
-            if leftover and time.time() - st.st_mtime < LEFTOVER_SECS and not tombstone:
+            if leftover and now - st.st_mtime < LEFTOVER_SECS and not tombstone:
                 continue                      # an in-flight harvest or restore
             private, alloc, _ = measure(path, ())
             stamp = os.path.join(path, ".last-used")
@@ -931,6 +992,9 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
             trees.append(Tree(path=path, kind="tmp", plx=False, dev=os.stat(path).st_dev,
                               last_built=newest_mtime(path)))
             continue
+        # A /tmp tree's age is the later of mtime and ctime (docs/disk-budget.md): a test fixture whose
+        # files were `utime`d into the past is not "garbage nobody has written to for a day".
+        built = newest_mtime(path, ctime=(kind == "tmp"))
         incr = tuple(sorted(os.path.join(p, "incremental") for p in profile_dirs(path)
                             if os.path.isdir(os.path.join(p, "incremental"))))
         private, alloc, incr_private = measure(path, incr)
@@ -947,7 +1011,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
             path=path, kind=kind, checkout=checkout, owner=owner, orphan=orphan, plx=plx,
             tombstone=".tombstone." in base, tracked=tracked_under(path), dev=os.stat(path).st_dev,
             private_bytes=private if plx else 0, alloc_bytes=alloc, incr_paths=incr if plx else (),
-            incr_bytes=incr_private if plx else 0, last_built=newest_mtime(path),
+            incr_bytes=incr_private if plx else 0, last_built=built,
             live=live_for(path, checkout, kind == "fleet" and owner or None, snap,
                           probes.cargo_locked(path), probes.check_locked(checkout) if checkout else False,
                           [w.path for w in wts]),
@@ -1073,18 +1137,108 @@ def default_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def main(argv: Sequence[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    sub = ap.add_subparsers(dest="action", required=True)
-    rp = sub.add_parser("report", help="print the budget, the trees, the ladder and the verdict (read-only)")
-    rp.add_argument("--root", default=default_root(), help="the current checkout (default: this script's)")
-    rp.add_argument("--tree", help="the tree the next build writes (default: <root>/rust-modules/target)")
-    rp.add_argument("--need-gib", type=float, help="the next build's estimate (default: by tree name)")
-    args = ap.parse_args(argv)
-    env = dict(os.environ)
+# --- the plan, as the one deleting tool reads it ------------------------------------------------------
+PLAN_HEADER = "# plx-disk-plan v1"
+PLAN_FIELDS = 8
+
+
+def emit(pl: Plan) -> str:
+    """The plan as `build-gc.sh --evict` reads it: `#` header lines, then one tab-separated line per path
+
+        evict  RUNG  SCOPE  EST_KIB  OWNER|-  IDLE_MIN  MODE  PATH
+
+    in the order to run them, and a single `stale` line (same fields) at the `--stale` sweep's rung-5 slot.
+    EST_KIB is the action's private bytes and rides on its first path. IDLE_MIN is how long the owner must
+    have been idle when the executor looks again (0: no age gate). MODE is `current` for rung 6's
+    current-checkout group, whose liveness rule differs (`make` itself runs there), else `normal`.
+    The plan is a proposal: `--evict` treats every field as untrusted and re-checks each path."""
+    lines = [PLAN_HEADER, "# verdict %s" % pl.verdict, "# free_kib %d" % (pl.free // 1024),
+             "# goal_kib %d" % (pl.goal // 1024), "# wanted_kib %d" % ((pl.need + pl.reserve) // 1024),
+             "# need_kib %d" % (pl.need // 1024), "# reserve_kib %d" % (pl.reserve // 1024)]
+    stale_done = False
+    for a in pl.actions:
+        mode = "current" if a.group == 1 else "normal"
+        owner = a.owner or "-"
+        if a.scope == "stale":
+            if not stale_done:
+                stale_done = True
+                lines.append("\t".join(("stale", str(a.rung), "stale", "0", owner, "0", mode, a.tree)))
+            continue
+        for index, path in enumerate(a.paths):
+            if "\t" in path or "\n" in path or "\r" in path:
+                lines.append("# skipped: a path with a control character in its name (%r)" % path)
+                continue
+            lines.append("\t".join(("evict", str(a.rung), a.scope, str((a.frees // 1024) if index == 0 else 0),
+                                    owner, str(a.idle_secs // 60), mode, path)))
+    return "\n".join(lines)
+
+
+def read_plan_header(text: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith("# ") and " " in line[2:]:
+            key, value = line[2:].split(" ", 1)
+            out[key] = value.strip()
+    return out
+
+
+def render_plan(pl: Plan) -> str:
+    lines = ["verdict  %s: %s" % (pl.verdict, pl.reason),
+             "free     %s; goal %s; the build needs %s with the %s reserve" % (
+                 gib(pl.free), gib(pl.goal), gib(pl.need + pl.reserve), gib(pl.reserve))]
+    for a in pl.actions:
+        lines.append("  rung %d  %-11s %8s  %-22s %s  (%s)" % (
+            a.rung, a.scope, size_text(a.frees) if a.sized else "?", a.owner[:22], tilde(a.tree), a.why))
+    if not pl.actions:
+        lines.append("  (nothing to evict)")
+    return "\n".join(lines)
+
+
+# --- test seams, and the guard that keeps them away from the owner's real trees -----------------------
+def clock(env) -> float:
+    """The time the planner and the probes read. PLX_GC_TEST_NOW (epoch seconds) moves it, for a test that
+    must age a tree it just made, and is honoured ONLY when PLX_GC_TMP_ROOTS names the directories to
+    look in: a clock set into the future while the defaults (/tmp, $TMPDIR) are searched is how a test
+    would read the owner's real trees as ancient garbage."""
+    value = env.get("PLX_GC_TEST_NOW", "")
+    if value and env.get("PLX_GC_TMP_ROOTS"):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return time.time()
+
+
+def default_roots(env) -> List[str]:
+    """The names among PLX_GC_TMP_ROOTS, PLX_FLEET_DIR and PLX_BUILD_CACHE that are left to their defaults."""
+    missing = []
+    if not env.get("PLX_GC_TMP_ROOTS"):
+        missing.append("PLX_GC_TMP_ROOTS")
+    if env.get("PLX_FLEET_DIR") is None:
+        missing.append("PLX_FLEET_DIR")
+    if not env.get("PLX_BUILD_CACHE"):
+        missing.append("PLX_BUILD_CACHE")
+    return missing
+
+
+def refuse_pretend_emergency(env) -> str:
+    """Why a plan must not be made right now, or "". A test override (PLX_GC_TEST_FREE_KIB pretends the disk
+    is full, PLX_GC_TEST_NOW pretends it is later) over the DEFAULT roots would plan the machine's real
+    trees as if they were the emergency; `report` is read-only and unaffected, a plan is not."""
+    overrides = [name for name in ("PLX_GC_TEST_FREE_KIB", "PLX_GC_TEST_NOW") if env.get(name)]
+    missing = default_roots(env)
+    if overrides and missing:
+        return ("refusing to plan under %s while %s is left to its default: a pretend emergency over the real "
+                "trees is how a test would delete them. Point every root at a disposable directory." % (
+                    "+".join(overrides), "+".join(missing)))
+    return ""
+
+
+# --- subcommands --------------------------------------------------------------------------------------
+def cmd_report(args, env) -> int:
     root = real(args.root)
     th = thresholds_from_env(env)
-    now = time.time()
+    now = clock(env)
     inv = collect(root, env, Probes(env), now, size_foreign=True)
     build_tree = real(args.tree) if args.tree else os.path.join(root, "rust-modules", "target")
     current = next((t.private_bytes for t in inv.trees if t.path == build_tree), 0)
@@ -1092,6 +1246,148 @@ def main(argv: Sequence[str]) -> int:
     free, total = free_bytes(root, env)
     print(render(inv, th, free, total, root, build_tree, need, now, env))
     return 0
+
+
+def cmd_reclaim(args, env) -> int:
+    """The plan for a reclaim up to `--to` GiB free (comfort line = `--to`, goal = `--to` + hysteresis)."""
+    refusal = refuse_pretend_emergency(env)
+    if refusal:
+        print("disk-budget: " + refusal, file=sys.stderr)
+        return 2
+    root = real(args.root)
+    now = clock(env)
+    th = replace(thresholds_from_env(env), comfort=int(args.to * GIB))
+    if args.idle_min is not None:
+        th = replace(th, idle_secs=max(0, args.idle_min) * 60)
+    inv = collect(root, env, Probes(env), now)
+    free, _ = free_bytes(root, env)
+    if args.no_build:
+        me, build_tree, need = None, None, int((args.need_gib or 0) * GIB)
+    else:
+        me = root
+        build_tree = real(args.tree) if args.tree else os.path.join(root, "rust-modules", "target")
+        current = next((t.private_bytes for t in inv.trees if t.path == build_tree), 0)
+        need = int(args.need_gib * GIB) if args.need_gib is not None else estimate_need(build_tree, current, env)
+    pl = plan(inv, free, need, th, me, now, build_tree)
+    print(emit(pl) if args.emit else render_plan(pl))
+    return 0
+
+
+def cmd_tmp_trees(args, env) -> int:
+    """The PlxNative cargo trees outside any checkout and the fleet dir, on the build's volume: the one
+    discovery `build-gc.sh --evict` uses to know what a /tmp path may be. One realpath per line."""
+    root = real(args.root)
+    wts, _ = worktrees(root)
+    checkouts = [w.path for w in wts] + [root]
+    dev = os.stat(root).st_dev
+    for path in sorted({real(p) for p in tmp_candidates(env, checkouts)}):
+        try:
+            if os.stat(path).st_dev == dev and has_plx_marker(path):
+                print(path)
+        except OSError:
+            continue
+    return 0
+
+
+def probe_tree(tree: str, checkout: Optional[str], lane: Optional[str], klass: str, current: bool,
+               min_age: int, probes: Probes, checkouts: Sequence[str], now: float) -> List[str]:
+    """Why `tree` must not be deleted right now (empty: nothing says so). The planner's own liveness
+    signals, asked again at the moment of deletion: open handles under the tree, a held cargo lock, a held
+    `make check` lock for its checkout, and (current=False) a builder whose cwd is in the checkout; for a
+    /tmp tree also its age (the later of mtime and ctime) against `min_age`, which never drops below the
+    idle window. A tree git tracks a file in is refused for every class."""
+    reasons: List[str] = []
+    if tracked_under(tree):
+        reasons.append("git tracks a file in it")
+    snap = probes.snapshot()
+    reasons.extend(live_for(tree, checkout, lane, snap, probes.cargo_locked(tree),
+                            probes.check_locked(checkout) if checkout else False,
+                            checkouts).reasons(current=current))
+    if klass == "tmp":
+        floor = max(min_age, IDLE_SECS)
+        age = now - newest_mtime(tree, ctime=True)
+        if age < floor:
+            reasons.append("changed %s ago (a /tmp tree must be idle %s)" % (age_text(age), age_text(floor)))
+    elif klass == "leftover" and ".tombstone." not in os.path.basename(tree):
+        # A `.tmp.` / `.restore.` / `.old.` entry may be an in-flight harvest or restore; only one older than
+        # cargo-seed's own limit is a leftover (an interrupted delete's tombstone is never in flight).
+        try:
+            age = now - os.lstat(tree).st_mtime
+        except OSError as err:
+            return ["cannot be read: %s" % err]
+        if age < LEFTOVER_SECS:
+            reasons.append("changed %s ago (a seed-run leftover must be %s old)" % (age_text(age), age_text(LEFTOVER_SECS)))
+    return reasons
+
+
+def cmd_probe(args, env) -> int:
+    root = real(args.root)
+    wts, _ = worktrees(root)
+    checkouts = [w.path for w in wts] + ([root] if root not in [w.path for w in wts] else [])
+    reasons = probe_tree(real(args.tree), real(args.checkout) if args.checkout else None, args.lane or None,
+                         args.klass, args.current, args.min_age_secs, Probes(env), checkouts, clock(env))
+    if reasons:
+        print("; ".join(reasons))
+        return 1
+    print("idle")
+    return 0
+
+
+def cmd_settle(args, env) -> int:
+    text = open(args.plan).read() if args.plan != "-" else sys.stdin.read()
+    header = read_plan_header(text)
+    try:
+        need, reserve = int(header["need_kib"]) * 1024, int(header["reserve_kib"]) * 1024
+    except (KeyError, ValueError):
+        print("n/a: the plan carries no budget")
+        return 0
+    verdict, why = settle(need, reserve, args.free_kib * 1024)
+    print("%s: %s" % (verdict if verdict == "ok" else "REFUSE", why))
+    return 0 if verdict == "ok" else 3
+
+
+def main(argv: Sequence[str]) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="action", required=True)
+
+    def with_root(p):
+        p.add_argument("--root", default=default_root(), help="the current checkout (default: this script's)")
+        return p
+
+    rp = with_root(sub.add_parser("report", help="print the budget, the trees, the ladder and the verdict "
+                                                 "(read-only)"))
+    rp.add_argument("--tree", help="the tree the next build writes (default: <root>/rust-modules/target)")
+    rp.add_argument("--need-gib", type=float, help="the next build's estimate (default: by tree name)")
+
+    cp = with_root(sub.add_parser("reclaim", help="the plan for a reclaim up to --to GiB free (read-only)"))
+    cp.add_argument("--to", type=float, required=True,
+                    help="the comfort line in GiB: the reclaim runs up to this plus the hysteresis")
+    cp.add_argument("--emit", action="store_true", help="print the tab-separated plan `build-gc.sh --evict` reads")
+    cp.add_argument("--no-build", action="store_true",
+                    help="no build is about to start (a hook, a timer): no current checkout, need 0")
+    cp.add_argument("--idle-min", type=int, help="how long a tree must have been idle (default 15)")
+    cp.add_argument("--tree", help="the tree the next build writes (default: <root>/rust-modules/target)")
+    cp.add_argument("--need-gib", type=float, help="the next build's estimate (default: by tree name)")
+
+    tp = with_root(sub.add_parser("tmp-trees", help="print the PlxNative cargo trees outside any checkout"))
+
+    pp = with_root(sub.add_parser("probe", help="is this tree safe to delete right now? exit 0: yes"))
+    pp.add_argument("--tree", required=True, help="the cargo target directory the path belongs to")
+    pp.add_argument("--class", dest="klass", required=True, choices=("lane", "main", "fleet", "tmp", "leftover"))
+    pp.add_argument("--checkout", help="the checkout that owns the tree")
+    pp.add_argument("--lane", help="the fleet lane the tree belongs to")
+    pp.add_argument("--current", action="store_true",
+                    help="the tree is in the checkout that is building: ignore its builder and `make check` lock")
+    pp.add_argument("--min-age-secs", type=int, default=0, help="a /tmp tree must be unchanged this long")
+
+    sp = sub.add_parser("settle", help="judge free space re-read after a plan ran")
+    sp.add_argument("--plan", required=True, help="the plan file (or - for stdin)")
+    sp.add_argument("--free-kib", type=int, required=True)
+
+    args = ap.parse_args(argv)
+    env = dict(os.environ)
+    return {"report": cmd_report, "reclaim": cmd_reclaim, "tmp-trees": cmd_tmp_trees, "probe": cmd_probe,
+            "settle": cmd_settle}[args.action](args, env)
 
 
 if __name__ == "__main__":

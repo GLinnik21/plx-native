@@ -172,9 +172,10 @@ What keeps that in check:
   anything but `make` output or a lane worktree already fully on `main`. Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
-- **`tools/build-gc.sh --auto` runs the same reclaim on its own**, staged by free space on the
-  volume and, for `--lanes`, by an idle guard that spares a lane touched inside the last hour —
-  from a `SessionEnd` hook and an optional hourly `make disk-watch` launchd agent. You do not have
+- **`tools/build-gc.sh --auto` reclaims on its own**, gated by free space on the volume and by an
+  idle guard that spares a lane touched inside the last hour, in the order `tools/disk-budget.py`
+  plans (`docs/disk-budget.md`) — from a `SessionEnd` hook and an optional hourly `make disk-watch`
+  launchd agent. You do not have
   to remember `make disk` for an ordinary fleet; it stays the report to read when deciding whether
   to intervene by hand, or when a lane needs reclaiming faster than the automatic pressure trigger.
 - **A linked worktree does not write an incremental cache.** The Makefile sets
@@ -200,9 +201,9 @@ What keeps that in check:
   seed's, the lane builds cold exactly as before. Builds are still per-checkout. **`du` counts a
   clone's blocks in full**, in the seed and in every lane cloned from it, so `make disk` overstates
   what is on the volume once lanes are seeded: `df` is the truth. `tools/build-gc.sh --cache` prunes
-  a seed nothing has used for 30 days, and `--auto` runs `--seed` (7 days) as its last stage when
-  free space is below the threshold, so a seed whose donor lanes are gone does not hold ~1.3 GB
-  for a month.
+  a seed nothing has used for 30 days, and `--seed` (7 days, by hand) prunes it sooner; `--auto`
+  never evicts it, because the lanes cloned from it share its blocks and deleting it frees almost
+  nothing.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 

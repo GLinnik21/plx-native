@@ -13,6 +13,14 @@ import unittest
 import check_steps
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def git_has_merge_tree():
+    """`git merge-tree --write-tree` (the squash check) arrived in git 2.38."""
+    import re
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    m = re.search(r"(\d+)\.(\d+)", out)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 38)
 MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
 
 
@@ -27,7 +35,13 @@ class BuildGcTests(unittest.TestCase):
         self.counter += 1
         root = self.root / str(self.counter)
         repo, fleet, cache, tools = [root / n for n in ("repo", "fleet", "cache", "bin")]
-        for path in (repo / "tools", fleet, cache, tools):
+        # `tmproot` is the one place the planner's /tmp discovery looks (PLX_GC_TMP_ROOTS), and `scratch` is
+        # this fixture's TMPDIR (beside the fixture rather than in it: the dry-run tests compare the whole
+        # fixture before and after, and a run's own temp files come and go there). Neither is ever the
+        # machine's real /tmp, whatever a test asks the clock or the free-space probe to pretend (the
+        # planner refuses to plan under those while a root is left to its default).
+        tmproot, scratch = root / "tmproot", self.root / ("scratch-%d" % self.counter)
+        for path in (repo / "tools", fleet, cache, tools, tmproot, scratch):
             path.mkdir(parents=True)
         script = repo / "tools/build-gc.sh"
         script.write_bytes((ROOT / "tools/build-gc.sh").read_bytes())
@@ -43,7 +57,10 @@ class BuildGcTests(unittest.TestCase):
                    # ~/Library/Logs or /tmp/plx-build-gc-auto.lock, which a concurrent real
                    # `--auto` (the SessionEnd hook, launchd) could be holding on the very machine
                    # running this suite.
-                   PLX_GC_LOG=str(root / "gc.log"), PLX_GC_LOCK_DIR=str(root / "gc.lock"))
+                   PLX_GC_LOG=str(root / "gc.log"), PLX_GC_LOCK_DIR=str(root / "gc.lock"),
+                   PLX_GC_TMP_ROOTS=str(tmproot), TMPDIR=str(scratch))
+        for key in ("PLX_GC_TEST_NOW", "PLX_GC_TEST_FREE_KIB", "PLX_GC_IDLE_MIN", "PLX_GC_MIN_FREE_GIB"):
+            env.pop(key, None)
         subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True)
         # Suppress unrelated compiler-named processes only. PGID checks use real pgrep;
         # PID checks remain the script's actual shell kill -0 builtin.
@@ -167,12 +184,15 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
         self.assertFalse((seeds / "target").exists(), "--seed left a seed unused for 10 days")
 
-    def test_auto_below_threshold_prunes_the_seed_last(self):
-        fixture = self.fixture(0, 0)
+    def test_auto_under_pressure_never_evicts_the_cargo_seed(self):
+        # The lanes cloned from the seed share its blocks, so deleting it frees almost nothing and makes
+        # every new lane's first build cold: neither `--auto` nor the planner ever takes it (`--seed`, by hand,
+        # still does: test_seed_prunes_a_week_old_cargo_seed_that_cache_would_keep).
+        fixture = self.with_planner(self.fixture(0, 0))
         repo, env = fixture[0], fixture[1]
-        shutil.copy(ROOT / "tools/cargo-seed.py", repo / "tools/cargo-seed.py")
         seeds = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed"
         (seeds / "target").mkdir(parents=True)
+        (seeds / "target" / "payload").write_text("third-party output\n")
         stamp = seeds / "target" / ".last-used"
         stamp.touch()
         ten_days = time.time() - 10 * 86400
@@ -180,9 +200,9 @@ class BuildGcTests(unittest.TestCase):
         result = self.run_auto(fixture, extra_env={
             "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999", "PLX_GC_IDLE_MIN": "0"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse((seeds / "target").exists(), "--auto under pressure kept an idle seed")
+        self.assertTrue((seeds / "target/payload").exists(), "--auto under pressure evicted the seed")
         log = Path(env["PLX_GC_LOG"]).read_text()
-        self.assertLess(log.index("stale:"), log.index("seed:"), "seed stage out of order:\n" + log)
+        self.assertNotIn("seed", log.replace("cargo-seed", ""), "a seed stage ran:\n" + log)
 
     def test_dry_runs_never_mutate_trees_or_locks(self):
         for owner in (os.getpid(), 0):
@@ -294,6 +314,83 @@ class BuildGcTests(unittest.TestCase):
                          "built a root-anchored external path from an empty PLX_FLEET_DIR: "
                          + trace)
         self.assertFalse(roots[0].exists(), "worktree was not actually removed: " + trace)
+
+    # --- `--worktrees` reads the repository the way the planner does ---------------------------------
+    def git(self, fixture, cwd, *args, check=True):
+        return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(cwd), *args],
+                              env=fixture[1], text=True, capture_output=True, check=check)
+
+    def _squash_landed_lane(self, fixture, name, landed=True):
+        """A lane with one commit of its own. `landed`: that commit reaches `origin/main` as ONE squash
+        commit while the local `main` stays a commit BEHIND it (the state every day-old checkout is in:
+        `main` is only moved by a fetch-and-merge nobody ran)."""
+        repo = fixture[0]
+        (repo / "README").write_text("seed\n")
+        self.git(fixture, repo, "add", "README")
+        self.git(fixture, repo, "commit", "-q", "-m", "seed")
+        self.git(fixture, repo, "branch", "-m", "main")
+        origin = repo.parent / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], env=fixture[1], check=True)
+        self.git(fixture, repo, "remote", "add", "origin", str(origin))
+        self.git(fixture, repo, "push", "-q", "-u", "origin", "main")
+        lane = repo.parent / name
+        self.git(fixture, repo, "worktree", "add", "-q", "-b", name, str(lane))
+        (lane / "work.txt").write_text(name + "\n")
+        self.git(fixture, lane, "add", "work.txt")
+        self.git(fixture, lane, "commit", "-q", "-m", name)
+        if landed:
+            self.git(fixture, repo, "merge", "-q", "--squash", name)
+            self.git(fixture, repo, "commit", "-q", "-m", "squash " + name)
+            self.git(fixture, repo, "push", "-q", "origin", "main")
+            self.git(fixture, repo, "reset", "-q", "--hard", "HEAD~1")
+        return lane
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_worktrees_judges_a_lane_against_origin_main_not_a_stale_local_main(self):
+        fixture = self.fixture(0, 0)
+        landed = self._squash_landed_lane(fixture, "landed")
+        open_lane = fixture[0].parent / "open"
+        self.git(fixture, fixture[0], "worktree", "add", "-q", "-b", "open", str(open_lane))
+        (open_lane / "wip.txt").write_text("not on origin\n")
+        self.git(fixture, open_lane, "add", "wip.txt")
+        self.git(fixture, open_lane, "commit", "-q", "-m", "wip")
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("would remove  %s" % landed, diagnostic,
+                      "a lane squash-merged into origin/main read as unmerged against the stale local main")
+        self.assertRegex(diagnostic, r"unmerged\s+%s" % open_lane)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_worktrees_falls_back_to_the_local_main_without_an_origin(self):
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="finished", add_target=False)
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        self.assertIn("would remove  %s" % roots[0], result.stdout + result.stderr)
+
+    def test_worktrees_checks_never_refresh_a_lanes_index(self):
+        # `git status` rewrites the index when a tracked file's stat data went stale (a `touch`, a
+        # checkout, a restore) unless GIT_OPTIONAL_LOCKS=0: a "report" that rewrites a lane's index
+        # races that lane's own `git add`. The control proves this test can see the write.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
+        lane = roots[0]
+        index = Path(self.git(fixture, lane, "rev-parse", "--path-format=absolute", "--git-path",
+                              "index").stdout.strip())
+        later = time.time() + 60
+        os.utime(lane / "README", (later, later))
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        control_env = dict(fixture[1])
+        subprocess.run(["git", "-C", str(lane), "status", "--porcelain"], env=control_env, check=True,
+                       capture_output=True)
+        self.assertNotEqual(before, (index.read_bytes(), index.stat().st_mtime_ns),
+                            "the control `git status` did not refresh the index: this test cannot fail")
+        os.utime(lane / "README", (later + 60, later + 60))
+        before = (index.read_bytes(), index.stat().st_mtime_ns)
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns),
+                         "build-gc refreshed a lane's index")
 
     # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
     # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a
@@ -486,82 +583,118 @@ class BuildGcTests(unittest.TestCase):
         self.assertFalse(sentinels[1].exists(), "orphans must run even above threshold: " + diagnostic)
         self.assertTrue(sentinels[2].exists(), "--auto must never run --cache: " + diagnostic)
 
-    def test_auto_below_threshold_runs_every_stage_in_order(self):
-        # An impossible threshold (999999 GiB) against a tiny stub free value keeps every stage
-        # gated "below threshold" throughout, including after stages that free nothing (this repo
-        # never actually reclaims enough to cross a threshold that high) — the point is to prove
-        # the STAGE ORDER, not a real crossing.
-        fixture = self.fixture(0, 0)
-        roots = self._add_worktrees(fixture, 2, prefix="lane", add_target=True)
+    def auto_lanes(self, lanes=2, age=2 * 3600):
+        """Idle lanes with build output (and the planner next to the script), plus an old main checkout."""
+        fixture, roots = self.evict_fixture(lanes=lanes)
+        for wt in roots:
+            self.age(wt, age)
+        self.age(fixture[0] / "rust-modules/target", age)
+        self.age(fixture[1]["PLX_FLEET_DIR"], age)
+        return fixture, roots
+
+    def test_auto_below_threshold_follows_the_planners_order(self):
+        # 10 GiB free against a 12 GiB threshold: below it, but above the 3 GiB reserve. The stop line (16 GiB)
+        # is never reached on a stubbed volume, so the whole of rungs 0-5 runs, in the planner's order, and
+        # the budget-critical rung 6 (the main checkout's incremental cache) does not.
+        fixture, roots = self.auto_lanes()
+        repo, env, sentinels, _ = fixture
         result = self.run_auto(fixture, extra_env={
-            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
-            "PLX_GC_IDLE_MIN": "0"})
+            "PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30"})
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         for wt in roots:
-            self.assertFalse((wt / "rust-modules/target").exists(),
-                             "idle lane target survived a below-threshold --auto: " + diagnostic)
-        repo, env, _, _ = fixture
+            self.assertFalse((wt / "rust-modules/target").exists(), "idle lane target survived: " + diagnostic)
+        self.assertFalse(sentinels[1].exists(), "the orphan survived: " + diagnostic)
+        self.assertTrue(sentinels[0].exists(), "rung 6 ran without being needed: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "--auto must never touch the FFmpeg cache: " + diagnostic)
         log = Path(env["PLX_GC_LOG"]).read_text()
-        order = [s for s in ("orphans:", "incremental:", "worktrees:", "lanes")
-                 if s in log]
-        self.assertEqual(order, ["orphans:", "incremental:", "worktrees:", "lanes"],
+        order = [m for m in ("orphans:", "worktrees (idle >= 30m):", "evict: rung 2 incremental",
+                             "evict: rung 4 tree", "evict: --stale sweep at rung 5", "evict (planner order):")
+                 if m in log]
+        self.assertEqual(order, ["orphans:", "worktrees (idle >= 30m):", "evict: rung 2 incremental",
+                                 "evict: rung 4 tree", "evict: --stale sweep at rung 5", "evict (planner order):"],
                          "stages ran out of order:\n" + log)
+        for gone in (" incremental:", " lanes", " stale:", " seed:"):
+            self.assertNotIn(gone, log, "a fixed stage of the old --auto ran:\n" + log)
+
+    def test_auto_below_the_reserve_reaches_the_main_checkouts_incremental_cache_last(self):
+        fixture, roots = self.auto_lanes()
+        repo, env, sentinels, _ = fixture
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertFalse(sentinels[0].exists(), "the last rung did not run under a full disk: " + diagnostic)
+        self.assertTrue((repo / "rust-modules/target").is_dir(), "took the main checkout's whole target: " + diagnostic)
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertLess(log.index("evict: rung 4 tree"), log.index("evict: rung 6 incremental"), log)
 
     def test_auto_idle_guard_spares_a_recently_touched_lane(self):
-        # Same setup as the ordering test, but the DEFAULT idle window (60 minutes) — a lane
-        # `_add_worktrees` just created has a target dir with an mtime of right now, so it must be
-        # spared even though free space is far below threshold. A stopped agent might resume in
-        # the next few minutes; a needless rebuild is real money, not a rounding error.
-        fixture = self.fixture(0, 0)
-        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=True)
+        # The DEFAULT idle window (60 minutes): a lane `evict_fixture` just built in has output written seconds
+        # ago, so the planner does not offer it and nothing evicts it, however far below threshold the disk is.
+        # A stopped agent might resume in the next few minutes; a needless rebuild is real money.
+        fixture, roots = self.evict_fixture(lanes=1)
         result = self.run_auto(fixture, extra_env={
             "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999"})
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
-        self.assertIn("recently active, skipped", diagnostic)
-        self.assertTrue((roots[0] / "rust-modules/target").exists(),
+        self.assertTrue((roots[0] / "rust-modules/target/sentinel").exists(),
                         "a lane touched seconds ago was reclaimed: " + diagnostic)
+        self.assertTrue((roots[0] / "rust-modules/target/debug/incremental").exists(), diagnostic)
 
     def test_auto_idle_guard_checks_the_external_tree_too(self):
-        # A lane's `cargo build` writes into `$PLX_FLEET_DIR/<lane>/target`, not into the
-        # worktree — `fleet-plan` exports `CARGO_TARGET_DIR` precisely so `git worktree remove`
-        # stays meaningful. So a worktree that has sat untouched past the idle window, while its
-        # lane is still mid-build (the only fresh mtime is in the external tree), must still be
-        # spared. Checking only the worktree's own mtime — the bug this test guards — would
-        # reclaim a tree a live build is using out from under it.
-        #
-        # `add_target=False`, and dirty by an untracked file OUTSIDE `rust-modules/target*`: a
-        # `rust-modules/target` inside the worktree would itself get deleted by the earlier
-        # "derived trees in linked worktrees" stage, and that deletion bumps the worktree's own
-        # directory mtime to "now" — which would make `idle_lane "$_w"` read active anyway and
-        # mask exactly the bug this test exists to catch. The scratch file keeps `git status
-        # --porcelain` non-empty (so the even-earlier `--worktrees` stage does not remove the
-        # whole worktree, and the external tree along with it) without giving any stage before
-        # `--lanes` something of its own to delete.
-        fixture = self.fixture(0, 0)
-        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
+        # A lane's `cargo build` writes into `$PLX_FLEET_DIR/<lane>/target`, not into the worktree, so a
+        # worktree that has sat untouched past the idle window while its lane is mid-build (the only fresh
+        # mtime is in the external tree) must still be spared.
+        fixture, roots = self.evict_fixture(lanes=1)
         wt = roots[0]
-        (wt / "scratch.txt").write_text("keeps git status dirty\n")
-        old = time.time() - 3600
-        for p in [wt, *wt.rglob("*")]:
-            try:
-                os.utime(p, (old, old), follow_symlinks=False)
-            except (FileNotFoundError, NotADirectoryError, OSError):
-                pass
+        shutil.rmtree(wt / "rust-modules/target")
+        self.age(wt, 3600)
         repo, env, sentinels, _ = fixture
-        fleet = Path(env["PLX_FLEET_DIR"])
-        ext_target = fleet / wt.name / "target"
-        ext_target.mkdir(parents=True)
-        (ext_target / "sentinel").write_text("synthetic build output\n")
+        ext_target = self.make_tree(Path(env["PLX_FLEET_DIR"]) / wt.name / "target", incremental=True)
         result = self.run_auto(fixture, extra_env={
-            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
-            "PLX_GC_IDLE_MIN": "30"})
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999", "PLX_GC_IDLE_MIN": "30"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue((ext_target / "sentinel").exists(),
+                        "external tree with a fresh write was reclaimed: " + diagnostic)
+        self.assertTrue((ext_target / "debug/incremental").exists(), diagnostic)
+        # the control: the same lane with its build tree old too is an idle lane, and goes
+        self.age(ext_target.parent, 3600)
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999", "PLX_GC_IDLE_MIN": "30"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(ext_target.exists(), "an idle lane's external tree was kept: " + result.stdout + result.stderr)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_leaves_a_landed_lane_that_is_not_idle(self):
+        # `--worktrees` on its own removes every finished lane. Under `--auto` a lane that LOOKS finished is
+        # not necessarily nobody's: a squash can land while an agent is still in the worktree. The window
+        # covers the worktree and the lane's build tree under the fleet dir.
+        fixture = self.with_planner(self.fixture(0, 0))
+        landed = self._squash_landed_lane(fixture, "landed")
+        fleet_tree = self.make_tree(Path(fixture[1]["PLX_FLEET_DIR"]) / "landed" / "target")
+        self.age(landed, 2 * 3600)
+        quiet = {"PLX_GC_TEST_FREE_KIB": str(10 << 20), "PLX_GC_MIN_FREE_GIB": "12", "PLX_GC_IDLE_MIN": "30"}
+        # worktree old, its fleet build tree written just now
+        result = self.run_auto(fixture, extra_env=quiet)
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         self.assertIn("recently active, skipped", diagnostic)
-        self.assertTrue((ext_target / "sentinel").exists(),
-                        "external tree with a fresh write was reclaimed: " + diagnostic)
+        self.assertTrue(landed.exists() and fleet_tree.exists(), "removed a lane with a fresh build tree: " + diagnostic)
+        # everything old: now it goes, with its fleet tree
+        self.age(fleet_tree.parent, 2 * 3600)
+        result = self.run_auto(fixture, extra_env=quiet)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertFalse(landed.exists(), "an idle landed lane was kept: " + diagnostic)
+        self.assertFalse(fleet_tree.exists(), "its fleet tree was kept: " + diagnostic)
+        # and `--worktrees` by hand has no idle window at all
+        by_hand = self.fixture(0, 0)
+        fresh = self._squash_landed_lane(by_hand, "landed")
+        result = self.run_gc(by_hand, "--worktrees")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(fresh.exists(), "--worktrees by hand kept a landed lane for being recent")
 
     def test_auto_lock_held_exits_quietly(self):
         # A genuinely live owner (this TEST PROCESS's own pid, guaranteed alive for the duration
@@ -583,14 +716,14 @@ class BuildGcTests(unittest.TestCase):
             self.assertIn("lock held", log.read_text())
 
     def test_auto_dry_run_deletes_nothing_and_leaves_no_lock(self):
-        fixture = self.fixture(0, 0)
-        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=True)
+        fixture, roots = self.auto_lanes(lanes=1)
         result = self.run_auto(fixture, "-n", extra_env={
             "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
-            "PLX_GC_IDLE_MIN": "0"})
+            "PLX_GC_IDLE_MIN": "30"})
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         self.assertIn("would remove", diagnostic)
+        self.assertRegex(diagnostic, r"would remove +~\S+ +\S+lane0/rust-modules/target  \(rung 4 tree, from lane0\)")
         self.assertTrue((roots[0] / "rust-modules/target").exists(),
                         "-n deleted a lane target: " + diagnostic)
         _, env, sentinels, _ = fixture
@@ -598,6 +731,430 @@ class BuildGcTests(unittest.TestCase):
             self.assertTrue(s.exists(), "-n deleted a sentinel: " + diagnostic)
         self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(),
                          "-n took the single-instance lock: " + diagnostic)
+
+
+    # --- `--evict PLAN` ------------------------------------------------------------------------------------
+    # The only mode that deletes what the planner chose. A plan is UNTRUSTED input, so most of what follows
+    # hands it paths the planner would never write and checks that none of them goes. Everything lives under
+    # the fixture's own root; `evict` is never pointed at this machine's trees.
+    PLAN_V1 = "# plx-disk-plan v1"
+
+    def with_planner(self, fixture):
+        """The planner and the tools it loads, next to the copy of build-gc.sh under test."""
+        repo = fixture[0]
+        for name in ("disk-budget.py", "cargo-seed.py", "check-lock.py"):
+            shutil.copy(ROOT / "tools" / name, repo / "tools" / name)
+        return fixture
+
+    def age(self, path, seconds):
+        """Backdate `path` and everything under it (mtime and atime; the ctime is always now)."""
+        old = time.time() - seconds
+        for p in [path, *Path(path).rglob("*")]:
+            try:
+                os.utime(p, (old, old), follow_symlinks=False)
+            except OSError:
+                pass
+
+    def make_tree(self, path, files=("sentinel",), incremental=False):
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            (path / f).write_text("synthetic build output\n")
+        if incremental:
+            (path / "debug/incremental").mkdir(parents=True, exist_ok=True)
+            (path / "debug/incremental/work-product").write_text("incremental\n")
+        return path
+
+    def write_plan(self, fixture, lines, goal_kib=None, header=None):
+        """`lines`: (kind, rung, scope, est_kib, owner, idle_min, mode, path) tuples."""
+        out = [header if header is not None else self.PLAN_V1, "# verdict reclaim"]
+        if goal_kib is not None:
+            out.append("# goal_kib %d" % goal_kib)
+        for fields in lines:
+            out.append("\t".join(str(f) for f in fields))
+        plan = fixture[0].parent / ("plan-%d.tsv" % self.counter)
+        plan.write_text("\n".join(out) + "\n")
+        return plan
+
+    def run_evict(self, fixture, plan, *args, extra_env=None, cwd=None, timeout=90):
+        repo, env, _, _ = fixture
+        env = dict(env)
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(["sh", "tools/build-gc.sh", "--evict", str(plan), *args],
+                              cwd=cwd or repo, env=env, text=True, capture_output=True, timeout=timeout)
+
+    def evict_fixture(self, lanes=2, pid=0, pgid=0, pgrep_body=None, planner=True):
+        fixture = self.fixture(pid, pgid, pgrep_body=pgrep_body)
+        roots = self._add_worktrees(fixture, lanes, prefix="lane", add_target=False)
+        if planner:
+            self.with_planner(fixture)
+        for wt in roots:
+            self.make_tree(wt / "rust-modules/target", incremental=True)
+        return fixture, roots
+
+    def snapshot_tree(self, root):
+        return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None)
+                for p in Path(root).rglob("*")}
+
+    def test_evict_deletes_exactly_what_the_plan_names_and_logs_who_gave_it_up(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        repo, env, sentinels, _ = fixture
+        orphan = sentinels[1].parents[2]                      # <fleet>/absent-lane/target
+        self.assertEqual(orphan.name, "target")
+        (lane0 / "pkg").mkdir()
+        (lane0 / "pkg/keep").write_text("pkg\n")
+        (lane0 / "vendor/ffmpeg-build").mkdir(parents=True)
+        (lane0 / "vendor/ffmpeg-build/keep").write_text("vendor\n")
+        plan = self.write_plan(fixture, [
+            ("evict", 0, "tree", 64, "-", 0, "normal", orphan),
+            ("evict", 2, "incremental", 32, "lane0", 0, "normal", lane0 / "rust-modules/target/debug/incremental"),
+            ("evict", 4, "tree", 96, "lane1", 0, "normal", lane1 / "rust-modules/target"),
+        ])
+        result = self.run_evict(fixture, plan)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertFalse(orphan.exists(), out)
+        self.assertFalse((lane0 / "rust-modules/target/debug/incremental").exists(), out)
+        self.assertFalse((lane1 / "rust-modules/target").exists(), out)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(),
+                        "took more than the incremental dir the plan named: " + out)
+        for kept in (sentinels[0], sentinels[2], lane0 / "pkg/keep", lane0 / "vendor/ffmpeg-build/keep",
+                     repo / "README"):
+            self.assertTrue(kept.exists(), "evicted something the plan did not name (%s): %s" % (kept, out))
+        self.assertEqual([p.name for p in orphan.parent.parent.rglob("*.tombstone.*")], [],
+                         "a tombstone was left behind")
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        self.assertRegex(log, r"evict: rung 4 tree freed ~\S+ from lane1: ")
+        self.assertRegex(log, r"evict: rung 2 incremental freed ~\S+ from lane0: ")
+
+    def test_evict_skips_a_tree_that_turned_live_and_takes_the_rest(self):
+        import fcntl
+        fixture, (lane0, lane1) = self.evict_fixture()
+        busy = lane0 / "rust-modules/target/debug/.cargo-lock"
+        busy.write_text("")
+        plan = self.write_plan(fixture, [
+            ("evict", 4, "tree", 96, "lane0", 0, "normal", lane0 / "rust-modules/target"),
+            ("evict", 4, "tree", 96, "lane1", 0, "normal", lane1 / "rust-modules/target"),
+        ])
+        fd = os.open(busy, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)      # "a cargo is building here, right now"
+            result = self.run_evict(fixture, plan)
+        finally:
+            os.close(fd)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("in use, skipped", out)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "evicted a tree under a cargo lock: " + out)
+        self.assertFalse((lane1 / "rust-modules/target").exists(), "the idle lane's tree should have gone: " + out)
+
+    def test_evict_asks_again_whether_a_builder_runs_in_the_lane(self):
+        pidfile = self.root / "live-evict.pid"
+        pidfile.write_text("0\n")
+        fixture, (lane0, lane1) = self.evict_fixture(pgrep_body=self.pid_file_stub(pidfile))
+        plan = self.write_plan(fixture, [
+            ("evict", 4, "tree", 96, "lane0", 0, "normal", lane0 / "rust-modules/target"),
+            ("evict", 4, "tree", 96, "lane1", 0, "normal", lane1 / "rust-modules/target"),
+        ])
+        live = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                cwd=lane0, stdin=subprocess.PIPE)
+        try:
+            pidfile.write_text(str(live.pid) + "\n")
+            result = self.run_evict(fixture, plan)
+        finally:
+            live.stdin.close()
+            live.wait(timeout=5)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "evicted under a live build: " + out)
+        self.assertFalse((lane1 / "rust-modules/target").exists(), out)
+
+    def test_evict_honours_the_idle_window_the_plan_names(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        self.age(lane1, 2 * 3600)
+        self.age(fixture[1]["PLX_FLEET_DIR"], 2 * 3600)
+        plan = self.write_plan(fixture, [
+            ("evict", 4, "tree", 96, "lane0", 30, "normal", lane0 / "rust-modules/target"),
+            ("evict", 4, "tree", 96, "lane1", 30, "normal", lane1 / "rust-modules/target"),
+        ])
+        result = self.run_evict(fixture, plan)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("its lane changed within 30 min", out)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "evicted a lane touched seconds ago: " + out)
+        self.assertFalse((lane1 / "rust-modules/target").exists(), "left an idle lane's tree: " + out)
+
+    def test_evict_refuses_paths_that_are_not_derived_build_trees(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        repo, env, sentinels, _ = fixture
+        fleet, cache, tmproot = (Path(env["PLX_FLEET_DIR"]), Path(env["PLX_BUILD_CACHE"]),
+                                 Path(env["PLX_GC_TMP_ROOTS"]))
+        # a lane's `pkg/` and `vendor/`, and a tracked file inside a tree
+        (lane0 / "pkg").mkdir()
+        (lane0 / "pkg/keep").write_text("pkg\n")
+        (lane0 / "vendor/ffmpeg-build").mkdir(parents=True)
+        (lane0 / "vendor/ffmpeg-build/keep").write_text("vendor\n")
+        tracked = lane1 / "rust-modules/target-tracked"
+        self.make_tree(tracked, files=("tracked.txt",))
+        self.git(fixture, lane1, "add", "-f", "rust-modules/target-tracked/tracked.txt")
+        self.git(fixture, lane1, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "tracked build output")
+        # another project's cargo tree in the one /tmp root the planner searches
+        foreign = tmproot / "other-project-target"
+        self.make_tree(foreign)
+        (foreign / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+        (foreign / "debug/deps").mkdir(parents=True)
+        (foreign / "debug/deps/libother_crate-1234.rlib").write_text("not ours\n")
+        self.age(foreign, 3 * 86400)
+        # a symlink resolving into the main checkout's target, and a path nowhere near a checkout
+        link = lane0.parent / "alias-of-main-target"
+        link.symlink_to(repo / "rust-modules/target", target_is_directory=True)
+        elsewhere = self.make_tree(lane0.parent / "somebody-elses-directory")
+        # ...and one into an idle lane's tree: resolved, it would be a legitimate target, which is why a symlink
+        # in the plan is refused outright rather than followed
+        lane_link = lane0.parent / "alias-of-lane1-target"
+        lane_link.symlink_to(lane1 / "rust-modules/target", target_is_directory=True)
+        # the seed and a live FFmpeg cache entry
+        seed = self.make_tree(cache / "cargo-seed/target")
+        entries = [
+            ("evict", 4, "tree", 1, "x", 0, "normal", lane0 / "pkg"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", lane0 / "vendor/ffmpeg-build"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", tracked),
+            ("evict", 0, "tree", 1, "-", 1440, "normal", foreign),
+            ("evict", 4, "tree", 1, "x", 0, "normal", link),
+            ("evict", 4, "tree", 1, "x", 0, "normal", lane_link),
+            ("evict", 0, "tree", 1, "x", 0, "normal", repo / "rust-modules/target"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", lane1 / "rust-modules/target/debug/incremental"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", elsewhere),
+            ("evict", 0, "tree", 1, "-", 0, "normal", seed),
+            ("evict", 0, "tree", 1, "-", 0, "normal", cache / "ffmpeg/synthetic-key"),
+            ("evict", 4, "tree", 1, "main", 0, "normal", repo / "rust-modules/target"),
+            ("evict", 2, "incremental", 1, "main", 0, "normal", repo / "rust-modules/target/debug/incremental"),
+            ("evict", 6, "tree", 1, "main", 0, "normal", repo / "rust-modules/target"),
+            ("evict", 6, "incremental", 1, "lane1", 0, "normal", lane1 / "rust-modules/target/debug/incremental"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", "rust-modules/target"),
+            ("evict", 4, "tree", 1, "x", 0, "normal", lane1 / "rust-modules/target/debug"),
+            ("evict", 4, "incremental", 1, "x", 0, "normal", lane1 / "rust-modules/target"),
+            ("evict", 9, "tree", 1, "x", 0, "normal", lane1 / "rust-modules/target"),
+            ("evict", 4, "everything", 1, "x", 0, "normal", lane1 / "rust-modules/target"),
+            ("evict", 4, "tree", 1, "x", 0, "elsewhere", lane1 / "rust-modules/target"),
+            ("delete", 4, "tree", 1, "x", 0, "normal", lane1 / "rust-modules/target"),
+        ]
+        before = {p: self.snapshot_tree(p) for p in (repo, lane0, lane1, fleet, cache, tmproot, elsewhere)}
+        for entry in entries:
+            with self.subTest(path=str(entry[-1])[-48:], rung=entry[1], scope=entry[2], mode=entry[6], kind=entry[0]):
+                plan = self.write_plan(fixture, [entry])
+                result = self.run_evict(fixture, plan)
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 1, out)
+                self.assertIn("REFUSED", out)
+        after = {p: self.snapshot_tree(p) for p in before}
+        self.assertEqual(before, after, "a refused path was touched")
+        self.assertTrue(link.is_symlink())
+
+    def test_evict_refuses_a_plan_in_a_format_it_was_not_written_for(self):
+        fixture, (lane0, _) = self.evict_fixture()
+        for header in ("# plx-disk-plan v2", "", "evict"):
+            with self.subTest(header=header):
+                plan = self.write_plan(fixture, [("evict", 4, "tree", 1, "x", 0, "normal", lane0 / "rust-modules/target")],
+                                       header=header)
+                result = self.run_evict(fixture, plan)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertTrue((lane0 / "rust-modules/target/sentinel").exists())
+
+    def test_evict_needs_a_plan_that_exists_and_a_planner_to_ask(self):
+        fixture, (lane0, _) = self.evict_fixture()
+        bare = self.run_gc(fixture, "--evict")
+        self.assertEqual(bare.returncode, 2, bare.stdout + bare.stderr)
+        self.assertIn("needs a plan file", bare.stderr)
+        missing = self.run_evict(fixture, fixture[0].parent / "no-such-plan.tsv")
+        self.assertEqual(missing.returncode, 2, missing.stdout + missing.stderr)
+        plain, (plane0, _) = self.evict_fixture(planner=False)
+        plan = self.write_plan(plain, [("evict", 4, "tree", 1, "x", 0, "normal", plane0 / "rust-modules/target")])
+        result = self.run_evict(plain, plan)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("refusing", result.stderr)
+        self.assertTrue((plane0 / "rust-modules/target/sentinel").exists(), "deleted without a planner to re-probe with")
+
+    def test_evict_goes_on_while_an_ffmpeg_build_holds_the_cache_lock_and_leaves_its_entry(self):
+        # Every other mode refuses for a held FFmpeg lock (assert_live_refusal). This one never writes under the
+        # cache, and an FFmpeg build is when the disk is likeliest to be short.
+        fixture, (lane0, _) = self.evict_fixture(pid=os.getpid(), pgid=0)
+        repo, env, sentinels, lock = fixture
+        orphan = sentinels[1].parents[2]
+        self.assertTrue(lock.exists())
+        control = self.run_gc(fixture, "--orphans")
+        self.assertNotEqual(control.returncode, 0, "the control mode should refuse under a held FFmpeg lock")
+        self.assertIn("held FFmpeg cache lock", control.stdout + control.stderr)
+        plan = self.write_plan(fixture, [("evict", 0, "tree", 64, "-", 0, "normal", orphan),
+                                         ("evict", 4, "tree", 64, "lane0", 0, "normal", lane0 / "rust-modules/target")])
+        result = self.run_evict(fixture, plan)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertFalse(orphan.exists(), out)
+        self.assertFalse((lane0 / "rust-modules/target").exists(), out)
+        self.assertTrue(sentinels[2].exists(), "touched the FFmpeg cache's live entry: " + out)
+        self.assertTrue(lock.exists())
+
+    def test_evict_takes_a_cache_tombstone_but_never_the_seed_or_a_fresh_leftover(self):
+        fixture, _ = self.evict_fixture()
+        env = fixture[1]
+        seeds = Path(env["PLX_BUILD_CACHE"]) / "cargo-seed"
+        seed = self.make_tree(seeds / "target")
+        tomb = self.make_tree(seeds / "target.tombstone.4242.1")
+        fresh = self.make_tree(seeds / "target.tmp.4242")
+        stale = self.make_tree(seeds / "target-release.restore.4242")
+        self.age(stale, 3 * 86400)
+        plan = self.write_plan(fixture, [("evict", 0, "tree", 8, "-", 0, "normal", tomb),
+                                         ("evict", 0, "tree", 8, "-", 0, "normal", fresh),
+                                         ("evict", 0, "tree", 8, "-", 0, "normal", stale),
+                                         ])
+        result = self.run_evict(fixture, plan)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertFalse(tomb.exists(), out)
+        self.assertTrue(fresh.exists(), "took an in-flight seed harvest: " + out)
+        self.assertFalse(stale.exists(), "left a day-old seed leftover: " + out)
+        self.assertTrue(seed.exists(), "took the seed: " + out)
+
+    def test_evict_never_takes_a_tmp_tree_that_only_looks_old(self):
+        # A test fixture's `utime` backdating moves the mtime, never the ctime: that tree is minutes old.
+        fixture, _ = self.evict_fixture()
+        env = fixture[1]
+        tmp_tree = self.make_tree(Path(env["PLX_GC_TMP_ROOTS"]) / "cargo-target-fixture")
+        (tmp_tree / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+        deps = tmp_tree / "debug/deps"
+        deps.mkdir(parents=True)
+        (deps / "plxnative_modules-0123456789abcdef.d").write_text("ours\n")
+        self.age(tmp_tree, 5 * 86400)
+        plan = self.write_plan(fixture, [("evict", 0, "tree", 8, "-", 1440, "normal", tmp_tree)])
+        young = self.run_evict(fixture, plan)
+        out = young.stdout + young.stderr
+        self.assertEqual(young.returncode, 0, out)
+        self.assertIn("in use, skipped", out)
+        self.assertRegex(out, r"changed .* ago")
+        self.assertTrue((tmp_tree / "CACHEDIR.TAG").exists(), "evicted a /tmp tree written minutes ago: " + out)
+        # The same fixture, with the clock really three days on, is old garbage.
+        later = self.run_evict(fixture, plan, extra_env={"PLX_GC_TEST_NOW": str(time.time() + 3 * 86400)})
+        out = later.stdout + later.stderr
+        self.assertEqual(later.returncode, 0, out)
+        self.assertFalse(tmp_tree.exists(), out)
+
+    def test_evict_stops_once_free_space_is_back_over_the_plans_goal(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        plan_lines = [("evict", 4, "tree", 96, "lane0", 0, "normal", lane0 / "rust-modules/target"),
+                      ("evict", 4, "tree", 96, "lane1", 0, "normal", lane1 / "rust-modules/target")]
+        enough = self.run_evict(fixture, self.write_plan(fixture, plan_lines, goal_kib=4 << 20),
+                                extra_env={"PLX_GC_TEST_FREE_KIB": str(8 << 20)})
+        out = enough.stdout + enough.stderr
+        self.assertEqual(enough.returncode, 0, out)
+        self.assertIn("back over the plan's goal", out)
+        self.assertTrue((lane0 / "rust-modules/target").exists() and (lane1 / "rust-modules/target").exists(),
+                        "deleted although free space was already over the goal: " + out)
+        # Free space that rises as the run frees things: a `df` that reports 1 GiB until it has been asked twice.
+        counter = fixture[0].parent / "df-calls"
+        df = fixture[0].parent / "bin/df"
+        df.write_text('#!/bin/sh\n'
+                      'if [ "$1" = -Pk ]; then\n'
+                      '  n=$(cat "%s" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "%s"\n'
+                      '  [ $n -ge 2 ] && free=%d || free=%d\n'
+                      '  printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\nx 1 1 %%s 1%%%% /\\n" $free\n'
+                      '  exit 0\n'
+                      'fi\n'
+                      'exec %s "$@"\n' % (counter, counter, 8 << 20, 1 << 20, shlex.quote(shutil.which("df"))))
+        df.chmod(0o755)
+        mid = self.run_evict(fixture, self.write_plan(fixture, plan_lines, goal_kib=4 << 20))
+        out = mid.stdout + mid.stderr
+        self.assertEqual(mid.returncode, 0, out)
+        self.assertFalse((lane0 / "rust-modules/target").exists(), "the first path should have gone: " + out)
+        self.assertTrue((lane1 / "rust-modules/target").exists(), "kept going past the goal: " + out)
+
+    def test_evict_ends_with_the_settle_verdict_on_the_free_space_it_re_read(self):
+        budget = ["# need_kib %d" % (4 << 20), "# reserve_kib %d" % (3 << 20)]
+        for free_kib, code, word in ((9 << 20, 0, "ok"), (2 << 20, 3, "REFUSE")):
+            with self.subTest(word=word):
+                fixture, (lane0, _) = self.evict_fixture()
+                line = ("evict", 4, "tree", 96, "lane0", 0, "normal", lane0 / "rust-modules/target")
+                plan = self.write_plan(fixture, [line])
+                plan.write_text(plan.read_text().replace("# verdict reclaim\n", "# verdict reclaim\n" + "\n".join(budget) + "\n"))
+                result = self.run_evict(fixture, plan, extra_env={"PLX_GC_TEST_FREE_KIB": str(free_kib)})
+                out = result.stdout + result.stderr
+                self.assertEqual(result.returncode, code, out)
+                self.assertIn("settle: " + word, out)
+
+    def test_evict_can_take_the_current_checkouts_incremental_dir_only_in_mode_current(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        for name in ("build-gc.sh", "disk-budget.py", "cargo-seed.py", "check-lock.py"):
+            (lane0 / "tools").mkdir(exist_ok=True)
+            shutil.copy(ROOT / "tools" / name, lane0 / "tools" / name)
+        incr = lane0 / "rust-modules/target/debug/incremental"
+        plan = self.write_plan(fixture, [("evict", 6, "incremental", 8, "lane0", 0, "normal", incr)])
+        normal = self.run_evict(fixture, plan, cwd=lane0)
+        self.assertEqual(normal.returncode, 1, normal.stdout + normal.stderr)
+        self.assertTrue(incr.exists())
+        plan = self.write_plan(fixture, [("evict", 6, "incremental", 8, "lane0", 0, "current", incr),
+                                         ("evict", 6, "tree", 8, "lane0", 0, "current", lane0 / "rust-modules/target")])
+        current = self.run_evict(fixture, plan, cwd=lane0)
+        out = current.stdout + current.stderr
+        self.assertEqual(current.returncode, 1, out)      # the whole tree is refused
+        self.assertFalse(incr.exists(), out)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "took more than its incremental dir: " + out)
+
+    def test_evict_dry_run_prints_the_plan_and_changes_nothing_and_logs_nothing(self):
+        fixture, (lane0, lane1) = self.evict_fixture()
+        repo, env, sentinels, _ = fixture
+        orphan = sentinels[1].parents[2]
+        plan = self.write_plan(fixture, [("evict", 0, "tree", 64, "-", 0, "normal", orphan),
+                                         ("evict", 4, "tree", 64, "lane1", 0, "normal", lane1 / "rust-modules/target")],
+                               goal_kib=1 << 30)
+        root = repo.parent
+
+        def state():
+            return {str(p.relative_to(root)): (p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
+                    for p in root.rglob("*") if p != plan}
+        before = state()
+        result = self.run_evict(fixture, plan, "-n")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertEqual(out.count("would remove"), 2, out)
+        self.assertEqual(before, state())
+        self.assertFalse(Path(env["PLX_GC_LOG"]).exists(), "a dry run wrote the log")
+
+    def test_evict_refuses_when_worktrees_cannot_be_enumerated(self):
+        fixture, (lane0, _) = self.evict_fixture()
+        fake_git = fixture[0].parent / "bin/git"
+        fake_git.write_text("#!/bin/sh\nexit 1\n")
+        fake_git.chmod(0o755)
+        plan = self.write_plan(fixture, [("evict", 4, "tree", 1, "x", 0, "normal", lane0 / "rust-modules/target")])
+        result = self.run_evict(fixture, plan)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot enumerate", result.stderr)
+        self.assertTrue((lane0 / "rust-modules/target/sentinel").exists())
+
+    def test_evict_runs_the_stale_sweep_at_its_slot_and_not_at_any_other_rung(self):
+        fixture, _ = self.evict_fixture()
+        repo = fixture[0]
+        deps = repo / "rust-modules/target/debug/deps"
+        deps.mkdir(parents=True)
+        old = time.time() - 30 * 3600
+        superseded = [deps / "plxnative_modules-aaaaaaaaaaaaaaaa", deps / "plxnative_modules-aaaaaaaaaaaaaaaa.d"]
+        newest = [deps / "plxnative_modules-bbbbbbbbbbbbbbbb", deps / "plxnative_modules-bbbbbbbbbbbbbbbb.d"]
+        for p in superseded:
+            p.write_bytes(b"")
+            os.utime(p, (old, old))
+        for p in newest:
+            p.write_bytes(b"")
+        misplaced = self.run_evict(fixture, self.write_plan(
+            fixture, [("stale", 3, "stale", 0, "-", 0, "normal", repo / "rust-modules/target")]))
+        self.assertEqual(misplaced.returncode, 1, misplaced.stdout + misplaced.stderr)
+        self.assertTrue(all(p.exists() for p in superseded))
+        result = self.run_evict(fixture, self.write_plan(
+            fixture, [("stale", 5, "stale", 0, "-", 0, "normal", repo / "rust-modules/target")]))
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("the --stale sweep", out)
+        self.assertTrue(all(not p.exists() for p in superseded), "the sweep did not run: " + out)
+        self.assertTrue(all(p.exists() for p in newest), "the sweep took the newest hash: " + out)
 
 
 class InstallDiskWatchTests(unittest.TestCase):
