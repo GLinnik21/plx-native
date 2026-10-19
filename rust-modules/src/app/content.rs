@@ -521,17 +521,10 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 app.pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
                 app.pages.request_with_return(source, NavOp::Present(AppArg::Content(arg)), ret);
             }
-            ContentReq::Back if {
+            ContentReq::Back => {
                 halt_preview(app);
-                bridge::nav_cancel(&mut app.pages)
-            } => {}
-            ContentReq::Back if app.pages.nav.is_surface(entry) =>
-                app.pages.request_with_return(source, NavOp::Dismiss(entry), ret),
-            ContentReq::Back if app.pages.nav.pending_surface().is_some() =>
-                app.pages.request_with_return(source, NavOp::Dismiss(app.pages.nav.pending_surface().unwrap()), ret),
-            // The chrome question (`Nav::Back { bar }`) is not asked here any more: the container
-            // answers it itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
-            ContentReq::Back => bridge::nav_pop_with_return(&mut app.pages, ret),
+                content_back(&mut app.pages, source, entry, ret);
+            }
             ContentReq::Play { play, resume_ns } => {
                 let mounted = bridge::player(&app.pages).is_some();
                 if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
@@ -771,15 +764,9 @@ fn watchlist_requests(app: &mut App) {
         }
         if app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
         match request {
-            WatchlistOut::Back => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
-            WatchlistOut::Tab(tab) => {
-                if !app.bridge.search_tab_available(tab) || matches!(tab, HomeTab::Watchlist) { continue; }
-                match tab {
-                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
-                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
-                }
+            WatchlistOut::Back | WatchlistOut::Tab(_) | WatchlistOut::Account => {
+                watchlist_navigation(&mut app.pages, &mut app.bridge, &request, ret);
             }
-            WatchlistOut::Account => chip_activate(&mut app.pages),
             WatchlistOut::Retry => app.bridge.watchlist_retry(),
             WatchlistOut::OpenOptions => {
                 let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
@@ -891,18 +878,11 @@ fn library_requests(app: &mut App, now: u32) {
         // library screen, so they answer the same requests.
         let library_page = app.route().is_library_family();
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !library_page { continue; }
+        let Some(ret) = library_navigation(&mut app.pages, &mut app.bridge, &request, ret) else { continue };
         match request {
             LibraryReq::PublishShelves { .. } => unreachable!(),
-            LibraryReq::OpenListing { listing, section } => {
-                use plx_screens::library::Listing;
-                let arg = match listing {
-                    Listing::Collections => AppArg::LibraryCollections { section },
-                    Listing::Recommended => AppArg::LibraryRecommended { section },
-                    // The full grid is the page underneath: nothing pushes it.
-                    Listing::All => continue,
-                };
-                bridge::nav_push_with_return(&mut app.pages, arg, ret);
-            }
+            LibraryReq::OpenListing { .. } | LibraryReq::BackToHome { .. } | LibraryReq::Tab(_) | LibraryReq::Account =>
+                unreachable!("`library_navigation` performed it"),
             LibraryReq::Menu { kind, anchor, target, folded, control } => {
                 app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
                 app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
@@ -910,13 +890,6 @@ fn library_requests(app: &mut App, now: u32) {
                     opener: (kind != plx_screens::registry::LibraryMenuKind::Sources).then_some((entry, control)),
                 })));
             }
-            LibraryReq::Account => chip_activate(&mut app.pages),
-            LibraryReq::BackToHome { kind } => {
-                bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home,
-                    Some(crate::app::chrome::Pill::Section(kind)), Some(ret));
-            }
-            LibraryReq::Tab(HomeTab::Home) => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
-            LibraryReq::Tab(tab) => bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, Some(ret)),
             LibraryReq::ItemMenu { sid, rk, from_deck } => {
                 let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
@@ -937,6 +910,78 @@ fn library_requests(app: &mut App, now: u32) {
             }
         }
     }
+}
+
+/// **The page moves a Library-family page asks for** — its header's Collections / Recommended links
+/// pushing a page over it, BACK off the grid to Home, a strip pill, the account chip. The loop
+/// (`library_requests`) and the app-tier tests' pump (`test_support::pump_navigation`) both call
+/// this, so a test drives the routing the TV runs rather than a copy of it. A request that is not
+/// one of these comes back with its `ret` for the caller to act on.
+pub(crate) fn library_navigation(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, request: &plx_screens::registry::LibraryReq,
+    ret: ReturnState<u32, PageMemory>,
+) -> Option<ReturnState<u32, PageMemory>> {
+    use plx_screens::registry::LibraryReq;
+    match request {
+        LibraryReq::OpenListing { listing, section } => {
+            use plx_screens::library::Listing;
+            let arg = match listing {
+                Listing::Collections => AppArg::LibraryCollections { section: *section },
+                Listing::Recommended => AppArg::LibraryRecommended { section: *section },
+                // The full grid is the page underneath: nothing pushes it.
+                Listing::All => return None,
+            };
+            bridge::nav_push_with_return(pages, arg, ret);
+        }
+        LibraryReq::Account => chip_activate(pages),
+        LibraryReq::BackToHome { kind } => {
+            bridge::nav_tab(pages, rig, HomeTab::Home, Some(crate::app::chrome::Pill::Section(*kind)), Some(ret));
+        }
+        LibraryReq::Tab(HomeTab::Home) => bridge::nav_home_pill(pages, rig, Some(ret)),
+        LibraryReq::Tab(tab) => bridge::nav_tab(pages, rig, *tab, None, Some(ret)),
+        _ => return Some(ret),
+    }
+    None
+}
+
+/// **BACK off a content page**, in the order the loop has always tried: withdraw a transition that
+/// has not committed, else dismiss the surface this page is (or the one on its way), else pop.
+/// Shared with the tests' pump for the reason [`library_navigation`] is.
+pub(crate) fn content_back(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, source: MachineId, entry: EntryId, ret: ReturnState<u32, PageMemory>,
+) {
+    if bridge::nav_cancel(pages) { return; }
+    if pages.nav.is_surface(entry) {
+        pages.request_with_return(source, NavOp::Dismiss(entry), ret);
+    } else if let Some(surface) = pages.nav.pending_surface() {
+        pages.request_with_return(source, NavOp::Dismiss(surface), ret);
+    } else {
+        // The chrome question (`Nav::Back { bar }`) is not asked here: the container answers it
+        // itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
+        bridge::nav_pop_with_return(pages, ret);
+    }
+}
+
+/// **The page moves the Watchlist asks for** — BACK to Home and the strip's pills — shared with the
+/// tests' pump for the reason [`library_navigation`] is.
+pub(crate) fn watchlist_navigation(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge,
+    request: &plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>,
+) -> Option<ReturnState<u32, PageMemory>> {
+    use plx_screens::watchlist::page::WatchlistOut;
+    match request {
+        WatchlistOut::Back => bridge::nav_tab(pages, rig, HomeTab::Home, None, Some(ret)),
+        WatchlistOut::Tab(tab) => {
+            if !rig.search_tab_available(*tab) || matches!(tab, HomeTab::Watchlist) { return None; }
+            match tab {
+                HomeTab::Home => bridge::nav_home_pill(pages, rig, Some(ret)),
+                other => bridge::nav_tab(pages, rig, *other, None, Some(ret)),
+            }
+        }
+        WatchlistOut::Account => chip_activate(pages),
+        _ => return Some(ret),
+    }
+    None
 }
 
 fn home_tab_available(

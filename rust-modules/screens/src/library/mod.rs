@@ -285,6 +285,19 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn toolbar_group(&self) -> GroupId { LIBRARY_GROUP }
 
+    /// The header row's stops in focus order, each named by what it is (`"library"`, `"collections"`,
+    /// `"recommended"`, `"sort"`, `"crumb"`): the per-stop probe the app-tier route tables walk.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header_stops(&self) -> Vec<(&'static str, u32)> {
+        self.header_elems().into_iter().map(|elem| (match elem {
+            toolbar::COLLECTIONS => "collections",
+            toolbar::RECOMMENDED => "recommended",
+            toolbar::SORTFILTER => "sort",
+            toolbar::CRUMB_ROOT => "crumb",
+            _ => "library",
+        }, elem)).collect()
+    }
+
     /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
     /// draw of the page would put on screen now.
     #[cfg(any(test, feature = "test-support"))]

@@ -62,6 +62,56 @@ pub(super) fn tick(i: u32) -> Tick {
     }
 }
 
+/// **Perform the page navigations the screens asked for this frame**, through the SAME functions
+/// the loop's `content_requests` calls (`content::library_navigation`, `content_back`,
+/// `watchlist_navigation`), under the same two guards: the asking page still holds input, and the
+/// route is one that answers the request. A test that presses a key and wants the BACK, the
+/// header link or the strip pill to take effect calls this once per frame, in the order the loop
+/// does (after the dispatcher's frame).
+///
+/// Returns one label per request it PERFORMED (`"library:BackToHome { kind: Movie }"`,
+/// `"content:Back"`, `"watchlist:Back"`), so a table can assert which request a key produced. A
+/// request that is not a navigation (a menu, a play, a store publication) is labelled
+/// `"unperformed ..."` and left undone: this pump does not stand in for the rest of the loop, and
+/// a test that needs one of those should say so rather than have it dropped.
+pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> Vec<String> {
+    use crate::app::content::{content_back, library_navigation, watchlist_navigation};
+    use plx_screens::registry::ContentReq;
+    // The entry that asked, while it is still the one holding input.
+    fn asker(d: &Dispatcher<AppHost>, source: MachineId) -> Option<EntryId> {
+        let MachineId::Instance(instance) = source else { return None };
+        let entry = d.nav.entry_of_instance(instance)?;
+        (d.nav.input_owner() == Some(InputOwner::Entry(entry))).then_some(entry)
+    }
+    let mut seen = Vec::new();
+    for (source, request, ret) in rig.take_library_reqs() {
+        let Some(_) = asker(d, source) else { continue };
+        if !d.top_arg().is_some_and(|arg| arg.is_library_family()) { continue; }
+        let label = format!("{request:?}");
+        seen.push(match library_navigation(d, rig, &request, ret) {
+            None => format!("library:{label}"),
+            Some(_) => format!("unperformed library:{label}"),
+        });
+    }
+    for (source, request, ret) in rig.take_content_reqs() {
+        let Some(entry) = asker(d, source) else { continue };
+        match request {
+            ContentReq::Back => { content_back(d, source, entry, ret); seen.push("content:Back".into()); }
+            _ => seen.push("unperformed content:request".into()),
+        }
+    }
+    for (source, request, ret) in rig.take_watchlist_reqs() {
+        let Some(_) = asker(d, source) else { continue };
+        if d.top_arg() != Some(&AppArg::Watchlist) { continue; }
+        let label = format!("{request:?}");
+        seen.push(match watchlist_navigation(d, rig, &request, ret) {
+            None => format!("watchlist:{label}"),
+            Some(_) => format!("unperformed watchlist:{label}"),
+        });
+    }
+    seen
+}
+
 pub(super) use super::super::words::every_route;
 
 pub(super) fn notices(d: &Dispatcher<AppHost>) -> String {

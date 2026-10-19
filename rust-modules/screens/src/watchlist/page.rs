@@ -733,6 +733,11 @@ pub struct WatchlistScreen {
 }
 
 impl WatchlistScreen {
+    /// The header's group and its stops (the Sort & Filter pill alone): the per-page probe the
+    /// app-tier route tables read in place of the private group ids.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header(&self) -> (GroupId, Vec<(&'static str, u32)>) { (HEADER_GROUP, vec![("sort", PILL_ELEM)]) }
+
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 

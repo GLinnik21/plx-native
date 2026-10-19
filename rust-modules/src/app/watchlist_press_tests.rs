@@ -26,7 +26,7 @@ fn guid(n: u8) -> String {
 }
 
 /// A scripted plex.tv: a fixed list; reads and writes can be refused (offline).
-struct Script {
+pub(super) struct Script {
     items: Vec<WatchItem>,
     fail_writes: AtomicBool,
     fail_reads: AtomicBool,
@@ -45,7 +45,7 @@ struct Script {
 }
 
 impl Script {
-    fn new(titles: &[u8]) -> Arc<Script> {
+    pub(super) fn new(titles: &[u8]) -> Arc<Script> {
         Arc::new(Script {
             items: titles
                 .iter()
@@ -171,7 +171,7 @@ fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 }
 
 /// A rig on Home, the Watchlist store over `script` and the catalog store over [`Discover`].
-fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
+pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
@@ -182,7 +182,7 @@ fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
 }
 
 /// Land what the workers brought and feed the pages, a few frames.
-fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
+pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_for_test().pump();
         rig.watchlist_feed(d);

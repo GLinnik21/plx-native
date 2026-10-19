@@ -464,6 +464,11 @@ impl RecommendedScreen {
         (region, -1, -1, 0.0, self.scroll.pos)
     }
 
+    /// The header row's group and its stops (the crumb root alone), as the library page's
+    /// `toolbar_group` / `probe_header_stops` answer for theirs.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header(&self) -> (GroupId, Vec<(&'static str, u32)>) { (CRUMB_GROUP, vec![("crumb", CRUMB_ELEM)]) }
+
     /// `(page alpha, focused card's pop scale)` — what a viewer sees of a focus arrival. The page
     /// is opaque from its first frame (the container's own transition carries the arrival).
     #[cfg(any(test, feature = "test-support"))]

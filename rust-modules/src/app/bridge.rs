@@ -3920,6 +3920,10 @@ pub(crate) use watchlist::{hex_of_guid, open_catalog, open_watchlist_menu};
 mod watchlist_press_tests;
 
 #[cfg(test)]
+#[path = "page_regions_tests.rs"]
+mod page_regions_tests;
+
+#[cfg(test)]
 #[path = "watchlist_wiring_tests.rs"]
 mod watchlist_wiring_tests;
 
