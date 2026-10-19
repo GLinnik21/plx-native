@@ -668,59 +668,10 @@ fn ink_cases() -> Vec<(TabGround, fn(f32, f32) -> [f32; 4])> {
     cases
 }
 
-/// What column `x` of a strip stands on, as DRAWN: the dark ground the ink is solved over, the
-/// selection plate where its capsule is, the focus capsule over it where its (popped) one is. The
-/// capsule geometry is read the way `TabStrip::draw` paints it, not through `ink_spans`.
-///
-/// By COLUMN only: a capsule is taken as a rectangle spanning its x-extent, so these contracts
-/// grade the ink along the capsule's centre row and are blind to its rounded ends. Where a
-/// capsule's end is an arc, a glyph row above or below the centre is up to ~4 px short of the
-/// extreme `ink_spans` cuts at, and those pixels wear the capsule's ink over the slate. Cutting
-/// along the arc (horizontal bands, each with its own chord) needs a 2-D contract like this one
-/// sampled at a row away from the centre.
-fn backing_at(strip: &TabStrip, ground: TabGround, x: f32) -> [f32; 4] {
-    let (pop, plate) = match ground {
-        TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
-        TabGround::Plated { pop } => (pop, theme::TAB_PLATE_SELECTED_OVER),
-        TabGround::Bare { pop, .. } => (pop, theme::TAB_PLATE_SELECTED),
-    };
-    let covers = |c: &Capsule, pop: f32| {
-        let (cx, cw) = c.span();
-        let r = Rect::new(cx, 0.0, cw, INK_H).scaled(pop);
-        (c.alpha() > 0.004 && cw > 0.5 && x >= r.x && x < r.x + r.w).then(|| c.alpha())
-    };
-    let over = |dst: [f32; 4], src: [f32; 4], a: f32| theme::cross(dst, [src[0], src[1], src[2], 1.0], a);
-    let mut c = INK_GROUND;
-    if let Some(a) = covers(&strip.sel, 1.0) { c = over(c, plate, plate[3] * a); }
-    if let Some(a) = covers(&strip.foc, pop) { c = over(c, crate::ACCENT, a); }
-    c
-}
-
-/// The lowest contrast between the ink a pill wears and the backing under it, over every pixel
-/// column of the pill, as `(ratio, x)`: each column is inked by the stretch `ink_spans` puts it in.
-fn worst_ink_contrast(strip: &TabStrip, ground: TabGround, pill: (f32, f32)) -> (f32, f32) {
-    worst_contrast_of(strip, ground, pill, TabPill::mixed_ink)
-}
-
-/// The tab bar's ink and the page header's: the same stretches, two palettes (a header label rests
+/// The tab bar's ink and the page header's: the same regions, two palettes (a header label rests
 /// at white 65% and a tab's at `TEXT_READING`).
 fn header_ink(focus: f32, selected: f32) -> [f32; 4] {
     theme::cross(theme::cross(theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK, selected), crate::ACCENT_INK, focus)
-}
-
-fn worst_contrast_of(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_of: fn(f32, f32) -> [f32; 4]) -> (f32, f32) {
-    let spans = strip.ink_spans(pill, ground);
-    let mut worst = (f32::MAX, pill.0);
-    for column in (pill.0.floor() as i32)..((pill.0 + pill.1).ceil() as i32) {
-        let x = column as f32 + 0.5;
-        if x < pill.0 || x >= pill.0 + pill.1 { continue; }
-        let span = spans.as_slice().iter().find(|s| x >= s.x0 && x < s.x1).expect("the stretches tile the pill");
-        let backing = backing_at(strip, ground, x);
-        let ink = ink_of(span.focus, span.selected);
-        let ratio = contrast(theme::cross(backing, [ink[0], ink[1], ink[2], 1.0], ink[3]), backing);
-        if ratio < worst.0 { worst = (ratio, x); }
-    }
-    worst
 }
 
 /// What the pixel `(x, y)` of a strip whose pills stand `INK_H` tall from y 0 stands on, as DRAWN:
@@ -749,15 +700,16 @@ fn backing_at_xy(strip: &TabStrip, ground: TabGround, x: f32, y: f32) -> [f32; 4
     c
 }
 
-/// The lowest contrast between the ink the pixels of a pill wear and what is under them, over every
-/// glyph row of the pill (the 34 rows a label's ascenders and descenders stand on, centre +-17) and
-/// every pixel column, as `(ratio, x, dy)`: the 2-D grade the column-only ones cannot give.
+/// The lowest contrast between the ink the pixels of a pill wear and what is under them, over the
+/// pill's GLYPH BOX: the 34 rows a label's ascenders and descenders stand on (centre +-17) and every
+/// pixel column from 12 px in from either end (labels and marks stand 18+ in), as `(ratio, x, dy)`:
+/// the 2-D grade the column-only ones could not give.
 fn worst_contrast_2d(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_of: fn(f32, f32) -> [f32; 4]) -> (f32, f32, f32) {
     let rect = Rect::new(pill.0, 0.0, pill.1, INK_H);
     let mut worst = (f32::MAX, pill.0, 0.0);
     for column in (pill.0.floor() as i32)..((pill.0 + pill.1).ceil() as i32) {
         let x = column as f32 + 0.5;
-        if x < pill.0 || x >= pill.0 + pill.1 { continue; }
+        if x < pill.0 + 12.0 || x >= pill.0 + pill.1 - 12.0 { continue; }
         for k in -17..17 {
             let y = INK_H * 0.5 + k as f32 + 0.5;
             let (focus, selected) = strip.ink_at(rect, ground, x, y);
@@ -806,90 +758,48 @@ fn a_label_a_capsule_is_crossing_stays_readable_on_every_glyph_row_not_only_the_
     }
 }
 
-/// **A label under a capsule's edge is readable on both sides of it** (the owner's "letters over
-/// the white plate are light, letters over the slate are dark"): across a whole travel from one
-/// pill to the next, on every strip ground, every pixel column of both pills the capsule is
-/// crossing keeps 3:1 against what is under it. A single mid-grey ink for the whole label cannot:
-/// it is wrong on whichever side of the edge it is not made for.
+/// **The ink regions follow the capsules' DRAWN shapes**: a pill no capsule is across is one plain
+/// region; a capsule across it splits it along the capsule's popped rounded shape (the capsule grows
+/// about its centre, `Rect::scaled`, and its end is an arc), so on a glyph row above the centre the
+/// ink flips further in than on the centre row; a lifted control (`focus: false`) has no focus
+/// capsule to cut at or to ink for.
 #[test]
-fn a_label_a_capsule_is_crossing_stays_readable_on_both_sides_of_its_edge() {
+fn the_ink_regions_follow_the_capsules_drawn_shapes() {
     let _g = serial_for_motion();
     let w = widths_for(12);
     let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
-    for (ground, ink_of) in ink_cases() {
-        let mut s = TabStrip::new();
-        for _ in 0..90 { s.update(2, 4, span, SelMark::Travels, DT); }
-        let mut worst = (f32::MAX, 0, 0.0);
-        for frame in 0..90 {
-            s.update(2, 5, span, SelMark::Travels, DT);
-            for pill in [4, 5] {
-                let (ratio, x) = worst_contrast_of(&s, ground, span_of(&w, pill), ink_of);
-                if ratio < worst.0 { worst = (ratio, frame, x); }
-            }
-        }
-        assert!(worst.0 >= 3.0, "worst {:.2}:1 at frame {} x {} (3:1 wanted)", worst.0, worst.1, worst.2);
-    }
-}
-
-/// **Up into the header: the label never goes**. The focus capsule fades in over the selection
-/// plate that is already under the label (grey brightening into white), and leaves the same way:
-/// the label keeps 3:1 on every frame of both, because its ink changes sides of the plate's
-/// brightness in one step instead of crossing it.
-#[test]
-fn a_focus_capsule_fading_in_over_the_selection_plate_never_loses_the_label() {
-    let _g = serial_for_motion();
-    let w = widths_for(12);
-    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
-    for (ground, ink_of) in ink_cases() {
-        for (from, to) in [(-1, 3), (3, -1)] {
-            let mut s = TabStrip::new();
-            for _ in 0..90 { s.update(3, from, span, SelMark::Lands, DT); }
-            let mut worst = (f32::MAX, 0, 0.0);
-            for frame in 0..60 {
-                s.update(3, to, span, SelMark::Lands, DT);
-                let (ratio, x) = worst_contrast_of(&s, ground, span_of(&w, 3), ink_of);
-                if ratio < worst.0 { worst = (ratio, frame, x); }
-            }
-            assert!(worst.0 >= 3.0, "{from} -> {to}: worst {:.2}:1 at frame {} x {} (3:1 wanted)", worst.0, worst.1, worst.2);
-        }
-    }
-}
-
-/// **The stretches tile the pill and are cut at the DRAWN edge**: the focus capsule's edge is the
-/// popped one (the capsule grows about its centre, `Rect::scaled`), not the span it follows; a
-/// pill no edge crosses is one stretch; a lifted control (`focus: false`) has no focus capsule to
-/// cut at or to ink for.
-#[test]
-fn the_ink_stretches_tile_the_pill_and_are_cut_at_the_capsules_drawn_edge() {
-    let _g = serial_for_motion();
-    let w = widths_for(12);
-    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    let rect = |i: usize| Rect::new(span_of(&w, i).0, 0.0, w[i], INK_H);
     let ground = TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: true };
     let mut s = TabStrip::new();
     for _ in 0..90 { s.update(-1, 4, span, SelMark::Travels, DT); }
-    assert_eq!(s.ink_spans(span_of(&w, 4), ground).as_slice().len(), 1, "a capsule at rest on a pill crosses no edge of it (it is wider than the pill)");
-    assert_eq!(s.ink_spans(span_of(&w, 9), ground).as_slice(), [InkSpan { x0: span_of(&w, 9).0, x1: span_of(&w, 9).0 + w[9], focus: 0.0, selected: 0.0 }]);
+    let at_rest = s.pill_ink(rect(4), ground);
+    assert_eq!(at_rest.regions().len(), 1, "a capsule at rest on a pill is over all of its glyphs");
+    assert!(at_rest.regions()[0].focus > 0.5 && at_rest.clip_of(&at_rest.regions()[0], Painter::root()).is_none(), "painted once, plain, in the capsule's ink");
+    let far = s.pill_ink(rect(9), ground);
+    assert_eq!(far.regions(), [InkRegion { focus: 0.0, selected: 0.0, sel: None, foc: None }], "a pill the capsule is not over is plain resting ink");
     let mut crossed = false;
     for _ in 0..40 {
         s.update(-1, 5, span, SelMark::Travels, DT);
-        let pill = span_of(&w, 4);
-        let spans = s.ink_spans(pill, ground);
-        let spans = spans.as_slice();
-        assert_eq!(spans.first().unwrap().x0, pill.0);
-        assert_eq!(spans.last().unwrap().x1, pill.0 + pill.1);
-        assert!(spans.windows(2).all(|pair| pair[0].x1 == pair[1].x0), "no gap and no overlap: {spans:?}");
-        if spans.len() > 1 {
-            crossed = true;
-            let (cx, cw) = s.foc.span();
-            let drawn = Rect::new(cx, 0.0, cw, INK_H).scaled(CTRL_FOCUS_SCALE);
-            assert_eq!(spans[0].x1, drawn.x, "cut at the left edge of the popped capsule, which is leaving to the right");
-            assert!(spans[0].focus == 0.0 && spans[1].focus > 0.5, "the capsule's side wears its ink: {spans:?}");
+        let pill = rect(4);
+        let ink = s.pill_ink(pill, ground);
+        if ink.regions().len() < 2 { continue; }
+        crossed = true;
+        let (cx, cw) = s.foc.span();
+        let drawn = Rect::new(cx, 0.0, cw, INK_H).scaled(CTRL_FOCUS_SCALE);
+        // The capsule is leaving to the right: its left end is an arc across the pill's glyph rows.
+        let (mid, off) = (INK_H * 0.5 + 0.5, INK_H * 0.5 - 15.5);
+        let first_inside = |y: f32| (0..400).map(|k| drawn.x + k as f32 * 0.25).find(|&x| ink.at(x, y).0 > 0.5);
+        let (centre, high) = (first_inside(mid), first_inside(off));
+        if let (Some(centre), Some(high)) = (centre, high) {
+            assert!(high > centre + 1.5, "on a row 15 px above the centre the ink flips further in ({high} vs {centre}): the arc, not the extreme");
         }
+        assert!(ink.regions().iter().any(|r| r.focus > 0.5 && r.foc == Some(Keep::Inside)) && ink.regions().iter().any(|r| r.focus == 0.0 && r.foc == Some(Keep::Outside)),
+            "the focus ink is inside the capsule, the resting ink outside it: {:?}", ink.regions());
     }
-    assert!(crossed, "the capsule left pill 4 across an edge of it");
+    assert!(crossed, "the capsule left pill 4 across the shape of it");
     let lifted = TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: false };
     for pill in [4, 5] {
-        let spans = s.ink_spans(span_of(&w, pill), lifted);
-        assert!(spans.as_slice().iter().all(|span| span.focus == 0.0), "a lifted control wears no focus ink");
+        let ink = s.pill_ink(rect(pill), lifted);
+        assert!(ink.regions().iter().all(|r| r.focus == 0.0), "a lifted control wears no focus ink");
     }
 }

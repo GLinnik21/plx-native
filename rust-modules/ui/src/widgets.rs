@@ -7,6 +7,7 @@ use crate::text_view::TextView;
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
 use crate::{Env, Painter, Rect, Spring, View};
+use plx_gfx::text::{InkClip, InkShape, Keep};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
@@ -4979,6 +4980,8 @@ pub struct TabPill {
     plated: bool,
     /// see [`TabPill::mix`] — `None` = this pill owns its own state fill (the boolean model).
     mix: Option<(f32, f32)>,
+    /// see [`TabPill::ink_only`]
+    ink_only: bool,
     /// see [`TabPill::ground`] — reaches [`TabStyle::Button`] and nothing else.
     ground: ControlGround,
 }
@@ -4998,8 +5001,22 @@ impl TabPill {
             note: TabNote::None,
             plated: false,
             mix: None,
+            ink_only: false,
             ground: ControlGround::Keyed,
         }
+    }
+    /// Paint the label and note ONLY, no fill: for a pill drawn inside [`paint_inked`], which paints
+    /// its callback once per ink region, so a fill in it would be laid down once per region. The
+    /// caller paints the fill once, before.
+    pub fn ink_only(mut self) -> Self {
+        self.ink_only = true;
+        self
+    }
+    /// The idle ground a strip-driven (plated) pill wears at whole-pill focus coverage `focus`:
+    /// what [`face`](Self::face) fills with, for a caller that paints it apart from the ink.
+    pub fn idle_fill_at(focus: f32) -> Option<[f32; 4]> {
+        let a = theme::TAB_PLATE_IDLE[3] * (1.0 - focus.clamp(0.0, 1.0));
+        (a > 0.002).then(|| theme::with_a(theme::TAB_PLATE_IDLE, a))
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
@@ -5166,7 +5183,7 @@ impl View for TabPill {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame;
         let (fill, ink, bold_mix) = self.face();
-        if let Some(bg) = fill {
+        if let Some(bg) = fill.filter(|_| !self.ink_only) {
             let rad = r.h * 0.5;
             if matches!(self.style, TabStyle::Button) {
                 let r = face_box(r);
@@ -5461,10 +5478,15 @@ pub fn draw_strip(
         if !crate::on_axis(pill.x + p.dx(), pill.w, crate::consts::SCR_W, 0.0) {
             continue;
         }
-        // Inked stretch by stretch, cut where a capsule's edge crosses it (`ink_spans`).
-        paint_inked(p, &strip.ink_spans((pill.x, pill.w), ground), pill.y, pill.h, |fm, sm| {
+        // The idle ground is the pill's, laid down ONCE at the whole pill's focus coverage (it retires
+        // as the opaque capsule arrives); the label is inked region by region (`pill_ink`).
+        if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
+            p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
+        }
+        paint_inked(p, &strip.pill_ink(pill, ground), |fm, sm| {
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
                 .plated()
+                .ink_only()
                 .mix(fm, sm)
                 .draw(&env, p);
         });
@@ -5730,92 +5752,165 @@ impl TabStrip {
         (self.foc.mix(pill), self.sel.mix(pill))
     }
 
-    /// **The ink a pill wears, stretch by stretch.** `pill` (content-space `(x, w)`) is cut at the
-    /// DRAWN edges of both capsules, and each stretch is inked by what is under it: the stretch
-    /// inside a capsule wears that capsule's ink, the rest the resting one. A label the capsule is
-    /// half way across is therefore two inks, split where the plate's edge is, instead of one
-    /// mid-grey that is illegible on both sides of it. `ground` says which strip this is (the
-    /// plates it paints, and the focus capsule's pop, which is part of the drawn edge).
+    /// **The ink a pill wears, region by region.** A pill's glyphs are inked by what is under each
+    /// PIXEL of them, as the capsules are DRAWN: inside the focus capsule's rounded rect they wear
+    /// its ink (once the composited ground behind them is bright enough, see `INK_FLIP_LUMA`),
+    /// inside the selection plate's the selected one and elsewhere the resting one. A label a capsule
+    /// is half way across is therefore two inks along the capsule's ARC, instead of one mid-grey
+    /// that is illegible on both sides of it, and a glyph row above or below the centre row flips
+    /// where the arc is, not at the capsule's x-extreme. `ground` says which strip this is (the
+    /// plates it paints, and the focus capsule's pop, which is part of the drawn shape); `pill` is the
+    /// pill's own rect, the rows the capsules stand on.
     ///
-    /// One stretch for every pill no capsule edge crosses, which is nearly every pill on every frame.
-    pub fn ink_spans(&self, pill: (f32, f32), ground: TabGround) -> InkSpans {
-        let (lo, hi) = (pill.0, pill.0 + pill.1);
+    /// One region for every pill no capsule's shape crosses the glyphs of, which is nearly every pill
+    /// on every frame: it is painted once, plain, as before. Otherwise one region per ink, each painted
+    /// once with its fragments cut by [`paint_inked`].
+    pub fn pill_ink(&self, pill: Rect, ground: TabGround) -> PillInk {
         let (focus_pop, draws_focus, sel_plate) = match ground {
             TabGround::Bare { pop, focus } => (pop, focus, theme::TAB_PLATE_SELECTED),
             TabGround::Plated { pop } => (pop, true, theme::TAB_PLATE_SELECTED_OVER),
             TabGround::Tracked { .. } => (1.0, true, theme::OVERLAY_FOCUS_PILL),
         };
-        // A capsule's span as DRAWN (`Capsule::drawn`, the one `draw` paints), or `None` while it
-        // is not on screen.
-        let drawn = |c: &Capsule, pop: f32| c.drawn(0.0, 1.0, pop).map(|(r, _)| (r.x, r.x + r.w));
-        let sel = drawn(&self.sel, 1.0);
-        let foc = if draws_focus { drawn(&self.foc, focus_pop) } else { None };
-        // The pill's own ends and every capsule edge strictly inside it, in order (no allocation:
-        // this runs for every pill every frame).
-        let mut edges = [hi; 4];
-        let mut inner = 0;
-        for edge in [sel.map(|e| e.0), sel.map(|e| e.1), foc.map(|e| e.0), foc.map(|e| e.1)].into_iter().flatten() {
-            if edge > lo && edge < hi {
-                edges[inner] = edge;
-                inner += 1;
+        // A capsule as DRAWN (`Capsule::drawn`, the one `draw` paints), or `None` while it is not on
+        // screen. Its shape is that rect with corner radius half its height.
+        let sel = self.sel.drawn(pill.y, pill.h, 1.0).map(|(r, _)| r);
+        let foc = if draws_focus { self.foc.drawn(pill.y, pill.h, focus_pop).map(|(r, _)| r) } else { None };
+        let glyphs = Rect::new(
+            pill.x + INK_GLYPH_INSET,
+            pill.y + (pill.h - 2.0 * INK_GLYPH_HALF) * 0.5,
+            (pill.w - 2.0 * INK_GLYPH_INSET).max(0.0),
+            2.0 * INK_GLYPH_HALF,
+        );
+        // Where each capsule stands against the glyph box: not over it, over all of it, or across it.
+        let rel = |shape: Option<Rect>| match shape {
+            Some(r) if r.x < glyphs.x + glyphs.w && r.x + r.w > glyphs.x => {
+                let corners = [(glyphs.x, glyphs.y), (glyphs.x + glyphs.w, glyphs.y), (glyphs.x, glyphs.y + glyphs.h), (glyphs.x + glyphs.w, glyphs.y + glyphs.h)];
+                if corners.iter().all(|&(x, y)| capsule_contains(r, x, y)) { Rel::Full } else { Rel::Part }
+            }
+            _ => Rel::Absent,
+        };
+        let (sel_rel, foc_rel) = (rel(sel), rel(foc));
+        let sel_alpha = self.sel.alpha();
+        let flip = |sel_alpha: f32| backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA;
+        let (flip_in_plate, flip_off_plate) = (flip(sel_alpha), flip(0.0));
+        let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc };
+        // Every (in the plate, in the focus capsule) the pill's glyphs can be in, each with its ink;
+        // the ones that wear the same ink are one region.
+        let mut groups: [(f32, f32, [Option<bool>; 2], [bool; 2]); 4] = [(0.0, 0.0, [None; 2], [false; 2]); 4];
+        let mut seen = 0;
+        for (in_sel, in_foc) in [(false, false), (true, false), (false, true), (true, true)] {
+            let feasible = |rel: Rel, inside: bool| match rel { Rel::Absent => !inside, Rel::Full => inside, Rel::Part => true };
+            if !feasible(sel_rel, in_sel) || !feasible(foc_rel, in_foc) { continue; }
+            let focus = if in_foc && (if in_sel { flip_in_plate } else { flip_off_plate }) { 1.0 } else { 0.0 };
+            let selected = if focus > 0.5 || !in_sel { 0.0 } else { sel_alpha };
+            let at = groups[..seen].iter().position(|g| g.0 == focus && g.1 == selected).unwrap_or_else(|| {
+                groups[seen] = (focus, selected, [None; 2], [false; 2]);
+                seen += 1;
+                seen - 1
+            });
+            for (axis, value) in [in_sel, in_foc].into_iter().enumerate() {
+                match groups[at].2[axis] {
+                    None => groups[at].2[axis] = Some(value),
+                    Some(v) if v != value => groups[at].3[axis] = true,
+                    _ => {}
+                }
             }
         }
-        edges[..inner].sort_by(f32::total_cmp);
-        let mut cuts = [lo; 6];
-        let mut n = 1;
-        for &edge in &edges[..inner] {
-            if edge > cuts[n - 1] { cuts[n] = edge; n += 1; }
-        }
-        cuts[n] = hi;
-        let inside = |span: Option<(f32, f32)>, at: f32| span.is_some_and(|(a, b)| at >= a && at < b);
-        let mut out = InkSpans { spans: [InkSpan { x0: lo, x1: hi, focus: 0.0, selected: 0.0 }; 5], n: 0 };
-        for pair in cuts[..=n].windows(2) {
-            let (x0, x1) = (pair[0], pair[1]);
-            let mid = (x0 + x1) * 0.5;
-            let sel_alpha = if inside(sel, mid) { self.sel.alpha() } else { 0.0 };
-            let focus = if inside(foc, mid) && backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA { 1.0 } else { 0.0 };
-            let span = InkSpan { x0, x1, focus, selected: sel_alpha };
-            match out.n.checked_sub(1).map(|last| &mut out.spans[last]) {
-                Some(last) if last.focus == focus && last.selected == sel_alpha => last.x1 = x1,
-                _ => { out.spans[out.n] = span; out.n += 1; }
-            }
+        for &(focus, selected, side, both) in &groups[..seen] {
+            // A side is a condition only where the capsule is ACROSS the glyphs and the region lies
+            // wholly on one side of its edge.
+            let keep = |axis: usize, rel: Rel| match (rel, side[axis], both[axis]) {
+                (Rel::Part, Some(inside), false) => Some(if inside { Keep::Inside } else { Keep::Outside }),
+                _ => None,
+            };
+            out.regions[out.n] = InkRegion { focus, selected, sel: keep(0, sel_rel), foc: keep(1, foc_rel) };
+            out.n += 1;
         }
         out
     }
 
-    /// The `(focus, selected)` mixes the pixel at `(x, y)` of `pill` is inked with.
-    pub fn ink_at(&self, pill: Rect, ground: TabGround, x: f32, _y: f32) -> (f32, f32) {
-        let spans = self.ink_spans((pill.x, pill.w), ground);
-        spans.as_slice().iter().find(|s| x >= s.x0 && x < s.x1).map_or((0.0, 0.0), |s| (s.focus, s.selected))
+    /// The `(focus, selected)` mixes the pixel at `(x, y)` of `pill`'s glyphs is inked with: the
+    /// region whose side of each capsule's drawn shape the pixel is on. Pure, and the one rule
+    /// [`paint_inked`]'s fragments answer, so it is what the contract tests grade.
+    pub fn ink_at(&self, pill: Rect, ground: TabGround, x: f32, y: f32) -> (f32, f32) {
+        self.pill_ink(pill, ground).at(x, y)
     }
 }
 
-/// A stretch `[x0, x1)` of a pill, in the strip's content space, and the `(focus, selected)` mixes
-/// it is inked with ([`TabPill::mixed_ink`]).
+/// How a capsule stands against a pill's glyphs: not over them, over all of them, across them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rel {
+    Absent,
+    Full,
+    Part,
+}
+
+/// Whether the pixel centre `(x, y)` is inside the capsule `r` as it is drawn: a rounded rect with
+/// corner radius half its height (`TabStrip::draw`'s `rrect(r, h * 0.5, ..)`, clamped to half the
+/// width as the fill's shader clamps it). The test is the signed-distance one the ink shader runs.
+fn capsule_contains(r: Rect, x: f32, y: f32) -> bool {
+    let rad = (r.h * 0.5).min(r.w * 0.5);
+    let q = ((x - (r.x + r.w * 0.5)).abs() - (r.w * 0.5 - rad), (y - (r.y + r.h * 0.5)).abs() - (r.h * 0.5 - rad));
+    q.0.max(0.0).hypot(q.1.max(0.0)) + q.0.max(q.1).min(0.0) - rad <= 0.0
+}
+
+/// How far in from a pill's ends, and how far either side of its centre row, its glyphs reach: the
+/// box the ink is decided over. Every label and mark stands at least `STRIP_PAD` / `OVERHANG` (18+)
+/// in from its pill's ends, and a 28 px label's ascenders and descenders fit in 34 rows.
+const INK_GLYPH_INSET: f32 = 12.0;
+const INK_GLYPH_HALF: f32 = 17.0;
+
+/// One ink and the part of a pill it is worn on: a side of the selection plate's drawn shape and a
+/// side of the focus capsule's (`None`: either side, or no such capsule over the glyphs).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InkSpan {
-    pub x0: f32,
-    pub x1: f32,
+pub struct InkRegion {
     pub focus: f32,
     pub selected: f32,
+    sel: Option<Keep>,
+    foc: Option<Keep>,
 }
 
-/// A pill's [`InkSpan`]s, left to right and tiling the pill: at most five (both edges of both
-/// capsules inside it).
+impl InkRegion {
+    const RESTING: Self = Self { focus: 0.0, selected: 0.0, sel: None, foc: None };
+}
+
+/// A pill's [`InkRegion`]s (at most four) and the shapes they are cut by, in the strip's content
+/// space.
 #[derive(Clone, Copy, Debug)]
-pub struct InkSpans {
-    spans: [InkSpan; 5],
+pub struct PillInk {
+    regions: [InkRegion; 4],
     n: usize,
+    sel: Option<Rect>,
+    foc: Option<Rect>,
 }
 
-impl InkSpans {
-    pub fn as_slice(&self) -> &[InkSpan] {
-        &self.spans[..self.n]
+impl PillInk {
+    pub fn regions(&self) -> &[InkRegion] {
+        &self.regions[..self.n]
     }
 
-    /// One stretch over the whole pill, at its resting ink: what a pill no capsule marks wears.
-    pub fn resting(pill: (f32, f32)) -> Self {
-        Self { spans: [InkSpan { x0: pill.0, x1: pill.0 + pill.1, focus: 0.0, selected: 0.0 }; 5], n: 1 }
+    /// One region over the whole pill at its resting ink: what a pill no capsule marks wears.
+    pub fn resting() -> Self {
+        Self { regions: [InkRegion::RESTING; 4], n: 1, sel: None, foc: None }
+    }
+
+    /// The mixes the pixel `(x, y)` wears (see [`TabStrip::ink_at`]).
+    pub fn at(&self, x: f32, y: f32) -> (f32, f32) {
+        let side = |shape: Option<Rect>| shape.is_some_and(|r| capsule_contains(r, x, y));
+        let (in_sel, in_foc) = (side(self.sel), side(self.foc));
+        let on = |keep: Option<Keep>, inside: bool| keep.is_none_or(|k| (k == Keep::Inside) == inside);
+        self.regions().iter().find(|r| on(r.sel, in_sel) && on(r.foc, in_foc)).map_or((0.0, 0.0), |r| (r.focus, r.selected))
+    }
+
+    /// `region`'s clip in `p`'s logical screen space: the shapes it is on a side of.
+    fn clip_of(&self, region: &InkRegion, p: Painter) -> Option<InkClip> {
+        let shape = |rect: Option<Rect>, keep: Option<Keep>| {
+            let (rect, keep) = (rect?, keep?);
+            let m = p.place(rect);
+            Some(InkShape { x0: m.x, y0: m.y, x1: m.x + m.w, y1: m.y + m.h, radius: m.h * 0.5, keep })
+        };
+        let clip = InkClip { shapes: [shape(self.sel, region.sel), shape(self.foc, region.foc)] };
+        clip.shapes.iter().any(Option::is_some).then_some(clip)
     }
 }
 
@@ -5842,23 +5937,36 @@ fn backing_luma(sel_plate: [f32; 4], sel_alpha: f32, foc_alpha: f32) -> f32 {
     rel_luma(over(c, crate::ACCENT, crate::ACCENT[3] * foc_alpha))
 }
 
-/// Paint a pill's content once per [`InkSpan`], each time clipped to its stretch (`clip` is the
-/// painter the spans' x is in; `y`/`h` are the pill's rows, with air for ascenders): `draw(focus,
-/// selected)` receives the mixes to ink that stretch with. A pill with one stretch is drawn once,
-/// unclipped, exactly as before. The scissors are `ClipScope`s, which nest by intersection inside
-/// whatever the strip already clips to, and `gfx::clip_set` rounds every edge in physical space, so
-/// the stretches abut with no seam and no overlap.
-pub fn paint_inked(clip: Painter, spans: &InkSpans, y: f32, h: f32, mut draw: impl FnMut(f32, f32)) {
-    if let [only] = spans.as_slice() {
-        return draw(only.focus, only.selected);
-    }
-    for span in spans.as_slice() {
-        let _scissor = crate::screen::ClipScope::open_in(clip, Rect::new(span.x0, y - INK_AIR, span.x1 - span.x0, h + 2.0 * INK_AIR));
-        draw(span.focus, span.selected);
+/// Paint a pill's content once per [`InkRegion`]: `draw(focus, selected)` receives the mixes to ink
+/// that region with, and the text and marks it paints are cut per FRAGMENT by the region's side of
+/// each capsule's drawn rounded shape (`plx_gfx::text::InkClip`, evaluated in `fs_text_ink.frag`), so
+/// a glyph the capsule's arc crosses is two inks on its two sides of the arc. `p` is the painter the
+/// pill's rects are in. A pill with one unconditioned region is drawn once, plain, exactly as before.
+/// The callback must paint ONLY ink (labels and marks): a fill drawn in it would be drawn once per
+/// region.
+pub fn paint_inked(p: Painter, ink: &PillInk, mut draw: impl FnMut(f32, f32)) {
+    let live = !p.is_recording() && !crate::frame::backdrop::discovering();
+    for region in ink.regions() {
+        // A restore-on-drop scope, so the clip never outlives its region's paint.
+        let _scope = live.then(|| InkClipScope::open(ink.clip_of(region, p)));
+        draw(region.focus, region.selected);
     }
 }
-/// Rows above and below a pill that a stretch's scissor leaves open, for glyphs that stand out of it.
-const INK_AIR: f32 = 12.0;
+
+/// The ink clip in force for the life of the scope; the one before it comes back on drop.
+struct InkClipScope(Option<InkClip>);
+
+impl InkClipScope {
+    fn open(clip: Option<InkClip>) -> Self {
+        Self(plx_gfx::text::set_ink_clip(clip))
+    }
+}
+
+impl Drop for InkClipScope {
+    fn drop(&mut self) {
+        plx_gfx::text::set_ink_clip(self.0);
+    }
+}
 
 // ---- The shared top tab row: profile chip leads at the margin, the global destinations
 // (Home | Movies | TV Shows | Search) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
@@ -7321,10 +7429,10 @@ impl StripRender {
             // throws away), so the two can never disagree about a sliver at the edge.
             let vis = r.intersect(view);
             if vis.w > 0.5 {
-                // ink comes from what the capsules above cover of this pill, edge by edge — never from
+                // ink comes from what the capsules above cover of each PIXEL of this pill — never from
                 // its own booleans, or a mid-travel label could darken toward ACCENT_INK with nothing
-                // bright under it (`ink_spans` cuts at the edges `Capsule::drawn` paints, so the fill and the ink agree).
-                let spans = self.top_strip.ink_spans((px, widths[i]), TabGround::Tracked { glass: glass_on });
+                // bright under it (`pill_ink` reads the shapes `Capsule::drawn` paints, so the fill and the ink agree).
+                let ink = self.top_strip.pill_ink(Rect::new(px, TOP_BAR_Y, widths[i], TAB_PILL_H), TabGround::Tracked { glass: glass_on });
                 match &faces[i] {
                     // An icon face is a MARK, and it takes its ink from exactly the same
                     // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
@@ -7333,14 +7441,18 @@ impl StripRender {
                         let d = TAB_ICON_D;
                         let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
                         let env = pulse.filter(|&(at, _)| at == i).map_or(0.0, |(_, e)| e);
-                        paint_inked(cp, &spans, TOP_BAR_Y, TAB_PILL_H, |fm, sm| {
-                            draw_tab_mark(p, *icon, ir, TabPill::mixed_ink(fm, sm), env);
+                        // The glow is no ink: laid down once, the glyph inked region by region.
+                        let look = tab_pulse_look(ir, env);
+                        draw_tab_glow(p, look);
+                        paint_inked(cp, &ink, |fm, sm| {
+                            crate::icons::draw(p, *icon, look.glyph, TabPill::mixed_ink(fm, sm));
                         });
                     }
                     TabFace::Label(_) => {
-                        paint_inked(cp, &spans, TOP_BAR_Y, TAB_PILL_H, |fm, sm| {
+                        paint_inked(cp, &ink, |fm, sm| {
                             TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
                                 .mix(fm, sm)
+                                .ink_only()
                                 .draw(&env, p);
                         });
                     }

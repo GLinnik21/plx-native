@@ -110,6 +110,7 @@ fn app_font(bold: bool) -> &'static CStr {
 const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
 const FS_TEXT: &CStr = crate::gfx::glsl!("shaders/fs_text.frag");
 const FS_TEXT_FADE: &CStr = crate::gfx::glsl!("shaders/fs_text_fade.frag");
+const FS_TEXT_INK: &CStr = crate::gfx::glsl!("shaders/fs_text_ink.frag");
 // GL enums
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
@@ -216,6 +217,98 @@ static mut TLF_FADE: c_int = 0;
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
+// the ink program (bound only while an [`InkClip`] is set) + its own uniform locations
+static mut TPROGI: c_uint = 0;
+static mut TLI_RECT: c_int = 0;
+static mut TLI_SCREEN: c_int = 0;
+static mut TLI_COL: c_int = 0;
+static mut TLI_TEX: c_int = 0;
+static mut TLI_A: c_int = 0;
+static mut TLI_B: c_int = 0;
+static mut TLI_P: c_int = 0;
+
+/// Which side of an [`InkShape`] a draw is kept on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    Inside,
+    Outside,
+}
+
+/// A rounded rect in logical screen px (`radius` is clamped to half the shorter side) that a draw's
+/// coverage is multiplied by, kept on one side of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InkShape {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub radius: f32,
+    pub keep: Keep,
+}
+
+/// What a text or mask draw is clipped to, per fragment: up to two shapes, all of which a pixel must
+/// satisfy. Set by `ui::widgets::paint_inked` for the life of one region's paint; absent, every draw
+/// takes the plain program.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InkClip {
+    pub shapes: [Option<InkShape>; 2],
+}
+
+thread_local! {
+    static INK_CLIP: std::cell::Cell<Option<InkClip>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set (or clear) the ink clip every following text and mask draw wears, returning the previous one
+/// so a scope can restore it.
+pub fn set_ink_clip(clip: Option<InkClip>) -> Option<InkClip> {
+    INK_CLIP.with(|c| c.replace(clip))
+}
+
+/// The ink clip in force, if any.
+pub fn ink_clip() -> Option<InkClip> {
+    INK_CLIP.with(|c| c.get())
+}
+
+/// Bind the ink program with `clip`'s shapes as uniforms. `false` when the program did not link
+/// (the caller then draws plain).
+unsafe fn bind_ink(clip: &InkClip) -> bool {
+    if TPROGI == 0 {
+        return false;
+    }
+    crate::gfx::use_prog(TPROGI); // TLI_SCREEN / TLI_TEX / texture unit 0 set once at init
+    let one = |slot: Option<InkShape>| match slot {
+        Some(s) => {
+            let rad = s.radius.min((s.x1 - s.x0) * 0.5).min((s.y1 - s.y0) * 0.5).max(0.0);
+            ([s.x0, s.y0, s.x1, s.y1], rad, if s.keep == Keep::Inside { 1.0 } else { -1.0 })
+        }
+        None => ([0.0; 4], 0.0, 0.0),
+    };
+    let (a, ra, ka) = one(clip.shapes[0]);
+    let (b, rb, kb) = one(clip.shapes[1]);
+    glUniform4f(TLI_A, a[0], a[1], a[2], a[3]);
+    glUniform4f(TLI_B, b[0], b[1], b[2], b[3]);
+    glUniform4f(TLI_P, ra, ka, rb, kb);
+    true
+}
+
+/// Draw `tex`'s ALPHA channel tinted `tint` into the logical-screen quad `(x, y, w, h)` through the
+/// ink program: what an icon's coverage mask (a white texture whose alpha is the shape) needs to
+/// wear the same [`InkClip`] a label does. `false` when no ink clip is set or the program is absent:
+/// the caller draws the mask as it always has.
+pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32) -> bool {
+    let Some(clip) = ink_clip() else { return false };
+    unsafe {
+        if !bind_ink(&clip) {
+            return false;
+        }
+        glUniform4fv(TLI_COL, 1, tint);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform4f(TLI_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    true
+}
+
 /// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
 /// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
 const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
@@ -1160,6 +1253,23 @@ pub fn init_text() {
             TLF_VTOP = glGetUniformLocation(TPROGF, c"u_vfadeT".as_ptr());
             TLF_VBOT = glGetUniformLocation(TPROGF, c"u_vfadeB".as_ptr());
         }
+        // the ink program shares VS_TEXT too; without it a label crossed by a capsule's rounded end
+        // is painted plain (a nicety again: the stretches' ink is still chosen, only the edge is square)
+        TPROGI = crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT_INK.as_ptr()).unwrap_or_else(
+            || {
+                log("text ink prog link failed");
+                0
+            },
+        );
+        if TPROGI != 0 {
+            TLI_RECT = glGetUniformLocation(TPROGI, c"u_trect".as_ptr());
+            TLI_SCREEN = glGetUniformLocation(TPROGI, c"u_tscreen".as_ptr());
+            TLI_COL = glGetUniformLocation(TPROGI, c"u_tcol".as_ptr());
+            TLI_TEX = glGetUniformLocation(TPROGI, c"u_tex".as_ptr());
+            TLI_A = glGetUniformLocation(TPROGI, c"u_ma".as_ptr());
+            TLI_B = glGetUniformLocation(TPROGI, c"u_mb".as_ptr());
+            TLI_P = glGetUniformLocation(TPROGI, c"u_mp".as_ptr());
+        }
         // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
         // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
         crate::gfx::use_prog(TPROG);
@@ -1169,6 +1279,11 @@ pub fn init_text() {
             crate::gfx::use_prog(TPROGF);
             glUniform2f(TLF_SCREEN, SCR_W, SCR_H);
             glUniform1i(TLF_TEX, 0);
+        }
+        if TPROGI != 0 {
+            crate::gfx::use_prog(TPROGI);
+            glUniform2f(TLI_SCREEN, SCR_W, SCR_H);
+            glUniform1i(TLI_TEX, 0);
         }
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
@@ -2107,10 +2222,21 @@ pub fn draw_text(
             Ok(p) => p,
             Err(w) => return w,
         };
+        let (ox, oy) = p.origin(zoom);
+        // Inside an ink clip the glyphs take the ink program: each fragment's coverage is cut by
+        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc.
+        if let Some(clip) = ink_clip().filter(|_| TPROGI != 0) {
+            if bind_ink(&clip) {
+                glUniform4fv(TLI_COL, 1, col);
+                glBindTexture(GL_TEXTURE_2D, p.tex);
+                glUniform4f(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                return p.w;
+            }
+        }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, p.tex);
-        let (ox, oy) = p.origin(zoom);
         glUniform4f(TL_RECT, ox, oy, p.quad.w, p.quad.h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         p.w

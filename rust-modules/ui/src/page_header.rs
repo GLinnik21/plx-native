@@ -19,9 +19,9 @@
 //! row (never by the row: a library switch replaces the whole header, and a capsule that lived in
 //! it would land afresh instead of travelling). [`PageHeader::step`] steps them (the focus capsule
 //! travels on the bar's spring; a changed selection lands under it, [`SelMark::Lands`]) and
-//! [`PageHeader::draw`] paints plates first, then each label inked by what is under it: cut at the
-//! capsules' drawn edges, the stretch inside a capsule in that capsule's ink and the rest in the
-//! resting one ([`TabStrip::ink_spans`]).
+//! [`PageHeader::draw`] paints plates first, then each label inked by what is under it, pixel by
+//! pixel: inside a capsule's drawn rounded shape in that capsule's ink and elsewhere in the resting
+//! one ([`TabStrip::pill_ink`]).
 
 use std::ffi::CString;
 
@@ -30,7 +30,7 @@ use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 use super::breadcrumb::{self, Crumb};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{paint_inked, CtlPop, InkSpans, SelMark, TabGround, TabStrip};
+use super::widgets::{paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip};
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
@@ -334,18 +334,18 @@ impl PageHeader {
         });
     }
 
-    /// The ink stretches of item `r`'s plate ([`TabStrip::ink_spans`]): how much of its label the
-    /// capsules cover, edge by edge. A read-out is no pill and is never inked by one; a `lifted`
+    /// The ink regions of item `r`'s plate ([`TabStrip::pill_ink`]): which part of its label each
+    /// capsule's drawn shape covers. A read-out is no pill and is never inked by one; a `lifted`
     /// control has no focus capsule under it (`ground` leaves it out), so its ink stays the resting
     /// one.
-    fn spans(&self, capsules: &TabStrip, r: &ItemRect, face: &Face<'_>, ground: TabGround) -> InkSpans {
-        if face.readout || !(r.focusable || face.selected) { return InkSpans::resting((r.plate.x, r.plate.w)); }
-        capsules.ink_spans((r.plate.x, r.plate.w), ground)
+    fn ink(&self, capsules: &TabStrip, r: &ItemRect, face: &Face<'_>, ground: TabGround) -> PillInk {
+        if face.readout || !(r.focusable || face.selected) { return PillInk::resting(); }
+        capsules.pill_ink(r.plate, ground)
     }
 
     /// Draw the row: the plates first (the selection's, then the focus capsule over it, through
-    /// the top bar's own [`TabStrip`]), then the `›` and every label inked by what is under it, edge
-    /// by edge, so a label wears a capsule's ink exactly where the capsule is and not before. `pop` is the
+    /// the top bar's own [`TabStrip`]), then the `›` and every label inked by what is under it, pixel
+    /// by pixel, so a label wears a capsule's ink exactly where the capsule is and not before. `pop` is the
     /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is a
     /// control a menu has taken out of the page (`DrawFrame::lifted`): the focus capsule is gone
     /// from the row, and the control's label stays as plain text or goes ([`Lift`]).
@@ -366,9 +366,9 @@ impl PageHeader {
             if lifted == Some(Lifted { item: index, lift: Lift::Away }) { continue; }
             let mut face = self.face(r.slot);
             if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i); }
-            // Inked by what is under it, stretch by stretch: a label a capsule's edge is crossing
-            // wears the capsule's ink on its side of the edge and the resting one on the other.
-            paint_inked(p, &self.spans(capsules, r, &face, ground), r.plate.y, r.plate.h, |focus, selected| {
+            // Inked by what is under each pixel: a label a capsule's arc is crossing wears the
+            // capsule's ink on its side of the arc and the resting one on the other.
+            paint_inked(p, &self.ink(capsules, r, &face, ground), |focus, selected| {
                 self.draw_face_at(p, r.text, &face, (0.0, 0.0), (focus, selected));
             });
         }
