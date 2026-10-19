@@ -30,8 +30,8 @@ impl<'a> ValueChip<'a> {
     pub fn focused(mut self, focused: bool) -> Self { self.focused = focused; self }
     pub fn icon(mut self, icon: Icon) -> Self { self.icon = icon; self }
     /// Leave the capsule's fill out and draw only what stands on it, for a caller that draws the
-    /// fill itself: a morphing popover's opener face (`Popover::morph_face`), whose plate is the
-    /// chip's own [`fill`](Self::fill) at the morph's rect.
+    /// fill itself (an opener face that lays its own plate, as `Popover::morph_face` does; no
+    /// product surface uses one now: the header menus' openers are the host's lift).
     pub fn bare(mut self) -> Self { self.bare = true; self }
 
     /// The capsule's fill, focused or not: the one place it is chosen.

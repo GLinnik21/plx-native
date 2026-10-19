@@ -388,9 +388,9 @@ impl PageHeader {
     }
 
     /// Draw item `layout.items[index]`'s face (label, value, fold glyph) with its plate at `to`,
-    /// and no plate of its own: the face a popover's morph carries while it grows out of the
-    /// control (`focused`: the accent ink the focused control wears). The same paint as
-    /// [`Self::draw`]'s, so a menu's opener face cannot drift from the row's.
+    /// and no plate of its own (`focused`: the accent ink the focused control wears). The same
+    /// paint as [`Self::draw`]'s, so the opener's face ([`Self::draw_opener`] is its caller) cannot
+    /// drift from the row's.
     pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
         let Some(r) = layout.items.get(index) else { return };
         self.draw_face_at(p, r.text, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
@@ -536,20 +536,12 @@ impl HeaderRow {
         PageHeader::step(&self.layout, self.page.selected(&self.layout), focused, capsules, pop, dt);
     }
 
-    /// The face of stop `elem` with its plate at `to` and no plate of its own: the opener face a
-    /// popover's morph carries while it grows out of the control (`focused`: the accent ink the
-    /// focused control wears). [`PageHeader::draw_face`] for a stop named by its element.
-    pub fn draw_face(&self, p: Painter, elem: u32, to: Rect, focused: bool) {
-        if let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) {
-            self.page.draw_face(p, &self.layout, *index, to, focused);
-        }
-    }
-
     /// **The opener, focused, above its menu's scrim** (design review S12): stop `elem` as the
     /// focused control the menu grew out of, `scroll` px up from its document position. The ONE
     /// paint of an opener for every header menu (Sort & Filter, `+N`): the page's pass leaves the
     /// control out of the row ([`Self::draw`]'s `lifted`) and `Screen::redraw_focused` calls this
-    /// through the host's opener lift, after the dim and before the menu's panel. `pop` is the
+    /// through the host's opener lift, which runs after the surfaces (above the dim AND the menu's
+    /// panel; `Z::OPENER`), so the panel never covers it. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
         let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) else { return };
