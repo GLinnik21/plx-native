@@ -2266,41 +2266,31 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // that page also UPDATES is the CONTAINER's question and is asked beside it, once, as
         // `bridge::host_frozen` — the host fold, off the surfaces' own `Style`.
 
-        if !super::bridge::host_frozen(&app.pages)
-            && matches!(app.route(), AppArg::Home)
-        {
-            crate::dev::scenarios::hero_osc_tick(app, fr.now);
-            crate::dev::scenarios::home_fold_osc_tick(app, fr.now);
-            crate::dev::scenarios::home_osc_tick(app, fr.now);
-            // only when home is actually drawn — stepping its 16×24 cell springs during
-            // Player/Detail frames was pure waste on the A53 (the ui::press dip/commit is driven
-            // route-agnostically right after `dt` above)
-            let (_, moving) = plx_machine::idle::scoped_motion(|| {
-                app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
-            });
-            fr.underlay_moving |= moving;
-        } else if !super::bridge::host_frozen(&app.pages)
-            && matches!(app.route(), AppArg::Library)
-        {
-            crate::dev::scenarios::lib_osc_tick(app, fr.now);
-            crate::dev::scenarios::lib_switch_tick(app, fr.now);
-            // scoped like Home's above, because this page can be the one UNDER the account
-            // popover now and its glass backdrop is refreshed off the underlay's motion
-            let (_, moving) = plx_machine::idle::scoped_motion(|| {
-                app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
-            });
-            fr.underlay_moving |= moving;
-        } else if !super::bridge::host_frozen(&app.pages)
-            && matches!(app.route(), AppArg::Search | AppArg::Watchlist)
-        {
-            // Search and the Watchlist wear the same shared bar as Home/Library (`ScreenArg::chrome() ==
-            // Chrome::TabBar`, `screens/registry.rs`), and
-            // `SearchScreen::tick` only steps the screen's OWN rows/springs — it never touches
-            // the strip's capsule/scroll/chip springs, which live in `Bridge`'s own
-            // `strip: StripRender` field. Without this arm those springs freeze at whatever the
-            // previously-drawn page left them at, and `ChromeSnapshot::members`'s published
-            // strip rects (read by pointer hit-testing and focus) go stale. This mirrors the
-            // Home/Library arms above rather than adding a fourth call site.
+        // **One arm for every page that wears the shared bar** (`bridge::wears_tab_bar`, the same
+        // predicate `capture_chrome` publishes the strip on). The springs it steps — the capsule,
+        // the scroll, the chip — live in `Bridge`'s own `strip: StripRender`, not in any screen:
+        // `SearchScreen::tick` and the rest only step their OWN rows. Without this the springs
+        // freeze at whatever the previously-drawn page left them at, and `ChromeSnapshot::members`'s
+        // published rects (read by pointer hit-testing and focus) go stale. Four arms spelled the
+        // routes by name (Home, Library, Search|Watchlist) and left Collections and Recommended
+        // out, which is how those two pages wore a bar nobody stepped.
+        if !super::bridge::host_frozen(&app.pages) && super::bridge::wears_tab_bar(&app.route()) {
+            match app.route() {
+                AppArg::Home => {
+                    crate::dev::scenarios::hero_osc_tick(app, fr.now);
+                    crate::dev::scenarios::home_fold_osc_tick(app, fr.now);
+                    crate::dev::scenarios::home_osc_tick(app, fr.now);
+                }
+                AppArg::Library => {
+                    crate::dev::scenarios::lib_osc_tick(app, fr.now);
+                    crate::dev::scenarios::lib_switch_tick(app, fr.now);
+                }
+                _ => {}
+            }
+            // only when a bar-wearing page is actually drawn — stepping the cell springs during
+            // Player/Detail frames was pure waste on the A53. Scoped, because the page can be the
+            // one UNDER the account popover and its glass backdrop is refreshed off the
+            // underlay's motion.
             let (_, moving) = plx_machine::idle::scoped_motion(|| {
                 app.bridge.update_home_chrome(&mut app.pages, &mut app.glass, fr.dt);
             });

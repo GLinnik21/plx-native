@@ -50,6 +50,8 @@ struct PageWithStrip<'a, H: Host> {
     page: &'a dyn Screen<H>,
     strip: Option<(GroupSpec, &'a [super::containers::tabs::StripMember<H::Elem>])>,
     strip_fallback: Option<H::Elem>,
+    /// The page's own pill (`TabContainer::strip_selected`): where a move up from the page lands.
+    strip_selected: Option<H::Elem>,
     entry: EntryId,
 }
 
@@ -115,6 +117,14 @@ where
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         match &self.strip {
             Some((spec, members)) if spec.id == g => {
+                // **One landing rule for every page that wears the bar:** the page's own pill, not
+                // the pill under the key that left the page. A move up from the Library's leftmost
+                // control used to land on the profile chip, and from the Watchlist's pill on Search,
+                // whichever pill happened to sit above the key. The nearest pill is only the answer
+                // when the application published no selection.
+                if let Some(own) = self.strip_selected.and_then(|key| members.iter().find(|m| m.elem == key)) {
+                    return FocusKey { entry: self.entry, elem: own.elem };
+                }
                 let cx_ = from.rect.cx();
                 let mut best = (f32::MAX, 0usize);
                 for (i, member) in members.iter().enumerate() {
@@ -762,7 +772,7 @@ where
         let is_top_page = nav.top_page().map(|t| t.id) == Some(entry);
         let strip = (is_top_page && page.strip_reachable() && !nav.tabs.strip.is_empty())
             .then(|| (nav.tabs.strip_group(), nav.tabs.strip.as_slice()));
-        Some(PageWithStrip { page, strip, strip_fallback: nav.tabs.strip_fallback, entry })
+        Some(PageWithStrip { page, strip, strip_fallback: nav.tabs.strip_fallback, strip_selected: nav.tabs.strip_selected, entry })
     }
 
     /// **Is this frame's picture a hardware VIDEO PLANE?** (spec §9, §16 risk 10.)

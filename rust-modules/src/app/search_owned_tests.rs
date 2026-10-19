@@ -924,62 +924,65 @@ fn draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal() {
     );
 }
 
-/// **Pins the `AppArg::Search` arm of `app::run::update` that keeps the shared top strip's springs
-/// and hit rects live while Search is on screen.**
+/// **Pins the arm of `app::run::update` that keeps the shared top strip's springs and hit rects
+/// live while ANY page that wears the bar is on screen** — Search among them.
 ///
 /// `SearchScreen::tick` steps only this screen's OWN rows/springs — it never touches the strip's
 /// travelling capsules, its scroll spring or the profile chip's unfurl, which all live in
 /// `Bridge`'s own `strip: StripRender` field and are stepped by `Bridge::update_home_chrome`.
-/// Home and Library each get an arm in `update` that calls it every frame they are on screen; if
-/// Search's mirroring arm (added alongside the owned cutover) were ever deleted, those springs
-/// would freeze at whatever the previously-drawn page left them, and `ChromeSnapshot::members`'s
-/// published strip rects (read by pointer hit-testing and by focus) would go stale under Search —
-/// exactly the regression `search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale`
-/// (this file, above) proves `update_home_chrome` FIXES once it is actually called.
+/// `update` calls it every frame a bar-wearing page is on screen, on ONE arm whose condition is
+/// `bridge::wears_tab_bar` — the same predicate `capture_chrome` publishes the strip on. If that
+/// arm were ever deleted, or narrowed back to a list of route names, those springs would freeze at
+/// whatever the previously-drawn page left them, and `ChromeSnapshot::members`'s published strip
+/// rects (read by pointer hit-testing and by focus) would go stale — exactly the regression
+/// `search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale` (this file, above)
+/// proves `update_home_chrome` FIXES once it is actually called, and the one Collections and
+/// Recommended had until the predicate was shared (they wore the bar and nobody stepped it).
 ///
 /// That test cannot see the arm itself: it calls `Bridge::update_home_chrome` directly, never
-/// `app::run::update`, so it stays green whether or not `update`'s `AppArg::Search` branch exists
-/// at all — which is exactly how this arm could vanish with every test still passing. And
+/// `app::run::update`, so it stays green whether or not `update`'s arm exists at all. And
 /// `app::run::update` cannot be driven end to end from a host test either: it is `unsafe fn
 /// update(app: &mut App, fr: &mut Frame)`, and `App`/`Frame` carry the live SDL/GL window state
 /// boot creates — there is no host constructor for either. So, like
 /// `draw_chromes_guard_calls_the_named_predicate_and_names_no_page_literal` above (the same
 /// shape of gap, one function over), this reads the source text of the arm itself rather than
-/// running it.
+/// running it. `the_strip_is_published_exactly_when_the_route_wears_the_tab_bar`
+/// (`page_regions_tests.rs`) grades the publication half over every route.
 ///
-/// Observed RED: commenting out the `else if !host_frozen(&app.pages) && matches!(app.route(),
-/// AppArg::Search) { ... }` block in `run.rs` (leaving the Home/Library arms above it and the
-/// `search_osc` block below it untouched) makes this test fail with "update must still branch on
-/// AppArg::Search to step the shared strip", while `cargo test --lib` on that same
-/// mutation reports every other test passing — the disabled-arm-passes-every-test blind spot the
-/// finding named directly.
+/// Observed RED: commenting out the `if !host_frozen(&app.pages) && wears_tab_bar(&app.route())
+/// { ... }` block in `run.rs` (leaving the `search_osc` block below it untouched) makes this test
+/// fail with "update must still step the strip on the shared predicate", while `cargo test --lib`
+/// on that same mutation reports every other test passing — the disabled-arm-passes-every-test
+/// blind spot the finding named directly.
 #[test]
-fn update_still_steps_the_shared_strip_on_search_the_way_home_and_library_do() {
+fn update_steps_the_shared_strip_on_every_route_that_wears_the_bar() {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
     ).expect("read run.rs");
     let fn_start = src.find("unsafe fn update(app: &mut App, fr: &mut Frame)")
         .expect("app::run::update must exist with its documented signature");
-    // `page_of(app.route)` until restructure phase 10, when the two popover routes it resolved
-    // were deleted and `page_of` became the identity function and went with them.
-    let needle = "matches!(app.route(), AppArg::Search | AppArg::Watchlist)";
+    let needle = "wears_tab_bar(&app.route())";
     let arm_at = src[fn_start..].find(needle).map(|i| fn_start + i).expect(
-        "update must still branch on AppArg::Search to step the shared strip — no arm of this \
-         shape was found after fn update's own start",
+        "update must still step the strip on the shared predicate — no arm of this shape was \
+         found after fn update's own start",
     );
     let body_start = src[arm_at..].find('{').map(|i| arm_at + i)
-        .expect("the AppArg::Search condition must open a block");
+        .expect("the bar-wearing condition must open a block");
     // Bounded by this arm's OWN closing statement rather than a raw character window, so the
     // search cannot spill into the unrelated `search_osc` block right after it (which mentions
     // neither `update_home_chrome` nor `scoped_motion`) and read that as a false pass.
     let body_end = src[body_start..].find("fr.underlay_moving |= moving;").map(|i| body_start + i)
-        .expect("the AppArg::Search arm must still report underlay motion the way Home/Library do");
+        .expect("the bar-wearing arm must still report underlay motion");
     let body = &src[body_start..body_end];
     assert!(
         body.contains("update_home_chrome"),
-        "the AppArg::Search arm must call Bridge::update_home_chrome — without it the shared \
-         strip's springs and published hit rects freeze while Search is on screen — got: {body:?}"
+        "the bar-wearing arm must call Bridge::update_home_chrome — without it the shared \
+         strip's springs and published hit rects freeze while the page is on screen — got: {body:?}"
     );
+    // …and no route is named in the condition: the arm is the predicate's, not a list's.
+    let cond = &src[arm_at.saturating_sub(120)..arm_at + needle.len()];
+    assert!(!cond.contains("AppArg::Search") && !cond.contains("AppArg::Watchlist"),
+        "the arm's condition names a page; it must be `wears_tab_bar` alone — got: {cond:?}");
 }
 
 /// **Finding 1 — the Search focus fingerprint (`app::bridge::content_probe`'s Search arm) reports

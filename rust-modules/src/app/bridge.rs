@@ -926,28 +926,35 @@ impl Bridge {
         // the next frame's reconcile clamped that foreign key to the picker's LAST avatar.
         let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
-        let search = *route == AppArg::Search;
-        let watchlist = *route == AppArg::Watchlist;
-        if matches!(route, AppArg::Home | AppArg::Library) || search || watchlist {
-            d.nav.tabs.strip_fallback = Some(if search { plx_ui::widgets::TAB_KEY_SEARCH }
-                else if watchlist { plx_ui::widgets::TAB_KEY_WATCHLIST } else { plx_screens::home::STRIP_HOME_ELEM });
+        if wears_tab_bar(route) {
+            d.nav.tabs.strip_fallback = Some(match route {
+                AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
+                AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
+                _ => plx_screens::home::STRIP_HOME_ELEM,
+            });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
             } else {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(), None);
             }
-            self.chrome_selection = if *route == AppArg::Library {
-                self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
-            } else if search { self.chrome.search_selection()
-            } else if watchlist { self.chrome.watchlist_selection() } else { 0 };
+            // The page's own pill: Home's is the first, and a library page's is its library's type.
+            self.chrome_selection = pill_of_arg(route, self.directory.view()).unwrap_or(0) as u32;
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
-            self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+            self.publish_strip(d, selected);
         } else {
             d.nav.tabs.strip.clear();
             d.nav.tabs.strip_fallback = None;
+            d.nav.tabs.strip_selected = None;
             self.chrome.drop_pulse();
         }
+    }
+
+    /// **Publish the strip's members and the pill that is the page's own** — one write, so the
+    /// landing rule (`TabContainer::strip_selected`) cannot name a pill the members do not hold.
+    fn publish_strip(&mut self, d: &mut Dispatcher<AppHost>, selected: i32) {
+        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+        d.nav.tabs.strip_selected = self.chrome.key_at(selected);
     }
 
     /// Return publication changes so the frame can coalesce them with store notices.
@@ -989,7 +996,7 @@ impl Bridge {
         let chrome_focus = self.chrome.focus(focus);
         self.strip.update(labels, selected, chrome_focus, dt);
         glass.step_tab_band(dt);
-        self.chrome.members(selected, focus, self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+        self.publish_strip(d, selected);
     }
 
     #[cfg(test)]
@@ -1591,8 +1598,7 @@ impl Bridge {
     /// itself. `route_wears_tab_bar`'s old `page_of` resolution — "which page is this popover
     /// route over" — has nothing left to resolve and went with the routes in D1.
     fn draws_chrome_for(arg: &AppArg) -> bool {
-        use plx_ui::screen::ScreenArg;
-        arg.chrome() == plx_machine::machine::Chrome::TabBar
+        wears_tab_bar(arg)
     }
 }
 
@@ -3160,6 +3166,18 @@ pub(crate) fn nav_push_with_return(
     d.request_with_return(MachineId::Nav, NavOp::Push(arg), ret);
 }
 
+/// **Does this route wear the shared tab bar?** The ONE answer: `ScreenArg::chrome()`, which the
+/// registry writes exhaustively, so a new page cannot be added without deciding it. Everything that
+/// depends on the bar asks this and nothing else — drawing it (`draws_chrome_for`), publishing the
+/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), and stepping the
+/// strip's springs (`run::update`) — because four hand-written lists of route names once drifted
+/// from it: the Collections and Recommended pages drew the bar, but their strip was never published
+/// or stepped, so Up from the page found no pills to land on.
+pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
+    use plx_ui::screen::ScreenArg;
+    arg.chrome() == plx_machine::machine::Chrome::TabBar
+}
+
 /// **Which PILL of the shared strip a page argument is**, for the pending selection the capsule
 /// travels to. `None` for everything that is not a strip destination, which is most of the
 /// alphabet — the row shows no pending selection while a detail page is coming up.
@@ -3173,7 +3191,9 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
-        AppArg::Library => {
+        // The grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library's: they select its type's pill, the pill they were opened from.
+        arg if arg.is_library_family() => {
             let kind = directory.current().map(|i| directory.sections()[i].kind)?;
             pill_of(directory, Pill::Section(kind))
         }

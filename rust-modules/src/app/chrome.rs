@@ -137,17 +137,10 @@ impl ChromeSnapshot {
         TabLabels { generation: self.tabs_generation.unwrap_or(0), faces: &self.faces }
     }
 
-    pub(crate) fn library_selection(&self, kind: SecKind) -> u32 {
-        let elem = match kind { SecKind::Movie => widgets::TAB_KEY_MOVIES, SecKind::Show => widgets::TAB_KEY_SHOWS };
-        self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
-    }
-
-    pub(crate) fn search_selection(&self) -> u32 {
-        self.keys.iter().position(|key| *key == widgets::TAB_KEY_SEARCH).unwrap_or(0) as u32
-    }
-
-    pub(crate) fn watchlist_selection(&self) -> u32 {
-        self.keys.iter().position(|key| *key == widgets::TAB_KEY_WATCHLIST).unwrap_or(0) as u32
+    /// The strip key published at `selected` (an index into [`Self::keys`], as `members` takes it):
+    /// the page's own pill, for the landing rule `TabContainer::strip_selected` states.
+    pub(crate) fn key_at(&self, selected: i32) -> Option<u32> {
+        self.keys.get(selected.max(0) as usize).copied()
     }
 
     pub(crate) fn profile(&self) -> ProfileChipRead<'_> {

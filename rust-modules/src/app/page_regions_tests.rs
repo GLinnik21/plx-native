@@ -372,3 +372,64 @@ fn the_pages_that_wear_the_tab_bar_share_one_route_table() {
     }
     assert!(fails.0.is_empty(), "{} cells of the route table failed:\n{}", fails.0.len(), fails.0.join("\n"));
 }
+
+/// **T2: the strip is published exactly when the route wears the bar.** Over EVERY page argument
+/// (`every_route()`, which now holds the library's Collections and Recommended pages): after the
+/// page has been through its frames, the container holds strip members if and only if
+/// `chrome() == TabBar`. The two predicates the loop used to spell by route name (what
+/// `capture_chrome` publishes, what `update` steps) are now ONE, `bridge::wears_tab_bar`, and this
+/// is what says it is the one the registry's table writes: a page added with `Chrome::TabBar` and
+/// no strip, or a strip on a page that draws no bar, fails here and not on the television as Up
+/// finding nothing to land on.
+#[test]
+fn the_strip_is_published_exactly_when_the_route_wears_the_tab_bar() {
+    use plx_ui::screen::ScreenArg;
+    let _guard = plx_base::testlock::serial();
+    for route in super::super::words::every_route() {
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        super::test_support::frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
+        for t in 1..4 {
+            super::frame(&mut d, &mut rig, tick(t), vec![]);
+        }
+        let word = super::super::words::route_word(&route);
+        let wears = route.chrome() == plx_machine::machine::Chrome::TabBar;
+        assert_eq!(wears_tab_bar(&route), wears, "{word}: the app's predicate is the registry's table");
+        assert_eq!(!d.nav.tabs.strip.is_empty(), wears,
+            "{word} ({}): the strip is published exactly when the route wears the tab bar",
+            named(Some(&route)));
+        assert_eq!(d.nav.tabs.strip_selected.is_some(), wears,
+            "{word}: the page's own pill is published with the strip, and only with it");
+    }
+}
+
+/// **Home follows the same landing rule** (the strip seat is shared by every page that wears the
+/// bar): Up from a card at the far right of the grid lands on the HOME pill — the page's own — and
+/// not on whichever pill sits above that card (it used to be the nearest by x, which from there is
+/// the Watchlist or Search).
+#[test]
+fn home_up_from_a_far_card_lands_on_the_home_pill() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.stores.hubs.seed_grid_for_test(3, 24);
+    let mut i = 0;
+    fn run(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, i: &mut u32, key: Option<Key>, n: u32) {
+        for k in 0..n {
+            let inputs = match key { Some(key) if k == 0 => script_key(key, tick(*i)), _ => vec![] };
+            super::test_support::frame(d, rig, AppArg::Home, tick(*i), inputs);
+            *i += 1;
+        }
+    }
+    run(&mut d, &mut rig, &mut i, None, 40);
+    assert!(rig.home_command(HomeCmd::FocusGrid { row: 0, col: 18 }));
+    run(&mut d, &mut rig, &mut i, None, 40);
+    let start = d.focus().expect("a card is focused");
+    assert!(start.elem < plx_ui::dispatch::STRIP_BASE, "premise: focus starts in the page, not on the strip");
+    for _ in 0..4 {
+        if d.focus().is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE) { break; }
+        run(&mut d, &mut rig, &mut i, Some(Key::Up), 30);
+    }
+    assert_eq!(d.focus().map(|k| k.elem), Some(plx_ui::widgets::TAB_KEY_HOME),
+        "Up from the page reaches the nav on the Home pill");
+}
