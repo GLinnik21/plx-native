@@ -1,20 +1,20 @@
 {
- "generated": "2026-10-19T12:04:34Z",
+ "generated": "2026-10-19T13:52:57Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 210.0,
+   "change7_pct": 219.1,
    "d30": null,
    "delta30": null,
-   "delta7": 116.9,
+   "delta7": 123.2,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 5,
-   "now": 172.5,
-   "prev7": 55.7,
+   "n_now": 5,
+   "n_prev": 6,
+   "now": 179.4,
+   "prev7": 56.2,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -28.7,
+   "change30_pct": -28.2,
    "change7_pct": 40.9,
-   "d30": 682.0,
-   "delta30": -196.0,
-   "delta7": 141.0,
+   "d30": 677,
+   "delta30": -191,
+   "delta7": 141,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 270,
+   "n_now": 271,
    "n_prev": 209,
-   "now": 486.0,
+   "now": 486,
    "prev7": 345,
    "shown": true,
    "state": "worse",
@@ -86,10 +86,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -36.8,
+   "change30_pct": -36.7,
    "change7_pct": 32.8,
-   "d30": 673.0,
-   "delta30": -248.0,
+   "d30": 671,
+   "delta30": -246,
    "delta7": 105,
    "group": "ci",
    "id": "push_wait",
@@ -108,81 +108,81 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.0,
+   "change7_pct": 32.6,
    "d30": null,
    "delta30": null,
-   "delta7": 1.7,
-   "group": "local",
-   "id": "bench.app",
-   "kind": "local",
-   "label": "Rebuild after editing the app crate",
-   "n_now": 8,
-   "n_prev": 5,
-   "now": 22.9,
-   "prev7": 21.2,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 16.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": 6.3,
-   "group": "local",
-   "id": "bench.screens",
-   "kind": "local",
-   "label": "Rebuild after editing plx_screens",
-   "n_now": 8,
-   "n_prev": 5,
-   "now": 44.0,
-   "prev7": 37.8,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 1.2,
-   "d30": null,
-   "delta30": null,
-   "delta7": 0.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 8,
-   "n_prev": 5,
-   "now": 47.5,
-   "prev7": 47.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 19.9,
-   "d30": null,
-   "delta30": null,
-   "delta7": 20.5,
+   "delta7": 32.5,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 8,
-   "n_prev": 5,
-   "now": 123.5,
-   "prev7": 103.0,
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 132.2,
+   "prev7": 99.7,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 1.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 0.2,
+   "group": "local",
+   "id": "bench.app",
+   "kind": "local",
+   "label": "Rebuild after editing the app crate",
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 21.7,
+   "prev7": 21.4,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 15.2,
+   "d30": null,
+   "delta30": null,
+   "delta7": 6.0,
+   "group": "local",
+   "id": "bench.screens",
+   "kind": "local",
+   "label": "Rebuild after editing plx_screens",
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 45.6,
+   "prev7": 39.5,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 10.2,
+   "d30": null,
+   "delta30": null,
+   "delta7": 4.5,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 49.0,
+   "prev7": 44.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -224,10 +224,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 96.0,
+   "change30_pct": 95.7,
    "change7_pct": 14.0,
-   "d30": 1112.0,
-   "delta30": 1068.0,
+   "d30": 1114,
+   "delta30": 1066,
    "delta7": 268.5,
    "group": "ci",
    "id": "minutes",
@@ -266,10 +266,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.8,
+   "change30_pct": 39.9,
    "change7_pct": 6.6,
-   "d30": 228,
-   "delta30": 93,
+   "d30": 229.5,
+   "delta30": 91.5,
    "delta7": 20.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -308,10 +308,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 116.4,
+   "change30_pct": 115.4,
    "change7_pct": 4.8,
-   "d30": 110,
-   "delta30": 128.0,
+   "d30": 110.5,
+   "delta30": 127.5,
    "delta7": 11.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -329,10 +329,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 164.6,
+   "change30_pct": 168.3,
    "change7_pct": -39.5,
-   "d30": 72,
-   "delta30": 118.5,
+   "d30": 71.0,
+   "delta30": 119.5,
    "delta7": -124.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -501,7 +501,7 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
+   "d30": 16.0,
    "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 675,
-   "delta30": -672,
+   "d30": 673.0,
+   "delta30": -670.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -584,18 +584,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 22.0,
+   "change7_pct": 43.4,
    "d30": null,
    "delta30": null,
-   "delta7": 0.1,
+   "delta7": 0.2,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 8,
-   "n_prev": 5,
-   "now": 0.7,
-   "prev7": 0.6,
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 0.8,
+   "prev7": 0.5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -606,7 +606,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 210.0,
+   "change_pct": 219.1,
    "commits": [
     {
      "pr": 836,
@@ -659,12 +659,12 @@
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
     }
    ],
-   "from": 55.7,
+   "from": 56.2,
    "id": "bench.tests",
    "label": "Unit suite",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 172.5
+   "to": 179.4
   },
   {
    "change_pct": 87.6,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 486.0
+   "to": 486
   },
   {
    "change_pct": 32.8,
@@ -909,6 +909,67 @@
    "since": "2026-10-19",
    "threshold_pct": 15.0,
    "to": 425
+  },
+  {
+   "change_pct": 32.6,
+   "commits": [
+    {
+     "pr": 836,
+     "sha": "b55c88f3c",
+     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
+    },
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
+    },
+    {
+     "pr": 838,
+     "sha": "3ac9e03fd",
+     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
+    },
+    {
+     "pr": 839,
+     "sha": "046f3058d",
+     "title": "Dolby Vision: keep the declaration when the server copies the video"
+    },
+    {
+     "pr": 846,
+     "sha": "a5307a98b",
+     "title": "Disk budget: inventory, eviction planner and a read-only report"
+    },
+    {
+     "pr": 848,
+     "sha": "8b2a13f95",
+     "title": "build-gc --evict: carry out the disk planner's plan, and drive it from --auto"
+    },
+    {
+     "pr": 845,
+     "sha": "d16d986dd",
+     "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    }
+   ],
+   "from": 99.7,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-10-19",
+   "threshold_pct": 25.0,
+   "to": 132.2
   }
  ],
  "schema": 2,
@@ -955,25 +1016,25 @@
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 172.5
+   "now": 179.4
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 123.5
+   "now": 132.2
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 47.5
+   "now": 49.0
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 44.0
+   "now": 45.6
   }
  ],
  "thresholds": {
