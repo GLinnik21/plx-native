@@ -354,11 +354,11 @@ mod tests {
         }
     }
 
-    /// Row snapping puts the focused row's OWN TOP EDGE at the viewport, clamped — not the minimal
-    /// reveal `card_row::reveal` performs, which is right for a shelf inside a page and wrong for a
-    /// wall of posters you walk down.
+    /// Row snapping seats the focused row with its poster top where the FIRST row's is at rest
+    /// (y 244), clamped to the document — not the minimal reveal `card_row::reveal` performs, which
+    /// is right for a shelf inside a page and wrong for a wall of posters you walk down.
     #[test]
-    fn row_snapping_targets_the_rows_own_top_edge() {
+    fn row_snapping_seats_every_row_at_the_first_rows_resting_y() {
         let lay = posters(true, 40);
         // **Row 0 is the canvas's own exception**: its target is the top of the page, so the
         // header directly above it stays on screen. Snapping past it would scroll away the
