@@ -471,8 +471,12 @@ fn the_rail_is_entered_only_from_the_last_column_and_walks_over_empty_letters() 
             start: "header:collections",
             steps: {
                 let mut steps = vec![
-                    press(Key::Down, "", "library", "grid:0,3"),
+                    // The page arrived on its first poster, so Down from the header returns to it.
+                    press(Key::Down, "", "library", "grid:0,0"),
                     // Not the last column: Right stays in the grid.
+                    press(Key::Right, "", "library", "grid:0,1"),
+                    press(Key::Right, "", "library", "grid:0,2"),
+                    press(Key::Right, "", "library", "grid:0,3"),
                     press(Key::Right, "", "library", "grid:0,4"),
                     press(Key::Right, "", "library", "grid:0,5"),
                     // The last column: Right enters the rail on the letter under the card.
@@ -493,8 +497,10 @@ fn the_rail_is_entered_only_from_the_last_column_and_walks_over_empty_letters() 
             setup: lettered,
             start: "header:collections",
             steps: {
-                // Down from the header lands in column 3, the one under the Collections control.
-                let mut steps = vec![press(Key::Down, "", "library", "grid:0,3")];
+                // Down from the header returns to the cell Up left from, the page's first poster;
+                // column 3 is reached by walking.
+                let mut steps = vec![press(Key::Down, "", "library", "grid:0,0")];
+                steps.extend((1..=3).map(|col| step_at(Key::Right, format!("grid:0,{col}"))));
                 steps.extend(grid_column(Key::Down, 1..=2, 3));
                 // Row 2, last column: Right enters the rail and Left comes back to the SAME card.
                 steps.extend(grid_column(Key::Right, 2..=2, 4));

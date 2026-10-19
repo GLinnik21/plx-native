@@ -43,8 +43,9 @@
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
 //!   let-go of the one that just lost focus). A deliberate move grows from rest.
-//!   A shelf whose page is still dissolving in is [`dormant`](Shelf::dormant): nothing is lifted
-//!   under the fade, and the first awake tick grows the focused card from rest.
+//!   A shelf or grid whose page is still dissolving in is [`dormant`](Shelf::dormant) /
+//!   [`Grid::dormant`]: nothing is lifted under the fade, and the first awake tick grows the focused
+//!   card from rest (a focus the engine restored meanwhile is adopted whole, as above).
 //! - **One frame convention.** A [`SectionFrame`]'s `y` is screen space; the painter handed to
 //!   `draw` may carry any translate (see [`SectionFrame`]).
 //! - **Press comes from the frame**, `cx.press` / `f.press` through `PressRead::dip_of()`, never the

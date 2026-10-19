@@ -1394,6 +1394,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         } else {
             self.pair.detail.groups(cx, out);
         }
+        self.with_regions(|regions| regions.seat_content_head(&mut out[content..]));
         // After a library was chosen, the DOWN into its grid is the reader's way back to where they
         // were: the engine's remembered tile, across the vertical door that otherwise projects.
         if self.enter_remembered {

@@ -596,7 +596,7 @@ impl<H: ContentLike> StackPage<H> for Page {
             Sec::Items,
             Kind::Grid { spec: grid_spec().animate_landings(true) },
             GRID_GROUP,
-        ));
+        ).seated(plx_ui::page_regions::CONTENT_HEAD_SEAT));
         // The unreachable read-out's Try again is the one focusable thing in the status section.
         let retry = (self.list == ListState::Failed)
             .then(|| unreachable_overlay().action_frame_measured(cx.measure))

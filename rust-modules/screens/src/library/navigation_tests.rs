@@ -459,11 +459,13 @@ fn source_controls_and_document_groups_match_bare_full_and_failed_content() {
     }
 }
 
-/// The poster wall under the heading closes the same square: DOWN from a heading chip lands on
-/// the grid tile under that chip, not on a remembered cell rows away (which dragged the page deep
-/// into All from its heading).
+/// DOWN from a heading chip lands on the cell the last UP left from (`PageRegions`'
+/// `CONTENT_HEAD_SEAT`: Up then Down is a round trip, whatever stop of the row the walk ended on);
+/// only a grid with no memory takes the tile under the chip (the projection that dragged the page
+/// deep into All from its heading when the remembered cell was rows away is the memory's cell now,
+/// and it is the one the reader just left).
 #[test]
-fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
+fn down_from_a_heading_chip_lands_on_the_remembered_tile_else_the_one_under_it() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new(1, 24, 0);
     let mut page = fixture.screen();
@@ -471,7 +473,6 @@ fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
     let mut engine = FocusEngine::new();
     let grid = page.pair.groups_config().detail;
     let deep = page.pair.detail.elem_at(15).expect("a 24-item grid");
-    engine.remember_projected(ENTRY, grid, deep);
     let seat = page.key(SORTFILTER);
     fixture.step(&mut page, &mut engine, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(seat) }));
     let chip = page.place(&SORTFILTER, &fixture.cx(&engine), At::SpringTarget).unwrap().rect;
@@ -481,9 +482,18 @@ fn down_from_a_heading_chip_lands_on_the_grid_tile_under_it() {
             d(a).total_cmp(&d(b))
         }).unwrap();
     assert_ne!(under, page.pair.detail.elem_at(0).unwrap(), "the fixture's SORTFILTER chip stands over a later column");
+    assert_ne!(under, deep, "the remembered cell is not the one under the chip");
+    // No memory: the projection under the chip.
     fixture.direction(&mut page, &mut engine, Dir::Down);
     assert_eq!(engine.current(OWNER), Some(page.key(under)),
-        "DOWN from SORTFILTER lands in the grid's first row under the chip");
+        "with nothing remembered, DOWN from SORTFILTER lands in the grid's first row under the chip");
+    // Memory: the cell Up left from, whatever the chip stands over.
+    let mut engine = FocusEngine::new();
+    engine.remember_projected(ENTRY, grid, deep);
+    fixture.step(&mut page, &mut engine, ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(seat) }));
+    fixture.direction(&mut page, &mut engine, Dir::Down);
+    assert_eq!(engine.current(OWNER), Some(page.key(deep)),
+        "DOWN from SORTFILTER returns to the cell the last UP left from");
 }
 
 #[cfg(test)]

@@ -113,8 +113,9 @@ fn a_movie_details_disc_adds_then_removes_the_title_by_keys() {
 /// **The Watchlist page's header row, by keys.** The row has ONE stop (the Sort & Filter pill: the
 /// title is a plate, not a control), so "walking it" is: Up from the first tile reaches the pill,
 /// Left and Right keep focus on the pill (they neither leave sideways to the strip nor fall into the
-/// grid), and Down enters the grid on the first row's tile under the pill (the engine's geometric Down:
-/// the pill is right-aligned, over the sixth column).
+/// grid), and Down returns to the tile Up left from (`PageRegions::CONTENT_HEAD_SEAT`, design review
+/// S2: the pill is right-aligned over the sixth column, ~1400 px from the tile the eye left, and
+/// the round trip does not go there).
 #[test]
 fn the_watchlist_header_row_holds_left_and_right_and_down_enters_the_grid() {
     let mut w = World::watchlist("r14-header");
@@ -131,10 +132,10 @@ fn the_watchlist_header_row_holds_left_and_right_and_down_enters_the_grid() {
     }
     assert!(!w.on_nav(), "and never reaches the strip");
 
-    // The pill is right-aligned over the sixth column, and the engine's Down lands on the tile under it.
-    let under_pill = page(&w).elem_at(5);
+    // The pill is right-aligned over the sixth column; Down still returns to the tile Up left from.
+    assert_ne!(page(&w).elem_at(5), first, "premise: the tile under the pill is not the one Up left from");
     w.press(Key::Down);
-    assert_eq!(w.elem(), under_pill, "Down enters the grid, on the first row's tile under the pill");
+    assert_eq!(w.elem(), first, "Down returns to the tile Up left from, not the one under the pill");
     assert_ne!(w.elem(), Some(PILL_ELEM));
 }
 
