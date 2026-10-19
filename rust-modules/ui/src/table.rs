@@ -918,6 +918,15 @@ impl TableView {
         self.measured_width(measure).clamp(self.min_panel_w.min(MENU_MAX_W), MENU_MAX_W)
     }
 
+    /// [`Self::menu_panel_width`] for a popover that hangs from a header control: never narrower
+    /// than `pill`, the control's focused pill (its plate at [`crate::widgets::CTRL_FOCUS_SCALE`]),
+    /// so a panel never reads as a smaller thing than the control that opened it, and the Library's
+    /// Sort & Filter and the Watchlist's size by the same rule. The control's width wins over
+    /// content only up to [`MENU_MAX_W`].
+    pub fn menu_panel_width_from(&self, measure: &dyn plx_machine::machine::Measure, pill: Rect) -> f32 {
+        self.menu_panel_width(measure).max(pill.w.min(MENU_MAX_W))
+    }
+
     /// Test-side half of the cap: `Err` names the offending width when this table would need a
     /// panel wider than [`MENU_MAX_W`] (`what` = language tag + menu/row context).
     #[cfg(any(test, feature = "test-support"))]

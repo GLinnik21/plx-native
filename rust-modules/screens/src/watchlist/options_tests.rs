@@ -89,7 +89,7 @@ fn the_summary_is_default_until_something_changes_then_lists_the_changes_in_sect
 fn the_control_reads_label_dot_value_with_both_regular() {
     let _g = language_on_this_thread_for_test(Preference::En);
     let row = header::Row::new(&FixtureMeasure, "Default", None);
-    let log = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, false, false));
+    let log = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
     // title, then the control's label, separator and value: every run at the regular weight.
     assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 4);
     assert_eq!(plx_platform::i18n::msg::watchlist_page_sort_filter(), "Sort & Filter");
@@ -105,13 +105,24 @@ fn open_menu() -> (OptionsMenu, Rect, WatchlistOptionsState) {
     (m, pill, state)
 }
 
+/// **The panel is never narrower than the pill it grows out of** (owner: the Sort & Filter panel
+/// was 337 under a 365 pill). One rule for every header control's popover
+/// (`TableView::menu_panel_width_from`), the same one the Library's menu hangs by.
+#[test]
+fn the_panel_is_never_narrower_than_the_pill_it_grows_out_of() {
+    let (m, pill, _) = open_menu();
+    let panel = m.panel_rect(&ShippedMeasure);
+    assert!(panel.w >= pill.w, "the panel {} is narrower than its pill {}", panel.w, pill.w);
+    assert!((panel.x + panel.w - (pill.x + pill.w)).abs() < 0.01, "right edges stay aligned");
+}
+
 #[test]
 fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_panel_radius() {
     let (mut m, pill, _) = open_menu();
     assert_eq!(m.popover().open_style(), plx_ui::popover::OpenStyle::Morph);
     let panel = m.panel_rect(&ShippedMeasure);
     let f0 = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
-    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (wider than the panel now: the 1.07 plate), not the panel");
+    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (the 1.07 plate), not the panel");
     assert!(f0.rect.h < panel.h);
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
@@ -238,7 +249,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::READOUT_GAP);
     assert!(!readout.focusable && control.focusable);
     assert_eq!(narrowed.plate(), plain.plate(), "the control does not move for the read-out");
-    let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, false, false));
+    let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
     assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 5);
 }
 
@@ -247,7 +258,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
 #[test]
 fn a_lifted_control_is_left_out_and_the_row_rides_the_scroll() {
     let row = header::Row::new(&FixtureMeasure, "Default", None);
-    let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, false, lifted));
+    let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, &plx_ui::widgets::TabStrip::new(), 1.0, lifted));
     assert_eq!(at(0.0, true).iter().filter(|(t, _)| *t == 100).count(), 1, "the title alone");
     let (rest, scrolled) = (at(0.0, false), at(-100.0, false));
     for (a, b) in rest.iter().zip(&scrolled) {

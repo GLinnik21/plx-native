@@ -33,10 +33,11 @@
 //! Home). A strip key carries the PAGE's own entry, so whether focus is "on the bar" is
 //! `elem >= STRIP_BASE` and never `key.entry`; [`PageRegions::region_of`] is where that is decided.
 //!
-//! **For the header-pill motion (the next stage):** a header row's state lives on the page
-//! (`Header.stops` on the Library's `header.rs`, `PILL_ELEM` on the Watchlist), and its Left/Right
-//! is [`row_neighbour`] over the page's stop list. A travelling-capsule component reads the focus
-//! key's move from `FocusMoved` as the nav pill does; it does not need a region.
+//! **The header row is one component** ([`crate::page_header::HeaderRow`] and its borrowed
+//! [`crate::page_header::HeaderFocus`]): the row's layout, paint, focus group and Left/Right
+//! ([`row_neighbour`] over its stop list) are the same on every page that wears one, and its motion
+//! (the focus capsule that travels, the selection plate that lands) is held by the SCREEN, stepped
+//! from the engine's current focus, so rebuilding the row for a new library moves nothing on screen.
 //!
 //! The module lives in `plx_ui` because both the screens and the application name it, and it
 //! names only `screen` types, `GroupId` and `dispatch::STRIP_BASE`.

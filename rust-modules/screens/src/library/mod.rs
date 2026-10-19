@@ -62,7 +62,6 @@ use plx_ui::{Rect, Spring};
 use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
 use layout::{Layout, Block, CONTENT_TOP};
-use header::Header;
 use toolbar::{CollectionsControl, COLLECTIONS, CRUMB_ROOT, RECOMMENDED, SORTFILTER};
 #[cfg(test)]
 use layout::COLS;
@@ -80,7 +79,7 @@ const PLAINTEXT_CANCEL: u32 = 5;
 const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
-pub const SHAPE: [&str; 8] = [
+pub const SHAPE: [&str; 10] = [
     "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
@@ -89,6 +88,9 @@ pub const SHAPE: [&str; 8] = [
     Layout::SHAPE,
     GridPart::SHAPE,
     RailPart::SHAPE,
+    // The header row's pills, held by the screen (`header_capsules`, `header_pop`).
+    plx_ui::widgets::TabStrip::SHAPE,
+    "HeaderPop{sp:[Spring{pos:f32,vel:f32};1],focused:Option<u32>}",
 ];
 
 struct Regions;
@@ -154,7 +156,12 @@ pub struct LibraryScreen {
     /// The directory sections the fold hid behind "+N" (what the Sources list shows).
     folded: Vec<u32>,
     /// The header row as `sync` last built it (`header.rs`); `None` before the first sync.
-    header: Option<Header>,
+    header: Option<plx_ui::page_header::HeaderRow>,
+    /// The header row's pills: the focus capsule and the selection plate, and the focus pop. Held
+    /// HERE and not in the row, so a library switch (which replaces the whole row) does not start
+    /// them over: the capsule travels from the old stop to the new.
+    header_capsules: plx_ui::widgets::TabStrip,
+    header_pop: plx_ui::widgets::CtlPop<1>,
     /// [`Self::header_key`] of the row `header` was built from.
     header_key: Option<u64>,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
@@ -244,7 +251,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: None, header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: None, header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
@@ -583,7 +590,9 @@ impl LibraryScreen {
         let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
-        } else if self.is_header_elem(key.elem) || key.elem == RETRY {
+        } else if let Some(top) = self.header_focus().and_then(|focus| focus.reveal(key.elem)) {
+            Some(top)
+        } else if key.elem == RETRY {
             Some(0.0)
         } else { None };
         if let Some(want) = want {
@@ -1169,6 +1178,7 @@ impl LibraryScreen {
                         .or_else(|| (!self.ground_seeded).then(|| H::listing(cx).item(0).filter(|item| item.has_blur).map(|item| item.blur)).flatten());
                     self.ground_seeded |= colours.is_some();
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
+                    self.step_header(cx, dt);
                     // A page still dissolving in shows its seat unpopped: the pop starts when the
                     // page is opaque, where it can be seen, instead of playing out under the fade.
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
@@ -1280,12 +1290,9 @@ impl LibraryScreen {
 impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.plaintext_alert.groups(out) { return; }
-        // The header row is always there: the names (when there are two or more), "+N" and the
-        // controls. Its extent is the row's plates, so a move from the grid ranks it by x.
-        out.push(row_group(LIBRARY_GROUP, self.header_elems().len(), Rect::new(
-            plx_ui::page_header::TEXT_X0 - plx_ui::page_header::OVERHANG, CONTENT_TOP - self.scroll.pos,
-            plx_ui::page_header::TEXT_X1 - plx_ui::page_header::TEXT_X0 + 2.0 * plx_ui::page_header::OVERHANG,
-            plx_ui::page_header::HEIGHT), ElemKind::Control));
+        // The header row: the names (when there are two or more), "+N" and the controls, or the
+        // crumb and Sort. One group, declared by the shared `HeaderFocus`.
+        out.extend(self.header_focus().and_then(|focus| focus.group_spec()));
         if self.readout == Readout::Failed {
             if let Some(rect) = self.status_rect(cx) {
                 out.push(GroupSpec { edge: [EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
@@ -1309,6 +1316,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if matches!(region_of_elem(key.elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.neighbour(key, dir, cx);
         }
+        if let Some(focus) = self.header_focus().filter(|focus| focus.contains(key.elem)) { return focus.neighbour(key, dir); }
         plx_ui::page_regions::row_neighbour(self.entry, &self.row_elems(self.group_of(&key.elem, cx)), key, dir)
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
@@ -1316,10 +1324,9 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if matches!(region_of_elem(*elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.place(elem, cx, at);
         }
-        let rect = if let Some(rect) = self.header_rect(*elem, at) {
-            rect
-        } else if *elem == RETRY && self.readout == Readout::Failed { self.status_rect(cx)? }
-        else { return None };
+        if let Some(placed) = self.header_focus().and_then(|focus| focus.place(*elem, at)) { return Some(placed); }
+        if *elem != RETRY || self.readout != Readout::Failed { return None; }
+        let rect = self.status_rect(cx)?;
         Some(Placed { rect, rest_rect: rect, clip: content_clip(), index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -1329,6 +1336,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             let next = self.pair.reconcile(want, cx);
             if self.pair.place(&next.elem, cx, At::SpringTarget).is_some() { return next; }
         }
+        if let Some(key) = self.header_focus().and_then(|focus| focus.reconcile(want)) { return key; }
         if self.place(&want.elem, cx, At::SpringTarget).is_some() { return want; }
         if let Some((group, index)) = self.keys.last_place(want.elem) {
             let elems = self.row_elems(Some(group));
@@ -1341,19 +1349,14 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         if let Some(key) = self.plaintext_alert.seat(group, self.entry) { return key; }
         if group == self.pair.groups_config().detail || group == self.pair.groups_config().master { return self.pair.seat(group, from, cx); }
-        let elems = self.row_elems(Some(group));
-        // The first way into the header from below lands on the library on view; once the reader
-        // has been on the row, the engine's remembered seat (the last control used) wins first.
+        // The first way into the header from below lands on the library on view (else the stop
+        // nearest the key); once the reader has been on the row, the engine's remembered seat (the
+        // last control used) wins first. That rule is the shared row's, not this page's.
         if group == LIBRARY_GROUP {
-            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
-                return self.key(*elem);
-            }
+            return self.header_focus().map_or_else(|| self.key(plx_ui::dispatch::STRIP_BASE), |focus| focus.seat(from));
         }
-        let elem = elems.iter().filter_map(|elem| self.place(elem, cx, At::SpringTarget)
-            .map(|placed| (*elem, (placed.rect.cx() - from.rect.cx()).abs())))
-            .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(elem, _)| elem)
-            .unwrap_or(plx_ui::dispatch::STRIP_BASE);
-        self.key(elem)
+        // The failed read-out's one control.
+        self.key(self.row_elems(Some(group)).first().copied().unwrap_or(plx_ui::dispatch::STRIP_BASE))
     }
 }
 
@@ -1429,6 +1432,8 @@ impl LogicalState for LibraryScreen {
         c.bool(self.ground_seeded);
         self.ground.write_motion(c);
         c.bool(self.switched);
+        self.header_capsules.write_motion(c);
+        self.header_pop.write_motion(c);
         PageMemory::Library(self.page_memory()).write(c);
         c.seq(self.viewports.len());
         for viewport in &self.viewports { viewport.write(c); }

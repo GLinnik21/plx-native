@@ -1,34 +1,16 @@
 //! The library page header (redesign spec, "Header"): the library names, the "+N" overflow and the
-//! page's three controls on the ui [`PageHeader`], one focus row at y 148.
+//! page's three controls (on the Collections page, the crumb and its Sort) on the ui
+//! [`PageHeader`], one focus row at y 148.
 //!
-//! The row is built here, once per sync, and cached with its geometry (`Header`): placement, hit
-//! rects, the focus order and the paint all read that one value, so they cannot disagree. The
-//! names are packed against the room the right cluster leaves (`PageHeader::layout`'s
-//! `left_budget`), so the cluster never moves when a name or a value changes.
+//! This file DECLARES the row: which names, which controls, which element each focusable item is.
+//! The row is built here, once per sync, as a ui [`HeaderRow`]; its layout, paint, motion and focus
+//! group are the ui's (`plx_ui::page_header`), the same ones the Collections, Recommended and
+//! Watchlist pages wear. The names are packed against the room the right cluster leaves
+//! (`PageHeader::layout`'s `left_budget`), so the cluster never moves when a name or a value
+//! changes. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
+//! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
-use plx_ui::page_header::{self, HeaderItem, HeaderLayout, PageHeader, PageHeaderSpec};
-
-/// The row as last built: the ui widget, its geometry (document space: y is the row's own top,
-/// 148, before the scroll), and which element each focusable item is.
-pub(super) struct Header {
-    page: PageHeader,
-    layout: HeaderLayout,
-    /// `(element, index into layout.items)` of every focusable item, in focus order.
-    stops: Vec<(u32, usize)>,
-    /// The Collections page's row: the crumb in place of the library names. `None` on every
-    /// other page.
-    pub(super) crumb: Option<(plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout)>,
-}
-
-impl Header {
-    /// The plate (focus and hit rect) of `elem` in document space.
-    pub(super) fn plate(&self, elem: u32) -> Option<Rect> {
-        if elem == CRUMB_ROOT { return self.crumb.as_ref().map(|(_, layout)| layout.root_plate); }
-        let (_, index) = self.stops.iter().find(|(key, _)| *key == elem)?;
-        Some(self.layout.items[*index].plate)
-    }
-
-}
+use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
 
 /// Which of `n` names show when the row cannot hold them all (`budget` is text edge to text edge
 /// for names plus "+N"). The picked library takes the LAST visible slot: names keep their order
@@ -59,17 +41,13 @@ fn item(label: impl Into<String>) -> HeaderItem {
 
 impl LibraryScreen {
     /// Every focusable element of the header row in focus order: the library names, "+N", then
-    /// the controls.
+    /// the controls (on the Collections page, the crumb's root, then Sort).
     pub(super) fn header_elems(&self) -> Vec<u32> {
-        if self.listing == Listing::Collections {
-            return [CRUMB_ROOT].into_iter().chain(self.toolbar_elems().iter().copied()).collect();
-        }
-        self.libraries.iter().map(|(elem, _)| *elem).chain(self.toolbar_elems().iter().copied()).collect()
+        self.header.as_ref().map_or_else(Vec::new, |row| row.stops.iter().map(|(elem, _)| *elem).collect())
     }
 
     pub(super) fn is_header_elem(&self, elem: u32) -> bool {
-        if self.listing == Listing::Collections { return elem == CRUMB_ROOT || self.toolbar_elems().contains(&elem); }
-        self.libraries.iter().any(|(key, _)| *key == elem) || self.toolbar_elems().contains(&elem)
+        self.header_focus().is_some_and(|focus| focus.contains(elem))
     }
 
     /// The Sort & Filter control's value: the sort in force, a queued edit included.
@@ -240,7 +218,7 @@ impl LibraryScreen {
             }
         }
 
-        let page = PageHeader::new(PageHeaderSpec { left, overflow, right }, &widest, measure);
+        let page = PageHeader::new(PageHeaderSpec { left, overflow, right, ..Default::default() }, &widest, measure);
         let mut layout = page.layout(SCR_W, measure);
         if self.libraries.is_empty() {
             // One library: no names, and the three controls sit centred between the nav and the
@@ -250,67 +228,74 @@ impl LibraryScreen {
                 it.plate.y += layout::SINGLE_LIBRARY_DY;
             }
         }
-        let controls = self.toolbar_elems();
-        let mut stops = Vec::new();
-        for (index, rect) in layout.items.iter().enumerate() {
-            let elem = match rect.slot {
-                page_header::Slot::Left(i) => self.libraries.get(i).map(|(elem, _)| *elem),
-                page_header::Slot::Overflow => Some(MORE),
-                page_header::Slot::Right(i) => {
-                    let first_control = page.spec().right.iter().position(|it| it.focusable).unwrap_or(0);
-                    i.checked_sub(first_control).and_then(|i| controls.get(i).copied())
-                }
-            };
-            if let Some(elem) = elem.filter(|_| rect.focusable) { stops.push((elem, index)); }
-        }
-        self.header = Some(Header { page, layout, stops, crumb: None });
+        self.header = Some(self.header_row(page, layout));
     }
 
-    /// The Collections page's row: the crumb (its root is the one stop besides Sort) in place of
-    /// the library names and the page's three controls.
+    /// The built row: which element each focusable item of `layout` is. The names and "+N" are
+    /// `self.libraries`, the controls are [`Self::toolbar_elems`] (the first focusable right item is
+    /// the first control, a read-out before it is no stop), the crumb's root is [`CRUMB_ROOT`] and
+    /// its page name, the title, is none.
+    fn header_row(&self, page: PageHeader, layout: page_header::HeaderLayout) -> HeaderRow {
+        let controls = self.toolbar_elems();
+        let first_control = page.spec().right.iter().position(|it| it.focusable).unwrap_or(0);
+        let stops = layout.items.iter().enumerate().filter(|(_, rect)| rect.focusable).filter_map(|(index, rect)| {
+            let elem = match rect.slot {
+                Slot::Left(i) => self.libraries.get(i).map(|(elem, _)| *elem),
+                Slot::Overflow => Some(MORE),
+                Slot::Right(i) => i.checked_sub(first_control).and_then(|i| controls.get(i).copied()),
+                Slot::CrumbRoot => Some(CRUMB_ROOT),
+                Slot::CrumbPage => None,
+            };
+            elem.map(|elem| (elem, index))
+        }).collect();
+        HeaderRow::new(page, layout, stops)
+    }
+
+    /// The Collections page's row: the crumb (its root is a stop, its page name the title) in
+    /// place of the library names, and Sort when the server declares more than one.
     fn refresh_collections_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         self.libraries.clear();
         // Only the collections' own declared sorts count: until the store has switched the section
         // to the collections listing, `sorts()` is still the films' list.
         let declared = if self.listed == plx_data::browse::LibraryType::Collections { H::listing(cx).sorts().len() } else { 0 };
         let library = self.view_section(cx).map(|index| self.library_label(index, cx)).unwrap_or_default();
-        let row = super::collections_page::header(&library, self.kind, declared, &self.sort_value(cx), SCR_W, cx.measure);
-        let stops = if row.sort.is_some() { vec![(SORTFILTER, 0)] } else { Vec::new() };
-        self.collections_sort = row.sort.is_some();
-        self.header = Some(Header { page: row.page, layout: row.layout, stops, crumb: Some((row.crumb, row.crumb_layout)) });
+        let spec = super::collections_page::header_spec(&library, self.kind, declared, &self.sort_value(cx));
+        self.collections_sort = super::collections_page::sort_visible(declared);
+        let page = PageHeader::new(spec, &[], cx.measure);
+        let layout = page.layout(SCR_W, cx.measure);
+        self.header = Some(self.header_row(page, layout));
+    }
+
+    /// The row as one focus group of this page, at its scroll: what the engine's `Focusable`
+    /// questions about the header are answered from (`None` before the row is built).
+    pub(super) fn header_focus(&self) -> Option<HeaderFocus<'_>> {
+        self.header.as_ref().map(|row| row.focus(self.entry, LIBRARY_GROUP, (self.scroll.pos, self.scroll_target), content_clip()))
     }
 
     /// Where the header control or name `elem` is, in screen space at the drawn or target scroll.
     pub(super) fn header_rect(&self, elem: u32, at: At) -> Option<Rect> {
-        let plate = self.header.as_ref()?.plate(elem)?;
-        let scroll = match at { At::Drawn => self.scroll.pos, At::SpringTarget => self.scroll_target };
-        Some(Rect::new(plate.x, plate.y - scroll, plate.w, plate.h))
+        self.header_focus()?.place(elem, at).map(|placed| placed.rect)
     }
 
-    /// Paint the row at the drawn scroll. The row scrolls away with the page: only its focused
-    /// pill and the selected plate are chrome of its own.
+    /// One frame of the row's motion: the focus capsule travels to the focused control, the
+    /// selection plate lands under it. Focus off the row (or a menu holding it) closes the pop.
+    pub(super) fn step_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, dt: f32) {
+        let Some(row) = &self.header else { return };
+        row.step(self.entry, cx.focus.current, &mut self.header_capsules, &mut self.header_pop, dt);
+    }
+
+    /// Paint the row at the drawn scroll. The row scrolls away with the page: only its pill and
+    /// the selected plate are chrome of its own.
     pub(super) fn draw_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
-        let Some(header) = &self.header else { return };
+        let Some(row) = &self.header else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
-        let mut layout = header.layout.clone();
-        for it in &mut layout.items {
-            it.text.y -= self.scroll.pos;
-            it.plate.y -= self.scroll.pos;
-        }
         let top = layout::HEADER_Y - self.scroll.pos;
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
-        let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
         // menu is its only copy, and the board shows it as plain text while the panel is open.
+        let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let focus = focused.filter(|elem| Some(*elem) != lifted)
-            .and_then(|elem| header.stops.iter().find(|(stop, _)| *stop == elem)).map(|(_, index)| *index);
-        header.page.draw(p, &layout, focus);
-        if let Some((crumb, crumb_layout)) = &header.crumb {
-            let mut crumb_layout = *crumb_layout;
-            for rect in [&mut crumb_layout.root_text, &mut crumb_layout.root_plate, &mut crumb_layout.glyph,
-                &mut crumb_layout.page_text, &mut crumb_layout.page_plate] { rect.y -= self.scroll.pos; }
-            crumb.draw(p, &crumb_layout, focused == Some(CRUMB_ROOT));
-        }
+        let lifted = lifted.filter(|elem| focused == Some(*elem)).map(|elem| (elem, page_header::Lift::Plain));
+        row.draw(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
     }
 }

@@ -190,12 +190,17 @@ the selected plate at the left, and at the right the control "Sort & Filter · <
 count is a filter read-out and nothing else: "{shown} of {total}" (the Library's sentence,
 `library.header.filtered_of`, numbers grouped as it groups them) stands ahead of the control while a
 Type or Show filter narrows the list (Sort alone does not), including "0 of N" beside the
-filtered-empty read-out, and there is no "{n} titles" at rest. It is derived from the list state (no
-`SCREEN_SHAPES` change), absent until the list has landed and on the empty-list and unavailable
+filtered-empty read-out, and there is no "{n} titles" at rest. It is derived from the list state (it
+holds no state of its own), absent until the list has landed and on the empty-list and unavailable
 read-outs, and follows the cards when the grid's landing STARTS MOVING: a Remove's on the first feed
 after the hold menu's veil drops below `CLOSING_GONE`, a Sort & Filter change's on the frame after the
 click (the click's own frame draws the frame before it), never at the commit, so the number and the
 tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the control is lifted.
+The row's pills are the Library's, one component: the focus pill slides to the control on the top bar's
+spring and the title's selected plate lands under it (`plx_ui::page_header`; the page holds the row's
+`TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
+panel is as wide as its longest label or as the control's focused pill, whichever is wider
+(`TableView::menu_panel_width_from`, the rule the Library's Sort & Filter hangs by too).
 
 **The grid and its captions follow the Library.** Six columns of 250 x 375 posters from x 96, 285
 apart (the last column ends on the row's right text edge, x 1771), the first row at y 244, a focused

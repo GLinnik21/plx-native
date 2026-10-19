@@ -5516,7 +5516,7 @@ pub struct TabStrip {
 /// How a strip's SELECTION plate answers a change of selection. The FOCUS capsule always travels —
 /// it is the ring following your thumb, and the path between two pills is the information.
 ///
-/// Selection is a different statement, and on one of the two strips the path is noise.
+/// Selection is a different statement, and on some strips (the header row) the path is noise.
 #[derive(Clone, Copy, PartialEq)]
 pub enum SelMark {
     /// **It travels**, as the focus capsule does: the shared top tab bar and the sources popover's
@@ -5524,7 +5524,7 @@ pub enum SelMark {
     /// re-pointing itself.
     Travels,
     /// **It lands** on the newly selected pill with no path in between — the detail page's season
-    /// strip (owner, 2026-08-22: the sliding grey pill "does not fit").
+    /// strip (owner, 2026-08-22: the sliding grey pill "does not fit") and a page's header row.
     ///
     /// The case is worth stating because it is the one where the travel was invisible AND ugly at
     /// the same time. Selection only ever changes here by pressing a season, and the press leaves
@@ -5535,10 +5535,11 @@ pub enum SelMark {
     Lands,
 }
 
-/// Which of the app's two tab strips a [`TabStrip`] is drawing, and everything that differs between
-/// them. One value rather than the `(plated, glass)` pair it replaces, because that pair could spell
-/// a combination that does not exist — a plated strip has no track to be glass — and because the
-/// focus POP belongs to exactly one of the two and now cannot be handed to the other by mistake.
+/// Which of the app's tab strips a [`TabStrip`] is drawing (the top bar, the detail page's season
+/// strip, and a library page's header row), and everything that differs between them. One value
+/// rather than the `(plated, glass)` pair it replaces, because that pair could spell a combination
+/// that does not exist — a plated strip has no track to be glass — and because the focus POP
+/// belongs to the plated and the bare strips and cannot be handed to the tracked one by mistake.
 ///
 /// The split is the design system's own (`components/chrome/TabStrip.jsx`), which gates every
 /// press and transform handler it writes on `plated`.
@@ -5616,7 +5617,7 @@ impl TabStrip {
     /// Draw both capsules in the painter's own (already scroll-translated) CONTENT space, for a strip
     /// whose pills stand `h` tall at `top`. Selection first, focus over it — when they are on the same
     /// pill the bright one wins, exactly as the boolean match ordered its arms. [`TabGround`] says
-    /// which of the two strips this is, and carries everything that differs between them.
+    /// which strip this is, and carries everything that differs between them.
     ///
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.

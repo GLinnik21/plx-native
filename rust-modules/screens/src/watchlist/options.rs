@@ -325,11 +325,12 @@ impl OptionsMenu {
         changed
     }
 
-    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label
-    /// ([`TableView::menu_panel_width`]) and as tall as its rows, held inside the safe frame.
+    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label and
+    /// never narrower than the pill ([`TableView::menu_panel_width_from`], the Library's rule too)
+    /// and as tall as its rows, held inside the safe frame.
     pub fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let safe = plx_ui::consts::SAFE;
-        let w = self.table.menu_panel_width(measure);
+        let w = self.table.menu_panel_width_from(measure, self.pill);
         let x = (self.pill.x + self.pill.w - w).max(safe.x);
         let h = self.table.measured_height().min(safe.h);
         // Hung under the pill; when the whole menu (ten rows, three headings) is taller than the

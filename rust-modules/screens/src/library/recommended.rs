@@ -40,6 +40,8 @@ use plx_ui::screen::{
     GroupSpec, Link, Placed, RenderStrategy, Screen, ScreenEvent, Step, Dir, By,
 };
 use plx_ui::page_regions::{Arrival, BackStep, PageRegions};
+use plx_ui::page_header::{HeaderFocus, HeaderRow, PageHeader, PageHeaderSpec, Slot};
+use plx_ui::breadcrumb::Crumb;
 use plx_ui::widgets::Art;
 use plx_ui::{on_axis, Env, Rect, Spring, View};
 
@@ -52,13 +54,11 @@ use crate::registry::{
 
 /// Where the page's title stands: the same top the library's header row has.
 const CONTENT_TOP: f32 = plx_ui::page_header::TOP;
-/// The title block under the header row (the library header row's own block height): the grid's
-/// first content line sits this far under [`CONTENT_TOP`], y 244.
-const TITLE_BLOCK_H: f32 = 96.0;
 /// The run's start under [`CONTENT_TOP`]: the first shelf's HEADING (drawn [`TITLE_DY`] above its
-/// row's origin) starts on the grid's content line, y 244, clear of the title row's 148..204 and the
-/// air under it; the origin, and the cards under it, follow the heading.
-const HEAD_H: f32 = TITLE_BLOCK_H + TITLE_DY;
+/// row's origin) starts on the grid's content line, y 244 (`page_header::BLOCK_H` under the header
+/// row's top), clear of the title row's 148..204 and the air under it; the origin, and the cards
+/// under it, follow the heading.
+const HEAD_H: f32 = plx_ui::page_header::BLOCK_H + TITLE_DY;
 /// Rows PageUp / PageDown move focus by.
 const PAGE_ROWS: usize = 2;
 /// The strip group the page's first row links up to (the shared top bar).
@@ -124,6 +124,10 @@ pub struct RecommendedScreen {
     ground: plx_ui::widgets::PageGround,
     ground_seeded: bool,
     sweep_down: bool,
+    /// The crumb row's pills (the focus capsule, the selection plate under "Recommended") and its
+    /// focus pop: the shared `PageHeader` motion, held by the page that wears the row.
+    header_capsules: plx_ui::widgets::TabStrip,
+    header_pop: plx_ui::widgets::CtlPop<1>,
     /// The standing "Hold OK for options" hint over a card. Paint-only.
     hold_hint: plx_ui::hold_hint::HoldHint,
     /// The held range last sent to the store, with the section it was for, so the command goes out
@@ -261,6 +265,7 @@ impl RecommendedScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None, viewports: Vec::new(),
             initial: true, readout: Readout::Loading, live: true,
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false, sweep_down: true,
+            header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(),
             hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
             hold_sent: None,
             #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
@@ -272,7 +277,9 @@ impl RecommendedScreen {
         "RecommendedScreen{entry:u32,instance:u32,kind:u32,scroll:{pos:f32,vel:f32},scroll_target:f32,",
         "restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,",
         "shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,ground_seeded:bool,",
-        "ground:PageGround,memory:PageMemory::Library,viewports:[LibraryViewport],",
+        "ground:PageGround,header_capsules:",
+        "TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}}",
+        ",header_pop:{sp:[Spring{pos:f32,vel:f32};1],focused:Option<u32>},memory:PageMemory::Library,viewports:[LibraryViewport],",
         "shelves:[{id:str,group:u32,heading:Option<(group:u32,elem:u32)>,landscape:bool,elems:[u32],motion:ShelfMotion}],",
         "readout:u32,run:f32}");
 
@@ -623,7 +630,7 @@ impl RecommendedScreen {
     }
 
     /// Bring a focused card (or heading) into view: the row's reveal scroll.
-    fn reveal_focus(&mut self, key: FocusKey<u32>, by: By) {
+    fn reveal_focus<H: LibraryLike>(&mut self, key: FocusKey<u32>, by: By, cx: &Cx<'_, H>) {
         self.relayout(Some(key));
         let want = self.shelves.iter().position(|row| row.elems.contains(&key.elem) || row.heading_elem() == Some(key.elem))
             .map(|index| reveal(&self.target_run, index));
@@ -637,7 +644,9 @@ impl RecommendedScreen {
                     self.scroll.jump(self.scroll_target);
                 }
             }
-        } else if key.elem == CRUMB_ELEM || key.elem >= plx_ui::dispatch::STRIP_BASE {
+        } else if let Some(top) = self.header(cx).focus(self.entry, CRUMB_GROUP, (self.scroll.pos, self.scroll_target), content_clip()).reveal(key.elem) {
+            self.scroll_target = top;
+        } else if key.elem >= plx_ui::dispatch::STRIP_BASE {
             self.scroll_target = 0.0;
         }
         self.relayout(Some(key));
@@ -732,7 +741,7 @@ impl RecommendedScreen {
             ScreenEvent::FocusMoved { to, by, .. } => {
                 self.shelves_on(ev, cx, fx);
                 if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
-                self.reveal_focus(*to, *by);
+                self.reveal_focus(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
@@ -744,6 +753,7 @@ impl RecommendedScreen {
                             .and_then(|shelf| shelf.items.first()).filter(|item| item.has_blur).map(|item| item.blur)).flatten());
                     self.ground_seeded |= colours.is_some();
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
+                    self.header(cx).step(self.entry, focused, &mut self.header_capsules, &mut self.header_pop, dt);
                     // A row at exact rest is a fixed point of its tick, so a page of hundreds of
                     // them costs a lookup each, not a spring step.
                     self.shelves_on(ev, cx, fx);
@@ -865,7 +875,7 @@ impl RecommendedScreen {
 
 impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        out.push(plx_ui::linked_heading::group_spec(CRUMB_GROUP, self.crumb_rect(cx, self.scroll_target)));
+        out.extend(self.header_focus(&self.header(cx)).group_spec());
         for (index, row) in self.shelves.iter().enumerate() {
             let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X,
                 shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
@@ -885,11 +895,12 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         self.shelves.iter().find_map(|row| row.heading.filter(|(_, e)| e == elem)).map(|(group, _)| group)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        if key.elem == CRUMB_ELEM { return self.header_focus(&self.header(cx)).neighbour(key, dir); }
         plx_ui::page_regions::row_neighbour(self.entry, &self.row_elems(self.group_of(&key.elem, cx)), key, dir)
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let rect = if *elem == CRUMB_ELEM {
-            self.crumb_rect(cx, if at == At::Drawn { self.scroll.pos } else { self.scroll_target })
+            return self.header_focus(&self.header(cx)).place(*elem, at);
         } else if let Some((row, col)) = self.cell_of(*elem) {
             if at == At::Drawn { return self.shelf_placed(row, elem, cx); }
             self.shelf_rect_at(row, col, cx)
@@ -899,6 +910,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         Some(Placed { rect, rest_rect: rect, clip: content_clip(), index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.header_focus(&self.header(cx)).reconcile(want) { return key; }
         if self.place(&want.elem, cx, At::SpringTarget).is_some() { return want; }
         if let Some((group, index)) = self.keys.last_place(want.elem) {
             let elems = self.row_elems(Some(group));
@@ -908,6 +920,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             .unwrap_or_else(|| self.key(plx_ui::dispatch::STRIP_BASE))
     }
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if group == CRUMB_GROUP { return self.header_focus(&self.header(cx)).seat(from); }
         let elems = self.row_elems(Some(group));
         let elem = elems.iter().filter_map(|elem| self.place(elem, cx, At::SpringTarget)
             .map(|placed| (*elem, (placed.rect.cx() - from.rect.cx()).abs())))
@@ -933,31 +946,29 @@ impl RecommendedScreen {
         f.painter.alpha(f.page_alpha)
     }
 
-    /// The page's breadcrumb, "<Library> › Recommended": the library's name is the link back, the
-    /// page's name sits on the selected plate. Placed on the header row like the Collections page's.
-    fn crumb<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> (plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout) {
-        let crumb = plx_ui::breadcrumb::Crumb::new(
+    /// The page's header row, "<Library> › Recommended": the shared `PageHeader` configured with a
+    /// crumb (the library's name is the link back, the page's name sits on the selected plate), the
+    /// same row the Collections page wears. Built on demand from the library's name; its one stop
+    /// is the crumb's root.
+    fn header<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> HeaderRow {
+        let crumb = Crumb::new(
             super::collections_page::root_label(&Self::library_title(cx), self.kind),
             plx_platform::i18n::msg::library_header_recommended());
-        let layout = crumb.layout(cx.measure);
-        (crumb, layout)
+        let page = PageHeader::new(PageHeaderSpec { crumb: Some(crumb), ..Default::default() }, &[], cx.measure);
+        let layout = page.layout(SCR_W, cx.measure);
+        let root = layout.items.iter().position(|item| item.slot == Slot::CrumbRoot).unwrap_or(0);
+        HeaderRow::new(page, layout, vec![(CRUMB_ELEM, root)])
     }
 
-    /// The crumb's root plate at `scroll` (the row scrolls away with the page).
-    fn crumb_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>, scroll: f32) -> Rect {
-        let mut plate = self.crumb(cx).1.root_plate;
-        plate.y -= scroll;
-        plate
+    /// `row` as this page's header focus group, at its scroll.
+    fn header_focus<'a>(&self, row: &'a HeaderRow) -> HeaderFocus<'a> {
+        row.focus(self.entry, CRUMB_GROUP, (self.scroll.pos, self.scroll_target), content_clip())
     }
 
-    /// The page's title row: "<Library> › Recommended", the same crumb the Collections page has.
+    /// The page's title row: "<Library> › Recommended".
     pub(super) fn draw_title<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
-        let (crumb, mut layout) = self.crumb(f.cx);
-        for rect in [&mut layout.root_text, &mut layout.root_plate, &mut layout.glyph, &mut layout.page_text, &mut layout.page_plate] {
-            rect.y -= self.scroll.pos;
-        }
-        let focused = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == CRUMB_ELEM);
-        crumb.draw(f.painter.alpha(f.page_alpha), &layout, focused);
+        self.header(f.cx).draw(f.painter.alpha(f.page_alpha), self.scroll.pos, &self.header_capsules,
+            self.header_pop.scale_with(0, f.press.scale), None);
     }
 
     fn library_title<H: LibraryLike>(cx: &Cx<'_, H>) -> String {
@@ -997,7 +1008,7 @@ impl RecommendedScreen {
             }
             Readout::Empty => {
                 let caption = std::ffi::CString::new(plx_platform::i18n::msg::recommended_page_empty()).unwrap_or_default();
-                let frame = Rect::new(MARGIN_X, CONTENT_TOP + TITLE_BLOCK_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + TITLE_BLOCK_H) - MARGIN_Y);
+                let frame = Rect::new(MARGIN_X, CONTENT_TOP + plx_ui::page_header::BLOCK_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + plx_ui::page_header::BLOCK_H) - MARGIN_Y);
                 plx_ui::widgets::StatusOverlay::new(frame, &caption, plx_ui::widgets::StatusKind::Empty)
                     .phase(f.cx.tick.ms).draw_measured(&env, f.painter.alpha(f.page_alpha), f.cx.measure);
             }
@@ -1077,6 +1088,8 @@ impl LogicalState for RecommendedScreen {
         });
         c.bool(self.ground_seeded);
         self.ground.write_motion(c);
+        self.header_capsules.write_motion(c);
+        self.header_pop.write_motion(c);
         PageMemory::Library(self.page_memory()).write(c);
         c.seq(self.viewports.len());
         for viewport in &self.viewports { viewport.write(c); }

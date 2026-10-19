@@ -443,12 +443,14 @@ impl LibraryMenu {
             #[cfg(test)] draft_rebuilds: 0,
         }
     }
-    /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width`]), hung off the
-    /// anchor's left edge and pulled back so the right edge stays inside the keep-out.
+    /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
+    /// rows, never narrower than the control's focused pill), hung off the anchor's left edge and
+    /// pulled back so the right edge stays inside the keep-out.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
+        let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
-        let mut width = self.form.table.menu_panel_width(measure);
+        let pill = Rect::new(x, y, w, h).scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+        let mut width = self.form.table.menu_panel_width_from(measure, pill);
         if self.kind == LibraryMenuKind::Sources {
             width = width.max(SOURCES_W);
             // The board hangs the list at x 330 under the names, whatever "+N"'s own x is.
@@ -1318,6 +1320,28 @@ mod tests {
             "the page's control is lifted into the menu");
         let more = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::Sources, None));
         assert_eq!(<LibraryMenu as Screen<HostFixture>>::opener(&more), None, "the +N list keeps its +N lit");
+    }
+
+    /// **The panel is never narrower than the control's pill** (the Watchlist's menu hangs by the
+    /// same rule, `TableView::menu_panel_width_from`): a wide control, here 400 px, gets a panel as
+    /// wide as its focused pill, and the right edge still ends on the header's text edge.
+    #[test]
+    fn the_sort_filter_panel_is_never_narrower_than_its_controls_pill() {
+        let _guard = plx_base::testlock::serial();
+        let arg = LibraryMenuArg {
+            host: plx_machine::machine::InstanceId(8),
+            target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
+            kind: LibraryMenuKind::SortFilter,
+            anchor: [1371.0f32.to_bits(), 148.0f32.to_bits(), 400.0f32.to_bits(), 56.0f32.to_bits()],
+            folded: Vec::new(),
+            opener: Some((EntryId(3), 5)),
+        };
+        let mut menu = LibraryMenu::new(EntryId(7), arg);
+        menu.apply_draft(filter_draft(false, None, true));
+        let frame = menu.frame(&FixtureMeasure);
+        let pill = 400.0 * plx_ui::widgets::CTRL_FOCUS_SCALE;
+        assert!(frame.w >= pill, "the panel {} is narrower than its control's pill {pill}", frame.w);
+        assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
     }
 
     include!("menu_contract_tests.rs");

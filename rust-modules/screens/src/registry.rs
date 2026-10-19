@@ -2284,6 +2284,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::library::SHAPE[5],
     crate::library::SHAPE[6],
     crate::library::SHAPE[7],
+    crate::library::SHAPE[8],
+    crate::library::SHAPE[9],
     crate::library::menu::SHAPE[0],
     crate::library::menu::SHAPE[1],
     crate::account_menu::SHAPE,
@@ -2458,7 +2460,13 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Library shelf removal: `LibraryScreen` and its `Layout` drop the hub-shelf fields (the shelves are
 // `RecommendedScreen`'s alone), so both shape strings move. The replay fixtures that open the
 // Library need re-recording against it; the previous pin was 0xff36_edc2_57ab_505a.
-const SCREEN_SHAPES_PIN: u64 = 0x2560_8275_1136_934c;
+// Header-row motion (F2): the page header is one component with the top bar's motion. Each page
+// that wears it (`LibraryScreen` -- the Library and Collections page, `RecommendedScreen`,
+// `WatchlistScreen`) holds the row's `TabStrip` (the focus capsule and the selection plate) and a
+// one-spring `CtlPop`, in its canon (`write_motion`) and its shape string; `LibraryScreen::SHAPE`
+// gains two entries, appended (`SCREEN_SHAPES` lists both). One bump; the three replay fixtures were
+// re-recorded against it; the previous pin was 0x2560_8275_1136_934c.
+const SCREEN_SHAPES_PIN: u64 = 0xbd4f_cd3e_ff97_a15f;
 
 #[cfg(test)]
 mod arg_tests {

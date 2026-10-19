@@ -88,7 +88,7 @@ fn values_are_regular_weight_white_and_labels_are_65_percent() {
     let _g = plx_base::testlock::serial();
     let h = header("Title");
     let l = h.layout(1920.0, &Fixed);
-    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, false));
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, None));
     let value = runs.iter().find(|r| r.text == "Title").expect("the sort value is drawn");
     assert!(!value.bold, "no bold anywhere in the row");
     assert_eq!(value.ink, [1.0, 1.0, 1.0, 1.0], "values at 100% white");
@@ -108,7 +108,7 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     let (readout, collections) = (l.items[3].text, l.items[4].text);
     assert_eq!(collections.x - (readout.x + readout.w), READOUT_GAP);
     assert_eq!(READOUT_GAP, 64.0);
-    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, false));
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, None));
     let run = runs.iter().find(|r| r.text == "24 of 27").unwrap();
     assert_eq!(run.ink, theme::COUNT_FILTERED_INK);
     assert_eq!(run.ink[3], 0.5);
@@ -178,7 +178,7 @@ const DT: f32 = 1.0 / 60.0;
 
 /// The rounded rects one recording draw of the row paints, in paint order. The selection plate is
 /// exactly [`HEIGHT`] tall (it never scales); the focus capsule wears the pop, so it is taller.
-fn rrects(page: &PageHeader, layout: &HeaderLayout, capsules: &TabStrip, pop: &CtlPop<1>, lifted: bool) -> Vec<Rect> {
+fn rrects(page: &PageHeader, layout: &HeaderLayout, capsules: &TabStrip, pop: &CtlPop<1>, lifted: Option<Lifted>) -> Vec<Rect> {
     crate::draw_census::capture(|| page.draw(Painter::recording(), layout, capsules, pop.scale_with(0, 0.0), lifted))
         .into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
 }
@@ -202,14 +202,14 @@ fn the_focus_capsule_travels_between_items_and_never_backwards() {
     let layout = page.layout(1920.0, &Fixed);
     let (mut capsules, mut pop) = settled(&layout, -1, 0);
     let (from, to) = (layout.items[0].plate.cx(), layout.items[1].plate.cx());
-    let at_rest = focus_capsule(&rrects(&page, &layout, &capsules, &pop, false)).expect("a focused item wears the capsule");
+    let at_rest = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("a focused item wears the capsule");
     assert!((at_rest.cx() - from).abs() < 0.5, "settled on item 0");
     assert!((at_rest.h / HEIGHT - crate::widgets::CTRL_FOCUS_SCALE).abs() < 0.001, "the capsule wears the control pop");
 
     let mut path = Vec::new();
     for _ in 0..90 {
         PageHeader::step(&layout, -1, 1, &mut capsules, &mut pop, DT);
-        path.push(focus_capsule(&rrects(&page, &layout, &capsules, &pop, false)).expect("stays drawn").cx());
+        path.push(focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("stays drawn").cx());
     }
     assert!(path.windows(2).all(|w| w[1] >= w[0] - 0.01), "never backwards: {path:?}");
     assert!(path.iter().any(|x| *x > from + 4.0 && *x < to - 4.0), "a frame between the two items: {path:?}");
@@ -227,16 +227,16 @@ fn the_selection_plate_lands_on_the_new_item_the_first_frame() {
     let layout = page.layout(1920.0, &Fixed);
     let (mut capsules, mut pop) = settled(&layout, 0, 0);
     let (old, new) = (layout.items[0].plate, layout.items[1].plate);
-    let rects = rrects(&page, &layout, &capsules, &pop, false);
+    let rects = rrects(&page, &layout, &capsules, &pop, None);
     assert_eq!(selection_plate(&rects).map(|r| r.x), Some(old.x), "the plate marks item 0");
 
     let mut travelling = capsules;
     PageHeader::step(&layout, 1, 1, &mut capsules, &mut pop, DT);
-    let plate = selection_plate(&rrects(&page, &layout, &capsules, &pop, false)).expect("the plate stays drawn");
+    let plate = selection_plate(&rrects(&page, &layout, &capsules, &pop, None)).expect("the plate stays drawn");
     assert_eq!((plate.x, plate.w), (new.x, new.w), "landed on item 1 in one frame");
 
     travelling.update(1, 1, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Travels, DT);
-    let glide = selection_plate(&rrects(&page, &layout, &travelling, &pop, false)).expect("drawn");
+    let glide = selection_plate(&rrects(&page, &layout, &travelling, &pop, None)).expect("drawn");
     assert!(glide.x < new.x - 1.0, "the contrast: a Travels plate is still on its way ({} < {})", glide.x, new.x);
 }
 
@@ -247,10 +247,31 @@ fn a_lifted_control_wears_no_focus_capsule_but_the_selection_plate_stays() {
     let page = header("Title");
     let layout = page.layout(1920.0, &Fixed);
     let (capsules, pop) = settled(&layout, 0, 3);
-    let on = rrects(&page, &layout, &capsules, &pop, false);
-    let off = rrects(&page, &layout, &capsules, &pop, true);
+    let on = rrects(&page, &layout, &capsules, &pop, None);
+    let lifted = |lift| Some(Lifted { item: 3, lift });
+    let off = rrects(&page, &layout, &capsules, &pop, lifted(Lift::Plain));
     assert!(focus_capsule(&on).is_some() && focus_capsule(&off).is_none());
     assert_eq!(selection_plate(&on), selection_plate(&off));
+}
+
+/// The two ways a menu leaves a lifted control: `Plain` keeps its label (the Library's Sort &
+/// Filter is plain text over its open panel), `Away` draws none (the Watchlist's menu draws the
+/// only copy, as the morph's face).
+#[test]
+fn a_lifted_control_keeps_or_loses_its_label_as_the_page_asks() {
+    let page = header("Title");
+    let layout = page.layout(1920.0, &Fixed);
+    let (capsules, pop) = settled(&layout, 0, 3);
+    let words = |lifted: Option<Lifted>| crate::draw_census::capture_text(|| {
+        page.draw(Painter::recording(), &layout, &capsules, pop.scale_with(0, 0.0), lifted)
+    }).into_iter().map(|(text, _)| text).collect::<Vec<_>>();
+    let kept = words(None);
+    assert!(kept.iter().any(|t| t == "Collections"), "{kept:?}");
+    let plain = words(Some(Lifted { item: 3, lift: Lift::Plain }));
+    assert!(plain.iter().any(|t| t == "Collections"), "Plain keeps the label: {plain:?}");
+    let away = words(Some(Lifted { item: 3, lift: Lift::Away }));
+    assert!(!away.iter().any(|t| t == "Collections"), "Away leaves it to the menu: {away:?}");
+    assert_eq!(away.len() + 3, kept.len(), "only that item's label, separator and value went");
 }
 
 /// **A breadcrumb is a configuration of the row**: the placement is [`Crumb::layout`]'s, so the
@@ -338,7 +359,58 @@ fn the_header_focus_walks_its_stops_without_wrapping_and_reconciles_to_a_stop() 
     assert_eq!(focus.reconcile(key(11)), Some(key(11)));
     assert_eq!(focus.reconcile(key(99)), None, "an element that is no stop falls back to the page's seat");
     assert_eq!(focus.reconcile(FocusKey { entry: EntryId(8), elem: 11 }), None, "another page's key is not ours");
+    assert_eq!((focus.reveal(11), focus.reveal(99)), (Some(0.0), None), "reaching a stop scrolls the page to its top");
     let drawn = focus.place(11, At::Drawn).unwrap().rect;
     let target = focus.place(11, At::SpringTarget).unwrap().rect;
     assert_eq!(drawn.y - target.y, 20.0, "the row rides the page's scroll: drawn 0, target 20 is 20 px apart");
+}
+
+/// **A surface above the page holds the row's motion.** While a Sort & Filter menu is up the
+/// engine's focus is on the menu's own rows (another entry), and the control is lifted out of the
+/// page. The row's capsule must neither fade nor close its pop meanwhile, or the menu's closing
+/// morph would hand over to a capsule that has to fade back in; focus leaving the row for the
+/// page's own content (or nowhere) still closes it.
+#[test]
+fn a_surface_above_the_page_holds_the_rows_motion_but_focus_leaving_it_closes_it() {
+    const ENTRY: EntryId = EntryId(7);
+    let page = header("Title");
+    let layout = page.layout(1920.0, &Fixed);
+    let row = row_of(header("Title"), layout.clone(), &[(10, 0), (11, 1)]);
+    let alpha_after = |current: Option<FocusKey<u32>>| {
+        let (mut capsules, mut pop) = settled(&layout, -1, 1);
+        for _ in 0..60 { row.step(ENTRY, current, &mut capsules, &mut pop, DT); }
+        focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).map(|r| r.h / HEIGHT)
+    };
+    let held = alpha_after(Some(FocusKey { entry: EntryId(8), elem: 0 }));
+    assert_eq!(held.map(|h| (h * 1000.0).round()), Some((crate::widgets::CTRL_FOCUS_SCALE * 1000.0).round()),
+        "the menu's rows hold focus: the capsule stays up, at its pop");
+    assert_eq!(alpha_after(Some(FocusKey { entry: ENTRY, elem: 11 })).map(|h| (h * 1000.0).round()), held.map(|h| (h * 1000.0).round()),
+        "focus on the row's own stop is the same picture");
+    assert_eq!(alpha_after(Some(FocusKey { entry: ENTRY, elem: 99 })), None, "focus on the page's content closes the capsule");
+    assert_eq!(alpha_after(None), None, "focus nowhere closes it too");
+}
+
+/// **The row's motion is decoration, not layout.** A page-freeze holds a pushed page's snapshot
+/// until its LAYOUT stops moving so the first posters can settle behind it; the header's capsules
+/// and pop move nothing but themselves, so they wake the present gate (`page_moving`) and never
+/// hold that snapshot (`page_layout_moving`): a warm Library push read as held for its whole
+/// length when the selection plate's landing counted.
+#[test]
+fn the_rows_motion_wakes_the_gate_but_never_holds_a_page_freeze() {
+    let page = header("Title");
+    let layout = page.layout(1920.0, &Fixed);
+    let (mut capsules, mut pop) = (TabStrip::new(), CtlPop::<1>::new());
+    let mut frames = 0;
+    let mut layout_moved = false;
+    let mut page_moved = false;
+    for _ in 0..90 {
+        plx_machine::idle::frame_begin(DT);
+        PageHeader::step(&layout, 0, 1, &mut capsules, &mut pop, DT);
+        layout_moved |= plx_machine::idle::page_layout_moving();
+        page_moved |= plx_machine::idle::page_moving();
+        frames += 1;
+    }
+    assert_eq!(frames, 90);
+    assert!(page_moved, "the capsule's travel is visible motion: it wakes the present gate");
+    assert!(!layout_moved, "and it is decoration: it never counts toward the page's layout motion");
 }

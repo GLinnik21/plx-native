@@ -152,7 +152,8 @@ fn the_crumb_names_the_library_the_header_strip_names() {
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = collections_page();
     run(&mut page, &fixture, ScreenEvent::Mount);
-    let (crumb, _) = page.header.as_ref().and_then(|h| h.crumb.as_ref()).expect("the crumb");
+    let header = page.header.as_ref().expect("the row is built");
+    let crumb = header.page.spec().crumb.as_ref().expect("the crumb");
     assert_eq!(crumb.root, "Movies", "the library's own name, not a hard-coded 'Films'");
 }
 

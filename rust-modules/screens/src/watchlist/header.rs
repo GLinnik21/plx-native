@@ -4,19 +4,19 @@
 //! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
 //! [`READOUT_GAP`] before the control) and the one control, "Sort & Filter · <value> ▾".
 //!
-//! Labels are 65% white, the value 100% white, both regular; the focused control is the accent pill
-//! at [`CTRL_FOCUS_SCALE`]. A control the Sort & Filter menu has lifted is drawn by the menu
-//! ([`Row::draw_face`]), so the page's row leaves it out ([`Row::draw`] with `lifted`).
+//! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
+//! travels, the pop) and focus group are the ui's, the same ones the Library, Collections and
+//! Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the menu as the
+//! morph's opener face ([`Row::draw_face`], which is [`PageHeader::draw_face`]: one label renderer
+//! for the row and for the face), so the page's pass leaves it out ([`Row::draw`] with `lifted`).
 //!
 //! The row is built here as a value ([`Row`]) from the measure, the summary and the read-out, and
 //! every consumer (paint, the focus rect, the menu's anchor) reads that one value.
 use plx_machine::machine::Measure;
-use plx_ui::icons::{self, Icon};
-use plx_ui::page_header::{self, HeaderItem, HeaderLayout, ItemRect, PageHeader, PageHeaderSpec, Slot};
+use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, Lift, PageHeader, PageHeaderSpec, Slot};
 use plx_ui::theme;
-use plx_ui::widgets::CTRL_FOCUS_SCALE;
+use plx_ui::widgets::{CtlPop, TabStrip, CTRL_FOCUS_SCALE};
 use plx_ui::{Painter, Rect};
-use std::ffi::CString;
 
 /// The count the page holds: the whole list, or what a Type / Show filter leaves of it. Only the
 /// narrowed form is ever drawn (the Library's rule: "312 of 1,284" while filtered, nothing else).
@@ -54,14 +54,10 @@ pub const BLOCK_H: f32 = page_header::BLOCK_H;
 /// The grid's right edge: the row's right text edge.
 pub const GRID_RIGHT: f32 = page_header::TEXT_X1;
 
-/// The focus ring size of the control: the label size the glyph chevron is drawn at.
-const FOLD_SIZE: f32 = 22.0;
-
-/// The row laid out: the widget, its geometry in document space (the row's own top, 148) and which
-/// laid-out item is the Sort & Filter control.
+/// The row laid out: the ui's [`HeaderRow`] (its one stop is the Sort & Filter control) and which
+/// laid-out item that is.
 pub struct Row {
-    page: PageHeader,
-    layout: HeaderLayout,
+    row: HeaderRow,
     sort: usize,
 }
 
@@ -85,16 +81,16 @@ impl Row {
             focusable: true,
             ..Default::default()
         });
-        let page = PageHeader::new(PageHeaderSpec { left, overflow: 0, right }, &[], measure);
+        let page = PageHeader::new(PageHeaderSpec { left, right, ..Default::default() }, &[], measure);
         let layout = page.layout(plx_ui::consts::SCR_W, measure);
         let sort = layout.items.iter().position(|it| matches!(it.slot, Slot::Right(_)) && it.focusable)
             .unwrap_or(layout.items.len().saturating_sub(1));
-        Self { page, layout, sort }
+        Self { row: HeaderRow::new(page, layout, vec![(super::page::PILL_ELEM, sort)]), sort }
     }
 
     /// The control's item, in document space.
     fn control(&self) -> ItemRect {
-        self.layout.items[self.sort]
+        self.row.layout.items[self.sort]
     }
 
     /// The control's plate (its focus rect and hit target), in document space.
@@ -108,70 +104,45 @@ impl Row {
         self.plate().scaled(CTRL_FOCUS_SCALE)
     }
 
+    /// The row as one focus group (`id`), for the page's declaration of its header section.
+    pub fn focus(&self, entry: plx_machine::machine::EntryId, id: plx_machine::machine::GroupId) -> HeaderFocus<'_> {
+        self.row.focus(entry, id, (0.0, 0.0), Rect::FULL)
+    }
+
     /// The title's plate, in document space.
     #[cfg(test)]
     pub fn title_plate(&self) -> Rect {
-        self.layout.items[0].plate
+        self.row.layout.items[0].plate
     }
 
     /// The text left edge of the right cluster (the read-out, else the control).
     #[cfg(test)]
     pub fn cluster_left(&self) -> f32 {
-        self.layout.items.iter().filter(|it| matches!(it.slot, Slot::Right(_))).map(|it| it.text.x).fold(f32::MAX, f32::min)
+        self.row.layout.items.iter().filter(|it| matches!(it.slot, Slot::Right(_))).map(|it| it.text.x).fold(f32::MAX, f32::min)
     }
 
     /// The laid-out items' text and plate rects, for geometry tests.
     #[cfg(test)]
     pub fn items(&self) -> &[ItemRect] {
-        &self.layout.items
+        &self.row.layout.items
     }
 
-    /// The row `dy` px from the document origin (a scrolled page: minus the scroll).
-    fn shifted(&self, dy: f32) -> HeaderLayout {
-        let mut layout = self.layout.clone();
-        for it in &mut layout.items {
-            it.text.y += dy;
-            it.plate.y += dy;
-        }
-        layout
+    /// One frame of the row's motion on the page's `capsules` and `pop`, from the engine's
+    /// `current` focus and the page's `entry` ([`HeaderRow::step`]).
+    pub fn step(&self, entry: plx_machine::machine::EntryId, current: Option<plx_machine::machine::FocusKey<u32>>, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
+        self.row.step(entry, current, capsules, pop, dt);
     }
 
-    /// Paint the row at `dy` from the document origin: the title, the read-out, and the control
-    /// (unless `lifted`: the Sort & Filter menu draws its only copy).
-    pub fn draw(&self, p: Painter, dy: f32, pill_focused: bool, lifted: bool) {
-        let mut layout = self.shifted(dy);
-        let focus = (pill_focused && !lifted).then_some(self.sort);
-        if lifted {
-            layout.items.remove(self.sort);
-        }
-        self.page.draw(p, &layout, focus);
+    /// Paint the row `dy` px from the document origin (a scrolled page: minus the scroll): the title, the read-out and the control, which the Sort & Filter menu has
+    /// `lifted` out of the page when it is up (the menu draws the only copy).
+    pub fn draw(&self, p: Painter, dy: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
+        self.row.draw(p, -dy, capsules, pop, lifted.then_some((super::page::PILL_ELEM, Lift::Away)));
     }
 
     /// The control as the menu's morph opener face, label only (no plate of its own: the morph
     /// draws the plate), placed so its plate is `anchor` less the focus scale.
     pub fn draw_face(&self, p: Painter, anchor: Rect, focused: bool) {
-        let item = self.control();
-        let plate = anchor.scaled(1.0 / CTRL_FOCUS_SCALE);
-        let (dx, dy) = (plate.x - item.plate.x, plate.y - item.plate.y);
-        let Some(spec) = self.page.spec().right.get(match item.slot { Slot::Right(i) => i, _ => 0 }) else { return };
-        let (rest, strong) = if focused {
-            (plx_ui::ACCENT_INK, plx_ui::ACCENT_INK)
-        } else {
-            (theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK)
-        };
-        let cy = item.text.y + dy + item.text.h * 0.5;
-        let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, cy);
-        let mut x = item.text.x + dx;
-        let run = |p: Painter, s: &str, x: f32, ink: [f32; 4]| -> f32 {
-            CString::new(s).map_or(0.0, |c| p.text(c.as_ptr(), x, y, theme::size::BODY, ink, 0, 0))
-        };
-        x += run(p, &spec.label, x, rest);
-        if let Some(value) = spec.value.as_deref() {
-            x += run(p, " \u{b7} ", x, rest);
-            run(p, value, x, strong);
-        }
-        let right = item.text.x + dx + item.text.w;
-        icons::draw(p, Icon::ChevronDown, Rect::new(right - FOLD_SIZE, item.text.y + dy + (item.text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), strong);
+        self.row.draw_face(p, super::page::PILL_ELEM, anchor.scaled(1.0 / CTRL_FOCUS_SCALE), focused);
     }
 }
 

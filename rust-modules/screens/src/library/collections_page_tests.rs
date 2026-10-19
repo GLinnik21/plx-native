@@ -3,6 +3,19 @@
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_platform::i18n::{self, language_on_this_thread_for_test, Language, Preference};
+use plx_ui::page_header::{self, HeaderLayout, ItemRect, PageHeader, Slot};
+use plx_machine::machine::Measure;
+
+/// The header row the page declares, laid out at the screen's width by the shared widget.
+fn row(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &str, measure: &dyn Measure) -> (PageHeaderSpec, HeaderLayout) {
+    let page = PageHeader::new(header_spec(library, kind, declared_sorts, sort_value), &[], measure);
+    let layout = page.layout(1920.0, measure);
+    (page.spec().clone(), layout)
+}
+
+fn part(layout: &HeaderLayout, slot: Slot) -> Option<ItemRect> {
+    layout.items.iter().copied().find(|item| item.slot == slot)
+}
 
 fn films(n: i64) -> TileFacts<'static> {
     TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n }
@@ -20,15 +33,13 @@ fn sort_is_hidden_unless_the_server_declares_two_or_more() {
     assert!(sort_visible(2));
     assert!(sort_visible(5));
     let m = ShippedMeasure;
-    assert!(header("Movies", SecKind::Movie, 1, "Title", 1920.0, &m).sort.is_none());
-    let h = header("Movies", SecKind::Movie, 2, "Title", 1920.0, &m);
-    assert!(h.sort.is_some());
+    assert!(part(&row("Movies", SecKind::Movie, 1, "Title", &m).1, Slot::Right(0)).is_none());
+    assert!(part(&row("Movies", SecKind::Movie, 2, "Title", &m).1, Slot::Right(0)).is_some());
 }
 
 #[test]
 fn the_sort_control_ends_at_the_header_row_edge() {
-    let h = header("Movies", SecKind::Movie, 2, "Title", 1920.0, &ShippedMeasure);
-    let sort = h.sort.unwrap();
+    let sort = part(&row("Movies", SecKind::Movie, 2, "Title", &ShippedMeasure).1, Slot::Right(0)).unwrap();
     assert!(sort.focusable);
     // Text edge 1771 less the fold glyph (10 gap + 22): the run's own end is the row's edge.
     assert!((sort.text.x + sort.text.w - 1771.0).abs() < 0.01);
@@ -45,14 +56,17 @@ fn the_section_sync_does_not_run_on_the_collections_page() {
 fn the_crumb_root_is_the_librarys_own_name_then_collections() {
     let _g = language_on_this_thread_for_test(Preference::from_tag("en"));
     let m = ShippedMeasure;
-    let h = header("Movies", SecKind::Movie, 1, "Title", 1920.0, &m);
-    assert_eq!((h.crumb.root.as_str(), h.crumb.page.as_str()), ("Movies", "Collections"));
-    assert_eq!(header("Anime Films", SecKind::Show, 1, "Title", 1920.0, &m).crumb.root, "Anime Films");
+    let (spec, layout) = row("Movies", SecKind::Movie, 1, "Title", &m);
+    let crumb = spec.crumb.expect("the Collections page's row is a crumb");
+    assert_eq!((crumb.root.as_str(), crumb.page.as_str()), ("Movies", "Collections"));
+    let root_of = |library, kind| header_spec(library, kind, 1, "Title").crumb.unwrap().root;
+    assert_eq!(root_of("Anime Films", SecKind::Show), "Anime Films");
     // Only a directory with no section to name falls back to what the library holds.
-    assert_eq!(header("", SecKind::Movie, 1, "Title", 1920.0, &m).crumb.root, "Films");
-    assert_eq!(header("", SecKind::Show, 1, "Title", 1920.0, &m).crumb.root, "Shows");
-    assert_eq!(h.crumb_layout.root_text.x, 96.0);
-    assert!(h.crumb_layout.page_plate.x > h.crumb_layout.root_plate.x + h.crumb_layout.root_plate.w - 8.0);
+    assert_eq!(root_of("", SecKind::Movie), "Films");
+    assert_eq!(root_of("", SecKind::Show), "Shows");
+    let (root, name) = (part(&layout, Slot::CrumbRoot).unwrap(), part(&layout, Slot::CrumbPage).unwrap());
+    assert_eq!(root.text.x, 96.0);
+    assert!(name.plate.x > root.plate.x + root.plate.w - 8.0);
 }
 
 #[test]
@@ -62,8 +76,9 @@ fn the_crumb_and_the_sort_control_never_meet_in_any_shipped_language() {
     for l in Language::SHIPPED {
         let _g = language_on_this_thread_for_test(Preference::from_tag(l.tag()));
         for kind in [SecKind::Movie, SecKind::Show] {
-            let h = header("Movies", kind, 2, "Title added (newest first)", 1920.0, &m);
-            let gap = h.sort.unwrap().plate.x - h.crumb_layout.right();
+            let (_, layout) = row("Movies", kind, 2, "Title added (newest first)", &m);
+            let name = part(&layout, Slot::CrumbPage).unwrap().plate;
+            let gap = part(&layout, Slot::Right(0)).unwrap().plate.x - (name.x + name.w);
             if gap < page_header::CLUSTER_GAP { bad.push(format!("{}: {gap:.0}px between crumb and Sort", l.tag())); }
         }
     }

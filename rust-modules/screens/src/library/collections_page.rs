@@ -8,7 +8,7 @@
 //!
 //! * the header row: a [`Crumb`] (the library's own name as the link, a centred chevron, "Collections" on the selected
 //!   plate) and, only when the server declares two or more sorts, one "Sort . value" control at
-//!   the right edge ([`header`], read by `header.rs`);
+//!   the right edge ([`header_spec`], built into the shared `PageHeader` by `header.rs`);
 //! * which of the library page's behaviours do not run here ([`syncs_section`], read by
 //!   `LibraryScreen::sync`);
 //! * the tile: no count badge, and a caption of "N films" / "N shows" under the focused tile (the
@@ -22,10 +22,9 @@ use super::Listing;
 use plx_data::browse::LibraryType;
 use plx_data::stores::browse::SecKind;
 use plx_platform::i18n::{msg, LocaleContext};
-use plx_ui::breadcrumb::{Crumb, CrumbLayout};
+use plx_ui::breadcrumb::Crumb;
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
-use plx_ui::page_header::{self, HeaderItem, HeaderLayout, PageHeader, PageHeaderSpec};
-use plx_machine::machine::Measure;
+use plx_ui::page_header::{HeaderItem, PageHeaderSpec};
 
 /// A server that declares at least this many sorts for the listing gets the Sort control. PMS
 /// declares only `titleSort` for `type=18` (and no descending key), so the control is absent today
@@ -66,23 +65,13 @@ pub fn root_label(library: &str, kind: SecKind) -> String {
     }.to_owned()
 }
 
-/// The header row of the page: the crumb, and the Sort control's row when the server declares
-/// two or more sorts.
-pub struct Header {
-    pub crumb: Crumb,
-    pub crumb_layout: CrumbLayout,
-    /// The right-hand row (the Sort control, or nothing), laid out at the screen's width.
-    pub page: PageHeader,
-    pub layout: HeaderLayout,
-    /// The Sort control's laid-out rects, only when [`sort_visible`].
-    pub sort: Option<page_header::ItemRect>,
-}
-
-/// Build the header for the library named `library` (of `kind`) at `width`. `declared_sorts` is how many sorts the server declared
-/// for `type=18`; `sort_value` the one in force (its title).
-pub fn header(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &str, width: f32, measure: &dyn Measure) -> Header {
-    let crumb = Crumb::new(root_label(library, kind), msg::browse_kind_collections());
-    let crumb_layout = crumb.layout(measure);
+/// The header row of the page, as the declaration `plx_ui::page_header::PageHeader` lays out and
+/// paints: the crumb (the library's name as the link, the centred chevron, "Collections" on the
+/// selected plate) and the Sort control at the right edge when the server declares two or more
+/// sorts ([`sort_visible`]). `library` is the root word's source ([`root_label`]); `sort_value`
+/// the sort in force (its title). The row itself, its motion and its focus group are the ui's:
+/// this is the page's declaration of what is on it, and nothing else.
+pub fn header_spec(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &str) -> PageHeaderSpec {
     let right = if sort_visible(declared_sorts) {
         vec![HeaderItem {
             label: msg::browse_library_sort().to_owned(),
@@ -92,10 +81,7 @@ pub fn header(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &
             ..Default::default()
         }]
     } else { Vec::new() };
-    let page = PageHeader::new(PageHeaderSpec { left: Vec::new(), overflow: 0, right }, &[], measure);
-    let layout = page.layout(width, measure);
-    let sort = layout.items.first().copied();
-    Header { crumb, crumb_layout, page, layout, sort }
+    PageHeaderSpec { crumb: Some(Crumb::new(root_label(library, kind), msg::browse_kind_collections())), right, ..Default::default() }
 }
 
 /// The facts of one collection row the tile and its caption read.

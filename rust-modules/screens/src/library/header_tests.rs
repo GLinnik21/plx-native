@@ -231,6 +231,8 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     let (fixture, mut page, mut engine) = grid_page(2);
     let key = page.key(SORTFILTER);
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    // The pill is the row's motion: it fades in under the focused control over a few frames.
+    for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
     let pill = page.header.as_ref().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
     let drawn = |page: &LibraryScreen, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(&engine);
@@ -276,16 +278,20 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
 }
 
-/// One frame of the page: its `Tick`, then the header drawn at that moment. The focus pill (the
-/// one rounded rect taller than the 56 px plates, since it grows by `CTRL_FOCUS_SCALE`) is
-/// returned as its centre x; `None` when no pill is drawn.
-fn pill_centre_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Option<f32> {
+/// One frame of the page: its `Tick`, then the header drawn at that moment, as its rounded rects.
+fn header_rrects_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Vec<plx_ui::Rect> {
     fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
     let cx = fixture.cx(engine);
     let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
-    let pills: Vec<f32> = plx_ui::draw_census::capture(|| page.draw_header(&frame)).iter()
-        .filter(|(tag, rect)| *tag == 2 && rect.h > plx_ui::page_header::HEIGHT + 1.0 && rect.h < plx_ui::page_header::HEIGHT * 1.2)
-        .map(|(_, rect)| rect.cx()).collect();
+    plx_ui::draw_census::capture(|| page.draw_header(&frame)).into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
+}
+
+/// The focus pill (the one rounded rect taller than the 56 px plates, since it grows by
+/// `CTRL_FOCUS_SCALE`) after one frame, as its centre x; `None` when no pill is drawn.
+fn pill_centre_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Option<f32> {
+    let pills: Vec<f32> = header_rrects_after_a_frame(fixture, page, engine, ms).iter()
+        .filter(|rect| rect.h > plx_ui::page_header::HEIGHT + 1.0 && rect.h < plx_ui::page_header::HEIGHT * 1.2)
+        .map(|rect| rect.cx()).collect();
     assert!(pills.len() <= 1, "one focused control wears one pill: {pills:?}");
     pills.first().copied()
 }
@@ -318,4 +324,47 @@ fn the_header_focus_pill_travels_to_the_next_name_instead_of_jumping() {
     assert!(path.iter().any(|x| *x > from + 4.0 && *x < to - 4.0),
         "some frame draws the pill between the two names (it jumped): {path:?}");
     assert!((path.last().unwrap() - to).abs() < 1.0, "it comes to rest on the new name: {path:?}");
+}
+
+/// **Switching library keeps the row's motion** (owner: "pills have no transitions"; the screen
+/// holds the capsules, never the built row). OK on the name the pill sits on switches the library:
+/// the selection plate lands under the pill on that frame, and the pill neither restarts from the
+/// left, nor fades, nor moves; the row is rebuilt for the new library and its motion state is not.
+#[test]
+fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(3);
+    let current = page.view_section(&fixture.cx(&engine));
+    let other = page.libraries.iter().find(|(_, index)| Some(*index) != current).unwrap().0;
+    let (from, to) = (None, page.key(other));
+    engine.set(OWNER, to, Some(LIBRARY_GROUP), By::Dir);
+    fixture.step(&mut page, &mut engine, ScreenEvent::FocusMoved { from, to, by: By::Dir });
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..90 { ms += 16; rest = pill_centre_after_a_frame(&fixture, &mut page, &mut engine, ms); }
+    let rest = rest.expect("a focused name wears the pill");
+    let plate = page.header.as_ref().unwrap().plate(other).unwrap();
+    assert!((rest - plate.cx()).abs() < 0.5, "settled under the name that will be picked");
+    let selected_under = |rects: &[plx_ui::Rect]| rects.iter().any(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01 && (r.cx() - plate.cx()).abs() < 1.0);
+    assert!(!selected_under(&header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16)), "premise: the old library wears the plate");
+
+    let motion = |page: &LibraryScreen| {
+        let mut canon = plx_machine::machine::Canon::new();
+        page.header_capsules.write_motion(&mut canon);
+        page.header_pop.write_motion(&mut canon);
+        canon.finish()
+    };
+    let before = motion(&page);
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(other));
+    assert!(page.switched, "OK switched the library");
+    assert_eq!(motion(&page), before, "the switch itself touches no motion state: the row is rebuilt, its capsules are not");
+    for frame in 1..=30 {
+        let rects = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16 * (frame + 1));
+        let pill = rects.iter().filter(|r| r.h > plx_ui::page_header::HEIGHT + 1.0).map(|r| r.cx()).collect::<Vec<_>>();
+        assert_eq!(pill.len(), 1, "frame {frame}: the pill stays drawn through the switch: {rects:?}");
+        assert!((pill[0] - rest).abs() < 0.5, "frame {frame}: and stays where it was ({} vs {rest})", pill[0]);
+        // The fixture's directory never commits the switch, so the plate returns to the library
+        // on view once the grid's fade has run; while the switch is pending it is under the name.
+        assert!(frame > 4 || selected_under(&rects), "frame {frame}: the plate is under the picked name from the first frame");
+    }
 }

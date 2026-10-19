@@ -289,9 +289,15 @@ impl PageHeader {
     /// behind the accent one. `selected` and `focused` are indices into `layout.items` (`-1`: none;
     /// focus off the row closes the pop). The span a capsule follows is the item's plate, the same
     /// geometry the row is laid out and hit-tested with.
+    ///
+    /// **Decoration, not layout** ([`plx_machine::idle::decorative`]): the capsules and the pop move
+    /// nothing but themselves, so they wake the present gate and never hold a pushed page's
+    /// snapshot, which the page-freeze keeps until the page's LAYOUT stops moving.
     pub fn step(layout: &HeaderLayout, selected: i32, focused: i32, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
-        capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Lands, dt);
-        pop.step((focused >= 0).then_some(0), dt);
+        plx_machine::idle::decorative(|| {
+            capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Lands, dt);
+            pop.step((focused >= 0).then_some(0), dt);
+        });
     }
 
     /// The `(focus, selected)` ink mixes of item `r`: how much of its plate the capsules cover. A
@@ -307,16 +313,17 @@ impl PageHeader {
     /// the top bar's own [`TabStrip`]), then the `›` and every label inked by how much of its plate
     /// the capsules cover, so a label brightens as the capsule arrives and not before. `pop` is the
     /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is a
-    /// control a menu has taken out of the page (`DrawFrame::lifted`): it wears no focus capsule,
-    /// and its label stays plain text.
-    pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: bool) {
-        capsules.draw(p, layout.top(), HEIGHT, TabGround::Bare { pop, focus: !lifted });
+    /// control a menu has taken out of the page (`DrawFrame::lifted`): the focus capsule is gone
+    /// from the row, and the control's label stays as plain text or goes ([`Lift`]).
+    pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>) {
+        capsules.draw(p, layout.top(), HEIGHT, TabGround::Bare { pop, focus: lifted.is_none() });
         if let Some(glyph) = layout.glyph {
             icons::draw(p, Icon::Chevron, glyph, breadcrumb::GLYPH_INK);
         }
-        for r in &layout.items {
+        for (index, r) in layout.items.iter().enumerate() {
+            if lifted == Some(Lifted { item: index, lift: Lift::Away }) { continue; }
             let face = self.face(r.slot);
-            let mix = self.mixes(capsules, r, &face, lifted);
+            let mix = self.mixes(capsules, r, &face, lifted.is_some());
             self.draw_face_at(p, r, &face, (0.0, 0.0), mix);
         }
     }
@@ -365,6 +372,24 @@ impl PageHeader {
     }
 }
 
+/// What a menu that has taken a control out of the row leaves of it on the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lift {
+    /// The label stays, as plain text at its resting ink (the Library's Sort & Filter over its
+    /// open panel); only the focus capsule under it is gone.
+    Plain,
+    /// The label goes too: the menu draws the control's only copy as the morph's opener face
+    /// ([`PageHeader::draw_face`]), and a second one on the page would be a ghost beside it.
+    Away,
+}
+
+/// A control a menu has lifted out of the row: `item` is an index into `layout.items`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lifted {
+    pub item: usize,
+    pub lift: Lift,
+}
+
 /// What the paint reads of one item.
 struct Face<'a> {
     label: String,
@@ -410,22 +435,40 @@ impl HeaderRow {
         HeaderFocus { entry, group, layout: &self.layout, stops: &self.stops, selected: self.selected_stop(), scroll, clip }
     }
 
-    /// One frame of the row's motion on the screen's `capsules` and `pop`; `focused` is the
-    /// element holding focus (`None`: focus is elsewhere, or a menu has it).
-    pub fn step(&self, focused: Option<u32>, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
-        let focused = focused.and_then(|elem| self.stops.iter().position(|(stop, _)| *stop == elem))
+    /// One frame of the row's motion on the screen's `capsules` and `pop`, from the engine's
+    /// `current` focus and the page's own `entry`. Focus on one of the row's stops draws the
+    /// capsule there; focus anywhere else on the page (or nowhere) closes it. Focus on ANOTHER
+    /// entry is a surface over the page, a Sort & Filter menu on its own rows, with the control
+    /// lifted out of the row: the motion holds as it was, so the menu's closing morph hands over to
+    /// a capsule that is still up, not one that has to fade back in.
+    pub fn step(&self, entry: EntryId, current: Option<FocusKey<u32>>, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
+        if current.is_some_and(|key| key.entry != entry) { return; }
+        let focused = current.map(|key| key.elem)
+            .and_then(|elem| self.stops.iter().position(|(stop, _)| *stop == elem))
             .map_or(-1, |at| self.stops[at].1 as i32);
         PageHeader::step(&self.layout, self.page.selected(&self.layout), focused, capsules, pop, dt);
     }
 
+    /// The face of stop `elem` with its plate at `to` and no plate of its own: the opener face a
+    /// popover's morph carries while it grows out of the control (`focused`: the accent ink the
+    /// focused control wears). [`PageHeader::draw_face`] for a stop named by its element.
+    pub fn draw_face(&self, p: Painter, elem: u32, to: Rect, focused: bool) {
+        if let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) {
+            self.page.draw_face(p, &self.layout, *index, to, focused);
+        }
+    }
+
     /// Paint the row `scroll` px up from its document position (it scrolls away with its page).
-    pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
+    /// `lifted` is the element a menu has taken out of the row, and how ([`Lift`]).
+    pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<(u32, Lift)>) {
         let mut layout = self.layout.clone();
         for item in &mut layout.items {
             item.text.y -= scroll;
             item.plate.y -= scroll;
         }
         if let Some(glyph) = &mut layout.glyph { glyph.y -= scroll; }
+        let lifted = lifted.and_then(|(elem, lift)| self.stops.iter().find(|(stop, _)| *stop == elem)
+            .map(|(_, item)| Lifted { item: *item, lift }));
         self.page.draw(p, &layout, capsules, pop, lifted);
     }
 }
@@ -502,6 +545,13 @@ impl HeaderFocus<'_> {
             .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(elem, _)| elem);
         let elem = self.selected.or_else(nearest).unwrap_or(crate::dispatch::STRIP_BASE);
         FocusKey { entry: self.entry, elem }
+    }
+
+    /// The scroll a page rests at when focus lands on `elem`: 0 for a stop of the row (it stands
+    /// at the top of the document, so reaching it brings the page back to its top), `None` for
+    /// anything else.
+    pub fn reveal(&self, elem: u32) -> Option<f32> {
+        self.contains(elem).then_some(0.0)
     }
 
     /// `want` if it is a stop of the row, else `None` (the page falls back to where the key was

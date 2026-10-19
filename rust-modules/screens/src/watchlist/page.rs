@@ -279,6 +279,11 @@ struct Page {
     art_log: std::cell::RefCell<Vec<(bool, usize)>>,
     /// Moves whenever anything the sections read moves (`StackPage::revision`).
     rev: u64,
+    /// The header row's pills (the focus capsule, the selection plate under the title) and its
+    /// focus pop: the shared `PageHeader` motion, held by the page that wears the row and stepped
+    /// by the screen's tick.
+    header_capsules: plx_ui::widgets::TabStrip,
+    header_pop: plx_ui::widgets::CtlPop<1>,
 }
 
 impl Page {
@@ -646,16 +651,23 @@ impl<H: ContentLike> StackPage<H> for Page {
         (k == Sec::Items).then(caption::policy)
     }
 
-    fn plain_group(&self, _cx: &Cx<'_, H>, _k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
-        GroupSpec {
-            id,
-            kind: GroupKind::Free,
-            seat: Seat::First,
-            reachable: AxisMask::VERTICAL,
-            edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
-            extent,
-            len: 1,
-            elem: ElemKind::Bare,
+    /// The header section's group is the shared row's (`HeaderFocus::group_spec`: a Control row,
+    /// Left and Right stopping at its ends, Up and Down the page's links); the extent is where the
+    /// stack stands the section. The status section is not a header and keeps its own.
+    fn plain_group(&self, cx: &Cx<'_, H>, k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
+        let header = (k == Sec::Head).then(|| self.header_row(cx.measure));
+        match header.as_ref().and_then(|row| row.focus(self.entry, id).group_spec()) {
+            Some(spec) => GroupSpec { extent, ..spec },
+            None => GroupSpec {
+                id,
+                kind: GroupKind::Free,
+                seat: Seat::First,
+                reachable: AxisMask::VERTICAL,
+                edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                extent,
+                len: 1,
+                elem: ElemKind::Bare,
+            },
         }
     }
 
@@ -663,13 +675,12 @@ impl<H: ContentLike> StackPage<H> for Page {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
-                let on = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
                 // The row rides the page: its frame is the section's own top, scroll included.
                 // While the Sort & Filter menu is up the control is the menu's (its `opener`,
                 // lifted out of this pass): the menu draws the only copy, dissolving into its panel.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
                 let p = p.alpha(head_alpha(scroll));
-                self.header_row(f.measure).draw(p, r.y, on, lifted);
+                self.header_row(f.measure).draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
                     header::draw_dev_blocked(p, r.y);
@@ -746,7 +757,7 @@ impl WatchlistScreen {
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 
-    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,descending:bool,show:u32},tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]}}";
+    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,descending:bool,show:u32},tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]},header_capsules:TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}},header_pop:{sp:[Spring{pos:f32,vel:f32};1],focused:Option<u32>}}";
 
     /// A page over `rows` (a snapshot already ordered and filtered by `options`), landed. The
     /// entry is unset: mount with [`at_entry`](Self::at_entry).
@@ -773,6 +784,8 @@ impl WatchlistScreen {
             #[cfg(test)]
             art_log: Default::default(),
             rev: 0,
+            header_capsules: plx_ui::widgets::TabStrip::new(),
+            header_pop: plx_ui::widgets::CtlPop::new(),
         };
         page.rebuild();
         Self {
@@ -1025,6 +1038,7 @@ impl WatchlistScreen {
             self.page.ghosts.clear();
         }
         self.release_count_hold();
+        self.page.header_row(cx.measure).step(self.page.entry, cx.focus.current, &mut self.page.header_capsules, &mut self.page.header_pop, t.dt());
         let held = self.ground_seeded && self.landing_in_flight();
         let target = self.ground_target();
         self.ground_applied = target;
@@ -1338,6 +1352,8 @@ impl LogicalState for WatchlistScreen {
             c.str(&t.row.guid).u32(t.state as u32).u32(cell.elem);
         }
         self.stack.write(c);
+        page.header_capsules.write_motion(c);
+        page.header_pop.write_motion(c);
     }
 
     fn probe(&self, out: &mut String) {

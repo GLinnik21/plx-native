@@ -368,6 +368,7 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
     let _g = plx_base::testlock::serial();
     let mut h = Harness::new(tiles(3));
     h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(60); // the page's pill is the row's motion: it comes up under the focused control
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
     let inside = |r: plx_ui::Rect| {
         let (cx, cy) = (r.cx(), r.cy());
