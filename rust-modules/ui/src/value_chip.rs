@@ -17,22 +17,16 @@ pub struct ValueChip<'a> {
     rect: Rect,
     focused: bool,
     icon: Icon,
-    /// Draw the label and chevron only, over a fill the caller draws itself ([`bare`](Self::bare)).
-    bare: bool,
 }
 
 impl<'a> ValueChip<'a> {
     /// `value` and `note` include their own separators (for example `" · Title"` and `"  owner"`).
     pub fn new(name: &'a CStr, value: &'a CStr, note: Option<&'a CStr>, rect: Rect) -> Self {
-        Self { name, value, note, rect, focused: false, icon: Icon::ChevronDown, bare: false }
+        Self { name, value, note, rect, focused: false, icon: Icon::ChevronDown }
     }
 
     pub fn focused(mut self, focused: bool) -> Self { self.focused = focused; self }
     pub fn icon(mut self, icon: Icon) -> Self { self.icon = icon; self }
-    /// Leave the capsule's fill out and draw only what stands on it, for a caller that draws the
-    /// fill itself (an opener face that lays its own plate, as `Popover::morph_face` does; no
-    /// product surface uses one now: the header menus' openers are the host's lift).
-    pub fn bare(mut self) -> Self { self.bare = true; self }
 
     /// The capsule's fill, focused or not: the one place it is chosen.
     pub fn fill(focused: bool) -> [f32; 4] {
@@ -57,9 +51,7 @@ impl View for ValueChip<'_> {
             (theme::CONTROL_IDLE_INK, theme::TEXT_SECONDARY)
         };
         let r = self.rect;
-        if !self.bare {
-            p.rrect(r, r.h * 0.5, r.h * 0.5, Self::fill(self.focused));
-        }
+        p.rrect(r, r.h * 0.5, r.h * 0.5, Self::fill(self.focused));
         let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, r.y + r.h * 0.5);
         let mut x = r.x + PAD;
         x += p.text(self.name.as_ptr(), x, y, theme::size::LABEL, name_ink, 0, 0);

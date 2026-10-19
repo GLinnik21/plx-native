@@ -562,8 +562,8 @@ impl Popover {
     pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
         if self.style == OpenStyle::Morph {
             // The morph owns the panel's arrival, part by part: the ground (`panel`) and the rows
-            // (`morph_rows`) each take their own alpha from the one morph clock (an opener face,
-            // `morph_face`, would too; the header menus' openers are the host's lift instead). Nothing slides; `rise` is the appear style's. The CONTAINER's
+            // (`morph_rows`) each take their own alpha from the one morph clock (the header menus'
+            // openers are the host's lift, not part of the morph). Nothing slides; `rise` is the appear style's. The CONTAINER's
             // appear is not on this painter either: the surface begins and ends as the opener,
             // which is not faded in or out.
             return base.alpha(crate::nav::page_alpha());
@@ -680,37 +680,6 @@ impl Popover {
         self.ground_done();
     }
 
-    /// Draw a MORPHING popover's opener FACE: the opener's own fill (`fill`, the focused pill's
-    /// plate) at the morph's rect and radius, then `label` (the opener's label, with no fill of
-    /// its own) clipped to that rect, the plate at [`Frame::pill_alpha`](crate::popover_morph::Frame::pill_alpha), the label at [`Frame::label_alpha`](crate::popover_morph::Frame::label_alpha).
-    /// Call it after [`panel`](Self::panel) and before [`morph_rows`](Self::morph_rows): the
-    /// plate fades OFF the glass laid under it.
-    ///
-    /// A surface that draws the face itself names its opener (`Screen::opener`) so the page leaves
-    /// it out, and draws this whatever the popover's state (at rest it is the opener exactly).
-    /// **No product surface does now:** the header menus (Library and Watchlist Sort & Filter, the
-    /// Library's `+N`) keep their opener lit ABOVE the panel through the host's opener lift (design
-    /// review S12), so only the glass morphs; this stays for a popover whose opener is not a page
-    /// element the host can lift. Nothing is drawn for a popover that does not morph or has no
-    /// opener rect.
-    pub fn morph_face(&self, p: Painter, panel: Rect, rad: f32, fill: [f32; 4], label: impl FnOnce(Painter)) {
-        if self.style != OpenStyle::Morph || self.from.is_none() {
-            return;
-        }
-        let f = self.morph.frame(self.from, panel, rad);
-        if f.pill_alpha <= 0.0 && f.label_alpha <= 0.0 {
-            return;
-        }
-        if f.pill_alpha > 0.0 {
-            p.alpha(f.pill_alpha).rrect(f.rect, f.radius, f.radius, fill);
-        }
-        if f.label_alpha > 0.0 {
-            let p = p.alpha(f.label_alpha);
-            let _clip = crate::screen::ClipScope::open_in(p, f.rect);
-            label(p.clipped(f.rect));
-        }
-    }
-
     /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
     ///
     /// - the rows are **clipped to the current surface rect** ([`ClipScope`](crate::screen::ClipScope),
@@ -742,7 +711,7 @@ impl Popover {
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
     /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
     /// an opener: the morphing rect and radius, the glass at FULL strength once the fill has begun
-    /// to cross (a `morph_face` plate would fade off it), and its shadow on the fill's share. The fallback: the glass fades in on the fill's share.
+    /// to cross (over the lit opener the host keeps), and its shadow on the fill's share. The fallback: the glass fades in on the fill's share.
     fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });

@@ -148,8 +148,8 @@ fn a_field_keeps_its_dither_through_every_motion() {
 const RAD: f32 = 26.0;
 
 /// DS7: the morph open style on a real `Popover`, beside the unchanged fade+slide. The pill and
-/// the panel are one surface: on every frame of the open and the close the opener's plate and the
-/// glass together cover it, and a row is only drawn once the fill is all glass.
+/// the panel are one surface: a row is only drawn once the fill is all glass, and a close lands
+/// back on the pill.
 #[test]
 fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     let _g = plx_base::testlock::serial();
@@ -158,7 +158,6 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     assert_eq!(pop.open_style(), crate::popover::OpenStyle::Morph);
     pop.open_from(Some(pill));
     let one_surface = |f: crate::popover_morph::Frame| {
-        assert!((f.pill_alpha + f.ground_alpha - 1.0).abs() < 1e-6, "plate + glass cover the surface: {f:?}");
         if f.content_alpha > 0.0 {
             assert_eq!(f.ground_alpha, 1.0, "a row only on a surface that is all glass: {f:?}");
         }
@@ -184,7 +183,7 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     }
     assert!(!pop.visible(), "the close lands and the panel is gone");
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-    assert_eq!((f.rect, f.pill_alpha), (pill, 1.0), "and what is left is the pill");
+    assert_eq!(f.rect, pill, "and what is left is the pill");
     pop.close();
 }
 
@@ -204,7 +203,7 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
 }
 
 /// A morphing popover's `panel` draws the GROUND at the morphing rect: nothing while the fill is
-/// all the opener's, then the glass at FULL strength (the opener's plate fades off it), and the
+/// at the first frame, then the glass at FULL strength (over the lit opener), and the
 /// settled panel's own rect at the end. Graded on what `Popover::panel` really DECLARES (a
 /// discovery pass, the glass command), against the command built from the morph frame's own rect
 /// and radius. Red on the build that faded the glass in under rows that led it: the glass command
@@ -416,74 +415,6 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
     });
     plain.close();
     pop.close();
-}
-
-/// Spec (a), (b), (d): the opener's FACE is the surface's other half. It starts as the focused
-/// pill exactly (the opener's own fill at its rect and radius, the label at full strength), fades
-/// off the glass as the fill crosses, with its label clipped to the surface, and a close lands
-/// back on it: it never fades out and never pops. Red on the build whose pill was its own draw
-/// faded by the CONTAINER's appear (frame dump n325–352: the landed pill faded out, seven empty
-/// frames, then the page's pill popped in at full white).
-#[test]
-fn the_opener_face_starts_and_ends_as_the_pill_and_crosses_to_the_glass() {
-    use crate::{Painter, Rect};
-    let _g = plx_base::testlock::serial();
-    let (pill, panel) = (Rect::new(1500.0, 40.0, 196.0, 38.0), Rect::new(1380.0, 40.0, 316.0, 400.0));
-    const FILL: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
-    let plate = |pop: &crate::popover::Popover| {
-        let mut label = None;
-        let paints = crate::popover_glass::tests::declared_all(|| {
-            pop.morph_face(Painter::root(), panel, RAD, FILL, |p| label = Some((p.opacity(), p.clip_rect())));
-        });
-        let plates: Vec<[f32; 4]> = paints.iter().filter(|p| p.kind() == "rrect").map(|p| p.placed()).collect();
-        (plates, label)
-    };
-    let mut pop = crate::popover::Popover::new().morphing();
-    pop.open_from(Some(pill));
-    let (plates, label) = plate(&pop);
-    assert_eq!(plates, vec![[pill.x, pill.y, pill.w, pill.h]], "frame 0: the opener's plate at the pill");
-    assert_eq!(label, Some((1.0, pill)), "frame 0: the label whole, inside the pill");
-    let mut crossed = 0;
-    let mut check = |pop: &crate::popover::Popover| {
-        let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        let (plates, label) = plate(pop);
-        if f.pill_alpha <= 0.0 {
-            assert!(plates.is_empty(), "no plate once the fill is glass: {f:?}");
-        } else {
-            assert_eq!(plates, vec![[f.rect.x, f.rect.y, f.rect.w, f.rect.h]], "the plate is the surface: {f:?}");
-        }
-        if f.label_alpha <= 0.0 {
-            assert!(label.is_none(), "no label once it has dissolved: {f:?}");
-            return;
-        }
-        let (a, clip) = label.expect("the label outlasts the plate");
-        assert!((a - f.label_alpha).abs() < 1e-6, "the label at its own alpha");
-        let near = (clip.x - f.rect.x).abs() + (clip.y - f.rect.y).abs() + (clip.w - f.rect.w).abs() + (clip.h - f.rect.h).abs();
-        assert!(near < 1e-2, "the label is clipped to the surface: {clip:?} vs {:?}", f.rect);
-        if f.label_alpha < 1.0 {
-            crossed += 1;
-        }
-    };
-    for _ in 0..240 {
-        pop.update(1.0 / 60.0);
-        check(&pop);
-    }
-    pop.dismiss();
-    for _ in 0..240 {
-        pop.update(1.0 / 60.0);
-        check(&pop);
-        if !pop.visible() {
-            break;
-        }
-    }
-    assert!(crossed >= 4, "the fill crosses over frames, both ways ({crossed})");
-    assert!(!pop.visible());
-    let (plates, label) = plate(&pop);
-    assert_eq!(plates, vec![[pill.x, pill.y, pill.w, pill.h]], "the close lands on the opener's plate");
-    assert_eq!(label, Some((1.0, pill)), "…with its label whole: nothing left to pop in");
-    pop.close();
-    let plain = crate::popover::Popover::new();
-    assert!(plate(&plain).0.is_empty(), "a popover that does not morph has no face");
 }
 
 /// One frame of a surface over a page, as `embedded_alert_frame` draws it, with the page's ink

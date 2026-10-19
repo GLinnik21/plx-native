@@ -389,10 +389,9 @@ presentation in a design pass.
    it focused above the scrim AND the panel, after the surfaces, so the glass grows out from under
    a pill that does not change and a close shrinks back into it. The shared painters are
    `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
-   about the panel anchor by the row spring); `Popover::morph_face` (an opener's own plate and
-   label, `Frame::pill_alpha`/`label_alpha`) is for a popover whose opener is not a liftable page
-   element, and nothing ships one. The morph is not faded by the container's appear: the surface
-   begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
+   about the panel anchor by the row spring). The morph draws no opener face: every header
+   opener, the profile chip included (`widgets::CHIP_PILL`), is the host's lift. The morph is not
+   faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
    `popover_morph.rs`.
 
