@@ -28,7 +28,7 @@ pub(super) const GRID_PITCH: f32 = plx_ui::consts::CARD_H
     + plx_ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 /// The letter pitch of a short alphabet (the most a letter is given).
-pub(super) const RAIL_PITCH: f32 = 34.0;
+pub(super) const RAIL_PITCH: f32 = 32.0;
 /// The least a letter is squeezed to: an alphabet that does not fit even at this pitch scrolls.
 pub(super) const RAIL_MIN_PITCH: f32 = 26.0;
 pub(super) const RAIL_CAP_PAD: f32 = 10.0;
@@ -209,14 +209,22 @@ impl Layout {
 
 }
 
-/// The rail's top: the grid's top (the first tile row).
+/// The rail's top when the whole alphabet is there to be fitted: the board starts the 27 letters
+/// at y 152, above the grid's top, so they stand at the full 32 pitch before any is squeezed.
+const RAIL_TOP_HIGH: f32 = 152.0;
+/// The rail's top for a short alphabet: the grid's top (the first tile row).
 const RAIL_TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
-/// The height the letters may take, between the grid's top and the bottom margin (less the track's cap).
-const RAIL_AVAIL: f32 = SCR_H - MARGIN_Y - RAIL_TOP - RAIL_CAP_PAD;
+/// The bottom the letters may reach (the bottom margin).
+const RAIL_BOTTOM: f32 = SCR_H - MARGIN_Y - RAIL_CAP_PAD;
+/// The height the letters may take when the rail starts as high as it goes.
+const RAIL_AVAIL: f32 = RAIL_BOTTOM - RAIL_TOP_HIGH;
+/// The board's letter column centre: the track box is x 1822, 44 wide.
+pub(super) const RAIL_CX: f32 = 1844.0;
 
 /// The pitch of `n` letters: [`RAIL_PITCH`], scaled down only as far as it takes (never below
 /// [`RAIL_MIN_PITCH`]) for the whole alphabet (a Latin one is 27 letters with `#`) to stand
-/// between the grid's top and the screen's bottom without scrolling.
+/// between [`RAIL_TOP_HIGH`] and the bottom margin without scrolling. The rail starts higher
+/// first; the pitch shrinks only once even that is full.
 pub(super) fn rail_pitch(n: usize) -> f32 {
     (RAIL_AVAIL / n.max(1) as f32).clamp(RAIL_MIN_PITCH, RAIL_PITCH)
 }
@@ -224,15 +232,15 @@ pub(super) fn rail_pitch(n: usize) -> f32 {
 /// The original fixed rail band: it never follows the scrolling first grid row.
 /// `(top, centre x, window height, scroll range)`; the range is 0 when all `n` letters fit.
 pub(super) fn rail_geom(n: usize) -> (f32, f32, f32, f32) {
-    // The rail's top follows the grid's top (the first tile row). The board draws the track at
-    // x 1822..1866; that leaves the 5% safe area (`inside_safe`, right edge 1824), which the shipped
-    // layout keeps, so the track stays flush with the safe edge.
     let pitch = rail_pitch(n);
     let all = n as f32 * pitch;
-    let x = SCR_W - MARGIN_X - RAIL_TRACK_W * 0.5;
-    if all <= RAIL_AVAIL + 0.01 { return (RAIL_TOP, x, all, 0.0); }
+    if all <= RAIL_AVAIL + 0.01 {
+        // bottom-anchored between the two tops: a short alphabet sits under the header at the
+        // grid's top, a full one climbs as far as RAIL_TOP_HIGH.
+        return ((RAIL_BOTTOM - all).clamp(RAIL_TOP_HIGH, RAIL_TOP), RAIL_CX, all, 0.0);
+    }
     let height = (RAIL_AVAIL / pitch).floor().max(1.0) * pitch;
-    (RAIL_TOP, x, height, all - height)
+    (RAIL_TOP_HIGH, RAIL_CX, height, all - height)
 }
 
 pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {

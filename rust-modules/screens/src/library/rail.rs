@@ -1,7 +1,7 @@
 //! Fixed-band rail owned by MasterDetail. Only Input owns its focused/remembered letter.
 use std::ffi::CString;
 use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
-use super::layout::{rail_geom, rail_pitch, rail_scroll_target, RAIL_CAP_PAD, RAIL_TRACK_W};
+use super::layout::{rail_geom, rail_pitch, rail_scroll_target, RAIL_TRACK_W};
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::consts::K_SCROLL;
 use plx_ui::frame::Budget;
@@ -209,8 +209,6 @@ impl RailPart {
     pub(super) fn draw_with_current<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>, _frame: Rect, grid_index: Option<usize>) {
         if self.elems.is_empty() || (!self.in_region(f.cx) && self.alpha.pos <= 0.01) { return; }
         let p = f.painter.alpha(f.page_alpha * self.alpha.pos);
-        let track = Rect::new(self.rect.x, self.rect.y - RAIL_CAP_PAD, self.rect.w, self.rect.h + 2.0 * RAIL_CAP_PAD);
-        p.rect_sheened(track, RAIL_TRACK_W * 0.5, theme::scrim_black(0.30), theme::scrim_black(0.40));
         let _clip = (rail_geom(self.elems.len()).3 > 0.5).then(|| f.clip(p, self.rect));
         let current = grid_index.map(|index| self.letter_for_item(index));
         for (index, label) in self.labels.iter().enumerate() {
@@ -226,7 +224,7 @@ impl RailPart {
                 q.rect(disc, size * 0.5, plx_ui::ACCENT, plx_ui::ACCENT, 0.0);
                 plx_ui::ACCENT_INK
             } else if current == Some(index) { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY };
-            plx_ui::label::Label::new(label.as_ptr(), theme::size::MICRO, ink).bold()
+            plx_ui::label::Label::new(label.as_ptr(), theme::size::MICRO, ink)
                 .h(plx_ui::label::HAlign::Center).draw(q, slot);
         }
         self.record_stops(f);
@@ -281,8 +279,8 @@ mod tests {
 
     fn model() -> RailPart {
         let mut rail = RailPart::new(EntryId(1), GroupId(2));
-        rail.elems = (0..30).collect();
-        let (y, x, h, _) = rail_geom(30);
+        rail.elems = (0..40).collect();
+        let (y, x, h, _) = rail_geom(40);
         rail.rect = Rect::new(x - RAIL_TRACK_W * 0.5, y, RAIL_TRACK_W, h);
         rail
     }
@@ -291,12 +289,12 @@ mod tests {
     fn rail_scroll_and_presence_animate_then_settle_outside_the_grid_region() {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(29), true, 0.016));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(39), true, 0.016));
         assert!(moving, "entering the region reports its scroll and fade motion");
         assert!(rail.scroll.pos > 0.0 && rail.scroll.pos < rail.scroll_target);
         assert!(rail.alpha.pos > 0.0 && rail.alpha.pos < 1.0);
-        for _ in 0..400 { rail.step_motion(Some(29), true, 0.016); }
-        assert!((rail.scroll.pos - rail_geom(30).3).abs() < 0.001);
+        for _ in 0..400 { rail.step_motion(Some(39), true, 0.016); }
+        assert!((rail.scroll.pos - rail_geom(40).3).abs() < 0.001);
         assert!((rail.alpha.pos - 1.0).abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
         for _ in 0..400 { rail.step_motion(None, false, 0.016); }
         assert!(rail.alpha.pos.abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
@@ -308,12 +306,12 @@ mod tests {
     fn quick_letter_steps_place_against_settled_scroll_and_keep_the_fade_margin() {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
-        rail.step_motion(Some(27), true, 0.016);
-        for drive in [28, 29] {
+        rail.step_motion(Some(37), true, 0.016);
+        for drive in [38, 39] {
             let target = rail.slot(drive, At::SpringTarget);
             let drawn = rail.slot(drive, At::Drawn);
             assert_ne!(drawn.y, target.y);
-            let margin = if drive == 29 { 0.0 } else { rail.pitch() };
+            let margin = if drive == 39 { 0.0 } else { rail.pitch() };
             assert!(target.y >= rail.rect.y + margin - 0.01);
             assert!(target.y + target.h <= rail.rect.y + rail.rect.h - margin + 0.01);
             rail.step_motion(Some(drive), true, 0.016);
@@ -435,19 +433,59 @@ mod tests {
     }
 
     #[test]
-    fn every_alphabet_fits_between_the_grid_top_and_the_screen_bottom_without_scrolling() {
-        use super::super::layout::{RAIL_MIN_PITCH, RAIL_PITCH};
+    fn the_rail_is_the_boards_column_at_pitch_32_starting_higher_before_it_shrinks() {
+        use super::super::layout::{RAIL_CAP_PAD, RAIL_MIN_PITCH, RAIL_PITCH, RAIL_CX};
+        assert_eq!((RAIL_PITCH, RAIL_TRACK_W, RAIL_CX), (32.0, 44.0, 1844.0));
         for n in [9usize, 26, 27] {
-            let (y, _, h, max) = rail_geom(n);
+            let (y, x, h, max) = rail_geom(n);
             let pitch = rail_pitch(n);
-            assert_eq!(max, 0.0, "{n} letters: the whole alphabet stands, no scrolling");
+            assert_eq!((x, max), (1844.0, 0.0), "{n} letters: the whole alphabet stands, no scrolling");
             assert!((h - n as f32 * pitch).abs() < 0.01);
             assert!(y + h + RAIL_CAP_PAD <= plx_ui::consts::SCR_H - plx_ui::consts::MARGIN_Y + 0.01, "{n} letters end inside the bottom margin");
             assert!((RAIL_MIN_PITCH..=RAIL_PITCH).contains(&pitch));
         }
-        assert_eq!(rail_pitch(9), RAIL_PITCH, "a short alphabet keeps the full pitch");
-        assert!(rail_pitch(27) < RAIL_PITCH, "27 letters are scaled down only as far as it takes");
+        assert_eq!(rail_pitch(27), 32.0, "# and A to Z keep the full 32 pitch");
+        let (top27, ..) = rail_geom(27);
+        assert!(top27 < 244.0, "27 letters start above the grid top ({top27}) rather than shrink");
+        assert_eq!(rail_geom(9).0, 244.0, "a short alphabet starts at the grid top");
         assert!(rail_geom(60).3 > 0.0, "a script too long even at the least pitch still scrolls");
+    }
+
+    #[test]
+    fn the_letters_stand_bare_regular_and_centred_on_1844_with_no_track() {
+        use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
+        let _guard = plx_base::testlock::serial();
+        let mut rail = with_starts(&[0, 1, 2]);
+        rail.labels = ["#", "A", "B"].iter().map(|l| CString::new(*l).unwrap()).collect();
+        let (y, x, h, _) = rail_geom(3);
+        rail.rect = Rect::new(x - RAIL_TRACK_W * 0.5, y, RAIL_TRACK_W, h);
+        rail.alpha = Spring::at(1.0);
+        let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
+        let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
+        let cx = Cx::<RailHost> {
+            views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
+            tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
+            focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
+        };
+        let mut frame = DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let (runs, rects) = {
+            let mut rects = Vec::new();
+            let runs = plx_ui::draw_census::capture_runs(|| {
+                rects = plx_ui::draw_census::capture(|| rail.draw_with_current(&mut frame, Rect::new(0.0, 0.0, 1920.0, 1080.0), None));
+            });
+            (runs, rects)
+        };
+        assert!(rects.iter().all(|(_, r)| r.w < RAIL_TRACK_W - 1.0 || r.h < RAIL_TRACK_W), "no dark track plate is drawn: {rects:?}");
+        assert_eq!(runs.len(), 3);
+        for r in &runs {
+            assert!(!r.bold, "letters are regular: {}", r.text);
+            assert_eq!(r.size, theme::size::MICRO);
+        }
+        for r in &runs {
+            assert_ne!(r.align, 0, "{} is centre-anchored", r.text);
+            assert!((r.at.x - 1844.0).abs() < 0.6, "{} anchored on 1844, got {}", r.text, r.at.x);
+        }
+        assert!((runs[1].at.y - runs[0].at.y - 32.0).abs() < 0.01, "pitch 32");
     }
 
     #[test]

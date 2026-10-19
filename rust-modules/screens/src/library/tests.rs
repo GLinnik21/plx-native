@@ -365,7 +365,7 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
 #[test]
 fn owned_rail_keeps_the_fixed_grid_top_origin_and_short_window() {
     let _guard = plx_base::testlock::serial();
-    for n in [9, 30] {
+    for n in [9, 40] {
         let mut fixture = Fixture::new();
         let sid = plx_plex::plex::ServerId::from_raw(0);
         fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
@@ -375,7 +375,8 @@ fn owned_rail_keeps_the_fixed_grid_top_origin_and_short_window() {
         let mut groups = Vec::new();
         page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
         let rail = groups.first().expect("the fixture has a real rail").extent;
-        assert_eq!(rail.y, 244.0, "the rail is not attached to the scrolling first grid row, and starts at the grid's top");
+        // a short alphabet starts at the grid's top; a long one climbs to the board's 152 first
+        assert_eq!(rail.y, if n == 9 { 244.0 } else { 152.0 }, "the rail is not attached to the scrolling first grid row");
         if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
         else { assert!(rail.h < n as f32 * layout::rail_pitch(n), "an alphabet too long even squeezed scrolls"); }
     }
