@@ -4021,6 +4021,9 @@ mod under_posters_route_tests;
 #[cfg(test)]
 #[path = "watchlist_disc_route_tests.rs"]
 mod watchlist_disc_route_tests;
+#[cfg(test)]
+#[path = "sort_filter_vocabulary_route_tests.rs"]
+mod sort_filter_vocabulary_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

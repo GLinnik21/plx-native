@@ -7,10 +7,6 @@
     "value": "Sort & Filter",
     "description": "Label of the single pill on the Watchlist header that opens the sort and filter popover."
   },
-  "watchlist.filter.sort_default": {
-    "value": "Default",
-    "description": "Summary shown in the Sort & Filter pill when the list is in the server's own order and no filter is set."
-  },
   "watchlist.filter.type_heading": {
     "value": "Type",
     "description": "Heading of the type section in the Sort & Filter popover."

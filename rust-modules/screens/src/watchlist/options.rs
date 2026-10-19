@@ -109,27 +109,13 @@ impl WatchlistOptionsState {
         }
     }
 
-    /// The pill's `<summary>` half: "Default" when nothing is changed, else the changed choices in
-    /// section order (Type, Sort, Show) joined by a comma, each by its menu label ("Movies, Title").
-    /// The direction is not spelled: the open menu shows it as the active key's chevron, and the
-    /// pill has to share the header line with the title and the count in the longest language.
+    /// The pill's `<summary>` half: the current SORT, by its menu label ("Date Added", "Title"),
+    /// the same fact the Library's pill names. A filter (Type, Show) never shows here; it shows
+    /// as the header's "N of M" read-out. The direction is not spelled: the open menu shows it as
+    /// the checked sort row's value word, and the pill has to share the header line with the
+    /// title and the count in the longest language.
     pub fn summary(&self) -> String {
-        let mut parts: Vec<&'static str> = Vec::new();
-        if self.type_ != TypeFilter::All {
-            parts.push(OptionsRow::Type(self.type_).label());
-        }
-        let default = Self::default();
-        if (self.sort, self.descending) != (default.sort, default.descending) {
-            parts.push(OptionsRow::Sort(self.sort).label());
-        }
-        if self.show != ShowFilter::All {
-            parts.push(OptionsRow::Show(self.show).label());
-        }
-        if parts.is_empty() {
-            msg::watchlist_filter_sort_default().to_string()
-        } else {
-            parts.join(", ")
-        }
+        OptionsRow::Sort(self.sort).label().to_string()
     }
 
     /// `rows` filtered and ordered by this value, exactly as the data layer does it

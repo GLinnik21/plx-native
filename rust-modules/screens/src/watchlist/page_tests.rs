@@ -379,7 +379,8 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
         log.iter().filter(|(_, r)| inside(*r)).map(|(t, r)| (*t, [r.x, r.y, r.w, r.h].map(|v| v.round() as i32))).collect()
     };
     let page_pill = shape(&h.draw_census(None));
-    assert!(page_pill.iter().any(|(t, r)| *t != 100 && r[2] == pill.w.round() as i32), "premise: the page draws its focused pill's plate: {page_pill:?}");
+    // (a plate whose width lands on a half pixel rounds either way: one pixel of slack.)
+    assert!(page_pill.iter().any(|(t, r)| *t != 100 && (r[2] - pill.w.round() as i32).abs() <= 1), "premise: the page draws its focused pill's plate: {page_pill:?} (pill {pill:?})");
 
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
@@ -429,8 +430,14 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
     let something = |log: &Census| log.iter().any(|(t, r)| *t != 100 && r.h >= pill.h - 1.0 && r.w >= 2.0 * pill.h);
 
     step(&mut menu, ScreenEvent::Mount, ms);
-    assert_eq!(shape(&draw(&mut menu, true)), page_pill, "held: the surface is the page's pill");
-    assert_eq!(shape(&draw(&mut menu, false)), page_pill, "frame 0: still the page's pill");
+    let is_page_pill = |got: Vec<(u64, [i32; 4])>, what: &str| {
+        // Primitive for primitive, to the pixel: a width that lands on a half pixel rounds either way.
+        let same = got.len() == page_pill.len()
+            && got.iter().zip(&page_pill).all(|(a, b)| a.0 == b.0 && a.1.iter().zip(&b.1).all(|(x, y)| (x - y).abs() <= 1));
+        assert!(same, "{what}: {got:?} vs the page's {page_pill:?}");
+    };
+    is_page_pill(shape(&draw(&mut menu, true)), "held: the surface is the page's pill");
+    is_page_pill(shape(&draw(&mut menu, false)), "frame 0: still the page's pill");
     for _ in 0..40 {
         ms += 16;
         step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
@@ -450,7 +457,7 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
         last = draw(&mut menu, false);
         assert!(something(&last), "a close frame with neither plate nor glass");
     }
-    assert_eq!(shape(&last), page_pill, "the close lands on the page's own pill: nothing to pop in");
+    is_page_pill(shape(&last), "the close lands on the page's own pill: nothing to pop in");
 }
 
 /// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the

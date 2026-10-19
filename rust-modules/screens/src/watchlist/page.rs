@@ -765,6 +765,11 @@ impl WatchlistScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.stack.target() }
 
+    /// The Sort & Filter pill's value, the text after the dot: what the header draws is built from
+    /// this one string (`header_row`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_pill_value(&self) -> String { self.page.options.summary() }
+
     /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header_builds(&self) -> u32 { self.page.header_rows.builds() }
