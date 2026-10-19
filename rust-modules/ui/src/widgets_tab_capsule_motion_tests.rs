@@ -265,8 +265,8 @@ fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
     }
 }
 
-/// **The season strip's selection LANDS; every other strip's travels.** Both halves, because the
-/// rule is a difference between two callers and a regression would be one call site copied onto
+/// **The season strip's and the page header row's selection LANDS; the top bar's travels.** Both
+/// halves, because the rule is a difference between two callers and a regression would be one call site copied onto
 /// the other.
 ///
 /// The owner's report (2026-08-22) was that a grey pill sliding across the season row "does not

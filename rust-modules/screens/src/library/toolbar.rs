@@ -1,5 +1,6 @@
 //! The header row's elements: the page's controls, the Collections control's state, and which
-//! library the row names. The geometry and the paint are `header.rs`.
+//! library the row names. The row's declaration is `header.rs`; its geometry, paint and motion are
+//! `plx_ui::page_header`.
 use super::*;
 
 /// The header's controls. Their ids sit beside the other page controls (`SORT`, `FILTER`, ...).

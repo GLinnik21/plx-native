@@ -196,9 +196,10 @@ read-outs, and follows the cards when the grid's landing STARTS MOVING: a Remove
 after the hold menu's veil drops below `CLOSING_GONE`, a Sort & Filter change's on the frame after the
 click (the click's own frame draws the frame before it), never at the commit, so the number and the
 tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the control is lifted.
-The row's pills are the Library's, one component: the focus pill slides to the control on the top bar's
-spring and the title's selected plate lands under it (`plx_ui::page_header`; the page holds the row's
-`TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
+The row's pills are the Library's, one component. With one focus stop the focus pill has nowhere to
+travel from: it lands on the control and fades in on the top bar's alpha spring, then pops on the
+page's `CtlPop`; the title's selected plate lands on the title (`plx_ui::page_header`; the page holds
+the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
 panel is as wide as its longest label or as the control's focused pill, whichever is wider
 (`TableView::menu_panel_width_from`, the rule the Library's Sort & Filter hangs by too).
 

@@ -5364,7 +5364,7 @@ impl Capsule {
     }
 }
 
-// ---- a strip's PILL GEOMETRY, shared by every strip a [`TabStrip`] drives ---------------------
+// ---- a strip's PILL GEOMETRY, shared by the season strip and the Filmography filter ------------
 //
 // **These lived in `ui/detail.rs`, private to the season strip, until the Library grew a strip of
 // its own.** `TabStrip` and `TabPill` were already shared; the numbers that PLACE their pills were
@@ -5412,9 +5412,11 @@ pub fn strip_pill_rect(lay: &StripLay, top: f32, h: f32) -> Rect {
     Rect::new(lay.x - STRIP_PAD, top, lay.w + 2.0 * STRIP_PAD, h)
 }
 
-/// Content-space `(x, w)` of pill `i` — **the frame, not the label inside it.** The one span
-/// function a [`TabStrip`] is placed from, so a capsule can only ever come to rest exactly on a
-/// pill; `TabStrip::update`'s contract is that this IS the function the caller laid out with.
+/// Content-space `(x, w)` of pill `i` — **the frame, not the label inside it.** The span function
+/// the detail page's season strip and the Filmography department filter are placed from, so a
+/// capsule can only ever come to rest exactly on a pill. The top bar places its capsules from
+/// `tab_pill_x`; the page header row from its own item plates (`page_header::PageHeader::step`).
+/// `TabStrip::update`'s contract (the span function IS the layout function) holds per caller.
 pub fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f32)> {
     lays.get(i).map(|l| {
         let r = strip_pill_rect(l, 0.0, h);
@@ -5424,8 +5426,9 @@ pub fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f32)> {
 
 /// **Draw a whole strip — both capsules, then every on-screen pill — through ONE scroll offset.**
 ///
-/// This is the one draw path every [`TabStrip`] consumer uses (the detail page's season tabs, the
-/// Filmography department filter and the Library's library row), because the capsules and the pills
+/// This is the one draw path of the strips built from [`StripLay`] pills (the detail page's season
+/// tabs and the Filmography department filter; the page header row paints through
+/// `TabStrip::draw` with [`TabGround::Bare`]), because the capsules and the pills
 /// are two halves of one picture and must never be placed by two offsets. The Filmography route
 /// drew them with two: its pills were laid out already scrolled while its capsules were drawn in
 /// content space through an UN-translated painter, so the moment the row scrolled the focus plate
@@ -5565,7 +5568,9 @@ pub enum TabGround {
     /// cast. The focus capsule is the accent at `pop` (a [`CtlPop`]'s factor, the press dip in it),
     /// with no rim and no cast: the header's focused control is a flat pill, not the season strip's
     /// lifted control face. `focus: false` leaves it out, for a control a menu has lifted off the
-    /// page (the menu is that control's only copy while it is open).
+    /// page: the focus capsule goes either way; whether the label stays is the caller's choice
+    /// ([`crate::page_header::Lift`]): the Watchlist's morph draws the control's only copy, the
+    /// Library's panel draws none.
     Bare { pop: f32, focus: bool },
 }
 
