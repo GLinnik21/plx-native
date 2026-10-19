@@ -31,6 +31,7 @@ use plx_ui::screen::{
     AxisMask, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind, GroupSpec, HitSource, Link,
     RenderStrategy, Screen, ScreenEvent, Seat,
 };
+use plx_ui::page_regions::{Arrival, BackStep, PageRegions};
 use plx_ui::theme;
 use plx_ui::tile::{Resume, TileFacts, TileKind};
 use plx_ui::widgets::{AmbientWash, Art, PageGround};
@@ -738,6 +739,10 @@ impl WatchlistScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header(&self) -> (GroupId, Vec<(&'static str, u32)>) { (HEADER_GROUP, vec![("sort", PILL_ELEM)]) }
 
+    /// The scroll the page is travelling to: 0 at its top.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_scroll_target(&self) -> f32 { self.stack.target() }
+
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 
@@ -1068,16 +1073,60 @@ impl WatchlistScreen {
     /// pill holds it until the first tiles land, and then the first tile does.
     fn follow_seat<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
         let Some(seated) = self.seat else { return };
-        let want = if !self.page.cells.is_empty() { GRID_GROUP } else { HEADER_GROUP };
+        let want = self.with_regions(|regions| regions.first_seat()).unwrap_or(HEADER_GROUP);
         if seated == Some(want) {
             return;
         }
         // The first tile is where the arrival ends: nothing lands above it to follow.
         self.seat = (want != GRID_GROUP).then_some(Some(want));
+        self.seat_own(FocusTarget::FirstInGroupAnimated(want), fx);
+    }
+
+    /// Ask the engine to seat `focus` as the page's OWN seat: counted in [`own_enters`], so the
+    /// `Enter` that comes back is not mistaken for a new arrival.
+    ///
+    /// [`own_enters`]: Self::own_enters
+    fn seat_own<H: ContentLike>(&mut self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
         self.own_enters = self.own_enters.saturating_add(1);
-        fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-            focus: FocusTarget::FirstInGroupAnimated(want),
-        }))));
+        fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
+    }
+
+    /// **This page's column** (`plx_ui::page_regions`): the Sort & Filter header, then the grid once
+    /// it has a cell (before that the header holds the arrival seat). The page arrives in its
+    /// content and BACK leaves for Home from the top of it; it does not walk the header.
+    fn with_regions<R>(&self, then: impl FnOnce(&PageRegions<'_>) -> R) -> R {
+        let content: &[GroupId] = if self.page.cells.is_empty() { &[] } else { &[GRID_GROUP] };
+        then(&PageRegions {
+            header: Some(HEADER_GROUP),
+            content,
+            rail: None,
+            back_walks_header: false,
+            arrival: Arrival::Content,
+        })
+    }
+
+    /// **BACK**, decided by [`PageRegions::back`] and executed here: a scrolled page first returns
+    /// to its top, on the first row in the column focus was in; from there it leaves for Home.
+    fn back<H: ContentLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let focus = cx.focus.current.filter(|key| key.entry == self.page.entry);
+        let step = self.with_regions(|regions| {
+            let at = focus.and_then(|key| regions.region_of(key.elem, Focusable::<H>::group_of(self, &key.elem, cx)));
+            regions.back(at, self.stack.target() > 0.5)
+        });
+        match step {
+            BackStep::Top => {
+                let column = focus.and_then(|key| self.page.cell_of(key.elem)).map_or(0, |index| index % COLS);
+                match self.page.cells.get(column).or_else(|| self.page.cells.last()) {
+                    Some(cell) => self.seat_own(FocusTarget::Elem(FocusKey { entry: self.page.entry, elem: cell.elem }), fx),
+                    None => self.seat_own(FocusTarget::FirstInGroupAnimated(HEADER_GROUP), fx),
+                }
+            }
+            BackStep::Content => self.seat_own(FocusTarget::FirstInGroupAnimated(GRID_GROUP), fx),
+            BackStep::Header => self.seat_own(FocusTarget::ContainerGroup(HEADER_GROUP), fx),
+            BackStep::Nav => self.seat_own(FocusTarget::ContainerGroup(plx_ui::containers::tabs::STRIP), fx),
+            BackStep::Leave => self.route(WatchlistOut::Back, fx),
+        }
+        Handled::Yes
     }
 
     /// A non-card element activated, by an `Activate` (a `Bare` element, a pointer) or by a committed
@@ -1397,8 +1446,7 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
                 }
             }
             ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) => {
-                self.route(WatchlistOut::Back, fx);
-                Handled::Yes
+                self.back(cx, fx)
             }
             _ => Handled::No,
         }
@@ -1454,13 +1502,11 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
-    /// The pill and the grid are one column: DOWN from the pill enters the grid, UP from the first
-    /// row returns to the pill.
+    /// The bar, the pill and the grid are one column: DOWN from the bar enters the pill, DOWN from
+    /// the pill enters the grid, UP from the first row returns to the pill and UP from the pill to
+    /// the bar (on the Watchlist's own pill).
     fn links(&self, out: &mut Vec<Link>) {
-        if !self.page.cells.is_empty() {
-            out.push(Link { from: HEADER_GROUP, dir: plx_ui::screen::Dir::Down, to: GRID_GROUP });
-            out.push(Link { from: GRID_GROUP, dir: plx_ui::screen::Dir::Up, to: HEADER_GROUP });
-        }
+        self.with_regions(|regions| regions.links(out));
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)

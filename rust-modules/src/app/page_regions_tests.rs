@@ -167,6 +167,15 @@ impl Rig {
         panic!("the top page is none of the four");
     }
 
+    /// The scroll the page on top is travelling to (0 at its top).
+    fn scroll_target(&self) -> f32 {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<LibraryScreen>() { return page.probe_scroll_target(); }
+        if let Some(page) = any.downcast_ref::<RecommendedScreen>() { return page.probe_scroll_target(); }
+        if let Some(page) = any.downcast_ref::<WatchlistScreen>() { return page.probe_scroll_target(); }
+        panic!("the top page is none of the four");
+    }
+
     /// The focused key and the region it is in.
     fn place(&self) -> Option<(Place, FocusKey<u32>)> {
         let key = self.d.focus()?;
@@ -326,6 +335,14 @@ fn columns(row: &Row, f: &mut Fails) {
 
 /// BACK from deep in the content, from the header and from the nav.
 fn back(row: &Row, f: &mut Fails) {
+    // The first BACK from a scrolled page returns it to its top, and focus stays in the content.
+    let mut scrolled = (row.mount)();
+    for _ in 0..8 { scrolled.press(Key::Down); }
+    f.check(scrolled.scroll_target() > 0.5, || format!("{}: premise: eight Downs scrolled the page, target {}", row.name, scrolled.scroll_target()));
+    scrolled.press(Key::Back);
+    f.check(scrolled.scroll_target() < 0.5 && scrolled.region() == Some(Place::Content), || format!(
+        "{}: BACK from deep in the content returns to the top, target {} focus {:?}", row.name, scrolled.scroll_target(), scrolled.place()));
+
     let mut deep = (row.mount)();
     for _ in 0..8 { deep.press(Key::Down); }
     back_sequence(&mut deep, row, "from deep in the content", row.back_from_content, f);

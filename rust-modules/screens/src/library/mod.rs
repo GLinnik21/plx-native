@@ -299,6 +299,10 @@ impl LibraryScreen {
         }, elem)).collect()
     }
 
+    /// The scroll the page is travelling to: 0 at its top.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
+
     /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
     /// draw of the page would put on screen now.
     #[cfg(any(test, feature = "test-support"))]
