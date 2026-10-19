@@ -638,7 +638,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` (or a planner-chosen
   `--evict PLAN`, below) is how you get it back —
   every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes
-  finished lane checkouts. The MAIN checkout is reached only narrowly: `--stale` sweeps the
+  finished lane checkouts, and with them their ignored files (`-n` lists the ones that are not
+  build output; `--auto` keeps a lane that holds any). The MAIN checkout is reached only narrowly: `--stale` sweeps the
   superseded hashes in its `deps/` (age-gated only there, never the newest hash per crate),
   `--incremental` and `--all` clear its incremental dirs, `--evict` takes those only as rung 6
   (the planner's last), and none of them removes its `target` dir itself. The `--stale` reach
@@ -663,7 +664,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `df` is what is really free.** None of this reclaim has to be run by
   hand anymore: `tools/build-gc.sh --auto` reclaims on its own, gated by free-space pressure, from a
   `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs — `--orphans`, then
-  `--worktrees` for lanes idle past `PLX_GC_IDLE_MIN`, then the planner's order — and `make disk`
+  `--worktrees` for lanes idle past `PLX_GC_IDLE_MIN` and holding no non-build ignored file, then the planner's order — and `make disk`
   remains the report to read before deciding whether to intervene yourself. Its last
   section is the disk budget (`tools/disk-budget.py report`, `docs/disk-budget.md`): each tree's
   PRIVATE bytes, which is what deleting it really frees and not what `du` says, the PlxNative cargo

@@ -169,7 +169,8 @@ What keeps that in check:
 - **`make disk`** (`tools/build-gc.sh`) reports every checkout's derived trees, the external lane
   trees under `$PLX_FLEET_DIR`, and the free space, in one table; `tools/build-gc.sh
   --orphans | --incremental | --lanes | --worktrees | --all` reclaims. Nothing it deletes is
-  anything but `make` output or a lane worktree already fully on `origin/main`. Run it when a lane starts
+  anything but `make` output or a lane worktree already fully on `origin/main` (with its ignored files:
+  by hand `-n` lists the ones that are not build output, e.g. `src/config.local.h`; `--auto` keeps such a lane). Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
 - **`tools/build-gc.sh --auto` reclaims on its own**, gated by free space on the volume and by an

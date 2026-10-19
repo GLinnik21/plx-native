@@ -40,7 +40,7 @@ python3 ci/test_build_bench.py
 # its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
 python3 ci/test_build_history.py
 # tools/build-gc.sh against disposable repositories, fleet dirs and caches: every OTHER reclaim mode refuses under a held FFmpeg lock, a
-# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window),
+# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window, and one holding an ignored file that is not build output),
 # `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
 # names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an
 # FFmpeg lock, and never takes a /tmp tree that only looks old. `--evict` runs only inside the fixture's own directories.

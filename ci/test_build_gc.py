@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Run the real GC only against disposable repositories, fleet trees and cache locks."""
+import importlib.util
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -326,7 +328,9 @@ class BuildGcTests(unittest.TestCase):
         `main` is only moved by a fetch-and-merge nobody ran)."""
         repo = fixture[0]
         (repo / "README").write_text("seed\n")
-        self.git(fixture, repo, "add", "README")
+        # the repository's own ignore rules: a lane's `src/config.local.h` is IGNORED (a clean tree), not untracked
+        (repo / ".gitignore").write_bytes((ROOT / ".gitignore").read_bytes())
+        self.git(fixture, repo, "add", "README", ".gitignore")
         self.git(fixture, repo, "commit", "-q", "-m", "seed")
         self.git(fixture, repo, "branch", "-m", "main")
         origin = repo.parent / "origin.git"
@@ -722,6 +726,146 @@ class BuildGcTests(unittest.TestCase):
         result = self.run_gc(by_hand, "--worktrees")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(fresh.exists(), "--worktrees by hand kept a landed lane for being recent")
+
+    # --- `--worktrees` and the files git IGNORES ------------------------------------------------------------
+    # `git worktree remove` deletes IGNORED files with the checkout, and "working tree clean" cannot see them: a
+    # lane can hold `src/config.local.h` (the real Plex token), `pkg/auth.json`, `.tv-host`, or its own notes and
+    # captures. By hand that is the human's call (the preview lists them); unattended (`--auto`, hourly and from the
+    # SessionEnd hook, and now reaching squash-merged lanes) a lane is removed only when everything ignored in it is
+    # build output `make` regenerates.
+    DERIVED_ONLY = ("rust-modules/target/sentinel", "rust-modules/target-sim/debug/x", "pkg/plxnative",
+                    "pkg/.build-config", "vendor/downloads/ffmpeg.tar.xz", "tools/__pycache__/x.cpython-312.pyc",
+                    ".DS_Store", "src/starfish.o")
+    UNDER_PRESSURE = {"PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999", "PLX_GC_IDLE_MIN": "30"}
+
+    def put_files(self, lane, *rels):
+        for rel in rels:
+            path = lane / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("synthetic\n")
+
+    def quiet_landed_lane(self, fixture, *rels):
+        """A squash-merged lane holding `rels` (all gitignored), untouched for two hours. No planner is installed
+        beside the script, so `--auto` runs its `--worktrees` stage and then skips the planner pass."""
+        lane = self._squash_landed_lane(fixture, "landed")
+        self.put_files(lane, *rels)
+        self.assertEqual(self.git(fixture, lane, "status", "--porcelain").stdout, "",
+                         "the fixture lane is not clean: its files are not all ignored")
+        self.age(lane, 2 * 3600)
+        return lane
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_spares_a_landed_lane_that_holds_a_private_file(self):
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *self.DERIVED_ONLY, "src/config.local.h")
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue((lane / "src/config.local.h").exists(), "--auto removed a lane holding a private file: " + out)
+        self.assertRegex(out, r"private +%s" % re.escape(str(lane)))
+        self.assertIn("src/config.local.h", out)
+        self.assertNotRegex(out, r"dirty|recently active", "the lane was kept for another reason: " + out)
+        for rel in ("rust-modules/target", "pkg/plxnative", "__pycache__", ".DS_Store"):
+            self.assertNotIn(rel, out, "build output was listed as what kept the lane: " + out)
+        log = Path(fixture[1]["PLX_GC_LOG"]).read_text()
+        self.assertIn("src/config.local.h", log, "the log does not say which path kept the lane")
+        self.assertIn(str(lane), log)
+        # the preview agrees: it names the lane as kept and offers no removal of it
+        preview = self.run_auto(fixture, "-n", extra_env=self.UNDER_PRESSURE)
+        out = preview.stdout + preview.stderr
+        self.assertRegex(out, r"private +%s" % re.escape(str(lane)))
+        self.assertNotIn("would remove  %s" % lane, out)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_removes_a_landed_lane_whose_ignored_files_are_all_build_output(self):
+        # The control for the test above: the same lane without the private file goes, with everything `make`
+        # regenerates in it. (This passes on the code before the rule too: it pins that the rule is not a veto
+        # on every lane that has ever been built in.)
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *self.DERIVED_ONLY)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertFalse(lane.exists(), "a lane holding only build output was kept: " + out)
+        self.assertNotRegex(out, r"private +/", out)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_auto_worktrees_stage_spares_a_lane_whose_ignored_files_cannot_be_listed(self):
+        # Fail closed: when git cannot say what is ignored there, the answer is not "nothing".
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *self.DERIVED_ONLY)
+        real_git = shutil.which("git")
+        fake = fixture[0].parent / "bin/git"
+        fake.write_text('#!/bin/sh\nfor a in "$@"; do case "$a" in --ignored*) exit 129 ;; esac; done\n'
+                        'exec ' + shlex.quote(real_git) + ' "$@"\n')
+        fake.chmod(0o755)
+        result = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertTrue(lane.exists(), "--auto removed a lane whose ignored files it could not list: " + out)
+        self.assertIn("could not list", Path(fixture[1]["PLX_GC_LOG"]).read_text())
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_worktrees_by_hand_lists_the_private_files_it_takes_with_the_lane(self):
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *self.DERIVED_ONLY, "src/config.local.h", "pkg/auth.json")
+        preview = self.run_gc(fixture, "--worktrees", "-n")
+        out = preview.stdout + preview.stderr
+        self.assertEqual(preview.returncode, 0, out)
+        self.assertIn("would remove  %s  (landed)" % lane, out)     # the line `--auto`'s counter reads, unchanged
+        for rel in ("src/config.local.h", "pkg/auth.json"):
+            self.assertIn(rel, out, "the preview does not say %s goes with the lane" % rel)
+        self.assertNotIn("pkg/plxnative", out)
+        self.assertTrue(lane.exists())
+        # a human typing `--worktrees` is asking for the removal, private files and all, and is told what went
+        result = self.run_gc(fixture, "--worktrees")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertFalse(lane.exists(), out)
+        self.assertIn("src/config.local.h", out)
+
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_every_gitignore_pattern_is_either_build_output_or_kept_as_private(self):
+        # The classification of "build output" is a list in build-gc.sh; the source of truth for what is ignored is
+        # .gitignore. This ties them: a pattern added to .gitignore must be decided here (build output, or kept)
+        # or the lane that holds its sample path is spared forever and this test names it.
+        spec = importlib.util.spec_from_file_location("oguard", ROOT / ".claude/hooks/outbound-guard.py")
+        guard = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guard)
+        kept_patterns = {"src/config.local.h", "local.env", "tests/manifest.local.json", ".claude/worktrees/",
+                         "sysroot/", "rust-poc/", ".abi-cache/", ".webos-ndk/", ".tv-mac", ".tv-host",
+                         ".tv-dpad-pass", ".tv-remote-url", "pkg/diagnostics/", "pkg/auth.json", "pkg/lab.json",
+                         "pkg/telemetry.local.json", "tests/fixtures/softfloat/arm.tbl", "**/plxnative-recordings/"}
+        derived, kept = {}, {rel: rel for rel in guard.PRIVATE_FILES}      # listed form -> file to create
+        for line in (ROOT / ".gitignore").read_text().splitlines():
+            pat = line.strip()
+            if not pat or pat.startswith(("#", "!")):
+                continue
+            sample = pat.strip("/").replace("**/", "").replace("*", "x")
+            # a pattern ending in `/` matches a directory only: the sample is a file inside one
+            (kept if pat in kept_patterns else derived)[sample] = sample + "/f" if pat.endswith("/") else sample
+        for rel in kept:
+            derived.pop(rel, None)
+        self.assertTrue(len(derived) > 30 and len(kept) > 15, (len(derived), len(kept)))
+        # (1) a lane holding a sample of every build-output pattern is removable, and the preview has nothing to add
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *derived.values())
+        preview = self.run_gc(fixture, "--worktrees", "-n")
+        out = preview.stdout + preview.stderr
+        self.assertIn("would remove  %s  (landed)" % lane, out)
+        self.assertNotIn("not rebuildable", out, "build output was listed as private: " + out)
+        auto = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        self.assertFalse(lane.exists(), "--auto kept a lane holding only .gitignore'd build output: "
+                         + auto.stdout + auto.stderr)
+        # (2) every private pattern, and every file outbound-guard.py guards, is listed by itself
+        fixture = self.fixture(0, 0)
+        lane = self.quiet_landed_lane(fixture, *kept.values())
+        preview = self.run_gc(fixture, "--worktrees", "-n")
+        out = preview.stdout + preview.stderr
+        for rel in kept:
+            self.assertRegex(out, r"(?m)^ +%s$" % re.escape(rel), "%s would go with the lane, unlisted: %s" % (rel, out))
+        auto = self.run_auto(fixture, extra_env=self.UNDER_PRESSURE)
+        self.assertTrue(lane.exists(), "--auto removed a lane holding private files: " + auto.stdout + auto.stderr)
 
     def test_auto_lock_held_exits_quietly(self):
         # A genuinely live owner (this TEST PROCESS's own pid, guaranteed alive for the duration

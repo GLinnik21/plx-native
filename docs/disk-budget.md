@@ -158,6 +158,25 @@ already exists, which is what "already landed" looks like). Rung 0 additionally 
 be clean, not `git worktree lock`ed and idle. A lane with no commits yet also reads merged; that
 costs it a rebuild at worst, and only its derived tree is ever planned, never the worktree.
 
+**`build-gc.sh --worktrees` removes the worktree itself, and `git worktree remove` takes its IGNORED files
+with it.** "Clean" does not see them: a lane can hold `src/config.local.h` (the real Plex token),
+`tests/manifest.local.json`, `pkg/auth.json`, `pkg/lab.json`, `.tv-host`, `.tv-mac`, or its own notes and
+captures, and none of that is rebuildable. Reaching squash-merged lanes made this fire unattended, so the
+two ways of running the mode differ. **By hand** (a human typing `--worktrees`) it removes as before, and
+`-n` and the run list under each lane every ignored path that is not build output, so the human sees what
+goes with it. **Under `--auto`** (the hourly agent and the `SessionEnd` hook; the mode's own marker is
+`PLX_GC_AUTO_IDLE_MIN`, which `--auto` sets around that one stage) a lane is removed only when EVERY ignored
+path in it is build output: it is kept, reported with the reason `private` and the paths that kept it, and
+the log line names them (`worktrees: kept <lane> (<branch>): holds ignored files that are not build
+output: ...`). A lane whose ignored files git could not list is kept too (fail closed). Build output is
+the allow-list `derived_output` in `tools/build-gc.sh`: `rust-modules/target*`, the FFmpeg, Sentry and libass
+trees under `vendor/`, what `make` stages in `pkg/` (the binaries, `.so`s, `.link.*` evidence, `.flavor`,
+`.build-config`), `ipkroot/`, `src/*.o`, `stub/*.so`, `tools/node_modules`, `__pycache__`, `.DS_Store`
+and a TV session's `.tv-*.pid`/`.log` scratch. Everything else is kept: `pkg/*` is deliberately not a pattern,
+and what was pulled from the television (`.abi-cache/`, `sysroot/`, `tests/fixtures/softfloat/arm.tbl`) is
+kept because getting it back needs the one TV. A new `.gitignore` pattern must be added to that list or named as
+private in `ci/test_build_gc.py`, which fails otherwise; until then a lane holding it is kept, never removed.
+
 ## Evicting a plan
 
 ```
@@ -236,7 +255,8 @@ it.
 
 **`build-gc.sh --auto`** is the planner followed by `--evict`. Always `--orphans` first, unconditionally.
 Below `PLX_GC_MIN_FREE_GIB` free (default 20): `--worktrees` restricted to lanes idle for at least
-`PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
+`PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree) and holding no
+ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
 $PLX_GC_IDLE_MIN --emit` into a temporary file and `--evict` on it. It replaces five fixed stages
 (`--incremental`, `--worktrees`, `--lanes`, `--stale`, `--seed`) with the planner's order, which
 differs: the main checkout's incremental cache is the last resort (rung 6) instead of
@@ -275,7 +295,7 @@ all three at temp directories and never run `--evict` anywhere else.
 | PR | Content |
 |---|---|
 | 1 (#846) | `tools/disk-budget.py` inventory, planner and `report`; `make disk` shows it; `ci/test_disk_budget.py`. No deletions |
-| 2 (this) | `build-gc.sh --evict`, `/tmp` discovery shared with the planner, `worktree_reason` against `origin/main`, `--auto` takes its order from the planner |
+| 2 (this) | `build-gc.sh --evict`, `/tmp` discovery shared with the planner, `worktree_reason` against `origin/main` (and, because that makes `--auto` reach squash-merged lanes, `--worktrees` keeps a lane holding a non-build ignored file when unattended), `--auto` takes its order from the planner |
 | 3 | `disk-preflight` becomes the planner's preflight, an order-only prerequisite of every cargo-invoking target |
 | 4 | A `PreToolUse` hook that catches direct `cargo` in a Claude session |
 | 5 | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe |

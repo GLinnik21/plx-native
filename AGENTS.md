@@ -147,12 +147,14 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   **incremental cache**, not FFmpeg, is most of the bulk.
   `tools/build-gc.sh --incremental|--lanes|--stale|--all` deletes only rebuildable output. After tearing
   a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `origin/main` —
-  which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
+  which `git branch --merged` cannot see once they are squash-merged; the removal takes the lane's
+  IGNORED files too, so `-n` lists the ones that are not build output, e.g. `src/config.local.h`) and then `--orphans` (lane
   target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
   `docs/agent-reference.md` keeps the measurements behind this. None of this has to be run by
   hand any more: `tools/build-gc.sh --auto` reclaims on its own, gated by free space, from a
   `SessionEnd` hook and the optional hourly `make disk-watch` launchd agent. Past `--orphans` and
-  an idle-guarded `--worktrees` it follows the PLANNER's order (`tools/disk-budget.py`,
+  an idle-guarded `--worktrees` (which also keeps any lane holding an ignored file that is not build
+  output, and logs which) it follows the PLANNER's order (`tools/disk-budget.py`,
   `docs/disk-budget.md`): `build-gc.sh --evict PLAN` is the one narrow deleting mode, and it
   re-checks every path of a plan against the live machine immediately before it renames it away
   (a live or idle-window-young tree is skipped, a path that is not a derived build tree is

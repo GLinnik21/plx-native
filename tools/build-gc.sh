@@ -28,7 +28,10 @@
 # below, and it will not touch the MAIN checkout's `target/` unless asked (that is the tree a human
 # iterates in; a lane's is cut for one task). The one exception that asks nothing is `--evict`, which
 # may take the main checkout's `incremental` dirs, and only as the planner's last rung (a refusal
-# otherwise); it never takes the main checkout's `target` itself.
+# otherwise); it never takes the main checkout's `target` itself. The other exception is `--worktrees`:
+# it removes a whole finished checkout, and `git worktree remove` takes the checkout's IGNORED files with
+# it, which can be private and hand-made (`src/config.local.h`, `pkg/auth.json`, a lane's notes). By hand
+# it lists them; unattended (`--auto`) it removes only a checkout whose ignored files are all build output.
 set -eu
 
 # NO GIT CALL HERE MAY WRITE A LANE'S INDEX OR THE REPOSITORY'S OBJECT STORE. `git status` refreshes
@@ -234,7 +237,18 @@ usage: tools/build-gc.sh [MODE] [-n]
                   $PLX_FLEET_DIR if one exists. Branches are never deleted; a removed worktree
                   whose branch still exists is reported as "branch left" so the owner decides.
                   Every worktree NOT removed is reported with one reason: dirty | locked |
-                  unmerged | building | current | main.
+                  unmerged | building | current | main | private.
+                  `git worktree remove` takes the checkout's IGNORED files with it, and "clean"
+                  cannot see them: a lane can hold `src/config.local.h`, `pkg/auth.json`,
+                  `.tv-host`, its own notes or captures. By hand (a human typing `--worktrees`)
+                  the removal stays, and the preview (`-n`) and the run list, under each lane,
+                  every ignored path that is not build output `make` regenerates, so the human
+                  sees what goes with it. Under `--auto` such a lane is KEPT instead (reason
+                  `private`, the paths that kept it listed and written to the log), and so is one
+                  whose ignored files git could not list; a lane whose ignored files are all
+                  build output (cargo target dirs, the FFmpeg/Sentry/libass trees, what `make`
+                  stages in `pkg/`, `__pycache__`, `.DS_Store`) is removed as before. The list is
+                  `derived_output` in this script, an allow-list: an unclassified path keeps a lane.
   --stale         delete SUPERSEDED per-hash cargo artifacts from every `deps/` directory this
                   script can find — inside the lanes, inside the external $PLX_FLEET_DIR lane
                   target dirs, AND inside the MAIN checkout's own `rust-modules/target*` (the only mode
@@ -283,7 +297,10 @@ usage: tools/build-gc.sh [MODE] [-n]
                   $PLX_GC_IDLE_MIN minutes (default 60, judged by the newest mtime anywhere under
                   the worktree and its fleet build tree, target dirs included — a lane an agent
                   might resume in the next few minutes is not the same as one nobody is touching,
-                  and a needless rebuild costs real money); then, if still below, the PLANNER's
+                  and a needless rebuild costs real money) and holding no ignored file that is
+                  not build output (a lane with `src/config.local.h`, `pkg/auth.json` or its own
+                  notes is kept and the log says which paths kept it: nobody is there to read
+                  what the removal takes); then, if still below, the PLANNER's
                   order: `tools/disk-budget.py reclaim --to $PLX_GC_MIN_FREE_GIB --emit` writes the
                   plan and `--evict` follows it (garbage, other lanes' incremental caches, younger
                   /tmp trees, whole idle lane trees, the `--stale` sweep, and the main checkout's
@@ -488,7 +505,8 @@ run_auto_planner() {
 # The orchestrator. `--orphans` runs first and unconditionally: it is the cheapest, safest mode this
 # script has, reclaiming trees that literally nothing on the machine can refer to again, so there is
 # no reason to gate it on pressure at all. Below the threshold: `--worktrees` (a finished lane
-# outright, but only one idle for the guard window, as `--lanes` always demanded), then the
+# outright, but only one idle for the guard window, as `--lanes` always demanded, and only one whose
+# ignored files are all build output: nobody reads what the removal takes), then the
 # planner's order. Under `-n` nothing is ever freed, so every stage the CURRENT pressure would
 # trigger is shown, which is the honest reading of "preview the plan".
 #
@@ -1174,6 +1192,71 @@ worktree_reason() {
   if [ -n "$_mt" ] && [ "$_mt" = "$_maintree" ]; then echo ""; else echo unmerged; fi
 }
 
+# IGNORED FILES GO WITH A WORKTREE. `git worktree remove` deletes everything in the checkout that git does
+# not track, ignored files included, and "working tree clean" (`worktree_reason`'s `dirty` test) does not see
+# them: a lane can hold `src/config.local.h` (the real Plex token), `tests/manifest.local.json`, `pkg/auth.json`,
+# `pkg/lab.json`, `.tv-host`, `.tv-mac` and the other gitignored private files `.claude/hooks/outbound-guard.py`
+# lists, or its own notes and captures, none of which `make` can rebuild. Before the squash check read
+# `origin/main` this never fired for a squash-merged lane; now `--auto` reaches them unattended, hourly.
+#
+# `derived_output` says whether one IGNORED path (relative to the worktree, no trailing slash) is output that
+# `make` or a tool regenerates from tracked sources. It is an ALLOW-list on purpose: a path nobody classified
+# is NOT build output, and the failure of a missing entry is a lane that stays (logged, with the path) until
+# someone looks, where the failure of a wrong entry is a deleted token. The source is `.gitignore` itself, whose
+# sections say which of their entries are derived; the first line is the `lane_trees` glob and the vendor line
+# covers `vendor_trees` and the sibling trees that function does not list (`--lanes` reclaims a tree's CONTENTS,
+# this asks whether the path is only ever output). `ci/test_build_gc.py` walks every `.gitignore` pattern and fails
+# on one that is neither listed here nor named there as kept, so the two cannot drift. `pkg/*` is deliberately
+# NOT a pattern: `pkg/auth.json`, `pkg/lab.json`, `pkg/telemetry.local.json` and `pkg/diagnostics/` live there.
+# Kept on purpose, though cheap to refetch: what was PULLED FROM THE TV (`.abi-cache/`, `sysroot/`,
+# `tests/fixtures/softfloat/arm.tbl`), which needs the one television to get back.
+derived_output() {
+  case "$1" in
+    rust-modules/target*) ;;                                    # every feature set's cargo target dir
+    vendor/ffmpeg-*|vendor/sentry-native-*|vendor/libass-*|vendor/downloads|vendor/nanosvg|vendor/vendor) ;;
+    pkg/plxnative|pkg/plxnative-storage|pkg/plxnative-stackwalk|pkg/plxnative.debug|pkg/threadprobe) ;;
+    pkg/mali-irq-sample|pkg/sockprobe|pkg/logmprobe) ;;
+    pkg/*.ipk|pkg/ipk.sha256|pkg/lib*-plx.so.*|pkg/libass-plx-host.so.0*|pkg/libass-plx.0.dylib.*.new) ;;
+    pkg/*.dylib|pkg/symbols|pkg/.ffabi-ok|pkg/.ffabi-host-ok|pkg/.build-config|pkg/.config-local-stamp) ;;
+    pkg/.flavor|pkg/PlxNative.app|pkg/PlxNative-*|pkg/*.link.*|pkg/link-evidence) ;;
+    ipkroot/*.tar.gz|ipkroot/debian-binary|ipkroot/data/usr|stub/*.so|*.o) ;;
+    tools/node_modules|__pycache__|*/__pycache__|*.pyc|.DS_Store|*/.DS_Store) ;;
+    .tv-*.pid|.tv-*.log) ;;                                     # a session's scratch, not its address or password
+    tests/fixtures/out|tests/fixtures/*.mkv|tests/fixtures/*.mp4|tests/fixtures/*.sup|tests/fixtures/fixtures.json) ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+# The ignored paths in worktree `$1` that are NOT build output, one per line (empty: removing it takes nothing
+# `make` cannot rebuild). `--ignored=matching` names each ignored path at the granularity of the pattern that
+# ignores it (`vendor/downloads/`, not a `vendor/` that merely contains it), and a directory is never walked, so
+# a multi-gigabyte `target/` costs one line. Returns 1 when git cannot answer — the caller must not read that
+# as "nothing". A path git quotes (spaces) never matches `derived_output`, so it is listed: kept, not guessed at.
+private_ignored_paths() {
+  _pst=$(git -C "$1" -c core.quotePath=false status --porcelain --ignored=matching 2>/dev/null) || return 1
+  printf '%s\n' "$_pst" | sed -n 's/^!! //p' | while IFS= read -r _pp; do
+    _pp=${_pp%/}
+    if ! derived_output "$_pp"; then printf '%s\n' "$_pp"; fi
+  done
+}
+# `$1` heading, `$2` newline-separated paths: at most fifty under the heading (a `*.log` pattern can ignore
+# thousands of files), the rest as a count.
+print_paths() {
+  printf '%s\n' "$2" | awk -v h="$1" 'NR <= 50 { if (NR == 1) print h; print "      " $0 }
+                                      END { if (NR > 50) printf "      ... and %d more\n", NR - 50 }'
+}
+# By hand: what removing the worktree takes that `make` cannot rebuild, or that git could not say. Reads the
+# `--worktrees` loop's `_priv` / `_priv_ok`; `$1` is the heading.
+print_private_note() {
+  if [ -z "$_priv_ok" ]; then printf '      git could not list its ignored files\n'
+  elif [ -n "$_priv" ]; then print_paths "$1" "$_priv"; fi
+}
+# The same for the log: one line, the first five.
+join_paths() {
+  printf '%s\n' "$1" | awk 'NR <= 5 { s = s (NR > 1 ? ", " : "") $0 }
+                            END { if (NR > 5) s = s sprintf(", ... and %d more", NR - 5); print s }'
+}
+
 install_worktree_cargo_policy
 BASE_REF=$(resolve_base_ref)
 
@@ -1803,11 +1886,20 @@ worktrees)
       printf '  %-9s %s  (%s)\n' "$reason" "$w" "$branch"
       continue
     fi
+    # What removing it would take that `make` cannot rebuild (see `private_ignored_paths`): read BEFORE the
+    # removal, since afterwards there is nothing to read. Only a lane that is otherwise removable gets here,
+    # so the probe is one `git status` per finished lane, never one per lane.
+    _priv_ok=1
+    _priv=$(private_ignored_paths "$w") || _priv_ok=
     # Under `--auto` only (PLX_GC_AUTO_IDLE_MIN is set by `run_auto_mode`'s call into this mode, never
-    # by a human typing `--worktrees`): a lane that LOOKS finished is not necessarily nobody's. A
+    # by a human typing `--worktrees`; it is this mode's "nobody is watching" marker): a lane that LOOKS
+    # finished is not necessarily nobody's. A
     # squash can land while an agent is still in the worktree reading it or about to branch from it,
     # and removing it then costs that agent its checkout. The same window `--evict` applies to another
     # lane's tree (`ev_lane_active`), over the worktree AND the lane's external build tree.
+    # And nobody is watching what goes with it: a lane holding an ignored file that is not build output
+    # (a private token, a lab session, a capture, notes) is kept, with the paths that kept it, and so is a
+    # lane whose ignored files git could not list. By hand the human is shown them instead (below).
     if [ -n "${PLX_GC_AUTO_IDLE_MIN-}" ]; then
       _lane_active=
       if ! idle_lane "$w" "$PLX_GC_AUTO_IDLE_MIN"; then _lane_active=1; fi
@@ -1819,9 +1911,22 @@ worktrees)
         printf '  recently active, skipped  %s  (%s)\n' "$w" "$branch" >&2
         continue
       fi
+      if [ -z "$_priv_ok" ] || [ -n "$_priv" ]; then
+        printf '  %-9s %s  (%s)\n' private "$w" "$branch"
+        if [ -z "$_priv_ok" ]; then
+          _why="git could not list its ignored files"
+          printf '      %s\n' "$_why"
+        else
+          _why="holds ignored files that are not build output: $(join_paths "$_priv")"
+          print_paths "      ignored and not build output, so it stays:" "$_priv"
+        fi
+        if [ -z "$DRY" ]; then gc_log "worktrees: kept $w ($branch): $_why"; fi
+        continue
+      fi
     fi
     if [ -n "$DRY" ]; then
       printf '  would remove  %s  (%s)\n' "$w" "$branch"
+      print_private_note "      ignored and not rebuildable, goes with it:"
       continue
     fi
     # `worktree_reason` answered "building?" from the snapshot taken once before this whole loop
@@ -1844,6 +1949,7 @@ worktrees)
     # all).
     if git worktree remove "$w" 2>&1; then
       printf '  removed       %s  (%s)\n' "$w" "$branch"
+      print_private_note "      ignored and not rebuildable, went with it:"
       # Same staleness risk as above for the external tree, plus `$FLEET_DIR` itself: `${VAR-def}`
       # only substitutes when VAR is UNSET, so `PLX_FLEET_DIR=""` in the environment leaves
       # `FLEET_DIR` empty rather than defaulted, and `"$FLEET_DIR/$(basename "$w")"` would then be
