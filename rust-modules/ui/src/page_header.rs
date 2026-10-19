@@ -19,7 +19,7 @@
 //! [`TabStrip`] and its focus pop through a [`CtlPop`], both owned by the SCREEN that wears the
 //! row (never by the row: a library switch replaces the whole header, and a capsule that lived in
 //! it would land afresh instead of travelling). [`PageHeader::step`] steps them (the focus capsule
-//! travels on the bar's spring; a changed selection lands under it, [`SelMark::Lands`]) and
+//! travels on the bar's spring; a changed selection's plate travels with it, [`SelMark::Travels`]) and
 //! [`PageHeader::draw`] paints plates first, then each label inked by what is under it, pixel by
 //! pixel: inside a capsule's drawn rounded shape in that capsule's ink and elsewhere in the resting
 //! one ([`TabStrip::pill_ink`]).
@@ -314,19 +314,19 @@ impl PageHeader {
     }
 
     /// **One frame of the row's motion**, on the screen's own `capsules` and `pop`. The focus
-    /// capsule always travels, on the top bar's spring; the selection plate LANDS under it
-    /// ([`SelMark::Lands`]): selection only ever changes by pressing, under a focus capsule that is
-    /// already on the pill, so the path a sliding plate would take is a grey edge crawling out from
-    /// behind the accent one. `selected` and `focused` are indices into `layout.items` (`-1`: none;
-    /// focus off the row closes the pop). The span a capsule follows is the item's plate, the same
-    /// geometry the row is laid out and hit-tested with.
+    /// capsule travels on the top bar's spring and the selection plate travels with it
+    /// ([`SelMark::Travels`], the same spring): pressing a library name selects it under a focus
+    /// capsule already on the pill, and the plate follows rather than being cut onto it in one
+    /// frame (design review S5, "OK moves the plate"). `selected` and `focused` are indices into
+    /// `layout.items` (`-1`: none; focus off the row closes the pop). The span a capsule follows is
+    /// the item's plate, the same geometry the row is laid out and hit-tested with.
     ///
     /// **Decoration, not layout** ([`plx_machine::idle::decorative`]): the capsules and the pop move
     /// nothing but themselves, so they wake the present gate and never hold a pushed page's
     /// snapshot, which the page-freeze keeps until the page's LAYOUT stops moving.
     pub fn step(layout: &HeaderLayout, selected: i32, focused: i32, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
         plx_machine::idle::decorative(|| {
-            capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Lands, dt);
+            capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Travels, dt);
             pop.step((focused >= 0).then_some(0), dt);
         });
     }

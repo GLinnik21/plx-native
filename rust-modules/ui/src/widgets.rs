@@ -5608,12 +5608,13 @@ pub struct TabStrip {
 /// Selection is a different statement, and on some strips (the header row) the path is noise.
 #[derive(Clone, Copy, PartialEq)]
 pub enum SelMark {
-    /// **It travels**, as the focus capsule does: the shared top tab bar and the sources popover's
-    /// segmented control, where the plate marks a page you are ON and sliding it reads as the row
-    /// re-pointing itself.
+    /// **It travels**, as the focus capsule does: the shared top tab bar, the sources popover's
+    /// segmented control and a page's header row ([`crate::page_header`]), where the plate marks a
+    /// page or library you are ON and "OK moves the plate" (design review S5: a plate cut onto the
+    /// new pill in one frame reads as a different mark appearing, not as the selection moving).
     Travels,
     /// **It lands** on the newly selected pill with no path in between — the detail page's season
-    /// strip (owner, 2026-08-22: the sliding grey pill "does not fit") and a page's header row.
+    /// strip (owner, 2026-08-22: the sliding grey pill "does not fit").
     ///
     /// The case is worth stating because it is the one where the travel was invisible AND ugly at
     /// the same time. Selection only ever changes here by pressing a season, and the press leaves
