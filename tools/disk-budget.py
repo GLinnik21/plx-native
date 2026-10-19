@@ -969,14 +969,25 @@ def parse_lsof(text: str, ignore_pids: Sequence[int] = ()) -> LiveSnapshot:
 
 
 def ancestor_pids() -> List[int]:
-    """This process and its parents: a `make disk` running in a checkout is not a build in it."""
+    """This process and its parents: a `make disk` running in a checkout is not a build in it.
+
+    One read of the process table, not a `ps -p` per hop: a process spawn is the expensive thing here
+    (build-gc.sh's walk makes the same single read). A `ps` that fails leaves just this process."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    parent: Dict[int, int] = {}
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+            parent[int(fields[0])] = int(fields[1])
     pids, pid = [], os.getpid()
     for _ in range(32):
         if pid <= 1:
             break
         pids.append(pid)
-        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True)
-        pid = int(out.stdout.strip()) if out.stdout.strip().isdigit() else 0
+        pid = parent.get(pid, 0)
     return pids
 
 

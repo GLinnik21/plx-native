@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,41 @@ def git_has_merge_tree():
     m = re.search(r"(\d+)\.(\d+)", out)
     return bool(m) and (int(m.group(1)), int(m.group(2))) >= (2, 38)
 MODES = ("--incremental", "--orphans", "--lanes", "--stale", "--cache", "--worktrees", "--all")
+
+# HANG GUARD, NOT A SPEED BOUND. Every run of the script below ends at the child's own exit; this is
+# only how long a test waits for a child that never exits before it gives up and fails. The honest cost
+# of one run is CPU, not wall: an `--auto` is ~1.3 CPU-seconds (about 150 short-lived processes at ~2 ms
+# of CPU each on an Apple M4, plus three python starts), and the whole file is ~65 CPU-seconds. Wall
+# time is that CPU divided by the share the scheduler grants, so it follows the machine's load:
+# measured on a Mac with load 45-65 from other lanes' builds, one `--auto` took 2.5-13 s and the
+# slowest test 13 s, and a fixed 30 s bound failed every lane's `make check` whenever a load spike
+# stretched one run past it. 600 s is far past any spike and still ends a genuine hang inside the
+# `make check` step's own budget; do not tighten it to "catch slowness" - a slow run is a loaded
+# machine, not a bug (test_a_hung_run_is_killed_with_everything_it_started is the proof a hang is
+# still caught).
+HANG_GUARD_SECS = 600
+
+
+def run_guarded(argv, cwd, env, timeout=HANG_GUARD_SECS):
+    """`subprocess.run(text=True, capture_output=True)` whose timeout actually ends the run.
+
+    `subprocess.run(timeout=)` kills only the direct child and then waits for the pipes to close, but
+    the script's stages run in `$(...)` and python children that inherit those pipes: a hung grandchild
+    keeps them open and the "timeout" blocks forever in `communicate()`. The child is therefore started
+    as its own session and process-group leader, and on timeout the whole group - which this call
+    created, so the pgid is the pid it started - is killed before `TimeoutExpired` is raised."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
 class BuildGcTests(unittest.TestCase):
@@ -94,16 +130,86 @@ class BuildGcTests(unittest.TestCase):
 
     def run_gc(self, fixture, *args):
         repo, env, _, _ = fixture
-        return subprocess.run(["sh", "tools/build-gc.sh", *args], cwd=repo, env=env,
-                              text=True, capture_output=True, timeout=20)
+        return run_guarded(["sh", "tools/build-gc.sh", *args], repo, env)
 
-    def run_auto(self, fixture, *args, extra_env=None, timeout=30):
+    def run_auto(self, fixture, *args, extra_env=None):
         repo, env, _, _ = fixture
         env = dict(env)
         if extra_env:
             env.update(extra_env)
-        return subprocess.run(["sh", "tools/build-gc.sh", "--auto", *args], cwd=repo, env=env,
-                              text=True, capture_output=True, timeout=timeout)
+        return run_guarded(["sh", "tools/build-gc.sh", "--auto", *args], repo, env)
+
+    def test_an_auto_run_reads_the_process_table_once_per_ancestor_walk(self):
+        # The walk up our own ancestors (so a `make disk` that is blocked on us is not mistaken for a
+        # builder) used to run `ps -o ppid= -p PID` once per hop, in the shell's `live_checkouts` of every
+        # stage and again in the planner's `ancestor_pids()`: 67 `ps` for one `--auto` here, more under a
+        # deeper `make check` -> python -> sh chain. A process spawn costs ~2 ms of CPU and, under load,
+        # many times that in wall time, so the count is the cost. This is a DESIGN assertion on the number
+        # of spawns (one read of the process table per walk, whatever the depth), not a speed bound.
+        fixture, _ = self.evict_fixture(lanes=1)
+        repo, env, _, _ = fixture
+        log = repo.parent / "ps.log"
+        tools = Path(env["PATH"].split(os.pathsep)[0])
+        stub = tools / "ps"
+        stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shlex.quote(str(log)) + "\nexec "
+                        + shlex.quote(shutil.which("ps")) + ' "$@"\n')
+        stub.chmod(0o755)
+        result = self.run_auto(fixture, extra_env={"PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        calls = log.read_text().splitlines()
+        per_hop = [c for c in calls if "ppid=" in c and "-p " in c]
+        self.assertEqual(per_hop, [], "an ancestor walk spawned `ps` once per hop:\n" + "\n".join(calls[:12]))
+        self.assertTrue(calls, "the walk never ran, so this test proves nothing: " + diagnostic)
+        # one table read per walk: the stages (orphans, worktrees, evict) and the planner's probes
+        self.assertLessEqual(len(calls), 10, "\n".join(calls))
+
+    def test_a_hung_run_is_killed_with_everything_it_started(self):
+        # The guard above is only worth having if a genuine hang still ends the test. `git` is the first
+        # thing the script runs, so a `git` that never returns hangs it at once: the stub records its pid
+        # and becomes a `sleep` that inherits the script's pipes (its stderr is the test's capture pipe),
+        # the case where `subprocess.run(timeout=)` kills the shell and then waits on `communicate()`
+        # forever. The guard must raise promptly AND leave nothing of the run alive.
+        fixture = self.fixture(0, 0)
+        repo, env, _, _ = fixture
+        pidfile = repo.parent / "hung.pid"
+        stub = Path(env["PATH"].split(os.pathsep)[0]) / "git"
+        stub.write_text("#!/bin/sh\necho $$ > " + shlex.quote(str(pidfile)) + "\nexec sleep 3600\n")
+        stub.chmod(0o755)
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_guarded(["sh", "tools/build-gc.sh", "--auto"], repo, env, timeout=5)
+        self.assertLess(time.monotonic() - started, 60, "the guard did not end the run")
+        pid = int(pidfile.read_text())
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, signal.SIGKILL)  # do not leave our own hung child behind, then fail
+            self.fail("the hung grandchild (pid %d) outlived the guard" % pid)
+
+    def test_a_run_whose_grandchild_holds_the_pipes_is_still_ended_by_the_guard(self):
+        # The same property without the script: a shell that backgrounds a sleeper holding its stdout.
+        pidfile = self.root / "sleeper.pid"
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_guarded(["sh", "-c", "sleep 3600 & echo $! > " + shlex.quote(str(pidfile)) + "; wait"],
+                        self.root, os.environ.copy(), timeout=2)
+        self.assertLess(time.monotonic() - started, 60)
+        pid = int(pidfile.read_text())
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, signal.SIGKILL)
+        self.fail("the sleeper (pid %d) outlived the guard" % pid)
 
     def assert_live_refusal(self, pid, pgid):
         for mode in MODES:
@@ -329,8 +435,7 @@ class BuildGcTests(unittest.TestCase):
         roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
         repo, env, _, _ = fixture
         env = dict(env, PLX_FLEET_DIR="")
-        result = subprocess.run(["sh", "-x", "tools/build-gc.sh", "--worktrees"], cwd=repo,
-                                env=env, text=True, capture_output=True, timeout=20)
+        result = run_guarded(["sh", "-x", "tools/build-gc.sh", "--worktrees"], repo, env)
         trace = result.stdout + result.stderr
         name = roots[0].name
         self.assertEqual(result.returncode, 0, trace)
@@ -522,8 +627,7 @@ class BuildGcTests(unittest.TestCase):
         fixture = self.fixture(0, 0, pgrep_body=stub)
         repo, env, sentinels, _ = fixture
         # An intermediate shell, so an ancestor really does have the repository as its cwd.
-        result = subprocess.run(["sh", "-c", "sh tools/build-gc.sh --all"], cwd=repo, env=env,
-                                text=True, capture_output=True, timeout=20)
+        result = run_guarded(["sh", "-c", "sh tools/build-gc.sh --all"], repo, env)
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         self.assertNotIn("in use, skipped", diagnostic)
@@ -606,8 +710,7 @@ class BuildGcTests(unittest.TestCase):
         recent = time.time() - 2 * 3600
         os.utime(young_but_superseded, (recent, recent))
         env = dict(env, PLX_GC_STALE_HOURS="3")
-        result = subprocess.run(["sh", "tools/build-gc.sh", "--stale"], cwd=repo, env=env,
-                                text=True, capture_output=True, timeout=20)
+        result = run_guarded(["sh", "tools/build-gc.sh", "--stale"], repo, env)
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         self.assertTrue(young_but_superseded.exists(),
@@ -969,13 +1072,12 @@ class BuildGcTests(unittest.TestCase):
         plan.write_text("\n".join(out) + "\n")
         return plan
 
-    def run_evict(self, fixture, plan, *args, extra_env=None, cwd=None, timeout=90):
+    def run_evict(self, fixture, plan, *args, extra_env=None, cwd=None):
         repo, env, _, _ = fixture
         env = dict(env)
         if extra_env:
             env.update(extra_env)
-        return subprocess.run(["sh", "tools/build-gc.sh", "--evict", str(plan), *args],
-                              cwd=cwd or repo, env=env, text=True, capture_output=True, timeout=timeout)
+        return run_guarded(["sh", "tools/build-gc.sh", "--evict", str(plan), *args], cwd or repo, env)
 
     def evict_fixture(self, lanes=2, pid=0, pgid=0, pgrep_body=None, planner=True):
         fixture = self.fixture(pid, pgid, pgrep_body=pgrep_body)
@@ -1459,8 +1561,7 @@ class InstallDiskWatchTests(unittest.TestCase):
 
         # The installer is invoked FROM the lane, not from `main` — exactly the case that broke:
         # `ROOT=$(cd "$(dirname "$0")/.." && pwd)` alone would resolve to the LANE.
-        result = subprocess.run(["sh", str(lane / "tools" / "install-disk-watch.sh")],
-                                cwd=lane, env=env, text=True, capture_output=True, timeout=20)
+        result = run_guarded(["sh", str(lane / "tools" / "install-disk-watch.sh")], lane, env)
         diagnostic = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, diagnostic)
         plist = home / "Library/LaunchAgents/com.plxnative.build-gc.plist"
