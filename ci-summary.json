@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T20:07:45Z",
+ "generated": "2026-10-19T20:14:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,10 +65,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -28.0,
+   "change30_pct": -28.1,
    "change7_pct": 40.1,
-   "d30": 675,
-   "delta30": -189,
+   "d30": 676.0,
+   "delta30": -190.0,
    "delta7": 139,
    "group": "ci",
    "id": "pr_wait",
