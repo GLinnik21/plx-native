@@ -1688,8 +1688,8 @@ scroll capsule) and the upper one is a composite band that captures INLINE in th
 Library's tuck ramp with the capsule up was exactly that on every ramp frame (mean 12.91M GPU
 cycles against 10.73M for the same page with one library and no capsule; 25.6% of the ramp's frames
 late against 2.4%): the inline capture costs about 1.4M more than the band's direct job. The page
-now sequences the two (`scroll_chrome::tuck` then `capsule_alpha`), so a ramp frame carries one
-direct job. With `plxnative-framedrop` armed the new `inl` span times each inline capture, so a frame
+now sequences the two (`scroll_chrome::Handoff`: the chrome leaves, then the capsule arrives), so a
+ramp frame carries one direct job. With `plxnative-framedrop` armed the new `inl` span times each inline capture, so a frame
 whose FRAMEDROP line carries `inl` in its `spans=` took the inline path (it counts them on the frames
 that line is logged for, not on every frame). Two caveats: the
 per-pass split of the inline increment (copy, render-pass split, chain) is not measured, and the

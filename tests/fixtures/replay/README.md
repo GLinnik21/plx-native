@@ -427,3 +427,12 @@ headers by `tools/plxnative-rec rerecord`. All three anchors were refused on loa
 `tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
 retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
 difference counter at zero.
+
+The chrome handoff (`plx_ui::scroll_chrome::Handoff`, the decided tucked state and the two drawn
+alphas the Library and the Watchlist page now own; the screen pin moves to `0xcbaf_3fdb_0c28_ad38`)
+moved the state shape from 16328958095966704900 to 4058586095815036115, read from the old and the new
+recorder headers by `tools/plxnative-rec rerecord`. All three anchors were refused on load
+(`StateShape` in the fixture preflight), then freshly recorded against the synthetic server with
+`tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
+retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
+difference counter at zero.

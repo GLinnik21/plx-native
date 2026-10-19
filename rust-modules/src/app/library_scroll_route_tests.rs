@@ -334,11 +334,11 @@ fn glass_press(r: &mut World, glass: &mut plx_ui::frame::glass::GlassPlan, key: 
 /// the lower one (the capsule, in the page layer) blocks the upper one (the band, in the chrome
 /// layer) from a direct job, and the band captures INLINE in the visible pass, a mid-frame
 /// framebuffer copy and the six-pass chain (+1.4M GPU cycles per frame on the television, 25.6% of
-/// the ramp's frames late). So the scroll window hands the place over in sequence, and on every
+/// the ramp's frames late). So the page's handoff hands the place over in sequence, and on every
 /// frame of the trip, through the real dispatcher with the frame loop's own discovery:
 ///  - at most ONE live glass is declared (the band, or the capsule, never both);
 ///  - every invalid source has its own direct job (none is composite);
-///  - the trip really crossed the tuck window each way, with the band at rest and the capsule
+///  - the trip really crossed the tuck threshold each way, with the band at rest and the capsule
 ///    tucked (so the discovery reached both glasses and this is not a vacuous pass).
 #[test]
 fn a_down_into_the_tucked_grid_and_an_up_back_never_leave_a_band_to_capture_inline() {

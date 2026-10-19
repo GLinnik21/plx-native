@@ -163,8 +163,10 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// declares no glass and samples no ground, whatever the lift), and the bar's pointer stops are
     /// withdrawn with it; part way up they sit where the bar is DRAWN ([`NavPresentation::chrome_drawn`],
     /// [`NavPresentation::chrome_rect`]). A page
-    /// answers from state it already animates (the Library derives it from its scroll spring), so
-    /// it needs no motion of its own and a resting page keeps the frame loop asleep.
+    /// answers from a `scroll_chrome::Handoff` it owns (the Library, Collections and the Watchlist:
+    /// decided from the scroll target, run on the `xfade` clock); the handoff reports its own motion
+    /// to the idle gate, so a running one asks for frames and a resting page keeps the frame loop
+    /// asleep.
     fn chrome_tuck(&self) -> f32 {
         0.0
     }

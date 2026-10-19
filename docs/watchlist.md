@@ -214,10 +214,12 @@ offline") takes the details line whatever the picker shows, except Nothing, whic
 A focused row below the first rests with its posters at the first row's y, 244 (`GridSpec::resting`,
 `poster_grid::rest_scroll`: the Library's rule, one function for both pages), and the last rows of a
 long list rest lower because the document's end holds them. So the first scrolled rest is a whole row
-down. The header row fades out over one `TUCK_RAMP` of scroll (`head_alpha`), the top chrome tucks
-over the first half of the ramp that ends at one row pitch (`plx_ui::scroll_chrome::tuck`; the
-second half is the capsule's, which this page does not draw), and the 72 px fade of the
-page's ground takes the top edge, as on the Library. There is NO capsule: the header names no
+down. The page owns one `plx_ui::scroll_chrome::Handoff` (the Library's, one rule for both pages): it is
+decided on the key frame from the scroll TARGET (tucked once the target is within 60 px of one row
+pitch down or past it, untucked once it is 120 px short of a pitch or less) and the top chrome leaves on the `xfade` clock, not on the scroll
+spring's. The header row is the chrome's own alpha (`Handoff::chrome`), so it leaves and returns with
+the bar and has no ramp of its own, and the eased 72 px fade of the page's ground takes the top
+edge, as on the Library. There is NO capsule: the header names no
 library, and the capsule restates the library the header names (`scroll_chrome::capsule_shown` is
 true only for 2+ names).
 
