@@ -553,19 +553,16 @@ fn heading_flow(
     dx
 }
 
+/// The caption of a tile that is NOT a poster: an episode still's air date and a headshot's nothing,
+/// then the server it came from when it is not the household's own. A poster's caption is the Under
+/// posters setting's, built by `registry::captions` (see `RowCards::label`).
 pub(super) fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
     let mut parts = Vec::new();
-    match item {
-        Item::Media(media) if kind == Kind::Episode => {
-            let date = plx_ui::fmt::pretty_date(&media.aired, media.year as i64);
-            if !date.is_empty() {
-                parts.push(date);
-            }
+    if let (Kind::Episode, Item::Media(media)) = (kind, item) {
+        let date = plx_ui::fmt::pretty_date(&media.aired, media.year as i64);
+        if !date.is_empty() {
+            parts.push(date);
         }
-        Item::Media(media) if media.year > 0 => parts.push(media.year.to_string()),
-        // a collection is its size, in the one formatter every collection surface shares
-        Item::Collection(hit) => parts.push(plx_ui::fmt::collection_count(hit.item.subtype.as_deref(), hit.item.child_count)),
-        _ => {}
     }
     if !handle.is_empty() {
         parts.push(handle.into());
@@ -1183,15 +1180,11 @@ mod tests {
         assert_eq!(runs("Collections", "", "").len(), 1);
     }
 
+    /// A tile that is not a poster keeps this caption: an episode still its air date, a headshot
+    /// nothing, each with the server it came from named last. (A poster's caption is the Under
+    /// posters setting's: `a_poster_result_is_worded_by_the_under_posters_builder`.)
     #[test]
-    fn a_caption_identifies_the_result_and_names_a_borrowed_source_last() {
-        let film = Item::Media(plx_data::pms::PmsMovie {
-            title: "Wallace & Gromit".into(),
-            year: 2005,
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Movie, &film, ""), "2005");
-        assert_eq!(subtitle(Kind::Movie, &film, "friend"), "2005 · friend");
+    fn a_still_or_headshot_caption_names_a_borrowed_source_last() {
         let ep = Item::Media(plx_data::pms::PmsMovie {
             kind: 3,
             title: "A Grand Day Out".into(),
@@ -1215,34 +1208,13 @@ mod tests {
         });
         assert_eq!(subtitle(Kind::Episode, &undated, ""), "");
         assert_eq!(subtitle(Kind::Episode, &undated, "friend"), "friend");
-        let bare = Item::Media(plx_data::pms::PmsMovie {
-            title: "Untitled".into(),
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Movie, &bare, ""), "");
-        assert_eq!(subtitle(Kind::Movie, &bare, "friend"), "friend");
         let person = Item::Tag(TagHit {
             name: "Peter Sallis".into(),
             count: 9,
             ..Default::default()
         });
         assert_eq!(subtitle(Kind::Person, &person, ""), "");
-        // a tag-shaped collection lands as a collection hit carrying the tag's count
-        let tagged = |count| Item::Collection(plx_data::search::CollectionHit::from_tag(&TagHit {
-            count,
-            ..Default::default()
-        }));
-        assert_eq!(subtitle(Kind::Collection, &tagged(4), ""), "4 items");
-        assert_eq!(subtitle(Kind::Collection, &tagged(1), ""), "1 item");
-        // a collection that arrived as a full row reads its childCount through the shared
-        // formatter — an empty collection is "0 items", as on its own page
-        let full = |child_count| Item::Collection(plx_data::search::CollectionHit {
-            item: plx_data::pms::PmsMovie { child_count, kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Collection, &full(12), ""), "12 items");
-        assert_eq!(subtitle(Kind::Collection, &full(1), "friend"), "1 item · friend");
-        assert_eq!(subtitle(Kind::Collection, &full(0), ""), "0 items");
+        assert_eq!(subtitle(Kind::Person, &person, "friend"), "friend");
     }
 
     /// Every collection result reaches the shared card as `Art::Poster` with a kind-4 row, which

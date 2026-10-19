@@ -1032,13 +1032,16 @@ impl DetailScreen {
     fn band_open(&self, section: i32) -> f32 {
         // Cast is deliberately absent: it prints a name under every headshot, so its band is
         // occupied whether or not it holds focus (`cast::block_h`).
-        let expand = match section {
-            3 => self.related.band_expand(),
-            6 => self.extras.band_expand(),
-            7 => self.collection.band_expand(),
+        let shelf = match section {
+            3 => &self.related,
+            6 => &self.extras,
+            7 => &self.collection,
             _ => return 0.0,
         };
-        ui_cards::BAND_OPEN * expand.clamp(0.0, 1.0)
+        // …by the band the shelf's OWN policy opens to: the Under posters setting's on the two poster
+        // shelves (Related, the collection's members: 0 / 40 / 72 px), the legacy block under the
+        // landscape Extras row.
+        ui_cards::band_open_for(shelf.band_h()) * shelf.band_expand().clamp(0.0, 1.0)
     }
 
     /// Sum of [`DetailScreen::band_open`] over every section that flows ABOVE `section` — the whole
@@ -1955,6 +1958,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let meta = H::metadata(cx);
+        // Related and the collection's members are POSTER shelves: they follow the Under posters
+        // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
+        // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
+        let policy = Some(crate::registry::captions::policy());
+        self.related.set_caption_policy(policy);
+        self.collection.set_caption_policy(policy);
         // The cards component's one entry: every event reaches every shelf it owns (its pop,
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.

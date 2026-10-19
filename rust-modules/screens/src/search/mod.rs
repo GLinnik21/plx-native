@@ -673,6 +673,11 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         }
     }
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }
+    /// The poster rows follow the Under posters setting; the Episode still row and the Person
+    /// headshot row are not posters and keep the legacy band.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
+    }
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
         let Sec::Row(kind, _) = k else { return None };
         let row = self.rows.iter().position(|row| row.kind == kind)?;

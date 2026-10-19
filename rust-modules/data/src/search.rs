@@ -822,11 +822,25 @@ impl SearchState {
     /// Publish a bounded catalog through the real retained-view boundary, without network work.
     #[cfg(any(test, feature = "test-support"))]
     pub fn publish_shelves_for_test(&mut self, shelves: Vec<Shelf>) {
+        self.publish_shelves(shelves, snapshot_favs);
+    }
+
+    /// [`Self::publish_shelves_for_test`] for a fixture whose pump runs over a retained directory:
+    /// the favourite-library snapshot is the DIRECTORY's, so the published catalog is not
+    /// superseded by the pump's first look at a directory it was not taken from.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn publish_shelves_over_directory_for_test(&mut self, shelves: Vec<Shelf>,
+        directory: crate::stores::browse::DirectoryView<'_>) {
+        self.publish_shelves(shelves, |state| snapshot_favs_from_directory(state, directory));
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn publish_shelves(&mut self, shelves: Vec<Shelf>, snapshot: impl FnOnce(&mut Self)) {
         plx_base::testlock::assert_held("the search store (publish_shelves_for_test)");
         // A published catalog represents completed source answers, not merely painted rows over
         // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
         self.visible = plx_plex::plex::server_roster_gen();
-        snapshot_favs(self);
+        snapshot(self);
         for i in slots() {
             let items = std::array::from_fn(|k| {
                 shelves

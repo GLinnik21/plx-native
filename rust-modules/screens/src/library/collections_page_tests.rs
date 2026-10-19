@@ -127,9 +127,9 @@ fn a_name_the_face_cuts_is_in_the_caption_whatever_the_setting() {
 }
 
 #[test]
-fn an_unknown_count_leaves_no_count_line() {
+fn an_unknown_count_invents_no_count_and_says_what_the_tile_is() {
     let en = "en";
-    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(0)), [None, None]);
+    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(0)), [None, Some("Collection".into())]);
 }
 
 #[test]

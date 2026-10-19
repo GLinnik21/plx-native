@@ -168,18 +168,11 @@ pub fn member_label(item: &PmsMovie) -> String {
     }
 }
 
-pub fn member_caption(item: &PmsMovie) -> TileLabel {
-    if item.kind == 3 {
-        let address = plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64);
-        let caption = match (item.show_title.is_empty(), address.is_empty()) {
-            (false, false) => format!("{} · {}", item.show_title, address),
-            (false, true) => item.show_title.clone(),
-            (true, false) => address,
-            (true, true) => String::new(),
-        };
-        return TileLabel::titled(&item.title, &caption);
-    }
-    ui_cards::poster_label(&tile_facts::of(item))
+/// A member's focused caption: the one Under posters builder, like every other poster. Every kind
+/// goes through it, an episode too (its own title over its "S3 \u{2022} E4" address under the default
+/// details; the persistent mark on the poster, [`member_label`], is a separate thing and stays).
+fn member_caption(item: &PmsMovie) -> TileLabel {
+    crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(item), None, false)
 }
 
 /// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.
@@ -630,6 +623,12 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
         out.extend([Sec::Items, Sec::Status, Sec::Head]);
+    }
+
+    /// The members are posters: the grid's focused band follows the Under posters setting, as the
+    /// Library's does, and `Members::label` words the caption it holds.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (k == Sec::Items).then(crate::registry::captions::policy)
     }
 
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<Members<'a>> {
@@ -1136,15 +1135,27 @@ mod tests {
     }
 
     #[test]
-    fn season_and_episode_projection_uses_persistent_labels_and_show_address_caption() {
+    fn season_and_episode_projection_uses_persistent_labels_and_the_policys_caption() {
+        use crate::registry::captions::TEST_UNDER_POSTERS;
+        use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
         let season = PmsMovie { kind: 2, season_index: 3, title: "Season 3".into(), ..Default::default() };
         assert_eq!(member_label(&season), "SEASON 3");
         let episode = PmsMovie { kind: 3, season_index: 3, ep_index: 4, title: "The Answer".into(),
             show_title: "Example Show".into(), ..Default::default() };
         assert_eq!(member_label(&episode), "S3 · E4");
-        let caption = member_caption(&episode);
-        assert_eq!(caption.title.unwrap().to_str().unwrap(), "The Answer");
-        assert_eq!(caption.caption.unwrap().to_str().unwrap(), "Example Show · S3 · E4");
+        // the focused caption is the Under posters builder's, not a copy of it: an episode is its own
+        // title over its address under the default details, and the Title switch decides the title
+        let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_str().unwrap().to_owned());
+        for (title, details, want) in [
+            (true, Details::YearLength, [Some("The Answer"), Some("S3 \u{2022} E4")]),
+            (false, Details::YearLength, [None, Some("S3 \u{2022} E4")]),
+            (true, Details::None, [Some("The Answer"), None]),
+        ] {
+            TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+            let caption = member_caption(&episode);
+            TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+            assert_eq!([text(&caption.title), text(&caption.caption)], want.map(|line| line.map(str::to_owned)), "title {title}, {details:?}");
+        }
     }
 
     pub(super) fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,

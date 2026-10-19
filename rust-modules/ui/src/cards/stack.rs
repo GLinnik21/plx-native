@@ -243,9 +243,10 @@ pub trait StackPage<H: Host> {
     fn draw_heading(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _lift: f32) {}
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
-    /// The Under posters policy grid section `k` opens its focused caption band by (0 / 80 / 112 px,
-    /// `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 92 px): a page
-    /// whose captions are not the Under posters setting's keeps it.
+    /// The Under posters policy shelf or grid section `k` opens its focused caption band by (0 / 80 /
+    /// 112 px, `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 92 px): a
+    /// section whose tiles are not posters (a landscape still row, a headshot row) keeps it. The
+    /// stack hands it to the section every frame, so a setting changed elsewhere reaches a standing page.
     fn caption_policy(&self, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {
         None
     }
@@ -598,10 +599,16 @@ impl<K: Copy + Eq> Stack<K> {
     /// Hand every grid the page: its top in document space and the scroll.
     fn sync_pages<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
         for i in 0..self.bodies.len() {
-            if let (Body::Grid(g), Some(policy)) = (&mut self.bodies[i], p.caption_policy(self.specs[i].key)) {
-                if g.caption_policy() != Some(policy) {
-                    g.set_caption_policy(policy);
+            match &mut self.bodies[i] {
+                Body::Grid(g) => {
+                    if let Some(policy) = p.caption_policy(self.specs[i].key) {
+                        if g.caption_policy() != Some(policy) {
+                            g.set_caption_policy(policy);
+                        }
+                    }
                 }
+                Body::Shelf(s) => s.set_caption_policy(p.caption_policy(self.specs[i].key)),
+                Body::Plain => {}
             }
         }
         self.retop(p, cx);
@@ -772,13 +779,15 @@ impl<K: Copy + Eq> Stack<K> {
     /// target computed against the live bands chases a moving goal for as long as they animate.
     fn settled_height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, n: usize, focus: usize) -> f32 {
         match &self.specs[n].kind {
-            Kind::Shelf { style, heading } => {
-                if self.len_of(p, cx, n) == 0 {
-                    0.0
-                } else {
-                    heading + style.h + card_row::under_band((n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
+            Kind::Shelf { style, heading } => match &self.bodies[n] {
+                _ if self.len_of(p, cx, n) == 0 => 0.0,
+                // the band the shelf's OWN policy opens to, so a Nothing / one-line / two-line setting
+                // is the destination the scroll target is computed against
+                Body::Shelf(s) => {
+                    heading + style.h + card_row::under_band_for(s.band_h(), (n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
                 }
-            }
+                _ => self.height(p, cx, n),
+            },
             Kind::Grid { .. } => match &self.bodies[n] {
                 Body::Grid(g) => g.settled_height(self.len_of(p, cx, n), n == focus),
                 _ => self.height(p, cx, n),

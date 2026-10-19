@@ -396,20 +396,51 @@ impl World {
     /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
     /// over the same scripted plex.tv, settled.
     pub(super) fn detail_with_disc(name: &str, hex: [u8; 12]) -> World {
-        let mut w = Self::scripted(name);
-        super::show_page(&mut w.d, AppArg::Home);
-        w.frames(20);
-        // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
-        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        Self::detail_page(name, plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
             guid: format!("plex://movie/{}", plx_data::watchlist::encode_hex(&hex)),
             ..Default::default()
-        }));
+        })
+    }
+
+    /// The Detail page of record `movie` holding `detail` (its `related` shelf, its collection), pushed
+    /// over Home over the same scripted plex.tv, settled.
+    pub(super) fn detail_page(name: &str, detail: plx_data::metadata::Detail) -> World {
+        let mut w = Self::scripted(name);
+        super::show_page(&mut w.d, AppArg::Home);
+        w.frames(20);
+        // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
+        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(detail));
         super::nav_push_with_return(&mut w.d, detail_arg("movie"), Default::default());
         w.frames(60);
         assert!(w.on(&detail_arg("movie")), "premise: the Detail page is on top");
+        w
+    }
+
+    /// The Search page with `shelves` (of the world's own server) published as its results, settled.
+    /// The query is set the way a typed one is, so the page shows results rather than recents.
+    pub(super) fn search_results(name: &str, shelves: impl FnOnce(plx_plex::plex::ServerId) -> Vec<plx_data::search::Shelf>) -> World {
+        let mut w = Self::new(name);
+        super::show_page(&mut w.d, AppArg::Search);
+        w.bridge.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
+        let shelves = shelves(w.own);
+        w.bridge.stores.search.publish_shelves_over_directory_for_test(shelves, w.bridge.directory.view());
+        w.frames(60);
+        assert!(w.on(&AppArg::Search), "premise: Search is on top");
+        w
+    }
+
+    /// The person page of `actor-a` whose filmography is `movies` and `shows`, `movie_roles` being the
+    /// characters the roles batch named the movie tiles' credits as, settled.
+    pub(super) fn person_page(name: &str, movies: Vec<plx_data::pms::PmsMovie>, shows: Vec<plx_data::pms::PmsMovie>, movie_roles: &[&str]) -> World {
+        let mut w = Self::new(name);
+        super::show_page(&mut w.d, person_arg("actor-a"));
+        w.frames(30);
+        w.bridge.stores.person.install_for_test(movies, shows);
+        w.bridge.stores.person.install_roles_for_test(0, movie_roles.iter().map(|r| (*r).to_owned()).collect());
+        w.frames(60);
         w
     }
 

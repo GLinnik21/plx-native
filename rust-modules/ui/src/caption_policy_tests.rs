@@ -190,3 +190,59 @@ fn a_details_line_the_tile_has_no_facts_for_says_its_identity() {
         assert_eq!(at(details, &films).as_deref(), Some("7 films"), "{details:?}");
     }
 }
+
+/// **No band over nothing**: a movie with no year, a show with no year and a collection of unknown
+/// size have no fact and no identity to say, so the last fallback says what KIND they are, in the
+/// locale's words, under every picker. Nothing still has no line, and a tile that is none of those
+/// (here a bare default with no kind flag) has nothing to say.
+#[test]
+fn a_tile_with_no_facts_and_no_identity_says_what_kind_it_is() {
+    let at = |details, f: &CaptionFacts, cx: &LocaleContext| caption_lines(&CaptionPolicy { title: false, details }, f, cx)[1].clone();
+    let pickers = [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore];
+    let movie = CaptionFacts { is_movie: true, year: Some(0), ..Default::default() };
+    let show = CaptionFacts { is_show: true, ..Default::default() };
+    let collection = CaptionFacts { subtype: Some("movie".into()), ..Default::default() };
+    for &l in Language::SHIPPED.iter() {
+        with_language(l, |cx| {
+            for details in pickers {
+                for (f, word) in [
+                    (&movie, plx_platform::i18n::msg::browse_kind_movie_in(cx)),
+                    (&show, plx_platform::i18n::msg::browse_kind_show_in(cx)),
+                    (&collection, plx_platform::i18n::msg::browse_collection_kind_in(cx)),
+                ] {
+                    assert_eq!(at(details, f, cx).as_deref(), Some(&*word), "{l:?} {details:?}");
+                }
+            }
+        });
+    }
+    let cx = i18n::english();
+    assert_eq!(at(DetailsKind::Genre, &movie, cx).as_deref(), Some("Movie"));
+    assert_eq!(at(DetailsKind::YearLength, &show, cx).as_deref(), Some("Show"));
+    assert_eq!(at(DetailsKind::AgeRatingScore, &collection, cx).as_deref(), Some("Collection"));
+    assert_eq!(at(DetailsKind::None, &movie, cx), None, "Nothing has no fallback");
+    assert_eq!(at(DetailsKind::Genre, &CaptionFacts::default(), cx), None, "no kind, no name, no facts: nothing to say");
+    // a year, a genre or a size beats the kind word
+    assert_eq!(at(DetailsKind::YearLength, &CaptionFacts { year: Some(1995), ..movie.clone() }, cx).as_deref(), Some("1995"));
+    assert_eq!(at(DetailsKind::Genre, &CaptionFacts { genre: Some("Crime".into()), ..movie.clone() }, cx).as_deref(), Some("Crime"));
+    assert_eq!(at(DetailsKind::Genre, &CaptionFacts { child_count: Some(7), ..collection.clone() }, cx).as_deref(), Some("7 films"));
+}
+
+/// A tile from a source that is not the household's own is credited after its details line, so
+/// two servers' copies of one title read apart; Nothing has no details line to credit it on.
+#[test]
+fn a_friends_server_is_credited_after_the_details_line() {
+    let cx = i18n::english();
+    let f = CaptionFacts {
+        title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), is_movie: true,
+        source: Some("@alex".into()), ..Default::default()
+    };
+    let lines = |title, details| caption_lines(&CaptionPolicy { title, details }, &f, cx);
+    assert_eq!(lines(true, DetailsKind::Genre), [Some("Heat".into()), Some("Crime \u{b7} @alex".into())]);
+    assert_eq!(lines(false, DetailsKind::YearLength), [None, Some("1995 \u{b7} @alex".into())]);
+    assert_eq!(lines(true, DetailsKind::None), [Some("Heat".into()), None], "Nothing drops the credit with the line");
+    let bare = CaptionFacts { year: Some(0), genre: None, ..f.clone() };
+    assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &bare, cx)[1].as_deref(),
+        Some("Movie \u{b7} @alex"), "the kind word is the line it is credited on");
+    let none = CaptionFacts { source: Some(String::new()), ..f };
+    assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &none, cx)[1].as_deref(), Some("Crime"), "an empty handle credits nothing");
+}

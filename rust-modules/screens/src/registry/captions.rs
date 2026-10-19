@@ -1,7 +1,9 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), for the Library grid, the Collections page, the Watchlist,
-//! Home's shelves and the Library's Recommended poster shelves. (Search, the person page and Detail's
-//! Related and Extras shelves are not on the policy; they keep the legacy band.)
+//! (Settings > Libraries > Under posters), for EVERY poster tile: the Library grid, the Collections
+//! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
+//! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
+//! members. (A landscape still or a headshot is not a poster and is not on the policy: Search's Episode
+//! and Person rows, Detail's Extras and Cast and Recommended's landscape rows keep the legacy block.)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -11,8 +13,10 @@
 //!   is never drawn empty, for any kind of tile** (`plx_ui::caption_policy::caption_lines`): the title
 //!   line is the name a reader knows the tile by (`tile_facts::caption_facts` puts a season's SHOW
 //!   there, an episode keeps its own title), and a details kind the tile has no facts for says its
-//!   identity instead (a season "Season 6", an episode "S1 • E8", a show or movie its year). A tile that carries a STATE
-//!   keeps it: its `state` line REPLACES the details line whenever the setting shows one (a
+//!   identity instead (a season "Season 6", an episode "S1 • E8", a show or movie its year, a collection
+//!   its size) and a tile with not even that says what KIND it is ("Movie", "Show", "Collection"), so a
+//!   band the setting opens is never open over nothing. A tile that carries a STATE
+//!   keeps it (a filmography poster's character is one, as a Continue Watching tile's time left is): its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
 //!   its amber play mark leads the title line whenever a press plays and the title is shown. With
 //!   Title Off and Details set to Nothing no band is opened ([`plx_ui::caption_policy::band_h`]); with

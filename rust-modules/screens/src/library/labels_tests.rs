@@ -45,7 +45,8 @@ fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
             "grid cards word the policy's year line, not remaining playback time (year {year})");
     }
     let item = PmsMovie { title: "Undated".into(), ..Default::default() };
-    assert!(super::parts::grid_label(&item, &POLICY).caption.is_none());
+    assert_eq!(super::parts::grid_label(&item, &POLICY).caption.unwrap().to_str().unwrap(), "Movie",
+        "a film the server told us nothing about says what it is: the band the setting opens is never over nothing");
     let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
         ..Default::default() };
     assert_eq!(super::parts::grid_label(&episode, &POLICY).caption.unwrap().to_str().unwrap(), "2020",
@@ -201,7 +202,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
         ..Default::default() }, true), "25m left", "a Continue Watching tile reports time left");
     assert_eq!(caption(PmsMovie { kind: 1, title: "Untitled".into(),
-        ..Default::default() }, false), "", "missing source data does not invent a caption");
+        ..Default::default() }, false), "Show", "missing source data invents no fact: the line says what the tile is");
 }
 
     #[test]

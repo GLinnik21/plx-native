@@ -131,6 +131,12 @@ impl PersonStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn install_roles_for_test(&mut self, kind: usize, roles: Vec<String>) {
+        self.state.install_roles_for_test(kind, roles);
+        self.bump();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn install_credits_for_test(&mut self, groups: &[(&str, usize)]) {
         self.state.install_credits_for_test(groups);
         self.bump();

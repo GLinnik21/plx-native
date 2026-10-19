@@ -341,9 +341,17 @@ impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
     fn art(&self, i: usize) -> Art<'_> {
         Art::Poster(self.person.shelf(self.kind).get(i).map(tile_facts::of))
     }
+    /// A filmography poster follows the Under posters setting through the one builder. The character
+    /// the credit plays is the PAGE's own state for the tile (the way a Continue Watching tile's time
+    /// left is), so it is the details line under every setting but Nothing; a credit with no
+    /// character (every crew credit, and every credit before the roles batch lands) reads the picked
+    /// fact like any other poster.
     fn label(&self, i: usize) -> TileLabel {
         match self.person.shelf(self.kind).get(i) {
-            Some(m) => TileLabel::titled(&m.title, self.person.role(self.kind, i)),
+            Some(m) => {
+                let role = Some(self.person.role(self.kind, i)).filter(|role| !role.is_empty()).map(str::to_owned);
+                crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), role, false)
+            }
             None => TileLabel::default(),
         }
     }
@@ -1110,6 +1118,11 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
         out.extend((0..NSHELF).map(Sec::Shelf));
         out.push(Sec::Head);
+    }
+
+    /// Every filmography shelf is a row of posters: they follow the Under posters setting.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Shelf(_)).then(crate::registry::captions::policy)
     }
 
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<ShelfCards<'a>> {
@@ -3115,7 +3128,7 @@ mod tests {
             .unwrap();
         let tile_top = placed.rest_rect.cy() - CARD_H / 2.0;
         let block_top = tile_top - SHELF_LABEL_H;
-        let block_bottom = tile_top + CARD_H + ui_cards::under_band(1.0);
+        let block_bottom = tile_top + CARD_H + ui_cards::under_band_for(plx_ui::caption_policy::band_h(&crate::registry::captions::policy()), 1.0);
         assert!(block_bottom <= SCR_H, "the block's bottom edge is on screen: {block_bottom}");
         assert!(block_top >= HEADER_TOP - 0.5, "and its top keeps the page margin: {block_top}");
         // and no further: the last shelf rests exactly one page margin above the bottom edge
@@ -3125,10 +3138,8 @@ mod tests {
 
     #[test]
     fn a_shelf_here_pitches_like_a_shelf_on_home() {
-        assert_eq!(
-            SHELF_GAP + SHELF_LABEL_H + CARD_H + ui_cards::under_band(1.0),
-            plx_ui::consts::ROW_PITCH
-        );
+        // the fixed part of the pitch; the band under it is the Under posters setting's, as Home's
+        assert_eq!(SHELF_GAP + SHELF_LABEL_H + CARD_H, ui_cards::ROW_PITCH_FIXED);
         assert_eq!(SHELF_LABEL_H, TITLE_DY + CARD_DY);
     }
 

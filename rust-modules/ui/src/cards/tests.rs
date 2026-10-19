@@ -4257,8 +4257,8 @@ fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
 /// reveals, and a shelf that follows none keeps the legacy two-line band.** The focused shelf's band
 /// settles at `under_band_for(band_h(policy), 1)` (0 / 80 / 112 px of caption: the room below the
 /// cards), the row below it is carried down by `band_open_for`, and the caption block is fully
-/// revealed at the end of the open; a `None` policy is the legacy 114 px band, as Search, Person and
-/// Detail's shelves still read it.
+/// revealed at the end of the open; a `None` policy is the legacy 114 px band, as a landscape still row
+/// or a headshot row (Search's Episode and Person rows, Detail's Extras) reads it.
 #[test]
 fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
     use crate::caption_policy::{band_h, CaptionPolicy, DetailsKind};

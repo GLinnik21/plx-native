@@ -38,6 +38,11 @@ fn region(w: &World) -> &'static str {
 
 /// The Collection screen of the first collection the Collections page lists, its members landed.
 pub(super) fn collection_screen(name: &str) -> World {
+    collection_screen_of(name, |sid| (0..9).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("m{i}"), title: format!("Movie {i}"), ..Default::default() }).collect())
+}
+
+/// [`collection_screen`] whose members are `members` of the collection's own server.
+pub(super) fn collection_screen_of(name: &str, members: impl FnOnce(plx_plex::plex::ServerId) -> Vec<plx_data::pms::PmsMovie>) -> World {
     let mut w = World::collections(name, false);
     w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);
@@ -45,8 +50,7 @@ pub(super) fn collection_screen(name: &str) -> World {
     w.press(Key::Ok);
     w.frames(40);
     assert!(matches!(w.d.top_arg(), Some(AppArg::Content(ContentArg::Collection(_)))), "premise: OK on a collection opened its screen");
-    let sid = w.own;
-    let items: Vec<_> = (0..9).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("m{i}"), title: format!("Movie {i}"), ..Default::default() }).collect();
+    let items = members(w.own);
     w.bridge.stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
     w.frames(40);
     w

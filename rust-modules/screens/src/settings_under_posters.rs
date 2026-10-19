@@ -9,7 +9,11 @@
 //! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); only that tile
 //! wears a caption, and a face with no artwork carries no word. A line the setting turns on is
 //! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
-//! length, often no genre) says the tile's identity instead ("Season 6", "S1 • E8", its year). The preview is built from the value
+//! length, often no genre) says the tile's identity instead ("Season 6", "S1 • E8", its year, and
+//! for a film, show or collection with not even that, what it is: "Movie", "Show", "Collection").
+//! The setting is the same under every POSTER in the app (Search results, a person's filmography,
+//! Detail's Related and collection shelves and a collection's members included); a landscape still
+//! or a headshot is not a poster and wears none of it. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
 //! the focused choice.
 //!

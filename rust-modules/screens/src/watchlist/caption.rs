@@ -51,6 +51,7 @@ pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy) -> TileLa
         title: Some(row.title.clone()),
         year: row.year,
         is_show: row.kind == Kind::Show,
+        is_movie: row.kind == Kind::Movie,
         ..Default::default()
     };
     crate::registry::captions::label(policy, &facts, state_sentence(state, row.release.as_deref()), false)

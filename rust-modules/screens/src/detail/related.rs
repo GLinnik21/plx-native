@@ -45,10 +45,12 @@ pub fn item<'a>(d: &'a Detail, key: u32) -> Option<&'a PmsMovie> {
     d.related.get(locate(key)?)
 }
 
-/// `band` is this shelf's live label-band expansion ([`plx_ui::cards::Shelf::band_expand`]), 0 collapsed → 1
-/// focused. The band is the SHARED collapse every other screen uses, not a fixed reservation: a
-/// shelf that holds no focus draws no label, so it gives the room back and the next section's
-/// heading rises to the design system's own region gap behind it.
+/// `band` is this shelf's label-band expansion, 0 collapsed → 1 focused; the page asks for the SETTLED,
+/// collapsed block (`0.0`) and lifts it by the live opening of the shelf's band
+/// (`DetailScreen::band_open`, which sizes the opening by the shelf's own Under posters policy). The band
+/// is the SHARED collapse every other screen uses, not a fixed reservation: a shelf that holds no
+/// focus draws no label, so it gives the room back and the next section's heading rises to the
+/// design system's own region gap behind it.
 pub fn block_h(band: f32) -> f32 {
     LABEL_H + RowStyle::HOME.h + ui_cards::under_band(band)
 }

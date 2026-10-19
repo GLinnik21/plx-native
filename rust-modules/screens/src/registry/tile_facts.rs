@@ -50,6 +50,7 @@ pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
         child_count: u32::try_from(item.child_count).ok().filter(|n| *n > 0),
         subtype: (item.kind == KIND_COLLECTION).then(|| item.subtype.clone().unwrap_or_default()),
         is_show: item.kind == 1,
+        is_movie: item.kind == 0,
         episode: (item.kind == 3).then(|| (
             u32::try_from(item.season_index).unwrap_or(0),
             u32::try_from(item.ep_index).unwrap_or(0),

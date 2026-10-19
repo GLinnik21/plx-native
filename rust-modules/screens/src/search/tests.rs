@@ -775,9 +775,12 @@ fn the_shelf_flow_is_frozen_unless_the_shelves_hold_focus_with_the_keyboard_down
 /// layout: blocks measured at their destination (the focused row's caption band open, the others
 /// closed), the page's `CONTENT_TOP` as the margin.
 fn search_reveal_want(kinds: &[Kind], k: usize, cur: f32) -> f32 {
-    use plx_ui::cards::{reveal, under_band};
+    use plx_ui::cards::{reveal, under_band, under_band_for};
     use plx_ui::consts::{MARGIN_Y, SCR_H};
-    let block = |n: usize, open: bool| layout::block_h(kinds[n], under_band(open as i32 as f32));
+    // a poster row opens the band of the stored Under posters setting; a still or a headshot row, the legacy one
+    let policy = plx_ui::caption_policy::band_h(&crate::registry::captions::policy());
+    let band = |kind, open: bool| if layout::is_poster(kind) { under_band_for(policy, open as i32 as f32) } else { under_band(open as i32 as f32) };
+    let block = |n: usize, open: bool| layout::block_h(kinds[n], band(kinds[n], open));
     let top = layout::CONTENT_TOP + (0..k).map(|n| block(n, false)).sum::<f32>();
     let end = layout::CONTENT_TOP + (0..kinds.len()).map(|n| block(n, n == k)).sum::<f32>();
     reveal(cur, top + block(k, true) - (SCR_H - MARGIN_Y), top - layout::CONTENT_TOP, (end - (SCR_H - MARGIN_Y)).max(0.0))
@@ -1590,4 +1593,48 @@ fn a_slid_row_names_its_cards_by_listing_position() {
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&slid, 11), 23);
     let opening = cards::RowCards { window: Default::default(), ..slid };
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&opening, 11), 11);
+}
+
+/// **A poster result is worded by the one Under posters builder** (R13): the Title switch decides
+/// the title line, the Details picker the second, and a result from a server that is not the
+/// household's own is credited after the details line. A still (the Episode row) is not a poster and
+/// keeps its air date under every setting.
+#[test]
+fn a_poster_result_is_worded_by_the_under_posters_builder() {
+    use crate::registry::captions::TEST_UNDER_POSTERS;
+    use plx_data::pms::PmsMovie;
+    use plx_data::search::scope::ScopeSource;
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    let lines = |l: &plx_ui::cards::TileLabel| {
+        let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_string_lossy().into_owned());
+        [text(&l.title), text(&l.caption)]
+    };
+    let friend = [ScopeSource {
+        sid: plx_plex::plex::ServerId::UNSET, name: String::new(), libraries: Vec::new(), handle: "@alex".into(),
+        owned: false, home: false, owner_id: 0, household: false, live: true,
+    }];
+    let label_of = |kind, item: Item, sources: &[ScopeSource]| {
+        let items = [item];
+        let cards = cards::RowCards { kind, elems: &[7], items: &items, sources, window: Default::default(), epoch: 0 };
+        plx_ui::cards::CardSource::<HostFixture>::label(&cards, 0)
+    };
+    let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });
+    let at = |title, details, sources: &[ScopeSource]| {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+        let label = lines(&label_of(Kind::Movie, heat(), sources));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+        label
+    };
+    assert_eq!(at(true, Details::Genre, &[]), [Some("Heat".into()), Some("Crime".into())]);
+    assert_eq!(at(false, Details::YearLength, &[]), [None, Some("1995".into())]);
+    assert_eq!(at(true, Details::Genre, &friend), [Some("Heat".into()), Some("Crime \u{b7} @alex".into())]);
+    assert_eq!(at(false, Details::YearLength, &friend), [None, Some("1995 \u{b7} @alex".into())]);
+    assert_eq!(at(true, Details::None, &friend), [Some("Heat".into()), None], "Nothing credits no line");
+    assert_eq!(at(false, Details::None, &friend), [None, None]);
+
+    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre })));
+    let still = Item::Media(PmsMovie { kind: 3, title: "A Grand Day Out".into(), aired: "1989-11-04".into(), ..Default::default() });
+    let episode = lines(&label_of(Kind::Episode, still, &friend));
+    TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    assert_eq!(episode, [Some("A Grand Day Out".into()), Some("11/4/1989 \u{b7} @alex".into())], "a still keeps its own block");
 }

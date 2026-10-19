@@ -73,7 +73,8 @@ pub const UNDER_LABEL_AIR: f32 = 22.0;
 /// it that way, and `card_row::settled_top` (`settled_top_for` with a policy's band) is the closed form a scroll target must use. What is
 /// unchanged is that this constant remains the ONE authority on a poster shelf's rhythm: the four
 /// screens differ in their fixed part (a landscape row, a typed search block), and in the band only by the
-/// Under posters policy a screen hands its shelves (`caption_policy::band_h`; the legacy band without one).
+/// Under posters policy a screen hands its poster shelves (`caption_policy::band_h`; the legacy band for a shelf of
+/// landscape stills or headshots, which take none).
 pub const ROW_PITCH: f32 =
     TITLE_DY + CARD_DY + CARD_H + crate::card_row::UNDER_LABEL_H + UNDER_LABEL_AIR;
 pub const CONTENT_Y: f32 = 200.0;

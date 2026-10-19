@@ -8,15 +8,20 @@
 //! name a reader knows the tile by (a season by its SHOW, an episode by its own title). The details
 //! line is the picked kind's facts, and a tile that has none of them (a season has no length and
 //! often no genre or rating) says its identity line instead (a season "Season 6", an episode its
-//! "S1 • E8" address, a show or movie its year, a collection its size), so a band the policy
-//! opens is never open over nothing. Under Nothing with Title Off no band opens at all.
+//! "S1 • E8" address, a show or movie its year, a collection its size), and a tile with not even that
+//! says what KIND it is ("Movie", "Show", "Collection"), so a band the policy opens is never open over
+//! nothing. Under Nothing with Title Off no band opens at all.
 //!
-//! The Library grid, the Collections page, the Watchlist, Home's shelves and the Library's Recommended shelves (the screens build the focused
-//! block through `registry::captions`, and hand a [`crate::cards::Shelf`] / grid the policy so the
-//! room it reserves is [`band_h`] of the same value); Search, the person page and Detail's Related and
-//! Extras shelves are not on the policy and keep the legacy band. The types and the two function signatures are
-//! what the library, collection and settings packages compile against. [`band_h`] sizes the band; [`caption_lines`] words the lines in the
-//! given locale, with the catalog's plurals.
+//! **Every POSTER tile reads this one setting**: the Library grid, the Collections page, the
+//! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
+//! page's filmography, Detail's Related and collection shelves and the Collection screen's members
+//! (the screens build the focused block through `registry::captions`, and hand a
+//! [`crate::cards::Shelf`] / grid the policy so the room it reserves is [`band_h`] of the same value).
+//! **Landscape tiles and headshots are not posters and are not on it**: an episode still (Search's
+//! Episode row, Detail's Extras) and a cast or search-result headshot keep their own block, in
+//! their own height, under every setting. The types and the two function signatures are what the
+//! library, collection and settings packages compile against. [`band_h`] sizes the band;
+//! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 
 use plx_platform::i18n::LocaleContext;
 
@@ -89,6 +94,12 @@ pub struct CaptionFacts {
     /// A collection's subtype (`movie`, `show`, …).
     pub subtype: Option<String>,
     pub is_show: bool,
+    /// A movie: with no year to be known by, its details line says what it is.
+    pub is_movie: bool,
+    /// Where a tile came from when that is not the household's own server (a friend's server handle,
+    /// on a Search result): credited after the details line, so two servers' copies of one title
+    /// read apart. Dropped with the details line under Nothing.
+    pub source: Option<String>,
     /// An episode's `(season, episode)` numbers (`0` for one the server did not number), which its
     /// default details line says in place of a year and length.
     pub episode: Option<(u32, u32)>,
@@ -104,9 +115,12 @@ pub struct CaptionFacts {
 /// line is `facts.title`, the name a reader knows the tile by (the caller puts a season's SHOW there).
 /// The details line is the picked kind's facts, and a tile that has none of them (a season has no
 /// length and often no genre or rating, a movie may have no genre) says its identity line instead
-/// ([`identity_line`]), so a band the policy opens is never open over nothing. Under
-/// [`DetailsKind::None`] there is no details line and no fallback; a line is `None` only when the
-/// setting turns it off (or the tile has no name or identity at all), never for want of one picked fact.
+/// ([`identity_line`]; a movie, show or collection with not even that says what KIND it is, the last
+/// fallback), so a band the policy opens is never open over nothing, and the source credit
+/// ([`CaptionFacts::source`]) follows whatever the details line says. Under
+/// [`DetailsKind::None`] there is no details line, no fallback and no credit; a line is `None` only
+/// when the setting turns it off (or the tile has no name or identity at all), never for want of one
+/// picked fact.
 ///
 /// Every word on a line comes from the catalog in `locale` (the shared `core.*` / `browse.*`
 /// duration, count and plural keys plus `captions.new_episodes`); the only literals are the
@@ -127,7 +141,8 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
                     .map(|s| locale.decimal((s * 10.0).round() as i64, 1))).collect(),
         ),
     };
-    [title, picked.or_else(|| identity_line(facts, locale))]
+    let details = picked.or_else(|| identity_line(facts, locale));
+    [title, join(details.into_iter().chain(facts.source.clone().filter(|s| !s.is_empty())).collect())]
 }
 
 fn join(parts: Vec<String>) -> Option<String> {
@@ -191,11 +206,16 @@ fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
 /// What a tile IS, in one short line, for a tile the picked details kind has nothing to say about:
 /// a collection its size, an episode its address ("S1 • E8"), a season its own title ("Season 6",
 /// "Specials", or "Season N" from the catalog when the server named it nothing), anything else its
-/// year. `None` for a tile with none of these.
+/// year; and for a movie, show or collection that has not even that, the kind word ("Movie", "Show",
+/// "Collection"), so a tile the server told us nothing about still has a line and the band the policy
+/// opened over it is not empty. `None` only for a tile that is none of those (an unnumbered episode).
 fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
-        return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
+        return Some(match f.child_count {
+            Some(n) => crate::fmt::collection_count_in(cx, Some(sub), i64::from(n)),
+            None => msg::browse_collection_kind_in(cx).to_string(),
+        });
     }
     if let Some(address) = episode_address(f, cx) {
         return Some(address);
@@ -207,7 +227,13 @@ fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
             (*number > 0).then(|| msg::browse_detail_season_number_in(cx, i64::from(*number)))
         };
     }
-    f.year.filter(|y| *y > 0).map(|y| y.to_string())
+    f.year.filter(|y| *y > 0).map(|y| y.to_string()).or_else(|| {
+        if f.is_show {
+            Some(msg::browse_kind_show_in(cx).to_string())
+        } else {
+            f.is_movie.then(|| msg::browse_kind_movie_in(cx).to_string())
+        }
+    })
 }
 
 /// The caption's text shadow (`0 1px 8px` black 35%): the glyph path has no blur, so it is set as
