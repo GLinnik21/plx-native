@@ -880,3 +880,87 @@ fn the_top_bar_keeps_three_to_one_on_every_glyph_pixel_of_every_hop() {
         }
     }
 }
+
+/// **What the top bar DRAWS in a label, not what the widget says it will.** The test above reads
+/// `region_label(..).face().2`, the widget's own weight number, which is why it passed while the bar
+/// crossfaded a regular and a bold raster at alpha `1 - w` and `w`: where both faces cover a pixel the
+/// ink reaches `1 - w(1 - w)` of full and where one covers it is `w` or `1 - w` alone, so 111
+/// glyph-body pixels sat under 3:1 in 13 frames of the Home -> Movies -> TV Shows hops (worst 2.02:1,
+/// design review judgment 4: "never an ink lerp"). This one records what [`StripRender::draw`] hands
+/// a painter, frame by frame through the same hops: every label run carries EXACTLY the ink one of
+/// its pill's regions names (no alpha cascaded onto it, so none of it is a lerp of two rasters), and
+/// all the runs of a label in a frame are in ONE weight, which STEPS (once per rise or fall of the
+/// capsule over the pill) rather than easing.
+#[test]
+fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
+    let _g = serial_for_motion();
+    // A recording painter paints no pixels, but the bar's draw also queues a framebuffer read of the
+    // ground under its track (`gfx::sample_ground`), which needs GL. A frozen page answers from the
+    // last reading and reads nothing (`gfx`'s `a_frozen_page_answers_its_ground_from_the_last_reading`).
+    struct Frozen(bool);
+    impl Drop for Frozen {
+        fn drop(&mut self) {
+            plx_gfx::gfx::set_page_frozen(self.0);
+        }
+    }
+    let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
+    let faces = [
+        TabFace::Label("Home".into()),
+        TabFace::Label("Movies".into()),
+        TabFace::Label("TV Shows".into()),
+        TabFace::Icon(crate::icons::Icon::Bookmark),
+        TabFace::Icon(crate::icons::Icon::Search),
+    ];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let words = ["Home", "Movies", "TV Shows"];
+    let mut mid_weight_frames = 0;
+    let mut stepped = 0;
+    for (sel, from, to) in [(1, 1, 2), (1, 2, 3), (1, 3, 2), (1, 2, 1), (1, 1, 0), (1, 0, 2)] {
+        let mut strip = StripRender::new();
+        let mut band = TabBand::new();
+        for _ in 0..90 {
+            strip.update(labels, sel, TopFocus::Pill(from), DT);
+        }
+        // Per label: the weight drawn on the previous frame, and how often it changed over the hop.
+        let mut last: [Option<bool>; 3] = [None; 3];
+        let mut flips = [0usize; 3];
+        for frame in 0..80 {
+            strip.update(labels, sel, TopFocus::Pill(to), DT);
+            let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
+            let (widths, glass_on) = with_tab_metrics_for(labels, |_, _, w| (w.to_vec(), tab_glass_on(tab_geometry(w, 0.0).track.w)));
+            for (i, word) in words.iter().enumerate() {
+                let mine: Vec<_> = runs.iter().filter(|r| r.text == *word).collect();
+                assert!(!mine.is_empty(), "{from} -> {to} frame {frame}: \"{word}\" is not drawn");
+                let ink = strip.top_strip.pill_ink(Rect::new(tab_pill_x(&widths, i), TOP_BAR_Y, widths[i], TAB_PILL_H), TabGround::Tracked { glass: glass_on });
+                if ink.weight() > 0.02 && ink.weight() < 0.98 {
+                    mid_weight_frames += 1;
+                }
+                let inks: Vec<[f32; 4]> = ink.regions().iter().map(|r| TabPill::mixed_ink(r.focus, r.selected)).collect();
+                for run in &mine {
+                    assert!(
+                        inks.contains(&run.ink),
+                        "{from} -> {to} frame {frame}: \"{word}\" is drawn in {:?}, which is no region's ink ({inks:?}): an alpha was cascaded onto the label",
+                        run.ink
+                    );
+                }
+                let bold = mine[0].bold;
+                assert!(
+                    mine.iter().all(|r| r.bold == bold),
+                    "{from} -> {to} frame {frame}: \"{word}\" is drawn in both weights at once ({:?})",
+                    mine.iter().map(|r| r.bold).collect::<Vec<_>>()
+                );
+                assert_eq!(bold, ink.weight() >= 0.5, "{from} -> {to} frame {frame}: \"{word}\" is bold iff its weight {} is past one half", ink.weight());
+                if last[i].is_some_and(|b| b != bold) {
+                    flips[i] += 1;
+                }
+                last[i] = Some(bold);
+            }
+        }
+        for (i, f) in flips.iter().enumerate() {
+            assert!(*f <= 2, "{from} -> {to}: \"{}\" changed weight {f} times over one hop", words[i]);
+            stepped += f;
+        }
+    }
+    assert!(mid_weight_frames > 20, "the hops cross labels mid-weight ({mid_weight_frames} frames)");
+    assert!(stepped > 4, "the weight steps as a capsule crosses a label ({stepped} steps)");
+}
