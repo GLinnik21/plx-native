@@ -5,8 +5,8 @@
 //! checked choice per details line, each with a sample of what it shows) and Reset. Both pages carry
 //! a framed preview: a still row of three posters from the library the Library last showed, drawn by
 //! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
-//! by the SAME policy every poster shelf reads (the Library, Collections, the Watchlist, Home and
-//! Recommended: [`crate::registry::captions`], [`plx_ui::caption_policy`]); only that tile
+//! by the SAME policy the Library, Collections, the Watchlist, Home and
+//! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); only that tile
 //! wears a caption, and a face with no artwork carries no word. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
 //! the focused choice.

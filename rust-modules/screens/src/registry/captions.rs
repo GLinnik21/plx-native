@@ -1,6 +1,7 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), for every poster shelf in the app: the Library grid, the
-//! Collections page, the Watchlist, Home's shelves and the Library's Recommended shelves.
+//! (Settings > Libraries > Under posters), for the Library grid, the Collections page, the Watchlist,
+//! Home's shelves and the Library's Recommended poster shelves. (Search, the person page and Detail's
+//! Related and Extras shelves are not on the policy; they keep the legacy band.)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -10,15 +11,15 @@
 //!   keeps it: its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
 //!   its amber play mark leads the title line whenever a press plays and the title is shown. With
-//!   Details set to Nothing no band is opened ([`plx_ui::caption_policy::band_h`]), so no state
-//!   line is shown either.
+//!   Title Off and Details set to Nothing no band is opened ([`plx_ui::caption_policy::band_h`]); with
+//!   Details Nothing the state line is dropped with the details line, so only the title (if on) shows.
 //! - The band's height is [`plx_ui::caption_policy::band_h`] of the same policy, everywhere: a
 //!   shelf is handed the policy ([`plx_ui::cards::Shelf::set_caption_policy`]) and reserves, opens
 //!   and reveals its band from it, so the label and the room for it cannot disagree.
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// The Under posters setting as the caption policy every poster shelf follows.
+/// The Under posters setting as the caption policy the screens listed in the module doc follow.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {

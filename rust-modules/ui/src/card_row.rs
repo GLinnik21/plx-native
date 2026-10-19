@@ -1002,8 +1002,9 @@ pub fn draw_label(
     let p = p.alpha(label.reveal);
     draw_label_block(p, rect, sty, label, ty, measure);
 }
-/// **The one trailing FACT under a focused tile** — the caption rung, for every poster shelf in the
-/// app and for the Library grid.
+/// **The one trailing FACT under a focused tile** — the caption rung of a Continue Watching deck's
+/// state line (`registry::captions::shelf_label`) and of `poster_label`'s Library seasons and
+/// episodes. A plain poster's details line is worded by `caption_policy::caption_lines`.
 ///
 /// It was `home.rs`'s, private, in two halves (`focused_caption` and `cw_caption`), and the Library
 /// simply had neither: its shelves passed a bare title, so every focused poster there reserved a
@@ -1142,7 +1143,8 @@ pub fn under_band(e: f32) -> f32 {
 }
 
 /// The whole gap under a focused poster before the next row (the label block and the air below
-/// it) with the legacy 92 px caption block: what Home, Search and every other shelf still open to.
+/// it) with the legacy 92 px caption block: what Search, the person page, Detail's shelves and Recommended's
+/// landscape rows still open to.
 /// The Libraries' "Under posters" setting replaces it with [`crate::caption_policy::band_h`].
 pub const LEGACY_BAND_H: f32 = UNDER_LABEL_H + crate::consts::UNDER_LABEL_AIR;
 

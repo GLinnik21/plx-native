@@ -4,10 +4,10 @@
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing.
 //!
-//! Every poster shelf reads this one policy: the Library grid, the Collections page, the
-//! Watchlist, Home's shelves and the Library's Recommended shelves (the screens build the focused
+//! The Library grid, the Collections page, the Watchlist, Home's shelves and the Library's Recommended shelves (the screens build the focused
 //! block through `registry::captions`, and hand a [`crate::cards::Shelf`] / grid the policy so the
-//! room it reserves is [`band_h`] of the same value). The types and the two function signatures are
+//! room it reserves is [`band_h`] of the same value); Search, the person page and Detail's Related and
+//! Extras shelves are not on the policy and keep the legacy band. The types and the two function signatures are
 //! what the library, collection and settings packages compile against. [`band_h`] sizes the band; [`caption_lines`] words the lines in the
 //! given locale, with the catalog's plurals.
 

@@ -189,12 +189,13 @@ just the page.
 ![Home, shelves](screenshots/ux-home-shelves.jpg)
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
-The focused card grows, and its title and a status line appear beneath it — here *"8 min
+The focused card grows, and what Settings → Libraries → Under posters asks for appears
+beneath it (a title line when its Title switch is On) — a Continue Watching card keeps its status line, here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
-Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
-what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
+Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ before the card's title is
+what announces that (it needs the title line, so Under posters → Title On) — the ▶ is drawn only in that mode, and in the default the card's menu leads
 with Play instead; an *episode* card there opens its **show** on that episode's season (the card's menu
 offers *Go to Episode*). **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and

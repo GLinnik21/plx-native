@@ -3,10 +3,10 @@
 //! **Under posters.** The band is the global Under posters setting's, the one the Library reads
 //! ([`policy`]): the Title switch (default Off) opens the title line, the Details picker the second,
 //! and the band is 0 / 80 / 112 px tall by what it will show (`Stack::caption_policy`); the lines are
-//! built by the one builder every poster shelf shares ([`crate::registry::captions::label`]). A Watchlist row
+//! built by the one builder the poster screens share ([`crate::registry::captions::label`]). A Watchlist row
 //! carries a title, a year and a kind, so Genre, Video and Age rating have nothing to say for it.
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
-//! one: with Details set to Nothing the band is not opened, and no sentence is shown.
+//! one: with Details set to Nothing the sentence is dropped with the details line (and the band is not opened when the Title switch is Off).
 //!
 //! A playable title reads its year under the default Details, as every poster does. An unplayable title carries its state as
 //! a SENTENCE, because the tile itself says nothing in words (TileStates: "No text on the tile; the
