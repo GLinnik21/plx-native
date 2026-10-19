@@ -700,9 +700,6 @@ pub struct WatchlistScreen {
     /// The page's layout, one scroll, groups, reconcile and the grid (`ui::cards::Stack`).
     stack: Stack<Sec>,
     ground: PageGround,
-    /// The glass the scroll capsule stands on, latched once per scrolled stay from the page ground's
-    /// corners (frozen ground, never a live blur).
-    capsule_field: plx_ui::underlay::UnderlayField,
     ground_seeded: bool,
     /// The target last handed to the wash: what a Remove's landing holds it at.
     ground_applied: [[f32; 4]; 4],
@@ -773,7 +770,6 @@ impl WatchlistScreen {
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
             stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
             ground: PageGround::new(),
-            capsule_field: plx_ui::underlay::UnderlayField::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
             ground_catching_up: false,
@@ -1124,19 +1120,12 @@ impl WatchlistScreen {
 
     /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground and the
     /// capsule ("Watchlist 12"), as the Library draws them.
-    fn draw_chrome<H: ContentLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+    fn draw_chrome<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let tuck = self.tuck();
         if tuck <= 0.0 {
-            // back at the top: the next scrolled stay latches the ground as it is THEN
-            self.capsule_field.reset();
             return;
         }
         let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
-        if !self.capsule_field.is_latched() {
-            let at = |x, y| self.ground.sample(Rect::FULL, x, y);
-            let corners = [at(0.0, 0.0), at(SCR_W, 0.0), at(SCR_W, SCR_H), at(0.0, SCR_H)];
-            self.capsule_field.latch_from_corners(corners, plx_ui::underlay::Grade::Dim);
-        }
         let p = f.painter.alpha(f.page_alpha);
         plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
         let total = match self.page.list {
@@ -1146,12 +1135,11 @@ impl WatchlistScreen {
         let (name, count) = plx_ui::scroll_chrome::capsule_parts(
             plx_platform::i18n::msg::watchlist_page_title(),
             total as i64,
-            plx_ui::scroll_capsule::label_budget(),
+            f32::INFINITY,
             |s| f.measure.width_str(s, theme::size::BODY, true),
             |s| f.measure.width_str(s, theme::size::CAPTION, false),
         );
-        let field = self.capsule_field.is_latched().then_some(&self.capsule_field);
-        plx_ui::scroll_capsule::draw(p, &name, &count, ground, field, tuck, f.measure);
+        plx_ui::scroll_capsule::draw(p, &name, &count, tuck, f.measure);
     }
 
     /// Test support: register the stops the grid draws (`Grid::record_stops`).
