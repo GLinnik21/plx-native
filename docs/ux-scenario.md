@@ -190,7 +190,7 @@ just the page.
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
 The focused card grows, and what Settings → Libraries → Under posters asks for appears
-beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name) — a Continue Watching card keeps its status line, here *"8 min
+beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card keeps its status line, here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
