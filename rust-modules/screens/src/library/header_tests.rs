@@ -367,10 +367,10 @@ fn the_header_focus_pill_travels_to_the_next_name_instead_of_jumping() {
 
 /// **Switching library keeps the row's motion** (owner: "pills have no transitions"; the screen
 /// holds the capsules, never the built row). OK on the name the pill sits on switches the library:
-/// the selection plate lands under the pill on that frame, and the pill neither restarts from the
-/// left, nor fades, nor moves; the row is rebuilt for the new library and its motion state is not.
+/// the selection plate travels to the pill (it is never cut onto it), and the pill neither restarts
+/// from the left, nor fades, nor moves; the row is rebuilt for the new library and its motion state is not.
 #[test]
-fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
+fn a_library_switch_keeps_the_rows_pill_and_travels_the_plate_to_the_picked_name() {
     let _guard = plx_base::testlock::serial();
     let (fixture, mut page, mut engine) = grid_page(3);
     let current = page.view_section(&fixture.cx(&engine));
@@ -385,7 +385,10 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
     let plate = page.header.row().unwrap().plate(other).unwrap();
     assert!((rest - plate.cx()).abs() < 0.5, "settled under the name that will be picked");
     let selected_under = |rects: &[plx_ui::Rect]| rects.iter().any(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01 && (r.cx() - plate.cx()).abs() < 1.0);
-    assert!(!selected_under(&header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16)), "premise: the old library wears the plate");
+    let plate_cx = |rects: &[plx_ui::Rect]| rects.iter().find(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01).map(|r| r.cx());
+    let before_rects = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16);
+    assert!(!selected_under(&before_rects), "premise: the old library wears the plate");
+    let old_cx = plate_cx(&before_rects).expect("premise: the old library's plate is drawn");
 
     let motion = |page: &LibraryScreen| {
         let mut canon = plx_machine::machine::Canon::new();
@@ -404,8 +407,15 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
         assert!((pill[0] - rest).abs() < 0.5, "frame {frame}: and stays where it was ({} vs {rest})", pill[0]);
         // Frame 5 is where `flush` hands the pick to the store and `pending` is consumed. The
         // fixture has no store behind it to move the directory's current library, so the page then
-        // reads the old library again; while the switch is pending, the plate is under the name.
-        assert!(frame > 4 || selected_under(&rects), "frame {frame}: the plate is under the picked name from the first frame");
+        // reads the old library again; while the switch is pending, the plate TRAVELS to the name
+        // (design review S5: it is never cut onto it): on its way on the first frame, nearer
+        // the name every frame, on it when it arrives.
+        if frame <= 4 {
+            let at = plate_cx(&rects).expect("the plate stays drawn through the switch");
+            let left = (at - plate.cx()).abs();
+            assert!(left < (old_cx - plate.cx()).abs() - 0.5, "frame {frame}: the plate has left the old library ({at} from {old_cx})");
+            assert!(frame > 1 || left > 1.0, "the plate is on its way on the first frame, not cut onto the name ({at} vs {})", plate.cx());
+        }
     }
 }
 
