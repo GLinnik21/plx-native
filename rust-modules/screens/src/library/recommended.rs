@@ -32,13 +32,15 @@ use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
 use plx_ui::consts::{CARD_DY, CARD_H, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY, UNDER_LABEL_AIR};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{
-    At, AxisMask, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable, GroupKind,
-    GroupSpec, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Dir, By,
+    At, DrawFrame, ElemKind, Enter, FocusTarget, Focusable,
+    GroupSpec, Link, Placed, RenderStrategy, Screen, ScreenEvent, Step, Dir, By,
 };
+use plx_ui::page_regions::{Arrival, BackStep, PageRegions};
 use plx_ui::widgets::Art;
 use plx_ui::{on_axis, Env, Rect, Spring, View};
 
 use super::identity::{KeyRegion, KeyRegistry};
+use super::row_group;
 use crate::registry::{
     tile_facts, AppFx, AppMsg, ContentArg, ContentReq, LibraryCmd, LibraryIdentity, LibraryLike,
     LibraryMemory, LibraryReq, LibrarySectionIdentity, LibraryViewport, PageMemory,
@@ -79,8 +81,6 @@ pub(super) struct Row {
 
 impl Row {
     fn heading_elem(&self) -> Option<u32> { self.heading.map(|(_, elem)| elem) }
-    /// The group a door INTO this row from above lands in: its linked heading when it has one.
-    fn entry_group(&self) -> GroupId { self.heading.map_or(self.group, |(group, _)| group) }
 }
 
 /// What the page is showing.
@@ -209,11 +209,6 @@ fn hub_cards(entry: EntryId, landscape: bool) -> ui_cards::Shelf {
 /// The panel the rows' cards are placed and hit-tested in: everything under the top bar.
 fn content_clip() -> Rect {
     Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM)
-}
-
-fn row_group(id: GroupId, len: usize, extent: Rect, elem: ElemKind) -> GroupSpec {
-    GroupSpec { id, kind: GroupKind::Row { wrap: false }, seat: Seat::Remembered,
-        reachable: AxisMask::VERTICAL, edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop], extent, len, elem }
 }
 
 fn row_on_screen(origin: f32, pitch: f32) -> bool {
@@ -397,8 +392,58 @@ impl RecommendedScreen {
         self.scroll_target = self.scroll_target.clamp(0.0, max_scroll(&self.target_run));
     }
 
+    /// **This page's column** (`plx_ui::page_regions`): the crumb's root as the header, then one
+    /// continuous document, a linked heading being its own block directly above its cards, so Up
+    /// from a card reaches the heading and Down returns to the remembered card. The page seats its
+    /// first row on arrival and BACK pops to the Library; it does not walk the header.
+    fn with_regions<R>(&self, then: impl FnOnce(&PageRegions<'_>) -> R) -> R {
+        let mut content = Vec::with_capacity(2 * self.shelves.len());
+        for row in &self.shelves {
+            content.extend(row.heading.map(|(heading, _)| heading));
+            content.push(row.group);
+        }
+        then(&PageRegions {
+            header: Some(CRUMB_GROUP),
+            content: &content,
+            rail: None,
+            back_walks_header: false,
+            arrival: Arrival::Content,
+        })
+    }
+
+    /// The group the page seats on its first arrival: the first row (its heading, when it has one).
     fn first_group(&self) -> GroupId {
-        self.shelves.first().map_or(STRIP, Row::entry_group)
+        self.with_regions(|regions| regions.first_seat()).unwrap_or(STRIP)
+    }
+
+    /// **BACK**, decided by [`PageRegions::back`] and executed here: a scrolled page first returns
+    /// to its top, on the first row in the column focus was in; from there it pops to the Library
+    /// page that opened it, and the return state captured at that press seats focus on the control
+    /// again. This page walks neither the header nor the bar, so those steps are only the answers a
+    /// page declaring `back_walks_header` would get.
+    fn back<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry);
+        let step = self.with_regions(|regions| {
+            let at = focus.and_then(|key| regions.region_of(key.elem, <Self as Focusable<H>>::group_of(self, &key.elem, cx)));
+            regions.back(at, self.scroll_target > 0.5)
+        });
+        match step {
+            BackStep::Top => {
+                self.scroll_target = 0.0;
+                let column = focus.and_then(|key| self.shelves.iter().find_map(|row| row.elems.iter().position(|elem| *elem == key.elem)))
+                    .unwrap_or(0);
+                let seat = self.shelves.first().and_then(|row| row.elems.get(column.min(row.elems.len().saturating_sub(1))));
+                match seat {
+                    Some(&elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
+                    None => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+                }
+            }
+            BackStep::Content => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+            BackStep::Header => self.reseat(FocusTarget::ContainerGroup(CRUMB_GROUP), fx),
+            BackStep::Nav => self.reseat(FocusTarget::ContainerGroup(STRIP), fx),
+            BackStep::Leave => fx.push(Fx::App(AppFx::Content(ContentReq::Back))),
+        }
+        Handled::Yes
     }
 
     fn current_viewport(&self) -> Option<LibraryViewport> {
@@ -463,6 +508,10 @@ impl RecommendedScreen {
         };
         (region, -1, -1, 0.0, self.scroll.pos)
     }
+
+    /// The scroll the page is travelling to: 0 at its top.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
 
     /// The header row's group and its stops (the crumb root alone), as the library page's
     /// `toolbar_group` / `probe_header_stops` answer for theirs.
@@ -728,11 +777,8 @@ impl RecommendedScreen {
                         return self.page(dir, cx, fx);
                     }
                 }
-                // BACK is the page's pop: the return state captured at the Recommended press
-                // seats focus on that control again.
                 if let InputKind::Key { key: Key::Back, edge: Edge::Down, .. } = input.kind {
-                    fx.push(Fx::App(AppFx::Content(ContentReq::Back)));
-                    return Handled::Yes;
+                    return self.back(cx, fx);
                 }
             }
             _ => {}
@@ -835,10 +881,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         self.shelves.iter().find_map(|row| row.heading.filter(|(_, e)| e == elem)).map(|(group, _)| group)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
-        let elems = self.row_elems(self.group_of(&key.elem, cx));
-        let Some(index) = elems.iter().position(|elem| *elem == key.elem) else { return Step::Edge };
-        let next = match dir { Dir::Left => index.checked_sub(1), Dir::Right => Some(index + 1), _ => None };
-        next.and_then(|i| elems.get(i).copied()).map_or(Step::Edge, |elem| Step::Move(self.key(elem)))
+        plx_ui::page_regions::row_neighbour(self.entry, &self.row_elems(self.group_of(&key.elem, cx)), key, dir)
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         let rect = if *elem == CRUMB_ELEM {
@@ -1010,23 +1053,8 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn memory(&self) -> PageMemory { PageMemory::Library(self.page_memory()) }
     fn links(&self, out: &mut Vec<Link>) {
-        // Strip, then the crumb's link back, then the rows: one column down the page.
-        out.push(Link { from: STRIP, dir: Dir::Down, to: CRUMB_GROUP });
-        out.push(Link { from: CRUMB_GROUP, dir: Dir::Up, to: STRIP });
-        if self.shelves.is_empty() { return; }
-        out.push(Link { from: CRUMB_GROUP, dir: Dir::Down, to: self.first_group() });
-        out.push(Link { from: self.first_group(), dir: Dir::Up, to: CRUMB_GROUP });
-        // One continuous document: a linked heading is its own block directly above its cards, so
-        // UP from a card reaches it and DOWN returns to the remembered card.
-        let mut document = Vec::new();
-        for row in &self.shelves {
-            if let Some((heading, _)) = row.heading { document.push(heading); }
-            document.push(row.group);
-        }
-        for pair in document.windows(2) {
-            out.push(Link { from: pair[0], dir: Dir::Down, to: pair[1] });
-            out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });
-        }
+        // The column: bar, crumb, then the rows (a linked heading above its cards).
+        self.with_regions(|regions| regions.links(out));
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
 }
