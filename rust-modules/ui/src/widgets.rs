@@ -7306,9 +7306,9 @@ impl StripRender {
             // throws away), so the two can never disagree about a sliver at the edge.
             let vis = r.intersect(view);
             if vis.w > 0.5 {
-                // ink comes from how covered this pill is by the capsules above — never from its own
-                // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
-                // under it (`cap_cover` is the one rule both sides read).
+                // ink comes from what the capsules above cover of this pill, edge by edge — never from
+                // its own booleans, or a mid-travel label could darken toward ACCENT_INK with nothing
+                // bright under it (`ink_spans` is the one rule the fill and the ink both read).
                 let spans = self.top_strip.ink_spans((px, widths[i]), TabGround::Tracked { glass: glass_on });
                 match &faces[i] {
                     // An icon face is a MARK, and it takes its ink from exactly the same
