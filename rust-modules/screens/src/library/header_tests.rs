@@ -145,13 +145,19 @@ fn back_walks_grid_to_header_to_nav_to_home_without_changing_the_library() {
 #[test]
 fn back_from_the_nav_leaves_for_home() {
     let _guard = plx_base::testlock::serial();
-    let (fixture, mut page, _) = grid_page(2);
-    let engine = FocusEngine::new(); // nothing of this page holds focus: the nav does
+    let (fixture, mut page, mut engine) = grid_page(2);
+    // The nav holds focus: a strip key, which carries THIS page's entry (an empty engine, where
+    // nothing of the page holds focus, is a different case and passed on a fiction).
+    let pill = FocusKey { entry: page.entry, elem: plx_ui::widgets::TAB_KEY_MOVIES };
+    engine.set(OWNER, pill, Some(STRIP), By::Dir);
+    assert!(pill.elem >= plx_ui::dispatch::STRIP_BASE && engine.current(OWNER) == Some(pill));
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
     page.step(&key_press(Key::Back), &fixture.cx(&engine),
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-    assert!(out.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Library(LibraryReq::BackToHome { .. })))));
+    assert!(out.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Library(LibraryReq::BackToHome { .. })))),
+        "BACK on a nav pill leaves for Home; it does not seat the header again");
+    assert!(!out.iter().any(|e| matches!(&e.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(_))))));
 }
 
 /// The right cluster in its widest case leaves the names at least 40% of the row in every shipped

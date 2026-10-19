@@ -57,6 +57,7 @@ use plx_ui::screen::{
     At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind, Enter, FocusTarget, Focusable,
     GroupKind, GroupSpec, Link, Part, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step,
 };
+use plx_ui::page_regions::{Arrival, BackStep, PageRegions};
 use plx_ui::{Rect, Spring};
 use plx_ui::xfade::Xfade;
 use identity::{KeyRegistry, KeyRegion, region_of_elem};
@@ -525,13 +526,27 @@ impl LibraryScreen {
         self.reseat(FocusTarget::ContainerGroup(group), fx);
     }
 
+    /// **This page's column** (`plx_ui::page_regions`): the header row, the status read-out when
+    /// the listing failed and the grid when it has titles, with the A-Z rail beside the grid. The
+    /// Library walks up it on BACK; the Collections page, pushed over the Library, does not (it
+    /// pops to the page that opened it). One declaration: the links, BACK, the first seat and the
+    /// region of a focused key all read it.
+    fn with_regions<R>(&self, then: impl FnOnce(&PageRegions<'_>) -> R) -> R {
+        let mut content = Vec::with_capacity(2);
+        if self.readout == Readout::Failed { content.push(STATUS_GROUP); }
+        if self.pair.detail.total() > 0 { content.push(self.pair.groups_config().detail); }
+        then(&PageRegions {
+            header: Some(LIBRARY_GROUP),
+            content: &content,
+            rail: Some(self.pair.groups_config().master),
+            back_walks_header: self.listing != Listing::Collections,
+            arrival: Arrival::Header,
+        })
+    }
+
+    /// The group the page seats on its first arrival: the header row.
     fn first_group(&self) -> GroupId {
-        match self.layout.first() {
-            Some(Block::LibraryRow) => LIBRARY_GROUP,
-            Some(Block::Status) => STATUS_GROUP,
-            Some(Block::Grid(_)) => LIBRARY_GROUP,
-            None => STRIP,
-        }
+        self.with_regions(|regions| regions.first_seat()).unwrap_or(STRIP)
     }
 
     fn current_viewport(&self) -> Option<LibraryViewport> {
@@ -956,9 +971,10 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
 }
 
 impl LibraryScreen {
-    /// BACK walks up the page one stop at a time and never changes the library: deep in the grid
-    /// to the top of the page, the top of the page to the header, the header to the nav, the nav
-    /// to Home.
+    /// **BACK**, decided by [`PageRegions::back`] and executed here. It walks up the Library one
+    /// region at a time and never changes the library: deep in the grid to the top of the page, the
+    /// top of the page to the header, the header to the bar, the bar to Home. The Collections page,
+    /// pushed over the Library, pops to it from the top of its grid, the header or the bar.
     fn back<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let cancelled = self.page_fade.cancel() | self.grid_fade.cancel();
         if cancelled {
@@ -967,30 +983,31 @@ impl LibraryScreen {
             self.refresh_header(cx);
             return Handled::Yes;
         }
-        let pushed = self.listing == Listing::Collections;
-        let Some(focus) = cx.focus.current.filter(|key| key.entry == self.entry) else {
-            // The nav (or nothing of this page) holds focus: leave the page. The Collections page
-            // was pushed over the library, so it pops to it; the library itself goes Home.
-            if pushed { fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back))); }
-            else { fx.push(Fx::App(AppFx::Library(LibraryReq::BackToHome { kind: self.kind }))); }
-            return Handled::Yes;
-        };
-        if region_of_elem(focus.elem) == Some(KeyRegion::Rail) {
-            self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
-        } else if self.is_header_elem(focus.elem) {
-            if pushed { fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back))); }
-            else { self.reseat(FocusTarget::ContainerGroup(STRIP), fx); }
-        } else if self.scroll_target > 0.5 {
-            // Deep in the page: back to its top, on the first row when focus is in the grid.
-            self.scroll_target = 0.0;
-            let first_row = self.grid_position(Some(focus)).and_then(|(_, col)|
-                self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
-            match first_row {
-                Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
-                None => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry);
+        let step = self.with_regions(|regions| {
+            let at = focus.and_then(|key| regions.region_of(key.elem, <Self as Focusable<H>>::group_of(self, &key.elem, cx)));
+            regions.back(at, self.scroll_target > 0.5)
+        });
+        match step {
+            BackStep::Content => self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx),
+            BackStep::Top => {
+                // Deep in the page: back to its top, on the first row when focus is in the grid.
+                self.scroll_target = 0.0;
+                let first_row = self.grid_position(focus).and_then(|(_, col)|
+                    self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
+                match first_row {
+                    Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
+                    None => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+                }
             }
-        } else {
-            self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx);
+            BackStep::Header => self.reseat(FocusTarget::ContainerGroup(LIBRARY_GROUP), fx),
+            BackStep::Nav => self.reseat(FocusTarget::ContainerGroup(STRIP), fx),
+            BackStep::Leave => {
+                // The Collections page was pushed over the library, so it pops to it; the library
+                // itself goes Home.
+                if self.listing == Listing::Collections { fx.push(Fx::App(AppFx::Content(crate::registry::ContentReq::Back))); }
+                else { fx.push(Fx::App(AppFx::Library(LibraryReq::BackToHome { kind: self.kind }))); }
+            }
         }
         Handled::Yes
     }
@@ -1288,10 +1305,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if matches!(region_of_elem(key.elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.neighbour(key, dir, cx);
         }
-        let elems = self.row_elems(self.group_of(&key.elem, cx));
-        let Some(index) = elems.iter().position(|elem| *elem == key.elem) else { return Step::Edge };
-        let next = match dir { Dir::Left => index.checked_sub(1), Dir::Right => Some(index + 1), _ => None };
-        next.and_then(|i| elems.get(i).copied()).map_or(Step::Edge, |elem| Step::Move(self.key(elem)))
+        plx_ui::page_regions::row_neighbour(self.entry, &self.row_elems(self.group_of(&key.elem, cx)), key, dir)
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         if let Some(placed) = self.plaintext_alert.place(*elem) { return placed; }
@@ -1377,17 +1391,10 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         PageMemory::Library(self.page_memory())
     }
     fn links(&self, out: &mut Vec<Link>) {
-        out.push(Link { from: STRIP, dir: Dir::Down, to: self.first_group() });
-        out.push(Link { from: self.first_group(), dir: Dir::Up, to: STRIP });
-        // A continuous document has adjacent blocks even while its offscreen geometry
-        // passes the floating strip. Geometric ranking must not skip an intervening block.
-        let mut document = vec![LIBRARY_GROUP];
-        if self.readout == Readout::Failed { document.push(STATUS_GROUP); }
-        if self.pair.detail.total() > 0 { document.push(self.pair.groups_config().detail); }
-        for pair in document.windows(2) {
-            out.push(Link { from: pair[0], dir: Dir::Down, to: pair[1] });
-            out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });
-        }
+        // The column: bar, header, status, grid. A continuous document has adjacent blocks even
+        // while its offscreen geometry passes the floating strip, so geometric ranking must not
+        // skip an intervening block; the rail's links are the pair's own.
+        self.with_regions(|regions| regions.links(out));
         self.pair.links(out);
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
