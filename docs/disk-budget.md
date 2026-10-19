@@ -62,7 +62,7 @@ freed-bytes estimate that said it did would stop the ladder early.
 | Comfort line | 20 GiB free (`PLX_GC_MIN_FREE_GIB`) | The line `build-gc.sh --auto` already uses: about an hour of fleet growth |
 | Hysteresis | +4 GiB | A reclaim runs up to comfort + 4, about one cold host `target`, so the next build does not reclaim again |
 | Reserve | 3 GiB (`PLX_MIN_FREE_MB`) | The existing preflight's ENOSPC floor |
-| Idle | 15 min | A tree written in the last 15 minutes is somebody's current work |
+| Idle | 15 min | A tree written in the last 15 minutes is somebody's current work; a lane is idle only when all of its trees are |
 | `/tmp` garbage | 24 h | A PlxNative `/tmp` tree untouched for a day is nobody's current work |
 | Seed | 7 days (`PLX_SEED_MAX_DAYS`) | `build-gc.sh --seed`'s age |
 

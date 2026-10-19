@@ -236,13 +236,19 @@ def never(tree: Tree, inv: Inventory) -> str:
 
 
 def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now: float,
-             build_tree: Optional[str]) -> Tuple[List[Action], str]:
-    """The actions a tree can contribute, and (when it contributes none) why it is kept."""
+             build_tree: Optional[str], lane_built: Optional[Dict[str, float]] = None) -> Tuple[List[Action], str]:
+    """The actions a tree can contribute, and (when it contributes none) why it is kept.
+
+    `lane_built` maps a checkout to when anything in ITS trees was last built: a lane is idle only when all of
+    its trees are, so a lane running `make test-hostsim` keeps its `target` too."""
     why = never(tree, inv)
     if why:
         return [], "never: " + why
     owner = tree.owner or "-"
-    idle = max(0.0, now - tree.last_built) >= th.idle_secs
+    built = tree.last_built
+    if tree.kind in ("lane", "fleet") and tree.checkout and lane_built:
+        built = max(built, lane_built.get(tree.checkout, 0.0))
+    idle = max(0.0, now - built) >= th.idle_secs
     handles = list(tree.live.reasons(current=True))
     handles = [r for r in handles if not r.startswith("cargo lock")]   # only open files / unknown
 
@@ -314,7 +320,8 @@ def classify(tree: Tree, inv: Inventory, th: Thresholds, me: Optional[str], now:
         return worth([whole(3, "PlxNative /tmp tree, idle %s" % age_text(now - tree.last_built))], "")
 
     if not idle:
-        return [], "built %s ago (< %d min)" % (age_text(now - tree.last_built), th.idle_secs // 60)
+        return [], "%s %s ago (< %d min)" % ("built" if built == tree.last_built else "its lane built",
+                                              age_text(now - built), th.idle_secs // 60)
     acts = []
     incr_taken = 0
     if tree.incr_bytes > 0:
@@ -330,8 +337,12 @@ def ladder(inv: Inventory, th: Thresholds, me: Optional[str], now: float,
     Independent of free space: this is the order a reclaim WOULD take."""
     actions: List[Action] = []
     kept: Dict[str, str] = {}
+    lane_built: Dict[str, float] = {}
     for tree in inv.trees:
-        acts, why = classify(tree, inv, th, me, now, build_tree)
+        if tree.kind in ("lane", "fleet") and tree.checkout and not tree.tombstone:
+            lane_built[tree.checkout] = max(lane_built.get(tree.checkout, 0.0), tree.last_built)
+    for tree in inv.trees:
+        acts, why = classify(tree, inv, th, me, now, build_tree, lane_built)
         actions.extend(acts)
         if why:
             kept[tree.path] = why

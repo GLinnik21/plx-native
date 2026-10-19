@@ -248,6 +248,15 @@ class NeverPlanned(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertIn("built", why)
 
+    def test_a_lane_is_idle_only_when_all_of_its_trees_are(self):
+        old = tree("/w/x/rust-modules/target", gib=4, age=9, checkout="/w/x", owner="x")
+        busy = tree("/w/x/rust-modules/target-hostsim", gib=2, age=0.1, checkout="/w/x", owner="x")
+        actions, kept = db.ladder(inv(old, busy), TH, ME, NOW)
+        self.assertEqual(actions, [])
+        self.assertIn("its lane built", kept[old.path])
+        other = tree("/w/y/rust-modules/target", gib=4, age=9, checkout="/w/y", owner="y")
+        self.assertEqual([a.tree for a in db.ladder(inv(old, busy, other), TH, ME, NOW)[0]], [other.path])
+
     def test_a_tree_that_shares_all_its_blocks_frees_nothing_and_is_not_planned(self):
         t = tree("/w/x/rust-modules/target", gib=0, age=9)
         actions, why = self.kept(t)
