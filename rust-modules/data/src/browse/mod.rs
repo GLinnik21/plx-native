@@ -349,6 +349,21 @@ impl LibraryType {
         self.title_in(kind, plx_platform::i18n::current())
     }
 
+    /// `n` of what this listing holds, in the same words every other count of it wears: "185
+    /// films", "40 shows", "6 seasons", "12 episodes", "9 items" (a collection listing). The ONE
+    /// source of the noun beside a number, shared by the Sources list's "185 films" line and the
+    /// Library header's "37 of 120 films" read-out, so a count never changes its noun by screen.
+    pub fn count_label(self, kind: SecKind, n: i64) -> String {
+        use plx_platform::i18n::msg;
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => msg::browse_person_films(n),
+            (Self::Primary, SecKind::Show) => msg::browse_person_shows(n),
+            (Self::Seasons, _) => msg::browse_detail_seasons(n),
+            (Self::Episodes, _) => msg::browse_detail_episodes(n),
+            (Self::Collections, _) => msg::browse_search_items(n),
+        }
+    }
+
     fn title_in(self, kind: SecKind, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
@@ -3405,10 +3420,7 @@ pub struct SrcRow {
 
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        match kind {
-            SecKind::Movie => plx_platform::i18n::msg::browse_person_films(count),
-            SecKind::Show => plx_platform::i18n::msg::browse_person_shows(count),
-        }
+        LibraryType::Primary.count_label(kind, count)
     } else {
         kind.plural().to_string()
     }

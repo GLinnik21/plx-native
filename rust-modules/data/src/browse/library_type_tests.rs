@@ -20,6 +20,26 @@ mod tests {
         assert_eq!(sort.query(true), "addedAt:desc");
     }
 
+    /// **One noun beside a number, by what the listing holds.** The Sources list's "185 films" and
+    /// the Library header's "37 of 120 films" read-out both come from `LibraryType::count_label`,
+    /// so a screen cannot count the same library in two words.
+    #[test]
+    fn a_count_wears_the_noun_of_what_the_listing_holds() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        for (ty, kind, n, want) in [
+            (LibraryType::Primary, SecKind::Movie, 185, "185 films"),
+            (LibraryType::Primary, SecKind::Movie, 1, "1 film"),
+            (LibraryType::Primary, SecKind::Show, 40, "40 shows"),
+            (LibraryType::Seasons, SecKind::Show, 6, "6 seasons"),
+            (LibraryType::Episodes, SecKind::Show, 12, "12 episodes"),
+            (LibraryType::Collections, SecKind::Movie, 9, "9 items"),
+        ] {
+            assert_eq!(ty.count_label(kind, n), want, "{ty:?} of {kind:?}");
+        }
+        assert_eq!(count_line(185, SecKind::Movie), LibraryType::Primary.count_label(SecKind::Movie, 185),
+            "the Sources list reads the same table");
+    }
+
     /// The Collections page borrows the section's one listing. The grid's sort and genre are
     /// its view, not the page's: they must be there when the loan is repaid.
     #[test]
