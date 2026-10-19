@@ -3922,6 +3922,11 @@ static mut GL_DIM_UV: c_int = 0;
 static mut GL_DIM_FIELD: c_int = 0;
 static mut GL_DIM_TEX: c_int = 0;
 static mut GL_DIM_SHARP: c_int = 0;
+static mut GL_WASH_ON: c_int = 0;
+static mut GL_WASH_UV: c_int = 0;
+/// `u_wash_tl`, `u_wash_tr`, `u_wash_br`, `u_wash_bl`.
+static mut GL_WASH_K: [c_int; 4] = [0; 4];
+static mut GL_WASH_W: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -4254,6 +4259,11 @@ fn blur_lazy_init() -> bool {
         GL_DIM_FIELD = glGetUniformLocation(GPROG, c"u_dim_field".as_ptr());
         GL_DIM_TEX = glGetUniformLocation(GPROG, c"u_dim_tex".as_ptr());
         GL_DIM_SHARP = glGetUniformLocation(GPROG, c"u_dim_sharp".as_ptr());
+        GL_WASH_ON = glGetUniformLocation(GPROG, c"u_wash_on".as_ptr());
+        GL_WASH_UV = glGetUniformLocation(GPROG, c"u_wash_uv".as_ptr());
+        GL_WASH_K = [c"u_wash_tl", c"u_wash_tr", c"u_wash_br", c"u_wash_bl"]
+            .map(|name| glGetUniformLocation(GPROG, name.as_ptr()));
+        GL_WASH_W = glGetUniformLocation(GPROG, c"u_wash_w".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -5734,6 +5744,21 @@ impl GlassFace {
     };
 }
 
+/// **Snapshot UV back to the screen**: `(su, sv, ou, ov)` with `screen_uv = uv * (su, sv) + (ou, ov)`
+/// over the whole canvas, top-down — `blur_uv_rect` inverted, for the region `reg` the snapshot holds
+/// in a window of `span` of its texture. Both composite-time terms that live on the page (the dim's
+/// field, the wash's delta) are specified over the screen and read at the sampled snapshot uv.
+fn snapshot_to_screen(reg: [f32; 4], span: [f32; 2], bottom_up: bool) -> [f32; 4] {
+    let su = reg[2] / (span[0] * SCR_W);
+    let ou = reg[0] / SCR_W;
+    let (sv, ov) = if bottom_up {
+        (-reg[3] / (span[1] * SCR_H), (reg[1] + reg[3]) / SCR_H)
+    } else {
+        (reg[3] / (span[1] * SCR_H), reg[1] / SCR_H)
+    };
+    [su, sv, ou, ov]
+}
+
 pub fn draw_blur_backdrop(
     x: f32,
     y: f32,
@@ -5854,15 +5879,7 @@ pub fn draw_blur_backdrop(
                 glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
                 glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
                 if d.tex != 0 {
-                    // `v_cuv` back to the screen point, then over the screen: the field maps the
-                    // whole screen top-down (`ui::underlay::panel_uv`). `blur_uv_rect` inverted.
-                    let su = c.reg[2] / (span[0] * SCR_W);
-                    let ou = c.reg[0] / SCR_W;
-                    let (sv, ov) = if c.bottom_up {
-                        (-c.reg[3] / (span[1] * SCR_H), (c.reg[1] + c.reg[3]) / SCR_H)
-                    } else {
-                        (c.reg[3] / (span[1] * SCR_H), c.reg[1] / SCR_H)
-                    };
+                    let [su, sv, ou, ov] = snapshot_to_screen(c.reg, span, c.bottom_up);
                     glUniform4f(GL_DIM_UV, su, sv, ou, ov);
                     glActiveTexture(GL_TEXTURE3);
                     glBindTexture(GL_TEXTURE_2D, d.tex);
@@ -5870,6 +5887,26 @@ pub fn draw_blur_backdrop(
                 }
             }
             _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+        }
+        // THE PAGE WASH, as a delta, in the same slot of the same expression (`backdrop::Ground`):
+        // the image keeps the wash it was drawn under and the composite owes this frame's
+        // difference from it, where the glass SAMPLES. The sharp grab below is off the finished
+        // framebuffer, whose wash is this frame's already, so only `srcRGB` takes it. Off (and
+        // exactly today's glass) whenever the two are the same wash.
+        match retained.as_ref().and(live).and_then(|request| backdrop::deferred_ground(request.z)) {
+            Some(d) => {
+                let [su, sv, ou, ov] = snapshot_to_screen(c.reg, span, c.bottom_up);
+                let [rx, ry, rw, rh] = d.rect;
+                // Snapshot UV -> screen UV (0..1 over the canvas) -> the wash's own frame.
+                let (kx, ky) = (SCR_W / rw.max(1.0), SCR_H / rh.max(1.0));
+                glUniform1f(GL_WASH_ON, 1.0);
+                glUniform4f(GL_WASH_UV, su * kx, sv * ky, ou * kx - rx / rw.max(1.0), ov * ky - ry / rh.max(1.0));
+                for (loc, k) in (*std::ptr::addr_of!(GL_WASH_K)).iter().zip(d.corners) {
+                    glUniform3f(*loc, k[0], k[1], k[2]);
+                }
+                glUniform2f(GL_WASH_W, d.weight[0], d.weight[1]);
+            }
+            None => glUniform1f(GL_WASH_ON, 0.0),
         }
         // The sharp grab below is off the finished framebuffer: the dim is in it already.
         glUniform1f(GL_DIM_SHARP, 0.0);
@@ -6093,6 +6130,9 @@ pub fn draw_glass_frozen(
             }
             _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
         }
+        // A frozen page carries its wash in the snapshot: no delta (the uniform is the program's,
+        // so the last live glass's `1` would otherwise stay).
+        glUniform1f(GL_WASH_ON, 0.0);
         glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
         glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, ground);
@@ -7005,6 +7045,30 @@ mod tests {
         assert_eq!(fetches, 1, "one dim-field fetch site, behind mode 1");
         let sharp = code.lines().find(|l| l.contains("u_dim_sharp > 0.0")).expect("the sharp dim");
         assert!(sharp.contains("dimRGB(sharp") && sharp.contains(", g)"), "the sharp dim reuses the body's texel: {sharp}");
+    }
+
+    /// **The page wash's delta rides `srcRGB`, once, before the source-alpha mix and off the sharp
+    /// branch.** `backdrop::Ground` defers the wash to composite: the snapshot keeps the wash it was
+    /// drawn under and `srcRGB` owes the difference, at the UV it SAMPLES (the refracted one — the
+    /// caller passes the lens's uv, so a term placed here is read where the filtered source is). The
+    /// sharp rim grab is off the finished framebuffer and carries this frame's wash already, so a
+    /// second delta there would count it twice. Behind a uniform branch so `u_wash_on = 0` is the
+    /// glass without it.
+    #[test]
+    fn the_wash_delta_is_applied_in_src_rgb_at_the_sampled_uv_and_nowhere_else() {
+        let code = shader_code(FS_GLASS);
+        for uniform in ["u_wash_on", "u_wash_uv", "u_wash_tl", "u_wash_tr", "u_wash_br", "u_wash_bl", "u_wash_w"] {
+            assert!(code.contains(&format!("uniform ")) && code.contains(uniform), "{uniform} declared");
+        }
+        let src = &code[code.find("vec3 srcRGB(").expect("srcRGB")..];
+        let src = &src[..src.find("\n}\n").expect("end of srcRGB")];
+        let on = src.find("if (u_wash_on > 0.0)").expect("the wash term is behind its uniform branch");
+        let mix = src.find("mix(u_source_ground, c, u_source_alpha)").expect("the source-alpha mix");
+        assert!(on < mix, "the delta is part of the source colour, before it is mixed over the ground");
+        assert!(src.contains("uv * u_wash_uv.xy + u_wash_uv.zw"), "evaluated at the sampled uv");
+        assert_eq!(code.matches("u_wash_tl").count(), 2, "declared once, read once");
+        let main = &code[code.find("void main(){").expect("main")..];
+        assert!(!main.contains("u_wash_"), "main never touches the wash: the sharp grab already carries it");
     }
 
     /// **The hairline specular costs nothing where it is off.** `u_spec.w` is its strength and both

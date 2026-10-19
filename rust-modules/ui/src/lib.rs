@@ -455,17 +455,29 @@ pub fn text_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
     (blur, off, a)
 }
 
+/// What a declared primitive offers a glass above it to take at composite ([`Painter::declare_as`]).
+enum Deferrable {
+    /// A modal dim: its ink and field, applied in `srcRGB` (`frame::backdrop::Dim`).
+    Dim(frame::backdrop::Dim),
+    /// The page's wash: its corners as the GPU receives them and the ink ramp laid over it in the
+    /// same pass, taken as a delta (`frame::backdrop::Ground`).
+    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]) },
+}
+
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
         self.declare_as(r, tag, None, values)
     }
-    /// [`declare`](Self::declare), with `dim` saying the primitive is a modal dim a glass above it
-    /// may apply at composite (`frame::backdrop::paint_dim`).
+    /// [`declare`](Self::declare), with `mark` saying the primitive is one a glass above it may
+    /// apply at composite instead of in its source: a modal dim (`frame::backdrop::paint_dim`) or
+    /// the page's wash (`frame::backdrop::paint_ground`). The mark is DECLARED, never inferred from
+    /// the tag: `ambient_art` shares tag 22's family with card textures and is not a wash a glass
+    /// may take.
     fn declare_as(
         self,
         r: Rect,
         tag: u64,
-        dim: Option<frame::backdrop::Dim>,
+        mark: Option<Deferrable>,
         values: impl FnOnce(&mut Vec<u64>),
     ) -> bool {
         if self.records() {
@@ -505,8 +517,13 @@ impl Painter {
         values(&mut data);
         // The primitive AA/rim can paint just outside its nominal rectangle.
         let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
-        match dim {
-            Some(dim) => frame::backdrop::paint_dim(bounds, data, dim),
+        match mark {
+            Some(Deferrable::Dim(dim)) => frame::backdrop::paint_dim(bounds, data, dim),
+            Some(Deferrable::Ground { corners, ink: (ink, ink_a) }) => frame::backdrop::paint_ground(
+                bounds,
+                data,
+                frame::backdrop::Ground { corners, rect: [m.x, m.y, m.w, m.h], ink, ink_a },
+            ),
             None => frame::backdrop::paint(bounds, data),
         }
         true
@@ -1250,13 +1267,16 @@ impl Painter {
     /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
     /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
     pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
-        if self.declare(r, 16, |data| {
+        // The corners as the GPU receives them (`gfx::draw_ambient` scales them by `dim`): the
+        // wash's mark for a glass above it, and what is drawn below.
+        let k = self.wash_corners(k);
+        let drawn = k.map(|c| c.map(|v| v * dim));
+        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]) }), |data| {
             use frame::backdrop::Value;
             dim.record(data);
             k.record(data);
         }) { return; }
         if self.records() { return; }
-        let k = self.wash_corners(k);
         let m = self.place(r);
         plx_gfx::gfx::draw_ambient(
             m.x, m.y, m.w, m.h,
@@ -1322,15 +1342,16 @@ impl Painter {
     ///
     /// [`AmbientWash::draw_ground`]: crate::widgets::AmbientWash::draw_ground
     pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2])) {
-        if self.declare(r, 23, |data| {
-            use frame::backdrop::Value;
-            k.record(data);
-            ink.0.record(data);
-            ink.1.record(data);
-        }) { return; }
-        if self.records() { return; }
+        let (k_raw, ink_raw) = (k, ink);
         let k = self.wash_corners(k);
         let (ink, inka) = self.ink(ink);
+        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka) }), |data| {
+            use frame::backdrop::Value;
+            k_raw.record(data);
+            ink_raw.0.record(data);
+            ink_raw.1.record(data);
+        }) { return; }
+        if self.records() { return; }
         let m = self.place(r);
         plx_gfx::gfx::draw_ambient_inked(
             m.x, m.y, m.w, m.h,
@@ -1421,7 +1442,7 @@ impl Painter {
     /// `UnderlayField::draw`'s `Role::Dim`.
     pub fn dim(self, r: Rect, tex: u32, tint: [f32; 4]) {
         let ink = frame::backdrop::Dim { tex, tint: self.c(tint) };
-        if self.declare_as(r, 24, Some(ink), |data| {
+        if self.declare_as(r, 24, Some(Deferrable::Dim(ink)), |data| {
             use frame::backdrop::Value;
             tex.record(data);
             plx_gfx::gfx::tex_ledger::revision(tex).record(data);
