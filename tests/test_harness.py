@@ -7468,6 +7468,48 @@ class FpsMock(unittest.TestCase):
         s["walk"]["max_rows"] = 3
         return s
 
+    # --- library-switch: the draw-rate floor does not flip on the phase of the switch cycle ---
+    # The scene's own heartbeats (`fps=` per 1 s window, route=library) on the television, 2026-10-19,
+    # one tuple per build of the same tree (phase H, built and run by the collections-redesign
+    # lane). The grader skips the first `warmup_s` (6) and grades the rest, so the graded window is
+    # the back half of the 14-step switch cycle plus the idle tail where the cycle is spent
+    # (`0 1 0 1 0 1`: the keepalive). Which steps land in which second moves between boots, so the
+    # graded MEDIAN read 7-11 for the same animation and failed fps_floor 8 on H7 (median 7).
+    SWITCH_SERIES = {
+        "H3": [49, 57, 42, 33, 17, 12, 21, 30, 11, 11, 33, 18, 11, 10, 0, 1, 0, 1, 0, 1],
+        "H5": [49, 56, 41, 32, 18, 12, 21, 31, 11, 11, 33, 18, 11, 11, 0, 1, 0, 1, 0, 1, 50],
+        "H7": [47, 57, 39, 33, 21, 8, 21, 35, 12, 5, 32, 22, 7, 10, 0, 1, 0, 1, 0, 1],
+        "H9": [48, 57, 41, 34, 19, 11, 21, 32, 12, 8, 32, 19, 10, 9, 0, 1, 0, 1, 0, 1],
+        # the lowest-total healthy run on record (tuck-E) and one with the idle steps elsewhere
+        "tuck-E": [56, 34, 3, 33, 20, 10, 20, 16, 6, 9, 31, 19, 10, 9, 0, 1, 0, 1, 0, 1],
+        "tv3-847-L1b": [49, 33, 3, 33, 19, 11, 20, 16, 9, 32, 32, 20, 10, 3, 1, 6, 13, 0, 1, 0],
+    }
+
+    @staticmethod
+    def _library_beat(fps):
+        return f"loop=60 route=library fps={fps} worstframe=1.0ms carried=0 dropped=0 budget=0/0"
+
+    def _run_switch(self, series):
+        log = [self.SYN] + [self._library_beat(n) for n in series]
+        return self._run_scene(copy.deepcopy(self.scenes["library-switch"]), log, {})
+
+    def test_library_switch_passes_every_phase_of_the_cycle(self):
+        for build, series in self.SWITCH_SERIES.items():
+            ok, detail = self._run_switch(series)
+            self.assertTrue(ok, f"{build} {series}: {detail}")
+
+    def test_library_switch_still_fails_a_frozen_animator(self):
+        # a frozen animator draws the keepalive alone, ~0.5 swaps/s, for the whole run
+        for frozen in ([1, 0] * 10, [0, 1] * 10, [1] * 20, [0] * 20):
+            ok, detail = self._run_switch(frozen)
+            self.assertFalse(ok, f"{frozen}: {detail}")
+            self.assertIn("fps_floor", detail)
+
+    def test_library_switch_still_fails_an_animator_at_a_quarter_of_the_rate(self):
+        slow = [round(n / 4) for n in self.SWITCH_SERIES["H3"]]
+        ok, detail = self._run_switch(slow)
+        self.assertFalse(ok, f"{slow}: {detail}")
+
     def _walk_log(self, server=None, fps=40, keys=6):
         out = [server or self.SYN, "hubs: landed — 90 items, 3 shelves"] + [self._beat(fps=1)] * 3
         for _ in range(keys):
