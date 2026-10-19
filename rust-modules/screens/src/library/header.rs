@@ -293,9 +293,10 @@ impl LibraryScreen {
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
         // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
         // menu is its only copy, and the board shows it as plain text while the panel is open.
-        let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let lifted = lifted.filter(|elem| focused == Some(*elem)).map(|elem| (elem, page_header::Lift::Plain));
+        // The dispatcher decides when it stands down (`lifted_opener`: a closing menu whose focus
+        // moved off the opener), so a lift is always the control's whole menu-open stretch, during
+        // which the engine's focus is on the menu's rows and the row's motion HOLDS.
+        let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| (key.elem, page_header::Lift::Plain));
         row.draw(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
     }
 }

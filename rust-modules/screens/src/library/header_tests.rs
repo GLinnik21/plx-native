@@ -363,8 +363,48 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
         let pill = rects.iter().filter(|r| r.h > plx_ui::page_header::HEIGHT + 1.0).map(|r| r.cx()).collect::<Vec<_>>();
         assert_eq!(pill.len(), 1, "frame {frame}: the pill stays drawn through the switch: {rects:?}");
         assert!((pill[0] - rest).abs() < 0.5, "frame {frame}: and stays where it was ({} vs {rest})", pill[0]);
-        // The fixture's directory never commits the switch, so the plate returns to the library
-        // on view once the grid's fade has run; while the switch is pending it is under the name.
+        // Frame 5 is where `flush` hands the pick to the store and `pending` is consumed. The
+        // fixture has no store behind it to move the directory's current library, so the page then
+        // reads the old library again; while the switch is pending, the plate is under the name.
         assert!(frame > 4 || selected_under(&rects), "frame {frame}: the plate is under the picked name from the first frame");
     }
+}
+
+/// **While the Sort & Filter menu is up, the control's accent pill is not under its panel.** The
+/// engine's focus is on the menu's own rows (another entry), so the row's motion HOLDS (a pill
+/// that faded meanwhile would have to fade back in when the closing morph hands over), and the
+/// page must still draw it out: the control is lifted, the menu is its only copy.
+#[test]
+fn the_held_focus_pill_is_not_drawn_under_an_open_menu_and_is_still_up_when_it_closes() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(2);
+    let key = page.key(SORTFILTER);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
+    let pill_w = page.header.as_ref().unwrap().plate(SORTFILTER).unwrap().w * plx_ui::widgets::CTRL_FOCUS_SCALE;
+    let pills = |page: &LibraryScreen, engine: &FocusEngine<u32>, lifted: Option<FocusKey<u32>>| {
+        let cx = fixture.cx(engine);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        frame.lifted = lifted;
+        plx_ui::draw_census::capture(|| page.draw_header(&frame)).iter()
+            .filter(|(tag, rect)| *tag == 2 && (rect.w - pill_w).abs() < 0.5).count()
+    };
+    assert_eq!(pills(&page, &engine, None), 1, "premise: the focused control wears the pill");
+    let motion = |page: &LibraryScreen| {
+        let mut canon = plx_machine::machine::Canon::new();
+        page.header_capsules.write_motion(&mut canon);
+        page.header_pop.write_motion(&mut canon);
+        canon.finish()
+    };
+    let up = motion(&page);
+
+    // The menu opens: its rows hold focus (another entry) and the page lifts the control.
+    engine.set(OWNER, FocusKey { entry: EntryId(ENTRY.0 + 1), elem: 0 }, None, By::Dir);
+    for frame in 61..=120 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
+    assert_eq!(pills(&page, &engine, Some(key)), 0, "its menu lifted it: no pill under the panel");
+    assert_eq!(motion(&page), up, "the row's motion held while a surface above had focus");
+
+    // The menu closes: focus is back on the control, the page draws it, and the pill is still up.
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    assert_eq!(pills(&page, &engine, None), 1, "the first frame after the menu is the pill, not a fade-in");
 }
