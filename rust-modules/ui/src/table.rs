@@ -924,7 +924,17 @@ impl TableView {
     /// Sort & Filter and the Watchlist's size by the same rule. The control's width wins over
     /// content only up to [`MENU_MAX_W`].
     pub fn menu_panel_width_from(&self, measure: &dyn plx_machine::machine::Measure, pill: Rect) -> f32 {
-        self.menu_panel_width(measure).max(pill.w.min(MENU_MAX_W))
+        self.menu_panel_width_to(measure, pill, MENU_MAX_W)
+    }
+
+    /// [`Self::menu_panel_width_from`] with the ceiling the caller names instead of
+    /// [`MENU_MAX_W`]: a list of USER-NAMED rows (the Library's "+N" libraries) is as wide as its
+    /// widest row up to the safe width, so a name is read whole with room to spare and only
+    /// marquees beyond it (the board: names are never faded or cut).
+    pub fn menu_panel_width_to(&self, measure: &dyn plx_machine::machine::Measure, pill: Rect, ceiling: f32) -> f32 {
+        self.measured_width(measure)
+            .clamp(self.min_panel_w.min(ceiling), ceiling)
+            .max(pill.w.min(ceiling))
     }
 
     /// Test-side half of the cap: `Err` names the offending width when this table would need a
