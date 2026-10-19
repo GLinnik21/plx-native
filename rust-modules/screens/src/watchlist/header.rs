@@ -14,6 +14,7 @@
 //! every consumer (paint, the focus rect, the menu's anchor) reads that one value.
 use plx_machine::machine::Measure;
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, Lift, PageHeader, PageHeaderSpec, Slot};
+#[cfg(feature = "devtriggers")]
 use plx_ui::theme;
 use plx_ui::widgets::{CtlPop, TabStrip, CTRL_FOCUS_SCALE};
 use plx_ui::{Painter, Rect};
