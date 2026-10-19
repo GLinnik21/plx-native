@@ -308,8 +308,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   on exit, and with `--require-match`: a `T=` that matches no test exits 1 instead of reporting `0
   passed` and passing. It is **incremental, by design**, in its own `rust-modules/target-hostsim`
   (gitignored), for the reason `test-fast` is: the Makefile's measured policy keeps shared and
-  linked-worktree builds non-incremental, and this is the same opt-in edit loop (edit-rebuild ~10 s
-  against 31-32 s) for the one test set `test-fast` cannot run. The price is the same disk; `make
+  linked-worktree builds non-incremental, and this is the same opt-in edit loop for the one test set
+  `test-fast` cannot run. `test-fast`'s measured edit-rebuild (~10 s against 31-32 s) is for the
+  14-crate default-feature suite, not this one-package build, and so is its ~2.7 GB; this tree was
+  1.7 GB after a cold build of `lifecycle_regression_tests` (62 tests, 31 s wall, 2026-10-19). `make
   disk` lists the tree, and `tools/build-gc.sh --incremental` (cache only) or `--lanes` (whole
   tree), or `rm -rf rust-modules/target-hostsim`, reclaims it. It replaces the former hand-run
   recipe that pointed `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any

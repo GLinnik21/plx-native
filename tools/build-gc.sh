@@ -49,9 +49,9 @@ MAIN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed '
 # The Makefile sets `CARGO_INCREMENTAL=0` in a linked worktree, with a long comment explaining why
 # a lane cut for one task must not pay a multi-gigabyte cache of its last build. That rule is
 # correct and it does not hold, because it lives in ONE of the several places a `cargo` runs here:
-# every agent (and `AGENTS.md`'s own `--no-default-features` gate) invokes cargo directly, and a
-# direct invocation never reads the Makefile. Measured 2026-09-17 across this machine's 113
-# worktrees: **12.9 GB of `target*/debug/incremental` inside LINKED worktrees**, on a volume with
+# every agent (and, until `make check-nodef` replaced it, `AGENTS.md`'s own `--no-default-features`
+# gate) invokes cargo directly, and a direct invocation never reads the Makefile. Measured 2026-09-17
+# across this machine's 113 worktrees: **12.9 GB of `target*/debug/incremental` inside LINKED worktrees**, on a volume with
 # 5.1 GiB free — i.e. the policy's whole stated saving, still on the disk, in the checkouts it
 # names.
 #

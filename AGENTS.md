@@ -108,9 +108,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `ci/list-caps.ini`.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
-- `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
-  (`app/run.rs` `lifecycle_regression_tests`, the player-return rig) run as `make test-hostsim
-  [T=filter]`. It runs `cargo test --lib -p plxnative-modules --features hostsim` on the pinned
+- `make test-crate` does NOT enable `hostsim`: the application crate's tests under
+  `#[cfg(all(test, feature = "hostsim"))]` (`app/run.rs` `lifecycle_regression_tests`, the
+  player-return rig) run as `make test-hostsim [T=filter]`. It covers that crate only: the
+  `hostsim` tests inside `plx_media` (`player/engine.rs`, `pump.rs`, `route/decision.rs`) are
+  compiled by `make check`'s hostsim pass alone, so a `T=` naming one fails "matched no test" even
+  when spelled right. It runs `cargo test --lib -p plxnative-modules --features hostsim` on the pinned
   toolchain with a throwaway `PLXNATIVE_RUNTIME_DIR` (removed afterwards), incrementally in its own
   gitignored `rust-modules/target-hostsim`: inside the checkout, so `make disk` and
   `tools/build-gc.sh` see it and it goes with the worktree, like `target-fast`. A `T=` that matches
