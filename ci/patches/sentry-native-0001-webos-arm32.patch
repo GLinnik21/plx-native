@@ -106,9 +106,9 @@ index 79477d12..c8c5b731 100644
 @@ -1012,7 +1035,7 @@ build_stacktrace_for_thread(
                  = sentry_malloc(sizeof(*remote_frames) * MAX_STACK_FRAMES);
              size_t remote_count = remote_frames
-                 ? sentry__unwind_stack_from_thread(
--                      tid, remote_frames, MAX_STACK_FRAMES, &registers)
-+                      tid, remote_frames, (size_t)frame_limit, &registers)
+                 ? sentry__unwind_stack_from_thread(tid, remote_frames,
+-                      MAX_STACK_FRAMES, &registers, ctx->symbolize_stacktraces)
++                      (size_t)frame_limit, &registers, ctx->symbolize_stacktraces)
                  : 0;
  
              if (remote_count > 0) {

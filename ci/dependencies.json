@@ -30,7 +30,7 @@
     "patches": [
       {
         "path": "ci/patches/sentry-native-0001-webos-arm32.patch",
-        "sha256": "59bcf1e14370a67bf9239c3702b68547e61a189df854dbd886ee1d539d44d953"
+        "sha256": "624d78fa86ab5e990c2fd8d83b496642d1dbb0cdae932d8a2caa97cced45de73"
       }
     ]
   },
