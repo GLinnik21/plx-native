@@ -424,7 +424,7 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     let ground_of = |rel: &str| {
         let src = std::fs::read_to_string(root.join(rel)).expect("read panel source");
         assert!(
-            src.contains("panel_ground(") || src.contains("pop.panel("),
+            src.contains("panel_ground(") || src.contains("pop.panel(") || src.contains("popover.panel("),
             "{rel} must draw its ground through `panel_ground` (or `Popover::panel`)"
         );
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");

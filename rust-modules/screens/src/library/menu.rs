@@ -14,6 +14,7 @@ use plx_ui::screen::{
 };
 use plx_ui::form::{Binding, Form, FormSection, FormTable, RowKey, RowKind};
 use plx_appkit::source_list::{self, Level, SrcTarget, Tail};
+use plx_ui::popover::Popover;
 use plx_ui::table::{Row, TableView};
 use std::convert::Infallible;
 #[cfg(test)]
@@ -424,6 +425,11 @@ pub struct LibraryMenu {
     identities: Vec<String>,
     stamp: Vec<u8>,
     desired_unwatched: Option<bool>,
+    /// The open/close motion: the panel MORPHS out of the control it opened from and back into it
+    /// (`Popover::morphing` + `open_from`, the path the Watchlist's Sort & Filter takes: one opener
+    /// rule for every header menu, design review S11). It owns the glass's arrival; the control
+    /// itself is the host's opener lift (S12), so this draws no pill of its own.
+    popover: Popover,
     #[cfg(test)] draft_rebuilds: usize,
 }
 
@@ -437,8 +443,15 @@ impl LibraryMenu {
             identities: Vec::new(),
             stamp: Vec::new(),
             desired_unwatched: None,
+            popover: Popover::new().morphing(),
             #[cfg(test)] draft_rebuilds: 0,
         }
+    }
+    /// The control's focused pill: where the panel grows from and shrinks back into, and what its
+    /// width is measured against.
+    fn pill(&self) -> Rect {
+        let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
+        plx_ui::widgets::focus_pill(Rect::new(x, y, w, h))
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
     /// rows, never narrower than the control's focused pill), hung off the anchor's left edge and
@@ -447,9 +460,9 @@ impl LibraryMenu {
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
+        let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
-        let pill = plx_ui::widgets::focus_pill(Rect::new(x, y, w, h));
+        let pill = self.pill();
         let width = if self.kind == LibraryMenuKind::Sources {
             self.form.table.menu_panel_width_to(measure, pill, plx_ui::page_header::TEXT_X1 - 96.0)
         } else {
@@ -630,10 +643,18 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
                 }
                 return Handled::Yes;
             }
-            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) | ScreenEvent::Enter(_) => {
+            ScreenEvent::Mount => {
+                self.popover.open_from(Some(self.pill()));
+                self.refresh(cx)
+            }
+            // However the surface was dismissed (BACK, a pick, the host's own press), the panel
+            // runs the morph back into its control.
+            ScreenEvent::Closing => self.popover.dismiss(),
+            ScreenEvent::StoreChanged(..) | ScreenEvent::Enter(_) => {
                 self.refresh(cx)
             }
             ScreenEvent::Tick(tick) => {
+                self.popover.update(tick.dt());
                 self.refresh(cx);
                 if self.kind == LibraryMenuKind::Genre {
                     fx.push(Fx::App(AppFx::Store(
@@ -776,11 +797,14 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // The panel's own share, named for `/tmp/plxnative-cpuprof` beside the page's `lb.*`
         // phases: the frosted ground plus its rows, so a slow frame while the Sort/Filter menu is
         // up can be read as the PANEL or as the host under it rather than as one `main.ui` total.
+        // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
+        // container's appear: the panel begins and ends as the control it grows from.
         let field = f.underlay;
         let frame = self.frame(measure);
+        let m = self.popover.content_painter_on(f.painter, 0.0);
         plx_ui::profile::phase("lb.menu", || {
-            plx_ui::widgets::panel_ground(p, frame, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
-            self.form.table.draw(p, frame, measure);
+            self.popover.panel(m, frame, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);
+            self.popover.morph_rows(m, frame, PANEL_RADIUS, |m| self.form.table.draw(m, frame, measure));
         });
         for index in 0..self.form.table.n_rows() as usize {
             let Some(key) = self.form.key_at(index) else { continue };
@@ -1331,6 +1355,73 @@ mod tests {
             <LibraryMenu as Screen<HostFixture>>::opener(&more),
             Some((EntryId(3), Some(FocusKey { entry: EntryId(3), elem: 6 }))),
             "the +N list lifts its +N too: it reads as the focused opener, not as the page's dimmed capsule");
+    }
+
+    /// **A header menu GROWS out of the control it opened from** (design review S11), as the
+    /// Watchlist's Sort & Filter does: one opener rule, one morph path (`Popover::morphing` +
+    /// `open_from`), whichever kind opens ("+N" included). Red while the panel was laid at its
+    /// final rect on its first frame and only faded in: three frames in, the glass is still the
+    /// control's size or a little over, and the settled panel is exactly `frame()`.
+    #[test]
+    fn the_panel_grows_out_of_its_control_and_settles_on_its_frame() {
+        use plx_machine::machine::MachineId;
+        let _guard = plx_base::testlock::serial();
+        for kind in [LibraryMenuKind::SortFilter, LibraryMenuKind::Sources] {
+            let anchor = Rect::new(1640.0, 148.0, 150.0, 56.0);
+            let arg = LibraryMenuArg {
+                host: plx_machine::machine::InstanceId(8),
+                target: SectionAddress { epoch: 11, sid: ServerId::from_raw(1), section: 7 },
+                kind,
+                anchor: [anchor.x, anchor.y, anchor.w, anchor.h].map(f32::to_bits),
+                folded: Vec::new(),
+                opener: Some((EntryId(3), 5)),
+            };
+            let mut menu = LibraryMenu::new(EntryId(7), arg);
+            let step = |menu: &mut LibraryMenu, ev: ScreenEvent<HostFixture>| {
+                with_cx(|cx| {
+                    let mut present = plx_machine::present::Present::new();
+                    let mut out = Vec::new();
+                    let mut fx = Effects::new(&mut out, MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
+                    Machine::<HostFixture>::step(menu, &ev, cx, &mut fx);
+                })
+            };
+            // The glass this frame: the panel ground (a `rect_rimmed`, tag 8, on a host with no
+            // frozen field) the surface drew.
+            let glass = |menu: &mut LibraryMenu| -> Rect {
+                with_cx(|cx| {
+                    plx_ui::draw_census::capture(|| {
+                        let mut f = DrawFrame::new(cx, plx_ui::Painter::recording());
+                        Screen::<HostFixture>::draw(menu, &mut f);
+                    })
+                })
+                .into_iter()
+                .find_map(|(tag, r)| (tag == 8).then_some(r))
+                .unwrap_or_default()
+            };
+            step(&mut menu, ScreenEvent::Mount);
+            let settled = menu.frame(&FixtureMeasure);
+            let mut ms = 0;
+            for _ in 0..3 {
+                ms += 16;
+                step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+            }
+            let early = glass(&mut menu);
+            assert!(
+                early.w < settled.w - 20.0 && early.h < settled.h - 20.0,
+                "{kind:?}: three frames into the open the panel is still growing out of the control \
+                 ({early:?}), not laid at its final {settled:?}"
+            );
+            for _ in 0..90 {
+                ms += 16;
+                step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+            }
+            let end = glass(&mut menu);
+            assert!(
+                (end.x - settled.x).abs() < 0.5 && (end.y - settled.y).abs() < 0.5
+                    && (end.w - settled.w).abs() < 0.5 && (end.h - settled.h).abs() < 0.5,
+                "{kind:?}: the settled panel is the frame {settled:?}, drew {end:?}"
+            );
+        }
     }
 
     /// **The panel is never narrower than the control's pill** (the Watchlist's menu hangs by the
