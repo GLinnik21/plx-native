@@ -15,6 +15,11 @@
 //! the `›` glyph and the page's name on the selected plate (not focusable); the placement is
 //! [`Crumb::layout`]'s, so the pieces stand where the mock has them.
 //!
+//! **A page's own name is plain text** ([`HeaderItem::title`], the Watchlist's "Watchlist"): full white
+//! on the bare ground, no plate and no stop. The selected plate means "current among siblings"
+//! (a library name, "Collections", a crumb's page) and the white pill means "focusable"; a lone
+//! title is neither (design review S10).
+//!
 //! **Motion is the top bar's own component.** The row paints its plates through a
 //! [`TabStrip`] and its focus pop through a [`CtlPop`], both owned by the SCREEN that wears the
 //! row (never by the row: a library switch replaces the whole header, and a capsule that lived in
@@ -76,6 +81,12 @@ pub struct HeaderItem {
     pub value: Option<String>,
     /// The item is the CURRENT one: it wears the selected plate.
     pub selected_plate: bool,
+    /// The item is the page's own NAME, not one of several siblings (the Watchlist's "Watchlist"):
+    /// **plain text** at full white on the bare ground. The plate means "current among siblings" and
+    /// the white pill means "focusable"; a lone title is neither, so it wears neither (design
+    /// review S10). Implies not focusable; it takes the same room a plate-wearing label would, so a
+    /// row's placement never depends on which of the two it is.
+    pub title: bool,
     /// A menu control: a fold glyph (down chevron) follows the text.
     pub fold_glyph: bool,
     /// Takes focus. A read-out ("312 of 1,284") does not.
@@ -248,7 +259,7 @@ impl PageHeader {
             items.push(ItemRect { slot, text, plate, focusable });
         };
         let mut left: Vec<(Slot, f32, bool)> = self.spec.left.iter().enumerate()
-            .map(|(i, it)| (Slot::Left(i), run_w(it, measure), it.focusable)).collect();
+            .map(|(i, it)| (Slot::Left(i), run_w(it, measure), it.focusable && !it.title)).collect();
         if self.spec.overflow > 0 {
             let more = HeaderItem { label: format!("+{}", self.spec.overflow), ..Default::default() };
             left.push((Slot::Overflow, run_w(&more, measure), true));
@@ -288,7 +299,7 @@ impl PageHeader {
     fn face(&self, slot: Slot) -> Face<'_> {
         let of = Self::face_of;
         fn plain<'a>(label: String, selected: bool) -> Face<'a> {
-            Face { label, value: None, selected, fold: false, dimmed: false, readout: false, fade: None }
+            Face { label, value: None, selected, title: false, fold: false, dimmed: false, readout: false, fade: None }
         }
         match slot {
             Slot::Left(i) => self.spec.left.get(i).map_or_else(|| plain(String::new(), false), of),
@@ -302,7 +313,7 @@ impl PageHeader {
     /// What an item says about itself: the flags the paint reads.
     fn face_of(item: &HeaderItem) -> Face<'_> {
         Face {
-            label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate,
+            label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate, title: item.title,
             fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, fade: None,
         }
     }
@@ -396,6 +407,8 @@ impl PageHeader {
     fn draw_face_at(&self, p: Painter, text: Rect, face: &Face<'_>, (dx, dy): (f32, f32), (focus, selected): (f32, f32)) {
         let (rest, strong) = if face.readout {
             (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)
+        } else if face.title {
+            (theme::CONTROL_IDLE_INK, theme::CONTROL_IDLE_INK)
         } else if face.dimmed {
             (theme::with_a(theme::CONTROL_TEXT_REST, 0.6), theme::with_a(theme::CONTROL_IDLE_INK, 0.6))
         } else {
@@ -469,6 +482,8 @@ struct Face<'a> {
     label: String,
     value: Option<&'a str>,
     selected: bool,
+    /// The page's name: full-white plain text, no plate ([`HeaderItem::title`]).
+    title: bool,
     fold: bool,
     dimmed: bool,
     readout: bool,

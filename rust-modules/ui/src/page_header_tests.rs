@@ -293,6 +293,31 @@ fn a_lifted_control_keeps_or_loses_its_label_as_the_page_asks() {
     assert_eq!(away.len() + 3, kept.len(), "only that item's label, separator and value went");
 }
 
+/// **S10: a title is plain text.** A [`HeaderItem::title`] wears no selection plate (the row has no
+/// selected item), takes no focus, and stands at full white, not a resting control's 65%; it takes
+/// the room a plate-wearing label would, so swapping the one for the other moves nothing.
+#[test]
+fn a_title_is_full_white_plain_text_with_no_plate_and_no_stop() {
+    let _g = plx_base::testlock::serial();
+    let sort = HeaderItem { fold_glyph: true, focusable: true, ..item("Sort", Some("Title")) };
+    let spec = |left: HeaderItem| PageHeaderSpec { left: vec![left], right: vec![sort.clone()], ..Default::default() };
+    let titled = PageHeader::new(spec(HeaderItem { title: true, ..item("Watchlist", None) }), std::slice::from_ref(&sort), &Fixed);
+    let plated = PageHeader::new(spec(real("Watchlist", true)), std::slice::from_ref(&sort), &Fixed);
+    let layout = titled.layout(1920.0, &Fixed);
+    let boxes = |l: &HeaderLayout| l.items.iter().map(|r| (r.text, r.plate)).collect::<Vec<_>>();
+    assert_eq!(boxes(&layout), boxes(&plated.layout(1920.0, &Fixed)), "the title takes the room a plated label takes");
+    assert_eq!(titled.selected(&layout), -1, "no item wears the plate");
+    let stops: Vec<Slot> = PageHeader::item_rects(&layout).iter().map(|(i, _)| layout.items[*i].slot).collect();
+    assert_eq!(stops, [Slot::Right(0)], "the title is not a stop");
+    let (capsules, pop) = settled(&layout, titled.selected(&layout), 1);
+    let rects = rrects(&titled, &layout, &capsules, &pop, None);
+    assert!(selection_plate(&rects).is_none(), "no plate under the title: {rects:?}");
+    let runs = crate::draw_census::capture_runs(|| titled.draw(Painter::recording(), &layout, &capsules, 1.0, None));
+    assert_eq!(runs.iter().find(|r| r.text == "Watchlist").expect("the title is drawn").ink, [1.0; 4]);
+    let plated_runs = crate::draw_census::capture_runs(|| plated.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    assert_eq!(plated_runs.iter().find(|r| r.text == "Watchlist").unwrap().ink, [1.0, 1.0, 1.0, 0.65], "a plain control label stays at 65%");
+}
+
 /// **A breadcrumb is a configuration of the row**: the placement is [`Crumb::layout`]'s, so the
 /// pieces stand where the mock has them, only the root is a stop, the page name wears the
 /// selected plate, and the right cluster is the same cluster the row would have had.

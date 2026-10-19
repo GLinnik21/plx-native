@@ -224,7 +224,7 @@ fn the_pill_face_still_records_its_label() {
 #[test]
 fn the_row_is_the_librarys_geometry() {
     let row = header::Row::new(&FixtureMeasure, "Default", None);
-    let title = row.title_plate();
+    let title = row.title_box();
     assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's plate: text at x 96, overhang 20");
     let plate = row.plate();
     assert_eq!((plate.y, plate.h), (148.0, 56.0));
@@ -248,7 +248,7 @@ fn the_title_is_plain_text_with_no_plate_under_it() {
     let row = header::Row::new(&ShippedMeasure, "Default", None);
     let (mut capsules, mut pop) = (TabStrip::new(), CtlPop::<1>::new());
     for _ in 0..180 { row.step(EntryId(1), None, &mut capsules, &mut pop, 1.0 / 60.0); }
-    let title = row.title_plate();
+    let title = row.title_box();
     let plates = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
     let under_title: Vec<_> = plates.iter().filter(|(tag, r)| *tag == 2 && r.x <= title.x + title.w && r.x + r.w >= title.x).collect();
     assert!(under_title.is_empty(), "a plate is drawn under the title: {under_title:?}");
@@ -362,7 +362,7 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
         // the longest summary with the longest read-out in front of it.
         for count in [Count::All(88888), Count::Of { shown: 88888, total: 88888 }] {
             let row = header::Row::new(&ShippedMeasure, &long.summary(), Some(count));
-            let (title_end, cluster) = (row.title_plate().x + row.title_plate().w, row.cluster_left());
+            let (title_end, cluster) = (row.title_box().x + row.title_box().w, row.cluster_left());
             if cluster < title_end + plx_ui::page_header::CLUSTER_GAP {
                 bad.push(format!("{tag} {count:?}: the cluster starts at x {cluster:.0}, the title's plate ends {title_end:.0}"));
             }

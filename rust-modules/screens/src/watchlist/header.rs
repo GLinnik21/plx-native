@@ -1,6 +1,7 @@
 //! The page header: the Library's one row (`plx_ui::page_header::PageHeader`, container left 76 /
 //! right 129, top 148, 56 tall, text edges x 96 and x 1771). The title "Watchlist" stands on the
-//! left on the selected plate, as the Collections page's crumb does; on the right a filter
+//! left as plain text (`HeaderItem::title`: no plate, which means "current among siblings", and no
+//! pill, which means "focusable"; design review S10); on the right a filter
 //! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
 //! [`READOUT_GAP`] before the control) and the one control, "Sort & Filter · <value> ▾".
 //!
@@ -77,7 +78,7 @@ impl Row {
         use plx_platform::i18n::msg;
         let left = vec![HeaderItem {
             label: msg::watchlist_page_title().to_owned(),
-            selected_plate: true,
+            title: true,
             ..Default::default()
         }];
         let mut right = Vec::new();
@@ -119,9 +120,9 @@ impl Row {
         self.row.focus(entry, id, (0.0, 0.0), Rect::FULL)
     }
 
-    /// The title's plate, in document space.
+    /// The title's box (its text and the room a plate would take), in document space.
     #[cfg(test)]
-    pub fn title_plate(&self) -> Rect {
+    pub fn title_box(&self) -> Rect {
         self.row.layout.items[0].plate
     }
 
