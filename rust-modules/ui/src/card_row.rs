@@ -2756,6 +2756,113 @@ mod tests {
             "both restart together: {t:?} {c:?}");
     }
 
+    // ---- a line gliding in a window held to its tile dissolves at BOTH of the window's edges ----
+
+    /// Every run of `caption` one focused tile held to its tile ([`TileLabel::within_tile`])
+    /// draws, leftmost first (the run, then its follower), with the census's `clip`, `fade` and
+    /// `lead` so a test can read where the window is and how each run dissolves into it.
+    fn within_tile_caption_runs(title: &str, caption: &str) -> Vec<crate::draw_census::Run> {
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let label = TileLabel::titled(title, caption).within_tile();
+        let mut runs = crate::draw_census::capture_runs(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        runs.retain(|r| r.text == caption);
+        runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        runs
+    }
+
+    /// The window a gliding run is clipped to, as `(left, right)` in screen x.
+    fn window_of(run: &crate::draw_census::Run) -> (f32, f32) {
+        let w = run.clip.expect("a gliding run is clipped to its window");
+        (w.x, w.x + w.w)
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.5
+    }
+
+    /// **A gliding line dissolves in at the window's LEADING edge too (FRAMES-5 item 4).** Only
+    /// the trailing edge dissolved, so the line's head was cut hard mid-letter at the window's
+    /// left edge ("Th" sliced). Once the run has travelled past [`LABEL_EDGE_FADE`] the first
+    /// that-many px of the window ramp 0 -> 1; the trailing dissolve is untouched.
+    #[test]
+    fn a_gliding_within_tile_line_dissolves_in_at_the_windows_leading_edge() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = within_tile_caption_runs("Alien", LONG_CAPTION);
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 2000.0) / 1000.0);
+        let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
+        assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
+        let (left, right) = window_of(&runs[0]);
+        assert!(runs[0].at.x < left - LABEL_EDGE_FADE, "the run has glided out past the left edge: {:?}", runs[0]);
+        let (from, to) = runs[0].lead.expect("a gliding run dissolves in over the window's first edge-fade px");
+        assert!(near(from, left) && near(to, left + LABEL_EDGE_FADE),
+            "the leading band covers [{left}, {}], got {from}..{to}", left + LABEL_EDGE_FADE);
+        let (tf, tt) = runs[0].fade.expect("the trailing dissolve is still there");
+        assert!(near(tf, right - LABEL_EDGE_FADE) && near(tt, right), "trailing band unchanged: {tf}..{tt}");
+        assert!(runs[1].at.x > left, "the follower is still inside the window's right: {:?}", runs[1]);
+        assert!(runs[1].lead.is_none(), "a run that starts inside the window has no leading band: {:?}", runs[1]);
+    }
+
+    /// And AT REST (the rest beat before the glide) the run starts exactly at the window's left
+    /// edge and draws crisp there: the leading band applies only while the run's left is past it.
+    #[test]
+    fn a_within_tile_line_at_rest_draws_crisp_at_the_windows_leading_edge() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
+        assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
+        let (left, right) = window_of(&runs[0]);
+        assert!(near(runs[0].at.x, left), "at rest the run starts on the window's left edge: {:?}", runs[0]);
+        assert!(runs.iter().all(|r| r.lead.is_none()), "no leading band at rest: {runs:?}");
+        let (tf, tt) = runs[0].fade.expect("the run still dissolves into the window's right edge");
+        assert!(near(tf, right - LABEL_EDGE_FADE) && near(tt, right), "trailing band unchanged: {tf}..{tt}");
+    }
+
+    /// **The leading band grows in with the travel instead of popping.** The first glide frame
+    /// moves the run well under a pixel; a full-width band there would dim the head of the line by
+    /// most of its alpha in that one frame. The band is as wide as the run has travelled, up to
+    /// the full [`LABEL_EDGE_FADE`] — zero width at rest, so the two are the same picture.
+    #[test]
+    fn the_leading_band_grows_in_with_the_travel_instead_of_popping() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = within_tile_caption_runs("Alien", LONG_CAPTION);
+        // a quarter second into the glide: 10 px travelled at 40 px/s
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
+        let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
+        let (left, _) = window_of(&runs[0]);
+        let travelled = left - runs[0].at.x;
+        assert!(travelled > 5.0 && travelled < LABEL_EDGE_FADE, "10 px into the glide: {travelled}");
+        let (from, to) = runs[0].lead.expect("a run past the left edge has a leading band");
+        assert!(near(from, left) && near(to, left + travelled),
+            "the band is as wide as the travel ({travelled} px from {left}): {from}..{to}");
+    }
+
+    /// A shorter line of a block parks at the end of its travel while the longer one still glides,
+    /// its follower sitting on the window's left edge up to float noise: that is a run AT REST and
+    /// must not pick up a leading band from an ulp of `-off + run_w + GAP`.
+    #[test]
+    fn a_line_parked_at_the_end_of_its_travel_draws_crisp() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = within_tile_caption_runs(LONG_TITLE, LONG_CAPTION);
+        let own = MARQUEE.period(measure_w(LONG_CAPTION, theme::size::CAPTION));
+        plx_machine::idle::frame_begin((own + 500.0) / 1000.0);
+        let runs = within_tile_caption_runs(LONG_TITLE, LONG_CAPTION);
+        let (left, _) = window_of(&runs[0]);
+        let parked: Vec<_> = runs.iter().filter(|r| (r.at.x - left).abs() < 0.5).collect();
+        assert_eq!(parked.len(), 1, "the follower has arrived at the window's left edge: {runs:?}");
+        assert!(parked[0].lead.is_none(), "and it is at rest, so crisp: {:?}", parked[0]);
+    }
+
     // ---- a credit label is one name line and one role line, in every state -------------------
 
     thread_local! {

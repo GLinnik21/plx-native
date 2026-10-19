@@ -334,6 +334,9 @@ pub mod draw_census {
         /// The horizontal dissolve ([`Painter::text_fade`]) as ABSOLUTE screen x, `(from, to)`:
         /// glyph alpha 1 at `from`, 0 at `to`. `None` for a run drawn plain.
         pub fade: Option<(f32, f32)>,
+        /// The LEADING dissolve, the mirror of `fade`, as ABSOLUTE screen x `(from, to)`: glyph
+        /// alpha 0 at `from`, 1 at `to`. `None` for a run with no leading band.
+        pub lead: Option<(f32, f32)>,
     }
     thread_local! {
         static RUNS: RefCell<Option<Vec<Run>>> = const { RefCell::new(None) };
@@ -1666,7 +1669,7 @@ impl Painter {
                 draw_census::note_run(draw_census::Run {
                     text: unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
                     size: sz, ink: self.c(col), bold: bold != 0, align, at,
-                    clip: draw_census::clip(), fade: None,
+                    clip: draw_census::clip(), fade: None, lead: None,
                 });
             }
             return w;
@@ -1749,7 +1752,7 @@ impl Painter {
                     draw_census::note_text(text.clone(), at);
                     draw_census::note_run(draw_census::Run {
                         text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
-                        clip: draw_census::clip(), fade: Some((at.x + fade_from, at.x + fade_to)),
+                        clip: draw_census::clip(), fade: Some((at.x + fade_from, at.x + fade_to)), lead: None,
                     });
                 }
             }
