@@ -11,14 +11,17 @@
 //! Only the root takes focus; OK on it returns to the page below (the caller's Back). The page name
 //! is the title, not a control. The glyph is centred in its own span, so it never rides the text
 //! baseline: it is centred on the row's midline.
+//!
+//! This module is the crumb's GEOMETRY. The crumb is drawn by [`crate::page_header::PageHeader`]
+//! (set [`PageHeaderSpec::crumb`](crate::page_header::PageHeaderSpec::crumb)): it is the header
+//! row's left side, so it has the row's one draw, motion and focus group.
 
 use std::ffi::CString;
 
 use plx_machine::machine::Measure;
 
-use super::icons::{self, Icon};
 use super::page_header::{HEIGHT, OVERHANG, TEXT_X0, TOP};
-use super::{theme, Painter, Rect};
+use super::{theme, Rect};
 
 /// The flex gap between the root, the glyph span and the page name.
 pub const GAP: f32 = 8.0;
@@ -81,27 +84,6 @@ impl Crumb {
         let page_plate = Rect::new(px, TOP, page_w + 2.0 * OVERHANG, HEIGHT);
         let page_text = Rect::new(px + OVERHANG, TOP, page_w, HEIGHT);
         CrumbLayout { root_text, root_plate, glyph, page_text, page_plate }
-    }
-
-    /// Draw the crumb. `root_focused`: the root wears the focus pill (the plate grown by the
-    /// control focus scale) and its ink inverts, as a header control's does.
-    pub fn draw(&self, p: Painter, l: &CrumbLayout, root_focused: bool) {
-        let text = |s: &str, r: Rect, ink: [f32; 4]| {
-            let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.y + r.h * 0.5);
-            if let Ok(c) = CString::new(s) {
-                p.text(c.as_ptr(), r.x, y, theme::size::BODY, ink, 0, 0);
-            }
-        };
-        if root_focused {
-            let pill = l.root_plate.scaled(super::widgets::CTRL_FOCUS_SCALE);
-            p.rrect(pill, pill.h * 0.5, pill.h * 0.5, super::ACCENT);
-            text(&self.root, l.root_text, super::ACCENT_INK);
-        } else {
-            text(&self.root, l.root_text, ROOT_INK);
-        }
-        icons::draw(p, Icon::Chevron, l.glyph, GLYPH_INK);
-        p.rrect(l.page_plate, l.page_plate.h * 0.5, l.page_plate.h * 0.5, theme::TAB_PLATE_SELECTED);
-        text(&self.page, l.page_text, theme::CONTROL_IDLE_INK);
     }
 }
 

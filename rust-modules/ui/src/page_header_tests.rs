@@ -17,6 +17,7 @@ fn header(value: &str) -> PageHeader {
         left: vec![item("Films", None), item("Shows", None)],
         overflow: 2,
         right: vec![item("Collections", Some("12")), item("Recommended", None), HeaderItem { fold_glyph: true, ..item("Sort", Some(value)) }],
+        ..Default::default()
     };
     let widest = [item("Collections", Some("9,999")), item("Recommended", None), HeaderItem { fold_glyph: true, ..item("Sort", Some("Date added")) }];
     PageHeader::new(spec, &widest, &Fixed)
@@ -87,7 +88,7 @@ fn values_are_regular_weight_white_and_labels_are_65_percent() {
     let _g = plx_base::testlock::serial();
     let h = header("Title");
     let l = h.layout(1920.0, &Fixed);
-    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, None));
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, false));
     let value = runs.iter().find(|r| r.text == "Title").expect("the sort value is drawn");
     assert!(!value.bold, "no bold anywhere in the row");
     assert_eq!(value.ink, [1.0, 1.0, 1.0, 1.0], "values at 100% white");
@@ -107,7 +108,7 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     let (readout, collections) = (l.items[3].text, l.items[4].text);
     assert_eq!(collections.x - (readout.x + readout.w), READOUT_GAP);
     assert_eq!(READOUT_GAP, 64.0);
-    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, None));
+    let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, false));
     let run = runs.iter().find(|r| r.text == "24 of 27").unwrap();
     assert_eq!(run.ink, theme::COUNT_FILTERED_INK);
     assert_eq!(run.ink[3], 0.5);
@@ -136,6 +137,7 @@ fn a_focused_scaled_pill_never_touches_its_neighbours_plate() {
         overflow: 3,
         right: vec![item("Collections", Some("12")), item("Recommended", None),
             HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
+        ..Default::default()
     };
     let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
     for pair in l.items.windows(2) {

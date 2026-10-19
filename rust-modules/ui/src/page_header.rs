@@ -1,20 +1,35 @@
 //! **PageHeader** — the one row of plain-text controls a library page wears under the top bar:
-//! the library names on the left (with a "+N" for the ones that do not fit), the page's own
-//! controls on the right ("Collections · 12", "Recommended", "Sort & Filter · Title ▾").
-//!
-//! CONTRACT FREEZE: the types and signatures here are what the library header (P4) compiles
-//! against. [`PageHeader::layout`] is real (it is the geometry the tests pin); [`PageHeader::draw`]
-//! is a first cut that P1 refines in place without changing a signature.
+//! the library names on the left (with a "+N" for the ones that do not fit) or a breadcrumb
+//! ("Films › Collections"), and the page's own controls on the right ("Collections · 12",
+//! "Recommended", "Sort & Filter · Title ▾"). The Library, its Collections and Recommended pages
+//! and the Watchlist all wear THIS row: one layout, one draw, one focus group ([`HeaderFocus`]).
 //!
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate or a focus pill overhangs
 //! the text by [`OVERHANG`] (20), so the container is left 76, right 129. The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster is sized ONCE from its widest case
 //! (`widest`), so it never moves when a value changes; the left group gets what is left.
+//!
+//! **A breadcrumb is a configuration of the row, not a second widget.** With
+//! [`PageHeaderSpec::crumb`] set, the left side is the root link (focusable, no plate of its own),
+//! the `›` glyph and the page's name on the selected plate (not focusable); the placement is
+//! [`Crumb::layout`]'s, so the pieces stand where the mock has them.
+//!
+//! **Motion is the top bar's own component.** The row paints its plates through a
+//! [`TabStrip`] and its focus pop through a [`CtlPop`], both owned by the SCREEN that wears the
+//! row (never by the row: a library switch replaces the whole header, and a capsule that lived in
+//! it would land afresh instead of travelling). [`PageHeader::step`] steps them (the focus capsule
+//! travels on the bar's spring; a changed selection lands under it, [`SelMark::Lands`]) and
+//! [`PageHeader::draw`] paints plates first, then each label inked by how much of its plate the
+//! capsules cover.
 
 use std::ffi::CString;
 
-use plx_machine::machine::Measure;
+use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 
+use super::breadcrumb::{self, Crumb};
+use super::page_regions::row_neighbour;
+use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
+use super::widgets::{CtlPop, SelMark, TabGround, TabStrip};
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
 /// Left text edge of the first library name.
@@ -74,6 +89,9 @@ pub struct HeaderItem {
 /// What the header is built from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageHeaderSpec {
+    /// The breadcrumb that replaces the left side on a page pushed from a library page
+    /// ("Films › Collections"). `left` is empty and `overflow` is 0 when this is set.
+    pub crumb: Option<Crumb>,
     /// The libraries, in order; `selected_plate` marks the current one. Empty on a single-library
     /// page (the row then carries only the right cluster).
     pub left: Vec<HeaderItem>,
@@ -89,6 +107,10 @@ pub enum Slot {
     Left(usize),
     Overflow,
     Right(usize),
+    /// The breadcrumb's root link: focusable, no plate of its own.
+    CrumbRoot,
+    /// The breadcrumb's page name, on the selected plate: the title, not a control.
+    CrumbPage,
 }
 
 /// One laid-out item: its text box (edges are the spec's x 96 / 1771), the plate / pill box that
@@ -105,11 +127,22 @@ pub struct ItemRect {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HeaderLayout {
     pub items: Vec<ItemRect>,
+    /// The breadcrumb's `›`, when the row has one.
+    pub glyph: Option<Rect>,
     /// The fixed width of the right cluster (text only), measured from the widest case.
     pub cluster_w: f32,
     /// The width the left group may fill, text edge to text edge, before it would meet the
     /// cluster: what the caller packs library names (and the "+N") into.
     pub left_budget: f32,
+}
+
+impl HeaderLayout {
+    /// The y every item's plate stands at (`items[0]`'s: the row is one line). [`TOP`] for an empty
+    /// row. A caller that shifts the items (a scrolled page, the single-library nudge) shifts them
+    /// all, so this is the one place the capsules' `top` is read from.
+    pub fn top(&self) -> f32 {
+        self.items.first().map_or(TOP, |item| item.plate.y)
+    }
 }
 
 pub struct PageHeader {
@@ -177,6 +210,14 @@ impl PageHeader {
         let x1 = TEXT_X1 + (width - 1920.0);
         let cluster_x0 = x1 - self.cluster_w;
         let mut items = Vec::new();
+        let mut glyph = None;
+        if let Some(crumb) = &self.spec.crumb {
+            debug_assert!(self.spec.left.is_empty() && self.spec.overflow == 0, "a crumb replaces the left side");
+            let placed = crumb.layout(measure);
+            items.push(ItemRect { slot: Slot::CrumbRoot, text: placed.root_text, plate: placed.root_plate, focusable: true });
+            items.push(ItemRect { slot: Slot::CrumbPage, text: placed.page_text, plate: placed.page_plate, focusable: false });
+            glyph = Some(placed.glyph);
+        }
         let mut place = |slot, x: f32, w: f32, focusable: bool| {
             let text = Rect::new(x, TOP, w, HEIGHT);
             let plate = Rect::new(x - OVERHANG, TOP, w + 2.0 * OVERHANG, HEIGHT);
@@ -203,6 +244,7 @@ impl PageHeader {
         }
         HeaderLayout {
             items,
+            glyph,
             cluster_w: self.cluster_w,
             left_budget: (cluster_x0 - CLUSTER_GAP - TEXT_X0).max(0.0),
         }
@@ -213,53 +255,259 @@ impl PageHeader {
         layout.items.iter().enumerate().filter(|(_, r)| r.focusable).map(|(i, r)| (i, r.plate)).collect()
     }
 
-    /// Draw the row. `focus` is an index into `layout.items`.
-    pub fn draw(&self, p: Painter, layout: &HeaderLayout, focus: Option<usize>) {
-        for (idx, r) in layout.items.iter().enumerate() {
-            let item = match r.slot {
-                Slot::Left(i) => self.spec.left.get(i),
-                Slot::Right(i) => self.spec.right.get(i),
-                Slot::Overflow => None,
-            };
-            let focused = focus == Some(idx);
-            let dim = item.is_some_and(|i| i.dimmed);
-            if focused {
-                let pill = r.plate.scaled(super::widgets::CTRL_FOCUS_SCALE);
-                p.rrect(pill, pill.h * 0.5, pill.h * 0.5, super::ACCENT);
-            } else if item.is_some_and(|i| i.selected_plate) {
-                p.rrect(r.plate, r.plate.h * 0.5, r.plate.h * 0.5, theme::TAB_PLATE_SELECTED);
-            }
-            let (rest, strong) = if focused {
-                (super::ACCENT_INK, super::ACCENT_INK)
-            } else if item.is_some_and(|i| i.readout) {
-                (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)
-            } else if dim {
-                (theme::with_a(theme::CONTROL_TEXT_REST, 0.6), theme::with_a(theme::CONTROL_IDLE_INK, 0.6))
-            } else {
-                (theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK)
-            };
-            let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.text.y + r.text.h * 0.5);
-            let mut x = r.text.x;
-            let label = match (r.slot, item) {
-                (Slot::Overflow, _) => format!("+{}", self.spec.overflow),
-                (_, Some(i)) => i.label.clone(),
-                _ => String::new(),
-            };
-            let ink = if item.is_some_and(|i| i.selected_plate) { strong } else { rest };
-            if let Ok(c) = CString::new(label) {
-                x += p.text(c.as_ptr(), x, y, theme::size::BODY, ink, 0, 0);
-            }
-            if let Some(v) = item.and_then(|i| i.value.as_deref()) {
-                if let (Ok(sep), Ok(v)) = (CString::new(" \u{b7} "), CString::new(v)) {
-                    x += p.text(sep.as_ptr(), x, y, theme::size::BODY, rest, 0, 0);
-                    x += p.text(v.as_ptr(), x, y, theme::size::BODY, strong, 0, 0);
-                }
-            }
-            if item.is_some_and(|i| i.fold_glyph) {
-                icons::draw(p, Icon::ChevronDown,
-                    Rect::new(x + FOLD_GAP, r.text.y + (r.text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), strong);
+    /// What `slot` says about its item: the label (a crumb's parts and the "+N" are the row's own,
+    /// not spec items) and the flags the paint reads.
+    fn face(&self, slot: Slot) -> Face<'_> {
+        fn of(item: &HeaderItem) -> Face<'_> {
+            Face {
+                label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate,
+                fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout,
             }
         }
+        fn plain<'a>(label: String, selected: bool) -> Face<'a> {
+            Face { label, value: None, selected, fold: false, dimmed: false, readout: false }
+        }
+        match slot {
+            Slot::Left(i) => self.spec.left.get(i).map_or_else(|| plain(String::new(), false), of),
+            Slot::Right(i) => self.spec.right.get(i).map_or_else(|| plain(String::new(), false), of),
+            Slot::Overflow => plain(format!("+{}", self.spec.overflow), false),
+            Slot::CrumbRoot => plain(self.spec.crumb.as_ref().map(|c| c.root.clone()).unwrap_or_default(), false),
+            Slot::CrumbPage => plain(self.spec.crumb.as_ref().map(|c| c.page.clone()).unwrap_or_default(), true),
+        }
+    }
+
+    /// The index in `layout.items` of the item wearing the selected plate (the library on view,
+    /// the crumb's page name), `-1` for none: the `selected` the row's motion follows.
+    pub fn selected(&self, layout: &HeaderLayout) -> i32 {
+        layout.items.iter().position(|r| self.face(r.slot).selected).map_or(-1, |i| i as i32)
+    }
+
+    /// **One frame of the row's motion**, on the screen's own `capsules` and `pop`. The focus
+    /// capsule always travels, on the top bar's spring; the selection plate LANDS under it
+    /// ([`SelMark::Lands`]): selection only ever changes by pressing, under a focus capsule that is
+    /// already on the pill, so the path a sliding plate would take is a grey edge crawling out from
+    /// behind the accent one. `selected` and `focused` are indices into `layout.items` (`-1`: none;
+    /// focus off the row closes the pop). The span a capsule follows is the item's plate, the same
+    /// geometry the row is laid out and hit-tested with.
+    pub fn step(layout: &HeaderLayout, selected: i32, focused: i32, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
+        capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Lands, dt);
+        pop.step((focused >= 0).then_some(0), dt);
+    }
+
+    /// The `(focus, selected)` ink mixes of item `r`: how much of its plate the capsules cover. A
+    /// read-out is no pill and is never inked by one; a `lifted` control has no focus capsule under
+    /// it, so its ink stays the resting one.
+    fn mixes(&self, capsules: &TabStrip, r: &ItemRect, face: &Face<'_>, lifted: bool) -> (f32, f32) {
+        if face.readout || !(r.focusable || face.selected) { return (0.0, 0.0); }
+        let (focus, selected) = capsules.mixes((r.plate.x, r.plate.w));
+        (if lifted { 0.0 } else { focus }, selected)
+    }
+
+    /// Draw the row: the plates first (the selection's, then the focus capsule over it, through
+    /// the top bar's own [`TabStrip`]), then the `›` and every label inked by how much of its plate
+    /// the capsules cover, so a label brightens as the capsule arrives and not before. `pop` is the
+    /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is a
+    /// control a menu has taken out of the page (`DrawFrame::lifted`): it wears no focus capsule,
+    /// and its label stays plain text.
+    pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: bool) {
+        capsules.draw(p, layout.top(), HEIGHT, TabGround::Bare { pop, focus: !lifted });
+        if let Some(glyph) = layout.glyph {
+            icons::draw(p, Icon::Chevron, glyph, breadcrumb::GLYPH_INK);
+        }
+        for r in &layout.items {
+            let face = self.face(r.slot);
+            let mix = self.mixes(capsules, r, &face, lifted);
+            self.draw_face_at(p, r, &face, (0.0, 0.0), mix);
+        }
+    }
+
+    /// Draw item `layout.items[index]`'s face (label, value, fold glyph) with its plate at `to`,
+    /// and no plate of its own: the face a popover's morph carries while it grows out of the
+    /// control (`focused`: the accent ink the focused control wears). The same paint as
+    /// [`Self::draw`]'s, so a menu's opener face cannot drift from the row's.
+    pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
+        let Some(r) = layout.items.get(index) else { return };
+        self.draw_face_at(p, r, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
+    }
+
+    /// One item's label, value segment and fold glyph, shifted by `(dx, dy)`, inked at the mixes
+    /// `(focus, selected)`: `rest` toward `strong` as the selection arrives, then all the way to
+    /// the accent ink as the focus capsule covers it (focus outranks selection). `cross`, not
+    /// `mix`: the resting ink is a translucent white and the accent ink is opaque, and a blend
+    /// that kept the source's alpha would land the dark ink at 65%.
+    fn draw_face_at(&self, p: Painter, r: &ItemRect, face: &Face<'_>, (dx, dy): (f32, f32), (focus, selected): (f32, f32)) {
+        let (rest, strong) = if face.readout {
+            (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)
+        } else if face.dimmed {
+            (theme::with_a(theme::CONTROL_TEXT_REST, 0.6), theme::with_a(theme::CONTROL_IDLE_INK, 0.6))
+        } else {
+            (theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK)
+        };
+        let to_accent = |ink: [f32; 4]| theme::cross(ink, super::ACCENT_INK, focus.clamp(0.0, 1.0));
+        let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.text.y + dy + r.text.h * 0.5);
+        let mut x = r.text.x + dx;
+        // The label answers to both plates; what follows it (the separator, the value, the glyph)
+        // only to the focus one: a value is full white whatever is selected.
+        let label_ink = to_accent(theme::cross(rest, strong, selected.clamp(0.0, 1.0)));
+        if let Ok(c) = CString::new(face.label.as_str()) {
+            x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
+        }
+        if let Some(v) = face.value {
+            if let (Ok(sep), Ok(v)) = (CString::new(" \u{b7} "), CString::new(v)) {
+                x += p.text(sep.as_ptr(), x, y, theme::size::BODY, to_accent(rest), 0, 0);
+                x += p.text(v.as_ptr(), x, y, theme::size::BODY, to_accent(strong), 0, 0);
+            }
+        }
+        if face.fold {
+            icons::draw(p, Icon::ChevronDown,
+                Rect::new(x + FOLD_GAP, r.text.y + dy + (r.text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
+        }
+    }
+}
+
+/// What the paint reads of one item.
+struct Face<'a> {
+    label: String,
+    value: Option<&'a str>,
+    selected: bool,
+    fold: bool,
+    dimmed: bool,
+    readout: bool,
+}
+
+/// **A built header row**: the widget, its geometry (document space: y is the row's own top before
+/// any scroll) and which element each focusable item is. The row's placement, hit rects, focus
+/// order and paint all read this one value, so they cannot disagree. Held by the page that wears
+/// the row and replaced when its inputs change; the row's MOTION is not in it (see the module
+/// doc), so replacing it moves nothing that is on screen.
+pub struct HeaderRow {
+    pub page: PageHeader,
+    pub layout: HeaderLayout,
+    /// `(element, index into layout.items)` of every focusable item, in focus order.
+    pub stops: Vec<(u32, usize)>,
+}
+
+impl HeaderRow {
+    pub fn new(page: PageHeader, layout: HeaderLayout, stops: Vec<(u32, usize)>) -> Self {
+        Self { page, layout, stops }
+    }
+
+    /// The plate (focus and hit rect) of `elem` in document space.
+    pub fn plate(&self, elem: u32) -> Option<Rect> {
+        let (_, index) = self.stops.iter().find(|(stop, _)| *stop == elem)?;
+        self.layout.items.get(*index).map(|item| item.plate)
+    }
+
+    /// The focusable stop that wears the selected plate (the library on view), if there is one.
+    pub fn selected_stop(&self) -> Option<u32> {
+        let selected = usize::try_from(self.page.selected(&self.layout)).ok()?;
+        self.stops.iter().find(|(_, index)| *index == selected).map(|(elem, _)| *elem)
+    }
+
+    /// The row as one focus group for `entry`, at the page's scroll (`(drawn, target)`) and
+    /// inside `clip`.
+    pub fn focus(&self, entry: EntryId, group: GroupId, scroll: (f32, f32), clip: Rect) -> HeaderFocus<'_> {
+        HeaderFocus { entry, group, layout: &self.layout, stops: &self.stops, selected: self.selected_stop(), scroll, clip }
+    }
+
+    /// One frame of the row's motion on the screen's `capsules` and `pop`; `focused` is the
+    /// element holding focus (`None`: focus is elsewhere, or a menu has it).
+    pub fn step(&self, focused: Option<u32>, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
+        let focused = focused.and_then(|elem| self.stops.iter().position(|(stop, _)| *stop == elem))
+            .map_or(-1, |at| self.stops[at].1 as i32);
+        PageHeader::step(&self.layout, self.page.selected(&self.layout), focused, capsules, pop, dt);
+    }
+
+    /// Paint the row `scroll` px up from its document position (it scrolls away with its page).
+    pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
+        let mut layout = self.layout.clone();
+        for item in &mut layout.items {
+            item.text.y -= scroll;
+            item.plate.y -= scroll;
+        }
+        if let Some(glyph) = &mut layout.glyph { glyph.y -= scroll; }
+        self.page.draw(p, &layout, capsules, pop, lifted);
+    }
+}
+
+/// **A header row as ONE focus group**, borrowed per call from the page that wears it. Its stops
+/// are the focusable items in `layout.items` order; Left and Right walk them with no wrap and
+/// never leave the row (the group's edges Stop), Up and Down are the page's `Link`s
+/// ([`crate::page_regions::PageRegions::links`]). Every page that wears a header answers the
+/// engine's `Focusable` questions for it by delegating here, so the row means the same on all of
+/// them: a `Control` row, seated where the reader last was, else on the selected item, else on the
+/// stop nearest the key that came up from below.
+#[derive(Clone, Copy)]
+pub struct HeaderFocus<'a> {
+    pub entry: EntryId,
+    pub group: GroupId,
+    pub layout: &'a HeaderLayout,
+    /// `(element, index into layout.items)` of every stop, in focus order.
+    pub stops: &'a [(u32, usize)],
+    /// The focusable item wearing the selected plate, if any (a crumb's page name is not one).
+    pub selected: Option<u32>,
+    /// The page's scroll, `(drawn, target)`: the row rides it.
+    pub scroll: (f32, f32),
+    /// The panel the row is placed and hit-tested in.
+    pub clip: Rect,
+}
+
+impl HeaderFocus<'_> {
+    /// The group the engine declares for the row; `None` when it has no stop to land on.
+    pub fn group_spec(&self) -> Option<GroupSpec> {
+        if self.stops.is_empty() { return None; }
+        Some(GroupSpec {
+            id: self.group,
+            kind: GroupKind::Row { wrap: false },
+            seat: Seat::Remembered,
+            reachable: AxisMask::VERTICAL,
+            edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+            // The row's plates, so a move from the content below ranks it by x.
+            extent: Rect::new(TEXT_X0 - OVERHANG, self.layout.top() - self.scroll.1,
+                TEXT_X1 - TEXT_X0 + 2.0 * OVERHANG, HEIGHT),
+            len: self.stops.len(),
+            elem: ElemKind::Control,
+        })
+    }
+
+    pub fn contains(&self, elem: u32) -> bool {
+        self.stops.iter().any(|(stop, _)| *stop == elem)
+    }
+
+    /// The stops' elements in focus order.
+    pub fn elems(&self) -> Vec<u32> {
+        self.stops.iter().map(|(elem, _)| *elem).collect()
+    }
+
+    /// Left and Right along the stops; `Step::Edge` at the ends and for Up and Down.
+    pub fn neighbour(&self, key: FocusKey<u32>, dir: Dir) -> Step<u32> {
+        row_neighbour(self.entry, &self.elems(), key, dir)
+    }
+
+    /// Where the stop `elem` is, at the drawn or the target scroll.
+    pub fn place(&self, elem: u32, at: At) -> Option<Placed> {
+        let (_, index) = self.stops.iter().find(|(stop, _)| *stop == elem)?;
+        let plate = self.layout.items.get(*index)?.plate;
+        let scroll = match at { At::Drawn => self.scroll.0, At::SpringTarget => self.scroll.1 };
+        let rect = Rect::new(plate.x, plate.y - scroll, plate.w, plate.h);
+        Some(Placed { rect, rest_rect: rect, clip: self.clip, index: None })
+    }
+
+    /// The stop the engine seats when focus comes into the row from `from` and has no remembered
+    /// one: the selected item (Up from the grid lands on the library on view), else the stop
+    /// nearest `from` by x.
+    pub fn seat(&self, from: Placed) -> FocusKey<u32> {
+        let nearest = || self.stops.iter()
+            .filter_map(|(elem, _)| self.place(*elem, At::SpringTarget).map(|placed| (*elem, (placed.rect.cx() - from.rect.cx()).abs())))
+            .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(elem, _)| elem);
+        let elem = self.selected.or_else(nearest).unwrap_or(crate::dispatch::STRIP_BASE);
+        FocusKey { entry: self.entry, elem }
+    }
+
+    /// `want` if it is a stop of the row, else `None` (the page falls back to where the key was
+    /// last placed, then to its first seat).
+    pub fn reconcile(&self, want: FocusKey<u32>) -> Option<FocusKey<u32>> {
+        (want.entry == self.entry && self.contains(want.elem)).then_some(want)
     }
 }
 

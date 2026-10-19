@@ -5557,6 +5557,15 @@ pub enum TabGround {
     /// what puts `press::scale()` in it), plus the control rim. The selection capsule still does not
     /// scale — see [`TabStrip::draw`].
     Plated { pop: f32 },
+    /// **A row of un-plated items on a page** ([`crate::page_header`]'s header row): text on the
+    /// page with no ground of its own and no track round it. The selection capsule is the
+    /// header's plate ([`theme::TAB_PLATE_SELECTED`], a plate that stands where there is no idle
+    /// plate under it; `Plated`'s lighter wash is meant OVER one), with no rim, no scale and no
+    /// cast. The focus capsule is the accent at `pop` (a [`CtlPop`]'s factor, the press dip in it),
+    /// with no rim and no cast: the header's focused control is a flat pill, not the season strip's
+    /// lifted control face. `focus: false` leaves it out, for a control a menu has lifted off the
+    /// page (the menu is that control's only copy while it is open).
+    Bare { pop: f32, focus: bool },
 }
 
 impl TabStrip {
@@ -5656,11 +5665,10 @@ impl TabStrip {
                 }
             }
         };
-        let plated = matches!(ground, TabGround::Plated { .. });
-        let sel_col = if plated {
-            theme::TAB_PLATE_SELECTED_OVER
-        } else {
-            theme::OVERLAY_FOCUS_PILL
+        let sel_col = match ground {
+            TabGround::Bare { .. } => theme::TAB_PLATE_SELECTED,
+            TabGround::Plated { .. } => theme::TAB_PLATE_SELECTED_OVER,
+            TabGround::Tracked { .. } => theme::OVERLAY_FOCUS_PILL,
         };
         // The SELECTION capsule never scales, on either strip. It marks which season you are
         // browsing, which is a fact about the page and not about the control under your thumb — and
@@ -5695,6 +5703,9 @@ impl TabStrip {
             TabGround::Plated { pop } => {
                 cap(&self.foc, crate::ACCENT, Some(theme::CARD_SHEEN), pop, true)
             }
+            // The header's flat accent pill: scaled by the pop, nothing else (see [`TabGround::Bare`]).
+            TabGround::Bare { pop, focus: true } => cap(&self.foc, crate::ACCENT, None, pop, false),
+            TabGround::Bare { focus: false, .. } => {}
             TabGround::Tracked { .. } => cap(&self.foc, crate::ACCENT, None, 1.0, false),
         }
     }
