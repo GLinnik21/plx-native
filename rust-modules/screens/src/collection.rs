@@ -1365,6 +1365,62 @@ mod tests {
         assert!(new < full - 0.001, "the new member grows from rest: {new}");
     }
 
+    /// DEBUG-6 (the owner, on the TV): closing a card's hold menu blanked EVERY poster of the row to
+    /// the not-yet-loaded skeleton for the whole close, then all art came back at once. The page is
+    /// live under the menu and the store still holds every member, but the dismissal reaches the
+    /// page as the dispatcher's `Uncover`, `RestoreMemory(the memory the nav kept when the menu was
+    /// pushed)`, `Enter(Restored)` (`ui::dispatch` `push_lifecycle`), and the page answered it with
+    /// `CollectionCmd::Restore`, which put back the saved page directory with no rows: every member
+    /// became a hole (`Art::Poster(None)`, which the shared card draws as `placeholder::skeleton`)
+    /// until the children page was read again. The store's commands run on the real store here.
+    #[test]
+    fn dismissing_a_hold_menu_leaves_every_member_drawn_with_its_art() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.replace_items_for_test((0..6).map(|i| PmsMovie {
+            thumb: format!("/library/metadata/{i}/thumb/1"), ..item(&format!("m{i}")) }).collect()));
+        tick_at(&mut screen, &store, None, 32);
+        let a = screen.key_at(store.view().current().unwrap(), 0);
+        for n in 0..30 { tick_at(&mut screen, &store, Some(a), 48 + n * 16); }
+        // The page's draw census: the art each card stands in for while its texture is not resident
+        // (a host test has no textures, so every card is counted, under its member's poster path; a
+        // member the store does not hold is counted under an empty key).
+        let drawn = |screen: &mut CollectionScreen, store: &plx_data::stores::collection::CollectionStore| {
+            let (_, frame) = plx_ui::placeholder::capture_declared(|| {
+                let cx = cx(store.view(), Some(a));
+                let mut f = DrawFrame::new(&cx, Painter::root());
+                Screen::<CollectionHost>::draw(screen, &mut f);
+            });
+            let mut keys: Vec<String> = frame.entries.into_iter()
+                .filter(|e| e.reason == plx_ui::placeholder::Reason::CardSkeleton).map(|e| e.key).collect();
+            keys.sort();
+            keys
+        };
+        let before = drawn(&mut screen, &store);
+        assert_eq!(before.len(), 6, "the six members are drawn: {before:?}");
+        assert!(before.iter().all(|k| !k.is_empty()), "each one as its own poster: {before:?}");
+
+        // The hold menu is pushed over the page: the nav keeps the page's memory as the request's
+        // return (`ret.memory`), and the page is covered for the length of the menu.
+        let memory = Screen::<CollectionHost>::memory_at(&screen, Some(a));
+        step(&mut screen, ScreenEvent::Cover, &cx(store.view(), Some(a)));
+        for n in 0..60 { tick_at(&mut screen, &store, Some(a), 600 + n * 16); }
+
+        // BACK dismisses it, and the page hears what the dispatcher delivers; whatever it asks of
+        // the collection store is run on the store, as the application's store adapter does.
+        for ev in [ScreenEvent::Uncover, ScreenEvent::RestoreMemory(memory), ScreenEvent::Enter(plx_ui::screen::Enter::Restored)] {
+            for out in step(&mut screen, ev, &cx(store.view(), Some(a))) {
+                if let plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(cmd))) = out.fx {
+                    store.run(cmd);
+                }
+            }
+        }
+        tick_at(&mut screen, &store, Some(a), 1600);
+        assert_eq!(drawn(&mut screen, &store), before,
+            "the first frame after the menu's dismissal draws every member as its own poster, not as a not-yet-loaded \
+             skeleton (an empty key): the store held all of them");
+        assert!(store.view().current().unwrap().item(0).is_some(), "the store still holds the first member");
+    }
+
     /// The failed page's read-out is the shared page read-out (#268): page-placed, the untyped
     /// "can't reach" glyph Home and the Library carry, and never drawn over the live header —
     /// with a three-line summary the glyph shrinks or drops, without one it keeps its full size.
