@@ -55,6 +55,37 @@ pub fn capsule_alpha(scroll: f32, gone_at: f32) -> f32 {
     ((scroll - (end - CHROME_SHARE)) / CHROME_SHARE).clamp(0.0, 1.0)
 }
 
+/// The page's chrome and capsule, as drawn: the state a page owns and steps once a frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Handoff {
+    chrome: f32,
+    capsule: f32,
+}
+
+impl Handoff {
+    /// A page at rest at its top: the chrome shown, no capsule.
+    pub const fn new() -> Self {
+        Handoff { chrome: 1.0, capsule: 0.0 }
+    }
+
+    /// One frame. (Today's mapping, kept while the test below is red: both alphas are pure
+    /// functions of the scroll position.)
+    pub fn step(&mut self, _dt: f32, pos: f32, _target: f32, gone_at: f32, _capsule_worn: bool) {
+        self.chrome = 1.0 - tuck(pos, gone_at);
+        self.capsule = capsule_alpha(pos, gone_at);
+    }
+
+    /// How much of the chrome is shown (0 gone .. 1 shown).
+    pub fn chrome(&self) -> f32 {
+        self.chrome
+    }
+
+    /// How far the capsule has arrived (0 absent .. 1 shown).
+    pub fn capsule(&self) -> f32 {
+        self.capsule
+    }
+}
+
 /// Does the page show the capsule? It restates the library the header row names, so only a header
 /// that names libraries to choose between (`selectable`: the names in its row, the `+N` overflow
 /// stop counted) has anything to restate. A one-library page and a page whose header names none
@@ -130,6 +161,86 @@ mod tests {
                 assert!((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&a));
             }
         }
+    }
+
+    /// 60 Hz, the frame the pages tick at.
+    const DT: f32 = 1.0 / 60.0;
+
+    /// One leg of a trip: `(leaving, arriving)` drawn alphas per frame, the glass on its way out
+    /// first. The key frame is frame 0.
+    type Leg = Vec<(f32, f32)>;
+
+    /// The drawn alphas on each frame of a Down past the threshold and an Up back, with the REAL
+    /// scroll spring a page owns (`consts::K_SCROLL`) stepped toward the target once a frame, then
+    /// `model(pos, target)` asked for `(chrome alpha, capsule alpha)`.
+    fn trip(mut model: impl FnMut(f32, f32) -> (f32, f32)) -> (Leg, Leg) {
+        let mut spring = crate::Spring::at(0.0);
+        let mut leg = |target: f32| -> Vec<(f32, f32)> {
+            (0..150).map(|_| { spring.step(target, crate::consts::K_SCROLL, DT); model(spring.pos, target) }).collect()
+        };
+        let down = leg(PITCH);
+        let up = leg(0.0).into_iter().map(|(chrome, capsule)| (capsule, chrome)).collect::<Vec<_>>();
+        (down, up)
+    }
+
+    /// Frames on which a glass is partly transparent (0 < alpha < 1): its half of the handoff.
+    fn frames_between(leg: &[(f32, f32)], pick: fn(&(f32, f32)) -> f32) -> Vec<f32> {
+        leg.iter().map(pick).filter(|a| *a > 0.0 && *a < 1.0).collect()
+    }
+
+    /// Frames from the key frame until neither alpha is still moving.
+    fn frames_to_rest(leg: &[(f32, f32)]) -> usize {
+        let last = *leg.last().unwrap();
+        leg.iter().rposition(|(a, b)| (a - last.0).abs() > 1e-3 || (b - last.1).abs() > 1e-3).map_or(1, |i| i + 2)
+    }
+
+    /// What is wrong with one leg of a trip, as sentences (empty when it is right): the handoff
+    /// runs on a fixed clock in sequence, the same in both directions.
+    fn faults(name: &str, leg: &[(f32, f32)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, (leaving, arriving)) in leg.iter().enumerate() {
+            if *leaving > 0.0 && *arriving > 0.0 {
+                out.push(format!("{name} frame {i}: both glasses on screen (leaving {leaving:.3}, arriving {arriving:.3})"));
+            }
+        }
+        // Neither glass past 10% for more than the single frame the sequence itself needs is a bare header.
+        let bare = leg.iter().filter(|(a, b)| *a < 0.1 && *b < 0.1).count();
+        if bare > 1 {
+            out.push(format!("{name}: {bare} frames with neither glass at 10%"));
+        }
+        for (which, half) in [("leaving", frames_between(leg, |f| f.0)), ("arriving", frames_between(leg, |f| f.1))] {
+            if half.len() < 4 {
+                out.push(format!("{name}: the {which} glass is partly transparent on only {} frames", half.len()));
+            }
+            let monotone = if which == "leaving" { half.windows(2).all(|w| w[1] <= w[0]) } else { half.windows(2).all(|w| w[1] >= w[0]) };
+            if !monotone {
+                out.push(format!("{name}: the {which} glass's alpha is not monotone"));
+            }
+        }
+        out
+    }
+
+    /// **The handoff is a clock, not the scroll's position**: a Down past the threshold and an Up
+    /// back, with the real scroll spring, take the same number of frames each way, each glass's
+    /// half runs at least four frames with a monotone alpha, the two glasses are never on screen
+    /// together (two live glasses sharing a frame cost +1.4M GPU cycles on the television), and the
+    /// header is never bare for more than the one frame between the halves. Driven by the page's
+    /// own tick order: the spring steps, then the chrome follows it.
+    #[test]
+    fn the_handoff_runs_on_one_fixed_clock_the_same_each_way() {
+        let _g = plx_base::testlock::serial();
+        let mut handoff = Handoff::new();
+        let (down, up) = trip(|pos, target| {
+            handoff.step(DT, pos, target, PITCH, true);
+            (handoff.chrome(), handoff.capsule())
+        });
+        let mut faults = faults("Down", &down);
+        faults.extend(self::faults("Up", &up));
+        let (frames_down, frames_up) = (frames_to_rest(&down), frames_to_rest(&up));
+        if frames_down.abs_diff(frames_up) > 1 {
+            faults.push(format!("Down takes {frames_down} frames and Up {frames_up}"));
+        }
+        assert!(faults.is_empty(), "{}", faults.join("; "));
     }
 
     #[test]
