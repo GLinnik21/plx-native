@@ -43,7 +43,7 @@ impl LibraryScreen {
     /// Every focusable element of the header row in focus order: the library names, "+N", then
     /// the controls (on the Collections page, the crumb's root, then Sort).
     pub(super) fn header_elems(&self) -> Vec<u32> {
-        self.header.as_ref().map_or_else(Vec::new, |row| row.stops.iter().map(|(elem, _)| *elem).collect())
+        self.header.row().map_or_else(Vec::new, |row| row.stops.iter().map(|(elem, _)| *elem).collect())
     }
 
     pub(super) fn is_header_elem(&self, elem: u32) -> bool {
@@ -174,9 +174,13 @@ impl LibraryScreen {
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);
-        if self.header.is_some() && self.header_key == Some(key) { return; }
-        self.header_key = Some(key);
-        if self.listing == Listing::Collections { return self.refresh_collections_header(cx); }
+        if self.header.is_current(key) { return; }
+        let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
+        self.header.install(key, row);
+    }
+
+    /// The row of the Library page itself: the library names that fit, then the controls.
+    fn names_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> HeaderRow {
         let (right, widest) = self.header_right(cx);
         let measure = cx.measure;
         let budget = PageHeader::new(PageHeaderSpec { right: right.clone(), ..Default::default() }, &widest, measure)
@@ -228,7 +232,7 @@ impl LibraryScreen {
                 it.plate.y += layout::SINGLE_LIBRARY_DY;
             }
         }
-        self.header = Some(self.header_row(page, layout));
+        self.header_row(page, layout)
     }
 
     /// The built row: which element each focusable item of `layout` is. The names and "+N" are
@@ -253,7 +257,7 @@ impl LibraryScreen {
 
     /// The Collections page's row: the crumb (its root is a stop, its page name the title) in
     /// place of the library names, and Sort when the server declares more than one.
-    fn refresh_collections_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+    fn collections_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> HeaderRow {
         self.libraries.clear();
         // Only the collections' own declared sorts count: until the store has switched the section
         // to the collections listing, `sorts()` is still the films' list.
@@ -263,13 +267,13 @@ impl LibraryScreen {
         self.collections_sort = super::collections_page::sort_visible(declared);
         let page = PageHeader::new(spec, &[], cx.measure);
         let layout = page.layout(SCR_W, cx.measure);
-        self.header = Some(self.header_row(page, layout));
+        self.header_row(page, layout)
     }
 
     /// The row as one focus group of this page, at its scroll: what the engine's `Focusable`
     /// questions about the header are answered from (`None` before the row is built).
     pub(super) fn header_focus(&self) -> Option<HeaderFocus<'_>> {
-        self.header.as_ref().map(|row| row.focus(self.entry, LIBRARY_GROUP, (self.scroll.pos, self.scroll_target), content_clip()))
+        self.header.row().map(|row| row.focus(self.entry, LIBRARY_GROUP, (self.scroll.pos, self.scroll_target), content_clip()))
     }
 
     /// Where the header control or name `elem` is, in screen space at the drawn or target scroll.
@@ -280,14 +284,14 @@ impl LibraryScreen {
     /// One frame of the row's motion: the focus capsule travels to the focused control, the
     /// selection plate lands under it. Focus off the row (or a menu holding it) closes the pop.
     pub(super) fn step_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, dt: f32) {
-        let Some(row) = &self.header else { return };
+        let Some(row) = self.header.row() else { return };
         row.step(self.entry, cx.focus.current, &mut self.header_capsules, &mut self.header_pop, dt);
     }
 
     /// Paint the row at the drawn scroll. The row scrolls away with the page: only its pill and
     /// the selected plate are chrome of its own.
     pub(super) fn draw_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
-        let Some(row) = &self.header else { return };
+        let Some(row) = self.header.row() else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let top = layout::HEADER_Y - self.scroll.pos;
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }

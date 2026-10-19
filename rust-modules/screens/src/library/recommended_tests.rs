@@ -289,3 +289,35 @@ fn the_first_shelf_heading_starts_clear_of_the_title_row() {
     assert!(heading >= title_row_bottom + 24.0 && heading >= pill_bottom + 24.0, "the first heading's text starts at {heading}");
     assert_eq!(heading, 244.0, "…on the grid's content line");
 }
+
+/// **The crumb row is built once per key, not once per question.** The page asks for the row in its
+/// focus questions, its placement, its motion and its paint, many times a frame; it is built when
+/// the library's name (or the locale) changes and held otherwise, by the one rule the Library's and
+/// the Watchlist's rows are held by (`plx_ui::page_header::SharedRow`).
+#[test]
+fn the_crumb_row_is_built_once_per_key_not_once_per_question() {
+    use plx_ui::screen::{At, Focusable};
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
+    let page = fixture.screen();
+    let ask = |fixture: &Fixture| {
+        let cx = fixture.cx(None);
+        let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        page.draw_title(&frame);
+        Focusable::<HostFixture>::place(&page, &CRUMB_ELEM, &cx, At::Drawn).expect("the crumb root is a stop");
+        Focusable::<HostFixture>::reconcile(&page, FocusKey { entry: ENTRY, elem: CRUMB_ELEM }, &cx);
+    };
+    ask(&fixture);
+    let built = page.probe_header_builds();
+    assert_eq!(built, 1, "the first question built the row");
+    for _ in 0..60 { ask(&fixture); }
+    assert_eq!(page.probe_header_builds(), built, "sixty frames of questions and paint build no row");
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
+        plx_data::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+            row: plx_data::browse::SrcRow { section: 0, title: "Renamed".into(), pinned: true, current: true, ..Default::default() } }]);
+    ask(&fixture);
+    assert_eq!(page.probe_header_builds(), built + 1, "the library's new name builds the row once");
+    for _ in 0..10 { ask(&fixture); }
+    assert_eq!(page.probe_header_builds(), built + 1, "and the questions after it build none");
+}

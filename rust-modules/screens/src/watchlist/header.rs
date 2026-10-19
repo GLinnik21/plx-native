@@ -30,6 +30,15 @@ pub enum Count {
 }
 
 impl Count {
+    /// What the row reads of the count: the narrowed form's two numbers, nothing for the whole list
+    /// (it is never drawn, so a list that grows or shrinks unfiltered changes nothing on the row).
+    pub fn narrowed(count: Option<Count>) -> Option<(usize, usize)> {
+        match count {
+            Some(Count::Of { shown, total }) => Some((shown, total)),
+            _ => None,
+        }
+    }
+
     /// The read-out sentence, `None` when nothing narrows the list. Numbers group as the Library's
     /// do (`LocaleContext::number`).
     pub fn readout(&self) -> Option<String> {

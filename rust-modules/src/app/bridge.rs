@@ -4001,6 +4001,9 @@ mod library_switch_route_tests;
 #[cfg(test)]
 #[path = "library_scroll_route_tests.rs"]
 mod library_scroll_route_tests;
+#[cfg(test)]
+#[path = "header_cache_route_tests.rs"]
+mod header_cache_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

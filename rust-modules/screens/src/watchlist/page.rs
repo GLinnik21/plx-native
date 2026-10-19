@@ -284,6 +284,10 @@ struct Page {
     /// by the screen's tick.
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
+    /// The row itself, held by the one rule every header row is held by
+    /// (`plx_ui::page_header::SharedRow`): built when the options, the count or the locale change,
+    /// not per question. Derived from them; not canon.
+    header_rows: plx_ui::page_header::SharedRow<header::Row>,
 }
 
 impl Page {
@@ -338,9 +342,16 @@ impl Page {
         self.rebuild();
     }
 
-    /// The header row for the options and count as they are now.
-    fn header_row(&self, measure: &dyn plx_machine::machine::Measure) -> header::Row {
-        header::Row::new(measure, &self.options.summary(), self.count())
+    /// The header row for the options and count as they are now: the one held, unless one of them
+    /// (or the locale) moved since it was built.
+    fn header_row(&self, measure: &dyn plx_machine::machine::Measure) -> std::rc::Rc<header::Row> {
+        use std::hash::{Hash, Hasher};
+        let count = self.count();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        self.options.hash(&mut h);
+        header::Count::narrowed(count).hash(&mut h);
+        self.header_rows.get(h.finish(), || header::Row::new(measure, &self.options.summary(), count))
     }
 
     fn readout(&self) -> Option<Readout> {
@@ -754,6 +765,10 @@ impl WatchlistScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.stack.target() }
 
+    /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header_builds(&self) -> u32 { self.page.header_rows.builds() }
+
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 
@@ -786,6 +801,7 @@ impl WatchlistScreen {
             rev: 0,
             header_capsules: plx_ui::widgets::TabStrip::new(),
             header_pop: plx_ui::widgets::CtlPop::new(),
+            header_rows: plx_ui::page_header::SharedRow::new(),
         };
         page.rebuild();
         Self {

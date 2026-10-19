@@ -137,7 +137,7 @@ fn the_header_is_the_crumb_not_the_library_header() {
     for gone in [COLLECTIONS, RECOMMENDED, SORTFILTER, MORE] {
         assert!(!page.is_header_elem(gone), "{gone} is not on the Collections page's row");
     }
-    let header = page.header.as_ref().expect("the row is built");
+    let header = page.header.row().expect("the row is built");
     assert!(header.plate(toolbar::CRUMB_ROOT).is_some_and(|plate| plate.x < 100.0 && plate.h > 0.0));
     assert!(header.plate(SORTFILTER).is_none());
 }
@@ -152,7 +152,7 @@ fn the_crumb_names_the_library_the_header_strip_names() {
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = collections_page();
     run(&mut page, &fixture, ScreenEvent::Mount);
-    let header = page.header.as_ref().expect("the row is built");
+    let header = page.header.row().expect("the row is built");
     let crumb = header.page.spec().crumb.as_ref().expect("the crumb");
     assert_eq!(crumb.root, "Movies", "the library's own name, not a hard-coded 'Films'");
 }

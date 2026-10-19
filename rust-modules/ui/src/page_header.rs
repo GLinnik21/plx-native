@@ -403,8 +403,8 @@ struct Face<'a> {
 /// **A built header row**: the widget, its geometry (document space: y is the row's own top before
 /// any scroll) and which element each focusable item is. The row's placement, hit rects, focus
 /// order and paint all read this one value, so they cannot disagree. Held by the page that wears
-/// the row and replaced when its inputs change; the row's MOTION is not in it (see the module
-/// doc), so replacing it moves nothing that is on screen.
+/// the row in a [`RowCache`] (or [`SharedRow`]) and rebuilt only when its inputs change; the row's
+/// MOTION is not in it (see the module doc), so replacing it moves nothing that is on screen.
 pub struct HeaderRow {
     pub page: PageHeader,
     pub layout: HeaderLayout,
@@ -471,6 +471,80 @@ impl HeaderRow {
             .map(|(_, item)| Lifted { item: *item, lift }));
         self.page.draw(p, &layout, capsules, pop, lifted);
     }
+}
+
+/// **The one rule for holding a built header row**: build it when its inputs change, never
+/// otherwise. A row is text measurement and packing; the pages ask for it many times a frame (their
+/// focus questions, their placement, their paint), so each page keeps ONE row beside a `key`, a
+/// fingerprint of everything the build reads, and rebuilds only when that key moves. The Library,
+/// its Collections and Recommended pages and the Watchlist all hold their row through this.
+///
+/// [`RowCache`] is the plain form, for a page that refreshes in its `&mut` ticks and reads from
+/// `&self`; [`SharedRow`] is the same rule behind interior mutability, for a page whose readers
+/// are `&self` questions that must have the row on the first call. `builds` counts the rebuilds
+/// (what a test pins: idle frames build nothing, a changed input builds once).
+pub struct RowCache<R> {
+    row: Option<R>,
+    key: Option<u64>,
+    builds: u32,
+}
+
+impl<R> Default for RowCache<R> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<R> RowCache<R> {
+    pub const fn new() -> Self { Self { row: None, key: None, builds: 0 } }
+
+    /// Is the row held the one `key` stands for?
+    pub fn is_current(&self, key: u64) -> bool { self.row.is_some() && self.key == Some(key) }
+
+    /// Hold `row`, built for `key`.
+    pub fn install(&mut self, key: u64, row: R) {
+        self.row = Some(row);
+        self.key = Some(key);
+        self.builds += 1;
+    }
+
+    /// The row for `key`: the one held when it was built for this key, else `build()` is held.
+    /// Whether it was rebuilt.
+    pub fn refresh(&mut self, key: u64, build: impl FnOnce() -> R) -> bool {
+        if self.is_current(key) { return false; }
+        self.install(key, build());
+        true
+    }
+
+    /// The row held, `None` before the first build.
+    pub fn row(&self) -> Option<&R> { self.row.as_ref() }
+
+    /// The key the row was built for.
+    pub fn key(&self) -> Option<u64> { self.key }
+
+    /// How many times a row has been built.
+    pub fn builds(&self) -> u32 { self.builds }
+}
+
+/// [`RowCache`] behind a `RefCell`, handing the row out as an `Rc`: for the page whose readers are
+/// `&self` (the engine's `Focusable` questions, the draw) and must find the row on the first call.
+/// The row is cheap to hold across a call (an `Rc` clone) and owns no borrow of the page.
+pub struct SharedRow<R>(std::cell::RefCell<RowCache<std::rc::Rc<R>>>);
+
+impl<R> Default for SharedRow<R> {
+    fn default() -> Self { Self::new() }
+}
+
+impl<R> SharedRow<R> {
+    pub const fn new() -> Self { Self(std::cell::RefCell::new(RowCache::new())) }
+
+    /// The row for `key`, built by `build` when the one held was built for another key.
+    pub fn get(&self, key: u64, build: impl FnOnce() -> R) -> std::rc::Rc<R> {
+        let mut cache = self.0.borrow_mut();
+        cache.refresh(key, || std::rc::Rc::new(build()));
+        std::rc::Rc::clone(cache.row().expect("refreshed above"))
+    }
+
+    /// How many times a row has been built.
+    pub fn builds(&self) -> u32 { self.0.borrow().builds() }
 }
 
 /// **A header row as ONE focus group**, borrowed per call from the page that wears it. Its stops

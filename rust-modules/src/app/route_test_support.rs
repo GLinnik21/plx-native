@@ -61,7 +61,13 @@ impl Rig {
         let d = Dispatcher::<AppHost>::new();
         let mut bridge = Bridge::for_test(|| 0);
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
-        if two_libraries { bridge.stores.browse.borrow_mut().set_pinned_for_test(FILM_CLUB, true); }
+        // Pinned the way the Home editor pins: one RECORDED answer for the profile. The table-only
+        // `set_pinned_for_test` is overwritten by the next roster sync (it re-resolves every row from
+        // the profile's record, on the discovery pump's wall-clock schedule), which moved the store
+        // back to Movies a second or so into a test and made the header name one library again.
+        if two_libraries {
+            bridge.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(FILM_CLUB, true)]));
+        }
         bridge.refresh_browse_directory();
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
@@ -191,6 +197,15 @@ impl Rig {
 
     /// How far the page on top has tucked the top chrome away.
     pub(super) fn tuck(&self) -> f32 { self.d.top_screen().expect("a page is on top").chrome_tuck() }
+
+    /// How many header rows the page on top has built (any of the four pages that wear one).
+    pub(super) fn header_builds(&self) -> u32 {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<LibraryScreen>() { return page.probe_header_builds(); }
+        if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_header_builds(); }
+        if let Some(page) = any.downcast_ref::<plx_screens::watchlist::page::WatchlistScreen>() { return page.probe_header_builds(); }
+        panic!("the top page wears no header row");
+    }
 
     /// Walk Right along the Library header to the stop `elem` (an element id) and stop there.
     pub(super) fn walk_header_to(&mut self, elem: u32) {

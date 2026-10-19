@@ -414,3 +414,39 @@ fn the_rows_motion_wakes_the_gate_but_never_holds_a_page_freeze() {
     assert!(page_moved, "the capsule's travel is visible motion: it wakes the present gate");
     assert!(!layout_moved, "and it is decoration: it never counts toward the page's layout motion");
 }
+
+/// **A header row is built once per key, whoever holds it.** The rule every page holds its row by
+/// (the Library, its Collections and Recommended pages, the Watchlist): the row stays while the key
+/// stands, a new key builds exactly one, and going back to an old key is a new key, not a restore.
+#[test]
+fn a_row_cache_builds_when_its_key_changes_and_never_otherwise() {
+    let mut cache = RowCache::<u32>::new();
+    assert_eq!((cache.row(), cache.key(), cache.builds()), (None, None, 0), "nothing built before the first ask");
+    assert!(cache.refresh(7, || 70), "the first ask builds");
+    for _ in 0..50 {
+        assert!(!cache.refresh(7, || unreachable!("the key stood: the row is not built again")));
+        assert!(cache.is_current(7));
+    }
+    assert_eq!((cache.row(), cache.key(), cache.builds()), (Some(&70), Some(7), 1));
+    assert!(cache.refresh(8, || 80), "a changed key builds");
+    assert!(cache.refresh(7, || 71), "the old key is not remembered: it builds again");
+    assert_eq!((cache.row(), cache.builds()), (Some(&71), 3));
+    // `install` is the split form for a builder that needs the page mutably (the Library's).
+    assert!(!cache.is_current(9));
+    cache.install(9, 90);
+    assert!(cache.is_current(9));
+    assert_eq!(cache.builds(), 4);
+}
+
+#[test]
+fn a_shared_row_hands_one_row_to_every_reader_until_the_key_changes() {
+    let row = SharedRow::<String>::new();
+    let first = row.get(1, || "one".to_owned());
+    for _ in 0..50 {
+        let again = row.get(1, || unreachable!("the key stood"));
+        assert!(std::rc::Rc::ptr_eq(&first, &again), "every reader gets the row that was built");
+    }
+    assert_eq!(row.builds(), 1);
+    let next = row.get(2, || "two".to_owned());
+    assert_eq!((next.as_str(), first.as_str(), row.builds()), ("two", "one", 2), "a reader that holds the old row keeps it");
+}
