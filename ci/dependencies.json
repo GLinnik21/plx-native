@@ -17,11 +17,11 @@
   {
     "id": "sentry-native",
     "bundled": true,
-    "version": "0.17.3",
+    "version": "0.17.4",
     "license": "MIT",
-    "archive": "sentry-native-0.17.3.tar.gz",
-    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.17.3.tar.gz",
-    "sha256": "a762fdda9374fe1576be1377a18e96f347cc656118ed1f1b932bf1cdd7551a32",
+    "archive": "sentry-native-0.17.4.tar.gz",
+    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.17.4.tar.gz",
+    "sha256": "41c329a9b08fa5cd3da4096addf75700da66b1fb913da77222eb4ac7a8bf0158",
     "update": {
       "type": "github-release",
       "repo": "getsentry/sentry-native",
