@@ -103,6 +103,8 @@ fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
         entry("originallyAvailableAt", "Release Date", true), entry("rating", "Critic Rating", true),
         entry("lastViewedAt", "Date Viewed", true)], Vec::new());
     w.frames(30);
+    // The page arrives in its first poster: climb to the header, then Collections > Recommended > Sort & Filter.
+    w.climb_into_header();
     w.press(Key::Right);
     w.press(Key::Right);
     w.press(Key::Ok);

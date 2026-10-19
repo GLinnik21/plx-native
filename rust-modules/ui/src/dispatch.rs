@@ -697,8 +697,7 @@ where
     }
 
     /// **Which page element, if any, the opener lift repaints this frame** — the ONE decision the
-    /// lift and the page pass share (`(host page, element)`; the application's `opener_lift` is
-    /// this). The lift is the opener tile drawn again above the dim *because it is the focused
+    /// lift and the page pass share (`(host page, element)`). The lift is the opener tile drawn again above the dim *because it is the focused
     /// one*. That stops being true the moment the menu is dismissed: `ModalStack::dismiss` hands
     /// input back to the page on the same frame, but the surface stays in the stack until its fade
     /// settles, so a D-pad press during the fade moves the page's focus to a neighbour while the
@@ -721,6 +720,35 @@ where
             if live.is_some() && live != opener && !departing() { return None; }
         }
         Some((entry, opener))
+    }
+
+    /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the
+    /// page's focused card drawn a second time above the dim. A card a card section left out of the
+    /// page pass ([`DrawFrame::lifted`]) is drawn by the lift ALONE, at this scale. An opener no
+    /// card section draws (the Detail episode strip, season tabs, hero buttons, the Home hero) is
+    /// still drawn by the page at the press scale (`DrawFrame.press`, from [`Self::parts`]), so
+    /// there the lift must be handed the SAME number or the two disagree on every frame the press is
+    /// moving. They did, while this was a constant `1.0`: a taken hold's card was drawn at its pop
+    /// by the lift and at its dip by the page and the host snapshot, and the owner saw a poster that
+    /// popped in one frame with its title doubled.
+    ///
+    /// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not
+    /// (the lift draws one card, not the page's hold hint).
+    pub fn opener_press(&self) -> PressRead<H::Elem> {
+        PressRead { scale: self.input.press.scale(), is_long: false, held_ms: None, owner: self.input.dip_owner }
+    }
+
+    /// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused
+    /// element, with the press taken from [`Self::opener_press`] and nothing else standing in for
+    /// it. [`Self::draw_with`] builds the lift's whole `Cx` from this, so the scale the lift draws
+    /// at is observable (`parts.press.scale`) without a renderer.
+    pub fn opener_parts(&self, entry: EntryId, focus: Option<FocusKey<H::Elem>>) -> CxParts<H::Elem> {
+        CxParts {
+            tick: Tick { ms: 0, dt_us: 0 },
+            press: self.opener_press(),
+            focus: FocusRead { current: focus, ..Default::default() },
+            owner: InputOwner::Entry(entry),
+        }
     }
 
     /// Feed the owner's focus from outside a step: a test's premise (no group is remembered).
@@ -1449,7 +1477,9 @@ where
         // what the page should show, so it is re-taken and the card sections say again whether
         // they left a card out (`popover::set_lift_owns`). Source and discovery walks neither
         // decide nor re-take: they redraw the page the visible pass is about to show.
-        let lifted = self.lifted_opener().and_then(|(_, key)| key);
+        let page_lift = self.lifted_opener();
+        let lifted = page_lift.and_then(|(_, key)| key);
+        let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
         if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && lifted != self.lifted_last {
             self.lifted_last = lifted;
             super::popover::set_lift_owns(false);
@@ -1755,15 +1785,32 @@ where
                 if !plx_gfx::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
         }
-        // **The surfaces' lifts, after the last surface** (`Scrim::lift`, `ModalStack::draw_lifts`):
-        // the element a surface was opened from, lit above the dim AND the panels, so a morphing
-        // panel grows out from under it. The dim above is the page pass's; this is the opener
-        // layer's, where a page's own header opener is lifted too (`Bridge::redraw_opener`).
+        // **The lift pass: ONE place, ONE layer, ONE order, on every plan** (`Z::OPENER`, after the
+        // last surface). The element a surface was opened from is lit above the dim AND the panels,
+        // so a morphing panel grows out from under it and a close shrinks back into it. Two kinds
+        // are drawn here, bottom to top:
+        // - the host PAGE's opener (`lifted_opener`: a header pill, an item hold menu's card) by
+        //   the page that drew it (`Screen::redraw_focused`). Not gated on `pages`: the loop's
+        //   surfaces-only second call (`bridge::PagePlan::LegacyThenSurfaces`) owes it too, and a
+        //   replaced host owes none (`SurfacesOnly`). It stands down by `lifted_opener`'s rule once
+        //   focus leaves the opener while the menu fades.
+        // - each surface's `Scrim::lift` (`ModalStack::draw_lifts`), the profile chip: chrome the
+        //   shared bar draws, asked for in the page pass that painted the dim and spent here.
         if Z::OPENER < ceiling {
             let _lift_layer = backdrop::layer(Z::OPENER, false);
             let _scope = rig.surface_scope();
-            let read = scrim_lift_read(rig, glass.as_deref());
-            backdrop::draw_span("lifts", || modals.draw_lifts(Some(read)));
+            backdrop::draw_span("lifts", || {
+                let owed = (host_render != HostRender::Replaced).then_some(page_lift.zip(lift_parts)).flatten();
+                if let Some(((entry, focus), lift_parts)) = owed {
+                    if let Some(screen) = nav.tabs.stack.top().filter(|e| e.id == entry).and_then(|e| e.inst.as_ref()).map(|i| &*i.screen) {
+                        let Split { views, measure, .. } = rig.split();
+                        let lift_cx = lift_parts.cx::<H>(views, measure);
+                        screen.redraw_focused(&mut DrawFrame::with_navigation(&lift_cx, Painter::root(), navigation), focus);
+                    }
+                }
+                let read = scrim_lift_read(&*rig, glass.as_deref());
+                modals.draw_lifts(Some(read));
+            });
         } else {
             modals.draw_lifts(None);
         }

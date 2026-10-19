@@ -430,14 +430,6 @@ impl CardRow {
     pub fn policy_band_h(&self) -> f32 {
         crate::caption_policy::band_h(&self.caption_policy)
     }
-    /// [`CardRow::under_band`] for the row's caption policy (80 / 112 / nothing, not the legacy 92).
-    pub fn policy_under_band(&self) -> f32 {
-        under_band_for(self.policy_band_h(), self.band.pos)
-    }
-    /// [`CardRow::band_reveal`] for the row's caption policy.
-    pub fn policy_band_reveal(&self) -> f32 {
-        band_reveal_for(self.policy_band_h(), self.band.pos)
-    }
     /// How much of the focused label block this shelf may show right now — [`band_reveal`] of
     /// [`CardRow::band_expand`]. Chain it onto the `TileLabel` with [`TileLabel::revealed`].
     #[inline]
@@ -1167,11 +1159,6 @@ pub const ROW_PITCH_FIXED: f32 = crate::consts::ROW_PITCH - UNDER_LABEL_H;
 /// move costs (or reclaims) in document height.
 pub const BAND_OPEN: f32 = UNDER_LABEL_H - LABEL_BAND_COLLAPSED;
 
-/// [`BAND_OPEN`] for a band of `band_h`: 40 px for a one-line band (80), 72 for two (112), 0 for none.
-pub fn band_open_for(band_h: f32) -> f32 {
-    open_gap(band_h) - COLLAPSED_GAP
-}
-
 /// **The SETTLED top of shelf `r`** in a column of uniform shelves whose fixed pitch is
 /// `pitch_fixed`, with `focus` (if any) holding the open band and every other shelf collapsed.
 ///
@@ -1186,7 +1173,8 @@ pub fn settled_top(r: usize, focus: Option<usize>, pitch_fixed: f32) -> f32 {
     settled_top_for(r, focus, pitch_fixed, BAND_OPEN)
 }
 
-/// [`settled_top`] for a focused row that opens by `band_open` ([`band_open_for`]).
+/// [`settled_top`] for a focused row that opens by `band_open` (40 px for a one-line band of 80,
+/// 72 for two lines of 112, 0 for none: `under_band_for(band_h, 1.0) - LABEL_BAND_COLLAPSED`).
 pub fn settled_top_for(r: usize, focus: Option<usize>, pitch_fixed: f32, band_open: f32) -> f32 {
     r as f32 * (pitch_fixed + LABEL_BAND_COLLAPSED)
         + if focus.is_some_and(|f| f < r) {

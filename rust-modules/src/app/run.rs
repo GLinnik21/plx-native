@@ -2731,10 +2731,6 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             } else {
                                 plx_gfx::gfx::frame_clear(plx_ui::theme::CLEAR_RGB.0, plx_ui::theme::CLEAR_RGB.1, plx_ui::theme::CLEAR_RGB.2);
                             }
-                            if plan != super::bridge::PagePlan::SurfacesOnly && Z::OPENER < ceiling {
-                                let _opener = plx_ui::frame::backdrop::layer(Z::OPENER, false);
-                                app.bridge.redraw_opener(&app.pages);
-                            }
                         };
                         {
                             let _declarations = plx_ui::frame::backdrop::discover(sources.clone());

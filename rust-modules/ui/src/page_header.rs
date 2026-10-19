@@ -198,23 +198,6 @@ fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
 const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
 
-/// How many of the leading library names fit in `budget` (text edge to text edge) once a "+N"
-/// item of `more_w` is reserved for the ones that do not. All of them when they all fit with no
-/// "+N". The caller (which knows the selected library and the 8-visible cap) may pick a window
-/// instead; this is the plain left-to-right case.
-pub fn fit_left(widths: &[f32], budget: f32, more_w: f32) -> usize {
-    let span = |n: usize| widths[..n].iter().sum::<f32>()
-        + GAP * n.saturating_sub(1) as f32;
-    if span(widths.len()) <= budget { return widths.len(); }
-    // "+N" follows the last name that stays, one gap after it.
-    let mut n = 0;
-    while n < widths.len() {
-        if span(n + 1) + GAP + more_w > budget { break; }
-        n += 1;
-    }
-    n
-}
-
 /// The space after `item` before `next`.
 fn gap_after(item: &HeaderItem) -> f32 {
     if item.readout { READOUT_GAP } else { GAP }
@@ -287,11 +270,6 @@ impl PageHeader {
             cluster_w: self.cluster_w,
             left_budget: (cluster_x0 - CLUSTER_GAP - TEXT_X0).max(0.0),
         }
-    }
-
-    /// The focusable items' rects in focus order, with their `items` index.
-    pub fn item_rects(layout: &HeaderLayout) -> Vec<(usize, Rect)> {
-        layout.items.iter().enumerate().filter(|(_, r)| r.focusable).map(|(i, r)| (i, r.plate)).collect()
     }
 
     /// What `slot` says about its item: the label (a crumb's parts and the "+N" are the row's own,
@@ -555,8 +533,8 @@ impl HeaderRow {
     /// focused control the menu grew out of, `scroll` px up from its document position. The ONE
     /// paint of an opener for every header menu (Sort & Filter, `+N`): the page's pass leaves the
     /// control out of the row ([`Self::draw`]'s `lifted`) and `Screen::redraw_focused` calls this
-    /// through the host's opener lift, which runs after the surfaces (above the dim AND the menu's
-    /// panel; `Z::OPENER`), so the panel never covers it. `pop` is the
+    /// from the dispatcher's lift pass, which runs after the last surface on every plan (above the
+    /// dim AND the menu's panel; `Z::OPENER`), so the panel never covers it. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
         let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) else { return };

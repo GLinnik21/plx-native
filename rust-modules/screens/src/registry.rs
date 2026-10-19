@@ -385,7 +385,7 @@ pub struct ItemMenuArg {
     pub rk: String,
     pub kind: ItemMenuKind,
     /// The PAGE entry the menu hangs off: its focused element is the anchor the panel sits beside
-    /// and the tile lifted back out of the modal dim (`app::bridge::redraw_opener`).
+    /// and the tile lifted back out of the modal dim (the dispatcher's lift pass).
     pub host: plx_machine::machine::EntryId,
     /// …and which element that is, as the host page's own focus at the press frame. The surface
     /// takes input the moment it is presented, so the host's live cursor is not the answer.

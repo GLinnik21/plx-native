@@ -905,9 +905,9 @@ impl<H: AppLike + crate::registry::MetadataLike> Screen<H> for ItemMenuScreen {
     /// The modal dim. **The TILE is lifted back out of it, and the lift is the HOST PAGE's to
     /// draw** — only the screen that drew an element knows where it landed, and a `Scrim::lift` is
     /// a bare `fn()` with nothing to borrow a page through. So this asks for the dim alone, and
-    /// `app/bridge.rs`'s `redraw_opener` — the ONE owner, reading this surface's own
-    /// [`ItemMenuScreen::opener`] rather than a copy kept on the side — repaints the focused
-    /// element immediately after the container's page pass, above the dim it just laid down.
+    /// the dispatcher's lift pass (`Dispatcher::draw_with`, after the last surface) — the ONE
+    /// owner, reading this surface's own [`ItemMenuScreen::opener`] rather than a copy kept on the
+    /// side — repaints the focused element above the dim and the panel.
     ///
     /// That tile is the panel's whole subject: the design's stated point is that "the card and the
     /// rest of the shelf stay where they are, visible behind it", which a scrim over the card

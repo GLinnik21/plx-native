@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, DrawFrame, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, FocusSource, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -1101,31 +1101,6 @@ impl Bridge {
         let mut arg = card_menu_arg(item, false, false, entry, ret.focus, card.rect);
         arg.watchlist = self.watchlist_card_face(item);
         Some(arg)
-    }
-
-    /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
-    /// pair it works from is the SURFACE's own argument (`ItemMenuScreen::opener`) — it was
-    /// `Bridge::menu_opener`, a second copy of the same `(entry, focus)` kept on the side and
-    /// written by four separate arms.
-    ///
-    /// It runs immediately after the container's page pass, which is where `ModalStack::draw_scrims`
-    /// laid the dim down: the tile is the panel's whole subject, and the design's stated point is
-    /// that the card stays visible behind it. The dim is the CONTAINER's now (`Screen::scrim`), so
-    /// what is left here is the half only the page that drew the element can answer — a `fn()` lift
-    /// has nothing to borrow a `&Dispatcher` through.
-    ///
-    /// Whether it runs at all is [`opener_lift`]'s answer, made once for every page: it stands down
-    /// once the menu is dismissed and focus has moved off the opener element.
-    pub(crate) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
-        let Some((entry, focus)) = opener_lift(d) else { return };
-        let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| &i.screen) else { return };
-        // The page pass may be submitting a cached host quad. Opener lifts are live paint
-        // above that quad, like Popover::scrim_lifting's legacy callback scope.
-        let _live = plx_ui::popover::host::live();
-        let parts = opener_parts(d, entry, focus);
-        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        let mut frame = DrawFrame::with_navigation(&cx, plx_ui::Painter::root(), self.navigation_presentation());
-        screen.redraw_focused(&mut frame, focus);
     }
 
     /// Drive `popover`'s host-user counters from the surface phases (module doc).
@@ -2852,62 +2827,13 @@ fn strip_menu_arg(
     }
 }
 
-/// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the page's
-/// focused card drawn a second time above the dim. A card a card section left out of the page pass
-/// (`DrawFrame::lifted`) is drawn by the lift ALONE, at this scale. An opener no card section draws
-/// (the Detail episode strip, season tabs, hero buttons, the Home hero) is still drawn by the page
-/// at the press scale (`DrawFrame.press`, from `Dispatcher::parts`), so there the lift must be
-/// handed the SAME number or the two disagree on every frame the press is moving. They did, while
-/// this was a constant `1.0`: a taken hold's card was drawn at its pop by the lift and at its dip
-/// by the page and the host snapshot, and the owner saw a poster that popped in one frame with its
-/// title doubled.
-///
-/// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
-/// lift draws one card, not the page's hold hint).
-pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead<u32> {
-    plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None, owner: d.input.dip_owner }
-}
-
-/// **Which element, if any, the opener lift repaints this frame** — the ONE decision every page
-/// inherits, so no screen's `redraw_focused` has to defend against a stale key.
-///
-/// The lift is the opener tile drawn again above the dim, *because it is the focused one*. That
-/// stops being true the moment the menu is dismissed: `ModalStack::dismiss` hands input back to the
-/// page on the same frame, but the surface stays in the stack until its fade settles, so a D-pad
-/// press during the fade moves the page's focus to a neighbour while this lift would still paint
-/// the OLD tile fully popped and captioned (two tiles look focused at once; the new one's pop
-/// reads late). So while the surface is `Closing`, the lift is painted only if the engine's focus
-/// on the host page is still the opener element (or there is none to compare); once focus has
-/// moved, the page draws the tiles itself and the lift stands down. While the menu is open the
-/// engine's focus is on the menu's own rows, so the lift always paints then.
-pub(crate) fn opener_lift(d: &Dispatcher<AppHost>) -> Option<(EntryId, Option<FocusKey<u32>>)> {
-    d.lifted_opener()
-}
-
-/// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused element,
-/// with the press taken from [`opener_press`] and nothing else standing in for it. `redraw_opener`
-/// builds its whole `Cx` from this, so the scale the lift draws at is observable
-/// (`parts.press.scale`) without a renderer.
-pub(crate) fn opener_parts(
-    d: &Dispatcher<AppHost>,
-    entry: EntryId,
-    focus: Option<plx_machine::machine::FocusKey<u32>>,
-) -> CxParts<u32> {
-    CxParts {
-        tick: Tick { ms: 0, dt_us: 0 },
-        press: opener_press(d),
-        focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() },
-        owner: plx_machine::machine::InputOwner::Entry(entry),
-    }
-}
-
 /// **Present the item context menu** over the page the hold happened on (idempotent while one is
 /// up, for `open_settings`'s reason: a second hold must not stack a second panel).
 ///
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
 /// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
-/// lift ([`opener_press`]) draws it live above the frozen page (and, for an opener no card section
+/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no card section
 /// draws, the page draws it too). The page pass leaves
 /// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
 /// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the

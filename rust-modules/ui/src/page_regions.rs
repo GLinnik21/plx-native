@@ -32,8 +32,11 @@
 //! focus mark, OK does nothing, BACK is [`PageRegions::back`] with `at: None`. The header's first
 //! control may be one whose OK leaves the page (the Collections page's Back crumb, the Library's
 //! "Collections" push), so it is never the arrival seat of a page that has no tile to seat yet.
-//! A directional key seats the header (the engine's no-focus fallback), and that move is the
-//! page's own "the reader has moved", so the cells that land afterwards do not pull focus.
+//! A directional key (any of the four, pinned on the Library, Collections, Recommended and Watchlist
+//! by `arrival_seat_tests`) seats the BAR, on the page's own pill: the engine's no-focus fallback
+//! is the first group it can offer, and the empty pending group is skipped, so it is group 0, not
+//! the header (one Down from there). That move is the page's own "the reader has moved", so the
+//! cells that land afterwards do not pull focus.
 //! [`PageRegions::links`] is where that column is
 //! written, so a page that declares a `Link` involving `STRIP`, its header group or the head of its
 //! content by hand has a second declaration of the column.
@@ -201,7 +204,7 @@ impl PageRegions<'_> {
     /// **Declare the [pending](Self::pending) group in `groups`** when the page has not (an empty
     /// grid declares no group at all): zero elements at the head of the content, which the engine's
     /// enter reads as "nothing to seat here" and a directional key skips (`move_dir` seats the
-    /// first group with elements, the header). A group the page did declare is left alone.
+    /// first group with elements: the bar's, group 0). A group the page did declare is left alone.
     pub fn declare_pending(&self, groups: &mut Vec<GroupSpec>) {
         let Some(id) = self.pending.filter(|id| !groups.iter().any(|spec| spec.id == *id)) else { return };
         let extent = groups.last().map_or(crate::Rect::new(0.0, 0.0, 1.0, 1.0), |spec| {

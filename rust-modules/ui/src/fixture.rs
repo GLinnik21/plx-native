@@ -330,6 +330,11 @@ pub struct FixtureScreen {
     /// `DrawFrame::lifted` as the page pass last handed it to this page's visible or captured draw
     /// (the element the opener lift owns); `None` when none was. Render bookkeeping, not state.
     pub lifted: Option<FocusKey<u32>>,
+    /// The [`draw_order`] tick of the latest opener LIFT ([`Screen::redraw_focused`], the
+    /// dispatcher's one lift pass) and how many there have been. Render bookkeeping, like
+    /// [`Self::draw_at`]; `Cell`s because the lift draws through `&self`.
+    pub redrawn_at: std::cell::Cell<usize>,
+    pub redraws: std::cell::Cell<u32>,
     /// The element this page says is departing (`Screen::opener_departing`): a removed card it
     /// still draws as it goes.
     pub departing: Option<u32>,
@@ -470,6 +475,10 @@ impl Machine<FixtureHost> for FixtureScreen {
 impl Screen<FixtureHost> for FixtureScreen {
     fn opener_departing(&self, key: FocusKey<u32>) -> bool {
         self.departing == Some(key.elem)
+    }
+    fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, FixtureHost>, _focus: Option<FocusKey<u32>>) {
+        self.redrawn_at.set(draw_order());
+        self.redraws.set(self.redraws.get() + 1);
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
@@ -658,7 +667,8 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None, tuck: 0.0,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+                                redrawn_at: Default::default(), redraws: Default::default(), departing: None, tuck: 0.0,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -946,7 +956,8 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None, tuck: 0.0,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+            redrawn_at: Default::default(), redraws: Default::default(), departing: None, tuck: 0.0,
         })
     }
 }
