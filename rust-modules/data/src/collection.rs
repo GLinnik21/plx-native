@@ -267,6 +267,12 @@ impl CollectionState {
                 // shape is not this listing's directory and is not guessed at.
                 let Some(c) = self.current.as_mut() else { return false };
                 if counts.len() != total.div_ceil(PAGE_SIZE) { return false; }
+                // A page whose surface was closed over it (a menu, a sheet, Back from Detail) is
+                // handed its own saved directory while this store still holds the listing it was
+                // saved from. Nothing is to be restored: the rows are held, and the read position
+                // and paging stay where the reading left them, not moved to the end of the list.
+                // Only a store opened again since has no directory (total 0) and takes the saved one.
+                if c.total == total && c.kept_counts() == counts { return false; }
                 c.total = total;
                 c.pages.set_total(total);
                 c.pages.restore_kept_counts(&counts);
@@ -1024,6 +1030,67 @@ mod tests {
         assert_eq!(requests, pages, "only the pages the window covers");
         let kept: Vec<usize> = (0..total).filter(|&s| keep(s)).collect();
         assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
+    }
+
+    /// Where a store's reading stands: the pages read, whether the frontier goes on, the indices
+    /// counted, the pages whose rows are held and the content revision.
+    fn standing(state: &CollectionState) -> (usize, bool, usize, usize, u64) {
+        let view = state.view();
+        let c = view.current().unwrap();
+        (c.read, c.more, c.shown(), c.pages.loaded_pages(), view.revision())
+    }
+
+    /// A surface closed over a live page (a card's hold menu, a sheet) or a Back from Detail hands
+    /// the page its own saved directory while the store still holds the listing it was saved from.
+    /// That restores nothing: the rows stay held (no member turns into a not-yet-loaded card), and in
+    /// a long, partly read list the read position stays where the reading left it and paging stays
+    /// on, instead of "read" to the last page with the frontier switched off.
+    #[test]
+    fn a_restore_of_the_directory_the_store_already_holds_changes_nothing_in_a_long_partly_read_list() {
+        let total = 5_000;
+        let keep = |s: usize| s % 7 != 3;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..120, Some(0), None, &keep);
+        let counts = state.view().current().unwrap().kept_counts();
+        assert_eq!(counts.len(), total.div_ceil(PAGE_SIZE));
+        let before = standing(&state);
+        let (read, more, shown, loaded_pages, _) = before;
+        assert!(read >= 2 && read < counts.len() && more, "a long list read only part of the way: {before:?}");
+        assert!(counts[..read].iter().all(|&k| k < 60) && loaded_pages == read, "short pages, every one held: {before:?}");
+
+        assert!(!state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone() }),
+            "the store holds this directory: nothing changed");
+        assert_eq!(standing(&state), before, "no row dropped, the read position and paging untouched");
+        assert!((0..shown).all(|i| rk_at(&state, i).is_some()), "every member the store counted is still held");
+
+        let requests = show(&mut state, &adapter, total, 0..shown + PAGE_SIZE, Some(0), None, &keep);
+        assert!(!requests.is_empty(), "paging is still on");
+        assert_eq!(requests, (read..read + requests.len()).map(|p| p * PAGE_SIZE).collect::<Vec<_>>(),
+            "the frontier goes on in order from the page it had reached");
+
+        // A store opened again since has no directory yet, so it takes the saved one whole.
+        let (mut back, back_adapter) = opened(total);
+        assert!(back.run(&back_adapter, CollectionCmd::Restore { total, counts: counts.clone() }));
+        let (read, more, _, loaded_pages, _) = standing(&back);
+        assert_eq!((read, more, loaded_pages), (counts.len(), false, 0), "the directory, no rows");
+        assert_eq!(back.view().current().unwrap().kept_counts(), counts);
+    }
+
+    /// A directory that is not the one the store holds is a restore: a page whose kept count
+    /// differs becomes a hole (the indices after it moved), and the pages that agree keep their rows.
+    #[test]
+    fn a_restore_of_a_different_directory_drops_only_the_pages_whose_counts_changed() {
+        let total = 300;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..300, Some(0), None, &|_| true);
+        let mut counts = state.view().current().unwrap().kept_counts();
+        assert_eq!(loaded(&state), 5);
+        counts[1] = 57;
+        assert!(state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone() }));
+        assert_eq!(loaded(&state), 4, "the page whose count changed is a hole");
+        assert_eq!(state.view().current().unwrap().kept_counts(), counts);
+        assert_eq!(rk_at(&state, 0).as_deref(), Some("0"), "a page that agrees keeps its rows");
+        assert_eq!(rk_at(&state, 60), None);
     }
 
     /// The focused card's page and a pending restore's target page survive the eviction a far-away

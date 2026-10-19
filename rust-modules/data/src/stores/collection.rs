@@ -15,7 +15,9 @@ pub enum CollectionCmd {
     /// Every landing evicts the pages outside these (see `PageCache::evict`).
     Window { wanted: Range<usize>, focus: Option<usize>, restore: Option<usize> },
     /// A restore's saved kept counts, one per page of a `total`-item listing. With them the
-    /// restore reads only its target's pages; without them the listing is read forward to it.
+    /// restore reads only its target's pages; without them the listing is read forward to it. A
+    /// store that already holds exactly this directory (the page was never closed, only covered)
+    /// ignores it and keeps its rows.
     Restore { total: usize, counts: Vec<u8> },
     Close,
     Reset,
