@@ -117,6 +117,11 @@ pub(crate) struct AppViews<'a> {
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
     pub(crate) session: &'a plx_media::route::PlaybackSession,
+    /// **The kind of page beneath the page these views are read for** on the navigation stack,
+    /// folded in by the dispatcher per page ([`Host::views_over`]); `None` for a root, and for
+    /// every context that is not a page's own. What a page that names where BACK goes reads
+    /// ([`super::page_title`]).
+    pub(crate) beneath: Option<plx_machine::machine::ScreenId>,
 }
 
 impl Bridge {
@@ -132,7 +137,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
     }
 }
 
@@ -175,6 +180,10 @@ impl Host for AppHost {
         !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
             | AppFx::Library(LibraryReq::PublishShelves { .. }))
     }
+
+    fn views_over<'a>(views: Self::Views<'a>, beneath: Option<plx_machine::machine::ScreenId>) -> Self::Views<'a> {
+        AppViews { beneath, ..views }
+    }
 }
 
 impl HomeLike for AppHost {
@@ -184,6 +193,10 @@ impl HomeLike for AppHost {
 impl plx_screens::registry::CollectionLike for AppHost {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
         cx.views.collection
+    }
+
+    fn back_to<'a>(cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> {
+        super::page_title::of(cx.views.beneath?, &cx.views)
     }
 }
 
@@ -1671,7 +1684,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -1841,7 +1854,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
             },
             measure: &self.measure,
         }
@@ -3964,6 +3977,10 @@ mod page_regions_tests;
 #[cfg(test)]
 #[path = "arrival_seat_tests.rs"]
 mod arrival_seat_tests;
+
+#[cfg(test)]
+#[path = "collection_crumb_route_tests.rs"]
+mod collection_crumb_route_tests;
 
 #[cfg(test)]
 #[path = "library_route_tests.rs"]

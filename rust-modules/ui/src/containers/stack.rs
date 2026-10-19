@@ -14,7 +14,7 @@
 //! the entry stays, and a Pop that reaches it remounts from its `ReturnState` — which is what
 //! `an_evicted_entry_keeps_its_focus_identity_on_remount` grades.
 
-use plx_machine::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId, Stamped};
+use plx_machine::machine::{EntryId, GroupId, Host, InstanceId, Leave, NavOp, RequestId, ScreenId, Stamped};
 use super::super::screen::{Enter, FocusTarget, ReturnState, Screen, ScreenArg, ScreenEvent};
 use super::transition::{CommitPoint, Transition};
 use super::{Life, Minter};
@@ -90,6 +90,18 @@ impl<H: Host> NavStack<H> {
 
     pub fn root(&self) -> Option<&Entry<H>> {
         self.entries.first()
+    }
+
+    /// **The kind of page BACK returns to from `entry`** — the screen id of the entry beneath it
+    /// on this stack, which is the ONE answer to "where does BACK go" for a page whose opener
+    /// varies ([`Host::views_over`] hands it to the screens). `None` when `entry` is the root (BACK
+    /// leaves the page stack). An entry staged behind a dip is not on the stack yet; it will be
+    /// pushed over the current top, so that is what lies beneath it.
+    pub fn beneath_id(&self, entry: EntryId) -> Option<ScreenId> {
+        match self.entries.iter().position(|e| e.id == entry) {
+            Some(index) => index.checked_sub(1).map(|below| self.entries[below].arg.id()),
+            None => self.top().map(|top| top.arg.id()),
+        }
     }
 
     pub fn depth(&self) -> usize {

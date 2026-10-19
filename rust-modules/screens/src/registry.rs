@@ -1190,6 +1190,14 @@ pub trait PersonLike: AppLike + Sized {
 
 pub trait CollectionLike: AppLike + Sized {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a>;
+
+    /// **The title of the page BACK returns to**, as the user sees it on that page: the entry
+    /// beneath this one on the navigation stack, read from the container ([`Host::views_over`]),
+    /// never named by the Collection screen or threaded by whoever opened it (Home, a library
+    /// page, Search, an item's Detail). `None`: BACK leaves the page stack, or the page beneath has
+    /// no name to give, and the screen draws no caption. The default is `None`, so a host that
+    /// cannot say draws none rather than a wrong one.
+    fn back_to<'a>(_cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> { None }
 }
 
 /// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
@@ -1665,6 +1673,23 @@ mod tests {
 // beside `Screen::name`; and `AppArg::route()`, the "which of the two spellings is this page"
 // resolution that every reader in `app/` had to perform first.)
 
+/// **The screen ids of the pages BACK can return to and that have a title to give**, named once so
+/// the one match that names a page ([`AppArg::id`], below) and the one that reads the kind of page
+/// beneath another ([`Host::views_over`]) cannot drift: an id is a screen's identity in a recorded
+/// state, so these numbers are the ones `id` has always answered.
+pub mod page_id {
+    use plx_machine::machine::ScreenId;
+    pub const HOME: ScreenId = ScreenId(4);
+    pub const LIBRARY: ScreenId = ScreenId(7);
+    pub const DETAIL: ScreenId = ScreenId(8);
+    pub const PERSON: ScreenId = ScreenId(9);
+    pub const SEARCH: ScreenId = ScreenId(10);
+    pub const COLLECTION: ScreenId = ScreenId(23);
+    pub const WATCHLIST: ScreenId = ScreenId(25);
+    pub const LIBRARY_COLLECTIONS: ScreenId = ScreenId(28);
+    pub const LIBRARY_RECOMMENDED: ScreenId = ScreenId(29);
+}
+
 /// **A screen argument: everything the container needs to mount one screen, and nothing else.**
 ///
 /// Three families in one enum, distinguished by nothing but which variant it is: the seven flat
@@ -1889,7 +1914,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             // it is holding two of them.
             AppArg::ItemMenu(_) => 20,
             // 25 and 26, forward of Collection's 24: the Watchlist page and its Sort & Filter menu.
-            AppArg::Watchlist => 25,
+            AppArg::Watchlist => page_id::WATCHLIST.0,
             AppArg::WatchlistMenu(_) => 26,
             // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
             // screen's identity in a recorded state and in `same_instance`, so they are allocated
@@ -1898,21 +1923,21 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Login => 1,
             AppArg::Profiles => 2,
             AppArg::Onboard => 3,
-            AppArg::Home => 4,
-            AppArg::Library => 7,
+            AppArg::Home => page_id::HOME.0,
+            AppArg::Library => page_id::LIBRARY.0,
             // 28 and 29, forward of the catalog page's 27.
-            AppArg::LibraryCollections { .. } => 28,
-            AppArg::LibraryRecommended { .. } => 29,
-            AppArg::Search => 10,
+            AppArg::LibraryCollections { .. } => page_id::LIBRARY_COLLECTIONS.0,
+            AppArg::LibraryRecommended { .. } => page_id::LIBRARY_RECOMMENDED.0,
+            AppArg::Search => page_id::SEARCH.0,
             AppArg::Player => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
             // consent question, whichever page each happens to have been rooted at.
             AppArg::Settings(_) => 12,
             AppArg::FirstRunConsent(_) => 13,
-            AppArg::Content(ContentArg::Detail { .. }) => 8,
-            AppArg::Content(ContentArg::Person { .. }) => 9,
+            AppArg::Content(ContentArg::Detail { .. }) => page_id::DETAIL.0,
+            AppArg::Content(ContentArg::Person { .. }) => page_id::PERSON.0,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
-            AppArg::Content(ContentArg::Collection(_)) => 23,
+            AppArg::Content(ContentArg::Collection(_)) => page_id::COLLECTION.0,
             // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
         })

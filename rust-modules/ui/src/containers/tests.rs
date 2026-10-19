@@ -5,6 +5,26 @@
 use super::modal::{HostRender, HostUpdate, Phase, Style};
 use super::stack::CAP;
 
+/// **The stack names the kind of page beneath each entry** — the one answer a page that says where
+/// BACK goes reads ([`plx_machine::machine::Host::views_over`]): none for the root (BACK leaves),
+/// the page it was pushed over for the rest, and for an entry staged behind a dip the current top.
+#[test]
+fn the_stack_names_the_kind_of_page_beneath_each_entry() {
+    use plx_machine::machine::ScreenId;
+    let (mut d, mut rig, _) = booted();
+    let root = d.nav.top_page().unwrap().id;
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(20)));
+    for i in 0..40 {
+        d.frame(&mut rig, tick(16 + i * 16), vec![], vec![], &mut NoTap);
+        if d.nav.tabs.stack.depth() == 2 { break; }
+    }
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "premise: the push committed");
+    let top = d.nav.top_page().unwrap().id;
+    assert_eq!(d.nav.tabs.stack.beneath_id(root), None, "the root: BACK leaves the page stack");
+    assert_eq!(d.nav.tabs.stack.beneath_id(top), Some(ScreenId(1)), "the page it was pushed over");
+    assert_eq!(d.nav.tabs.stack.beneath_id(EntryId(9999)), Some(ScreenId(2)), "an entry not on the stack lands over the top");
+}
+
 #[test]
 fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
     for evict in [false, true] {
