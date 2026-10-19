@@ -138,6 +138,13 @@ impl GridSpec {
     fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
 }
 
+/// What [`Grid::card_paint`] decides for one card (see there).
+struct CardPaint {
+    rect: Rect,
+    p: Painter,
+    label: Option<super::TileLabel>,
+}
+
 pub struct Grid {
     entry: EntryId,
     spec: GridSpec,
@@ -787,6 +794,49 @@ impl Grid {
         self.draw_card(f, p, src, i, s, true, &self.bands.geometry());
     }
 
+    /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
+    /// and the host test that reads the captions ([`caption_probe`](Self::caption_probe)) cannot
+    /// disagree about what is on screen: the cell it fills, the painter it is drawn with (an arriving
+    /// card's fade applied) and the caption block under it with its alpha in `reveal`. `None` when
+    /// the card is not painted at all: not loaded, lifted into a menu, or culled.
+    #[allow(clippy::too_many_arguments)]
+    fn card_paint<H: Host, S: CardSource<H>>(
+        &self,
+        f: &DrawFrame<'_, '_, H>,
+        p: Painter,
+        src: &S,
+        i: usize,
+        s: f32,
+        focused: bool,
+        bands: &[GridBand],
+    ) -> Option<CardPaint> {
+        if !src.loaded(i) {
+            return None;
+        }
+        if super::lifted_out(f, self.entry, src, i) {
+            return None;
+        }
+        let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
+        if !card_row::paint_visible(p, rect, s, focused) {
+            return None;
+        }
+        // an arriving card fades in
+        let p = match self.landing.alpha(src.len(), i) {
+            a if a < 1.0 => p.alpha(a),
+            _ => p,
+        };
+        let label = focused.then(|| {
+            let row = i / self.spec.cols;
+            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
+            // The focused card left as a ghost that is still waiting for the landing to step: the
+            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
+            // focus reconciled to takes it up with the landing's first step.
+            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+            label.revealed(card_row::band_reveal_for(self.band_h(), open))
+        });
+        Some(CardPaint { rect, p, label })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_card<H: Host, S: CardSource<H>>(
         &self,
@@ -798,29 +848,9 @@ impl Grid {
         focused: bool,
         bands: &[GridBand],
     ) {
-        if !src.loaded(i) {
-            return;
-        }
-        if super::lifted_out(f, self.entry, src, i) {
-            return;
-        }
-        let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
-        if !card_row::paint_visible(p, rect, s, focused) {
-            return;
-        }
-        // an arriving card fades in
-        let p = match self.landing.alpha(src.len(), i) {
-            a if a < 1.0 => p.alpha(a),
-            _ => p,
-        };
+        let Some(CardPaint { rect, p, label }) = self.card_paint(f, p, src, i, s, focused, bands) else { return };
         if focused {
-            let row = i / self.spec.cols;
-            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            // The focused card left as a ghost that is still waiting for the landing to step: the
-            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
-            // focus reconciled to takes it up with the landing's first step.
-            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            let label = label.revealed(card_row::band_reveal_for(self.band_h(), open));
+            let label = label.unwrap_or_default();
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
@@ -832,8 +862,27 @@ impl Grid {
             }
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
+            if let Some(label) = &label {
+                card_row::draw_label(p, rect, s, &self.spec.style, label, f.measure);
+            }
         }
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+    }
+
+    /// Test support: the captions [`draw`](Self::draw) puts on screen now, `(card index, alpha)`,
+    /// read from the same decision the draw paints (`card_paint`: loaded, lifted, culled, arriving
+    /// fade and all), so a caption that is cut or late on screen is cut or late here.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_probe<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S) -> Vec<(usize, f32)> {
+        let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let bands = self.bands.geometry();
+        self.draw_plan(src.len(), focus, &bands).into_iter().filter_map(|(role, i)| {
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let paint = self.card_paint(f, p, src, i, s, role == DrawRole::Focus, &bands)?;
+            let label = paint.label?;
+            (label.title.is_some() || label.caption.is_some()).then(|| (i, label.reveal * paint.p.opacity()))
+        }).collect()
     }
 
     /// The focused card left as a ghost and the landing has not made its first moving step (the menu's
