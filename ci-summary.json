@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T13:54:30Z",
+ "generated": "2026-10-19T14:28:04Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,10 +65,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -28.2,
+   "change30_pct": -28.1,
    "change7_pct": 40.9,
-   "d30": 677,
-   "delta30": -191,
+   "d30": 676.0,
+   "delta30": -190.0,
    "delta7": 141,
    "group": "ci",
    "id": "pr_wait",
@@ -83,27 +83,6 @@
    "state30": "better",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": -36.7,
-   "change7_pct": 32.8,
-   "d30": 671,
-   "delta30": -246,
-   "delta7": 105,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 117,
-   "n_prev": 113,
-   "now": 425,
-   "prev7": 320,
-   "shown": true,
-   "state": "worse",
-   "state30": "better",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -125,6 +104,27 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -37.0,
+   "change7_pct": 32.2,
+   "d30": 671,
+   "delta30": -248.0,
+   "delta7": 103.0,
+   "group": "ci",
+   "id": "push_wait",
+   "kind": "wait",
+   "label": "Wait after merge",
+   "n_now": 118,
+   "n_prev": 113,
+   "now": 423.0,
+   "prev7": 320,
+   "shown": true,
+   "state": "worse",
+   "state30": "better",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -317,10 +317,10 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 108,
-   "n_prev": 107,
-   "now": 238.0,
-   "prev7": 227,
+   "n_now": 109,
+   "n_prev": 106,
+   "now": 238,
+   "prev7": 227.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,19 +329,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 168.3,
-   "change7_pct": -39.5,
+   "change30_pct": 167.6,
+   "change7_pct": -39.6,
    "d30": 71.0,
-   "delta30": 119.5,
+   "delta30": 119.0,
    "delta7": -124.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 108,
-   "n_prev": 107,
-   "now": 190.5,
-   "prev7": 315,
+   "n_now": 109,
+   "n_prev": 106,
+   "now": 190,
+   "prev7": 314.5,
    "shown": true,
    "state": "better",
    "state30": "worse",
@@ -414,17 +414,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 6.3,
+   "change7_pct": 5.9,
    "d30": null,
    "delta30": null,
-   "delta7": 9.0,
+   "delta7": 8.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 104,
-   "now": 152.5,
+   "now": 152,
    "prev7": 143.5,
    "shown": true,
    "state": "flat",
@@ -508,10 +508,10 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 108,
-   "n_prev": 107,
-   "now": 18.0,
-   "prev7": 17,
+   "n_now": 109,
+   "n_prev": 106,
+   "now": 18,
+   "prev7": 17.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 219.1,
    "commits": [
     {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
@@ -657,6 +652,11 @@
      "pr": 845,
      "sha": "d16d986dd",
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
     }
    ],
    "from": 56.2,
@@ -670,11 +670,6 @@
    "change_pct": 87.6,
    "commits": [
     {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
@@ -718,6 +713,11 @@
      "pr": 845,
      "sha": "d16d986dd",
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
     }
    ],
    "from": 209.0,
@@ -731,11 +731,6 @@
    "change_pct": 50.9,
    "commits": [
     {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
@@ -779,6 +774,11 @@
      "pr": 845,
      "sha": "d16d986dd",
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
     }
    ],
    "from": 265.0,
@@ -792,11 +792,6 @@
    "change_pct": 40.9,
    "commits": [
     {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
@@ -840,6 +835,11 @@
      "pr": 845,
      "sha": "d16d986dd",
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
     }
    ],
    "from": 345,
@@ -850,75 +850,9 @@
    "to": 486
   },
   {
-   "change_pct": 32.8,
-   "commits": [
-    {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
-     "pr": 835,
-     "sha": "de030644b",
-     "title": "Locales: Hungarian (Magyar) UI language"
-    },
-    {
-     "pr": 822,
-     "sha": "2cb770755",
-     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
-    },
-    {
-     "pr": 817,
-     "sha": "d28ab6473",
-     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
-    },
-    {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
-    {
-     "pr": 839,
-     "sha": "046f3058d",
-     "title": "Dolby Vision: keep the declaration when the server copies the video"
-    },
-    {
-     "pr": 846,
-     "sha": "a5307a98b",
-     "title": "Disk budget: inventory, eviction planner and a read-only report"
-    },
-    {
-     "pr": 848,
-     "sha": "8b2a13f95",
-     "title": "build-gc --evict: carry out the disk planner's plan, and drive it from --auto"
-    },
-    {
-     "pr": 845,
-     "sha": "d16d986dd",
-     "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
-    }
-   ],
-   "from": 320,
-   "id": "push_wait",
-   "label": "Wait after merge",
-   "since": "2026-10-19",
-   "threshold_pct": 15.0,
-   "to": 425
-  },
-  {
    "change_pct": 32.6,
    "commits": [
     {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
      "pr": 835,
      "sha": "de030644b",
      "title": "Locales: Hungarian (Magyar) UI language"
@@ -962,6 +896,11 @@
      "pr": 845,
      "sha": "d16d986dd",
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
     }
    ],
    "from": 99.7,
@@ -970,6 +909,67 @@
    "since": "2026-10-19",
    "threshold_pct": 25.0,
    "to": 132.2
+  },
+  {
+   "change_pct": 32.2,
+   "commits": [
+    {
+     "pr": 835,
+     "sha": "de030644b",
+     "title": "Locales: Hungarian (Magyar) UI language"
+    },
+    {
+     "pr": 822,
+     "sha": "2cb770755",
+     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
+    },
+    {
+     "pr": 817,
+     "sha": "d28ab6473",
+     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
+    },
+    {
+     "pr": 825,
+     "sha": "17eb48b95",
+     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
+    },
+    {
+     "pr": 838,
+     "sha": "3ac9e03fd",
+     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
+    },
+    {
+     "pr": 839,
+     "sha": "046f3058d",
+     "title": "Dolby Vision: keep the declaration when the server copies the video"
+    },
+    {
+     "pr": 846,
+     "sha": "a5307a98b",
+     "title": "Disk budget: inventory, eviction planner and a read-only report"
+    },
+    {
+     "pr": 848,
+     "sha": "8b2a13f95",
+     "title": "build-gc --evict: carry out the disk planner's plan, and drive it from --auto"
+    },
+    {
+     "pr": 845,
+     "sha": "d16d986dd",
+     "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
+    },
+    {
+     "pr": 847,
+     "sha": "a89d54273",
+     "title": "glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass"
+    }
+   ],
+   "from": 320,
+   "id": "push_wait",
+   "label": "Wait after merge",
+   "since": "2026-10-19",
+   "threshold_pct": 15.0,
+   "to": 423.0
   }
  ],
  "schema": 2,
