@@ -173,8 +173,10 @@ into the margin. Only a trailing block may be wider than `under_budget` (it is g
 wants, up to that room); a block that still does not fit glides inside its window, in lockstep
 through the one `marquee::Block`. A label that names a tile whose face cut the name (the
 Collections page) is held to its tile instead: `TileLabel::within_tile` gives the block a
-tile-wide window (never the neighbours' room) and the run dissolves into the window's edge over
-`card_row::LABEL_EDGE_FADE` px (`Painter::text_fade`) as the shared marquee glides it. All of it is judged where the tile will REST
+tile-wide window (never the neighbours' room) and the run dissolves at BOTH of the window's edges
+over `card_row::LABEL_EDGE_FADE` px (`Painter::text_fade_edges`: out into the right edge, in from the
+left edge once the run has glided past it, a band that grows with the travel and is none at rest)
+as the shared marquee glides it. All of it is judged where the tile will REST
 (`CardRow::settle_lag`, passed through `TileLabel::settling`), so a scroll glide never flips the
 block's alignment or width mid-flight. A headshot's credit label is not placed this way: it is a
 box inside its own slot (`draw_credit_label`), which cannot cross the margin, and it never moves.

@@ -793,7 +793,7 @@ pub struct TileLabel {
     pub shadowed: bool,
     /// Hold the block to the LIFTED tile it names ([`TileLabel::within_tile`]): its window is the
     /// tile's width instead of the shared reach into the neighbours' room, and a line the window
-    /// cannot hold glides on the shared marquee and dissolves into the window's edge
+    /// cannot hold glides on the shared marquee and dissolves at BOTH of the window's edges
     /// ([`LABEL_EDGE_FADE`]) instead of being cut there.
     pub within_tile: bool,
 }
@@ -832,7 +832,7 @@ impl TileLabel {
     /// **Hold this block to its tile.** For a tile whose caption carries a name that is wider than
     /// the tile (the Collections page: the face cuts the name, the caption tells it whole): the
     /// block's window is the tile, so the name never runs under the next column, and what the
-    /// window cannot hold glides on the shared label marquee, dissolving into the edge
+    /// window cannot hold glides on the shared label marquee, dissolving at both edges
     /// ([`LABEL_EDGE_FADE`]) rather than being cut mid-letter. Every other label keeps the shared
     /// reach into its neighbours' room ([`under_budget`]).
     pub fn within_tile(mut self) -> Self {
@@ -1335,10 +1335,16 @@ impl LabelPlace {
     }
 }
 
-/// How far a label line dissolves into the edge of the window it glides inside, when the block is
+/// How far a label line dissolves at each edge of the window it glides inside, when the block is
 /// held to its tile ([`TileLabel::within_tile`]): the run is faded out over its last this-many px
-/// instead of being cut hard mid-letter.
+/// before the window's right edge, and faded in over the window's first this-many px once its head
+/// has glided past the left edge ([`lead_band`]), instead of being cut hard mid-letter at either.
 pub const LABEL_EDGE_FADE: f32 = 24.0;
+
+/// A run whose head is no further than this past its window's left edge is AT REST there: it takes
+/// no leading dissolve. Float noise, not travel: a line parked at the end of its glide sits on the
+/// edge to within an ulp of `-off + run_w + GAP`, and that is not a run to dim.
+const LEAD_REST_EPS: f32 = 0.01;
 
 /// Air kept between a label block and the PANEL's edge (or a band the screen reserves there).
 /// A label belongs to its card, not to the safe area: it is never moved toward the safe frame.
@@ -1406,9 +1412,26 @@ fn tile_window(lead: f32, tile_w: f32, run: f32) -> LabelPlace {
     }
 }
 
-/// One line of a label block at `x`, plain, or — given the window's right edge — dissolving over
-/// the last [`LABEL_EDGE_FADE`] px before it, for the part of a gliding run that reaches there.
-/// `run_w` is the line's drawn width; a run that stays clear of the edge takes the plain program.
+/// **The leading dissolve of a run whose head is `left - x` px past its window's left edge**, as
+/// `(from, to)` px from the string's own left edge: alpha 0 at the window's edge, 1 a
+/// [`LABEL_EDGE_FADE`] later. `None` for a run at rest (starting at the edge, or not yet past it —
+/// [`LEAD_REST_EPS`]): it draws crisp.
+///
+/// The band is as wide as the run has travelled, up to the full [`LABEL_EDGE_FADE`]. The marquee
+/// moves 40 px/s, so its first glide frame is a fraction of a pixel past the edge; a full-width
+/// band from the first frame would drop the head of the line (still full alpha at rest, 24 px of
+/// it) to most of its alpha in that one frame. Grown with the travel, the picture is the rest
+/// picture at zero travel and the full dissolve from `LABEL_EDGE_FADE` px on.
+fn lead_band(x: f32, left: f32) -> Option<(f32, f32)> {
+    let past = left - x;
+    (past > LEAD_REST_EPS).then(|| (past, past + past.min(LABEL_EDGE_FADE)))
+}
+
+/// One line of a label block at `x`, plain, or — given the window it glides inside, `(left, right)`
+/// — dissolving over the window's first [`LABEL_EDGE_FADE`] px for the part of a run that has
+/// glided past the left edge ([`lead_band`]) and over its last [`LABEL_EDGE_FADE`] px for the part
+/// that reaches the right. `run_w` is the line's drawn width; a run clear of both edges takes the
+/// plain program.
 fn block_text(
     p: Painter,
     text: *const c_char,
@@ -1418,15 +1441,18 @@ fn block_text(
     ink: [f32; 4],
     bold: std::os::raw::c_int,
     run_w: f32,
-    edge: Option<f32>,
+    window: Option<(f32, f32)>,
 ) {
-    match edge {
-        Some(right) if x + run_w > right - LABEL_EDGE_FADE => {
-            p.text_fade(text, x, y, sz, ink, bold, right - LABEL_EDGE_FADE - x, right - x);
-        }
-        _ => {
-            p.text(text, x, y, sz, ink, 0, bold);
-        }
+    let (lead, trail) = window.map_or((None, None), |(left, right)| {
+        (
+            lead_band(x, left),
+            (x + run_w > right - LABEL_EDGE_FADE).then_some((right - LABEL_EDGE_FADE - x, right - x)),
+        )
+    });
+    if lead.is_none() && trail.is_none() {
+        p.text(text, x, y, sz, ink, 0, bold);
+    } else {
+        p.text_fade_edges(text, x, y, sz, ink, bold, lead, trail);
     }
 }
 
@@ -1481,6 +1507,9 @@ pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f3
 /// fourth title path: before it, the glyph line was a dead end that never fell through to a
 /// marquee at all, so a long Continue-Watching title elided instead of animating like every other
 /// shelf's focused label.
+///
+/// `fade` (a block held to its tile, [`TileLabel::within_tile`]) dissolves the gliding run at both
+/// edges of its window instead of cutting it there ([`block_text`]).
 fn title_marquee(
     p: Painter,
     at: LabelPlace,
@@ -1536,12 +1565,12 @@ fn title_marquee(
             block.cycle_w,
             Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
             |dx| {
-                let edge = fade.then_some(text_x0 + budget);
+                let window = fade.then_some((text_x0, text_x0 + budget));
                 if shadowed {
                     block_text(p, text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz,
-                        crate::caption_policy::CAPTION_SHADOW, bold, w, edge);
+                        crate::caption_policy::CAPTION_SHADOW, bold, w, window);
                 }
-                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, edge);
+                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window);
             },
         )
     });
@@ -1649,12 +1678,12 @@ fn draw_label_block(
                     block.cycle_w,
                     Rect::new(at.x, y - MARQUEE_AIR, at.w, UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
                     |dx| {
-                        let edge = label.within_tile.then_some(at.x + at.w);
+                        let window = label.within_tile.then_some((at.x, at.x + at.w));
                         if label.shadowed {
                             block_text(p, tc.as_ptr(), at.x + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
-                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, edge);
+                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window);
                         }
-                        block_text(p, tc.as_ptr(), at.x + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, edge);
+                        block_text(p, tc.as_ptr(), at.x + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window);
                     },
                 )
             });
@@ -2861,6 +2890,20 @@ mod tests {
         let parked: Vec<_> = runs.iter().filter(|r| (r.at.x - left).abs() < 0.5).collect();
         assert_eq!(parked.len(), 1, "the follower has arrived at the window's left edge: {runs:?}");
         assert!(parked[0].lead.is_none(), "and it is at rest, so crisp: {:?}", parked[0]);
+    }
+
+    /// The leading band as a pure function of how far the run's head is past the window's edge:
+    /// none at rest or within float noise of it, as wide as the travel while it is short of the
+    /// full dissolve, and the full [`LABEL_EDGE_FADE`] beyond it — always starting at the edge
+    /// (`from` is the travel itself, in px from the string's own left).
+    #[test]
+    fn the_leading_band_is_none_at_rest_grows_with_travel_and_caps_at_the_edge_fade() {
+        assert_eq!(lead_band(100.0, 100.0), None, "at rest");
+        assert_eq!(lead_band(100.0 + 1e-4, 100.0), None, "inside the window by an ulp: still at rest");
+        assert_eq!(lead_band(100.0 - 1e-4, 100.0), None, "past the edge by an ulp: still at rest");
+        assert_eq!(lead_band(90.0, 100.0), Some((10.0, 20.0)));
+        assert_eq!(lead_band(100.0 - LABEL_EDGE_FADE, 100.0), Some((24.0, 48.0)));
+        assert_eq!(lead_band(0.0, 100.0), Some((100.0, 100.0 + LABEL_EDGE_FADE)));
     }
 
     // ---- a credit label is one name line and one role line, in every state -------------------

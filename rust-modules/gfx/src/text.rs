@@ -207,6 +207,10 @@ static mut TLF_SCREEN: c_int = 0;
 static mut TLF_COL: c_int = 0;
 static mut TLF_TEX: c_int = 0;
 static mut TLF_FADE: c_int = 0;
+/// **The LEADING horizontal band**, the mirror of [`TLF_FADE`]: `(from, to)` in the same string-
+/// texture uv.x, glyph alpha rising 0 -> 1 across it. `(0.0, 0.0)` is "off" (the shader's gate is
+/// `to > from`). A gliding marquee run is cut by the LEFT of its window as well as the right.
+static mut TLF_LEAD: c_int = 0;
 /// **Vertical edge-fade bands, in logical screen y** (the same absolute space `u_trect`'s `y`
 /// lives in) — the counterpart of [`TLF_FADE`]'s horizontal one. `(0.0, 0.0)` (the default, since
 /// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
@@ -1250,6 +1254,7 @@ pub fn init_text() {
             TLF_COL = glGetUniformLocation(TPROGF, c"u_tcol".as_ptr());
             TLF_TEX = glGetUniformLocation(TPROGF, c"u_tex".as_ptr());
             TLF_FADE = glGetUniformLocation(TPROGF, c"u_tfade".as_ptr());
+            TLF_LEAD = glGetUniformLocation(TPROGF, c"u_tlead".as_ptr());
             TLF_VTOP = glGetUniformLocation(TPROGF, c"u_vfadeT".as_ptr());
             TLF_VBOT = glGetUniformLocation(TPROGF, c"u_vfadeB".as_ptr());
         }
@@ -2355,8 +2360,9 @@ pub fn draw_text_tracked(
     }
 }
 
-/// [`draw_text_fade`] with tracking; at 0 it IS [`draw_text_fade`]. The horizontal fade band stays
-/// anchored to the whole string's left edge (each cluster's band is shifted by its offset).
+/// [`draw_text_fade`] with tracking; at 0 it IS [`draw_text_fade`]. The horizontal fade bands stay
+/// anchored to the whole string's left edge (each cluster's bands are shifted by its offset,
+/// [`shift_hband`]).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text_fade_tracked(
     s: *const c_char,
@@ -2367,36 +2373,53 @@ pub fn draw_text_fade_tracked(
     align: c_int,
     bold: c_int,
     hfade: Option<(f32, f32)>,
+    hlead: Option<(f32, f32)>,
     vfade_top: Option<(f32, f32)>,
     vfade_bot: Option<(f32, f32)>,
     zoom: crate::gfx::Zoom,
     letter_spacing: f32,
 ) -> f32 {
     if letter_spacing == 0.0 {
-        return draw_text_fade(s, x, y, sz, col, align, bold, hfade, vfade_top, vfade_bot, zoom);
+        return draw_text_fade(s, x, y, sz, col, align, bold, hfade, hlead, vfade_top, vfade_bot, zoom);
     }
     unsafe {
         draw_tracked_with(s, x, sz, align, bold, letter_spacing, |c, gx, off| {
-            let shifted = hfade.map(|(a, z)| (a - off, z - off));
-            draw_text_fade(c, gx, y, sz, col, 0, bold, shifted, vfade_top, vfade_bot, zoom);
+            let (fade, lead) = (shift_hband(hfade, off), shift_hband(hlead, off));
+            draw_text_fade(c, gx, y, sz, col, 0, bold, fade, lead, vfade_top, vfade_bot, zoom);
         })
     }
 }
 
-/// [`draw_text`] with up to three independent fades (its OWN GL program, so plain text pays no
+/// A horizontal band given from the WHOLE string's left edge, re-anchored to a cluster that starts
+/// `off` px into it ([`draw_text_fade_tracked`] draws each cluster as its own string).
+fn shift_hband(band: Option<(f32, f32)>, off: f32) -> Option<(f32, f32)> {
+    band.map(|(a, z)| (a - off, z - off))
+}
+
+/// A horizontal band in px from the string's left edge, as the fade program's uv.x pair: `dw` is
+/// the texture's unzoomed width. `None` is `(0.0, 0.0)`, which the shader's `to > from` gate reads
+/// as off, so a caller with no band need not sentinel against the string's own width.
+fn hband_uv(band: Option<(f32, f32)>, dw: f32) -> (f32, f32) {
+    band.map_or((0.0, 0.0), |(a, z)| (a / dw, z / dw))
+}
+
+/// [`draw_text`] with up to four independent fades (its OWN GL program, so plain text pays no
 /// per-fragment fade cost — see the shader's own header for why every ordinary glyph stays off
-/// it): a HORIZONTAL one (`hfade`, glyph alpha 1→0 between `from`..`to` px from the string's LEFT
-/// edge regardless of `align` — the About card's and the person header bio's `MORE` dissolve), and
-/// two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1 rising through the band,
-/// `vfade_bot` ramps 1→0 falling through it — a line crossing a SCROLLING viewport's clipped edge,
-/// see `ui::text_view::TextView::edge_fade`). Each is `None` by default and costs the shader
-/// nothing extra to skip (a uniform compare, not a texture sample). Falls back to plain
-/// [`draw_text`] if the fade program failed to link — a device with no working fade shader still
-/// shows every word, just without the dissolve.
+/// it): two HORIZONTAL ones measured in px from the string's LEFT edge regardless of `align` —
+/// `hfade`, the TRAILING edge, glyph alpha 1→0 between `from`..`to` (the About card's and the
+/// person header bio's `MORE` dissolve, and a gliding marquee run's right edge), and `hlead`, the
+/// LEADING edge, glyph alpha 0→1 between `from`..`to` (a gliding run is cut by the LEFT of its
+/// window as well: `card_row::block_text`, where `from` is how far the string's head is past the
+/// window's edge) — and two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1
+/// rising through the band, `vfade_bot` ramps 1→0 falling through it — a line crossing a SCROLLING
+/// viewport's clipped edge, see `ui::text_view::TextView::edge_fade`). Each is `None` by default
+/// and costs the shader nothing extra to skip (a uniform compare, not a texture sample). Falls
+/// back to plain [`draw_text`] if the fade program failed to link — a device with no working fade
+/// shader still shows every word, just without the dissolve.
 ///
 /// `zoom` is [`draw_text`]'s: a dissolving line inside a lifted block grows with the lines above
-/// it. The horizontal band is a fraction of the string's own texture, so it needs no mapping; the
-/// vertical bands are screen y and go through the same zoom as the quad.
+/// it. The horizontal bands are a fraction of the string's own texture, so they need no mapping;
+/// the vertical bands are screen y and go through the same zoom as the quad.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text_fade(
     s: *const c_char,
@@ -2407,6 +2430,7 @@ pub fn draw_text_fade(
     align: c_int,
     bold: c_int,
     hfade: Option<(f32, f32)>,
+    hlead: Option<(f32, f32)>,
     vfade_top: Option<(f32, f32)>,
     vfade_bot: Option<(f32, f32)>,
     zoom: crate::gfx::Zoom,
@@ -2421,11 +2445,11 @@ pub fn draw_text_fade(
         };
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
-        // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
-        // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
-        // against the string's own width.
-        let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
-        glUniform2f(TLF_FADE, hf0 / p.dw, hf1 / p.dw);
+        // px → string-texture uv (the varying spans the one-quad string); see [`hband_uv`].
+        let (hf0, hf1) = hband_uv(hfade, p.dw);
+        glUniform2f(TLF_FADE, hf0, hf1);
+        let (hl0, hl1) = hband_uv(hlead, p.dw);
+        glUniform2f(TLF_LEAD, hl0, hl1);
         let band = |b: Option<(f32, f32)>| {
             b.map_or((0.0, 0.0), |(a, z)| (zoom.map_y(a), zoom.map_y(z)))
         };
@@ -2507,6 +2531,26 @@ mod tests {
     fn tracked_clusters_at_zero_spacing_are_the_untracked_positions() {
         let got = tracked_clusters("abc", 0.0, |p| p.len() as f32 * 7.0);
         assert_eq!(got.iter().map(|c| c.1).collect::<Vec<_>>(), vec![0.0, 7.0, 14.0]);
+    }
+
+    /// The horizontal fade bands are given from the WHOLE string's left edge; a tracked string is
+    /// drawn a cluster at a time, so each cluster's copy of a band (trailing AND leading) is
+    /// re-anchored by its offset. An absent band stays absent.
+    #[test]
+    fn a_tracked_clusters_horizontal_bands_are_reanchored_by_its_offset() {
+        assert_eq!(shift_hband(Some((100.0, 124.0)), 0.0), Some((100.0, 124.0)));
+        assert_eq!(shift_hband(Some((100.0, 124.0)), 28.5), Some((71.5, 95.5)));
+        assert_eq!(shift_hband(Some((12.0, 36.0)), 28.5), Some((-16.5, 7.5)), "a band may start before the cluster");
+        assert_eq!(shift_hband(None, 28.5), None);
+    }
+
+    /// A band reaches the shader as a uv.x pair over the texture's width, and no band is the
+    /// `(0, 0)` pair the shader's `to > from` gate reads as off (`u_tfade` and `u_tlead` alike).
+    #[test]
+    fn a_horizontal_band_is_a_uv_pair_and_no_band_is_the_off_pair() {
+        assert_eq!(hband_uv(Some((50.0, 100.0)), 200.0), (0.25, 0.5));
+        let (from, to) = hband_uv(None, 200.0);
+        assert!(!(to > from), "off: the shader's gate `to > from` must be false for {from}..{to}");
     }
 
     use plx_base::fontcov;
