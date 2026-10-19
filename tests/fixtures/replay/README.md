@@ -427,3 +427,13 @@ headers by `tools/plxnative-rec rerecord`. All three anchors were refused on loa
 `tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
 retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
 difference counter at zero.
+
+One duration and one release phrase (`plx_ui::fmt::duration`, `fmt::coming_on`) changed the text the
+Detail page draws without moving the state shape: its Run Time and hero facts read "2h 24m" where
+they read "2 hr 24 min". `12-filmography-detail-return` was observed being refused on the first
+measurement it had never taken (`replay: REFUSED — replay measurement table miss`, both modes),
+while `1-boot-home-chip-grid` and `6-settings-family` stayed SAME. The anchor was recorded afresh
+on the unchanged shape (`tests/focusfp.sh --rec --only 12`, `tools/plxnative-rec import` over the
+removed directory, `anchor: true` restored by hand) and replayed SAME in Targets and Resolve
+(`tests/replay_fixtures.py`) with every difference counter zero. The closed alphabet's runtime
+literal is now `2h 24m`.
