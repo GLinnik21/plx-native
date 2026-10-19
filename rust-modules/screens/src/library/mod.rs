@@ -181,6 +181,15 @@ pub struct LibraryScreen {
     /// A library was just chosen with OK: the page seats the name the reader pressed and shows the
     /// top of the page, where the header is, instead of restoring the new library's scroll.
     switched: bool,
+    /// A library was chosen with OK and the reader has not entered its grid since: the grid group
+    /// is published with [`Seat::RememberedFirst`], so the DOWN that enters it lands on the tile the
+    /// reader left in that library (the engine's remembered element, seeded from the store's
+    /// snapshot when the engine has none), else on its first row. Every other DOWN from the header
+    /// keeps [`Seat::Remembered`]'s rule: the tile under the control it leaves. Not canon, like
+    /// `unfiltered`: it is armed by a switch and disarmed by the focus move into the grid, both
+    /// already in the recorded stream, and the focus it decides is in every frame's hash, so
+    /// leaving it out moves no state shape (`SCREEN_SHAPES_PIN`, the three replay recordings).
+    enter_remembered: bool,
     section: Option<LibrarySectionIdentity>,
     epoch: Option<u32>,
     query: Option<u32>,
@@ -253,7 +262,7 @@ impl LibraryScreen {
             ),
             libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
-            switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
+            switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
@@ -741,6 +750,7 @@ impl LibraryScreen {
         self.save_cursor(cx, fx);
         self.pending.request_section(target);
         self.switched = true;
+        self.enter_remembered = true;
         self.grid_fade.reload();
         self.refresh_header(cx);
         fx.invalidate(Provenance::Input);
@@ -847,6 +857,7 @@ impl LibraryScreen {
                 self.page_fade.cancel();
                 self.grid_fade.cancel();
                 self.switched = false;
+                self.enter_remembered = false;
                 self.refresh_header(cx);
                 return Handled::Yes;
             }
@@ -933,6 +944,7 @@ impl LibraryScreen {
                 self.save_cursor(cx, fx);
                 self.flush(fx);
                 self.wanted_kind = Some(kind);
+                self.enter_remembered = false;
                 self.initial = true;
                 self.page_fade.mount();
                 self.sync(cx);
@@ -1055,6 +1067,7 @@ impl LibraryScreen {
         if cancelled {
             self.pending.cancel();
             self.switched = false;
+            self.enter_remembered = false;
             self.refresh_header(cx);
             return Handled::Yes;
         }
@@ -1179,6 +1192,7 @@ impl LibraryScreen {
                 if to_group != self.provisional { self.provisional = None; }
                 // What the engine now remembers for this group is the page's own seat only if this
                 // move IS that seat; any other move into the group was somebody's choice.
+                if to_group == Some(self.pair.groups_config().detail) { self.enter_remembered = false; }
                 if let Some(group) = to_group {
                     self.placed.retain(|(placed, _)| *placed != group);
                     if self.provisional == Some(group) { self.placed.push((group, to.elem)); }
@@ -1361,10 +1375,17 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
                     ..row_group(STATUS_GROUP, 1, rect, ElemKind::Control) });
             }
         }
+        let content = out.len();
         if self.pair.detail.total() > 0 && self.pair.master.eligible(cx) {
             self.pair.groups(cx, out);
         } else {
             self.pair.detail.groups(cx, out);
+        }
+        // After a library was chosen, the DOWN into its grid is the reader's way back to where they
+        // were: the engine's remembered tile, across the vertical door that otherwise projects.
+        if self.enter_remembered {
+            let grid = self.pair.groups_config().detail;
+            for spec in out[content..].iter_mut().filter(|spec| spec.id == grid) { spec.seat = Seat::RememberedFirst; }
         }
     }
     fn group_of(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
