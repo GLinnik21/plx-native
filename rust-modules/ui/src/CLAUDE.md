@@ -605,7 +605,10 @@ tried first. None of it is reconstructable from the code without repeating the m
 ## Card marks — three marks, three meanings, and no card may blur them
 
 Library All uses the shared caption-band policy for movies, shows, seasons and episodes:
-only the focused row opens its caption; a bounded set of springs closes rows left behind.
+only the focused row opens its caption; a bounded set of springs closes rows left behind, and
+each row's caption is drawn at its band's own expansion (`card_row::band_fade`), so a move is one
+hand-over (`out = 1 - in`) that starts on the key frame; `GridBands::closing` names the card a
+closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and

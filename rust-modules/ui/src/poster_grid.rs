@@ -525,12 +525,15 @@ mod tests {
         let closing = geometry.iter().find(|b| b.row == 0).unwrap().expansion;
         assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
         assert!((opened + closing - 1.0).abs() < 0.0001);
-        assert_eq!(card_row::band_reveal(opened), 0.0, "caption waits until its space is open");
+        assert!(
+            (card_row::band_fade(opened) + card_row::band_fade(closing) - 1.0).abs() < 0.0001,
+            "the two captions of a move are one hand-over, out = 1 - in"
+        );
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
         assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
-        assert!(card_row::band_reveal(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
+        assert!(card_row::band_fade(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         assert!(bands.slots.iter().all(|s| s.row.is_none()));
