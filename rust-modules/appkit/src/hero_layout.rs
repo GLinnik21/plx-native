@@ -102,6 +102,42 @@ pub fn draw_name(p: Painter, ctl: Rect, name: &str, t: f32, measure: &dyn Measur
         .draw(p.alpha(t), Rect::new(x, ctl.y + ctl.h + NAME_GAP, w, 0.0));
 }
 
+/// One name that wants the hero row's caption slot: the control it hangs under, the words, and how
+/// much it is wanted, 0 (not at all) to 1 (the slot is entirely its).
+#[derive(Clone, Copy, Debug)]
+pub struct NameWant<'a> {
+    pub ctl: Rect,
+    pub name: &'a str,
+    pub want: f32,
+}
+
+/// **The one label-swap rule: two strings in one slot never share a frame.** The slot is the caption
+/// band under the hero row; `want` is how much a string is wanted there and `rival` the strongest
+/// want among the others. The string shows what it wants OVER its rival: the old one is out by the
+/// time the new one is half wanted, and the new one arrives only in the second half, so when two
+/// strings trade the slot (wants `1 - s` and `s` along a swap `s`) the outgoing one fades over the
+/// first 50% (`1 - 2s`) and the incoming one over the last 50% (`2s - 1`). Alone (`rival` 0) it is
+/// `want` itself, so a name still arrives with the fill that asks for it. At most one string of a
+/// slot has any reveal on any frame: a string revealed needs `want > rival`, which no rival of it
+/// can say back.
+///
+/// The S6 count digits are NOT a swap in a slot: they cross-fade in place on purpose, and this rule
+/// is not theirs.
+pub fn name_reveal(want: f32, rival: f32) -> f32 {
+    (want - rival).clamp(0.0, 1.0)
+}
+
+/// Draw the names contesting one caption slot ([`name_reveal`] decides each one's alpha) under
+/// their controls. Every hero page draws its captions through this, whether the strings that trade
+/// the slot are two controls' names (Home's disc and Info, focus moving between them) or one
+/// control's two faces (the bookmark disc's Add and On-list names, the flip between them).
+pub fn draw_names(p: Painter, wants: &[NameWant<'_>], measure: &dyn Measure) {
+    for (k, w) in wants.iter().enumerate() {
+        let rival = wants.iter().enumerate().filter(|&(j, _)| j != k).fold(0.0f32, |m, (_, o)| m.max(o.want));
+        draw_name(p, w.ctl, w.name, name_reveal(w.want, rival), measure);
+    }
+}
+
 /// The Info control's name: the page it opens, said in the card menu's own "Go to ..." words (a
 /// show's page, a season's, an episode's, else the movie's).
 pub fn info_name(kind: i32) -> &'static str {
