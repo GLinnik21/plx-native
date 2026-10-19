@@ -6211,7 +6211,7 @@ const K_TAB_SCROLL: f32 = 240.0;
 ///
 /// Paint and input geometry both call [`tab_geometry`], so there is no retained pill-rect model.
 /// The account-menu lift borrows [`ChromeRead`] from the same bridge snapshot and receives the
-/// published tab face through [`crate::screen::ScrimLiftRead`]; it does not reach back into
+/// published tab face through `Rig::lift_bar_member`; it does not reach back into
 /// this renderer or a process-global ownership path. None of these render fields is logical/hashed
 /// state (§5.3).
 pub struct StripRender {
@@ -6337,7 +6337,7 @@ impl StripRender {
         self.tab_scroll.pos
     }
 
-    /// This frame's chip unfurl amount. `Bridge::scrim_chrome_read` includes it in the borrowed
+    /// This frame's chip unfurl amount. the bridge's `Rig::lift_bar_member` reads it from the borrowed
     /// [`ChromeRead`] the rig lends the lift pass — see [`lift_profile_chip`].
     pub fn chip_expand_pos(&self) -> f32 {
         self.chip_expand.pos
