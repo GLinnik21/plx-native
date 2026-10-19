@@ -245,3 +245,46 @@ fn a_vanished_disc_returns_focus_to_play() {
     let want = key(&m, HERO_WATCHLIST_ELEM);
     assert_eq!(Focusable::<TestHost>::reconcile(&m, want, &cx(mview, Some(want))).elem, HERO_PLAY_ELEM);
 }
+
+/// What the hero row's actions draw as text with the spring focus settled on `slot`.
+fn hero_runs(s: &mut HomeScreen, view: HubsView<'_>, slot: Option<usize>) -> Vec<String> {
+    for _ in 0..90 {
+        s.hero_pop.step(slot, 1.0 / 60.0);
+    }
+    let hero = s.selected_hero(view).expect("a hero").item;
+    let env = s.env(0.0);
+    plx_gfx::text::capture_text_runs_for_test(|| {
+        let focus = slot.map(Located::Hero);
+        s.draw_hero_actions(hero, &env, Painter::recording(), 0.0, true, 0.5, focus, &plx_ui::fixture::FixtureMeasure, 1.0);
+    })
+}
+
+fn names_in(runs: &[String], name: &str) -> bool {
+    runs.iter().any(|r| r.contains(name))
+}
+
+/// S25: the icon-only controls name themselves while focused, one rule with the Detail hero. The
+/// bookmark disc wears the state-aware Watchlist name, Info the page it opens, and a row with no
+/// focus on either draws neither.
+#[test]
+fn a_focused_icon_only_control_names_itself() {
+    let _guard = plx_base::testlock::serial();
+    let snapshot = seeded(true);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let add = plx_platform::i18n::msg::watchlist_action_add();
+    let on = plx_platform::i18n::msg::watchlist_action_on_list();
+    let go = plx_platform::i18n::msg::browse_menu_go_movie();
+
+    let rest = hero_runs(&mut s, view, Some(0));
+    assert!(!names_in(&rest, add) && !names_in(&rest, on) && !names_in(&rest, go), "{rest:?}");
+
+    let disc = hero_runs(&mut s, view, Some(2));
+    assert!(names_in(&disc, add) && !names_in(&disc, on), "the outline disc offers the add: {disc:?}");
+    s.disc.set(HEX_A, Membership::On);
+    let disc_on = hero_runs(&mut s, view, Some(2));
+    assert!(names_in(&disc_on, on) && !names_in(&disc_on, add), "the filled disc reports the state: {disc_on:?}");
+
+    let info = hero_runs(&mut s, view, Some(1));
+    assert!(names_in(&info, go) && !names_in(&info, on), "Info names the page it opens: {info:?}");
+}

@@ -732,3 +732,54 @@ fn a_press_armed_inside_the_previous_springback_dips_the_new_control() {
         prev = now;
     }
 }
+
+/// **The focus fill is a cross-fade on the lift spring, not a step beside it.** Frame by frame, as
+/// the hero row does it (`CtlPop::step`, then each control drawn at `CtlPop::focus`): focus moves
+/// from control 0 to control 1 and the plate and the ink of BOTH change by no more than the lift
+/// spring itself moved, out = 1 - in, and land exactly on the two rest faces. Before the rule the
+/// plate flipped in the first frame (18,738 px on Home, 14,151 on Detail) while the lift took
+/// twenty.
+#[test]
+fn the_focus_fill_crossfades_on_the_lift_spring_out_equals_one_minus_in() {
+    let palette = ControlPalette::ambient([0.7, 0.3, 0.2]);
+    let idle = ControlStyle::Accent.face(false, ControlGround::Keyed, palette);
+    let lit = ControlStyle::Accent.face(true, ControlGround::Keyed, palette);
+    let mut pop = CtlPop::<2>::new();
+    for _ in 0..200 {
+        pop.step(Some(0), 1.0 / 60.0);
+    }
+    let draw = |pop: &CtlPop<2>, i: usize| {
+        let b = Button::new(c"Resume".as_ptr(), theme::size::BODY, Rect::new(0.0, 0.0, 200.0, 60.0)).palette(palette).focus_mix(pop.focus(i));
+        let c = CircleButton::new(c"".as_ptr()).palette(palette).focus_mix(pop.focus(i));
+        (b.face_now(), c.face_now())
+    };
+    let step = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    let span = step(idle.top, lit.top);
+    let ink_span = step(idle.ink, lit.ink);
+    assert!(span > 0.2 && ink_span > 0.2, "the two faces must differ for the test to see a step");
+    let (mut prev0, mut prev1) = (pop.focus(0), pop.focus(1));
+    let (mut f0, mut f1) = (draw(&pop, 0).0, draw(&pop, 1).0);
+    let near = |a: [f32; 4], b: [f32; 4]| step(a, b) < 1e-3;
+    assert!(near(f0.top, lit.top) && near(f0.ink, lit.ink) && near(f1.top, idle.top) && near(f1.ink, idle.ink));
+    let mut frames_between = 0;
+    for _ in 0..60 {
+        pop.step(Some(1), 1.0 / 60.0);
+        let (t0, t1) = (pop.focus(0), pop.focus(1));
+        let (n0, n1) = (draw(&pop, 0), draw(&pop, 1));
+        // the plate and the ink move by exactly the spring's step, never more
+        assert!(step(n0.0.top, f0.top) <= span * (prev0 - t0).abs() + 1e-4, "control 0's plate stepped past its spring");
+        assert!(step(n1.0.top, f1.top) <= span * (t1 - prev1).abs() + 1e-4, "control 1's plate stepped past its spring");
+        assert!(step(n0.0.ink, f0.ink) <= ink_span * (prev0 - t0).abs() + 1e-4, "control 0's ink stepped past its spring");
+        assert!(step(n1.0.ink, f1.ink) <= ink_span * (t1 - prev1).abs() + 1e-4, "control 1's ink stepped past its spring");
+        // out = 1 - in: the two controls' progress shares one spring and the disc agrees with the pill
+        assert!((t0 + t1 - 1.0).abs() < 1e-3, "out and in must sum to one: {t0} + {t1}");
+        assert_eq!(n0.0.top, n0.1.top);
+        if t0 > 0.05 && t0 < 0.95 {
+            frames_between += 1;
+        }
+        (prev0, prev1, f0, f1) = (t0, t1, n0.0, n1.0);
+    }
+    assert!(frames_between >= 4, "the fade must take several frames, took {frames_between}");
+    let (end0, end1) = (draw(&pop, 0).0, draw(&pop, 1).0);
+    assert!(near(end0.top, idle.top) && near(end0.ink, idle.ink) && near(end1.top, lit.top) && near(end1.ink, lit.ink));
+}

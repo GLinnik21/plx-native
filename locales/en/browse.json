@@ -203,10 +203,6 @@
     "value": "tone-mapping needs",
     "description": "browse detail tonemap_needs"
   },
-  "browse.home.continue": {
-    "value": "Continue",
-    "description": "browse home continue"
-  },
   "browse.home.failed": {
     "value": "Can’t reach your Plex server",
     "description": "browse home failed"

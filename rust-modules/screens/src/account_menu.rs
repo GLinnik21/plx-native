@@ -179,15 +179,19 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
     }
     let mut sec = FormSection::from_head(head);
     let signed_in = inputs.signed_in;
+    // Where the user goes, then the one way out: Sign out is LAST, behind a rule, so it is never
+    // one Down from where the menu opens and never beside the row a stray press would mean.
     let rows = [
         (Action::ChangeProfile, signed_in && inputs.can_switch),
         (Action::SignIn, !signed_in),
-        (Action::SignOut, signed_in),
         (Action::Settings, true),
         (Action::SendDiagnostics, inputs.lab),
     ];
     for (action, offered) in rows {
         sec = sec.item_if(offered, action, RowKind::Button, action, action_row(action));
+    }
+    if signed_in {
+        sec = sec.separator().item(Action::SignOut, RowKind::Button, Action::SignOut, action_row(Action::SignOut));
     }
     (header, Form::new().section(sec))
 }
@@ -566,7 +570,7 @@ mod tests {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let acc = s.account(None);
         assert_eq!(rows_of(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
-            vec!["Sign out", "Settings"]);
+            vec!["Settings", "Sign out"]);
         assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
         let _serial = plx_base::testlock::serial();
@@ -596,7 +600,7 @@ mod tests {
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(true));
         assert!(!menu_rows(&menu).contains(&Action::ChangeProfile), "rig: the roster was refused");
-        assert_eq!(menu_rows(&menu)[0], Action::SignOut, "rig: Sign out is the first row");
+        assert_eq!(menu_rows(&menu), [Action::Settings, Action::SignOut], "rig: Sign out is behind Settings");
         assert_ne!(menu.form.selected_id(), Some(&Action::SignOut),
             "the menu opened focused on Sign out");
         assert_eq!(menu.form.selected_id(), Some(&Action::Settings));
@@ -656,7 +660,9 @@ mod tests {
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
         menu.build(false);
-        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(2));
+        // Sign out arrives LAST behind a rule, so Settings holds its seat — and still its key
+        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
+        assert!(menu.form.index_of_key(RowKey(Action::SignOut.focus_key())) > Some(1));
         assert_eq!(menu.form.index_of_key(RowKey(Action::SignIn.focus_key())), None,
             "an old Sign in key cannot become the new Sign out action");
     }
@@ -701,7 +707,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A picked managed profile names the header even though the roster also could.
@@ -718,7 +724,7 @@ mod tests {
         };
         let (name, rows) = menu(&s, Some(&active));
         assert_eq!(name, "Kid");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// The roster hop looks for a NAMED entry, admin first: an admin tile that happens to carry an
@@ -744,7 +750,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Account");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A server-only session (no plex.tv token) is still signed IN — it is streaming — but cannot
@@ -762,7 +768,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, None);
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Settings", "Sign out"]);
     }
 
     /// The seam the mount actually uses: the crate-global active profile really does reach the
@@ -880,9 +886,30 @@ mod tests {
             [Action::SignIn, Action::Settings]);
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         assert_eq!(rows_of(&s.account(None), false),
-            [Action::ChangeProfile, Action::SignOut, Action::Settings]);
+            [Action::ChangeProfile, Action::Settings, Action::SignOut]);
         assert_eq!(rows_of(&local(Session::default()).account(None), false),
-            [Action::SignOut, Action::Settings]);
+            [Action::Settings, Action::SignOut]);
+    }
+
+    /// **Sign out is the last row, behind a separator.** The account menu used to put it one Down
+    /// from the landing row; now the rows go to places, a rule closes them, and the one destructive
+    /// row ends the menu in EVERY signed-in state (lab diagnostics included).
+    #[test]
+    fn sign_out_is_last_behind_a_separator() {
+        let s = local(Session { account_token: "acct".into(), ..Default::default() });
+        for (inputs, why) in [
+            (AccountInputs::of(&s.account(None), false), "signed in"),
+            (AccountInputs::of(&s.account(None), true), "roster refused"),
+            (AccountInputs { lab: true, ..AccountInputs::of(&s.account(None), false) }, "lab build"),
+        ] {
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
+            t.set(account_form(&inputs).1, None);
+            let n = t.table.n_rows() as usize;
+            assert_eq!(t.id_at(n - 1).copied(), Some(Action::SignOut), "{why}: Sign out is the last row");
+            assert!(t.id_at(n - 2).is_none(), "{why}: a separator, not a row, sits above Sign out");
+            assert!(t.id_at(n - 3).is_some(), "{why}: and the rows it closes sit above that");
+        }
+        assert!(!rows_of(&Session::default().account(None), false).contains(&Action::SignOut));
     }
 
     /// Reordering the form moves no focus key and no behaviour: two forms that differ only in the

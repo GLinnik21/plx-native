@@ -1954,7 +1954,7 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
         let mark_d = HERO_PAGER_D.round();
         let mark = Rect::new(
@@ -1979,9 +1979,12 @@ impl HomeScreen {
         .map(ControlPalette::ambient)
         .unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
+        // The fill rides the lift spring (`CtlPop::focus`) so plate and ink cross-fade with the pop;
+        // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
+        let fill = |i| if live { self.hero_pop.focus(i) } else { f32::from(focus == Some(Located::Hero(i))) };
         Button::new(label.as_ptr(), theme::size::BODY, pill)
             .icon(Icon::Play)
-            .focused(focus == Some(Located::Hero(0)))
+            .focus_mix(fill(0))
             .palette(palette)
             .scale(pop(0))
             .draw(env, p);
@@ -1991,7 +1994,7 @@ impl HomeScreen {
             let mut button = CircleButton::new(c"".as_ptr())
                 .icon(icon)
                 .at(rect.x, rect.y)
-                .focused(focus == Some(Located::Hero(2)))
+                .focus_mix(fill(2))
                 .palette(palette)
                 .scale(pop(2));
             if let Some(frame) = mid {
@@ -2002,10 +2005,18 @@ impl HomeScreen {
         CircleButton::new(c"".as_ptr())
             .icon(Icon::Info)
             .at(info.x, info.y)
-            .focused(focus == Some(Located::Hero(1)))
+            .focus_mix(fill(1))
             .palette(palette)
             .scale(pop(1))
             .draw(env, p);
+        // The two icon-only controls name themselves while focused (the shared rule, `hero_layout::draw_name`).
+        if live {
+            if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
+                let name = plx_appkit::watchlist_disc::name(self.disc.membership(hex));
+                plx_appkit::hero_layout::draw_name(p, rect, name, fill(2), measure);
+            }
+            plx_appkit::hero_layout::draw_name(p, info, plx_appkit::hero_layout::info_name(hero.kind), fill(1), measure);
+        }
         plx_ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
     }
 
@@ -2747,7 +2758,7 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let rects = hero_rects(measure, hero, label);
         match index {
             0 => Some(rects.play),
@@ -3239,6 +3250,16 @@ impl HeroDisc {
             (Some(h), _) if h == hex => self.flip.pos(),
             (_, Some((h, filled))) if h == hex => f32::from(filled),
             _ => 0.0,
+        }
+    }
+
+    /// The membership the disc of the title `hex` stands for: the flip's own for the title it is
+    /// fed, `Unknown` (the Add face) for any other.
+    fn membership(&self, hex: [u8; 12]) -> plx_data::catalog::Membership {
+        if self.of == Some(hex) {
+            self.flip.membership()
+        } else {
+            plx_data::catalog::Membership::Unknown
         }
     }
 

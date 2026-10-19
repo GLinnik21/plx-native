@@ -1254,6 +1254,14 @@ impl<const N: usize> CtlPop<N> {
     pub fn scale(&self, i: usize) -> f32 {
         self.scale_with(i, crate::press::scale())
     }
+    /// How far control `i` is into its focus, 0 (resting) to 1 (focused), read off the SAME lift
+    /// spring [`scale`](Self::scale) reads: the fill and ink of a control cross-fade on this, so
+    /// the plate arrives at the pace the pop does and never in a frame of its own
+    /// ([`ControlStyle::face_at`]). The press dip is NOT in it: a click dips the size, not the fill.
+    pub fn focus(&self, i: usize) -> f32 {
+        let pos = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
+        ((pos - 1.0) / (CTRL_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0)
+    }
     /// Captured-input counterpart for owned screens: paint and placement use the same frame's
     /// press value, without consulting the legacy global press machine. Zero means no press read.
     pub fn scale_with(&self, i: usize, press_scale: f32) -> f32 {
@@ -2885,6 +2893,9 @@ pub struct CircleButton {
     pub glyph: *const c_char,
     pub icon: Option<crate::icons::Icon>, // vector glyph; overrides the text glyph when set
     pub focused: bool,
+    /// Focus PROGRESS 0..1 when driven off a spring ([`CircleButton::focus_mix`]); `None` is the
+    /// plain binary [`focused`](Self::focused).
+    pub focus: Option<f32>,
     pub style: ControlStyle,
     /// WHICH GROUND this disc stands on — see [`ControlGround`].
     pub ground: ControlGround,
@@ -2907,6 +2918,7 @@ impl CircleButton {
             icon: None,
             fill: None,
             focused: false,
+            focus: None,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
@@ -2951,6 +2963,17 @@ impl CircleButton {
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
         self
+    }
+    /// Draw the focus fill at progress `t` (0..1) — normally [`CtlPop::focus`], the lift spring —
+    /// instead of the binary [`focused`](Self::focused); see [`ControlStyle::face_at`].
+    pub fn focus_mix(mut self, t: f32) -> Self {
+        self.focus = Some(t.clamp(0.0, 1.0));
+        self.focused = t > 0.0;
+        self
+    }
+    /// The face this disc draws now.
+    fn face_now(&self) -> ControlFace {
+        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the control's centre — normally
     /// [`CtlPop::scale`], which already folds the press dip in. `1.0` is the resting control, which
@@ -3058,7 +3081,7 @@ impl View for CircleButton {
     fn draw(&self, _e: &Env, p: Painter) {
         let base = self.frame;
         let r = base.scaled(self.scale);
-        let face = self.style.face(self.focused, self.ground, self.palette);
+        let face = self.face_now();
         let ink = face.ink;
         // The DISC is the frame's HEIGHT, not its width: an unfurled control is a capsule, and
         // taking the radius and the glyph box off `w` would swell both as it opened. At rest the
@@ -3069,7 +3092,7 @@ impl View for CircleButton {
         // flag — at rest both are no-ops on a circle.
         let plate = face_box(r);
         if self.focused {
-            control_cast(p, plate, plate.h * 0.5);
+            control_cast_at(p, plate, plate.h * 0.5, self.focus.unwrap_or(1.0));
         }
         control_rim(
             p,
@@ -7552,8 +7575,14 @@ fn face_box(r: Rect) -> Rect {
 /// capsule: at a 32px blur the half pixel between the two outlines is far below anything the
 /// penumbra resolves.
 fn control_cast(p: Painter, r: Rect, rad: f32) {
+    control_cast_at(p, r, rad, 1.0);
+}
+
+/// [`control_cast`] at focus progress `t` (see [`ControlStyle::face_at`]): the lift's shadow rides
+/// the same spring as the fill it lifts, so it is not a step either.
+fn control_cast_at(p: Painter, r: Rect, rad: f32, t: f32) {
     for (dy, blur, a) in theme::CONTROL_CAST_FOCUS {
-        p.shadow(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a));
+        p.shadow(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a * t));
     }
 }
 
@@ -7642,6 +7671,30 @@ impl ControlStyle {
         }
     }
 
+    /// **THE FOCUS-FILL RULE: one cross-fade, out = 1 - in.** The face at focus progress `t`
+    /// (0 = [`face`](Self::face)`(false, ..)`, 1 = `face(true, ..)`): every channel of the plate
+    /// (top, body, spent) and the ink, alpha included ([`theme::cross`]), is the same linear mix, so what the idle fill gives up the
+    /// focused fill takes and the two always sum to one. `t` is a focus spring
+    /// ([`CtlPop::focus`]), which is what keeps the plate from changing in a single frame while
+    /// the lift eases over twenty. Both rests are exactly the two states `face` already drew.
+    fn face_at(self, t: f32, ground: ControlGround, palette: ControlPalette) -> ControlFace {
+        let idle = self.face(false, ground, palette);
+        let focus = self.face(true, ground, palette);
+        let t = t.clamp(0.0, 1.0);
+        if t <= 0.0 {
+            return idle;
+        }
+        if t >= 1.0 {
+            return focus;
+        }
+        ControlFace {
+            top: theme::cross(idle.top, focus.top, t),
+            body: theme::cross(idle.body, focus.body, t),
+            ink: theme::cross(idle.ink, focus.ink, t),
+            spent: theme::cross(idle.spent, focus.spent, t),
+        }
+    }
+
     /// Compatibility projection of the default shelf palette to one `(top fill, ink)` pair. New
     /// painting code uses [`ControlStyle::face`] so it cannot silently discard the focused body's
     /// second stop; this remains for pure state tests and callers that genuinely need one colour.
@@ -7668,6 +7721,9 @@ pub struct Button {
     /// [`crate::table::Row::ticon`] puts at a row's trailing edge, for the same reason.
     pub trailing: Option<crate::icons::Icon>,
     pub focused: bool,
+    /// Focus PROGRESS 0..1 when the caller drives it off a spring ([`Button::focus_mix`]);
+    /// `None` is the plain binary [`focused`](Self::focused).
+    pub focus: Option<f32>,
     pub style: ControlStyle,
     /// WHICH GROUND this pill stands on — see [`ControlGround`]. [`Keyed`](ControlGround::Keyed)
     /// unless the caller says otherwise, which is every screen but the player HUD.
@@ -7699,6 +7755,7 @@ impl Button {
             icon: None,
             trailing: None,
             focused: false,
+            focus: None,
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
@@ -7730,6 +7787,17 @@ impl Button {
         self.focused = f;
         self
     }
+    /// Draw the focus fill at progress `t` (0..1) — normally [`CtlPop::focus`], the lift spring —
+    /// instead of the binary [`focused`](Self::focused); see [`ControlStyle::face_at`].
+    pub fn focus_mix(mut self, t: f32) -> Self {
+        self.focus = Some(t.clamp(0.0, 1.0));
+        self.focused = t > 0.0;
+        self
+    }
+    /// The face this pill draws now.
+    fn face_now(&self) -> ControlFace {
+        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
+    }
     pub fn style(mut self, s: ControlStyle) -> Self {
         self.style = s;
         self
@@ -7753,7 +7821,7 @@ impl Button {
     ///
     /// ONE formula for every pill in the product, because they all relabel from state and a fixed
     /// frame that fits the short word crams the long one against its own capsule ends: both hero
-    /// rows ("Play"/"Continue", "Play"/"Resume") pass `icon: true`, and Home's status-screen Retry
+    /// rows ("Play"/"Resume") pass `icon: true`, and Home's status-screen Retry
     /// control passes `false`. That flag is the whole reason this takes one — an icon-less pill
     /// measured with an icon box gets a slug of air it never fills, which is why the earlier
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
@@ -7844,7 +7912,7 @@ impl Button {
             // FOCUS is an elevation as well as a fill — see `control_cast`. Under the face, so the
             // near-opaque focused plate covers everything the shadow's own interior cut leaves.
             if self.focused {
-                control_cast(p, b, rad);
+                control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }
             control_rim(p, b, rad, face.top, face.body, self.focused, self.ground);
         }
@@ -7902,7 +7970,7 @@ pub fn draw_control_face(
 impl View for Button {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame.scaled(self.scale);
-        let face = self.style.face(self.focused, self.ground, self.palette);
+        let face = self.face_now();
         let ink = face.ink;
         // **Nothing at REST, a lift on FOCUS** — `plate` draws [`control_cast`] under the face and
         // only when the remote is on it. A control face is held by its EDGE ([`control_rim`], the

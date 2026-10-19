@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
-use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy};
+use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
@@ -52,26 +52,6 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// The facts of a catalog row a caption policy words its lines from.
-fn caption_facts(item: &plx_data::pms::PmsMovie) -> CaptionFacts {
-    CaptionFacts {
-        title: Some(item.title.clone()),
-        year: Some(item.year),
-        duration_min: u32::try_from(item.dur_ns / 60_000_000_000).ok(),
-        genre: item.genre.clone(),
-        video_resolution: item.video_resolution.clone(),
-        hdr: item.hdr,
-        content_rating: Some(item.rating.clone()),
-        audience_rating: item.audience_rating,
-        leaf_count: item.leaf_count,
-        viewed_leaf_count: item.viewed_leaf_count,
-        child_count: u32::try_from(item.child_count).ok().filter(|n| *n > 0),
-        subtype: (item.kind == plx_data::pms::KIND_COLLECTION).then(|| item.subtype.clone().unwrap_or_default()),
-        is_show: item.kind == 1,
-        ..Default::default()
-    }
-}
-
 /// A grid poster card's label under `policy`: the focused caption band shows exactly what the
 /// Under posters setting chose. An episode and a season keep their own wording (an episode names
 /// its address and release date, a season the show it belongs to) and ride the same band.
@@ -89,7 +69,7 @@ pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy)
     if item.kind == 2 && !item.show_title.is_empty() {
         return ui_cards::poster_label(&tile_facts::of(item));
     }
-    ui_cards::TileLabel::from_lines(plx_ui::caption_policy::caption_lines(policy, &caption_facts(item),
+    ui_cards::TileLabel::from_lines(plx_ui::caption_policy::caption_lines(policy, &tile_facts::caption_facts(item),
         plx_platform::i18n::current()))
 }
 

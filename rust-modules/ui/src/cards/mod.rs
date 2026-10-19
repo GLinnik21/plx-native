@@ -80,6 +80,7 @@ mod avatars;
 mod grid;
 mod landing;
 mod pool;
+mod sample_row;
 mod shelf;
 mod stack;
 
@@ -96,6 +97,7 @@ pub use crate::poster_grid::{
     STYLE as GRID_STYLE,
 };
 pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};
+pub use sample_row::SampleRow;
 pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 

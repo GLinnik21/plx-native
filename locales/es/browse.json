@@ -50,7 +50,6 @@
   "browse.detail.original_audio_converted": "Original · audio convertido",
   "browse.detail.hardware_needs": "la conversión por hardware requiere",
   "browse.detail.tonemap_needs": "el mapeo de tonos requiere",
-  "browse.home.continue": "Continuar",
   "browse.home.failed": "No se puede conectar con tu servidor Plex",
   "browse.home.empty": "Aún no hay nada en este servidor",
   "browse.home.refresh": "Actualizar",

@@ -333,11 +333,7 @@ fn build_card(
         ItemRow::Play,
         RowKind::Button,
         Action::Play(m.rk.clone()),
-        Row::new(if resumes {
-            plx_platform::i18n::msg::browse_home_continue()
-        } else {
-            plx_platform::i18n::msg::browse_detail_play()
-        })
+        Row::new(plx_appkit::hero_layout::play_text(resumes))
         .licon(Icon::Play),
     );
 
@@ -1122,7 +1118,8 @@ mod tests {
 
         // an item with a resume point says so, in the hero pill's word
         let resuming = build_deck(&item(0, PosterMark::InProgress), true, DeckPress::Details);
-        assert_eq!(labels(&resuming)[0], "Continue");
+        assert_eq!(labels(&resuming)[0], plx_appkit::hero_layout::play_label(true).to_str().unwrap());
+        assert_eq!(labels(&resuming)[0], "Resume");
     }
 
     /// A show or season card on the deck (the Library's `*.inprogress.*` shelf can hold one) in
@@ -1146,7 +1143,7 @@ mod tests {
             let play = labels(&build_deck(&m, true, DeckPress::Play));
             assert_eq!(play[0], nav, "{kind}: {play:?}");
             assert_eq!(l[1..], play[2..], "{kind}: {l:?} vs {play:?}");
-            assert!(!play.iter().any(|x| x == "Play" || x == "Continue"), "{play:?}");
+            assert!(!play.iter().any(|x| x == "Play" || x == "Resume"), "{play:?}");
             // off the deck the setting is not consulted
             assert_eq!(
                 labels(&build_deck(&m, false, DeckPress::Details)),
@@ -1197,7 +1194,7 @@ mod tests {
     fn the_play_mode_and_off_deck_menus_are_unchanged() {
         for kind in [0, 3] {
             let today = labels(&build(&item(kind, PosterMark::None), true));
-            assert!(!today.iter().any(|l| l == "Play" || l == "Continue"), "{today:?}");
+            assert!(!today.iter().any(|l| l == "Play" || l == "Resume"), "{today:?}");
             assert_eq!(labels(&build_deck(&item(kind, PosterMark::None), true, DeckPress::Play)), today);
             // off the deck the setting is not consulted at all
             for mode in DeckPress::LADDER {

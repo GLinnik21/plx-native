@@ -24,6 +24,16 @@ pub fn face(m: Membership) -> Face {
     if m == Membership::On { Face::Filled } else { Face::Outline }
 }
 
+/// The name a face wears while the disc holds focus: the action the outline offers, the state the
+/// filled face reports (the menu's own words, `watchlist.action.*`; the filled one is the detail
+/// page's "On Watchlist"). A press on the filled face removes, but the name says what the disc IS.
+pub fn name(m: Membership) -> &'static str {
+    match face(m) {
+        Face::Outline => plx_platform::i18n::msg::watchlist_action_add(),
+        Face::Filled => plx_platform::i18n::msg::watchlist_action_on_list(),
+    }
+}
+
 /// The glyph a face draws. The pair share one silhouette (`icons.rs`), so a flip never moves an edge.
 pub fn face_icon(f: Face) -> plx_ui::icons::Icon {
     match f {

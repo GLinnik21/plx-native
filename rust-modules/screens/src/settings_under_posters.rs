@@ -3,8 +3,10 @@
 //! One global setting, saved per profile (`plx_plex::plex::session::UnderPosters`). The page holds
 //! three rows: a Title switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
 //! checked choice per details line, each with a sample of what it shows) and Reset. Both pages carry
-//! a framed preview of one lifted sample poster and its caption, drawn by the SAME policy the
-//! shelves and the Library read ([`plx_ui::caption_policy`]). The preview is built from the value
+//! a framed preview: a still row of three posters from the library the Library last showed, drawn by
+//! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
+//! by the SAME policy the shelves and the Library read ([`plx_ui::caption_policy`]); only that tile
+//! wears a caption, and a face with no artwork carries no word. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
 //! the focused choice.
 //!
@@ -14,9 +16,12 @@
 
 use super::*;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
-use plx_ui::caption_policy::{band_h, caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
-use plx_ui::cards::{draw_label, RowStyle, TileLabel};
-use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::caption_policy::{band_h, caption_lines, CaptionPolicy, DetailsKind};
+use plx_data::pms::PmsMovie;
+use plx_ui::caption_policy::CaptionFacts;
+use plx_ui::cards::{RowStyle, SampleRow, TileLabel};
+use plx_ui::widgets::Art;
+use crate::registry::tile_facts;
 
 /// The stored setting as the UI's caption policy. The mapping lives here, not in `plx_plex`: the
 /// data layer must not name the UI layer.
@@ -227,17 +232,23 @@ impl UnderPostersPage {
 // the preview
 // ---------------------------------------------------------------------------------------------
 
-/// The framed preview: one lifted sample poster and its caption, the board's panel on the narrative
-/// column's floor. The poster is the Library's tile proportions at a size that leaves the tallest
-/// caption band (title and details, 112) clear under it inside the frame.
-const PREVIEW_W: f32 = 240.0;
-const PREVIEW_H: f32 = PREVIEW_W * plx_ui::consts::CARD_H / plx_ui::consts::CARD_W;
-/// The air between the frame's top edge and the poster.
+/// The framed preview: a still row of three posters, the middle one lifted and captioned, in the
+/// board's panel on the narrative column's floor. The row is [`SampleRow`], the shelves' own tile and
+/// caption painters; the tiles are the first posters of the library the Library last showed
+/// ([`plx_data::stores::browse::DirectoryView::sample`]), blank faces where it holds fewer.
+const PREVIEW_TILES: usize = 3;
+/// The tile the row lifts and captions when the library supplied enough posters to fill it.
+const PREVIEW_LIFTED: usize = 1;
+/// The Library's tile proportions at a size that fits three across the frame, a lifted one among them.
+const PREVIEW_TILE_W: f32 = 160.0;
+const PREVIEW_TILE_H: f32 = PREVIEW_TILE_W * plx_ui::consts::CARD_H / plx_ui::consts::CARD_W;
+const PREVIEW_STYLE: RowStyle = RowStyle { w: PREVIEW_TILE_W, h: PREVIEW_TILE_H, gap: 28.0, ..RowStyle::HOME };
+/// The air between the frame's top edge and the row.
 const PREVIEW_PAD: f32 = 32.0;
-/// The room under the poster: the label's drop plus the tallest band.
+/// The room under the row: the label's drop plus the tallest band.
 const PREVIEW_UNDER: f32 = 30.0 + plx_ui::caption_policy::BAND_TWO_LINES;
-/// The frame's height: the poster and its caption band with air above and below.
-const PREVIEW_FRAME_H: f32 = PREVIEW_PAD + PREVIEW_H + PREVIEW_UNDER + PREVIEW_PAD;
+/// The frame's height: the row and its caption band with air above and below.
+const PREVIEW_FRAME_H: f32 = PREVIEW_PAD + PREVIEW_TILE_H + PREVIEW_UNDER + PREVIEW_PAD;
 
 /// The preview's frame: the whole block rests on the narrative column's floor.
 fn preview_frame() -> Rect {
@@ -245,13 +256,24 @@ fn preview_frame() -> Rect {
     Rect::new(narrative.x, narrative.y + narrative.h - PREVIEW_FRAME_H, narrative.w, PREVIEW_FRAME_H)
 }
 
-/// The lifted poster, centred in the frame.
-fn preview_poster() -> Rect {
+/// Where the row of tiles stands: the frame less its top air, one tile tall.
+fn preview_row() -> Rect {
     let frame = preview_frame();
-    Rect::new(frame.x + (frame.w - PREVIEW_W) * 0.5, frame.y + PREVIEW_PAD, PREVIEW_W, PREVIEW_H)
+    Rect::new(frame.x, frame.y + PREVIEW_PAD, frame.w, PREVIEW_TILE_H)
 }
 
-/// The sample facts every preview tile is captioned from.
+/// The tile the row lifts: the middle one, or the last real poster when the library has fewer.
+fn lifted_tile(posters: usize) -> usize {
+    if posters == 0 { PREVIEW_LIFTED } else { PREVIEW_LIFTED.min(posters - 1) }
+}
+
+/// The facts the lifted tile is captioned from: its poster's own, or the sample when the library
+/// has none to show.
+fn caption_facts_of(poster: Option<&PmsMovie>) -> CaptionFacts {
+    poster.map_or_else(sample_facts, tile_facts::caption_facts)
+}
+
+/// The sample facts a preview with no poster behind it is captioned from.
 fn sample_facts() -> CaptionFacts {
     use plx_platform::i18n::msg;
     CaptionFacts {
@@ -267,31 +289,31 @@ fn sample_facts() -> CaptionFacts {
     }
 }
 
-/// The preview's caption lines for a stored value — what the focused sample tile wears. Pure, so
-/// a test states the exact words.
-fn preview_lines(v: UnderPosters) -> [Option<String>; 2] {
-    caption_lines(&caption_policy_of(v), &sample_facts(), plx_platform::i18n::current())
+/// The preview's caption lines for a stored value — what the lifted tile wears. Pure, so a test
+/// states the exact words. `None` is the sample.
+fn preview_lines(v: UnderPosters, poster: Option<&PmsMovie>) -> [Option<String>; 2] {
+    caption_lines(&caption_policy_of(v), &caption_facts_of(poster), plx_platform::i18n::current())
 }
 
-/// The preview: a frame holding one lifted sample poster, wearing the caption the policy gives
-/// it. A poster with no artwork shows its title inside the placeholder, so the title is never lost
-/// when the caption leaves it out.
-fn draw_preview(p: Painter, v: UnderPosters, measure: &dyn plx_machine::machine::Measure) {
+/// The preview: a frame holding the row of posters, the lifted one wearing the caption the policy
+/// gives it. A face with no artwork is a blank face and carries no word, so the title is only ever
+/// the caption.
+fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], measure: &dyn plx_machine::machine::Measure) {
     let frame = preview_frame();
     p.rect(frame, theme::CARD_RING_RAD, theme::scrim_black(0.30), theme::scrim_black(0.30), 0.0);
-    let r = preview_poster();
-    let sty = RowStyle { w: PREVIEW_W, h: PREVIEW_H, ..RowStyle::HOME };
-    // placeholder-exempt: a fixed illustration of the caption policy, not a content stand-in for a pending load
-    p.rrect_sheened(r, theme::CARD_RING_RAD, theme::CARD_ABSENT);
-    let name = plx_platform::i18n::msg::under_posters_sample_title();
-    let size = theme::size::LABEL;
-    let inner = PREVIEW_W - 2.0 * theme::space::SM;
-    let fit = measure.fit_line(name, inner, size, true);
-    Label::new(fit.as_ptr(), size, theme::TEXT_SECONDARY).bold().h(HAlign::Center).v(VAlign::Middle)
-        .draw(p, Rect::new(r.x + theme::space::SM, r.y, inner, r.h));
-    if band_h(&caption_policy_of(v)) > 0.0 {
-        draw_label(p, r, 1.0, &sty, &TileLabel::from_lines(preview_lines(v)), measure);
-    }
+    let lifted = lifted_tile(posters.len());
+    let label = if band_h(&caption_policy_of(v)) > 0.0 {
+        TileLabel::from_lines(preview_lines(v, posters.get(lifted).copied()))
+    } else {
+        TileLabel::default()
+    };
+    let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
+    SampleRow::draw(p, preview_row(), &PREVIEW_STYLE, tiles, lifted, &label, measure);
+}
+
+/// The posters a page's preview shows: the current library's first cached ones.
+fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
+    cx.views.sample(PREVIEW_TILES).collect()
 }
 
 impl Machine<InnerHost> for UnderPostersPage {
@@ -349,7 +371,7 @@ impl Screen<InnerHost> for UnderPostersPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, self.state.value, f.cx.measure);
+        draw_preview(f.painter, self.state.value, &preview_posters(f.cx), f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
@@ -373,7 +395,7 @@ impl FormId for DetailsId {
 /// What a choice shows under a poster, as the preview words it: the row's sample on the right.
 /// `None` for Nothing, whose row has no value.
 fn details_sample(d: UnderPostersDetails) -> Option<String> {
-    preview_lines(UnderPosters { title: false, details: d })[1].clone()
+    preview_lines(UnderPosters { title: false, details: d }, None)[1].clone()
 }
 
 /// The picker's order: Nothing first, then the lines in the ladder's order (the board's list).
@@ -555,7 +577,7 @@ impl Screen<InnerHost> for DetailsPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, UnderPosters { details: self.state.focused(), ..self.state.value }, f.cx.measure);
+        draw_preview(f.painter, UnderPosters { details: self.state.focused(), ..self.state.value }, &preview_posters(f.cx), f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }

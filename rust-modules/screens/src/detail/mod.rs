@@ -2921,7 +2921,6 @@ impl DetailScreen {
             self.disc_unfurl.map(|s| s.pos),
             self.named_show(meta),
         );
-        let current = cx.focus.current.map(|k| k.elem);
         // Deliberately `hero_ctls`, not `hero::visible_ctls`: the row's FOCUSABLE extent narrows
         // to Play the instant `full_trailer()` flips (that gate lives in `valid`/`focusable` and
         // is unchanged), but what's DRAWN must not narrow in the same frame — the caller already
@@ -2955,7 +2954,7 @@ impl DetailScreen {
         };
         for (i, ctl) in controls[..n].iter().copied().enumerate() {
             let rect = hero::hero_btn_rect_at(set, i, y, widths);
-            let focused = current == Some(ctl.elem());
+            let fill = self.ctl_pop.focus(i);
             let scale = self.ctl_pop.scale(i);
             match ctl {
                 hero::HeroCtl::Play => Button::new(
@@ -2964,7 +2963,7 @@ impl DetailScreen {
                     rect,
                 )
                 .icon(plx_ui::icons::Icon::Play)
-                .focused(focused)
+                .focus_mix(fill)
                 .palette(palette)
                 .ground(ground)
                 .scale(scale)
@@ -2972,7 +2971,7 @@ impl DetailScreen {
                 hero::HeroCtl::Alt => {
                     Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
                         .trailing_icon(plx_ui::icons::Icon::ChevronDown)
-                        .focused(focused)
+                        .focus_mix(fill)
                         .palette(palette)
                         .ground(ground)
                         .scale(scale)
@@ -2991,7 +2990,7 @@ impl DetailScreen {
                     let mut button = CircleButton::new(c"".as_ptr())
                         .icon(icon)
                         .frame(rect)
-                        .focused(focused)
+                        .focus_mix(fill)
                         .palette(palette)
                         .ground(ground)
                         .scale(scale);
@@ -3004,6 +3003,12 @@ impl DetailScreen {
                         }
                     }
                     button.draw(&Env::inert(), p);
+                    // The bookmark disc carries no verb to unfurl, so it names itself with the
+                    // shared caption (the other discs unfurl theirs): `hero_layout::draw_name`.
+                    if ctl == hero::HeroCtl::Watchlist {
+                        let name = plx_appkit::watchlist_disc::name(self.watchlist.membership());
+                        plx_appkit::hero_layout::draw_name(p, rect, name, fill, cx.measure);
+                    }
                 }
             }
         }

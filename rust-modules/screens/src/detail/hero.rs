@@ -92,7 +92,8 @@ pub enum HeroCtl {
     /// the − face of that same toggle — worn once the item IS watched
     MarkUnwatched,
     /// the bookmark disc — present only for an item with a Watchlist-takeable guid, then always
-    /// SECOND (right after Play/Resume), never labelled
+    /// SECOND (right after Play/Resume); a circle that never unfurls, it names itself with a caption
+    /// under it while focused (`hero_layout::draw_name`)
     Watchlist,
 }
 
@@ -307,7 +308,8 @@ pub fn watch_names_show(d: &Detail) -> bool {
 }
 
 /// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS
-/// and for the bookmark disc, which has no label.
+/// and for the bookmark disc, which has no verb to unfurl (it is captioned while focused instead,
+/// `hero_layout::draw_name`).
 pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
         (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
@@ -357,11 +359,7 @@ pub fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
 
 /// The Play pill's label — the word the press will actually perform.
 pub fn hero_pill_label(has_restart: bool) -> &'static CStr {
-    if has_restart {
-        plx_platform::i18n::msg::browse_detail_resume_c()
-    } else {
-        plx_platform::i18n::msg::browse_detail_play_c()
-    }
+    plx_appkit::hero_layout::play_label(has_restart)
 }
 
 pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
@@ -389,7 +387,7 @@ pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect 
             HeroCtl::Play => cw.pill,
             HeroCtl::Alt => cw.alt,
             HeroCtl::Restart => cw.disc[0],
-            // never labelled, so never unfurls: a circle at every instant
+            // no verb to unfurl (its focused name is a caption): a circle at every instant
             HeroCtl::Watchlist => CD,
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
