@@ -2526,8 +2526,7 @@ mod arg_tests {
     /// grades the other half, on a real tree.
     ///
     /// It is asked of `ScreenArg::chrome` DIRECTLY, here, rather than of its one-line consumer
-    /// (`app::bridge::wears_tab_bar`, which is `chrome() == Chrome::TabBar` and nothing else, and
-    /// is what `app::input::chip_clicked` asks):
+    /// (`app::bridge::wears_tab_bar`, which is `chrome() == Chrome::TabBar` and nothing else):
     /// this file is where a page argument joins the alphabet, so the bar-wearing set and the
     /// screen that joins it land in the same commit. A `screens/` module may not name
     /// `crate::app::` at all (`ci/check-deps.sh`'s `layer` gate), which is the same boundary

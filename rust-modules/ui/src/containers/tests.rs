@@ -1884,6 +1884,40 @@ fn a_fully_tucked_chrome_band_is_not_drawn_at_all() {
     assert_eq!(frame(&mut d, &mut rig, 1.0), (0, vec![]), "a fully tucked bar is not drawn: no glass, no entry");
 }
 
+/// **A chrome frame the dispatcher skips leaves the bar's material Flat.** The material (flat capsule or
+/// the glass track's solved face) is what the bar's draw publishes into the `GlassPlan` for the chip and
+/// for the account menu's chip lift (`scrim_lift_read`); a skipped frame publishes nothing, so without a
+/// reset they read the LAST DRAWN frame's face, for a bar that is not on screen.
+///
+/// The fixture's `draw_chrome` never touches the band (a real bar's draw resets it first, then solves),
+/// so a face seeded here survives every drawn frame and only the skip can clear it.
+#[test]
+fn a_skipped_chrome_frame_leaves_the_bar_material_flat() {
+    use crate::frame::backdrop::{self, Z};
+    use crate::frame::glass::GlassPlan;
+    let _guard = plx_base::testlock::serial();
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (mut d, mut rig, _) = booted();
+    let mut glass = GlassPlan::new();
+    glass.set_tab_face_for_test(plx_gfx::gfx::GlassFace::NONE);
+    assert!(glass.tab_face().is_some(), "premise: the seeded face reads back");
+    let frame = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, glass: &mut GlassPlan, tuck: f32| -> (usize, bool) {
+        let entry = d.nav.tabs.stack.top_mut().expect("the booted page");
+        let page = entry.inst.as_mut().expect("mounted").screen.as_any_mut().expect("fixture page");
+        page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = tuck;
+        let before = rig.chrome_draws;
+        glass.sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = backdrop::discover(glass.sources.clone());
+            d.draw_with_glass_below(rig, glass, true, Z::ALL);
+        }
+        glass.sources.borrow_mut().resolve();
+        (rig.chrome_draws - before, glass.tab_face().is_some())
+    };
+    assert_eq!(frame(&mut d, &mut rig, &mut glass, 0.5), (1, true), "a drawn frame leaves what the bar's own draw published");
+    assert_eq!(frame(&mut d, &mut rig, &mut glass, 1.0), (0, false), "a skipped frame resets the material: the bar is not drawn, so it is Flat");
+}
+
 #[test]
 fn frozen_dispatch_in_reuses_the_floor_capture() {
     let _guard = plx_base::testlock::serial();

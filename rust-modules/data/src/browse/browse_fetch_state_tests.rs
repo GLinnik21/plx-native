@@ -35,6 +35,32 @@ fn a_served_page_leaves_the_section_ready() {
     assert!(!browse.loading_initial());
     assert_eq!(browse.state.cur_state().unwrap().total, 3);
 }
+/// A listing seeded by hand stands for the server's answer to the query, so the request still out
+/// for that query is SUPERSEDED, exactly as a query edit drops it. The store retries a failed first
+/// page on a frame-counted cooldown, so a rig that seeds the filtered answer a frame after the retry
+/// was released has a worker out whose failure lands on the next pump, at the current generation:
+/// it flipped the seeded listing to `Failed` (no "37 of 120" read-out) whenever the worker thread
+/// was scheduled after the main thread's next frame, and only then.
+#[test]
+fn a_seeded_listing_is_not_overwritten_by_the_request_that_was_out_when_it_was_seeded() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, _, client) = registered_page_source();
+    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+        client,
+        token_gen: client.token_gen(),
+        gen: browse.state.query_gen(),
+        sec: 0,
+        start: 0,
+        items: Vec::new(),
+        total: -1,
+        sorts: None, restored: None, genres: None, genre: None,
+        resolved: Default::default(),
+    });
+    seed_items_for_owner_test(&mut browse.state, 37);
+    let _outcome = browse.pump();
+    assert_eq!(browse.fetch_state(), SecFetch::Ready, "the late failure is for a query that has been answered");
+    assert_eq!(browse.state.cur_state().unwrap().total, 37);
+}
 /// An EMPTY answer is an answer — `Ready`, never `Failed`. The library really does hold
 /// nothing (an unwatched filter that matches none, a section still being scanned), and the
 /// grid's own "Nothing here matches" line is the right read-out. This is `StatusKind::Empty`'s

@@ -420,6 +420,35 @@ fn the_strip_is_published_exactly_when_the_route_wears_the_tab_bar() {
     }
 }
 
+/// **Every page that wears the bar owns the pointer once it is up** (`owns_input`). The run loop's
+/// MOUSEBUTTONDOWN used to try a second path for the profile chip, `chip_clicked`, for the window
+/// in which `owns_input` was false while a bar was drawn; there is no such window — the bar is
+/// drawn only for a mounted page, and every page that wears it answers `FocusSource::Engine` — so
+/// the second path was dead and is gone, and the chip and the pills are hit-map stops registered
+/// where the bar is drawn (`Dispatcher::bar_stops`). This is what keeps that true: a page added
+/// with `Chrome::TabBar` that answered `FocusSource::Legacy` would hand its pointer to a loop that
+/// has no chip path any more, and fails here.
+#[test]
+fn every_route_that_wears_the_tab_bar_owns_the_pointer() {
+    use plx_ui::screen::ScreenArg;
+    let _guard = plx_base::testlock::serial();
+    let mut wearers = 0;
+    for route in super::super::words::every_route() {
+        if route.chrome() != plx_machine::machine::Chrome::TabBar { continue; }
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        super::test_support::frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
+        for t in 1..4 {
+            super::frame(&mut d, &mut rig, tick(t), vec![]);
+        }
+        wearers += 1;
+        assert!(owns_input(&d),
+            "{} ({}): a page that wears the tab bar owns the pointer (no legacy path for the chip)",
+            super::super::words::route_word(&route), named(Some(&route)));
+    }
+    assert!(wearers >= 4, "the loop saw the Library family and the Watchlist, not {wearers} routes");
+}
+
 /// **Home follows the same landing rule** (the strip seat is shared by every page that wears the
 /// bar): Up from a card at the far right of the grid lands on the HOME pill — the page's own — and
 /// not on whichever pill sits above that card (it used to be the nearest by x, which from there is

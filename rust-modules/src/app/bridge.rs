@@ -1350,12 +1350,14 @@ impl Bridge {
         self.stores.owe_page_read(keys);
     }
 
-    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
-    /// current section, Search's results, and the Person / Filmography / Collection store when it
-    /// is showing that very page. Nothing for any other page.
+    /// The items the page for `arg` holds cards for, from the store that feeds it: the current
+    /// section of the Library family (the grid, its Collections page, which borrows the section's
+    /// listing, and its Recommended page, which shows the section's shelves), Search's results, and
+    /// the Person / Filmography / Collection store when it is showing that very page. Nothing for
+    /// any other page.
     pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
         match arg {
-            AppArg::Library => self.stores.library_held_keys(),
+            arg if arg.is_library_family() => self.stores.library_held_keys(),
             AppArg::Search => self.stores.search.held_keys(),
             AppArg::Watchlist => self.stores.watchlist.held_keys(),
             AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
@@ -2462,7 +2464,9 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         }
         return out;
     }
-    if matches!(page.arg, AppArg::Library) {
+    if page.arg.is_library_family() {
+        // The Recommended page is a `RecommendedScreen`, not a `LibraryScreen`: it has no
+        // fingerprint of its own and answers the empty line, as it always has.
         let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
@@ -3169,11 +3173,11 @@ pub(crate) fn nav_push_with_return(
 /// **Does this route wear the shared tab bar?** The ONE answer: `ScreenArg::chrome()`, which the
 /// registry writes exhaustively, so a new page cannot be added without deciding it. Everything that
 /// depends on the bar asks this and nothing else — drawing it (`draws_chrome_for`), publishing the
-/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), stepping the
-/// strip's springs (`run::update`), and recognising a click on the profile chip
-/// (`input::chip_clicked`) — because four hand-written lists of route names once drifted
+/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), and stepping the
+/// strip's springs (`run::update`) — because hand-written lists of route names once drifted
 /// from it: the Collections and Recommended pages drew the bar, but their strip was never published
-/// or stepped, so Up from the page found no pills to land on.
+/// or stepped, so Up from the page found no pills to land on. (A click on the bar is not asked of the
+/// route at all: the chip and pills are stops of the hit map, registered where the bar is drawn.)
 pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
     use plx_ui::screen::ScreenArg;
     arg.chrome() == plx_machine::machine::Chrome::TabBar
@@ -4005,6 +4009,9 @@ mod library_scroll_route_tests;
 #[cfg(test)]
 #[path = "header_cache_route_tests.rs"]
 mod header_cache_route_tests;
+#[cfg(test)]
+#[path = "library_reread_route_tests.rs"]
+mod library_reread_route_tests;
 #[cfg(test)]
 #[path = "library_memory_route_tests.rs"]
 mod library_memory_route_tests;

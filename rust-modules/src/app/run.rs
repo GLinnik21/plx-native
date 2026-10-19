@@ -1386,30 +1386,17 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // which is exactly the shape phase 12 exists to end: a live path and a dead one on one
         // piece of state. Phase 12, PX-PLAYER. This chain's head was that block's
         // `matches!(app.route, Route::Player)`, so what follows is now the head itself.)
-        if chip_clicked(&app.route(), &app.ev) {
-            // The shared bar's profile chip, on whichever bar-wearing page is up. `key_ok`
-            // carries no matching `TopFocus::Chip` arm any more — every bar-wearing page is an
-            // owned screen now, so the chip's focus/OK path is the shared engine's, not this
-            // ladder's — and this arm itself is close to unreachable in practice: the
-            // `owns_input()` early return above already claims every click for a mounted owned
-            // page, and the bar-wearing pages (the only ones `chip_clicked` recognises) are
-            // always mounted once their frame runs. What is left for this to catch is the
-            // one-frame window before a page's body mounts.
-            chip_activate(&mut app.pages);
-        // `Route::Search` is deliberately absent here (phase 7 Search cutover, mirroring
-        // `Route::Profiles`'s own removal): Search is unconditionally an owned screen, so
-        // its clicks — including the shared strip's pills — were already taken by
-        // `owns_input()`'s click arm above and never reach this chain.
+        // **A click that gets past `owns_input()` lands on nothing.** The shared bar's profile chip and
+        // pills are stops in the hit map like any other control (`Dispatcher::draw` registers them at the
+        // place the bar is DRAWN, tucked or not), so the arm above claims their clicks for every mounted
+        // page; the old `chip_clicked` ladder here tested the chip's RESTING rect against the route
+        // alone, so it opened the account menu over a bar that was lifted away or not drawn. A page
+        // whose body has not mounted yet draws no bar, so there is nothing here for a click to press.
         //
-        // (`Route::ItemMenu`'s arm stood here, ABOVE the Home arm below, which is what kept a
-        // click off the panel from falling through onto the shelf and launching whatever card it
-        // hit — the failure `modal_of` was written for. Phase 10 made the menu a surface, so the
-        // container answers that by construction: `owns_input()` consults it first, and the
-        // panel's rows are stops in the shared hit map.)
-        }
-        // `Route::Profiles` and `Route::Login` are deliberately absent here (phase 6):
-        // both are owned screens now, so a click on either was already taken by
-        // `owns_input()`'s click arm above and never reaches this chain.
+        // (`Route::Profiles`, `Route::Login`, `Route::Search` and `Route::ItemMenu` once had arms in
+        // this chain; each is an owned screen or a surface now, so `owns_input()`'s arm above takes
+        // its clicks. The menu's panel in particular is why the container answers a click off a
+        // surface by construction: a click cannot fall through onto the shelf under it.)
     } else if et == SDL_MOUSEBUTTONUP {
         if std::mem::take(&mut app.ptr.ok_from_click) {
             super::events::remote_synth_key_edge(SDLK_RETURN, 0, false);
@@ -2281,7 +2268,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     crate::dev::scenarios::home_fold_osc_tick(app, fr.now);
                     crate::dev::scenarios::home_osc_tick(app, fr.now);
                 }
-                AppArg::Library => {
+                // (Each tick gates itself on the pages it drives: the sweep on the library family,
+                // the switch cycle on the full grid.)
+                arg if arg.is_library_family() => {
                     crate::dev::scenarios::lib_osc_tick(app, fr.now);
                     crate::dev::scenarios::lib_switch_tick(app, fr.now);
                 }
@@ -2466,7 +2455,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             plx_data::stores::notify_map::Shown::default(), |mut shown, e| {
                 match e.arg {
                     AppArg::Home => shown.home = true,
-                    AppArg::Library => shown.library = true,
+                    ref arg if arg.is_library_family() => shown.library = true,
                     AppArg::Search => shown.search = true,
                     AppArg::Watchlist => shown.watchlist = true,
                     _ => {}
@@ -6395,6 +6384,59 @@ mod lifecycle_regression_tests {
             assert_eq!(super::super::words::route_word(&rig.app.route()), word, "BACK returns to the {word} page");
             assert_eq!(matches!(rig.app.route(), AppArg::LibraryCollections { .. }), listing);
         }
+    }
+
+    /// **`/tmp/plxnative-libosc` on the Collections page** (`fps:library-collections`): the sweep is
+    /// the library family's, so it moves the Collections page's scroll, and the focus fingerprint
+    /// (`--arm focus`) reports that scroll as `viewport_y`. Both were gated on `AppArg::Library`
+    /// alone: the TV run saw 3 focus lines in 80 s and a median of 1 fps against a floor of 30.
+    #[test]
+    fn the_library_sweep_moves_the_collections_page_and_the_fingerprint_reports_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| {
+            if request.contains("type=18") && request.contains("/library/sections/") {
+                let tiles: Vec<String> = (0..60).map(|i| format!(
+                    r#"{{"ratingKey":"{}","key":"/library/collections/{}/children","type":"collection","subtype":"movie","title":"Set {i}","titleSort":"Set {i}","childCount":"3","smart":"0","librarySectionID":1,"librarySectionTitle":"Movies"}}"#,
+                    50000 + i, 50000 + i)).collect();
+                return format!(r#"{{"MediaContainer":{{"size":60,"totalSize":60,"Metadata":[{}]}}}}"#, tiles.join(","));
+            }
+            r#"{"MediaContainer":{"size":0}}"#.into()
+        }) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.release.send(()).unwrap();
+        rig.app.bridge.seed_registered_browse_for_test([rig.sid, rig.sid]);
+        super::super::bridge::nav_select_tab(&mut rig.app.pages, AppArg::Library);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::LibraryCollections { section: 0 });
+        for _ in 0..120 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        assert!(matches!(rig.app.route(), AppArg::LibraryCollections { .. }), "premise: the Collections page is on top");
+        let page = rig.app.pages.nav.top_page().unwrap();
+        let instance = rig.app.pages.nav.instance_of(page.id).unwrap();
+        rig.app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Library(plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 })))));
+        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(rig.app.bridge.grid_tile_for_test(0).is_some(), "premise: the page lists the server's collections");
+        let scroll = |app: &App| app.pages.nav.top_page().and_then(|page| page.inst.as_ref())
+            .and_then(|inst| inst.screen.as_any()).and_then(|any| any.downcast_ref::<plx_screens::library::LibraryScreen>())
+            .expect("the Collections page is a LibraryScreen").probe_scroll_target();
+        let viewport_y = |app: &App| {
+            let line = super::super::bridge::content_probe(&app.pages, &app.bridge);
+            line.split("viewport_y=").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|v| v.parse::<f32>().ok())
+        };
+        assert_eq!(scroll(&rig.app), 0.0, "premise: the page rests at its top");
+        assert!(viewport_y(&rig.app).is_some(), "the fingerprint reports the Collections page's viewport");
+        rig.app.scenarios.dev.lib_osc = true;
+        for _ in 0..900 {
+            step(&mut rig.app, &mut t, vec![]);
+            if scroll(&rig.app) > 0.5 { break; }
+        }
+        assert!(scroll(&rig.app) > 0.5, "the sweep moved the Collections page's scroll, now {}", scroll(&rig.app));
+        for _ in 0..30 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(viewport_y(&rig.app).is_some_and(|y| y > 0.0),
+            "the fingerprint reports the scroll the sweep made: {:?}", viewport_y(&rig.app));
     }
 
     /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
