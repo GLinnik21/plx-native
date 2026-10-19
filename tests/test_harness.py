@@ -7505,6 +7505,30 @@ class FpsMock(unittest.TestCase):
             self.assertFalse(ok, f"{frozen}: {detail}")
             self.assertIn("fps_floor", detail)
 
+    def test_library_switch_fails_an_animator_that_freezes_partway(self):
+        # the keepalive tail of a SPENT cycle reads 0 1 0 1; a frozen animator reads it from the freeze
+        # on, so the graded windows (the first six are warmup) end in the same tail either way. A mean
+        # over them cannot tell the two apart (H3 4.07, H7 4.43, H9 4.21 after two live graded seconds,
+        # against 10.4-10.6 healthy); the number of windows that were LIVE can.
+        warmup = 6
+        for build in ("H3", "H5", "H7", "H9"):
+            healthy = self.SWITCH_SERIES[build]
+            for live in (0, 1, 2, 3, 4, 5):
+                froze = healthy[:warmup + live] + [0, 1] * ((len(healthy) - warmup - live + 1) // 2)
+                froze = froze[:len(healthy)]
+                ok, detail = self._run_switch(froze)
+                self.assertFalse(ok, f"{build} frozen after {live} graded seconds {froze}: {detail}")
+                self.assertIn("fps_floor", detail)
+
+    def test_library_switch_fails_a_frozen_animator_with_one_burst(self):
+        # a frozen run plus one 50-60 fps window (a teardown flush, a stray repaint) is not an animation
+        for burst in (50, 60):
+            for at in (7, 12, 19):
+                series = [0, 1] * 10
+                series[at] = burst
+                ok, detail = self._run_switch(series)
+                self.assertFalse(ok, f"{series}: {detail}")
+
     def test_library_switch_still_fails_an_animator_at_a_quarter_of_the_rate(self):
         slow = [round(n / 4) for n in self.SWITCH_SERIES["H3"]]
         ok, detail = self._run_switch(slow)
@@ -7517,16 +7541,27 @@ class FpsMock(unittest.TestCase):
             if stat is not None:
                 self.assertIn(stat, run.FPS_FLOOR_STATS, name)
                 self.assertIsNotNone(scene.get("fps_floor"), f"{name}: a statistic without a floor")
+            self.assertEqual("fps_floor_windows" in scene, stat == "live",
+                             f"{name}: fps_floor_windows belongs to the live statistic and only to it")
+            if stat == "live":
+                self.assertIsInstance(scene["fps_floor_windows"], int, name)
+                self.assertGreaterEqual(scene["fps_floor_windows"], 1, name)
         # the opt-in is the library-switch scene and nothing else: every other scene keeps the median
         self.assertEqual({n for n, sc in self.scenes.items() if sc.get("fps_floor_stat")}, {"library-switch"})
         ok, detail = run.fps_floor_verdict([5, 5, 5, 5, 5, 40, 40], 10)
         self.assertFalse(ok)
         self.assertIn("median=5 fps (min=5, max=40, n=7) vs fps_floor 10", detail)
-        ok, detail = run.fps_floor_verdict([5, 5, 5, 5, 5, 40, 40], 10, "mean")
+        # live: a window is live at >= the floor, and the count must reach `windows`
+        ok, detail = run.fps_floor_verdict([5, 5, 5, 3, 0, 1, 40], 4, "live", 4)
         self.assertTrue(ok)
-        self.assertIn("mean=15.0 fps (total=105, median=5", detail)
+        self.assertIn("live=4 of n=7 windows at >= 4 fps (need 4;", detail)
+        self.assertFalse(run.fps_floor_verdict([5, 5, 5, 3, 0, 1, 40], 4, "live", 5)[0])
         with self.assertRaises(ValueError):
             run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "p95")
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "live")
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "mean")
 
     def _walk_log(self, server=None, fps=40, keys=6):
         out = [server or self.SYN, "hubs: landed — 90 items, 3 shelves"] + [self._beat(fps=1)] * 3
