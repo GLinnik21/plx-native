@@ -71,7 +71,7 @@ pub(crate) struct Feed {
 
 /// The membership of `hex` in `view`: member (intents in flight counted), absent from a read list,
 /// or not known yet.
-fn membership_in(view: &plx_data::stores::watchlist::WatchlistView<'_>, hex: &[u8; 12]) -> plx_data::catalog::Membership {
+pub(super) fn membership_in(view: &plx_data::stores::watchlist::WatchlistView<'_>, hex: &[u8; 12]) -> plx_data::catalog::Membership {
     use plx_data::catalog::Membership;
     if view.is_member(hex) {
         Membership::On

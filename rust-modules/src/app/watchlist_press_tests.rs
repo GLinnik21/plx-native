@@ -319,11 +319,11 @@ fn an_add_on_an_unread_list_feeds_unknown_then_on() {
     script.fail_reads.store(true, Ordering::SeqCst);
     let (mut d, mut rig) = rig_over(&script);
     read_list(&mut d, &mut rig);
-    assert_eq!(membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::Unknown);
+    assert_eq!(super::watchlist::membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::Unknown);
     rig.watchlist_add([5; 12]);
-    assert_eq!(membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::On);
+    assert_eq!(super::watchlist::membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::On);
     assert!(rig.watchlist_remove(&guid(5), false));
-    assert_eq!(membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::Unknown);
+    assert_eq!(super::watchlist::membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::Unknown);
 }
 
 /// plex.tv cannot be read at all: the membership is unknown, so the disc and the pill wear the Add
