@@ -1135,6 +1135,35 @@ pub const CARD_FOCUS_SCALE: f32 = 1.07;
 /// separate design decisions that happen to have landed on one number; either may move alone.
 pub const CTRL_FOCUS_SCALE: f32 = 1.07;
 
+/// How far a [`TabGround::Bare`] pill's focus capsule stands out past its plate on EVERY side, in px
+/// — the header row's pop. **A constant, not a scale:** [`CTRL_FOCUS_SCALE`] grows a pill by a
+/// fraction of its own width, so a long library name's pill reached 45 px past its text where
+/// "Movies" reached 22 and poked well past the shared x 96 margin (design review S4). Two px is the
+/// vertical pop the 1.07 gave the 56 px row (1.96), now paid equally on the horizontal axis. The
+/// plate is the pill's resting extent and the outset is all the pill adds to it, so every
+/// separator and neighbour can be measured from [`focus_pill`] (design review S9,
+/// `page_header::GAP`).
+///
+/// **The scale stays for every other control face** ([`Button`], [`CircleButton`],
+/// [`TransportButton`], the season strip's [`TabGround::Plated`] pills, `linked_heading`): they are
+/// laid out with room for a fraction of their own size, and the header row is the one place whose
+/// pills sit shoulder to shoulder on a shared margin.
+pub const PILL_FOCUS_OUTSET: f32 = 2.0;
+
+/// The focused pill of a header control whose plate is `plate`: the plate grown by
+/// [`PILL_FOCUS_OUTSET`] on every side. The one extent the row's gaps, the menus' morphs and the
+/// tests measure from.
+pub fn focus_pill(plate: Rect) -> Rect {
+    plate.inset(-PILL_FOCUS_OUTSET)
+}
+
+/// How far a [`TabGround::Bare`] pill with focus-pop factor `pop` (a [`CtlPop`]'s scale: 1 at rest,
+/// [`CTRL_FOCUS_SCALE`] focused, the press dip folded in) stands out past its plate: the factor
+/// read as a progress along the focus spring, mapped onto [`PILL_FOCUS_OUTSET`] px.
+fn pop_outset(pop: f32) -> f32 {
+    (pop - 1.0) / (CTRL_FOCUS_SCALE - 1.0) * PILL_FOCUS_OUTSET
+}
+
 /// The gap between two controls that form ONE GROUP — the design system's `--control-gap`, which
 /// sits in `tokens/layout.css` under *Controls* rather than on the `theme::space` ladder, because
 /// it is a property of the control family and not a rung of the vertical rhythm (20 is not on that
@@ -5309,6 +5338,33 @@ fn cap_cover(pill: (f32, f32), cap: (f32, f32)) -> f32 {
     ((hi - lo) / pill.1).clamp(0.0, 1.0)
 }
 
+/// How a capsule grows past its pill's plate when it is drawn: by a factor of its own size (a
+/// control face's [`CTRL_FOCUS_SCALE`] pop, `1.0` for a capsule that never grows) or by a constant
+/// px on every side (the header row's [`PILL_FOCUS_OUTSET`]).
+#[derive(Clone, Copy)]
+enum Grow {
+    Scale(f32),
+    Outset(f32),
+}
+
+impl Grow {
+    /// What a [`TabGround`]'s focus pop `pop` (a [`CtlPop`] factor) grows its focus capsule by.
+    fn focus(ground: TabGround) -> Self {
+        match ground {
+            TabGround::Bare { pop, .. } => Self::Outset(pop_outset(pop)),
+            TabGround::Plated { pop } => Self::Scale(pop),
+            TabGround::Tracked { .. } => Self::Scale(1.0),
+        }
+    }
+    /// `plate` grown about its centre.
+    fn of(self, plate: Rect) -> Rect {
+        match self {
+            Self::Scale(s) => plate.scaled(s),
+            Self::Outset(d) => plate.inset(-d),
+        }
+    }
+}
+
 /// A tab highlight that TRAVELS between pills instead of being repainted onto a new one. Two springs
 /// for its content-space geometry — left edge AND width, so a wide pill *morphs* into a narrow one
 /// rather than teleporting — plus one for alpha, which is how it enters and leaves a row without
@@ -5361,15 +5417,15 @@ impl Capsule {
             }
         }
     }
-    /// This capsule as DRAWN: its rect for a strip whose pills stand `h` tall at `top`, popped about
-    /// its own centre by `scale`, with its alpha — or `None` while it is not worth a pass (sub-code
+    /// This capsule as DRAWN: its rect for a strip whose pills stand `h` tall at `top`, grown about
+    /// its own centre by `grow`, with its alpha — or `None` while it is not worth a pass (sub-code
     /// alpha, or a sub-pixel width). [`TabStrip::draw`] paints exactly this and
     /// [`TabStrip::ink_spans`] cuts a label at exactly its x-extent, so the fill and the ink read ONE
     /// answer to "where is the capsule" and cannot drift apart.
-    fn drawn(&self, top: f32, h: f32, scale: f32) -> Option<(Rect, f32)> {
+    fn drawn(&self, top: f32, h: f32, grow: Grow) -> Option<(Rect, f32)> {
         let (x, w) = self.span();
         let a = self.alpha();
-        (a > 0.004 && w > 0.5).then(|| (Rect::new(x, top, w, h).scaled(scale), a))
+        (a > 0.004 && w > 0.5).then(|| (grow.of(Rect::new(x, top, w, h)), a))
     }
     /// Content-space `(x, w)` as drawn this frame.
     #[inline]
@@ -5586,7 +5642,8 @@ pub enum TabGround {
     /// perimeter or is a plain wash.
     Tracked { glass: bool },
     /// **The detail page's season strip**, bare on artwork with each pill laying its own ground. Its
-    /// focused pill is a CONTROL FACE and wears the whole of one: the `CTRL_FOCUS_SCALE` pop and the
+    /// focused pill is a CONTROL FACE and wears the whole of one: the `CTRL_FOCUS_SCALE` pop (the one
+    /// strip that still scales: its pills are laid out with room to) and the
     /// press dip, both folded into `pop` (normally a `CtlPop<1>`'s [`scale`](CtlPop::scale), which is
     /// what puts `press::scale()` in it), plus the control rim. The selection capsule still does not
     /// scale — see [`TabStrip::draw`].
@@ -5595,8 +5652,10 @@ pub enum TabGround {
     /// page with no ground of its own and no track round it. The selection capsule is the
     /// header's plate ([`theme::TAB_PLATE_SELECTED`], a plate that stands where there is no idle
     /// plate under it; `Plated`'s lighter wash is meant OVER one), with no rim, no scale and no
-    /// cast. The focus capsule is the accent at `pop` (a [`CtlPop`]'s factor, the press dip in it),
-    /// with no rim and no cast: the header's focused control is a flat pill, not the season strip's
+    /// cast. The focus capsule is the accent standing out [`PILL_FOCUS_OUTSET`] px past the plate when
+    /// settled: `pop` (a [`CtlPop`]'s factor, the press dip in it) is read as the progress of the focus
+    /// spring and mapped onto that outset (`pop_outset`), so the pill grows on the same spring a scale
+    /// would, but by a constant px, never a fraction of its label's width. It has no rim and no cast: the header's focused control is a flat pill, not the season strip's
     /// lifted control face. `focus: false` leaves it out, for a control a menu has lifted off the
     /// page: the focus capsule goes either way; whether the label stays is the caller's choice
     /// ([`crate::page_header::Lift`]): the Watchlist's morph draws the control's only copy, the
@@ -5657,14 +5716,14 @@ impl TabStrip {
     /// Call this BEFORE the pill loop: the capsules are the pills' ground, and a label drawn under an
     /// opaque focus capsule is a label nobody can read.
     pub fn draw(&self, p: Painter, top: f32, h: f32, ground: TabGround) {
-        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, scale: f32, cast: bool| {
+        let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, grow: Grow, cast: bool| {
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
             // (`Capsule::drawn` is `None` for it).
             //
-            // The pop + press dip, about the capsule's own centre — 1.0 for a tracked strip, which
-            // never scales. The RADIUS stays keyed to the drawn height so a scaled capsule is still
+            // The pop + press dip, about the capsule's own centre — none for a tracked strip, which
+            // never grows. The RADIUS stays keyed to the drawn height so a grown capsule is still
             // a capsule rather than a rounded rectangle.
-            if let Some((r, a)) = c.drawn(top, h, scale) {
+            if let Some((r, a)) = c.drawn(top, h, grow) {
                 let h = r.h;
                 // The lift every other focused control face wears (`control_cast`, via
                 // `Button::plate`) — owner correction, 2026-09-06: a plated strip's focused pill IS
@@ -5712,7 +5771,7 @@ impl TabStrip {
             &self.sel,
             sel_col,
             matches!(ground, TabGround::Tracked { glass: true }).then_some(theme::GLASS_RIM),
-            1.0,
+            Grow::Scale(1.0),
             // No cast: it marks a PAGE fact (which department you are browsing), not the control
             // under your thumb, and only the thing focus is actually on lifts off the page.
             false,
@@ -5735,13 +5794,13 @@ impl TabStrip {
         // pill sits bare on artwork exactly the way `linked_heading::Entry` sits bare on the page,
         // and it had the identical defect for the identical reason, so `cast: true` below.
         match ground {
-            TabGround::Plated { pop } => {
-                cap(&self.foc, crate::ACCENT, Some(theme::CARD_SHEEN), pop, true)
+            TabGround::Plated { .. } => {
+                cap(&self.foc, crate::ACCENT, Some(theme::CARD_SHEEN), Grow::focus(ground), true)
             }
-            // The header's flat accent pill: scaled by the pop, nothing else (see [`TabGround::Bare`]).
-            TabGround::Bare { pop, focus: true } => cap(&self.foc, crate::ACCENT, None, pop, false),
+            // The header's flat accent pill: stood out by the pop's outset, nothing else (see [`TabGround::Bare`]).
+            TabGround::Bare { focus: true, .. } => cap(&self.foc, crate::ACCENT, None, Grow::focus(ground), false),
             TabGround::Bare { focus: false, .. } => {}
-            TabGround::Tracked { .. } => cap(&self.foc, crate::ACCENT, None, 1.0, false),
+            TabGround::Tracked { .. } => cap(&self.foc, crate::ACCENT, None, Grow::focus(ground), false),
         }
     }
     /// The `(focus, selected)` WHOLE-LABEL coverage of pill `pill` (content-space `(x, w)`) by each
@@ -5766,15 +5825,15 @@ impl TabStrip {
     /// on every frame: it is painted once, plain, as before. Otherwise one region per ink, each painted
     /// once with its fragments cut by [`paint_inked`].
     pub fn pill_ink(&self, pill: Rect, ground: TabGround) -> PillInk {
-        let (focus_pop, draws_focus, sel_plate) = match ground {
-            TabGround::Bare { pop, focus } => (pop, focus, theme::TAB_PLATE_SELECTED),
-            TabGround::Plated { pop } => (pop, true, theme::TAB_PLATE_SELECTED_OVER),
-            TabGround::Tracked { .. } => (1.0, true, theme::OVERLAY_FOCUS_PILL),
+        let (draws_focus, sel_plate) = match ground {
+            TabGround::Bare { focus, .. } => (focus, theme::TAB_PLATE_SELECTED),
+            TabGround::Plated { .. } => (true, theme::TAB_PLATE_SELECTED_OVER),
+            TabGround::Tracked { .. } => (true, theme::OVERLAY_FOCUS_PILL),
         };
         // A capsule as DRAWN (`Capsule::drawn`, the one `draw` paints), or `None` while it is not on
         // screen. Its shape is that rect with corner radius half its height.
-        let sel = self.sel.drawn(pill.y, pill.h, 1.0).map(|(r, _)| r);
-        let foc = if draws_focus { self.foc.drawn(pill.y, pill.h, focus_pop).map(|(r, _)| r) } else { None };
+        let sel = self.sel.drawn(pill.y, pill.h, Grow::Scale(1.0)).map(|(r, _)| r);
+        let foc = if draws_focus { self.foc.drawn(pill.y, pill.h, Grow::focus(ground)).map(|(r, _)| r) } else { None };
         let glyphs = Rect::new(
             pill.x + INK_GLYPH_INSET,
             pill.y + (pill.h - 2.0 * INK_GLYPH_HALF) * 0.5,

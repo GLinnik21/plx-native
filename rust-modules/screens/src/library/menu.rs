@@ -449,7 +449,7 @@ impl LibraryMenu {
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
-        let pill = Rect::new(x, y, w, h).scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+        let pill = plx_ui::widgets::focus_pill(Rect::new(x, y, w, h));
         let mut width = self.form.table.menu_panel_width_from(measure, pill);
         if self.kind == LibraryMenuKind::Sources {
             width = width.max(SOURCES_W);
@@ -1347,7 +1347,7 @@ mod tests {
         let mut menu = LibraryMenu::new(EntryId(7), arg);
         menu.apply_draft(filter_draft(false, None, true));
         let frame = menu.frame(&FixtureMeasure);
-        let pill = 400.0 * plx_ui::widgets::CTRL_FOCUS_SCALE;
+        let pill = 400.0 + 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET;
         assert!(frame.w >= pill, "the panel {} is narrower than its control's pill {pill}", frame.w);
         assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
     }

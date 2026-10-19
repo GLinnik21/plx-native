@@ -1,5 +1,6 @@
 use super::*;
 use std::ffi::CStr;
+use crate::widgets::focus_pill;
 
 struct Fixed;
 impl Measure for Fixed {
@@ -66,21 +67,76 @@ fn names_that_do_not_fit_fold_into_plus_n_and_all_fit_when_there_is_room() {
     assert!(used + 40.0 <= 300.0);
 }
 
+/// **S4.** A header pill grows by a CONSTANT outset past its plate, whatever its label: the pill
+/// of "Movies" and of a long library name stand out by the same px (a scale made it 22 px a side
+/// for one and 45 for the other), and the first pill never reaches further left than the
+/// outset past the first plate.
 #[test]
-fn focus_pill_grows_by_the_control_scale() {
-    let l = header("Title").layout(1920.0, &Fixed);
-    let plate = l.items[0].plate;
-    let pill = plate.scaled(crate::widgets::CTRL_FOCUS_SCALE);
-    assert!((pill.w / plate.w - 1.07).abs() < 0.001);
+fn the_focus_pill_stands_a_constant_outset_past_its_plate_whatever_the_label_is() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("A Very Long Library Name Indeed Of Many Words", false)],
+        ..Default::default()
+    };
+    let page = PageHeader::new(spec, &[], &m);
+    let layout = page.layout(1920.0, &m);
+    assert!(layout.items[1].plate.w > 3.0 * layout.items[0].plate.w, "the two plates are very different widths");
+    for focused in 0..2 {
+        let (capsules, pop) = settled(&layout, -1, focused);
+        let cap = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("a focused item wears the capsule");
+        let plate = layout.items[focused as usize].plate;
+        assert!((plate.x - cap.x - PILL_FOCUS_OUTSET).abs() < 0.05, "item {focused}: left outset {}", plate.x - cap.x);
+        assert!((cap.x + cap.w - (plate.x + plate.w) - PILL_FOCUS_OUTSET).abs() < 0.05, "item {focused}: right outset");
+        assert!((plate.y - cap.y - PILL_FOCUS_OUTSET).abs() < 0.05 && (cap.h - plate.h - 2.0 * PILL_FOCUS_OUTSET).abs() < 0.05,
+            "item {focused}: the same outset above and below");
+        let pill = focus_pill(plate);
+        assert!((pill.x - cap.x).abs() < 0.05 && (pill.w - cap.w).abs() < 0.05, "item {focused}: focus_pill is the drawn extent");
+    }
+    let (capsules, pop) = settled(&layout, -1, 0);
+    let cap = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).unwrap();
+    assert!(cap.x >= TEXT_X0 - OVERHANG - PILL_FOCUS_OUTSET - 0.05, "no pill reaches past the first plate's outset: {}", cap.x);
 }
 
+/// **S9.** Neighbouring text runs stand `GAP` apart, and `GAP` is the focused pill's extent plus
+/// [`theme::space::SM`] of air before the neighbour's plate, for any widths.
 #[test]
-fn neighbouring_text_runs_stand_a_gap_apart_that_covers_the_pill_growth() {
-    assert_eq!(GAP, 48.0, "the floor: the board's 53px between visible text edges, less glyph side bearings");
+fn neighbouring_text_runs_stand_a_gap_apart_that_leaves_sm_of_air_past_the_focused_pill() {
+    assert_eq!(GAP, 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM, "plate, outset, air, plate");
     let l = header("Title").layout(1920.0, &Fixed);
     let (a, b) = (l.items[0].text, l.items[1].text);
-    assert_eq!(b.x - (a.x + a.w), gap_between(a.w, b.w));
-    assert!(gap_between(a.w, b.w) >= GAP);
+    assert_eq!(b.x - (a.x + a.w), GAP);
+}
+
+fn real(label: &str, selected: bool) -> HeaderItem {
+    HeaderItem { selected_plate: selected, ..item(label, None) }
+}
+
+/// The air between item `a`'s focused pill and the plate of the item `b` after it, in px, and the
+/// reverse (`b`'s pill and `a`'s plate): both are `SM`, whatever the names are.
+#[test]
+fn a_focused_pill_leaves_sm_of_air_before_its_neighbours_plate() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("LDN Films bamx23", false), real("A Very Long Library Name Indeed", false)],
+        overflow: 3,
+        right: vec![item("Collections", Some("12")), item("Recommended", None),
+            HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
+        ..Default::default()
+    };
+    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
+    for pair in l.items.windows(2) {
+        let group = |s: Slot| matches!(s, Slot::Right(_));
+        // The two groups are kept apart by CLUSTER_GAP, checked below; this is each group's own row.
+        if !(pair[0].focusable && pair[1].focusable) || group(pair[0].slot) != group(pair[1].slot) { continue; }
+        let (a, b) = (focus_pill(pair[0].plate), focus_pill(pair[1].plate));
+        let air = |pill: Rect, plate: Rect| (plate.x - (pill.x + pill.w)).max(pill.x - (plate.x + plate.w));
+        for (air, who) in [(air(a, pair[1].plate), "after"), (air(b, pair[0].plate), "before")] {
+            assert!((air - theme::space::SM).abs() < 0.01,
+                "{:?} and {:?}: {air} px of air {who} the focused pill", pair[0].slot, pair[1].slot);
+        }
+    }
 }
 
 #[test]
@@ -116,48 +172,6 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     assert!((last.text.x + last.text.w - 1771.0).abs() < 0.01, "the cluster still ends at the right text edge");
 }
 
-/// Does a focused, scaled pill on item `a` touch the plate of item `b` (or the reverse)? Items are
-/// adjacent on one row, so the x ranges decide.
-fn touches(a: Rect, b: Rect) -> bool {
-    let (sa, sb) = (a.scaled(crate::widgets::CTRL_FOCUS_SCALE), b.scaled(crate::widgets::CTRL_FOCUS_SCALE));
-    let hit = |p: Rect, q: Rect| p.x < q.x + q.w && q.x < p.x + p.w;
-    hit(sa, b) || hit(sb, a)
-}
-
-fn real(label: &str, selected: bool) -> HeaderItem {
-    HeaderItem { selected_plate: selected, ..item(label, None) }
-}
-
-#[test]
-fn a_focused_scaled_pill_never_touches_its_neighbours_plate() {
-    use plx_base::fontcov::advances::ShippedMeasure;
-    let m = ShippedMeasure;
-    let spec = PageHeaderSpec {
-        left: vec![real("Movies", true), real("LDN Films bamx23", false), real("A Very Long Library Name Indeed", false)],
-        overflow: 3,
-        right: vec![item("Collections", Some("12")), item("Recommended", None),
-            HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
-        ..Default::default()
-    };
-    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
-    for pair in l.items.windows(2) {
-        let group = |s: Slot| matches!(s, Slot::Right(_));
-        // The two groups are kept apart by CLUSTER_GAP, checked below; this is each group's own row.
-        if !(pair[0].focusable && pair[1].focusable) || group(pair[0].slot) != group(pair[1].slot) { continue; }
-        assert!(!touches(pair[0].plate, pair[1].plate),
-            "{:?} and {:?}: a focused pill grown 1.07 reaches its neighbour", pair[0].slot, pair[1].slot);
-    }
-}
-
-#[test]
-fn the_gap_between_two_items_grows_with_the_wider_plate() {
-    let narrow = gap_between(60.0, 60.0);
-    let wide = gap_between(60.0, 400.0);
-    assert!(wide > narrow, "{narrow} {wide}");
-    assert_eq!(gap_between(60.0, 400.0), gap_between(400.0, 60.0));
-    assert!(narrow >= GAP);
-}
-
 #[test]
 fn fit_left_and_layout_agree_on_the_gap() {
     use plx_base::fontcov::advances::ShippedMeasure;
@@ -166,10 +180,10 @@ fn fit_left_and_layout_agree_on_the_gap() {
     let spec = PageHeaderSpec { left: names.iter().map(|n| real(n, false)).collect(), ..Default::default() };
     let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
     let widths: Vec<f32> = l.items.iter().map(|i| i.text.w).collect();
-    let used = widths[0] + gap_between(widths[0], widths[1]) + widths[1];
+    let used = widths[0] + GAP + widths[1];
     assert_eq!(fit_left(&widths, used, 0.0), 2, "exactly fits");
     assert_eq!(fit_left(&widths, used - 1.0, 0.0), 1, "one px short");
-    assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + gap_between(widths[0], widths[1]));
+    assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + GAP);
 }
 
 // ── the row's motion, its crumb configuration and its focus group (T3) ──────────────────────────
@@ -204,7 +218,7 @@ fn the_focus_capsule_travels_between_items_and_never_backwards() {
     let (from, to) = (layout.items[0].plate.cx(), layout.items[1].plate.cx());
     let at_rest = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("a focused item wears the capsule");
     assert!((at_rest.cx() - from).abs() < 0.5, "settled on item 0");
-    assert!((at_rest.h / HEIGHT - crate::widgets::CTRL_FOCUS_SCALE).abs() < 0.001, "the capsule wears the control pop");
+    assert!((at_rest.h - HEIGHT - 2.0 * PILL_FOCUS_OUTSET).abs() < 0.01, "the capsule wears the focus outset");
 
     let mut path = Vec::new();
     for _ in 0..90 {
@@ -379,10 +393,10 @@ fn a_surface_above_the_page_holds_the_rows_motion_but_focus_leaving_it_closes_it
     let alpha_after = |current: Option<FocusKey<u32>>| {
         let (mut capsules, mut pop) = settled(&layout, -1, 1);
         for _ in 0..60 { row.step(ENTRY, current, &mut capsules, &mut pop, DT); }
-        focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).map(|r| r.h / HEIGHT)
+        focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).map(|r| r.h)
     };
     let held = alpha_after(Some(FocusKey { entry: EntryId(8), elem: 0 }));
-    assert_eq!(held.map(|h| (h * 1000.0).round()), Some((crate::widgets::CTRL_FOCUS_SCALE * 1000.0).round()),
+    assert_eq!(held.map(|h| (h * 1000.0).round()), Some(((HEIGHT + 2.0 * PILL_FOCUS_OUTSET) * 1000.0).round()),
         "the menu's rows hold focus: the capsule stays up, at its pop");
     assert_eq!(alpha_after(Some(FocusKey { entry: ENTRY, elem: 11 })).map(|h| (h * 1000.0).round()), held.map(|h| (h * 1000.0).round()),
         "focus on the row's own stop is the same picture");

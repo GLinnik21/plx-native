@@ -21,12 +21,12 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     if n == 0 || cap == 0 { return Vec::new(); }
     let selected = selected.min(n - 1);
     let span = |picks: &[usize]| picks.iter().map(|&i| widths[i]).sum::<f32>()
-        + picks.windows(2).map(|w| page_header::gap_between(widths[w[0]], widths[w[1]])).sum::<f32>();
+        + page_header::GAP * picks.len().saturating_sub(1) as f32;
     let all: Vec<usize> = (0..n).collect();
     if n <= cap && span(&all) <= budget { return all; }
     // "+N" takes the end of the row, one gap after the last name.
     let with_more = |picks: &[usize]| span(picks) + picks.last()
-        .map_or(0.0, |&last| page_header::gap_between(widths[last], more_w)) + more_w;
+        .map_or(0.0, |_| page_header::GAP) + more_w;
     for k in (1..n.min(cap)).rev() {
         let mut picks: Vec<usize> = (0..k).collect();
         if selected >= k { picks[k - 1] = selected; }
@@ -309,7 +309,8 @@ impl LibraryScreen {
         let Some(row) = self.header.row() else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let top = layout::HEADER_Y - self.scroll.pos;
-        if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
+        // The pill's outset (2 px) is far inside the cast's padding the band is grown by, so the band needs no pop.
+        if !super::draw::document_band_visible(p, top, page_header::HEIGHT, 1.0) { return; }
         // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
         // menu is its only copy, and the board shows it as plain text while the panel is open.
         // The dispatcher decides when it stands down (`lifted_opener`: a closing menu whose focus

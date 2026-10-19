@@ -16,7 +16,7 @@ use plx_machine::machine::Measure;
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, Lift, PageHeader, PageHeaderSpec, Slot};
 #[cfg(feature = "devtriggers")]
 use plx_ui::theme;
-use plx_ui::widgets::{CtlPop, TabStrip, CTRL_FOCUS_SCALE};
+use plx_ui::widgets::{focus_pill, CtlPop, TabStrip, PILL_FOCUS_OUTSET};
 use plx_ui::{Painter, Rect};
 
 /// The count the page holds: the whole list, or what a Type / Show filter leaves of it. Only the
@@ -108,10 +108,10 @@ impl Row {
         self.control().plate
     }
 
-    /// The control as the focused pill draws it, [`CTRL_FOCUS_SCALE`] over the plate: where the menu's
+    /// The control as the focused pill draws it, [`PILL_FOCUS_OUTSET`] past the plate: where the menu's
     /// morph starts and ends when focus is on the control.
     pub fn pill(&self) -> Rect {
-        self.plate().scaled(CTRL_FOCUS_SCALE)
+        focus_pill(self.plate())
     }
 
     /// The row as one focus group (`id`), for the page's declaration of its header section.
@@ -150,9 +150,9 @@ impl Row {
     }
 
     /// The control as the menu's morph opener face, label only (no plate of its own: the morph
-    /// draws the plate), placed so its plate is `anchor` less the focus scale.
+    /// draws the plate), placed so its plate is `anchor` less the focus outset.
     pub fn draw_face(&self, p: Painter, anchor: Rect, focused: bool) {
-        self.row.draw_face(p, super::page::PILL_ELEM, anchor.scaled(1.0 / CTRL_FOCUS_SCALE), focused);
+        self.row.draw_face(p, super::page::PILL_ELEM, anchor.inset(PILL_FOCUS_OUTSET), focused);
     }
 }
 

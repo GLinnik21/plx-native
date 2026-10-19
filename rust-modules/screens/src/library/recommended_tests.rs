@@ -283,9 +283,8 @@ fn the_first_shelf_heading_starts_clear_of_the_title_row() {
     let title_row_bottom = plx_ui::page_header::TOP + plx_ui::page_header::HEIGHT;
     let heading = paints.iter().filter(|(k, r)| k == "text" && r[1] > title_row_bottom - 20.0)
         .map(|(_, r)| r[1]).fold(f32::INFINITY, f32::min);
-    // Clear of the row (204) AND its focus pill grown by the control scale, with air to spare.
-    let pill_bottom = plx_ui::page_header::TOP + plx_ui::page_header::HEIGHT * (1.0 + plx_ui::widgets::CTRL_FOCUS_SCALE) * 0.5
-        + (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 * plx_ui::page_header::HEIGHT;
+    // Clear of the row (204) AND its focus pill stood out by its outset, with air to spare.
+    let pill_bottom = title_row_bottom + plx_ui::widgets::PILL_FOCUS_OUTSET;
     assert!(heading >= title_row_bottom + 24.0 && heading >= pill_bottom + 24.0, "the first heading's text starts at {heading}");
     assert_eq!(heading, 244.0, "…on the grid's content line");
 }

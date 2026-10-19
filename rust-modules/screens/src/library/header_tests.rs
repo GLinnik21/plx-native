@@ -71,8 +71,8 @@ fn one_library_draws_no_names_and_two_draw_both() {
 fn the_picked_library_takes_the_last_visible_slot() {
     let widths = [200.0, 180.0, 220.0, 160.0, 240.0];
     assert_eq!(pack_names(&widths, 0, 4000.0, 90.0, 8), [0, 1, 2, 3, 4], "everything fits: all names, in order");
-    let gap = plx_ui::page_header::gap_between;
-    let tight = 200.0 + 180.0 + 220.0 + gap(200.0, 180.0) + gap(180.0, 220.0) + 90.0 + gap(220.0, 90.0) + 1.0;
+    let gap = plx_ui::page_header::GAP;
+    let tight = 200.0 + 180.0 + 220.0 + gap + gap + 90.0 + gap + 1.0;
     let cut = pack_names(&widths, 1, tight, 90.0, 8);
     assert_eq!(cut, [0, 1, 2], "a pick inside the cut keeps its place");
     let cut = pack_names(&widths, 4, tight, 90.0, 8);
@@ -233,7 +233,7 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     // The pill is the row's motion: it fades in under the focused control over a few frames.
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill = page.header.row().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    let pill = plx_ui::widgets::focus_pill(page.header.row().unwrap().plate(SORTFILTER).unwrap());
     let drawn = |page: &LibraryScreen, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(&engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
@@ -325,8 +325,8 @@ fn header_rrects_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engi
     plx_ui::draw_census::capture(|| page.draw_header(&frame)).into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
 }
 
-/// The focus pill (the one rounded rect taller than the 56 px plates, since it grows by
-/// `CTRL_FOCUS_SCALE`) after one frame, as its centre x; `None` when no pill is drawn.
+/// The focus pill (the one rounded rect taller than the 56 px plates, since it stands out by
+/// `PILL_FOCUS_OUTSET`) after one frame, as its centre x; `None` when no pill is drawn.
 fn pill_centre_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Option<f32> {
     let pills: Vec<f32> = header_rrects_after_a_frame(fixture, page, engine, ms).iter()
         .filter(|rect| rect.h > plx_ui::page_header::HEIGHT + 1.0 && rect.h < plx_ui::page_header::HEIGHT * 1.2)
@@ -420,7 +420,7 @@ fn the_held_focus_pill_is_not_drawn_under_an_open_menu_and_is_still_up_when_it_c
     let key = page.key(SORTFILTER);
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill_w = page.header.row().unwrap().plate(SORTFILTER).unwrap().w * plx_ui::widgets::CTRL_FOCUS_SCALE;
+    let pill_w = page.header.row().unwrap().plate(SORTFILTER).unwrap().w + 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET;
     let pills = |page: &LibraryScreen, engine: &FocusEngine<u32>, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());

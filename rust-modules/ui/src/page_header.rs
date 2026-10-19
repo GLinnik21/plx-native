@@ -30,7 +30,7 @@ use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 use super::breadcrumb::{self, Crumb};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip};
+use super::widgets::{paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
@@ -50,19 +50,15 @@ pub const BLOCK_H: f32 = 96.0;
 /// of a scrolled grid comes back to (`cards::GridSpec::resting`, the Library's `Layout::row_reveal`),
 /// well clear of the scroll capsule (`scroll_capsule::Y + H`, 118).
 pub const GRID_TOP: f32 = TOP + BLOCK_H;
-/// The least gap between two items' text runs: the plates' overhangs and a little air. See
-/// [`gap_between`] for the real one.
-pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;
-/// The text-edge gap between two adjacent items whose text runs are `a` and `b` wide. [`GAP`] is
-/// its floor: the two plates' overhangs plus [`theme::space::XS`] of air. On top of that comes how
-/// far the focus pill of the WIDER of the two grows past its plate on each side
-/// (`(CTRL_FOCUS_SCALE - 1) / 2` of the plate's width), so a focused, scaled pill never reaches its
-/// neighbour's plate whatever the names are. Symmetric, and the one gap every placement and every
-/// packing uses.
-pub fn gap_between(a: f32, b: f32) -> f32 {
-    let widest_plate = a.max(b) + 2.0 * OVERHANG;
-    GAP + (super::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 * widest_plate
-}
+/// **The text-edge gap between two adjacent items**, whatever their names: the first one's plate
+/// overhang, the focused pill's [`PILL_FOCUS_OUTSET`] past that plate, [`theme::space::SM`] of air,
+/// then the next item's plate and its overhang. The air is measured from the FOCUSED pill's extent
+/// ([`focus_pill`](super::widgets::focus_pill)) because that is the edge the eye reads against the neighbour (design review S9: the
+/// old `XS` of air was spent before the pill grew, and a 1.07 scale grew by more the wider the name
+/// was, so "Classics" read ~10 px from the "Movies" plate). The outset is a constant (S4), so the gap
+/// is one number, and every placement and every packing uses it. The breadcrumb's chevron takes the
+/// same air on each side ([`breadcrumb::AIR`]).
+pub const GAP: f32 = 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM;
 /// The least text-edge to text-edge gap between a read-out and the control after it (the gap the
 /// cluster is sized with). The read-out is anchored at the cluster's measured left edge, so the gap
 /// grows by however much narrower the live cluster is than its widest case.
@@ -196,27 +192,27 @@ const FOLD_SIZE: f32 = 22.0;
 /// instead; this is the plain left-to-right case.
 pub fn fit_left(widths: &[f32], budget: f32, more_w: f32) -> usize {
     let span = |n: usize| widths[..n].iter().sum::<f32>()
-        + widths[..n].windows(2).map(|w| gap_between(w[0], w[1])).sum::<f32>();
+        + GAP * n.saturating_sub(1) as f32;
     if span(widths.len()) <= budget { return widths.len(); }
     // "+N" follows the last name that stays, one gap after it.
     let mut n = 0;
     while n < widths.len() {
-        if span(n + 1) + gap_between(widths[n], more_w) + more_w > budget { break; }
+        if span(n + 1) + GAP + more_w > budget { break; }
         n += 1;
     }
     n
 }
 
 /// The space after `item` before `next`.
-fn gap_after(item: &HeaderItem, next: &HeaderItem, measure: &dyn Measure) -> f32 {
-    if item.readout { READOUT_GAP } else { gap_between(run_w(item, measure), run_w(next, measure)) }
+fn gap_after(item: &HeaderItem) -> f32 {
+    if item.readout { READOUT_GAP } else { GAP }
 }
 
-/// Width of a cluster of items laid out with [`gap_between`] between them ([`READOUT_GAP`] after a
+/// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
 /// read-out).
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     let runs: f32 = items.iter().map(|i| run_w(i, measure)).sum();
-    let gaps: f32 = items.windows(2).map(|w| gap_after(&w[0], &w[1], measure)).sum();
+    let gaps: f32 = items.windows(2).map(|w| gap_after(&w[0])).sum();
     runs + gaps
 }
 
@@ -259,7 +255,7 @@ impl PageHeader {
         let mut x = TEXT_X0;
         for (n, &(slot, w, focusable)) in left.iter().enumerate() {
             place(slot, x, w, focusable);
-            if let Some(next) = left.get(n + 1) { x += w + gap_between(w, next.1); }
+            if left.get(n + 1).is_some() { x += w + GAP; }
         }
         // The right cluster keeps its measured width; its items sit flush to the right edge, each
         // placed for the room it takes (`run_w`) and drawn as wide as its text (`ink_w`). The
@@ -271,7 +267,7 @@ impl PageHeader {
             let w = run_w(it, measure);
             let at = if it.readout && i == 0 { cluster_x0.min(rx) } else { rx };
             place(Slot::Right(i), at, ink_w(it, measure), it.focusable);
-            if let Some(next) = self.spec.right.get(i + 1) { rx += w + gap_after(it, next, measure); }
+            if self.spec.right.get(i + 1).is_some() { rx += w + gap_after(it); }
         }
         HeaderLayout {
             items,

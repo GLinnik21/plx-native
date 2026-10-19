@@ -122,7 +122,7 @@ fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_pan
     assert_eq!(m.popover().open_style(), plx_ui::popover::OpenStyle::Morph);
     let panel = m.panel_rect(&ShippedMeasure);
     let f0 = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
-    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (the 1.07 plate), not the panel");
+    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (the plate and its outset), not the panel");
     assert!(f0.rect.h < panel.h);
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
@@ -231,7 +231,7 @@ fn the_row_is_the_librarys_geometry() {
     assert_eq!(plate.x + plate.w, 1771.0 + 20.0, "the control's text ends on x 1771; its plate overhangs");
     let pill = row.pill();
     assert_eq!(pill.cy(), plate.cy());
-    assert!((pill.w / plate.w - plx_ui::widgets::CTRL_FOCUS_SCALE).abs() < 1.0e-4, "the focused pill is the plate at 1.07");
+    assert!((pill.w - plate.w - 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET).abs() < 1.0e-4, "the focused pill is the plate and its outset");
     assert_eq!(header::GRID_RIGHT, 1771.0);
     assert_eq!(header::HEADER_TOP + header::BLOCK_H, 244.0);
 }

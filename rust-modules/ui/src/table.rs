@@ -919,7 +919,7 @@ impl TableView {
     }
 
     /// [`Self::menu_panel_width`] for a popover that hangs from a header control: never narrower
-    /// than `pill`, the control's focused pill (its plate at [`crate::widgets::CTRL_FOCUS_SCALE`]),
+    /// than `pill`, the control's focused pill ([`crate::widgets::focus_pill`] of its plate),
     /// so a panel never reads as a smaller thing than the control that opened it, and the Library's
     /// Sort & Filter and the Watchlist's size by the same rule. The control's width wins over
     /// content only up to [`MENU_MAX_W`].

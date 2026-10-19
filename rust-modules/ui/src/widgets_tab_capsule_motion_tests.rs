@@ -675,19 +675,19 @@ fn header_ink(focus: f32, selected: f32) -> [f32; 4] {
 }
 
 /// What the pixel `(x, y)` of a strip whose pills stand `INK_H` tall from y 0 stands on, as DRAWN:
-/// like [`backing_at`] but each capsule is the ROUNDED rect `TabStrip::draw` paints (its rect popped
+/// like [`backing_at`] but each capsule is the ROUNDED rect `TabStrip::draw` paints (its rect grown
 /// about its centre, corner radius half its height), so a pixel above or below the centre row that
 /// is outside the arc is on the slate. A hard decision per pixel centre (`d <= 0`): the antialiased
 /// rim pixel itself is a blend and is not graded.
 fn backing_at_xy(strip: &TabStrip, ground: TabGround, x: f32, y: f32) -> [f32; 4] {
-    let (pop, plate) = match ground {
-        TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
-        TabGround::Plated { pop } => (pop, theme::TAB_PLATE_SELECTED_OVER),
-        TabGround::Bare { pop, .. } => (pop, theme::TAB_PLATE_SELECTED),
+    let plate = match ground {
+        TabGround::Tracked { .. } => theme::OVERLAY_FOCUS_PILL,
+        TabGround::Plated { .. } => theme::TAB_PLATE_SELECTED_OVER,
+        TabGround::Bare { .. } => theme::TAB_PLATE_SELECTED,
     };
-    let covers = |c: &Capsule, pop: f32| {
+    let covers = |c: &Capsule, grow: Grow| {
         let (cx, cw) = c.span();
-        let r = Rect::new(cx, 0.0, cw, INK_H).scaled(pop);
+        let r = grow.of(Rect::new(cx, 0.0, cw, INK_H));
         let rad = (r.h * 0.5).min(r.w * 0.5);
         let q = ((x - (r.x + r.w * 0.5)).abs() - (r.w * 0.5 - rad), (y - (r.y + r.h * 0.5)).abs() - (r.h * 0.5 - rad));
         let d = q.0.max(0.0).hypot(q.1.max(0.0)) + q.0.max(q.1).min(0.0) - rad;
@@ -695,8 +695,8 @@ fn backing_at_xy(strip: &TabStrip, ground: TabGround, x: f32, y: f32) -> [f32; 4
     };
     let over = |dst: [f32; 4], src: [f32; 4], a: f32| theme::cross(dst, [src[0], src[1], src[2], 1.0], a);
     let mut c = INK_GROUND;
-    if let Some(a) = covers(&strip.sel, 1.0) { c = over(c, plate, plate[3] * a); }
-    if let Some(a) = covers(&strip.foc, pop) { c = over(c, crate::ACCENT, a); }
+    if let Some(a) = covers(&strip.sel, Grow::Scale(1.0)) { c = over(c, plate, plate[3] * a); }
+    if let Some(a) = covers(&strip.foc, Grow::focus(ground)) { c = over(c, crate::ACCENT, a); }
     c
 }
 
@@ -785,7 +785,7 @@ fn the_ink_regions_follow_the_capsules_drawn_shapes() {
         if ink.regions().len() < 2 { continue; }
         crossed = true;
         let (cx, cw) = s.foc.span();
-        let drawn = Rect::new(cx, 0.0, cw, INK_H).scaled(CTRL_FOCUS_SCALE);
+        let drawn = Grow::focus(ground).of(Rect::new(cx, 0.0, cw, INK_H));
         // The capsule is leaving to the right: its left end is an arc across the pill's glyph rows.
         let (mid, off) = (INK_H * 0.5 + 0.5, INK_H * 0.5 - 15.5);
         let first_inside = |y: f32| (0..400).map(|k| drawn.x + k as f32 * 0.25).find(|&x| ink.at(x, y).0 > 0.5);
