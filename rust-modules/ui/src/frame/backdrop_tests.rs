@@ -787,8 +787,15 @@ fn wash_frame_with(
     owed
 }
 
+/// A hand-fed wash whose springs are still easing (`resting` false): the frames of an ease.
 fn plain_wash(step: f32) -> impl Fn(crate::Painter) {
-    move |p| p.ambient(Rect::FULL, 1.0, wash_at(step))
+    move |p| p.ambient(Rect::FULL, 1.0, wash_at(step), false)
+}
+
+/// The same wash with every spring landed (`resting` true), as `AmbientWash::draw` declares it
+/// from the frame its ease finishes.
+fn resting_wash(step: f32) -> impl Fn(crate::Painter) {
+    move |p| p.ambient(Rect::FULL, 1.0, wash_at(step), true)
 }
 
 /// **A wash easing under the chrome re-sources nothing.** `AmbientWash` dissolves each corner
@@ -822,10 +829,58 @@ fn the_settle_frame_refreshes_once() {
         owed.push(wash_frame(&sources, plain_wash(s), 300.0, true));
     }
     for _ in 0..4 {
-        owed.push(wash_frame(&sources, plain_wash(25.0), 300.0, false));
+        owed.push(wash_frame(&sources, resting_wash(25.0), 300.0, false));
     }
     let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
     assert_eq!(frames, vec![0, 6], "activation, then the first still frame: {owed:?}");
+}
+
+/// **A code the tail holds for a frame is not rest.** A critically damped spring's last stretch
+/// changes its 8-bit code less than once a frame, so the drawn wash repeats for a frame or two
+/// while the springs behind it still move. The wash says so itself (`resting` false), and the
+/// source is re-taken once, on the frame it says it has landed.
+#[test]
+fn a_code_the_tail_holds_for_a_frame_is_not_rest() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let mut owed = Vec::new();
+    for s in [0.0, 3.0, 8.0, 14.0, 21.0, 21.0, 24.0, 25.0, 25.0, 26.0] {
+        owed.push(wash_frame(&sources, plain_wash(s), 300.0, true));
+    }
+    for _ in 0..4 {
+        owed.push(wash_frame(&sources, resting_wash(26.0), 300.0, false));
+    }
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, vec![0, 10], "activation, then the frame the wash landed: {owed:?}");
+}
+
+/// **The wash's rest is its own**: a card, a spinner or a scroll elsewhere on the page can keep the
+/// page moving for as long as the wash has been still, and the picture that stays on the panel is
+/// still owed the wash it rests on.
+#[test]
+fn a_wash_at_rest_is_re_taken_while_something_else_still_moves() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let mut owed: Vec<bool> = [0.0, 4.0, 9.0, 15.0]
+        .iter()
+        .map(|&s| wash_frame(&sources, plain_wash(s), 300.0, true))
+        .collect();
+    owed.extend((0..4).map(|_| wash_frame(&sources, resting_wash(18.0), 300.0, true)));
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, vec![0, 4], "activation, then the wash's own rest: {owed:?}");
+}
+
+/// **A page dip is not rest.** `ui::nav` fades a page toward the app ground through the painter's
+/// alpha, which mixes the wash's corners toward `SURFACE_APP` and moves the drawn corners every
+/// frame with every spring at rest. Rest means the drawn corners have stopped, so the cascade must
+/// be the identity for it to count; the glass keeps taking the dip as a composite term.
+#[test]
+fn a_wash_at_rest_under_a_page_dip_owes_nothing() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let dip = |a: f32| move |p: crate::Painter| p.alpha(a).ambient(Rect::FULL, 1.0, wash_at(10.0), true);
+    let owed: Vec<bool> = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5].iter().map(|&a| wash_frame(&sources, dip(a), 300.0, true)).collect();
+    assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole dip: {owed:?}");
 }
 
 /// **A real ease re-takes the source once, at the wash's own rest, however its tail holds a code.**
@@ -835,7 +890,9 @@ fn the_settle_frame_refreshes_once() {
 /// 7-8 such frames per ease). A held code is not rest; the wash's own springs are. This steps a
 /// REAL wash through two eases (the first from the flat app ground) with the page's update/draw
 /// order and holds the owed frames to: the activation frame, then ONE frame per ease, the first on
-/// which the wash has stopped moving. It proves its own premise by counting the held codes.
+/// which the wash itself says it has landed (`AmbientWash::at_rest`). It proves its own premise by
+/// counting the held codes, and keeps stepping long after the rest so a code that flipped late
+/// would show.
 #[test]
 fn a_real_ease_re_takes_the_source_once_at_the_washes_own_rest() {
     use crate::widgets::AmbientWash;
@@ -856,7 +913,7 @@ fn a_real_ease_re_takes_the_source_once_at_the_washes_own_rest() {
                 if let Some(t) = target {
                     w.step(t, AmbientWash::K, 1.0 / 60.0);
                 }
-                moving.borrow_mut().push(plx_machine::idle::present_moving());
+                moving.borrow_mut().push(!w.at_rest());
                 drawn.borrow_mut().push(w.drawn_corners());
                 w.draw(p, Rect::FULL);
             },
@@ -981,8 +1038,8 @@ fn an_inked_wash_strip_is_deferred_and_its_ramp_keys_the_source() {
     let strips = |step: f32, foot: f32| {
         move |p: crate::Painter| {
             let ink = [0.02, 0.02, 0.03, 1.0];
-            p.ambient_inked(Rect::new(0.0, 0.0, 1920.0, 400.0), wash_at(step), (ink, [0.0, foot]));
-            p.ambient_inked(Rect::new(0.0, 400.0, 1920.0, 680.0), wash_at(step), (ink, [foot, 0.6]));
+            p.ambient_inked(Rect::new(0.0, 0.0, 1920.0, 400.0), wash_at(step), (ink, [0.0, foot]), false);
+            p.ambient_inked(Rect::new(0.0, 400.0, 1920.0, 680.0), wash_at(step), (ink, [foot, 0.6]), false);
         }
     };
     let sources = Rc::new(RefCell::new(Sources::default()));
@@ -1049,8 +1106,8 @@ fn two_grounds_under_the_region_keep_the_wash_in_the_source() {
     let sources = Rc::new(RefCell::new(Sources::default()));
     let bands = |step: f32| {
         move |p: crate::Painter| {
-            p.ambient(Rect::new(0.0, 0.0, 1920.0, 100.0), 1.0, wash_at(step));
-            p.ambient(Rect::new(0.0, 100.0, 1920.0, 980.0), 1.0, wash_at(step));
+            p.ambient(Rect::new(0.0, 0.0, 1920.0, 100.0), 1.0, wash_at(step), false);
+            p.ambient(Rect::new(0.0, 100.0, 1920.0, 980.0), 1.0, wash_at(step), false);
         }
     };
     let owed: Vec<bool> = (0..8).map(|i| wash_frame(&sources, bands(3.0 * i as f32), 300.0, true)).collect();

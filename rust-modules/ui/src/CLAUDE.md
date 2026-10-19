@@ -598,8 +598,15 @@ tried first. None of it is reconstructable from the code without repeating the m
   never marked, and a ramp knee inside the footprint (two washes) keeps the wash in the source.
   **Bounded, not exact:** over card content the term adds the ease as if the wash showed
   everywhere, so the error is at most the ease's amplitude times the content's coverage under the
-  filter, and it is gone when the wash comes to rest, where the source is re-taken ONCE (the idle
-  gate's settle frame included). A card moving under the band keeps every frame owed, as before.
+  filter, and it is gone when the wash comes to rest, where the source is re-taken ONCE. **Rest is
+  the wash's OWN statement**, not a reading of its codes or of the page: `AmbientWash::step` lands a
+  spring on its target the moment it settles, `AmbientWash::at_rest` (all twelve velocities exactly
+  zero) rides `Painter::ambient`'s `resting` to the glass, and the re-take fires on the frame it is
+  true and the held wash differs. A critically damped tail holds an 8-bit code for whole frames
+  while it moves, and a card can keep the page moving long after the wash is still, so neither
+  "the codes did not change" nor "nothing moves" is rest. A page dip (the painter's alpha mixing the
+  wash toward the app ground) is not rest either: `resting` counts only through an identity
+  cascade. A card moving under the band keeps every frame owed, as before.
 
 - **Freezing the host page is a separate, shared policy** — `Popover::caching_host()` +
   `ui::popover::host`. The mechanism is a REFUSAL at the renderer's one shared gate

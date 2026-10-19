@@ -20,7 +20,8 @@ exact corner codes by 2-6 every frame and re-sourced both glasses on each (measu
 the fix: 77-83% of a switch's refreshing frames, about 0.8M Mali cycles and 2.7-7.1 ms of render
 thread apiece). The wash is now a delta in `fs_glass.frag` (`u_wash_*`, `backdrop::Ground`): the
 source keeps the wash it was drawn under, the composite adds `wash now - wash captured` at the
-refracted uv, and the source is re-taken once when the wash settles. Bounded, not exact, over card
+refracted uv, and the source is re-taken once when the wash's own springs have landed on their
+target (`AmbientWash::at_rest`; a held 8-bit code in the tail is not rest). Bounded, not exact, over card
 content: the error is the ease's amplitude times the content's coverage under the filter, gone at
 rest. Art grounds, a ramp knee under the region and a moving card keep the wash in the source.
 

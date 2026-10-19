@@ -157,8 +157,9 @@ uniform sampler2D u_dim_tex;
 // live glass, whose sharp grab is off the finished framebuffer and carries the dim already.
 uniform float u_dim_sharp;
 // THE PAGE WASH, as a DELTA applied here rather than filtered into the snapshot
-// (`backdrop::Ground`): the wash is the page's opaque first draw and it eases for ~0.5 s on a
-// library switch, so a source that held it re-sourced the whole glass on every frame of the ease.
+// (`backdrop::Ground`): the wash is the page's opaque ground, the first draw under the glass that can
+// SHOW (the frame clear recorded before it is overwritten), and it eases for ~0.5 s on a library
+// switch, so a source that held it re-sourced the whole glass on every frame of the ease.
 // The snapshot keeps the wash it was drawn under and this adds `wash now - wash then`, evaluated
 // where the fragment SAMPLES (the refracted uv, not the fragment): the wash is a bilinear field,
 // so the difference of two washes is one — `u_wash_*` are the four corners of that difference
@@ -166,7 +167,7 @@ uniform float u_dim_sharp;
 // `u_wash_w` is how much of the wash an ink ramp over it lets through at its top and bottom edge.
 // `u_wash_on = 0` is the glass without it, bit for bit. Added where the wash shows and, as if it
 // showed everywhere, over content too: bounded by the ease's own amplitude and gone when the
-// source is re-taken at rest (`backdrop::GroundDelta`).
+// source is re-taken at the wash's own rest (`backdrop::GroundDelta`, `AmbientWash::at_rest`).
 uniform float u_wash_on;
 uniform highp vec4 u_wash_uv;
 uniform vec3 u_wash_tl;

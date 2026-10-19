@@ -460,8 +460,9 @@ enum Deferrable {
     /// A modal dim: its ink and field, applied in `srcRGB` (`frame::backdrop::Dim`).
     Dim(frame::backdrop::Dim),
     /// The page's wash: its corners as the GPU receives them and the ink ramp laid over it in the
-    /// same pass, taken as a delta (`frame::backdrop::Ground`).
-    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]) },
+    /// same pass, taken as a delta (`frame::backdrop::Ground`), and whether the wash's own springs
+    /// are at rest (`frame::backdrop::paint_ground`'s `resting`).
+    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), resting: bool },
 }
 
 impl Painter {
@@ -519,10 +520,11 @@ impl Painter {
         let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
         match mark {
             Some(Deferrable::Dim(dim)) => frame::backdrop::paint_dim(bounds, data, dim),
-            Some(Deferrable::Ground { corners, ink: (ink, ink_a) }) => frame::backdrop::paint_ground(
+            Some(Deferrable::Ground { corners, ink: (ink, ink_a), resting }) => frame::backdrop::paint_ground(
                 bounds,
                 data,
                 frame::backdrop::Ground { corners, rect: [m.x, m.y, m.w, m.h], ink, ink_a },
+                resting,
             ),
             None => frame::backdrop::paint(bounds, data),
         }
@@ -1266,12 +1268,20 @@ impl Painter {
     ///
     /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
     /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
-    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
+    ///
+    /// `resting` is the wash's own at-rest signal ([`AmbientWash::at_rest`]): every spring that
+    /// eases it has landed on its target, so `k` is final. A glass over the wash re-takes its
+    /// source once when that turns true ([`Self::wash_rests`] says when the cascade lets it count).
+    /// A gradient with no springs behind it passes `false`.
+    ///
+    /// [`AmbientWash::at_rest`]: crate::widgets::AmbientWash::at_rest
+    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4], resting: bool) {
         // The corners as the GPU receives them (`gfx::draw_ambient` scales them by `dim`): the
         // wash's mark for a glass above it, and what is drawn below.
+        let resting = resting && dim == 1.0 && self.wash_rests();
         let k = self.wash_corners(k);
         let drawn = k.map(|c| c.map(|v| v * dim));
-        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]) }), |data| {
+        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);
             k.record(data);
@@ -1341,11 +1351,14 @@ impl Painter {
     /// replaces. Callers must check `gfx::wash_ink_ok` ([`AmbientWash::draw_ground`] does).
     ///
     /// [`AmbientWash::draw_ground`]: crate::widgets::AmbientWash::draw_ground
-    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2])) {
+    ///
+    /// `resting` is [`ambient`](Self::ambient)'s: the wash's own springs have landed.
+    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2]), resting: bool) {
         let (k_raw, ink_raw) = (k, ink);
+        let resting = resting && self.wash_rests();
         let k = self.wash_corners(k);
         let (ink, inka) = self.ink(ink);
-        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka) }), |data| {
+        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka), resting }), |data| {
             use frame::backdrop::Value;
             k_raw.record(data);
             ink_raw.0.record(data);
@@ -1366,6 +1379,14 @@ impl Painter {
     fn ink(self, (ink, a): ([f32; 4], [f32; 2])) -> ([f32; 3], [f32; 2]) {
         let c = self.c(ink);
         ([c[0], c[1], c[2]], [a[0] * self.a, a[1] * self.a])
+    }
+    /// Does the cascade hand a wash's corners to the GPU as they are: no alpha mixing them toward
+    /// [`theme::SURFACE_APP`] (a page dipping for [`ui::nav`](crate::nav)'s route transition moves
+    /// the drawn corners every frame with every spring at rest) and no gain? Only then is a wash
+    /// whose springs have landed also a wash whose drawn corners have stopped changing, which is
+    /// what a glass above it re-takes its source on.
+    fn wash_rests(self) -> bool {
+        self.a >= 1.0 && self.out_rgb() == 1.0
     }
     /// A wash's corners through the cascade — [`ambient`](Self::ambient)'s rule, which
     /// [`ambient_art`](Self::ambient_art) must apply identically: the wash stays OPAQUE, so an alpha

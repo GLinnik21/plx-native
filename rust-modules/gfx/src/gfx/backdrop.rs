@@ -157,6 +157,11 @@ pub struct Paint {
     /// below it is overwritten), which that glass may take as a DELTA at composite instead of
     /// re-filtering it ([`paint_ground`]). Not part of equality.
     pub ground: Option<Ground>,
+    /// With [`ground`](Self::ground): the wash's OWN springs have landed on their target (and the
+    /// cascade it was drawn through is the identity), so the corners it drew are the ones it keeps
+    /// ([`paint_ground`]). A control signal for [`Sources::resolve`], not a pixel argument: not
+    /// part of equality, and never in a glass's signature.
+    pub resting: bool,
 }
 
 /// **A modal dim, as the composite needs it**: `mix(below, ink, alpha)` where the ink is
@@ -438,22 +443,27 @@ fn fully_occluded(z: Z, layers: &[Layer]) -> bool {
     layers.iter().any(|l| l.blocks && l.z > z && covers(l.rect, canvas()))
 }
 pub fn paint(rect: Rect, values: Vec<u64>) {
-    paint_with(rect, values, None, None)
+    paint_with(rect, values, None, None, false)
 }
 /// [`paint`] for a modal DIM: the same exact-argument record, plus what a glass above it needs to
 /// apply it at composite instead of in its source ([`Dim`]). Whether a given glass does is decided
 /// per glass in [`Sources::resolve`]: only when the dim is the last draw under its region.
 pub fn paint_dim(rect: Rect, values: Vec<u64>, dim: Dim) {
-    paint_with(rect, values, Some(dim), None)
+    paint_with(rect, values, Some(dim), None, false)
 }
 /// [`paint`] for the page's WASH: the same exact-argument record, plus the corners, rect and ink a
 /// glass needs to take it as a delta at composite ([`Ground`]). Whether a given glass does is decided
 /// per glass in [`Sources::resolve`]: only when it is the first draw that can show under its region
 /// and the only wash there.
-pub fn paint_ground(rect: Rect, values: Vec<u64>, ground: Ground) {
-    paint_with(rect, values, None, Some(ground))
+///
+/// `resting` is the wash's own at-rest signal: every spring that eases it has landed on its target
+/// (`AmbientWash::at_rest`) and nothing in the cascade is moving the corners it drew. The glass
+/// re-takes its source once when it becomes true ([`Sources::resolve`]); a hand-fed gradient with
+/// no springs behind it passes `false` and is never re-taken for rest.
+pub fn paint_ground(rect: Rect, values: Vec<u64>, ground: Ground, resting: bool) {
+    paint_with(rect, values, None, Some(ground), resting)
 }
-fn paint_with(rect: Rect, values: Vec<u64>, dim: Option<Dim>, ground: Option<Ground>) {
+fn paint_with(rect: Rect, values: Vec<u64>, dim: Option<Dim>, ground: Option<Ground>, resting: bool) {
     WALK.with(|w| {
         let w = w.borrow();
         let Some(w) = w.as_ref().filter(|w| w.discovery) else {
@@ -505,6 +515,7 @@ fn paint_with(rect: Rect, values: Vec<u64>, dim: Option<Dim>, ground: Option<Gro
             source: Vec::new(),
             dim,
             ground,
+            resting,
         }));
     });
 }
@@ -768,9 +779,11 @@ pub struct Entry {
     /// Set when an image is retained, from [`ground`](Self::ground), so a replay or an inline
     /// capture alike holds exactly the wash its frame drew.
     captured_ground: Option<Ground>,
-    /// The previous resolved frame's [`ground`](Self::ground): a wash that did not move since is
-    /// at rest, whatever else is moving.
-    last_ground: Option<Ground>,
+    /// This frame's [`ground`](Self::ground) is at rest: the wash's own springs have landed (the
+    /// `resting` its draw declared, [`paint_ground`]). That is the wash's statement that its ease
+    /// has finished, whatever else on the page is still moving, and it is final: a landed spring
+    /// is snapped onto its target, so the codes it drew cannot change again until a new ease starts.
+    ground_resting: bool,
     /// Armed probe only: why the non-compare paths (`begin`'s damage, `request`'s growth) cleared
     /// `valid`, so `resolve` can name it. Never set while the probe is off.
     cause: Option<&'static str>,
@@ -808,6 +821,7 @@ impl Sources {
                 source: Vec::new(),
                 dim: None,
                 ground: None,
+                resting: false,
             }));
         }
         for (&z, e) in &mut self.entries {
@@ -936,6 +950,7 @@ impl Sources {
                         .is_some_and(|r| covers(first.rect(), r))
             });
             e.ground = wash.and_then(|p| p.ground);
+            e.ground_resting = wash.is_some_and(|p| p.resting);
             // An upper glass reads THIS one's composite through `prefixes`, and that composite
             // carries the dim at this frame's alpha and the wash it is showing, so it is handed
             // their real arguments.
@@ -956,15 +971,17 @@ impl Sources {
             };
             let captured = signature(&e.captured_prefix, &e.members, e.rises, &e.captured_layers, z);
             // A wash that has come to rest on a code other than the one the image was drawn under:
-            // re-take the source, so the picture that stays on the panel is exact. At rest means the
-            // wash did not move since the last frame, or NOTHING reported motion this frame (the
-            // idle gate presents one settle frame after the last spring, and that frame can still
-            // cross a rounding boundary of an 8-bit code, so equality with the frame before is not
-            // guaranteed to be seen).
-            if e.valid && current == captured {
+            // re-take the source, so the picture that stays on the panel is exact. "At rest" is the
+            // WASH's own statement (`ground_resting`: every spring that eases it has landed), not
+            // a reading of its codes. A critically damped tail holds an 8-bit code for whole frames
+            // while it still moves, so "the codes did not change since the last frame" is not
+            // rest; and "nothing on the page moves" is not the wash's rest either, because a card
+            // or a spinner can keep the page moving for as long as the wash has been still. A
+            // landed spring is snapped onto its target, so the codes at rest are the final ones
+            // and this fires once per ease.
+            if e.valid && current == captured && e.ground_resting {
                 if let Some(g) = e.ground {
-                    let at_rest = e.last_ground == Some(g) || !plx_machine::idle::present_moving();
-                    if at_rest && e.captured_ground != Some(g) {
+                    if e.captured_ground != Some(g) {
                         if plx_base::diag::spans::armed() {
                             self.diffs.push(format!("GLASSDIFF frame={frame} job={:#x} what=ground-settle", z.0));
                         }
@@ -972,7 +989,6 @@ impl Sources {
                     }
                 }
             }
-            e.last_ground = e.ground;
             // Query the scene that produced the retained image at the CURRENT sampling rects.
             // Growing into an unchanged part of its captured union is not underlay damage. An
             // image that has the dim (or the wash) baked in cannot serve a glass that now applies
@@ -1100,7 +1116,7 @@ impl Sources {
             captured_dim: false,
             ground: None,
             captured_ground: None,
-            last_ground: None,
+            ground_resting: false,
             cause: None,
         });
         if !covers(e.rect, rect) {
@@ -1855,6 +1871,7 @@ mod glassdiff_tests {
             source: Vec::new(),
             dim: None,
             ground: None,
+            resting: false,
         })
     }
     #[test]
