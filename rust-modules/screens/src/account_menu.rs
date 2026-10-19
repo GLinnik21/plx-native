@@ -148,8 +148,14 @@ impl AccountInputs {
 /// signed-in owner and the chip offered them "Sign in" — which is the first thing a reviewer on a
 /// fresh test account sees, and the last thing they should.
 pub fn chip_label(acc: &Account) -> String {
-    match (&acc.name, acc.signed_in) {
-        (Some(n), _) => n.clone(),
+    chip_text(acc.name.as_deref(), acc.signed_in)
+}
+
+/// [`chip_label`] from the two facts it is decided by, so the menu's own builder
+/// ([`account_form`], which holds [`AccountInputs`] and no `Account`) asks the SAME rule.
+fn chip_text(name: Option<&str>, signed_in: bool) -> String {
+    match (name, signed_in) {
+        (Some(n), _) => n.to_string(),
         (None, true) => plx_platform::i18n::msg::settings_account_title().to_string(),
         (None, false) => label(Action::SignIn).to_string(),
     }
@@ -168,14 +174,19 @@ fn label(a: Action) -> &'static str {
 /// The menu's header text and its one-section [`Form`], from [`AccountInputs`] — pure, so the
 /// text-fit suite drives the real builder. A named account's own name is user text (the managed
 /// profile or the roster owner), so it is a `server_header`; the fallback "Account" label is this
-/// app's own word for a nameless signed-in account. **Reordering the menu is moving a line.**
+/// app's own word for a nameless signed-in account. A head that only repeats the chip's own label
+/// ([`chip_label`]) is not drawn. **Reordering the menu is moving a line.**
 fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infallible>) {
     let header = inputs
         .name
         .clone()
         .unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string());
-    let mut head = Section::new(header.clone());
-    if inputs.name.is_some() {
+    // The chip this menu hangs from already says who the account is (N-c): a head that only repeats
+    // it is dropped (an empty header draws no header row), so the panel opens on its first action.
+    // Signed out, the chip reads "Sign in" and the head "Account": different words, so it stays.
+    let repeats_chip = header == chip_text(inputs.name.as_deref(), inputs.signed_in);
+    let mut head = Section::new(if repeats_chip { String::new() } else { header.clone() });
+    if inputs.name.is_some() && !repeats_chip {
         head = head.server_header();
     }
     let mut sec = FormSection::from_head(head);
@@ -1008,6 +1019,32 @@ mod tests {
             [Action::ChangeProfile, Action::Settings, Action::SignOut]);
         assert_eq!(rows_of(&local(Session::default()).account(None), false),
             [Action::Settings, Action::SignOut]);
+    }
+
+    /// **The menu does not head itself with what the chip above it already says** (N-c: "DEMO" over the
+    /// panel the chip "DEMO" opened). The head is dropped exactly when it would read as the chip's own
+    /// label (`chip_label`); a header the chip does not say stays, and the rows are the same either way.
+    #[test]
+    fn the_head_is_dropped_only_when_it_repeats_the_chip() {
+        let heads = |inputs: &AccountInputs| {
+            let (_, form) = account_form(inputs);
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
+            t.set(form, None);
+            t.table.sections.iter().map(|section| section.header.clone()).collect::<Vec<_>>()
+        };
+        // a named account: the chip says the name, so the menu does not say it again
+        let named = local(Session { account_token: "acct".into(), home_users: vec![owner("Gleb")], ..Default::default() });
+        let named = named.account(Some(&UserRef::default()));
+        assert_eq!(chip_label(&named), "Gleb", "premise: the chip says the name");
+        let named_inputs = AccountInputs::of(&named, false);
+        assert!(heads(&named_inputs).iter().all(String::is_empty), "named: no head repeats the chip: {:?}", heads(&named_inputs));
+        // signed out the chip says "Sign in" and the menu "Account": different words, so the head stays
+        let out = Session::default().account(None);
+        assert_ne!(chip_label(&out), plx_platform::i18n::msg::settings_account_title(), "premise: the chip says another word");
+        assert_eq!(heads(&AccountInputs::of(&out, false)), [plx_platform::i18n::msg::settings_account_title()],
+            "signed out: the \"Account\" head stays");
+        // the rows are the same with the head or without
+        assert_eq!(ids(account_form(&named_inputs).1), rows_of(&named, false));
     }
 
     /// **Sign out is the last row, behind a separator.** The account menu used to put it one Down
