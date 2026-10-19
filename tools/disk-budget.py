@@ -12,7 +12,7 @@ planner and the read-only `report`. It deletes nothing and has no subcommand tha
 deleting path (`build-gc.sh --evict`) is a later PR, so the owner can read the verdicts for a few days
 before anything acts on them. `make disk` prints this report after build-gc's own table.
 
-THE PLANNER IS A PURE FUNCTION. `plan(inventory, free, need, thresholds, me)` does no I/O: it is the one
+THE PLANNER IS A PURE FUNCTION. `plan(inv, free, need, th, me, now, build_tree)` does no I/O: it is the one
 place where order and safety are decided, and `ci/test_disk_budget.py` feeds it synthetic inventories.
 The inventory is built separately (`collect`) by walking the disk, with every process, lock and git probe
 behind `Probes` so a test can supply its own.
@@ -25,7 +25,8 @@ THE LADDER (docs/disk-budget.md; LRU, least recently built first, within each ru
     2  incremental dirs of OTHER idle lanes (the main checkout waits for rung 6)
     3  younger PlxNative `/tmp` trees, idle >= 15 min
     4  whole derived trees of OTHER idle lanes
-    5  `--stale` sweeps (the main checkout only; not sized here) and the cargo seed once unused for a week
+    5  the main checkout's `--stale` sweep (not sized here; planned only when the report runs from another
+       checkout, since the current one waits for rung 6) and the cargo seed once unused for a week
     6  budget-critical only: the main checkout's incremental dirs, then the CURRENT checkout's
        incremental dirs in trees other than the one being built
 
@@ -41,16 +42,19 @@ them. Off macOS the private size falls back to allocated blocks.
 
 NEVER PLANNED (`never`, checked again inside the planner, not only when the inventory is built): a tree
 with a tracked file, a live tree (a builder's cwd in its checkout, an open file under it, a held cargo
-lock, a held `make check` lock, or an `lsof` that could not answer), the current checkout (except rung 6),
-the main checkout (except rung 6), anything under a checkout's `pkg/` or `vendor/` or the shared FFmpeg
-cache, a tree on another volume, and any cargo tree without a PlxNative marker (`CACHEDIR.TAG` alone
-proves nothing: two `rs-matter` trees belong to another project and are reported "not ours").
+lock, a held `make check` lock, or an `lsof` that could not answer), the current checkout (except rung 6,
+and there never the tree being built), the main checkout (except its `--stale` sweep at rung 5 and its
+incremental dirs at rung 6), anything under a checkout's `pkg/` or `vendor/` and the shared FFmpeg cache's
+live entries (its `.tombstone.` leftovers are rung 0), a tree on another volume, and any cargo tree without
+a PlxNative marker (`CACHEDIR.TAG` alone proves nothing: two `rs-matter` trees belong to another project
+and are reported "not ours").
 
 Environment: PLX_GC_MIN_FREE_GIB (comfort, default 20), PLX_MIN_FREE_MB (reserve, default 3072),
 PLX_DISK_NEED_GIB (the build's estimate), PLX_SEED_MAX_DAYS (7), PLX_FLEET_DIR (default ~/plx-fleet),
 PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories to look for
 `/tmp` trees in; default /tmp and $TMPDIR), PLX_GC_TEST_FREE_KIB (test-only free-space override, the name
-build-gc.sh already uses: it makes the ladder printable on an unpressured machine).
+build-gc.sh already uses: the ladder always prints, this shows which of its rungs a reclaim would take on a
+machine that has room).
 """
 from __future__ import annotations
 
@@ -1037,7 +1041,7 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
     lines.append("  a `?` is not estimated (the `--stale` sweep sizes itself); rung 6 runs only when the build "
                  "would otherwise be refused")
     lines.append("  never planned: the current checkout (rung 6 aside), live trees, tracked files, pkg/, vendor/, "
-                 "the FFmpeg cache, non-PlxNative trees")
+                 "the FFmpeg cache's live entries, non-PlxNative trees")
     tail = log_tail(env)
     if tail:
         lines.append("")

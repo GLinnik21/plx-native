@@ -43,8 +43,9 @@ its estimate). It prints, in order:
    says), when cargo last wrote in it, and its state (the rungs it can be taken at, or why it is kept).
 3. **The ladder**: every eviction a reclaim could take, in the order it would take them. A `*` marks
    what it would take at the free space shown; the running total shows where the line is crossed.
-   Set `PLX_GC_TEST_FREE_KIB` (the override `build-gc.sh` already has) to print the ladder on a
-   machine that has room: `PLX_GC_TEST_FREE_KIB=$((8*1024*1024)) python3 tools/disk-budget.py report`.
+   The ladder always prints; set `PLX_GC_TEST_FREE_KIB` (the KiB override `build-gc.sh` already has)
+   to see which of its rungs a reclaim would take, and the verdict, on a machine that has room:
+   `PLX_GC_TEST_FREE_KIB=$((8*1024*1024)) python3 tools/disk-budget.py report`.
 
 `PRIVATE` is the number to trust. On APFS a clone shares its blocks, so `du` counts them in full in
 every tree that holds them and deleting one of a pair frees nothing. `PRIVATE` is the file's own
@@ -82,12 +83,15 @@ be refused: free space still below the estimate plus the reserve.
 | 2 | Incremental dirs of OTHER idle lanes | that lane's next edit-rebuild is cold once |
 | 3 | Younger PlxNative `/tmp` trees, idle 15 min | that command's next run is cold |
 | 4 | Whole derived trees of OTHER idle lanes | that lane's next check rebuilds the workspace; third-party comes back from the seed |
-| 5 | The `--stale` sweep of the main checkout (not sized), and the cargo seed once unused for a week | as `build-gc.sh` today |
+| 5 | The main checkout's `--stale` sweep (not sized; only when the report runs from another checkout), and the cargo seed once unused for a week | as `build-gc.sh` today |
 | 6 | Budget-critical only: the main checkout's incremental dirs, then the CURRENT checkout's incremental dirs in trees other than the one being built | one cold incremental build |
 
 A **refusal** is the planner saying the whole ladder cannot free the build's estimate plus the
-reserve. Because the `--stale` sweep cannot be sized ahead of time, a plan that includes it is never
-a refusal: it says so, and the step that acts on it re-reads free space after the sweep.
+reserve. The `--stale` sweep cannot be sized ahead of time, so a plan that reaches it (rungs 0-4
+fell short) is never a refusal: it says so, and the step that acts on it re-reads free space after
+the sweep. The sweep is planned only when the report runs from another checkout: from the main
+checkout, the main `target` is the current checkout and only its rung-6 incremental dirs are
+candidates.
 
 ## What is never planned
 
@@ -100,7 +104,9 @@ a refusal: it says so, and the step that acts on it re-reads free space after th
   checkout, so for it the working-directory test cannot be used and the per-tree locks decide.
 - The main checkout, except its `--stale` sweep (rung 5) and its incremental dirs (rung 6).
 - Anything under a checkout's `pkg/` or `vendor/` (the FFmpeg, libass and other builds: expensive,
-  not derived from cargo) and the shared FFmpeg cache.
+  not derived from cargo) and the live entries of the shared FFmpeg cache (`<cache>/ffmpeg/<key>`).
+  The one thing in that cache the planner takes, at rung 0, is a `.tombstone.` entry left by an
+  interrupted delete, which nothing will ever read.
 - A tree on another volume.
 - **A cargo tree that is not PlxNative's.** `CACHEDIR.TAG` alone proves nothing (any cargo writes
   it); a tree is ours only if its `deps/`, `.fingerprint/`, `build/` or `incremental/` hold a
@@ -119,8 +125,9 @@ subprocess and `open` made to raise), so `ci/test_disk_budget.py` feeds it synth
 - `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`): the cargo seed, and leftover `.tmp.`,
   `.restore.`, `.old.` and `.tombstone.` entries. The FFmpeg cache's live entries are never listed.
 
-**Merged lanes are judged against `origin/main`**, not the local `main`, which can be days behind it
-(then every squash-merged lane reads "unmerged"). A lane is merged if its HEAD is an ancestor, or if
+**Merged lanes are judged against `origin/main`** when it exists, because the local `main` can be days
+behind it (then every squash-merged lane reads "unmerged"); with no `origin/main` the local `main` is
+used, and the report's `lanes judged` line says which. A lane is merged if its HEAD is an ancestor, or if
 a three-way `git merge-tree --write-tree` of the two leaves `origin/main`'s own tree. That command
 writes the merged tree, so the report points it at a throwaway object directory with the real one as
 an alternate: no object is added to the repository (git may refresh the mtime of an object that
@@ -132,8 +139,8 @@ costs it a rebuild at worst, and only its derived tree is ever planned, never th
 
 - No deletion: `build-gc.sh --evict`, build-entry preflights, hooks, `make test-hostsim` and dedup
   are the PRs below.
-- The `--stale` sweep's yield is not estimated, so a main checkout with a `target` makes every
-  plan "uncertain". Sizing it (superseded `deps/` hashes) is open.
+- The `--stale` sweep's yield is not estimated, so a plan that reaches it is "uncertain". Sizing it
+  (superseded `deps/` hashes) is open.
 - The cost of rung 4 and rung 6 evictions in lost build time across a real fleet day. Measure it
   from the build-gc log once evictions are logged.
 - Rung 1 saves ~0.8 GB per lane at most today, and nothing in a lane just cloned from the current

@@ -5,8 +5,9 @@ The planner is a pure function, so most of this file feeds `plan` / `ladder` / `
 inventories and reads the answer. The properties pinned here are the ones whose failure is a deleted
 tree that something needed once the eviction PR acts on these verdicts: the order of the ladder (LRU
 within a rung), stopping at the line instead of at zero, refusing only when the whole ladder cannot
-free the build's estimate plus the reserve, and NEVER planning the current checkout, a live tree, a
-tracked file, `pkg/`, a tree that is not PlxNative's, or another volume. The second half builds real
+free the build's estimate plus the reserve, and NEVER planning the current checkout below rung 6 (and
+there never the tree being built), a live tree, a tracked file, `pkg/`, a tree that is not PlxNative's,
+or another volume. The second half builds real
 directories and a real git repository in a temp dir and checks the I/O: private-byte accounting under
 hard links, the PlxNative marker, `/tmp` discovery, `origin/main` merged detection (squash merges, a
 local `main` that is behind, and that detecting one writes nothing into the repository), and that
@@ -297,9 +298,10 @@ class TmpTrees(unittest.TestCase):
 class TombstonesAndSeed(unittest.TestCase):
     def test_a_tombstone_is_rung_0_unless_a_process_holds_it(self):
         t = db.Tree("/cache/ffmpeg/x.tombstone.7", "leftover", private_bytes=GIB, last_built=NOW, tombstone=True)
-        self.assertEqual([a.rung for a in db.ladder(inv(t), TH, ME, NOW)[0]], [0])
+        i = inv(t, protected_prefixes=("/cache/ffmpeg",))      # the FFmpeg cache is protected; its tombstones are not
+        self.assertEqual([a.rung for a in db.ladder(i, TH, ME, NOW)[0]], [0])
         held = db.Tree(**{**t.__dict__, "live": live(open_files=("rm",))})
-        self.assertEqual(db.ladder(inv(held), TH, ME, NOW)[0], [])
+        self.assertEqual(db.ladder(inv(held, protected_prefixes=("/cache/ffmpeg",)), TH, ME, NOW)[0], [])
 
     def test_a_tombstone_outside_the_build_cache_is_refused(self):
         t = db.Tree("/elsewhere/x.tombstone.7", "leftover", private_bytes=GIB, last_built=NOW, tombstone=True)
