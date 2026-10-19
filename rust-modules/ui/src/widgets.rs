@@ -2517,7 +2517,7 @@ pub const CHIP_FRAME: Rect = Rect::new(
 /// `e` is the unfurl, 0..1; `name_w` the elided name's measured width ([`CHIP_NAME_MAX`] is its
 /// budget, so `chip_cap(1.0, CHIP_NAME_MAX)` is the widest capsule the control can ever draw).
 /// Only the WIDTH moves — the capsule grows rightward off a fixed left edge.
-const fn chip_cap(e: f32, name_w: f32) -> Rect {
+pub const fn chip_cap(e: f32, name_w: f32) -> Rect {
     let closed = CHIP_D + 2.0 * TAB_TRACK_PAD;
     let open = closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL;
     Rect::new(
@@ -2527,13 +2527,6 @@ const fn chip_cap(e: f32, name_w: f32) -> Rect {
         CHIP_D + 2.0 * TAB_TRACK_PAD,
     )
 }
-
-/// **The chip's resting surround** — the capsule at no unfurl (`chip_cap(0, _)`: the avatar plus
-/// [`TAB_TRACK_PAD`] all round, a circle). It is the one extent of the chip that holds in every
-/// state, and so the pill the profile menu's panel grows out of and shrinks back into
-/// (`Popover::open_from`): the focused chip the host lifts above the dim (`redraw_profile_chip`)
-/// is this capsule or this capsule widened rightward, never anything else.
-pub const CHIP_PILL: Rect = chip_cap(0.0, 0.0);
 
 /// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
 const K_CHIP: f32 = 300.0;
@@ -2623,7 +2616,7 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// their current rectangles in the same chrome layer. The planner captures their union once,
 /// and separates their z bands automatically if their sampling regions overlap.
 ///
-/// **`frozen` is the opener lift's ground** (`redraw_profile_chip`, the account menu up): the
+/// **`frozen` is the opener lift's ground** (`lift_profile_chip`, the account menu up): the
 /// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
 /// the host snapshot behind its rim and no dim (it is drawn above the dim), and requests no
 /// backdrop entry and no blur source pass. A field that has not latched yet answers `false`, the
@@ -2752,7 +2745,7 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 }
 
 /// [`profile_chip_with`] on a chosen ground for its capsule: `frozen` is the latched underlay field
-/// of the modal stack the chip is lifted over ([`redraw_profile_chip`]), `None` the live tab-strip
+/// of the modal stack the chip is lifted over ([`lift_profile_chip`]), `None` the live tab-strip
 /// glass.
 fn profile_chip_on(
     p: Painter,
@@ -2858,43 +2851,26 @@ fn profile_chip_on(
     }
 }
 
-/// [`profile_chip_with`], re-drawn above the account menu's scrim AND panel — the `Scrim::lift`
-/// contract (`ui::screen::Scrim`, drawn by `ModalStack::draw_lifts` after every surface, so the
-/// panel's glass grows out from under the chip), for the one surface in the app that
-/// hangs off a piece of shared CHROME rather than off a card.
-///
-/// It lives HERE, beside the chip itself, for the reason the chip does: the control is drawn
-/// verbatim by Home, the Library and Search, and the menu can be opened from any of the three.
-/// It was Home's own `redraw_profile_chip` while Home was the only screen
-/// whose chip could be pressed, which would have lifted the HOME chip's spring over whichever page
-/// the user was actually on — and there is only one chip, so there is only one lift.
-///
-/// On `nav::chrome_alpha` and not `page_alpha`, because that is the alpha the chip is drawn on: the
-/// top band holds still while pages swap under it. A lift on the wrong alpha would make the chip
-/// flicker through a route change that nothing else on the bar reacts to.
+/// [`profile_chip_with`], re-drawn above the account menu's scrim AND panel: the lit copy of the
+/// opener the dispatcher's lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`, `Screen::bar_opener`)
+/// asks the rig for (`Rig::lift_bar_member`), the one place any opener is lifted. The control is
+/// drawn verbatim by every page that wears the bar and there is only one chip, so there is only one
+/// lift; `p` is the chrome pass's own painter (its alpha and its tuck, `NavPresentation`), so the lit
+/// copy lies exactly on the chip the bar drew.
 ///
 /// **The lift's capsule stands on FROZEN ground** (owner rule, 2026-10-17: no live-refracting glass
 /// over a page): while the menu is up the capsule is `Painter::glass_frozen` over the stack's
-/// latched underlay field (`ScrimLiftRead::field`), its rim bending the host snapshot, and it
-/// requests no backdrop entry or blur source pass. Before the field has latched it is the flat
-/// capsule. The chip on the tab strip, with no menu up, stays live glass.
-///
-/// [`crate::screen::ScrimLiftRead`] is `Scrim::lift`'s own argument (spec phase 12,
-/// PX-WIDGETS). Its `ChromeRead` borrows the captured profile, labels and unfurl from
-/// `Rig::scrim_chrome_read`; its material is the face the same frame's `GlassPlan` received from
-/// normal strip paint. This bare `fn` therefore redraws the exact owner publication without a
-/// static or a draw-time session/vocabulary read.
-///
-/// [`Opener`]: crate::popover::Opener
-pub fn redraw_profile_chip(read: crate::screen::ScrimLiftRead<'_>) {
-    let Some(chrome) = read.chrome else { return };
-    crate::guard(|| profile_chip_on(
-        Painter::root().alpha(crate::nav::chrome_alpha()),
-        chrome.profile,
-        chrome.chip_expand,
-        read.bar_material,
-        read.field,
-    ));
+/// latched underlay field, its rim bending the host snapshot, and it requests no backdrop entry or
+/// blur source pass. Before the field has latched it is the flat capsule. The chip on the tab
+/// strip, with no menu up, stays live glass.
+pub fn lift_profile_chip(
+    p: Painter,
+    data: ProfileChipRead<'_>,
+    chip_expand: f32,
+    bar_material: Option<plx_gfx::gfx::GlassFace>,
+    ground: &crate::underlay::UnderlayField,
+) {
+    crate::guard(|| profile_chip_on(p, data, chip_expand, bar_material, Some(ground)));
 }
 
 // ---- CircleButton: circular disc + centered glyph, same keyed/unkeyed ControlStyle family as
@@ -6362,7 +6338,7 @@ impl StripRender {
     }
 
     /// This frame's chip unfurl amount. `Bridge::scrim_chrome_read` includes it in the borrowed
-    /// [`ChromeRead`] passed to the bare-`fn` lift — see [`redraw_profile_chip`].
+    /// [`ChromeRead`] the rig lends the lift pass — see [`lift_profile_chip`].
     pub fn chip_expand_pos(&self) -> f32 {
         self.chip_expand.pos
     }
@@ -6526,7 +6502,7 @@ impl TabBand {
     /// **Back to the flat capsule.** The bar's material is something its DRAW publishes, so a frame that
     /// does not draw the bar (an early return in [`StripRender::draw`], or the dispatcher skipping the
     /// chrome pass at tuck 1 / alpha 0) must say so, or the chip and the account menu's chip lift
-    /// ([`Self::face`], through `scrim_lift_read`) read the last DRAWN frame's stops for a bar that is
+    /// ([`Self::face`], through `Rig::lift_bar_member`) read the last DRAWN frame's stops for a bar that is
     /// not on screen. See [`BarMaterial`].
     pub fn reset_material(&mut self) {
         self.material = BarMaterial::Flat;

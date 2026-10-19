@@ -410,6 +410,13 @@ impl Popover {
         self.open();
         self.from = from;
     }
+    /// **Re-read the opener's rect while the popover is up**: a morphing popover whose opener MOVES
+    /// (the profile chip rides the bar's tuck) starts and ends its morph on the opener's live drawn
+    /// rect, not on the rect measured when it opened. The same rect the lit copy of the opener is
+    /// drawn at, handed in before every draw.
+    pub fn track_opener(&mut self, drawn: Rect) {
+        self.from = Some(drawn);
+    }
     /// (re)open: restart the fade+slide from 0.
     pub fn open(&mut self) {
         self.from = None;

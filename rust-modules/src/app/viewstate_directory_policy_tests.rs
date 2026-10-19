@@ -654,7 +654,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         "a completion from a worker started before reset must not land in the post-reset store");
 }
 
-/// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second
+/// The account-menu lift (`Rig::lift_bar_member`) is a second PAINT of this bridge's captured chrome, not a second
 /// publication. Changing the process globals after A captured must not make A draw B's chip.
 #[test]
 fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
@@ -675,10 +675,9 @@ fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
         ..Default::default()
     }), 41);
 
-    let ar = <Bridge as plx_ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&a)
-        .expect("a bar-wearing bridge publishes lift chrome");
-    let br = <Bridge as plx_ui::dispatch::Rig<AppHost>>::scrim_chrome_read(&b)
-        .expect("the second bridge publishes its own lift chrome");
+    // the lift (`Rig::lift_bar_member`) reads exactly this: the bridge's own captured chrome
+    let ar = a.chrome.read(0.0);
+    let br = b.chrome.read(0.0);
     assert_eq!(ar.profile.name.to_bytes(), b"Owner A");
     assert_eq!(ar.profile.initial.to_bytes(), b"A");
     assert_eq!(ar.labels.faces, [plx_ui::widgets::TabFace::Label("Home".into()), plx_ui::widgets::TabFace::Label("Movies".into()), plx_ui::widgets::TabFace::Icon(plx_ui::icons::Icon::Search)]);

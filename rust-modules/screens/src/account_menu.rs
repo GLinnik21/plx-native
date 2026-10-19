@@ -329,7 +329,8 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
         let switch_refused = H::auth(cx).0.switch_refused;
         match ev {
             ScreenEvent::Mount => {
-                self.popover.open_from(Some(plx_ui::widgets::CHIP_PILL));
+                // the origin is the chip's LIVE drawn rect, handed in before every draw (`opener_rect`)
+                self.popover.open_from(None);
                 self.build(switch_refused)
             }
             // However the surface was dismissed (BACK, a pick, the host's own press), the panel
@@ -446,16 +447,23 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel grows out of
-    /// ([`plx_ui::widgets::CHIP_PILL`], the morph's origin) and the only thing on screen the panel
-    /// is about, so dimming it under its own menu is the same bug the focused card had. It is lit
-    /// above the panel too (`ModalStack::draw_lifts`), so the glass grows out from under it. Only
-    /// the DRAW half of the legacy `Opener` is used: the panel's settled placement is its own (it
-    /// hangs under the top bar); the chip's rect is where the morph starts and ends.
+    /// The CHIP is this menu's opener, like a header pill is the Library menu's: the dispatcher's one
+    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel,
+    /// so the glass grows out from under it. The chip is chrome the bar draws, so it is named as a
+    /// bar member rather than a page element.
+    fn bar_opener(&self) -> Option<u32> {
+        Some(plx_ui::widgets::TAB_KEY_CHIP)
+    }
+    /// The chip's LIVE drawn rect (the bar's tuck and its unfurl included): the rect the morph starts
+    /// and ends on, re-read every frame, so a chip that moves while the menu opens or closes is
+    /// followed (the Watchlist tucks the bar). The panel's settled placement is its own.
+    fn opener_rect(&mut self, drawn: plx_ui::Rect) {
+        self.popover.track_opener(drawn);
+    }
+    /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
+    /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
     fn scrim(&self) -> Scrim {
-        // The COMPACT role, as every menu hung off a chip: how dark the page goes behind this menu,
-        // the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
-        Scrim::lifting(plx_ui::theme::underlay::DIM_COMPACT, plx_ui::widgets::redraw_profile_chip)
+        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {

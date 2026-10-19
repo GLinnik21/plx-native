@@ -120,42 +120,50 @@ fn the_page_pass_is_the_only_place_a_scrim_is_asked_for() {
     assert_eq!(modal_of(&d, id).scrim_at.get(), once, "a surfaces-only pass draws no dim");
 }
 
-/// **A surface's lift is NOT drawn with its dim** (`ModalStack::draw_lifts`): the element a
-/// morphing panel grows out of (the profile chip) is lit above the dim AND the panel, after every
-/// surface has drawn, so the glass grows out from under it and shrinks back into it. Red while the
-/// lift was called from `draw_scrims_on`, right after the dim and before any surface: the glass
-/// covered the chip it came from. The lift is asked for in the page pass that paints the dim and
-/// SPENT by the draw that follows it, so a surfaces-only pass repaints none and no frame draws one
-/// twice. (The order against the panel is the dispatcher's; a host test has no GL context to
-/// draw a dim through, so the dispatcher's call sits where `draw_lifts` is documented to.)
+/// **A bar member is lifted by the ONE opener pass, once per frame, where the chrome pass drew it**
+/// (N-a): the profile chip is a surface's opener like a header pill or a card, so
+/// `Dispatcher::lifted_opener` answers for it and the `Z::OPENER` pass asks the rig to redraw it lit
+/// above the dim and the panel (`Rig::lift_bar_member`) on the stack's latched field. There is no
+/// second path (`ModalStack::draw_lifts`, `Scrim::lift`, `redraw_profile_chip` are gone). Red on the
+/// tree where the chip was lifted by `draw_lifts`: `lifted_opener` answered `None` for it, and the
+/// surface was never told where the chip is drawn.
+///
+/// The lift lies on the presentation the chrome pass drew the bar with, so a TUCKED bar is lifted at
+/// its tucked position and alpha, and the surface hanging from it is handed that same rect before it
+/// draws (`Screen::opener_rect`) for its morph to start and end on. A surfaces-only pass owes no lift.
 #[test]
-fn a_surfaces_lift_waits_for_its_own_draw_and_is_spent_by_it() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static LIFTS: AtomicUsize = AtomicUsize::new(0);
-    fn lift(_: crate::screen::ScrimLiftRead<'_>) {
-        LIFTS.fetch_add(1, Ordering::Relaxed);
-    }
+fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presentation() {
     let _guard = plx_base::testlock::serial();
     let (mut d, mut rig, _) = booted();
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    let modal = modal_mut(&mut d, id);
-    modal.scrim_alpha = 0.5;
-    modal.scrim_lift = Some(lift);
+    let host = d.nav.top_page().map(|e| e.id).expect("the booted page");
+    // no dim declared: a host test has no GL context to paint one through, and the lift is the
+    // opener's, not the dim's
+    modal_mut(&mut d, id).bar_opener = Some(7);
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
-    LIFTS.store(0, Ordering::Relaxed);
-    let mut fb = FakeFb::new(0.5);
-    dims_frame(&mut d, &rig, &mut fb);
-    assert_eq!(LIFTS.load(Ordering::Relaxed), 0, "the dim pass draws no lift: the surfaces are still to draw");
-    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_lifts(Some(read));
-    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "the lift is drawn after the surfaces, once");
-    d.nav.modals.draw_lifts(Some(read));
-    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "…and spent: a surfaces-only pass owes none");
-    // a walk whose ceiling is below the opener layer asks for nothing and still spends them
-    dims_frame(&mut d, &rig, &mut fb);
-    d.nav.modals.draw_lifts(None);
-    d.nav.modals.draw_lifts(Some(read));
-    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "a skipped walk does not leave a lift for the next");
+    let chip = FocusKey { entry: host, elem: 7 };
+    assert_eq!(d.lifted_opener(), Some((host, Some(chip))), "the chip is the surface's opener, hosted by the page on top");
+
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    rig.bar_lifts.clear();
+    d.draw(&mut rig, true);
+    assert_eq!(rig.bar_lifts.len(), 1, "one lift in a drawn frame");
+    assert_eq!(rig.bar_lifts[0].0, 7);
+    d.draw(&mut rig, true);
+    assert_eq!(rig.bar_lifts.len(), 2, "one lift per drawn frame, not one per surface-and-pass");
+    d.draw(&mut rig, false);
+    assert_eq!(rig.bar_lifts.len(), 2, "a surfaces-only pass owes none: the bar and its dim were not drawn");
+
+    // a half-tucked bar: the lift, and the rect the surface is told, are where the bar is drawn
+    let page = d.nav.tabs.stack.top_mut().unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap();
+    page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = 0.5;
+    d.draw(&mut rig, true);
+    let lift = crate::screen::chrome_lift(0.5);
+    let (_, presented) = *rig.bar_lifts.last().unwrap();
+    assert_eq!(presented.chrome_lift, lift, "the lift lies on the tucked presentation the chrome pass drew");
+    assert!((presented.chrome_alpha - 0.5).abs() < 1e-6, "…at its faded alpha");
+    assert_eq!(modal_of(&d, id).opener_seen.last().copied(), Some(crate::Rect::new(76.0, 40.0 - lift, 60.0, 60.0)),
+        "the surface is handed the live drawn rect of the opener");
 }
 
 /// An `Opaque` surface is the mechanism's one documented boundary: it REPLACES its host once the
@@ -198,50 +206,6 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     // settled and no transition: exactly what the surface declared
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
-}
-
-/// The production dispatcher supplies one borrowed chrome projection to the bare lift callback;
-/// it must include the profile, labels and the material the normal chrome draw just published.
-#[test]
-fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static SEEN: AtomicBool = AtomicBool::new(false);
-    fn lift(read: crate::screen::ScrimLiftRead<'_>) {
-        let chrome = read.chrome.expect("the fixture rig supplied chrome");
-        assert_eq!(chrome.profile.name.to_bytes(), b"Captured A");
-        assert_eq!(chrome.profile.initial.to_bytes(), b"A");
-        // The fixture seeds captured words verbatim; the lift sees exactly what it was given.
-        assert_eq!(chrome.labels.faces, [super::super::widgets::TabFace::Label("Home".into()),
-            super::super::widgets::TabFace::Label("Movies".into()),
-            super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)]);
-        assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
-        let face = read.bar_material.expect("the frame plan supplied the tab face");
-        assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
-        SEEN.store(true, Ordering::Relaxed);
-    }
-
-    let _guard = plx_base::testlock::serial();
-    SEEN.store(false, Ordering::Relaxed);
-    let (mut d, mut rig, _) = booted();
-    rig.seed_scrim_chrome_for_test("Captured A", "A", &[super::super::widgets::TabFace::Label("Home".into()),
-        super::super::widgets::TabFace::Label("Movies".into()),
-        super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)], 0.625);
-    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    let modal = modal_mut(&mut d, id);
-    modal.scrim_alpha = 0.5;
-    modal.scrim_lift = Some(lift);
-    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
-    let mut glass = crate::frame::glass::GlassPlan::new();
-    glass.set_tab_face_for_test(plx_gfx::gfx::GlassFace {
-        scrim_top: [0.1, 0.2, 0.3, 0.4],
-        scrim_bot: [0.5, 0.6, 0.7, 0.8],
-        rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,
-    });
-    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(&rig, Some(&glass));
-    let lifts = d.nav.modals.scrims(1.0);
-    assert_eq!(lifts.len(), 1, "the live surface contributes exactly one lift");
-    (lifts[0].2)(read);
-    assert!(SEEN.load(Ordering::Relaxed), "the dispatcher never invoked the lift callback");
 }
 
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
@@ -591,7 +555,7 @@ fn no_surface_states_its_own_dim_weight() {
         let src = std::fs::read_to_string(f).unwrap();
         for (n, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            let hit = ["Scrim::dim(", "Scrim::lifting(", "Scrim::over_video(", ".scrim("]
+            let hit = ["Scrim::dim(", "Scrim::over_video(", ".scrim("]
                 .iter()
                 .any(|c| literal_after(code, c))
                 || code.contains("const SCRIM_A")
@@ -719,7 +683,7 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
 /// while the dispatcher never called `Screen::redraw_focused`.
 ///
 /// `draw(.., false)` is the surfaces-only second call: it draws no dim and so owes no
-/// `Scrim::lift` (`a_surfaces_lift_waits_for_its_own_draw_and_is_spent_by_it`), but the page opener
+/// the bar opener's lift (`a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presentation`), but the page opener
 /// is not a dim's lift and is owed on every plan the host is not REPLACED on. The stand-down rule
 /// (the lift stops once focus left the opener while the menu fades) is `lifted_opener`'s, so it
 /// holds for both.
@@ -2016,7 +1980,7 @@ fn a_fully_tucked_chrome_band_is_not_drawn_at_all() {
 
 /// **A chrome frame the dispatcher skips leaves the bar's material Flat.** The material (flat capsule or
 /// the glass track's solved face) is what the bar's draw publishes into the `GlassPlan` for the chip and
-/// for the account menu's chip lift (`scrim_lift_read`); a skipped frame publishes nothing, so without a
+/// for the account menu's chip lift (`Rig::lift_bar_member`); a skipped frame publishes nothing, so without a
 /// reset they read the LAST DRAWN frame's face, for a bar that is not on screen.
 ///
 /// The fixture's `draw_chrome` never touches the band (a real bar's draw resets it first, then solves),

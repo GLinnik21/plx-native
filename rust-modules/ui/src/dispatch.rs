@@ -241,11 +241,17 @@ pub trait Rig<H: Host> {
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
     fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>,
         _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {}
-    /// The captured shared-chrome publication this frame for a `Scrim::lift` that redraws part of
-    /// that bar over a surface's dim (spec phase 12, PX-WIDGETS; today's one caller is the account
-    /// menu's chip lift). [`scrim_lift_read`] combines this borrow with the material published by
-    /// the application-owned `GlassPlan`. `None` is correct for a rig with no such bar.
-    fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> { None }
+    /// **Where the shared bar's member `elem` is DRAWN this frame**, under `presented` (the host page's
+    /// tuck, [`chrome_presented`]): its resting rect through the tuck, the rect the lit copy of an
+    /// opener is drawn at and a surface's morph starts and ends on. `None` for a rig with no such
+    /// member (the default).
+    fn bar_member_rect(&self, _elem: H::Elem, _presented: super::screen::NavPresentation) -> Option<super::Rect> { None }
+    /// **Redraw the bar member `elem` lit above the dim AND the panel** (the Z::OPENER lift pass, for
+    /// a surface whose [`Screen::bar_opener`] is that member — the profile chip), at the position and
+    /// alpha the chrome pass drew it with (`presented`), on `ground`, the stack's latched underlay
+    /// field (the frozen ground; no live glass over a page), and `material`, this frame's tab face.
+    fn lift_bar_member(&mut self, _elem: H::Elem, _presented: super::screen::NavPresentation,
+        _material: Option<plx_gfx::gfx::GlassFace>, _ground: &super::underlay::UnderlayField) {}
     /// Coexistence adapter for a legacy overlay which freezes an owned host (phase 10 retirement).
     fn page_updates(&self) -> bool { true }
     /// The application lifts its legacy host-cache cull before drawing an owned surface.
@@ -278,17 +284,6 @@ fn chrome_presented<H: Host>(navigation: super::screen::NavPresentation, screen:
 {
     let presented = navigation.tucked(screen.chrome_tuck());
     presented.chrome_drawn().then_some(presented)
-}
-
-pub fn scrim_lift_read<'a, H: Host>(
-    rig: &'a dyn Rig<H>,
-    glass: Option<&crate::frame::glass::GlassPlan>,
-) -> super::screen::ScrimLiftRead<'a> {
-    super::screen::ScrimLiftRead {
-        chrome: rig.scrim_chrome_read(),
-        bar_material: glass.and_then(super::frame::glass::GlassPlan::tab_face),
-        field: None,
-    }
 }
 
 pub struct Split<'a, H: Host> {
@@ -707,19 +702,32 @@ where
     /// itself and the lift stands down. While the menu is open the engine's focus is on the menu's
     /// own rows, so the lift always paints then.
     pub fn lifted_opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
+        self.lift_target().map(|(entry, opener, _)| (entry, opener))
+    }
+
+    /// [`Self::lifted_opener`]'s decision with the kind of the opener: `true` when it is a member of the
+    /// shared bar ([`Screen::bar_opener`], hosted by the page on top), `false` for a page element
+    /// ([`Screen::opener`]). One decision and one stand-down rule for both.
+    fn lift_target(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>, bool)> {
         use super::containers::modal::Phase;
-        let (surface, (entry, opener)) = self.nav.modals.surfaces.iter()
-            .find_map(|s| Some((s, s.entry.inst.as_ref()?.screen.opener()?)))?;
+        let (surface, (entry, opener, bar)) = self.nav.modals.surfaces.iter().find_map(|s| {
+            let screen = &s.entry.inst.as_ref()?.screen;
+            let found = screen.opener().map(|(entry, key)| (entry, key, false)).or_else(|| {
+                let host = self.nav.top_page()?.id;
+                Some((host, Some(FocusKey { entry: host, elem: screen.bar_opener()? }), true))
+            })?;
+            Some((s, found))
+        })?;
         if self.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
         if surface.phase == Phase::Closing {
             let live = self.focus().filter(|k| k.entry == entry);
             // focus moved off the opener: the lift stands down, unless the opener LEFT the page and
             // is still drawn going (a removed card's ghost), which the lift keeps above the dim
-            let departing = || opener.is_some_and(|k| self.nav.entry(entry).and_then(|e| e.inst.as_ref())
+            let departing = || !bar && opener.is_some_and(|k| self.nav.entry(entry).and_then(|e| e.inst.as_ref())
                 .is_some_and(|i| i.screen.opener_departing(k)));
             if live.is_some() && live != opener && !departing() { return None; }
         }
-        Some((entry, opener))
+        Some((entry, opener, bar))
     }
 
     /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the
@@ -1407,7 +1415,7 @@ where
                 layers.push(Layer { z:Z::surface(index), rect:canvas(), blocks:true, revision:0, composite_alpha:None });
             }
         }
-        if self.nav.modals.scrims(page_alpha).iter().any(|(_,a,_)| *a >= 1.0) {
+        if self.nav.modals.scrims(page_alpha).iter().any(|(_,a)| *a >= 1.0) {
             layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0, composite_alpha:None });
         }
         layers
@@ -1478,7 +1486,24 @@ where
         // what the page should show, so it is re-taken and the card sections say again whether
         // they left a card out (`popover::set_lift_owns`). Source and discovery walks neither
         // decide nor re-take: they redraw the page the visible pass is about to show.
-        let page_lift = self.lifted_opener();
+        let target = self.lift_target();
+        let page_lift = target.filter(|t| !t.2).map(|(entry, key, _)| (entry, key));
+        // A bar member (the profile chip) is lifted by the same pass, drawn where the chrome pass
+        // drew it: the host page's tuck is part of that, and the surface hanging from it is told
+        // the rect (`Screen::opener_rect`) before it draws, so its morph rides the live opener.
+        let bar_lift = target.filter(|t| t.2).and_then(|(entry, key, _)| {
+            let elem = key?.elem;
+            let host = self.nav.tabs.stack.top().filter(|e| e.id == entry)?.inst.as_ref()?;
+            let presented = chrome_presented::<H>(navigation, &*host.screen)?;
+            Some((elem, presented, rig.bar_member_rect(elem, presented)))
+        });
+        if let Some((_, _, Some(rect))) = bar_lift {
+            for s in &mut self.nav.modals.surfaces {
+                if let Some(inst) = s.entry.inst.as_mut().filter(|i| i.screen.bar_opener().is_some()) {
+                    inst.screen.opener_rect(rect);
+                }
+            }
+        }
         let lifted = page_lift.and_then(|(_, key)| key);
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
         if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && lifted != self.lifted_last {
@@ -1795,8 +1820,10 @@ where
         //   surfaces-only second call (`bridge::PagePlan::LegacyThenSurfaces`) owes it too, and a
         //   replaced host owes none (`SurfacesOnly`). It stands down by `lifted_opener`'s rule once
         //   focus leaves the opener while the menu fades.
-        // - each surface's `Scrim::lift` (`ModalStack::draw_lifts`), the profile chip: chrome the
-        //   shared bar draws, asked for in the page pass that painted the dim and spent here.
+        // - the shared BAR's member the surface hangs from (`Screen::bar_opener`: the profile chip),
+        //   by the rig (`Rig::lift_bar_member`) on the stack's latched ground, at the position and
+        //   alpha the chrome pass drew it with. Chrome the page does not own, so not a
+        //   `redraw_focused`; the same pass, the same layer, the same stand-down rule.
         if Z::OPENER < ceiling {
             let _lift_layer = backdrop::layer(Z::OPENER, false);
             let _scope = rig.surface_scope();
@@ -1812,11 +1839,10 @@ where
                         screen.redraw_focused(&mut DrawFrame::with_navigation(&lift_cx, Painter::root(), navigation), focus);
                     }
                 }
-                let read = scrim_lift_read(&*rig, glass.as_deref());
-                modals.draw_lifts(Some(read));
+                if let Some((elem, presented, _)) = bar_lift.filter(|_| pages) {
+                    rig.lift_bar_member(elem, presented, glass.as_deref().and_then(super::frame::glass::GlassPlan::tab_face), modals.lift_field());
+                }
             });
-        } else {
-            modals.draw_lifts(None);
         }
         if drain_surface_text && !capture_surface && !source_pass && warm_budget_us > 0 {
             plx_base::diag::spans::span("warmdrain", || plx_gfx::text::drain_prewarm(warm_budget_us, || rig.now_us()));

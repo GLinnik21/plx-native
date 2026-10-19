@@ -1803,11 +1803,23 @@ impl Rig<AppHost> for Bridge {
             glass.tab_face(),
         );
     }
-    /// See [`plx_ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
-    /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
-    /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
-    fn scrim_chrome_read(&self) -> Option<plx_ui::widgets::ChromeRead<'_>> {
-        Some(self.chrome.read(self.strip.chip_expand_pos()))
+    /// The chip's DRAWN rect: `chip_cap` at the strip's live unfurl and the captured name's width,
+    /// through the host page's tuck (`presented`), exactly what [`Bridge::draw_chrome`] draws.
+    fn bar_member_rect(&self, elem: u32, presented: plx_ui::screen::NavPresentation) -> Option<plx_ui::Rect> {
+        (elem == plx_ui::widgets::TAB_KEY_CHIP).then(|| {
+            let chrome = self.chrome.read(self.strip.chip_expand_pos());
+            presented.chrome_rect(plx_ui::widgets::chip_cap(chrome.chip_expand.clamp(0.0, 1.0), chrome.profile.name_w))
+        })
+    }
+    /// The account menu's chip lift (the dispatcher's `Z::OPENER` pass): the SAME captured profile and
+    /// unfurl [`Bridge::draw_chrome`] used, on the same painter (the host page's tuck, alpha and
+    /// lift), over the stack's frozen ground. The material is this frame's tab face from `GlassPlan`.
+    fn lift_bar_member(&mut self, elem: u32, presented: plx_ui::screen::NavPresentation,
+        material: Option<plx_gfx::gfx::GlassFace>, ground: &plx_ui::underlay::UnderlayField) {
+        if elem != plx_ui::widgets::TAB_KEY_CHIP { return; }
+        let chrome = self.chrome.read(self.strip.chip_expand_pos());
+        let p = plx_ui::Painter::root().alpha(presented.chrome_alpha).translate(0.0, -presented.chrome_lift);
+        plx_ui::widgets::lift_profile_chip(p, chrome.profile, chrome.chip_expand, material, ground);
     }
     fn page_alpha(&self) -> f32 { plx_ui::nav::page_alpha() }
     fn navigation_presentation(&self) -> plx_ui::screen::NavPresentation {
