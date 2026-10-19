@@ -1,6 +1,9 @@
 //! Owned collection page: a Person-like header over a stable six-column portrait grid. The
 //! Collection store owns resolution and paging; this screen owns only presentation state and the
 //! identity→element registry that lets Back restore the exact member tile.
+//! The heading is the page's own big title, so BACK is named the Settings family's way: "‹ Collections"
+//! (the parent page's own title) above the title, in the title column, through the one shared
+//! crumb painter ([`route_screen::draw_back_crumb`]); it is not focusable, and BACK already returns.
 //! The page is a `plx_ui::cards::Stack` of three sections (`Sec`): the head (drawn here, one focus
 //! element when the summary truncates), the member grid (this screen supplies its `CardSource`) and
 //! the status read-outs. The stack owns the layout, the one scroll, the groups and their seats,
@@ -23,6 +26,7 @@ use plx_machine::present::Provenance;
 use plx_ui::screen::{At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind,
     FocusSource, Focusable, GroupKind, GroupSpec, HitSource, Link,
     RenderStrategy, Screen, ScreenEvent, Seat};
+use plx_ui::route_screen::{self, CRUMB_BAND, CRUMB_RISE};
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
 use plx_ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
@@ -500,6 +504,18 @@ impl Page {
         Rect::new(COL_X, HEADER_TOP - scroll, TEXT_W, ART_H)
     }
 
+    /// The crumb's band, scrolled with the document: in the title column, ending one
+    /// `space::SM` above the title's cap top ([`CRUMB_RISE`] above `HEADER_TOP`). It sits in the
+    /// page's top margin, so the art, the title and every row below keep the lines they had; a test
+    /// grades that the band stays inside the safe area.
+    fn crumb_band(scroll: f32) -> Rect {
+        Rect::new(COL_X, HEADER_TOP - CRUMB_RISE - scroll, TEXT_W, CRUMB_BAND)
+    }
+
+    /// The place BACK returns to, named by the parent page's own title string (the Library's
+    /// Collections page heads itself with the same catalog entry).
+    fn back_to() -> &'static str { plx_platform::i18n::msg::browse_kind_collections() }
+
     /// The collection's art, scrolled with the document.
     fn art_rect(scroll: f32) -> Rect {
         Rect::new(MARGIN_X, HEADER_TOP - scroll, ART_W, ART_H)
@@ -511,6 +527,7 @@ impl Page {
         let alpha = head_alpha(scroll);
         if alpha <= 0.0 { return; }
         let p = p.alpha(alpha);
+        route_screen::draw_back_crumb(p, Self::crumb_band(scroll), Self::back_to(), measure);
         let art = Self::art_rect(scroll);
         let name = if collection.title.is_empty() { &collection.id.name } else { &collection.title };
         if collection.header_ready() && collection.thumb.is_empty() {
@@ -1030,7 +1047,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
-    fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { None }
+    fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { Some(std::borrow::Cow::Borrowed(Page::back_to())) }
     fn prepare(&mut self, _budget: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
@@ -1413,6 +1430,39 @@ mod tests {
             plx_gfx::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
         });
         assert!(runs.iter().any(|run| run == parent), "the frame draws {parent:?}: {runs:?}");
+    }
+
+    /// **S21b geometry.** The crumb is in the title column, its band ends one `space::SM` above the
+    /// title's cap top, it shares no pixel with the art, the whole band is inside the safe area,
+    /// and it takes nothing from the page below: the art, the title and the grid keep the lines
+    /// `the_header_and_grid_sit_on_the_mocks_lines` pins, so the Items row's focused caption still
+    /// ends inside the safe area's bottom edge.
+    #[test]
+    fn the_crumb_sits_above_the_title_clear_of_the_art_and_inside_the_safe_area() {
+        let band = Page::crumb_band(0.0);
+        let column = Page::header_rect(0.0);
+        let art = Page::art_rect(0.0);
+        assert_eq!((band.x, band.w, band.h), (COL_X, TEXT_W, CRUMB_BAND), "the title column, the family's band");
+        assert_eq!(column.y - (band.y + band.h), theme::space::SM, "one SM of air above the title");
+        assert!(band.y + band.h <= art.y && band.x >= art.x + art.w,
+            "above the title and clear of the art: {band:?} / {art:?}");
+        assert!(inside_safe(band), "the band is required content: {band:?}");
+        assert!(GRID_TOP + CARD_H + ui_cards::UNDER_LABEL_H <= SAFE.y + SAFE.h,
+            "the Items row's focused caption ends inside the safe area");
+        assert_eq!(Page::crumb_band(120.0).y, band.y - 120.0, "it scrolls away with the head");
+    }
+
+    /// The crumb is the family's own painter and nothing else: this screen draws no chevron, sets
+    /// no caption type and names no ink of its own for it (`route_screen::draw_back_crumb` owns the
+    /// mark, the offsets and the type).
+    #[test]
+    fn the_crumb_is_drawn_by_the_shared_painter_and_names_no_glyph_here() {
+        let source = include_str!("collection.rs");
+        let production = &source[..source.find("#[cfg(test)]\nmod tests {").expect("the test module")];
+        assert!(production.contains("route_screen::draw_back_crumb("), "the screen calls the shared painter");
+        for private in ["ChevronLeft", "size::CAPTION", "TEXT_TERTIARY"] {
+            assert!(!production.contains(private), "a screen-local crumb primitive: {private}");
+        }
     }
 
     /// C2: scrolling to a lower row rests the first visible row on the content edge, with the
