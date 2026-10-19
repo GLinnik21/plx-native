@@ -201,6 +201,20 @@ impl Harness {
         Screen::<WatchHost>::redraw_focused(&self.screen, &mut f, focus);
     }
 
+    /// The opener lift's frame for `focus`, with what it declared: its primitives as `(tag, screen
+    /// rect)` and its text runs with their ink. A recording painter OUTSIDE a discovery walk, which
+    /// is the only place a run's ink is noted.
+    pub(crate) fn lift_census(&mut self, focus: Option<FocusKey<u32>>) -> (Vec<(u64, Rect)>, Vec<plx_ui::draw_census::Run>) {
+        use plx_ui::screen::Screen;
+        let cx = self.cx();
+        let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let mut prims = Vec::new();
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            prims = plx_ui::draw_census::capture(|| Screen::<WatchHost>::redraw_focused(&self.screen, &mut f, focus));
+        });
+        (prims, runs)
+    }
+
     /// Step one event; returns the effects it queued and whether the step reported page motion.
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();

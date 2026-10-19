@@ -706,8 +706,8 @@ impl<H: ContentLike> StackPage<H> for Page {
         match k {
             Sec::Head => {
                 // The row rides the page: its frame is the section's own top, scroll included.
-                // While the Sort & Filter menu is up the control is the menu's (its `opener`,
-                // lifted out of this pass): the menu draws the only copy, dissolving into its panel.
+                // While the Sort & Filter menu is up the control is the opener lift's (its `opener`,
+                // left out of this pass): `redraw_focused` draws the only copy, lit above the scrim.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
                 // The header row leaves with the top chrome and returns with it, on the handoff's
                 // one clock (`scroll_chrome`): no ramp of its own, so a scrolled page leaves no
@@ -907,6 +907,18 @@ impl WatchlistScreen {
     /// The tile showing element `elem`.
     pub fn index_of(&self, elem: u32) -> Option<usize> {
         self.page.index.get(&elem).copied()
+    }
+
+    /// **The Sort & Filter control, lit above its menu's scrim** (the opener lift, design review
+    /// S12): painted as the focused control at the row's drawn place, with the head's own tuck
+    /// alpha, since the page's pass leaves it out while the menu is up. A control scrolled out of
+    /// the head (`head_alpha` 0) draws nothing, as the row would not.
+    fn redraw_opener<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+        let Some(placed) = Focusable::<H>::place(self, &PILL_ELEM, f.cx, plx_ui::screen::At::Drawn) else { return };
+        let row = self.page.header_row(f.measure);
+        let dy = placed.rect.y - row.plate().y;
+        let p = f.painter.alpha(f.page_alpha).alpha(head_alpha(-dy));
+        row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press.scale));
     }
 
     /// The Sort & Filter control as the focused pill draws it, in the page's document space: the
@@ -1536,6 +1548,9 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
         Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
     }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
+        if focus.is_some_and(|key| key.entry == self.page.entry && key.elem == PILL_ELEM) {
+            return self.redraw_opener(f);
+        }
         self.stack.view(&self.page).redraw_focused(f, focus);
     }
     fn opener_departing(&self, key: FocusKey<u32>) -> bool {

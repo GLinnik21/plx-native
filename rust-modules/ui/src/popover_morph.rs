@@ -2,9 +2,14 @@
 //! sliding in on [`crate::popover::K_APPEAR`]. Selected per popover (see
 //! [`crate::popover::Popover::morphing`], the ONE selector; open it with
 //! [`crate::popover::Popover::open_from`] and the opener's rect, and `Popover::panel` lays the glass
-//! at full strength at the morphing rect and radius while the opener's plate fades off it; only
-//! the fade-and-slide fallback fades the glass in). The item hold
-//! menu is not a morph: it keeps the opener lift and the shared appear.
+//! at full strength at the morphing rect and radius; only the fade-and-slide fallback fades the glass
+//! in). The item hold menu is not a morph: it keeps the opener lift and the shared appear.
+//!
+//! **The shipped header menus (Library and Watchlist Sort & Filter, the Library's `+N`) morph the
+//! GLASS ONLY.** Their opener is not part of the morph: the host's opener lift paints it lit above
+//! the scrim AND the panel for as long as the menu is up (design review S12), so the glass grows
+//! out from under a pill that never changes. The plate and label factors below describe the
+//! opener face a caller MAY draw itself (`Popover::morph_face`); no product surface does.
 //!
 //! Source: design board `Motion`, card "Sort & Filter" (end state `WatchlistOptions`): the label
 //! pill becomes a panel that fits its rows while the label dissolves into them. The board states
@@ -24,7 +29,7 @@
 //!
 //! - the FILL crosses from the opener's own (the focused pill's accent plate) to the glass over
 //!   the first [`FILL_AT`] of the progress, a smoothstep: the glass is laid at full strength under
-//!   the plate and the plate fades off it ([`Frame::pill_alpha`] `= 1 -` [`Frame::ground_alpha`]),
+//!   the plate and, for a caller that draws one, the plate fades off it ([`Frame::pill_alpha`] `= 1 -` [`Frame::ground_alpha`]),
 //!   so the surface is covered on every frame, and there is never a frame with no pill and no
 //!   glass. The opener's LABEL has its own, longer ramp ([`Frame::label_alpha`], to
 //!   [`LABEL_GONE_AT`]): it dissolves into the rows as they come, and a close brings it back while
@@ -34,11 +39,9 @@
 //!   larger than the pill. They are clipped to the current rect (`Popover::morph_rows`), so no row
 //!   ever draws outside the surface.
 //!
-//! A close runs the same curve backwards and ends ON the opener: plate and label at full strength
-//! at the pill's rect and radius, which is what the page draws there once the menu has gone. The
-//! plate's colour is the caller's: the pill AS IT WILL REST (focused when focus returns to it, the
-//! idle fill when focus went elsewhere), so the glass never passes through a colour the pill will
-//! not have.
+//! A close runs the same curve backwards and ends ON the opener: the glass back at the pill's rect
+//! and radius (and, for a caller that draws a face, its plate and label at full strength, in the
+//! colour the pill will REST in, so the glass never passes through one it will not have).
 //!
 //! **No measured opener, no morph.** [`Frame`] with `from == None` is the fade+scale FALLBACK:
 //! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and its glass fades in on

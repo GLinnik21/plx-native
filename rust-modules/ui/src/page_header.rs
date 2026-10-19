@@ -36,7 +36,7 @@ use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 use super::breadcrumb::{self, Crumb};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
+use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
@@ -354,24 +354,25 @@ impl PageHeader {
     /// Draw the row: the plates first (the selection's, then the focus capsule over it, through
     /// the top bar's own [`TabStrip`]), then the `›` and every label inked by what is under it, pixel
     /// by pixel, so a label wears a capsule's ink exactly where the capsule is and not before. `pop` is the
-    /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is a
-    /// control a menu has taken out of the page (`DrawFrame::lifted`): the focus capsule is gone
-    /// from the row, and the control's label stays as plain text or goes ([`Lift`]).
-    pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>) {
+    /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is the
+    /// index of a control a menu has taken out of the page (`DrawFrame::lifted`): the row draws
+    /// none of it, no capsule and no label, because [`Self::draw_opener`] paints its only copy,
+    /// focused, above the menu's scrim (design review S12: one rule for every opener).
+    pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<usize>) {
         self.draw_with(p, layout, capsules, pop, lifted, &HeaderSwap::new());
     }
 
     /// [`Self::draw`] on a row that is changing under the reader: the controls `swap` carries are
     /// painted as it says (a value cross-fading in place, a control leaving or arriving), every
     /// other face as `draw` paints it.
-    pub fn draw_with(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>, swap: &HeaderSwap) {
+    pub fn draw_with(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<usize>, swap: &HeaderSwap) {
         let ground = TabGround::Bare { pop, focus: lifted.is_none() };
         capsules.draw(p, layout.top(), HEIGHT, ground);
         if let Some(glyph) = layout.glyph {
             icons::draw(p, Icon::Chevron, glyph, breadcrumb::GLYPH_INK);
         }
         for (index, r) in layout.items.iter().enumerate() {
-            if lifted == Some(Lifted { item: index, lift: Lift::Away }) { continue; }
+            if lifted == Some(index) { continue; }
             let mut face = self.face(r.slot);
             if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i); }
             // Inked by what is under each pixel: a label a capsule's arc is crossing wears the
@@ -386,10 +387,21 @@ impl PageHeader {
         }
     }
 
+    /// **Item `layout.items[index]` as the focused control a menu opened from**: the accent pill
+    /// the focus capsule is (the plate stood out by the pop's outset), and the face inked as the
+    /// focused control wears it. What [`Self::draw`] shows for a focused item, without the row
+    /// around it, so a menu can keep it lit above its scrim.
+    pub fn draw_opener(&self, p: Painter, layout: &HeaderLayout, index: usize, pop: f32) {
+        let Some(r) = layout.items.get(index) else { return };
+        let pill = focus_pill_popped(r.plate, pop);
+        p.rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
+        self.draw_face(p, layout, index, r.plate, true);
+    }
+
     /// Draw item `layout.items[index]`'s face (label, value, fold glyph) with its plate at `to`,
-    /// and no plate of its own: the face a popover's morph carries while it grows out of the
-    /// control (`focused`: the accent ink the focused control wears). The same paint as
-    /// [`Self::draw`]'s, so a menu's opener face cannot drift from the row's.
+    /// and no plate of its own (`focused`: the accent ink the focused control wears). The same
+    /// paint as [`Self::draw`]'s, so the opener's face ([`Self::draw_opener`] is its caller) cannot
+    /// drift from the row's.
     pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
         let Some(r) = layout.items.get(index) else { return };
         self.draw_face_at(p, r.text, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
@@ -457,24 +469,6 @@ impl PageHeader {
                 Rect::new(x + FOLD_GAP, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
         }
     }
-}
-
-/// What a menu that has taken a control out of the row leaves of it on the page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lift {
-    /// The label stays, as plain text at its resting ink (the Library's Sort & Filter over its
-    /// open panel); only the focus capsule under it is gone.
-    Plain,
-    /// The label goes too: the menu draws the control's only copy as the morph's opener face
-    /// ([`PageHeader::draw_face`]), and a second one on the page would be a ghost beside it.
-    Away,
-}
-
-/// A control a menu has lifted out of the row: `item` is an index into `layout.items`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lifted {
-    pub item: usize,
-    pub lift: Lift,
 }
 
 /// What the paint reads of one item.
@@ -557,31 +551,39 @@ impl HeaderRow {
         PageHeader::step(&self.layout, self.page.selected(&self.layout), focused, capsules, pop, dt);
     }
 
-    /// The face of stop `elem` with its plate at `to` and no plate of its own: the opener face a
-    /// popover's morph carries while it grows out of the control (`focused`: the accent ink the
-    /// focused control wears). [`PageHeader::draw_face`] for a stop named by its element.
-    pub fn draw_face(&self, p: Painter, elem: u32, to: Rect, focused: bool) {
-        if let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) {
-            self.page.draw_face(p, &self.layout, *index, to, focused);
+    /// **The opener, focused, above its menu's scrim** (design review S12): stop `elem` as the
+    /// focused control the menu grew out of, `scroll` px up from its document position. The ONE
+    /// paint of an opener for every header menu (Sort & Filter, `+N`): the page's pass leaves the
+    /// control out of the row ([`Self::draw`]'s `lifted`) and `Screen::redraw_focused` calls this
+    /// through the host's opener lift, which runs after the surfaces (above the dim AND the menu's
+    /// panel; `Z::OPENER`), so the panel never covers it. `pop` is the
+    /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
+    pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
+        let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) else { return };
+        let mut layout = self.layout.clone();
+        for item in &mut layout.items {
+            item.text.y -= scroll;
+            item.plate.y -= scroll;
         }
+        self.page.draw_opener(p, &layout, *index, pop);
     }
 
     /// Paint the row `scroll` px up from its document position (it scrolls away with its page).
-    /// `lifted` is the element a menu has taken out of the row, and how ([`Lift`]).
-    pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<(u32, Lift)>) {
+    /// `lifted` is the element a menu has taken out of the row: the row draws none of it
+    /// ([`Self::draw_opener`] is its only copy).
+    pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<u32>) {
         self.draw_with(p, scroll, capsules, pop, lifted, &HeaderSwap::new());
     }
 
     /// [`Self::draw`] while the screen's `swap` carries the row's controls from the row before it.
-    pub fn draw_with(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<(u32, Lift)>, swap: &HeaderSwap) {
+    pub fn draw_with(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<u32>, swap: &HeaderSwap) {
         let mut layout = self.layout.clone();
         for item in &mut layout.items {
             item.text.y -= scroll;
             item.plate.y -= scroll;
         }
         if let Some(glyph) = &mut layout.glyph { glyph.y -= scroll; }
-        let lifted = lifted.and_then(|(elem, lift)| self.stops.iter().find(|(stop, _)| *stop == elem)
-            .map(|(_, item)| Lifted { item: *item, lift }));
+        let lifted = lifted.and_then(|elem| self.stops.iter().find(|(stop, _)| *stop == elem).map(|(_, item)| *item));
         self.page.draw_with(p, &layout, capsules, pop, lifted, swap);
     }
 }

@@ -377,6 +377,54 @@ fn the_plus_n_list_picks_a_library_into_the_last_slot_and_back_picks_nothing() {
     ]);
 }
 
+/// **Every header opener stays the lifted, focused control while its menu is up** (design review
+/// S12): the dispatcher names the page's element as the surface's lifted opener, the one decision
+/// `Bridge::redraw_opener` paints from, for the `+N` list as for Sort & Filter. The `+N` list named
+/// none, so its page capsule sat dimmed under the scrim.
+fn the_menu_lifts_its_opener(stop: &'static str) -> impl Fn(&mut World) -> Vec<String> {
+    move |w: &mut World| {
+        w.frames(30);
+        let want = w.library().probe_header_stops().into_iter().find(|(name, _)| *name == stop).map(|(_, elem)| elem);
+        let page = w.d.nav.top_page().map(|e| e.id);
+        let lifted = crate::app::bridge::opener_lift(&w.d);
+        match (lifted, page, want) {
+            (Some((host, Some(key))), Some(page), Some(elem)) if host == page && key.entry == page && key.elem == elem => Vec::new(),
+            other => vec![format!("the {stop} opener is not the lifted element: {other:?}")],
+        }
+    }
+}
+
+#[test]
+fn the_plus_n_list_and_sort_filter_both_lift_their_opener() {
+    // `end` is a plain `fn`: one per stop, the closure's `stop` carried by the function's body.
+    fn plus_n(w: &mut World) -> Vec<String> { the_menu_lifts_its_opener("more")(w) }
+    fn sort(w: &mut World) -> Vec<String> { the_menu_lifts_its_opener("sort")(w) }
+    run(vec![
+        Row {
+            name: "s12-plus-n",
+            setup: many_libraries,
+            start: "header:name0",
+            steps: vec![
+                press(Key::Right, "", "library", "header:name4"),
+                press(Key::Right, "", "library", "header:more"),
+                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:0:12"),
+            ],
+            end: plus_n,
+        },
+        Row {
+            name: "s12-sort-filter",
+            setup: library,
+            start: "header:collections",
+            steps: {
+                let mut steps = to_sort_filter();
+                steps.push(press(Key::Ok, "library:Menu { kind: SortFilter", "library", "menu:unwatched"));
+                steps
+            },
+            end: sort,
+        },
+    ]);
+}
+
 // ---- R6: Sort & Filter and the "N of M" read-out ---------------------------------------------------
 
 /// The Sort & Filter control, from the Library's arrival on the Collections control.

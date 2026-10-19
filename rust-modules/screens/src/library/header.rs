@@ -314,12 +314,22 @@ impl LibraryScreen {
         let top = layout::HEADER_Y - self.scroll.pos;
         // The pill's outset (2 px) is far inside the cast's padding the band is grown by, so the band needs no pop.
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, 1.0) { return; }
-        // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
-        // menu is its only copy, and the board shows it as plain text while the panel is open.
-        // The dispatcher decides when it stands down (`lifted_opener`: a closing menu whose focus
-        // moved off the opener), so a lift is always the control's whole menu-open stretch, during
-        // which the engine's focus is on the menu's rows and the row's motion HOLDS.
-        let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| (key.elem, page_header::Lift::Plain));
+        // A control a menu has lifted out of the page (`Screen::opener`) is not drawn here at all:
+        // the opener lift is its only copy ([`Self::draw_opener`]), lit above the scrim. One rule
+        // for every header opener (design review S12). The dispatcher decides when it stands down
+        // (`lifted_opener`: a closing menu whose focus moved off the opener), so a lift is always
+        // the control's whole menu-open stretch, during which the engine's focus is on the menu's
+        // rows and the row's motion HOLDS.
+        let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
         row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
+    }
+
+    /// **The opener lift for a header control** (`Screen::redraw_focused`): `elem`, the control a
+    /// menu opened from, painted as the focused one above the menu's scrim, where the page pass
+    /// left it out. Nothing is drawn for an element that is no stop of this row (a card).
+    pub(super) fn draw_header_opener<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>, elem: u32) {
+        let Some(row) = self.header.row() else { return };
+        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
+        row.draw_opener(p, self.scroll.pos, self.header_pop.scale_with(0, f.press.scale), elem);
     }
 }

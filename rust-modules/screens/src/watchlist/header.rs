@@ -7,17 +7,18 @@
 //!
 //! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
 //! travels, the pop) and focus group are the ui's, the same ones the Library, Collections and
-//! Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the menu as the
-//! morph's opener face ([`Row::draw_face`], which is [`PageHeader::draw_face`]: one label renderer
-//! for the row and for the face), so the page's pass leaves it out ([`Row::draw`] with `lifted`).
+//! Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the host's opener
+//! lift, focused, above the menu's scrim ([`Row::draw_opener`], which is [`PageHeader::draw_opener`]:
+//! the one paint every header opener has), so the page's pass leaves it out ([`Row::draw`] with
+//! `lifted`) and the pill stays lit for as long as its panel is up (design review S12).
 //!
 //! The row is built here as a value ([`Row`]) from the measure, the summary and the read-out, and
 //! every consumer (paint, the focus rect, the menu's anchor) reads that one value.
 use plx_machine::machine::Measure;
-use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, Lift, PageHeader, PageHeaderSpec, Slot};
+use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, PageHeader, PageHeaderSpec, Slot};
 #[cfg(feature = "devtriggers")]
 use plx_ui::theme;
-use plx_ui::widgets::{focus_pill, CtlPop, TabStrip, PILL_FOCUS_OUTSET};
+use plx_ui::widgets::{focus_pill, CtlPop, TabStrip};
 use plx_ui::{Painter, Rect};
 
 /// The count the page holds: the whole list, or what a Type / Show filter leaves of it. Only the
@@ -145,22 +146,16 @@ impl Row {
     }
 
     /// Paint the row `dy` px from the document origin (a scrolled page: minus the scroll): the title, the read-out and the control, which the Sort & Filter menu has
-    /// `lifted` out of the page when it is up (the menu draws the only copy).
+    /// `lifted` out of the page when it is up (the opener lift draws the only copy).
     pub fn draw(&self, p: Painter, dy: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
-        self.row.draw(p, -dy, capsules, pop, lifted.then_some((super::page::PILL_ELEM, Lift::Away)));
+        self.row.draw(p, -dy, capsules, pop, lifted.then_some(super::page::PILL_ELEM));
     }
 
-    /// The control as the menu's morph opener face, label only (no plate of its own: the morph
-    /// draws the plate), placed so its plate is `anchor` less the focus outset.
-    pub fn draw_face(&self, p: Painter, anchor: Rect, focused: bool) {
-        self.row.draw_face(p, super::page::PILL_ELEM, anchor.inset(PILL_FOCUS_OUTSET), focused);
+    /// The control as the focused opener of its menu, `dy` px from the document origin
+    /// ([`HeaderRow::draw_opener`]): what the opener lift paints above the scrim.
+    pub fn draw_opener(&self, p: Painter, dy: f32, pop: f32) {
+        self.row.draw_opener(p, -dy, pop, super::page::PILL_ELEM);
     }
-}
-
-/// The plate the menu's morph starts from and ends on: the accent while focus will return to the
-/// control, nothing when focus goes elsewhere (a resting control is plain text).
-pub fn pill_fill(focused: bool) -> [f32; 4] {
-    if focused { plx_ui::ACCENT } else { [0.0; 4] }
 }
 
 /// **The debug build's "write blocked" cue** (Q11): one LABEL line in [`theme::TEXT_SECONDARY`] under

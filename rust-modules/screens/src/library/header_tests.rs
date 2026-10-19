@@ -223,8 +223,8 @@ fn the_plus_n_list_holds_exactly_the_libraries_the_fold_hid() {
     assert!(!page.folded.contains(&current), "nor the library on view");
 }
 
-/// **A control a menu has lifted wears no pill** (board: "Sort & Filter" is plain text over its
-/// open panel); every other focused control still does.
+/// **A control a menu has lifted wears no pill on the page** (the opener lift draws it, lit); every
+/// other focused control still does.
 #[test]
 fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     let _guard = plx_base::testlock::serial();
@@ -244,6 +244,46 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     assert_eq!(drawn(&page, None), 1, "a focused control wears the pill");
     assert_eq!(drawn(&page, Some(key)), 0, "its menu lifted it: no plate under the scrim");
     page.scroll.jump(0.0);
+}
+
+/// **Every header opener stays lit while its menu is open** (design review S12: one rule). Sort &
+/// Filter and `+N` are both lifted out of the page's pass (no capsule, no label: the page draws
+/// none of the control) and the opener lift (`Screen::redraw_focused`) paints each as the focused
+/// control, the accent pill at the focused extent and every run of the face in the focused ink,
+/// above the scrim. The `+N` list used to keep the page's dimmed capsule under the scrim.
+#[test]
+fn every_header_opener_is_lit_by_the_lift_while_its_menu_is_open() {
+    use plx_ui::screen::Screen;
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(12);
+    for elem in [SORTFILTER, MORE] {
+        let key = page.key(elem);
+        engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+        for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
+        let plate = page.header.row().unwrap().plate(elem).expect("the opener is a stop of the row");
+        let pill = plx_ui::widgets::focus_pill(plate);
+        let words = |rect: plx_ui::Rect| rect.cx() > plate.x && rect.cx() < plate.x + plate.w && rect.cy() > plate.y && rect.cy() < plate.y + plate.h;
+
+        // the page's pass, with the opener lifted out of it, draws none of the control
+        let cx = fixture.cx(&engine);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        frame.lifted = Some(key);
+        let left = plx_ui::draw_census::capture_runs(|| page.draw_header(&frame));
+        assert!(!left.iter().any(|run| words(run.at)), "elem {elem}: the page left words on the opener: {left:?}");
+
+        // the lift paints it: one accent pill, the face in the focused ink
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let mut pills = Vec::new();
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            pills = plx_ui::draw_census::capture(|| Screen::<TestHost>::redraw_focused(&page, &mut frame, Some(key)));
+        });
+        let rects: Vec<_> = pills.iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| *r).collect();
+        assert!(rects.len() == 1 && (rects[0].x - pill.x).abs() < 0.5 && (rects[0].w - pill.w).abs() < 0.5 && (rects[0].h - pill.h).abs() < 0.5,
+            "elem {elem}: one accent pill at {pill:?}, got {rects:?}");
+        assert!(!runs.is_empty() && runs.iter().all(|run| words(run.at)
+            && run.ink.iter().zip(plx_ui::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)),
+            "elem {elem}: the face is on the pill, in the focused ink: {runs:?}");
+    }
 }
 
 /// The kinds one descriptive draw of `page`, scrolled one grid pitch (the chrome fully tucked),

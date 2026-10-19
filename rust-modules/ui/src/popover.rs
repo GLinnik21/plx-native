@@ -561,9 +561,9 @@ impl Popover {
     /// own frame painter, so a held surface's walk (the text recorder) reaches it like any other.
     pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
         if self.style == OpenStyle::Morph {
-            // The morph owns the panel's arrival, part by part: the ground (`panel`), the opener's
-            // face (`morph_face`) and the rows (`morph_rows`) each take their own alpha from the
-            // one morph clock. Nothing slides; `rise` is the appear style's. The CONTAINER's
+            // The morph owns the panel's arrival, part by part: the ground (`panel`) and the rows
+            // (`morph_rows`) each take their own alpha from the one morph clock (an opener face,
+            // `morph_face`, would too; the header menus' openers are the host's lift instead). Nothing slides; `rise` is the appear style's. The CONTAINER's
             // appear is not on this painter either: the surface begins and ends as the opener,
             // which is not faded in or out.
             return base.alpha(crate::nav::page_alpha());
@@ -686,11 +686,13 @@ impl Popover {
     /// Call it after [`panel`](Self::panel) and before [`morph_rows`](Self::morph_rows): the
     /// plate fades OFF the glass laid under it.
     ///
-    /// This is the opener's only copy while the surface is up (the page leaves it out,
-    /// `Screen::opener`), and it is drawn whatever the popover's state: at rest before the open
-    /// and after the close it is the opener exactly, at the opener's rect and radius, so the
-    /// surface's first and last frames are the page's own pill. Nothing is drawn for a popover
-    /// that does not morph or has no opener rect.
+    /// A surface that draws the face itself names its opener (`Screen::opener`) so the page leaves
+    /// it out, and draws this whatever the popover's state (at rest it is the opener exactly).
+    /// **No product surface does now:** the header menus (Library and Watchlist Sort & Filter, the
+    /// Library's `+N`) keep their opener lit ABOVE the panel through the host's opener lift (design
+    /// review S12), so only the glass morphs; this stays for a popover whose opener is not a page
+    /// element the host can lift. Nothing is drawn for a popover that does not morph or has no
+    /// opener rect.
     pub fn morph_face(&self, p: Painter, panel: Rect, rad: f32, fill: [f32; 4], label: impl FnOnce(Painter)) {
         if self.style != OpenStyle::Morph || self.from.is_none() {
             return;
@@ -739,9 +741,8 @@ impl Popover {
 
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
     /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
-    /// an opener: the morphing rect and radius, the glass at FULL strength (the opener's plate
-    /// fades off it, `morph_face`) once the fill has begun to cross, and its shadow on the fill's
-    /// share. The fallback: the glass fades in on the fill's share.
+    /// an opener: the morphing rect and radius, the glass at FULL strength once the fill has begun
+    /// to cross (a `morph_face` plate would fade off it), and its shadow on the fill's share. The fallback: the glass fades in on the fill's share.
     fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
