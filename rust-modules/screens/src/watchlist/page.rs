@@ -711,8 +711,9 @@ impl<H: ContentLike> StackPage<H> for Page {
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
                 // The header row leaves with the top chrome and returns with it, on the handoff's
                 // one clock (`scroll_chrome`): no ramp of its own, so a scrolled page leaves no
-                // remnant of the head above its rows.
-                let p = p.alpha(self.handoff.chrome());
+                // remnant of the head above its rows. It also keeps out of the band the drawn chrome
+                // stands in while the scroll is still bringing it home (`Handoff::clearance`).
+                let p = p.alpha(self.handoff.head_alpha(r.y));
                 self.header_row(f.measure).draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
@@ -918,7 +919,7 @@ impl WatchlistScreen {
         let Some(placed) = Focusable::<H>::place(self, &PILL_ELEM, f.cx, plx_ui::screen::At::Drawn) else { return };
         let row = self.page.header_row(f.measure);
         let dy = placed.rect.y - row.plate().y;
-        let p = f.painter.alpha(f.page_alpha).alpha(self.page.handoff.chrome());
+        let p = f.painter.alpha(f.page_alpha).alpha(self.page.handoff.head_alpha(dy));
         row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press.scale));
     }
 
@@ -1292,10 +1293,11 @@ impl WatchlistScreen {
         self.page.handoff.step(0.0, y, y, grid_spec().pitch(), false);
     }
 
-    /// Test support: how much of the header row is left (it leaves with the top chrome).
+    /// Test support: the alpha the header row is drawn with at the page's scroll (it leaves with the
+    /// top chrome and keeps out of the band the chrome is drawn in): the very value `custom_draw` wears.
     #[cfg(test)]
     pub(crate) fn head_alpha(&self) -> f32 {
-        self.page.handoff.chrome()
+        self.page.handoff.head_alpha(-self.stack.scroll())
     }
 
     /// Test support: the ground colours the focused title keys (before the wash eases to them).

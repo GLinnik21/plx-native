@@ -47,6 +47,20 @@
 //! So the handoff shares the two durations and the millisecond ramp, and the alphas stay linear:
 //! steepest at the floor, with no hold.
 //!
+//! **A row that rides the page keeps out of the band the chrome is drawn in** ([`Handoff::clearance`]).
+//! The chrome returns on the clock above, decided on the key frame, but a page's header row rides the
+//! scroll spring, which is still gliding home for a dozen frames after the chrome is whole: the
+//! profile chip was painted over the Watchlist's title, and over the Library's first pill, while the
+//! row passed through y 62..122 (design review F3). The row cannot wait for the chrome (it rides the
+//! page) and the chrome must not wait for the row (the clock above), so the row is faded by where it
+//! stands: whole once its top is [`CLEARANCE_RAMP`] below the bottom edge of the chrome AS DRAWN
+//! (the band's resting bottom, [`TOP_BAR_BOTTOM`](crate::widgets::TOP_BAR_BOTTOM), less the lift
+//! the tuck has put on it, `screen::chrome_lift`), gone where it would touch it. The edge is a value
+//! of the drawn chrome, not a state, so a page whose row is not scaled by the chrome's own alpha (the
+//! Library's) meets no pop when the chrome finishes leaving: the edge has lifted off the row by then.
+//! This is a spatial rule and not a second timeline: it has no clock, no state and no say in when
+//! the chrome is shown.
+//!
 //! A resting page asks for no further frames ([`Handoff::step`] reports motion only while an alpha
 //! is on its way). The pixels are [`crate::scroll_capsule`] (the nav pill's live glass); this file
 //! owns WHEN and WHAT.
@@ -65,6 +79,12 @@ pub const TUCK_AT: f32 = 60.0;
 /// How far short of the first row's pitch the target must have fallen to untuck. Further from the
 /// pitch than [`TUCK_AT`], so the 60 px between them is the hysteresis.
 pub const UNTUCK_AT: f32 = 120.0;
+
+/// How far below the drawn chrome band a page-riding row has to stand to be whole: the air a header
+/// row rests with under [`TOP_BAR_BOTTOM`](crate::widgets::TOP_BAR_BOTTOM) (the row's top, `page_header::TOP`,
+/// less the band's bottom), so the row is exactly whole at its rest and the ramp is the row's own
+/// last 18 px of travel.
+pub const CLEARANCE_RAMP: f32 = crate::page_header::TOP - crate::widgets::TOP_BAR_BOTTOM;
 
 /// The page's chrome and capsule, as drawn, and the state that decides them.
 ///
@@ -152,6 +172,28 @@ impl Handoff {
     /// (`Screen::chrome_tuck`) and the top fade follows.
     pub fn tuck(&self) -> f32 {
         1.0 - self.chrome
+    }
+
+    /// **How much of a page-riding row whose top stands at `top` (screen y) the drawn chrome leaves
+    /// clear**, 0..1: 0 while the row's top is at or above the bottom edge of the chrome as it is
+    /// drawn now, 1 from [`CLEARANCE_RAMP`] below it, a smoothstep between. The edge is the band's
+    /// resting bottom ([`TOP_BAR_BOTTOM`](crate::widgets::TOP_BAR_BOTTOM)) less the lift the tuck has put on it
+    /// ([`chrome_lift`](crate::screen::chrome_lift)): a shown chrome keeps a row out of y 0..130, a
+    /// chrome that has left keeps it out of nothing. Pure in the chrome's drawn value and the row's
+    /// place, so it is continuous under a reversal and under a jump. A page multiplies its header
+    /// row's alpha by it (the Library's `draw_header`, the Watchlist's head).
+    pub fn clearance(&self, top: f32) -> f32 {
+        let edge = crate::widgets::TOP_BAR_BOTTOM - crate::screen::chrome_lift(self.tuck());
+        let t = ((top - edge) / CLEARANCE_RAMP).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// The alpha a header row wears when the page has put it `dy` px from its resting place (the
+    /// section's own top, scroll included: `-scroll` for a row at the document's head): the chrome's
+    /// own shown value, so a row that leaves with the chrome leaves on its clock, times what the
+    /// drawn chrome leaves [`clear`](Self::clearance) at the row's top, `page_header::TOP + dy`.
+    pub fn head_alpha(&self, dy: f32) -> f32 {
+        self.chrome * self.clearance(crate::page_header::TOP + dy)
     }
 
     /// How far the capsule has arrived (0 absent .. 1 shown). It is above 0 only while
@@ -500,5 +542,65 @@ mod tests {
         assert!(!capsule_shown(1), "one name is not a choice between libraries");
         assert!(capsule_shown(2));
         assert!(capsule_shown(8));
+    }
+
+    /// **A header row riding the page keeps out of the band the chrome is drawn in, and a chrome
+    /// that is leaving takes the band with it.** The geometry (`clearance`): 0 where the row's top is
+    /// at or above the drawn band's bottom edge, 1 [`CLEARANCE_RAMP`] below it, monotone between; the
+    /// band is [`TOP_BAR_BOTTOM`](crate::widgets::TOP_BAR_BOTTOM) tall shown and nothing once gone; and a row at
+    /// its rest (`page_header::TOP`) is whole under a shown chrome, so nothing at rest is dimmed.
+    #[test]
+    fn a_riding_row_is_clear_below_the_drawn_band_and_gone_inside_it() {
+        let bottom = crate::widgets::TOP_BAR_BOTTOM;
+        let shown = Handoff::new();
+        assert_eq!(shown.clearance(bottom), 0.0, "touching the band is inside it");
+        assert_eq!(shown.clearance(bottom - 40.0), 0.0);
+        assert_eq!(shown.clearance(bottom + CLEARANCE_RAMP), 1.0);
+        assert_eq!(shown.clearance(crate::page_header::TOP), 1.0, "the row at rest is whole under a shown chrome");
+        let ramp: Vec<f32> = (0..=18).map(|i| shown.clearance(bottom + CLEARANCE_RAMP * i as f32 / 18.0)).collect();
+        assert!(ramp.windows(2).all(|w| w[1] >= w[0]) && ramp.iter().any(|a| *a > 0.0 && *a < 1.0), "a ramp, not a cut: {ramp:?}");
+        let mut gone = Handoff::new();
+        gone.step(DT, 0.0, 2.0 * PITCH, PITCH, false);
+        for _ in 0..30 { gone.step(DT, 2.0 * PITCH, 2.0 * PITCH, PITCH, false); }
+        assert_eq!(gone.chrome(), 0.0);
+        assert_eq!(gone.clearance(CLEARANCE_RAMP), 1.0, "a chrome that has gone keeps a row out of nothing");
+        assert_eq!(gone.clearance(0.0), 0.0, "only the screen's own top edge");
+    }
+
+    /// **Up from a scrolled page, through the real scroll spring, never draws the row where the chrome
+    /// is; Down never dims a row before the chrome that is leaving has lifted off it.** The Up leg is
+    /// the F3 shape (the chrome whole by frame 8 while the row is still gliding home); the Down leg is
+    /// what keeps the Library's header, which is not scaled by the chrome's own alpha, from popping when
+    /// the chrome has finished leaving, and the Watchlist's from fading faster than its chrome.
+    #[test]
+    fn the_row_waits_for_its_place_on_the_way_up_and_is_never_dimmed_early_on_the_way_down() {
+        let mut spring = crate::Spring::at(0.0);
+        let mut h = Handoff::new();
+        let mut down = Vec::new();
+        for _ in 0..90 {
+            spring.step(PITCH, crate::consts::K_SCROLL, DT);
+            h.step(DT, spring.pos, PITCH, PITCH, false);
+            down.push((h.chrome(), h.clearance(crate::page_header::TOP - spring.pos), crate::page_header::TOP - spring.pos));
+        }
+        assert!(down.iter().any(|f| f.0 > 0.0 && f.0 < 1.0), "premise: the chrome leaves over several frames");
+        for (i, (chrome, clear, top)) in down.iter().enumerate().filter(|(_, f)| f.0 > 0.0) {
+            assert_eq!(*clear, 1.0, "down frame {i}: the row is dimmed while the chrome (alpha {chrome:.2}) is still leaving, at y {top:.0}");
+        }
+        let mut up = Vec::new();
+        for i in 0..90 {
+            spring.step(0.0, crate::consts::K_SCROLL, DT);
+            h.step(DT, spring.pos, 0.0, PITCH, false);
+            let top = crate::page_header::TOP - spring.pos;
+            up.push((i, h.chrome(), h.clearance(top), top));
+        }
+        let bottom = crate::widgets::TOP_BAR_BOTTOM;
+        for (i, chrome, clear, top) in &up {
+            assert!(*clear == 0.0 || *top >= bottom * chrome, "up frame {i}: the row is drawn ({clear:.2}) at y {top:.0} inside the chrome band (alpha {chrome:.2})");
+        }
+        let (shown_first, whole_first) = (up.iter().position(|f| f.2 > 0.0).unwrap(), up.iter().position(|f| f.2 == 1.0).unwrap());
+        let chrome_whole = up.iter().position(|f| f.1 == 1.0).unwrap();
+        assert!(shown_first > chrome_whole, "the row arrives after the chrome is whole ({shown_first} vs {chrome_whole}): the chrome did not wait");
+        assert!(whole_first >= shown_first + 3, "and arrives over more than a pop ({shown_first}..{whole_first})");
+        assert_eq!(up.last().unwrap().2, 1.0, "home, it is whole");
     }
 }

@@ -310,8 +310,10 @@ impl LibraryScreen {
     /// the selected plate are chrome of its own.
     pub(super) fn draw_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
         let Some(row) = self.header.row() else { return };
-        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let top = layout::HEADER_Y - self.scroll.pos;
+        // The row rides the scroll under the top fade, and keeps out of the band the returning
+        // chrome is drawn in while the scroll is still bringing it home (`Handoff::clearance`).
+        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha() * self.handoff.clearance(top));
         // The pill's outset (2 px) is far inside the cast's padding the band is grown by, so the band needs no pop.
         if !super::draw::document_band_visible(p, top, page_header::HEIGHT, 1.0) { return; }
         // A control a menu has lifted out of the page (`Screen::opener`) is not drawn here at all:
@@ -329,7 +331,7 @@ impl LibraryScreen {
     /// left it out. Nothing is drawn for an element that is no stop of this row (a card).
     pub(super) fn draw_header_opener<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>, elem: u32) {
         let Some(row) = self.header.row() else { return };
-        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
+        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha() * self.handoff.clearance(layout::HEADER_Y - self.scroll.pos));
         row.draw_opener(p, self.scroll.pos, self.header_pop.scale_with(0, f.press.scale), elem);
     }
 }
