@@ -3949,6 +3949,10 @@ mod watchlist_press_tests;
 mod page_regions_tests;
 
 #[cfg(test)]
+#[path = "arrival_seat_tests.rs"]
+mod arrival_seat_tests;
+
+#[cfg(test)]
 #[path = "library_route_tests.rs"]
 mod library_route_tests;
 
