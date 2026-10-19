@@ -129,6 +129,9 @@ pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
 /// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
 /// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.
 pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
+/// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
+/// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
+pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating

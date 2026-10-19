@@ -1539,7 +1539,7 @@ fn draw_label_block(
                             p.text(tc.as_ptr(), at.x + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                                 crate::caption_policy::CAPTION_SHADOW, 0, 0);
                         }
-                        p.text(tc.as_ptr(), at.x + dx, y, csz, theme::TEXT_SECONDARY, 0, 0);
+                        p.text(tc.as_ptr(), at.x + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, 0);
                     },
                 )
             });
@@ -1548,7 +1548,7 @@ fn draw_label_block(
                 p.text(tc.as_ptr(), at.run_x(caption_w), y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                     crate::caption_policy::CAPTION_SHADOW, 0, 0);
             }
-            p.text(tc.as_ptr(), at.run_x(caption_w), y, csz, theme::TEXT_SECONDARY, 0, 0);
+            p.text(tc.as_ptr(), at.run_x(caption_w), y, csz, theme::CAPTION_DETAIL_INK, 0, 0);
         }
     }
 }

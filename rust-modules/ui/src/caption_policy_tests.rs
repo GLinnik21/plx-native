@@ -134,3 +134,23 @@ fn a_policy_label_is_shadowed_and_drops_absent_lines() {
     assert!(l.shadowed && l.title.is_none() && l.caption.is_some());
     assert!(!card_row::TileLabel::title("x").shadowed);
 }
+
+struct Flat;
+impl plx_machine::machine::Measure for Flat {
+    fn width(&self, s: &std::ffi::CStr, size: i32, _: bool) -> f32 { s.to_bytes().len() as f32 * size as f32 * 0.5 }
+    fn cap_h(&self, _: i32) -> f32 { 20.0 }
+    fn line_h(&self, _: i32) -> f32 { 36.0 }
+}
+
+#[test]
+fn the_details_line_under_a_poster_is_white_at_82_percent() {
+    let _g = plx_base::testlock::serial();
+    let mut l = card_row::TileLabel::from_lines([None, Some("2019 · 2h 6m".into())]);
+    l.reveal = 1.0;
+    let runs = crate::draw_census::capture_runs(|| {
+        card_row::draw_label(crate::Painter::recording(), crate::Rect::new(100.0, 100.0, 200.0, 300.0), 1.0, &card_row::RowStyle::HOME, &l, &Flat);
+    });
+    let d = runs.iter().rfind(|r| r.text.contains("2019")).expect("the details run is drawn");
+    assert_eq!(d.ink, [1.0, 1.0, 1.0, 0.82]);
+    assert_eq!(d.ink, crate::theme::CAPTION_DETAIL_INK);
+}
