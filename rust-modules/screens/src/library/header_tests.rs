@@ -466,3 +466,60 @@ fn the_header_row_is_built_once_per_key_not_once_per_frame() {
     for _ in 0..60 { page.sync(&fixture.cx(&engine)); }
     assert_eq!(page.header.builds(), built + 1, "and the frames after it build none");
 }
+
+/// One frame of the page, then every text run the header draws at that moment.
+fn header_runs_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Vec<plx_ui::draw_census::Run> {
+    fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    let cx = fixture.cx(engine);
+    let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+    plx_ui::draw_census::capture_runs(|| page.draw_header(&frame))
+}
+
+/// What the Collections control looks like on one frame: where its label stands, and how opaque each
+/// number beside it is, as `(label x, [(number, alpha)])`.
+fn collections_face(runs: &[plx_ui::draw_census::Run], numbers: &[&str]) -> Option<(f32, Vec<(String, f32)>)> {
+    let label = runs.iter().find(|run| run.text == "Collections")?;
+    let counts = runs.iter().filter(|run| numbers.contains(&run.text.as_str()))
+        .map(|run| (run.text.clone(), run.ink[3])).collect();
+    Some((label.at.x, counts))
+}
+
+/// **A library switch moves nothing in the Collections control** (spec: "OK on a library: ... count
+/// and Collections number cross-fade ... Nothing resizes"). The row follows the press at once while
+/// the probe is still answering for the library it left, and the control used to read "Collections"
+/// with no number for that whole window (its label jumped 37 px, then jumped back when the number
+/// landed). The count it had stays until the new one is known, then the two cross-fade in place.
+#[test]
+fn a_library_switch_keeps_the_collections_label_still_and_cross_fades_its_count() {
+    let _guard = plx_base::testlock::serial();
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    land_collections(1, Ok(4));
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    let current = page.view_section(&fixture.cx(&engine));
+    let other = page.libraries.iter().find(|(_, index)| Some(*index) != current).unwrap().0;
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..10 { ms += 16; rest = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["4", "2"]); }
+    let (label_x, counts) = rest.expect("premise: the control is drawn");
+    assert_eq!(counts, [("4".to_string(), 1.0)], "premise: it wears the count the first library has");
+
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(other));
+    let mut shown = Vec::new();
+    for frame in 1..=60 {
+        ms += 16;
+        // The press reaches the store (the directory's current library moves) a few frames in, and
+        // the new library's probe lands a few frames after that.
+        if frame == 6 { fixture.publish(1, 36); }
+        if frame == 12 { land_collections(2, Ok(2)); }
+        let face = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["4", "2"]);
+        let (x, counts) = face.unwrap_or_else(|| panic!("frame {frame}: the Collections control vanished"));
+        assert!((x - label_x).abs() < 0.01, "frame {frame}: the label moved ({label_x} -> {x}), counts {counts:?}");
+        let visible: f32 = counts.iter().map(|(_, alpha)| *alpha).sum();
+        assert!(visible >= 0.99, "frame {frame}: the count dipped to {visible} between two counts: {counts:?}");
+        shown.push(counts);
+    }
+    assert_eq!(shown.first().unwrap().first().map(|(text, _)| text.as_str()), Some("4"), "the old count stays while the new one is unknown");
+    assert!(shown.iter().any(|counts| counts.len() == 2), "the two numbers share frames: that is a cross-fade, not a cut: {shown:?}");
+    assert_eq!(shown.last().unwrap(), &[("2".to_string(), 1.0)], "and it settles on the new count");
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+}

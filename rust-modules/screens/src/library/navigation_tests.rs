@@ -31,6 +31,28 @@ impl LibraryLike for TestHost {
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
+    /// The app's probe, in the one respect the header cares about: it answers only for the
+    /// directory's CURRENT section (`collections_probe::count`), and only once a test has said the
+    /// probe landed ([`land_collections`]). So for the length of a library switch, between the press
+    /// and the store moving, the answer for the library the row now names is `None`.
+    fn collections_count(cx: &Cx<'_, Self>, section: u32) -> Option<Result<u32, crate::registry::Forbidden>> {
+        let directory = cx.views.directory;
+        let current = directory.sections().get(directory.current()?)?;
+        if current.key != i64::from(section) { return None; }
+        COLLECTION_ANSWERS.with(|answers| answers.borrow().iter().find(|(key, _)| *key == section).map(|(_, answer)| *answer))
+    }
+}
+thread_local! {
+    /// What the fixture's collections probe has learned, by section key.
+    static COLLECTION_ANSWERS: std::cell::RefCell<Vec<(u32, Result<u32, crate::registry::Forbidden>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+/// The fixture's probe for section `key` returns: `Ok(0)` / `Err` hide the control, `Ok(n)` counts.
+fn land_collections(key: u32, answer: Result<u32, crate::registry::Forbidden>) {
+    COLLECTION_ANSWERS.with(|answers| {
+        let mut answers = answers.borrow_mut();
+        answers.retain(|(seen, _)| *seen != key);
+        answers.push((key, answer));
+    });
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
