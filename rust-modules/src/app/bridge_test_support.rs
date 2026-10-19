@@ -244,6 +244,12 @@ impl World {
     /// (`BrowseStore::hold_listing_for_test`): a test server is a closed port whose fetch fails at once,
     /// so a listing that is still on its way needs the hold.
     fn build_listing(name: &str, two_libraries: bool, answered: bool) -> World {
+        Self::build_shelves(name, two_libraries, answered, true)
+    }
+
+    /// [`Self::build_listing`], the section's hubs seeded as six committed shelves (`shelved`) or
+    /// left as a section nothing has published for yet: the Recommended page's FIRST publication.
+    fn build_shelves(name: &str, two_libraries: bool, answered: bool, shelved: bool) -> World {
         let (serial, session) = Self::lock(name);
         plx_plex::plex::reset_servers_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -262,8 +268,10 @@ impl World {
         {
             let mut browse = bridge.stores.browse.borrow_mut();
             if answered { browse.seed_items_for_test(120); } else { browse.hold_listing_for_test(); }
-            browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
-            browse.seed_landscape_for_test(0, "Synthetic show");
+            if shelved {
+                browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
+                browse.seed_landscape_for_test(0, "Synthetic show");
+            }
         }
         World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, script: None,
             _session: session, _serial: serial }
@@ -273,6 +281,14 @@ impl World {
     /// "Film Club" beside "Movies".
     pub(super) fn movies_library(name: &str, two_libraries: bool) -> World {
         let mut w = Self::build(name, two_libraries);
+        w.open_library();
+        w
+    }
+
+    /// The Movies library whose section has published no shelves yet (its listing answered): the
+    /// Recommended page opened from it has a first publication still to come.
+    pub(super) fn movies_library_unshelved(name: &str) -> World {
+        let mut w = Self::build_shelves(name, false, true, false);
         w.open_library();
         w
     }

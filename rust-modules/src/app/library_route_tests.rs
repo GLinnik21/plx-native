@@ -674,3 +674,31 @@ fn opening_collections_again_does_not_stack_a_second_page() {
     w.frames(80);
     assert_eq!((top(&w), w.d.nav.tabs.stack.depth()), ("collections", base + 1), "and the page opens once more, not twice");
 }
+
+/// **The Recommended page's first publication is not held by the press that opened it.** OK on the
+/// Library header's Recommended control pushes the page from the press's commit, while the press is
+/// still springing back (live until it rests). The page's hubs are its whole content and none are
+/// committed yet, so nothing is under the finger to protect: the landing is committed on the frame
+/// it is asked for, and the page leaves its spinner, instead of waiting out the spring (for ever on
+/// the frame dump's frozen clock: crx-f3's dump stalled 120 s on `library-spinner`).
+#[test]
+fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_springs() {
+    let mut w = World::movies_library_unshelved("rec-first-publication");
+    w.walk_header_to(9);
+    w.tap(Key::Ok, 0);
+    let mut frames = 0;
+    while !w.on(&AppArg::LibraryRecommended { section: 0 }) {
+        w.frames(1);
+        frames += 1;
+        assert!(frames < 90, "premise: OK on the Recommended control opened the page, the top page is {}", top(&w));
+    }
+    assert!(w.d.input.press.is_live(), "premise: the press that opened the page is still springing back");
+    assert_ne!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+        "premise: nothing is committed for the page yet");
+    // The worker's answer arrives, staged behind the gate.
+    w.bridge.stores.browse.borrow_mut().stage_shelves_for_test(0);
+    w.frames(2);
+    assert!(w.d.input.press.is_live(), "premise: the press has not rested yet");
+    assert_eq!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+        "the first hubs are committed while the press springs, so the page leaves its spinner");
+}

@@ -1201,6 +1201,13 @@ impl BrowseState {
         }
         keys
     }
+    /// Is any shelf of the section addressed by `target` committed (drawn)? A section whose first
+    /// publication has not happened, or whose address no longer names a section, has none.
+    pub fn hubs_committed(&self, target: crate::stores::browse::SectionAddress) -> bool {
+        self.resolve_section(target.epoch, target.sid, target.section)
+            .and_then(|index| self.states.get(index))
+            .is_some_and(|st| !st.hubs.committed.is_empty())
+    }
     pub fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
             return None;
