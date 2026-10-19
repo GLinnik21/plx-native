@@ -445,3 +445,15 @@ only its `rec-0000.jsonl` was replaced: `rerecord` refuses a shape that did not 
 manifests (anchor flag included) already equal the new recorder's header, so they stand byte for
 byte. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets and Resolve and
 every difference counter at zero.
+
+The Collections redesign's third batch changed what the pages draw without moving the shape: the
+time-left form ("12m left" where it read "12 min left"; the closed alphabet's
+pattern is now `s[0-9a-f]{8} · [0-9]+m left`), ink weight, hero names, the art dissolve, header
+clearance and the menus' morphs. `plxnative-rec check` refused the committed
+`1-boot-home-chip-grid` for the old time-left phrase (`a string of 23 chars outside the
+alphabet`). The shape stayed `4058586095815036115`, so `rerecord` refuses; each anchor was
+recorded afresh on the merged, committed tree (`tests/focusfp.sh --rec --only 1,6,12`), passed
+`plxnative-rec check` against the alphabet unchanged by this step, and only its `rec-0000.jsonl`
+was replaced: the manifests (anchor flag included) already equal the new recorder's header.
+`make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and every
+difference counter at zero.
