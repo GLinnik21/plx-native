@@ -46,8 +46,13 @@ use crate::registry::{
 
 /// Where the page's title stands: the same top the library's header row has.
 const CONTENT_TOP: f32 = plx_ui::page_header::TOP;
-/// The title block above the first row (the library header row's own block height).
-const HEAD_H: f32 = 96.0;
+/// The title block under the header row (the library header row's own block height): the grid's
+/// first content line sits this far under [`CONTENT_TOP`], y 244.
+const TITLE_BLOCK_H: f32 = 96.0;
+/// The run's start under [`CONTENT_TOP`]: the first shelf's HEADING (drawn [`TITLE_DY`] above its
+/// row's origin) starts on the grid's content line, y 244, clear of the title row's 148..204 and the
+/// air under it; the origin, and the cards under it, follow the heading.
+const HEAD_H: f32 = TITLE_BLOCK_H + TITLE_DY;
 /// Rows PageUp / PageDown move focus by.
 const PAGE_ROWS: usize = 2;
 /// The strip group the page's first row links up to (the shared top bar).
@@ -940,7 +945,7 @@ impl RecommendedScreen {
             }
             Readout::Empty => {
                 let caption = std::ffi::CString::new(plx_platform::i18n::msg::recommended_page_empty()).unwrap_or_default();
-                let frame = Rect::new(MARGIN_X, CONTENT_TOP + HEAD_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + HEAD_H) - MARGIN_Y);
+                let frame = Rect::new(MARGIN_X, CONTENT_TOP + TITLE_BLOCK_H, SCR_W - 2.0 * MARGIN_X, SCR_H - (CONTENT_TOP + TITLE_BLOCK_H) - MARGIN_Y);
                 plx_ui::widgets::StatusOverlay::new(frame, &caption, plx_ui::widgets::StatusKind::Empty)
                     .phase(f.cx.tick.ms).draw_measured(&env, f.painter.alpha(f.page_alpha), f.cx.measure);
             }

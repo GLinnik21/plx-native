@@ -71,7 +71,8 @@ fn one_library_draws_no_names_and_two_draw_both() {
 fn the_picked_library_takes_the_last_visible_slot() {
     let widths = [200.0, 180.0, 220.0, 160.0, 240.0];
     assert_eq!(pack_names(&widths, 0, 4000.0, 90.0, 8), [0, 1, 2, 3, 4], "everything fits: all names, in order");
-    let tight = 200.0 + 180.0 + 220.0 + 2.0 * plx_ui::page_header::GAP + 90.0 + plx_ui::page_header::GAP + 1.0;
+    let gap = plx_ui::page_header::gap_between;
+    let tight = 200.0 + 180.0 + 220.0 + gap(200.0, 180.0) + gap(180.0, 220.0) + 90.0 + gap(220.0, 90.0) + 1.0;
     let cut = pack_names(&widths, 1, tight, 90.0, 8);
     assert_eq!(cut, [0, 1, 2], "a pick inside the cut keeps its place");
     let cut = pack_names(&widths, 4, tight, 90.0, 8);
@@ -235,4 +236,36 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     assert_eq!(drawn(&page, None), 1, "a focused control wears the pill");
     assert_eq!(drawn(&page, Some(key)), 0, "its menu lifted it: no plate under the scrim");
     page.scroll.jump(0.0);
+}
+
+/// The kinds one descriptive draw of `page`, scrolled one grid pitch (the chrome fully tucked),
+/// declares: a capsule is a `glass` paint (the nav pill's live material).
+fn tucked_draw_kinds(fixture: &Fixture, page: &mut LibraryScreen, engine: &FocusEngine<u32>) -> Vec<(String, [f32; 4])> {
+    use plx_ui::screen::Screen;
+    let pitch = page.layout.grid_pitch();
+    page.scroll.jump(pitch);
+    page.scroll_target = pitch;
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let cx = fixture.cx(engine);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        page.draw(&mut frame);
+    }
+    let paints = sources.borrow().paints.iter().map(|p| (p.kind().to_owned(), p.placed())).collect();
+    paints
+}
+
+#[test]
+fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut one, engine) = grid_page(1);
+    let kinds = tucked_draw_kinds(&fixture, &mut one, &engine);
+    assert!(kinds.iter().any(|(k, r)| k == "rect" && r[3] == plx_ui::scroll_capsule::FADE_H), "the top fade stays");
+    assert!(kinds.iter().all(|(k, _)| k != "glass"), "one library: no names in the header, no capsule");
+    let (fixture, mut two, engine) = grid_page(2);
+    let kinds = tucked_draw_kinds(&fixture, &mut two, &engine);
+    assert!(kinds.iter().any(|(k, r)| k == "glass" && r[1] == plx_ui::scroll_capsule::Y), "two libraries: the capsule, as live glass");
+    assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
 }

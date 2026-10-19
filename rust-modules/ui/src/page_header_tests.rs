@@ -74,11 +74,12 @@ fn focus_pill_grows_by_the_control_scale() {
 }
 
 #[test]
-fn neighbouring_text_runs_stand_48_apart() {
-    assert_eq!(GAP, 48.0, "the board's 53px between visible text edges, less glyph side bearings");
+fn neighbouring_text_runs_stand_a_gap_apart_that_covers_the_pill_growth() {
+    assert_eq!(GAP, 48.0, "the floor: the board's 53px between visible text edges, less glyph side bearings");
     let l = header("Title").layout(1920.0, &Fixed);
     let (a, b) = (l.items[0].text, l.items[1].text);
-    assert_eq!(b.x - (a.x + a.w), GAP);
+    assert_eq!(b.x - (a.x + a.w), gap_between(a.w, b.w));
+    assert!(gap_between(a.w, b.w) >= GAP);
 }
 
 #[test]
@@ -112,4 +113,59 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     assert_eq!(run.ink[3], 0.5);
     let last = l.items.last().unwrap();
     assert!((last.text.x + last.text.w - 1771.0).abs() < 0.01, "the cluster still ends at the right text edge");
+}
+
+/// Does a focused, scaled pill on item `a` touch the plate of item `b` (or the reverse)? Items are
+/// adjacent on one row, so the x ranges decide.
+fn touches(a: Rect, b: Rect) -> bool {
+    let (sa, sb) = (a.scaled(crate::widgets::CTRL_FOCUS_SCALE), b.scaled(crate::widgets::CTRL_FOCUS_SCALE));
+    let hit = |p: Rect, q: Rect| p.x < q.x + q.w && q.x < p.x + p.w;
+    hit(sa, b) || hit(sb, a)
+}
+
+fn real(label: &str, selected: bool) -> HeaderItem {
+    HeaderItem { selected_plate: selected, ..item(label, None) }
+}
+
+#[test]
+fn a_focused_scaled_pill_never_touches_its_neighbours_plate() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("LDN Films bamx23", false), real("A Very Long Library Name Indeed", false)],
+        overflow: 3,
+        right: vec![item("Collections", Some("12")), item("Recommended", None),
+            HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
+    };
+    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
+    for pair in l.items.windows(2) {
+        let group = |s: Slot| matches!(s, Slot::Right(_));
+        // The two groups are kept apart by CLUSTER_GAP, checked below; this is each group's own row.
+        if !(pair[0].focusable && pair[1].focusable) || group(pair[0].slot) != group(pair[1].slot) { continue; }
+        assert!(!touches(pair[0].plate, pair[1].plate),
+            "{:?} and {:?}: a focused pill grown 1.07 reaches its neighbour", pair[0].slot, pair[1].slot);
+    }
+}
+
+#[test]
+fn the_gap_between_two_items_grows_with_the_wider_plate() {
+    let narrow = gap_between(60.0, 60.0);
+    let wide = gap_between(60.0, 400.0);
+    assert!(wide > narrow, "{narrow} {wide}");
+    assert_eq!(gap_between(60.0, 400.0), gap_between(400.0, 60.0));
+    assert!(narrow >= GAP);
+}
+
+#[test]
+fn fit_left_and_layout_agree_on_the_gap() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let names = ["Movies", "LDN Films bamx23"];
+    let spec = PageHeaderSpec { left: names.iter().map(|n| real(n, false)).collect(), ..Default::default() };
+    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
+    let widths: Vec<f32> = l.items.iter().map(|i| i.text.w).collect();
+    let used = widths[0] + gap_between(widths[0], widths[1]) + widths[1];
+    assert_eq!(fit_left(&widths, used, 0.0), 2, "exactly fits");
+    assert_eq!(fit_left(&widths, used - 1.0, 0.0), 1, "one px short");
+    assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + gap_between(widths[0], widths[1]));
 }

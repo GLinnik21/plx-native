@@ -81,7 +81,7 @@ pub mod caption_policy; // "Under posters": what a focused poster's caption band
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod scroll_chrome; // the tuck ramp, capsule text and settle edge a scrolled card page shares with the Library (pure)
-pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (frozen ground, never live blur)
+pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (live nav-pill glass)
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)

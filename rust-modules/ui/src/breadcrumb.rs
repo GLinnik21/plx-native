@@ -148,4 +148,15 @@ mod tests {
         assert!(grew > 0.0);
         assert!((b.page_plate.x - a.page_plate.x - grew).abs() < 0.01);
     }
+
+    /// The focused root pill (plate grown by the control scale) must clear the page name's plate,
+    /// for a short root and for a very long one.
+    #[test]
+    fn the_focused_root_pill_never_reaches_the_page_plate() {
+        for root in ["Movies", "LDN Films bamx23", "A Very Long Library Name Indeed Of Many Words"] {
+            let l = Crumb::new(root, "Recommended").layout(&ShippedMeasure);
+            let pill = l.root_plate.scaled(crate::widgets::CTRL_FOCUS_SCALE);
+            assert!(pill.x + pill.w < l.page_plate.x, "{root}: pill ends {} past plate at {}", pill.x + pill.w, l.page_plate.x);
+        }
+    }
 }

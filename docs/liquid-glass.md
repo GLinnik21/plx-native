@@ -324,9 +324,12 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
 ## 7. Where it can go today
 
-**Glass: the chrome and one standing note.** The top bar's standing track and the profile chip's capsule, and the
+**Glass: the chrome and the standing notes.** The top bar's standing track and the profile chip's capsule, the
 "Hold OK for options" capsule (`ui::hold_hint`, on Home and, once per screen kind per run, on Collection, Person, Search, Library and Detail — the track's material at a fixed weight, its own
-source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), on
+source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), and the
+Library's scroll capsule (`ui::scroll_capsule`: the same standing container, `GlassRim::Standing` and `Material::UltraThin`, wearing the
+hold hint's fixed face; flat track fallback; drawn only while the chrome is tucked on a page whose header names two or more libraries;
+region-budgeted by `scroll_capsule::tests::a_long_names_capsule_stays_inside_the_glass_region_budget`), on
 `Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page were not glass, until DS6 (menus are again, on frozen ground with no blur chain; the field below is every sheet's ground and a menu's fallback)**:
 Sort, Filter, Sources, the item menu, *Also available*, *Track information*, *About*, Account, the
 person biography and the decision alert all draw their ground through `widgets::panel_ground` over
