@@ -423,6 +423,12 @@ impl HeaderRow {
         self.layout.items.get(*index).map(|item| item.plate)
     }
 
+    /// The filter read-out the right cluster carries ("312 of 1,284"), if the row has one: the
+    /// text every page that narrows its list draws before its controls.
+    pub fn readout(&self) -> Option<&str> {
+        self.page.spec().right.iter().find(|item| item.readout).map(|item| item.label.as_str())
+    }
+
     /// The focusable stop that wears the selected plate (the library on view), if there is one.
     pub fn selected_stop(&self) -> Option<u32> {
         let selected = usize::try_from(self.page.selected(&self.layout)).ok()?;

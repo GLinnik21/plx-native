@@ -858,20 +858,12 @@ mod search_action_tests {
 }
 
 fn library_requests(app: &mut App, now: u32) {
-    use plx_screens::registry::{LibraryReq, LibraryMenuArg};
+    use plx_screens::registry::LibraryReq;
     for (source, request, ret) in app.bridge.take_library_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
         if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
-            // The grid and the Recommended page both publish: the hubs are the Recommended page's
-            // whole content, so its route must be let through too.
-            if app.pages.nav.top_page().is_some_and(|page| page.id == entry)
-                && matches!(app.route(), AppArg::Library | AppArg::LibraryRecommended { .. }) {
-                // Apply through the store vocabulary at this boundary. The press check and commit
-                // are adjacent; no queued boolean can outlive an input arm created later.
-                app.bridge.browse_run(library_publication_command(
-                    &app.pages, target, hidden_page, at_head));
-            }
+            library_publish_shelves(&app.pages, &mut app.bridge, entry, target, hidden_page, at_head);
             continue;
         }
         // The full grid and the two pages its header pushes (Collections, Recommended) are all the
@@ -879,35 +871,82 @@ fn library_requests(app: &mut App, now: u32) {
         let library_page = app.route().is_library_family();
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !library_page { continue; }
         let Some(ret) = library_navigation(&mut app.pages, &mut app.bridge, &request, ret) else { continue };
-        match request {
-            LibraryReq::PublishShelves { .. } => unreachable!(),
-            LibraryReq::OpenListing { .. } | LibraryReq::BackToHome { .. } | LibraryReq::Tab(_) | LibraryReq::Account =>
-                unreachable!("`library_navigation` performed it"),
-            LibraryReq::Menu { kind, anchor, target, folded, control } => {
-                app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
-                app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
-                    host: instance, target, kind, anchor, folded,
-                    opener: (kind != plx_screens::registry::LibraryMenuKind::Sources).then_some((entry, control)),
-                })));
-            }
-            LibraryReq::ItemMenu { sid, rk, from_deck } => {
-                let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
-                app.bridge.watchlist_open_if_idle();
-                arg.watchlist = app.bridge.watchlist_card_face(&item);
-                bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
-            }
-            LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
-                let Some((mut item, _)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || &item.rk != rk { continue; }
-                let play = matches!(request, LibraryReq::Play { .. });
-                let from_deck = matches!(request, LibraryReq::Detail { from_deck: true, .. });
-                if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
-                unsafe { activate_deck_card(&mut app.player.session, &mut app.adapters.player, &item, from_deck, play,
-                    HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge, &mut app.menu_play_await, now); }
-            }
+        unsafe {
+            library_page_request(&mut app.player.session, &mut app.adapters.player, &mut app.menu_play_await,
+                &mut app.ok_armed, now, &mut app.pages, &mut app.bridge, instance, entry, request, ret);
+        }
+    }
+}
+
+/// **A Library page's shelf publication, performed**: the store may land the hubs it staged quietly
+/// when the asking page is the one on top. The grid and the Recommended page both publish: the hubs
+/// are the Recommended page's whole content, so its route must be let through too. The loop
+/// (`library_requests`) and the app-tier tests' pump both call this.
+pub(crate) fn library_publish_shelves(
+    pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
+    bridge: &mut bridge::Bridge,
+    entry: EntryId,
+    target: plx_data::stores::browse::SectionAddress,
+    hidden_page: bool,
+    at_head: bool,
+) {
+    if pages.nav.top_page().is_some_and(|page| page.id == entry)
+        && matches!(pages.top_arg(), Some(AppArg::Library | AppArg::LibraryRecommended { .. })) {
+        // Apply through the store vocabulary at this boundary. The press check and commit
+        // are adjacent; no queued boolean can outlive an input arm created later.
+        bridge.browse_run(library_publication_command(pages, target, hidden_page, at_head));
+    }
+}
+
+/// **The rest of a Library-family page's requests, performed** — the ones [`library_navigation`] left
+/// undone: the "+N" and Sort & Filter menus (`Menu`), a held poster's card menu (`ItemMenu`) and a
+/// poster press (`Detail`, `Play`), the last two through `Bridge::library_selection`, which reads the
+/// card from whichever Library-family page asked. The loop (`library_requests`) and the app-tier
+/// tests' pump (`test_support::Pump`) both call this, so a test that presses OK on a poster drives
+/// the routing the TV runs, not a copy of it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn library_page_request(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    menu_play_await: &mut Option<super::input::MenuPlayAwait>,
+    ok_armed: &mut bool,
+    now: u32,
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
+    bridge: &mut bridge::Bridge,
+    instance: plx_machine::machine::InstanceId,
+    entry: EntryId,
+    request: plx_screens::registry::LibraryReq,
+    ret: ReturnState<u32, PageMemory>,
+) {
+    use plx_screens::registry::{LibraryReq, LibraryMenuArg};
+    let source = MachineId::Instance(instance);
+    match request {
+        LibraryReq::PublishShelves { .. } => unreachable!("`library_requests` publishes them"),
+        LibraryReq::OpenListing { .. } | LibraryReq::BackToHome { .. } | LibraryReq::Tab(_) | LibraryReq::Account =>
+            unreachable!("`library_navigation` performed it"),
+        LibraryReq::Menu { kind, anchor, target, folded, control } => {
+            pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
+            pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
+                host: instance, target, kind, anchor, folded,
+                opener: (kind != plx_screens::registry::LibraryMenuKind::Sources).then_some((entry, control)),
+            })));
+        }
+        LibraryReq::ItemMenu { sid, rk, from_deck } => {
+            let Some((item, opener)) = bridge.library_selection(pages, entry, ret.focus) else { return };
+            if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { return; }
+            let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+            bridge.watchlist_open_if_idle();
+            arg.watchlist = bridge.watchlist_card_face(&item);
+            bridge::open_item_menu(pages, arg);
+            *ok_armed = false;
+        }
+        LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
+            let Some((mut item, _)) = bridge.library_selection(pages, entry, ret.focus) else { return };
+            if item.sid != sid || &item.rk != rk { return; }
+            let play = matches!(request, LibraryReq::Play { .. });
+            let from_deck = matches!(request, LibraryReq::Detail { from_deck: true, .. });
+            if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
+            activate_deck_card(ps, pa, &item, from_deck, play, HUD_LINGER_MS, Some(ret), pages, bridge, menu_play_await, now);
         }
     }
 }

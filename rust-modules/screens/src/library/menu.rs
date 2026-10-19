@@ -464,6 +464,13 @@ impl LibraryMenu {
             height,
         )
     }
+    /// The identity of the row focus is on (`"unwatched"`, `"sort:titleSort"`, a library's row), as
+    /// a route test names what a key landed on; `None` off the menu.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_row(&self, focus: Option<FocusKey<u32>>) -> Option<&str> {
+        focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.identities.get(key.elem as usize)).map(String::as_str)
+    }
     fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
         if self.desired_unwatched == Some(listing.unwatched()) {
@@ -752,6 +759,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn state(&self) -> &dyn LogicalState {
         self
     }
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }

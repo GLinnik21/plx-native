@@ -3945,6 +3945,10 @@ mod watchlist_press_tests;
 mod page_regions_tests;
 
 #[cfg(test)]
+#[path = "library_route_tests.rs"]
+mod library_route_tests;
+
+#[cfg(test)]
 #[path = "watchlist_wiring_tests.rs"]
 mod watchlist_wiring_tests;
 

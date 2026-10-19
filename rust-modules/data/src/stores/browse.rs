@@ -269,6 +269,13 @@ impl BrowseStore {
         crate::browse::seed_items_for_owner_test(&mut self.state, count);
     }
 
+    /// [`seed_items_for_test`](Self::seed_items_for_test) with `count` collections: the listing a
+    /// section answers on `type=18`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_collections_for_test(&mut self, count: usize) {
+        crate::browse::seed_collections_for_owner_test(&mut self.state, count);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_sources_for_test(&mut self, count: usize, reachable: bool) {
         crate::browse::seed_sources_for_owner_test(&mut self.state, count, reachable);

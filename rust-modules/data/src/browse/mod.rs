@@ -3585,23 +3585,38 @@ pub fn queue_discovery_for_owner_test(
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
     plx_base::testlock::assert_held("browse's section table (seed_items_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("{}", i + 1),
+        title: format!("Item {i}"),
+        thumb: format!("/t/{i}"),
+        ..Default::default()
+    });
+}
+
+/// [`seed_items_for_owner_test`]'s listing as the section lists on `type=18`: `n` collections,
+/// each with a ratingKey of its own (`5000<i>`, none of the films'), a title and a child count.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
+    plx_base::testlock::assert_held("browse's section table (seed_collections_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("5000{i}"),
+        title: format!("Collection {i}"),
+        thumb: format!("/t/c{i}"),
+        kind: crate::pms::KIND_COLLECTION,
+        child_count: i as i64 + 2,
+        ..Default::default()
+    });
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn seed_listing_for_owner_test(state: &mut BrowseState, n: usize, make: impl Fn(ServerId, usize) -> crate::pms::PmsMovie) {
     let c = state.cur();
     let sid = state.section_sid(c).unwrap_or_default();
     if let Some(st) = state.state_mut(c) {
         st.total = n as i64;
-        st.items = SecItems::from_vec(
-            (0..n)
-                .map(|i| {
-                    Some(crate::pms::PmsMovie {
-                        sid,
-                        rk: format!("{}", i + 1),
-                        title: format!("Item {i}"),
-                        thumb: format!("/t/{i}"),
-                        ..Default::default()
-                    })
-                })
-                .collect(),
-        );
+        st.items = SecItems::from_vec((0..n).map(|i| Some(make(sid, i))).collect());
         st.fetch = SecFetch::Ready;
     }
 }

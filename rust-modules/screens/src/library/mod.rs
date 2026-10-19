@@ -302,8 +302,28 @@ impl LibraryScreen {
             toolbar::RECOMMENDED => "recommended",
             toolbar::SORTFILTER => "sort",
             toolbar::CRUMB_ROOT => "crumb",
+            MORE => "more",
             _ => "library",
         }, elem)).collect()
+    }
+
+    /// The library names on the row as `(element, section index)`, "+N" not among them, and the
+    /// section indexes the "+N" list holds: what the fold shows and what it hid.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_names(&self) -> (Vec<(u32, usize)>, Vec<u32>) {
+        (self.libraries.iter().filter(|(elem, _)| *elem != MORE).copied().collect(), self.folded.clone())
+    }
+
+    /// The A-Z rail: every letter with whether it is empty, and the index of the focused one.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_rail(&self, focus: Option<FocusKey<u32>>) -> (Vec<(String, bool)>, Option<usize>) {
+        self.pair.master.probe(focus)
+    }
+
+    /// The filter read-out on the header row ("312 of 1,284"), if it carries one.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_readout(&self) -> Option<String> {
+        self.header.as_ref().and_then(|row| row.readout()).map(str::to_owned)
     }
 
     /// The scroll the page is travelling to: 0 at its top.

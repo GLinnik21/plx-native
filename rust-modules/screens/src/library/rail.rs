@@ -166,6 +166,17 @@ impl RailPart {
 
     fn pitch(&self) -> f32 { rail_pitch(self.elems.len()) }
 
+    /// The rail as a route test reads it: every letter with whether the server listed a title
+    /// under it, and the index of the one focus is on (`None` off the rail).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn probe(&self, focus: Option<FocusKey<u32>>) -> (Vec<(String, bool)>, Option<usize>) {
+        let letters = self.labels.iter().enumerate()
+            .map(|(index, label)| (label.to_string_lossy().into_owned(), self.letter_empty(index))).collect();
+        let focused = focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.elems.iter().position(|elem| *elem == key.elem));
+        (letters, focused)
+    }
+
     /// The nearest letter with titles at or before `index`, else the first one after it.
     fn skip_empty(&self, index: usize) -> usize {
         (0..=index.min(self.elems.len().saturating_sub(1))).rev().find(|i| !self.letter_empty(*i))
