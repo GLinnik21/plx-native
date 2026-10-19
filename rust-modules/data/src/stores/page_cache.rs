@@ -266,10 +266,10 @@ impl<T> PageCache<T> {
     }
 
     /// Replaces the directory with `counts` (one entry per page). The counts carry no rows: a page
-    /// this cache already holds whose kept count is the saved one keeps them (the directory came
-    /// back to the cache it was saved from, so the rows are still that page's), and every other
-    /// page reads as a hole until it lands again. A page whose count changed does not keep rows,
-    /// because the indices after it moved. The caller sets the total.
+    /// this cache already holds whose kept count is the saved one keeps its rows (they still fit
+    /// the count), and every other page reads as a hole until it lands again. A page whose count
+    /// changed drops its rows because they no longer match the count; the pages after it keep
+    /// theirs, which now read from their new first indices. The caller sets the total.
     pub fn restore_kept_counts(&mut self, counts: &[u8]) {
         let mut held = std::mem::take(&mut self.pages).into_iter();
         self.pages = counts

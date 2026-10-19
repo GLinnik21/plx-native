@@ -327,10 +327,11 @@ struct Page {
     focus_index: Option<usize>,
     /// The index a Back is restoring to, from the saved memory.
     restore_index: Option<usize>,
-    /// Saved kept counts a return sends the store once it is open.
-    restore_counts: Option<(usize, Vec<u8>)>,
-    /// The total and kept counts as of the last sync, saved with the page.
-    counts: (usize, Vec<u8>),
+    /// Saved kept counts (with the generation of the listing they came from) a return sends the
+    /// store once it is open.
+    restore_counts: Option<(usize, Vec<u8>, u32)>,
+    /// The total, kept counts and listing generation as of the last sync, saved with the page.
+    counts: (usize, Vec<u8>, u32),
     /// The window last sent to the store.
     sent_window: Option<(std::ops::Range<usize>, Option<usize>, Option<usize>)>,
     /// The end of the last range the grid asked for.
@@ -388,7 +389,7 @@ impl Page {
     fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         self.project(collection, None);
-        self.counts = (collection.total, collection.kept_counts());
+        self.counts = (collection.total, collection.kept_counts(), collection.generation());
         self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
         self.links_c.clear();
@@ -691,7 +692,7 @@ impl CollectionScreen {
             page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
                 proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true, None), CString::default()),
                 return_pending: false, focus_elem: None, restore_elem: None,
-                focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new()),
+                focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new(), 0),
                 sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
@@ -792,7 +793,8 @@ impl CollectionScreen {
         self.page.header_marked |= memory.header_marked;
         self.page.restore_index = memory.focus_index;
         // The counts are sent to the store once it is open (see `Enter`).
-        self.page.restore_counts = Some((memory.total, memory.counts.clone())).filter(|(_, c)| !c.is_empty());
+        self.page.restore_counts = Some((memory.total, memory.counts.clone(), memory.generation))
+            .filter(|(_, c, _)| !c.is_empty());
         self.page.restore_elem = memory.focus_elem;
     }
 
@@ -803,7 +805,7 @@ impl CollectionScreen {
             .filter(|&e| e != HEADER_ELEM && e != RETRY_ELEM).or(self.page.focus_elem);
         let index = elem.and_then(|e| self.page.proj.index.get(&e).copied()).or(self.page.focus_index);
         CardPageMemory { cards: self.page.cards.clone(), header_marked: self.page.header_marked,
-            total: self.page.counts.0, counts: self.page.counts.1.clone(),
+            total: self.page.counts.0, counts: self.page.counts.1.clone(), generation: self.page.counts.2,
             focus_index: index, focus_elem: elem }
     }
 
@@ -975,10 +977,10 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             }
             ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
                 self.request_store(self.entry_want(), fx);
-                if let Some((total, counts)) = self.page.restore_counts.take() {
+                if let Some((total, counts, generation)) = self.page.restore_counts.take() {
                     fx.push(plx_machine::machine::Fx::App(AppFx::Store(
                         plx_data::stores::StoreId::Collection,
-                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Restore { total, counts }),
+                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Restore { total, counts, generation }),
                     )));
                 }
                 fx.invalidate(Provenance::Nav); Handled::Yes
@@ -1683,10 +1685,13 @@ mod tests {
         let out = step(&mut back, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
         let sent = out.iter().find_map(|e| match &e.fx {
             plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
-                CollectionCmd::Restore { total, counts }))) => Some((*total, counts.len())),
+                CollectionCmd::Restore { total, counts, generation }))) => Some((*total, counts.len(), *generation)),
             _ => None,
         });
-        assert_eq!(sent, Some((5000, 84)), "the saved directory goes back to the store");
+        let generation = store.view().current().unwrap().generation();
+        assert_ne!(generation, 0, "the store opened this listing");
+        assert_eq!(sent, Some((5000, 84, generation)),
+            "the saved directory goes back to the store with the generation of the listing it was saved from");
     }
 
     /// A slot whose page is not held draws the not-yet-loaded card, and becomes its member's card

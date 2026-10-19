@@ -787,10 +787,12 @@ pub(crate) fn unlive_excess(
 pub struct CardPageMemory {
     pub cards: CardKeys,
     pub header_marked: bool,
-    /// A listing page's directory (Collection): its total, one kept-row count per page read, the
-    /// focused member's index and element. Empty for a page that has none.
+    /// A listing page's directory (Collection): its total, one kept-row count per page of the
+    /// listing, the store's generation of the listing they were saved from, the focused member's
+    /// index and element. Empty for a page that has none.
     pub total: usize,
     pub counts: Vec<u8>,
+    pub generation: u32,
     pub focus_index: Option<usize>,
     pub focus_elem: Option<u32>,
 }
@@ -803,6 +805,7 @@ impl CardPageMemory {
         if tag == 7 {
             c.u64(self.total as u64).seq(self.counts.len());
             for &kept in &self.counts { c.u32(u32::from(kept)); }
+            c.u32(self.generation);
             c.bool(self.focus_index.is_some()).u64(self.focus_index.unwrap_or(0) as u64)
                 .bool(self.focus_elem.is_some()).u32(self.focus_elem.unwrap_or(0));
         }
