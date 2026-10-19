@@ -465,6 +465,16 @@ inside the app"** — three routes qualify today (the Settings modal, the first 
 question, and the QR sign-in), but take the census with
 `git grep -A2 'draw_narrative(' -- 'rust-modules/ui/src/*.rs'` rather than trusting that number.
 
+**One crumb rule, keyed on where the page's heading lives.** A page whose heading is in its header
+row reads `Parent › Current` in that row (the Library family, `page_header`'s `Crumb`). A page whose
+heading is its own big title carries `‹ Parent` above that title, and both forms say the parent
+page's own title string (one catalog entry, never a second spelling). The big-title form has ONE
+painter, `route_screen::draw_back_crumb`: `draw_narrative` draws the Settings family's through it,
+and the Collection screen draws its `‹ Collections` through it in the title column, in the page's
+top margin (`route_screen::CRUMB_RISE` above the title's cap top, so nothing below moved). Neither
+is a focus stop; BACK already returns. A page that wears the second form calls the painter rather
+than drawing a chevron of its own.
+
 **It replaced `Press [BACK] to return` in the bottom action band across the whole family**, and the
 trade is the point: the hint spent a 60px band restating a key the remote already has and could not
 say where the key WENT, which on a three-deep push is the only part anybody needs. Freeing the band

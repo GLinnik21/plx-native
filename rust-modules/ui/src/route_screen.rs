@@ -109,7 +109,12 @@ const CRUMB_MARK: f32 = theme::size::MICRO as f32;
 /// the font through SDL2_ttf, which the host suite cannot LINK, so a measured band would make
 /// every route's vertical flow ungradeable off-device — the boundary `ui/CLAUDE.md` records as
 /// stopping the whole suite linking rather than skipping one test.
-const CRUMB_BAND: f32 = CRUMB_MARK;
+pub const CRUMB_BAND: f32 = CRUMB_MARK;
+/// How far above a title's top a crumb's band starts: the band and one [`theme::space::SM`] of air
+/// (the "tight" rung, a caption over the line it belongs to). The narrative flow spends it
+/// ([`RouteLayout::narrative_top`]), and a page whose heading is its own big title but which is not
+/// laid out by [`RouteLayout`] (the Collection screen) reserves the same rise above its title.
+pub const CRUMB_RISE: f32 = CRUMB_BAND + theme::space::SM;
 
 /// Where the crumb's word starts so that its CAP BAND is centred on the mark's centre `cy`.
 ///
@@ -122,6 +127,29 @@ const CRUMB_BAND: f32 = CRUMB_MARK;
 fn crumb_label_top(cy: f32, cap_h: f32) -> f32 {
     cy - cap_h * 0.5
 }
+
+/// **The one back-crumb painter** — a left chevron and the name of the place BACK returns to, in the
+/// caption rung and the tertiary ink, centred on `band`'s middle (`band.h` is [`CRUMB_BAND`]) and
+/// clipped to `band.w`. [`RouteLayout::draw_narrative`] draws every Settings-family route's crumb
+/// through it, and so does any other page whose heading is its own big title (the Collection
+/// screen): the mark, the offsets and the type live here and nowhere else, so a page cannot carry a
+/// crumb of its own that drifts from the family's.
+pub fn draw_back_crumb(p: Painter, band: Rect, back_to: &str, measure: &dyn Measure) {
+    let cy = band.y + band.h * 0.5;
+    icons::draw(
+        p,
+        Icon::ChevronLeft,
+        Rect::new(band.x, cy - CRUMB_MARK * 0.5, CRUMB_MARK, CRUMB_MARK),
+        theme::TEXT_TERTIARY,
+    );
+    let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
+    let x = band.x + CRUMB_MARK * ink_r + theme::space::XS;
+    let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
+    TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .max_lines(1)
+        .draw(p, Rect::new(x, ty, band.x + band.w - x, band.h));
+}
+
 const PUSH_K: f32 = 200.0;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
@@ -899,7 +927,7 @@ impl RouteLayout {
     /// its own `l.content.y` — a value against itself, which cannot fail.
     pub fn narrative_top(self, has_crumb: bool) -> f32 {
         if has_crumb {
-            self.narrative.y + CRUMB_BAND + theme::space::SM
+            self.narrative.y + CRUMB_RISE
         } else {
             self.narrative.y
         }
@@ -916,25 +944,7 @@ impl RouteLayout {
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
-        let h = CRUMB_BAND;
-        let cy = top + h * 0.5;
-        icons::draw(
-            p,
-            Icon::ChevronLeft,
-            Rect::new(
-                self.narrative.x,
-                cy - CRUMB_MARK * 0.5,
-                CRUMB_MARK,
-                CRUMB_MARK,
-            ),
-            theme::TEXT_TERTIARY,
-        );
-        let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
-        let x = self.narrative.x + CRUMB_MARK * ink_r + theme::space::XS;
-        let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
-        TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .max_lines(1)
-            .draw(p, Rect::new(x, ty, self.narrative.x + self.narrative.w - x, h));
+        draw_back_crumb(p, Rect::new(self.narrative.x, top, self.narrative.w, CRUMB_BAND), back_to, measure);
     }
 
     /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
