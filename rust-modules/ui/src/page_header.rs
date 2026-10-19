@@ -4,8 +4,9 @@
 //! "Recommended", "Sort & Filter · Title ▾"). The Library, its Collections and Recommended pages
 //! and the Watchlist all wear THIS row: one layout, one draw, one focus group ([`HeaderFocus`]).
 //!
-//! Geometry (spec): the text edges are x 96 and x 1771; a selected plate or a focus pill overhangs
-//! the text by [`OVERHANG`] (20), so the container is left 76, right 129. The row is
+//! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
+//! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant
+//! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster is sized ONCE from its widest case
 //! (`widest`), so it never moves when a value changes; the left group gets what is left.
 //!
@@ -38,7 +39,7 @@ use super::{icons::{self, Icon}, theme, Painter, Rect};
 pub const TEXT_X0: f32 = 96.0;
 /// Right text edge of the last right-cluster item.
 pub const TEXT_X1: f32 = 1771.0;
-/// How far a plate or pill stands out past its text on each side.
+/// How far a plate stands out past its text on each side (a focus pill: that and [`PILL_FOCUS_OUTSET`]).
 pub const OVERHANG: f32 = 20.0;
 /// Top of the header row, and its height.
 pub const TOP: f32 = 148.0;
