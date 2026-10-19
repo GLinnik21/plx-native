@@ -236,6 +236,27 @@ fn the_row_is_the_librarys_geometry() {
     assert_eq!(header::HEADER_TOP + header::BLOCK_H, 244.0);
 }
 
+/// **S10: the Watchlist's title is plain text.** The selection plate means "current among
+/// siblings" and the white pill means "focusable", and the title is neither: it is the page's name,
+/// so it stands at full white on the bare ground with no plate under it, whatever the focus does
+/// (the design review's S10: "Watchlist" sat on a plate that no sibling shared).
+#[test]
+fn the_title_is_plain_text_with_no_plate_under_it() {
+    use plx_machine::machine::EntryId;
+    use plx_ui::widgets::{CtlPop, TabStrip};
+    let _g = plx_base::testlock::serial();
+    let row = header::Row::new(&ShippedMeasure, "Default", None);
+    let (mut capsules, mut pop) = (TabStrip::new(), CtlPop::<1>::new());
+    for _ in 0..180 { row.step(EntryId(1), None, &mut capsules, &mut pop, 1.0 / 60.0); }
+    let title = row.title_plate();
+    let plates = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let under_title: Vec<_> = plates.iter().filter(|(tag, r)| *tag == 2 && r.x <= title.x + title.w && r.x + r.w >= title.x).collect();
+    assert!(under_title.is_empty(), "a plate is drawn under the title: {under_title:?}");
+    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let name = runs.iter().find(|r| r.text == msg::watchlist_page_title()).expect("the title is drawn");
+    assert_eq!(name.ink, [1.0, 1.0, 1.0, 1.0], "the title is full white, not a resting control's 65%");
+}
+
 /// **A count is a filter read-out and nothing else** (the Library's rule): "6 of 14" while a filter
 /// narrows the list, ahead of the control by the read-out gap, and no "14 titles" at rest.
 #[test]
