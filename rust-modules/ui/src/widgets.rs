@@ -2672,21 +2672,22 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// **`frozen` is the opener lift's ground** (`lift_profile_chip`, the account menu up): the
 /// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
 /// the host snapshot behind its rim and no dim (it is drawn above the dim), and requests no
-/// backdrop entry and no blur source pass. A field that has not latched yet answers `false`, the
-/// flat capsule's cue. The chip on the tab strip passes `None` and keeps the live glass.
+/// backdrop entry and no blur source pass. It is the LATCHED field's texture, so an unlatched ground
+/// is not representable here: [`lift_profile_chip`] draws no lift at all until the field has latched,
+/// because a flat capsule over the bar's own would darken the chip twice. The chip on the tab strip
+/// passes `None` and keeps the live glass.
 fn chip_capsule(
     p: Painter,
     cap: Rect,
     e: f32,
     bar_material: Option<plx_gfx::gfx::GlassFace>,
-    frozen: Option<&crate::underlay::UnderlayField>,
+    frozen: Option<u32>,
 ) -> bool {
     let face = match bar_material {
         None => return false,
         Some(f) => chip_face(f, e),
     };
-    if let Some(field) = frozen {
-        let Some(ground) = field.ground_tex() else { return false };
+    if let Some(ground) = frozen {
         let sharp = crate::popover::host::page_tex().unwrap_or(0);
         return p.glass_frozen(
             cap,
@@ -2798,14 +2799,14 @@ pub fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expand: f32
 }
 
 /// [`profile_chip_with`] on a chosen ground for its capsule: `frozen` is the latched underlay field
-/// of the modal stack the chip is lifted over ([`lift_profile_chip`]), `None` the live tab-strip
-/// glass.
+/// of the modal stack the chip is lifted over ([`lift_profile_chip`]) as its texture, `None` the live
+/// tab-strip glass.
 fn profile_chip_on(
     p: Painter,
     data: ProfileChipRead<'_>,
     chip_expand: f32,
     bar_material: Option<plx_gfx::gfx::GlassFace>,
-    frozen: Option<&crate::underlay::UnderlayField>,
+    frozen: Option<u32>,
 ) {
     let r = CHIP_FRAME;
     let expand = chip_expand;
@@ -2914,7 +2915,10 @@ fn profile_chip_on(
 /// **The lift's capsule stands on FROZEN ground** (owner rule, 2026-10-17: no live-refracting glass
 /// over a page): while the menu is up the capsule is `Painter::glass_frozen` over the stack's
 /// latched underlay field, its rim bending the host snapshot, and it requests no backdrop entry or
-/// blur source pass. Before the field has latched it is the flat capsule. The chip on the tab
+/// blur source pass. **Before the field has latched it draws nothing** (CONFIRM2 CB1): the field
+/// latches a frame after the OK that opens the menu, the dim is still 0 on that frame, and the bar's
+/// own chip is already on screen at the same rect — the flat capsule this used to fall back to landed
+/// on top of that one and the chip blinked near-black for a frame on every open. The chip on the tab
 /// strip, with no menu up, stays live glass.
 pub fn lift_profile_chip(
     p: Painter,
@@ -2923,6 +2927,7 @@ pub fn lift_profile_chip(
     bar_material: Option<plx_gfx::gfx::GlassFace>,
     ground: &crate::underlay::UnderlayField,
 ) {
+    let Some(ground) = ground.ground_tex() else { return };
     crate::guard(|| profile_chip_on(p, data, chip_expand, bar_material, Some(ground)));
 }
 
