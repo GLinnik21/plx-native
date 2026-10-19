@@ -323,8 +323,9 @@ pub struct LibraryMenuArg {
     /// The `Sources` menu lists exactly these directory sections, the libraries the header's fold
     /// hid behind "+N". Empty for every other menu.
     pub folded: Vec<u32>,
-    /// The page's entry and the control the menu grew out of, for a menu whose control is lifted
-    /// into it (everything but the "+N" list, whose "+N" stays lit under the panel).
+    /// The page's entry and the control the menu grew out of. Every header menu names it, "+N"
+    /// included: the page leaves the control out of its pass and the opener lift draws it lit
+    /// above the panel's scrim (design review S12).
     pub opener: Option<(plx_machine::machine::EntryId, u32)>,
 }
 

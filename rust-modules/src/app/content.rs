@@ -942,7 +942,7 @@ pub(crate) unsafe fn library_page_request(
             pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
             pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
                 host: instance, target, kind, anchor, folded,
-                opener: (kind != plx_screens::registry::LibraryMenuKind::Sources).then_some((entry, control)),
+                opener: Some((entry, control)),
             })));
         }
         LibraryReq::ItemMenu { sid, rk, from_deck } => {

@@ -1157,6 +1157,13 @@ pub fn focus_pill(plate: Rect) -> Rect {
     plate.inset(-PILL_FOCUS_OUTSET)
 }
 
+/// [`focus_pill`] at the focus pop `pop` (a [`CtlPop`]'s scale, the press dip folded in): the plate
+/// stood out by the part of [`PILL_FOCUS_OUTSET`] the spring has reached, as a [`TabGround::Bare`]
+/// capsule draws it.
+pub fn focus_pill_popped(plate: Rect, pop: f32) -> Rect {
+    plate.inset(-pop_outset(pop))
+}
+
 /// How far a [`TabGround::Bare`] pill with focus-pop factor `pop` (a [`CtlPop`]'s scale: 1 at rest,
 /// [`CTRL_FOCUS_SCALE`] focused, the press dip folded in) stands out past its plate: the factor
 /// read as a progress along the focus spring, mapped onto [`PILL_FOCUS_OUTSET`] px.
@@ -5658,9 +5665,9 @@ pub enum TabGround {
     /// spring and mapped onto that outset (`pop_outset`), so the pill grows on the same spring a scale
     /// would, but by a constant px, never a fraction of its label's width. It has no rim and no cast: the header's focused control is a flat pill, not the season strip's
     /// lifted control face. `focus: false` leaves it out, for a control a menu has lifted off the
-    /// page: the focus capsule goes either way; whether the label stays is the caller's choice
-    /// ([`crate::page_header::Lift`]): the Watchlist's morph draws the control's only copy, the
-    /// Library's panel draws none.
+    /// page: the focus capsule and the label both go, because the control's only copy is then the
+    /// menu's opener lift ([`crate::page_header::HeaderRow::draw_opener`]), drawn focused above the
+    /// scrim.
     Bare { pop: f32, focus: bool },
 }
 

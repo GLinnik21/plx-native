@@ -746,9 +746,10 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
     }
 }
 impl<H: LibraryLike> Screen<H> for LibraryMenu {
-    /// The header control the panel grew out of is THIS surface's while it is up (the board draws
-    /// "Sort & Filter" as plain text over the panel, with no plate), so the page leaves its pill
-    /// out of its pass (`DrawFrame::lifted`). The "+N" list does not lift: its "+N" stays lit.
+    /// The header control the panel grew out of, for every kind of menu ("+N" included): the page
+    /// leaves it out of its pass (`DrawFrame::lifted`) and the opener lift draws it focused above
+    /// the scrim (`LibraryScreen::draw_header_opener`), so the control the panel is about stays
+    /// lit while it is open (design review S12).
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
     }
@@ -1325,8 +1326,11 @@ mod tests {
             <LibraryMenu as Screen<HostFixture>>::opener(&menu),
             Some((EntryId(3), Some(FocusKey { entry: EntryId(3), elem: 5 }))),
             "the page's control is lifted into the menu");
-        let more = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::Sources, None));
-        assert_eq!(<LibraryMenu as Screen<HostFixture>>::opener(&more), None, "the +N list keeps its +N lit");
+        let more = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::Sources, Some((EntryId(3), 6))));
+        assert_eq!(
+            <LibraryMenu as Screen<HostFixture>>::opener(&more),
+            Some((EntryId(3), Some(FocusKey { entry: EntryId(3), elem: 6 }))),
+            "the +N list lifts its +N too: it reads as the focused opener, not as the page's dimmed capsule");
     }
 
     /// **The panel is never narrower than the control's pill** (the Watchlist's menu hangs by the

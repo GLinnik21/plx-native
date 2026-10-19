@@ -315,20 +315,20 @@ fn the_control_is_one_rect_for_paint_focus_and_anchor() {
     assert_eq!((focus.y, focus.h), (148.0, 56.0));
 }
 
-/// **While Sort & Filter is up the pill is the menu's, not the page's** (DS7: "the pill's glass
-/// becomes the panel"). The menu names the pill as its opener, so the dispatcher lifts it out of
-/// the page pass and the menu's own copy (`OptionsMenu::draw_face`, the morph's opener face) is the
-/// only pill drawn. Red when the page kept drawing its pill under the scrim: the
-/// settled menu, slid up over the pill because it is taller than the room below it, refracted
-/// that pill's label into its glass rim (`GlassRim::Menu`'s sharp band) — a ghost "Sort & Filter
-/// · Default" along the panel's top edge.
+/// **While Sort & Filter is up the pill is the opener lift's, lit** (S12: one rule for every header
+/// opener). The menu names the pill as its opener, so the dispatcher leaves it out of the page pass
+/// (no dimmed copy under the scrim) and the lift (`Screen::redraw_focused`) paints the only copy,
+/// as the focused control: the accent pill at the focused extent and the whole face in the focused
+/// ink. Red while the menu's own morph face drew the pill: it was gone once the panel settled.
 #[test]
-fn the_open_menu_lifts_the_pill_out_of_the_page() {
+fn the_open_menus_pill_is_lit_by_the_lift_and_left_out_of_the_page() {
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
     use plx_machine::machine::{EntryId, FocusKey};
-    use plx_ui::screen::Screen;
+    use plx_ui::screen::{By, Screen};
     let mut h = Harness::new(tiles(3));
+    h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(60); // the row's motion brings the focused pill up
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
@@ -338,49 +338,44 @@ fn the_open_menu_lifts_the_pill_out_of_the_page() {
     let menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
     let key = FocusKey { entry: ENTRY, elem: PILL_ELEM };
     assert_eq!(Screen::<WatchHost>::opener(&menu), Some((ENTRY, Some(key))), "the menu's opener is the page's pill");
-    let label_in_pill = |log: &[(u64, plx_ui::Rect)]| {
-        log.iter().filter(|(tag, r)| *tag == 100 && r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h).count()
-    };
+    let inside = |r: &plx_ui::Rect| r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h;
+    let label_in_pill = |log: &[(u64, plx_ui::Rect)]| log.iter().filter(|(tag, r)| *tag == 100 && inside(r)).count();
     assert!(label_in_pill(&h.draw_census(None)) > 0, "premise: the page draws the pill's label");
     let lifted = h.draw_census(Some(key));
     assert_eq!(label_in_pill(&lifted), 0, "a lifted pill is not drawn by the page");
     assert!(lifted.iter().any(|(tag, r)| *tag == 100 && r.x < pill.x), "the title still is");
+
+    let (prims, runs) = h.lift_census(Some(key));
+    let plates: Vec<_> = prims.iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| *r).collect();
+    assert!(plates.len() == 1 && (plates[0].x - pill.x).abs() < 0.5 && (plates[0].w - pill.w).abs() < 0.5 && (plates[0].h - pill.h).abs() < 0.5,
+        "the lift paints one accent pill at the focused extent {pill:?}: {plates:?}");
+    assert!(runs.iter().any(|run| run.text.contains("Sort") && inside(&run.at)), "and its label: {runs:?}");
+    assert!(runs.iter().all(|run| run.ink.iter().zip(plx_ui::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)),
+        "every run of the face in the focused ink: {runs:?}");
+    // a card is not the pill: the lift for a tile paints no accent pill
+    h.focus_index(0);
+    let tile = h.focus.expect("a tile is focused");
+    let (prims, _) = h.lift_census(Some(tile));
+    assert!(!prims.iter().any(|(tag, r)| *tag == 2 && (r.w - pill.w).abs() < 0.5 && (r.h - pill.h).abs() < 0.5), "a tile's lift is no pill");
 }
 
-/// **The Sort & Filter surface begins and ends as the page's own pill, and is never nothing** (spec
-/// (a), (b), (d); frame dump at 572f46d07). Driven through the surface itself, as the dispatcher
-/// drives it: Mount, the held face (`Screen::draw_held`), the open's frames, BACK, and the close
-/// run out and past. Graded on the paints each frame DECLARES (a discovery walk):
-///
-/// - the held face and the last close frame are the page's focused pill, primitive for primitive
-///   (red when the face was the pill drawn on the container's appear: on the held frames nothing,
-///   at the end of the close a pill faded to nothing, then the page's popping in);
-/// - every frame between has the opener's plate or the glass (red on the n334–351 empty frames).
+/// **The menu's surface draws no pill of its own** (S12): its glass begins at the pill's rect and is
+/// never nothing once the morph is under way, and the pill above it is the lift's. Driven through
+/// the surface itself, as the dispatcher drives it: Mount, the open's frames, BACK, and the close
+/// run out and past. Red while the surface painted the pill's plate and label (the morph face), which
+/// is also what put a second copy of the label under the lift's on the first frames.
 #[test]
-fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
+fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, Key, Machine, PressRead, Tick,
     };
-    use plx_ui::screen::{By, DrawFrame, Screen, ScreenEvent};
+    use plx_ui::screen::{DrawFrame, Screen, ScreenEvent};
     use std::{cell::RefCell, rc::Rc};
     let _g = plx_base::testlock::serial();
-    let mut h = Harness::new(tiles(3));
-    h.focus_elem(PILL_ELEM, By::Dir);
-    h.run(60); // the page's pill is the row's motion: it comes up under the focused control
+    let h = Harness::new(tiles(3));
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
-    let inside = |r: plx_ui::Rect| {
-        let (cx, cy) = (r.cx(), r.cy());
-        cx > pill.x && cx < pill.x + pill.w && cy > pill.y && cy < pill.y + pill.h
-    };
-    type Census = Vec<(u64, plx_ui::Rect)>;
-    let shape = |log: &Census| -> Vec<(u64, [i32; 4])> {
-        log.iter().filter(|(_, r)| inside(*r)).map(|(t, r)| (*t, [r.x, r.y, r.w, r.h].map(|v| v.round() as i32))).collect()
-    };
-    let page_pill = shape(&h.draw_census(None));
-    assert!(page_pill.iter().any(|(t, r)| *t != 100 && r[2] == pill.w.round() as i32), "premise: the page draws its focused pill's plate: {page_pill:?}");
-
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
         options: WatchlistOptionsState::default(),
@@ -403,7 +398,7 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
         Machine::<WatchHost>::step(menu, &ev, &cx, &mut fx);
     };
-    let draw = |menu: &mut WatchlistMenuScreen, held: bool| -> Census {
+    let draw = |menu: &mut WatchlistMenuScreen| -> Vec<(String, plx_ui::Rect)> {
         let sources = Rc::new(RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
         let cx = Cx {
             views: (),
@@ -413,44 +408,26 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
             focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
             owner: InputOwner::Entry(entry),
         };
-        plx_ui::draw_census::capture(|| {
+        plx_ui::draw_census::capture_text(|| {
             let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
-            if held {
-                Screen::<WatchHost>::draw_held(menu, &mut f);
-            } else {
-                Screen::<WatchHost>::draw(menu, &mut f);
-            }
+            Screen::<WatchHost>::draw(menu, &mut f);
         })
     };
-    // The plate or the glass: a primitive at least the pill's height and twice as wide (the
-    // surface narrows toward the panel's width, which may be less than the pill's; text runs are
-    // the label's and the rows').
-    let something = |log: &Census| log.iter().any(|(t, r)| *t != 100 && r.h >= pill.h - 1.0 && r.w >= 2.0 * pill.h);
-
+    let pill_label = plx_platform::i18n::msg::watchlist_page_sort_filter();
     step(&mut menu, ScreenEvent::Mount, ms);
-    assert_eq!(shape(&draw(&mut menu, true)), page_pill, "held: the surface is the page's pill");
-    assert_eq!(shape(&draw(&mut menu, false)), page_pill, "frame 0: still the page's pill");
-    for _ in 0..40 {
-        ms += 16;
-        step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
-        let log = draw(&mut menu, false);
-        assert!(something(&log), "an open frame with neither plate nor glass: {log:?}");
-    }
     let back = InputEvent {
         kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
         at: Tick::default(),
         source: plx_machine::machine::Source::Sdl,
     };
-    step(&mut menu, ScreenEvent::Input(back), ms);
-    let mut last = Vec::new();
-    for _ in 0..60 {
+    for frame in 0..100 {
+        if frame == 40 { step(&mut menu, ScreenEvent::Input(back.clone()), ms); }
         ms += 16;
         step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
-        last = draw(&mut menu, false);
-        assert!(something(&last), "a close frame with neither plate nor glass");
+        let words = draw(&mut menu);
+        assert!(!words.iter().any(|(text, _)| text == pill_label), "frame {frame}: the surface drew the pill's label: {words:?}");
     }
-    assert_eq!(shape(&last), page_pill, "the close lands on the page's own pill: nothing to pop in");
 }
 
 /// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the

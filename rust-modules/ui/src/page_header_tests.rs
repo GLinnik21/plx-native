@@ -192,7 +192,7 @@ const DT: f32 = 1.0 / 60.0;
 
 /// The rounded rects one recording draw of the row paints, in paint order. The selection plate is
 /// exactly [`HEIGHT`] tall (it never scales); the focus capsule wears the pop, so it is taller.
-fn rrects(page: &PageHeader, layout: &HeaderLayout, capsules: &TabStrip, pop: &CtlPop<1>, lifted: Option<Lifted>) -> Vec<Rect> {
+fn rrects(page: &PageHeader, layout: &HeaderLayout, capsules: &TabStrip, pop: &CtlPop<1>, lifted: Option<usize>) -> Vec<Rect> {
     crate::draw_census::capture(|| page.draw(Painter::recording(), layout, capsules, pop.scale_with(0, 0.0), lifted))
         .into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
 }
@@ -267,30 +267,47 @@ fn a_lifted_control_wears_no_focus_capsule_but_the_selection_plate_stays() {
     let layout = page.layout(1920.0, &Fixed);
     let (capsules, pop) = settled(&layout, 0, 3);
     let on = rrects(&page, &layout, &capsules, &pop, None);
-    let lifted = |lift| Some(Lifted { item: 3, lift });
-    let off = rrects(&page, &layout, &capsules, &pop, lifted(Lift::Plain));
+    let off = rrects(&page, &layout, &capsules, &pop, Some(3));
     assert!(focus_capsule(&on).is_some() && focus_capsule(&off).is_none());
     assert_eq!(selection_plate(&on), selection_plate(&off));
 }
 
-/// The two ways a menu leaves a lifted control: `Plain` keeps its label (the Library's Sort &
-/// Filter is plain text over its open panel), `Away` draws none (the Watchlist's menu draws the
-/// only copy, as the morph's face).
+/// A menu leaves a lifted control NOTHING on the page (one rule for every opener, design review
+/// S12): no capsule and no label, because [`PageHeader::draw_opener`] is its only copy. A label left
+/// behind sat dimmed under the scrim next to the lit one.
 #[test]
-fn a_lifted_control_keeps_or_loses_its_label_as_the_page_asks() {
+fn a_lifted_control_leaves_no_label_on_the_page() {
     let page = header("Title");
     let layout = page.layout(1920.0, &Fixed);
     let (capsules, pop) = settled(&layout, 0, 3);
-    let words = |lifted: Option<Lifted>| crate::draw_census::capture_text(|| {
+    let words = |lifted: Option<usize>| crate::draw_census::capture_text(|| {
         page.draw(Painter::recording(), &layout, &capsules, pop.scale_with(0, 0.0), lifted)
     }).into_iter().map(|(text, _)| text).collect::<Vec<_>>();
     let kept = words(None);
     assert!(kept.iter().any(|t| t == "Collections"), "{kept:?}");
-    let plain = words(Some(Lifted { item: 3, lift: Lift::Plain }));
-    assert!(plain.iter().any(|t| t == "Collections"), "Plain keeps the label: {plain:?}");
-    let away = words(Some(Lifted { item: 3, lift: Lift::Away }));
-    assert!(!away.iter().any(|t| t == "Collections"), "Away leaves it to the menu: {away:?}");
+    let away = words(Some(3));
+    assert!(!away.iter().any(|t| t == "Collections"), "the opener lift draws it: {away:?}");
     assert_eq!(away.len() + 3, kept.len(), "only that item's label, separator and value went");
+}
+
+/// **The opener, lit** (S12): `draw_opener` paints the control as the focused one: the accent pill
+/// stood out by the focus outset over its plate, and every run of its face in the focused ink.
+#[test]
+fn the_opener_is_painted_as_the_focused_control() {
+    let page = header("Title");
+    let layout = page.layout(1920.0, &Fixed);
+    let (_, pop) = settled(&layout, 0, 3);
+    let plate = layout.items[3].plate;
+    let scale = pop.scale_with(0, 0.0);
+    let rects = crate::draw_census::capture(|| page.draw_opener(Painter::recording(), &layout, 3, scale))
+        .into_iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| r).collect::<Vec<_>>();
+    let want = focus_pill(plate);
+    assert!(rects.len() == 1 && (rects[0].x - want.x).abs() < 0.01 && (rects[0].y - want.y).abs() < 0.01
+        && (rects[0].w - want.w).abs() < 0.01 && (rects[0].h - want.h).abs() < 0.01,
+        "one accent pill, at the focused pill's extent: {rects:?} vs {want:?}");
+    let runs = crate::draw_census::capture_runs(|| page.draw_opener(Painter::recording(), &layout, 3, scale));
+    assert!(runs.iter().any(|run| run.text == "Collections"), "{runs:?}");
+    assert!(runs.iter().all(|run| run.ink.iter().zip(crate::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)), "the focused ink on every run: {runs:?}");
 }
 
 /// **A breadcrumb is a configuration of the row**: the placement is [`Crumb::layout`]'s, so the

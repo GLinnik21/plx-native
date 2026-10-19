@@ -181,40 +181,17 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
     assert_eq!((state.sort, state.descending), (SortKey::Title, false));
 }
 
-/// **The morph ends in the pill AS IT WILL REST.** Focus back on the pill: the accent plate all
-/// the way. Focus gone elsewhere: the plate is the idle fill from the first close frame, so the
-/// glass never passes through the accent.
+/// **The pill is never under the panel's glass** (S12): the opener lift draws the pill lit above the
+/// panel, so the settled panel must hang clear of it, in every shipped language. A panel that
+/// slid up over the pill (taller than the room below) would put an accent pill across its top edge.
 #[test]
-fn a_close_lands_in_the_pill_as_it_will_rest() {
-    let (mut m, _, _) = open_menu();
-    for _ in 0..120 {
-        m.update(1.0 / 60.0, &ShippedMeasure);
+fn the_panel_hangs_clear_of_the_lit_pill_in_every_language() {
+    for lang in LANGUAGES {
+        let _g = language_on_this_thread_for_test(lang);
+        let (m, pill, _) = open_menu();
+        let panel = m.panel_rect(&ShippedMeasure);
+        assert!(panel.y >= pill.y + pill.h, "{}: the panel {panel:?} covers the pill {pill:?}", lang.tag());
     }
-    assert_eq!(m.plate_fill(), header::pill_fill(true), "open from the focused pill");
-    m.dismiss();
-    for _ in 0..60 {
-        m.update(1.0 / 60.0, &ShippedMeasure);
-        assert_eq!(m.plate_fill(), header::pill_fill(true), "focus returns to the pill: accent throughout");
-    }
-    let (mut m, _, _) = open_menu();
-    for _ in 0..120 {
-        m.update(1.0 / 60.0, &ShippedMeasure);
-    }
-    m.dismiss_resting(false);
-    assert_ne!(header::pill_fill(false), header::pill_fill(true), "premise: the two fills differ");
-    for _ in 0..60 {
-        m.update(1.0 / 60.0, &ShippedMeasure);
-        assert_eq!(m.plate_fill(), header::pill_fill(false), "focus went elsewhere: a resting control is plain text, never the accent");
-    }
-}
-
-#[test]
-fn the_pill_face_still_records_its_label() {
-    let (m, _, state) = open_menu();
-    let log = plx_ui::draw_census::capture(|| m.draw_face(plx_ui::Painter::recording(), &ShippedMeasure, &state));
-    assert!(log.iter().any(|(tag, _)| *tag == 100), "the pill's label is a text run");
-    // The surface's whole morph (plate, glass, label, rows) is graded on `Popover` in `plx_ui`
-    // and on the menu surface in `page_tests`.
 }
 
 // ---- header ----
