@@ -833,6 +833,15 @@ impl Sources {
     }
     /// Resolve CURRENT declarations before any capture. This is a geometry-only traversal of
     /// the same draw tree, not a predictor based on the previous present's set of surfaces.
+    ///
+    /// **A glass takes the page's wash at composite ([`Ground`]) when the wash is the first draw
+    /// under its region that can SHOW**, and "can show" is the rule, not "was recorded first":
+    /// every page opens with `gfx::frame_clear`, which a discovery walk records as a full-canvas
+    /// draw of its own, so the wash is never the first record. A wash that covers the whole region
+    /// and writes it opaque overwrites everything recorded before it there, so those records are
+    /// invisible under it and do not make it a mid-picture layer. Anything recorded AFTER the wash
+    /// (a card, text, a lower glass) can show over it, and is why the composite's term is bounded
+    /// rather than exact.
     pub fn resolve(&mut self) {
         let frame = self.frame;
         let layers = &self.layers;
@@ -907,14 +916,17 @@ impl Sources {
                         .is_some_and(|r| covers(last.rect(), r))
             });
             e.dim = deferred.and_then(|p| p.dim);
-            // The page's wash, taken as a delta at composite: the FIRST draw under the region (the
-            // opaque ground everything else is drawn over) and the only wash there, covering all of
-            // it, with no dim in the source and no lower glass's composite in it. Two washes (a
-            // ramp knee inside the footprint, a page transition's outgoing ground) or art in the
+            // The page's wash, taken as a delta at composite: the FIRST draw under the region that
+            // can show (the opaque ground everything else is drawn over) and the only wash there,
+            // covering all of it, with no dim in the source and no lower glass's composite in it.
+            // "First that can show", not "first recorded": a page opens with the frame clear, a
+            // full-canvas record of its own, and a wash that covers the region and writes it opaque
+            // overwrites every draw recorded before it (the clear included), so those cannot show
+            // and the wash is still the ground the picture under the glass is made on. Two washes
+            // (a ramp knee inside the footprint, a page transition's outgoing ground) or art in the
             // ground (`ambient_art`, never marked) keep the wash in the source as before.
-            let wash = full.first().filter(|first| {
-                first.ground.is_some()
-                    && full.iter().filter(|p| p.ground.is_some()).count() == 1
+            let wash = full.iter().find(|p| p.ground.is_some()).filter(|first| {
+                full.iter().filter(|p| p.ground.is_some()).count() == 1
                     && full.iter().all(|p| p.dim.is_none())
                     && !inline.contains(&z)
                     && region
