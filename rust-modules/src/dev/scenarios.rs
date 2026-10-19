@@ -2303,15 +2303,20 @@ pub(crate) fn home_osc_tick(app: &mut App, now: u32) {
     }
 }
 
-/// `/tmp/plxnative-libosc` — the Library twin of `homeosc`.
+/// `/tmp/plxnative-libosc` — the Library twin of `homeosc`. Sweeps whichever page of the library
+/// family is up (the grid, its Collections page, its Recommended shelves): all three answer
+/// `LibraryCmd::Sweep`, and `fps:library-collections` is this sweep on the Collections page.
 pub(crate) fn lib_osc_tick(app: &mut App, now: u32) {
-    if app.scenarios.dev.lib_osc && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
+    if app.scenarios.dev.lib_osc && app.route().is_library_family() && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
         app.scenarios.lib_osc_last = now;
         crate::app::bridge::Bridge::library_command(&mut app.pages, plx_screens::registry::LibraryCmd::Sweep);
     }
 }
 
-/// `/tmp/plxnative-libswitch` — cycle EVERY Library switch on a timer.
+/// `/tmp/plxnative-libswitch` — cycle EVERY Library switch on a timer. The full grid's alone, on
+/// purpose and unlike the sweep above: the switches it cycles (type, sort and filter, the library
+/// plate, Unwatched, the A-Z rail) are the grid header's controls, which the Collections page does
+/// not wear (its header is a crumb) and the Recommended page answers `Handled::No`.
 pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.lib_switch && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_switch_last) > 1400 {
         app.scenarios.lib_switch_last = now;

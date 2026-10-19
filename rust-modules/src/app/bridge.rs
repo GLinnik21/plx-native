@@ -1350,12 +1350,14 @@ impl Bridge {
         self.stores.owe_page_read(keys);
     }
 
-    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
-    /// current section, Search's results, and the Person / Filmography / Collection store when it
-    /// is showing that very page. Nothing for any other page.
+    /// The items the page for `arg` holds cards for, from the store that feeds it: the current
+    /// section of the Library family (the grid, its Collections page, which borrows the section's
+    /// listing, and its Recommended page, which shows the section's shelves), Search's results, and
+    /// the Person / Filmography / Collection store when it is showing that very page. Nothing for
+    /// any other page.
     pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
         match arg {
-            AppArg::Library => self.stores.library_held_keys(),
+            arg if arg.is_library_family() => self.stores.library_held_keys(),
             AppArg::Search => self.stores.search.held_keys(),
             AppArg::Watchlist => self.stores.watchlist.held_keys(),
             AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
@@ -2462,7 +2464,9 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         }
         return out;
     }
-    if matches!(page.arg, AppArg::Library) {
+    if page.arg.is_library_family() {
+        // The Recommended page is a `RecommendedScreen`, not a `LibraryScreen`: it has no
+        // fingerprint of its own and answers the empty line, as it always has.
         let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return String::new() };
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
@@ -4008,6 +4012,9 @@ mod library_scroll_route_tests;
 #[cfg(test)]
 #[path = "header_cache_route_tests.rs"]
 mod header_cache_route_tests;
+#[cfg(test)]
+#[path = "library_reread_route_tests.rs"]
+mod library_reread_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

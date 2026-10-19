@@ -2281,7 +2281,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     crate::dev::scenarios::home_fold_osc_tick(app, fr.now);
                     crate::dev::scenarios::home_osc_tick(app, fr.now);
                 }
-                AppArg::Library => {
+                // (Each tick gates itself on the pages it drives: the sweep on the library family,
+                // the switch cycle on the full grid.)
+                arg if arg.is_library_family() => {
                     crate::dev::scenarios::lib_osc_tick(app, fr.now);
                     crate::dev::scenarios::lib_switch_tick(app, fr.now);
                 }
@@ -2466,7 +2468,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             plx_data::stores::notify_map::Shown::default(), |mut shown, e| {
                 match e.arg {
                     AppArg::Home => shown.home = true,
-                    AppArg::Library => shown.library = true,
+                    ref arg if arg.is_library_family() => shown.library = true,
                     AppArg::Search => shown.search = true,
                     AppArg::Watchlist => shown.watchlist = true,
                     _ => {}
@@ -6395,6 +6397,59 @@ mod lifecycle_regression_tests {
             assert_eq!(super::super::words::route_word(&rig.app.route()), word, "BACK returns to the {word} page");
             assert_eq!(matches!(rig.app.route(), AppArg::LibraryCollections { .. }), listing);
         }
+    }
+
+    /// **`/tmp/plxnative-libosc` on the Collections page** (`fps:library-collections`): the sweep is
+    /// the library family's, so it moves the Collections page's scroll, and the focus fingerprint
+    /// (`--arm focus`) reports that scroll as `viewport_y`. Both were gated on `AppArg::Library`
+    /// alone: the TV run saw 3 focus lines in 80 s and a median of 1 fps against a floor of 30.
+    #[test]
+    fn the_library_sweep_moves_the_collections_page_and_the_fingerprint_reports_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| {
+            if request.contains("type=18") && request.contains("/library/sections/") {
+                let tiles: Vec<String> = (0..60).map(|i| format!(
+                    r#"{{"ratingKey":"{}","key":"/library/collections/{}/children","type":"collection","subtype":"movie","title":"Set {i}","titleSort":"Set {i}","childCount":"3","smart":"0","librarySectionID":1,"librarySectionTitle":"Movies"}}"#,
+                    50000 + i, 50000 + i)).collect();
+                return format!(r#"{{"MediaContainer":{{"size":60,"totalSize":60,"Metadata":[{}]}}}}"#, tiles.join(","));
+            }
+            r#"{"MediaContainer":{"size":0}}"#.into()
+        }) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.release.send(()).unwrap();
+        rig.app.bridge.seed_registered_browse_for_test([rig.sid, rig.sid]);
+        super::super::bridge::nav_select_tab(&mut rig.app.pages, AppArg::Library);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::LibraryCollections { section: 0 });
+        for _ in 0..120 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        assert!(matches!(rig.app.route(), AppArg::LibraryCollections { .. }), "premise: the Collections page is on top");
+        let page = rig.app.pages.nav.top_page().unwrap();
+        let instance = rig.app.pages.nav.instance_of(page.id).unwrap();
+        rig.app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Library(plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 })))));
+        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(rig.app.bridge.grid_tile_for_test(0).is_some(), "premise: the page lists the server's collections");
+        let scroll = |app: &App| app.pages.nav.top_page().and_then(|page| page.inst.as_ref())
+            .and_then(|inst| inst.screen.as_any()).and_then(|any| any.downcast_ref::<plx_screens::library::LibraryScreen>())
+            .expect("the Collections page is a LibraryScreen").probe_scroll_target();
+        let viewport_y = |app: &App| {
+            let line = super::super::bridge::content_probe(&app.pages, &app.bridge);
+            line.split("viewport_y=").nth(1).and_then(|rest| rest.split_whitespace().next()).and_then(|v| v.parse::<f32>().ok())
+        };
+        assert_eq!(scroll(&rig.app), 0.0, "premise: the page rests at its top");
+        assert!(viewport_y(&rig.app).is_some(), "the fingerprint reports the Collections page's viewport");
+        rig.app.scenarios.dev.lib_osc = true;
+        for _ in 0..900 {
+            step(&mut rig.app, &mut t, vec![]);
+            if scroll(&rig.app) > 0.5 { break; }
+        }
+        assert!(scroll(&rig.app) > 0.5, "the sweep moved the Collections page's scroll, now {}", scroll(&rig.app));
+        for _ in 0..30 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(viewport_y(&rig.app).is_some_and(|y| y > 0.0),
+            "the fingerprint reports the scroll the sweep made: {:?}", viewport_y(&rig.app));
     }
 
     /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
