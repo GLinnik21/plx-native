@@ -756,8 +756,9 @@ impl Grid {
 
     /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
     /// the leaving copies of the cards a landing moved to another row (over the owner's ghosts,
-    /// which it paints before this), the non-focused cards, the focused one last; only the cards
-    /// the scroll can show are touched.
+    /// which it paints before this), every caption (beneath every tile, so a line still arriving
+    /// never covers the poster tops of the row under it), the non-focused cards, the focused one
+    /// last; only the cards the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
