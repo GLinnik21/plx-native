@@ -382,8 +382,10 @@ fn source_controls_and_document_groups_match_bare_full_and_failed_content() {
         if failed {
             expected.push(STATUS_GROUP);
         }
+        // A loading listing declares its (empty) grid group so a fresh enter into it seats nothing
+        // (`PageRegions::declare_pending`): focus-inert, so it is not a control of the document.
         assert_eq!(
-            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            groups.iter().filter(|group| group.len > 0).map(|group| group.id).collect::<Vec<_>>(),
             expected
         );
         for control in [SORTFILTER] {

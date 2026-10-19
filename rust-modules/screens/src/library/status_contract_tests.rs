@@ -194,7 +194,8 @@ fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
         assert_eq!(groups.iter().any(|group| group.id == STATUS_GROUP), retry, "{name}");
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry, "{name}");
         assert!(page.place(&SORTFILTER, &cx, At::SpringTarget).is_some(), "{name}");
-        assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail), "{name}");
+        // (A loading listing declares its grid group EMPTY, `PageRegions::declare_pending`: no control.)
+        assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail && group.len > 0), "{name}");
         assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master), "{name}");
     }
 }

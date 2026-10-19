@@ -955,7 +955,8 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
         assert_eq!(page.readout, expected);
         let mut groups = Vec::new();
         page.groups(&cx, &mut groups);
-        assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail), grid);
+        // (A loading listing declares its grid group EMPTY, `PageRegions::declare_pending`: no control.)
+        assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail && g.len > 0), grid);
         // The header row is the way out of every state, so its controls are always placed.
         let _ = head;
         for control in [SORTFILTER] {
