@@ -569,3 +569,34 @@ fn a_control_the_next_row_lacks_fades_out_in_place() {
     assert!((alphas[0] - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "from fully there: {alphas:?}");
     assert!(swap_runs(&new, &swap).iter().all(|(text, ..)| text != "Collections"), "and gone once the clock ran out");
 }
+
+/// **A label a capsule's edge crosses is painted once per stretch, each in its own ink**: the
+/// stretch under the white focus capsule in the dark accent ink and the rest in the resting white,
+/// split where the capsule's edge is (the edge itself is `TabStrip::ink_spans`', the clip each
+/// stretch is painted in is the scissor's).
+#[test]
+fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
+    let _g = plx_base::testlock::serial();
+    let h = header("Title");
+    let l = h.layout(1920.0, &Fixed);
+    let (mut capsules, mut pop) = settled(&l, -1, 0);
+    // Travel to the next item until the capsule's edge stands inside the first one's plate.
+    let plate = l.items[0].plate;
+    let mut frame = None;
+    for _ in 0..60 {
+        PageHeader::step(&l, -1, 1, &mut capsules, &mut pop, DT);
+        let spans = capsules.ink_spans((plate.x, plate.w), TabGround::Bare { pop: 1.0, focus: true });
+        if spans.as_slice().len() > 1 { frame = Some(spans); break; }
+    }
+    let spans = frame.expect("the capsule's edge crosses the first plate on its way");
+    let label = &h.spec().left.first().map_or_else(|| h.spec().right[0].label.clone(), |item| item.label.clone());
+    let runs: Vec<_> = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &capsules, 1.0, None))
+        .into_iter().filter(|run| &run.text == label).collect();
+    assert_eq!(runs.len(), spans.as_slice().len(), "one paint of the label per stretch");
+    for (run, span) in runs.iter().zip(spans.as_slice()) {
+        let want = if span.focus > 0.5 { crate::ACCENT_INK } else { theme::CONTROL_TEXT_REST };
+        assert_eq!(run.ink, want, "the stretch {:?} wears its own ink", (span.x0, span.x1));
+    }
+    assert!(runs.iter().any(|run| run.ink == crate::ACCENT_INK) && runs.iter().any(|run| run.ink == theme::CONTROL_TEXT_REST),
+        "both inks are on the label: the capsule is half across it");
+}

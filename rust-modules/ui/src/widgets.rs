@@ -5446,11 +5446,13 @@ pub fn draw_strip(
         if !crate::on_axis(pill.x + p.dx(), pill.w, crate::consts::SCR_W, 0.0) {
             continue;
         }
-        let (fm, sm) = strip.mixes((pill.x, pill.w));
-        TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
-            .plated()
-            .mix(fm, sm)
-            .draw(&env, p);
+        // Inked stretch by stretch, cut where a capsule's edge crosses it (`ink_spans`).
+        paint_inked(p, &strip.ink_spans((pill.x, pill.w), ground), pill.y, pill.h, |fm, sm| {
+            TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
+                .plated()
+                .mix(fm, sm)
+                .draw(&env, p);
+        });
     }
 }
 
@@ -5711,7 +5713,132 @@ impl TabStrip {
     pub fn mixes(&self, pill: (f32, f32)) -> (f32, f32) {
         (self.foc.mix(pill), self.sel.mix(pill))
     }
+
+    /// **The ink a pill wears, stretch by stretch.** `pill` (content-space `(x, w)`) is cut at the
+    /// DRAWN edges of both capsules, and each stretch is inked by what is under it: the stretch
+    /// inside a capsule wears that capsule's ink, the rest the resting one. A label the capsule is
+    /// half way across is therefore two inks, split where the plate's edge is, instead of one
+    /// mid-grey that is illegible on both sides of it. `ground` says which strip this is (the
+    /// plates it paints, and the focus capsule's pop, which is part of the drawn edge).
+    ///
+    /// One stretch for every pill no capsule edge crosses, which is nearly every pill on every frame.
+    pub fn ink_spans(&self, pill: (f32, f32), ground: TabGround) -> InkSpans {
+        let _ = ground;
+        let (focus, selected) = self.mixes(pill);
+        InkSpans { spans: [InkSpan { x0: pill.0, x1: pill.0 + pill.1, focus, selected }; 5], n: 1 }
+    }
+
+    #[allow(dead_code)]
+    fn ink_split(&self, pill: (f32, f32), ground: TabGround) -> InkSpans {
+        let (lo, hi) = (pill.0, pill.0 + pill.1);
+        let (focus_pop, draws_focus, sel_plate) = match ground {
+            TabGround::Bare { pop, focus } => (pop, focus, theme::TAB_PLATE_SELECTED),
+            TabGround::Plated { pop } => (pop, true, theme::TAB_PLATE_SELECTED_OVER),
+            TabGround::Tracked { .. } => (1.0, true, theme::OVERLAY_FOCUS_PILL),
+        };
+        // A capsule's span as DRAWN (`draw`'s own guard and its pop about the capsule's centre), or
+        // `None` while it is not on screen.
+        let drawn = |c: &Capsule, pop: f32| {
+            let (x, w) = c.span();
+            (c.alpha() > 0.004 && w > 0.5).then(|| (x + (w - w * pop) * 0.5, x + (w + w * pop) * 0.5))
+        };
+        let sel = drawn(&self.sel, 1.0);
+        let foc = if draws_focus { drawn(&self.foc, focus_pop) } else { None };
+        let mut cuts = [lo; 6];
+        let mut n = 1;
+        let mut edges = [sel.map(|e| e.0), sel.map(|e| e.1), foc.map(|e| e.0), foc.map(|e| e.1)]
+            .into_iter().flatten().filter(|e| *e > lo && *e < hi).collect::<Vec<f32>>();
+        edges.sort_by(f32::total_cmp);
+        for e in edges {
+            if e > cuts[n - 1] { cuts[n] = e; n += 1; }
+        }
+        cuts[n] = hi;
+        let inside = |span: Option<(f32, f32)>, at: f32| span.is_some_and(|(a, b)| at >= a && at < b);
+        let mut out = InkSpans { spans: [InkSpan { x0: lo, x1: hi, focus: 0.0, selected: 0.0 }; 5], n: 0 };
+        for pair in cuts[..=n].windows(2) {
+            let (x0, x1) = (pair[0], pair[1]);
+            let mid = (x0 + x1) * 0.5;
+            let sel_alpha = if inside(sel, mid) { self.sel.alpha() } else { 0.0 };
+            let focus = if inside(foc, mid) && backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA { 1.0 } else { 0.0 };
+            let span = InkSpan { x0, x1, focus, selected: sel_alpha };
+            match out.n.checked_sub(1).map(|last| &mut out.spans[last]) {
+                Some(last) if last.focus == focus && last.selected == sel_alpha => last.x1 = x1,
+                _ => { out.spans[out.n] = span; out.n += 1; }
+            }
+        }
+        out
+    }
 }
+
+/// A stretch `[x0, x1)` of a pill, in the strip's content space, and the `(focus, selected)` mixes
+/// it is inked with ([`TabPill::mixed_ink`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InkSpan {
+    pub x0: f32,
+    pub x1: f32,
+    pub focus: f32,
+    pub selected: f32,
+}
+
+/// A pill's [`InkSpan`]s, left to right and tiling the pill: at most five (both edges of both
+/// capsules inside it).
+#[derive(Clone, Copy, Debug)]
+pub struct InkSpans {
+    spans: [InkSpan; 5],
+    n: usize,
+}
+
+impl InkSpans {
+    pub fn as_slice(&self) -> &[InkSpan] {
+        &self.spans[..self.n]
+    }
+
+    /// One stretch over the whole pill, at its resting ink: what a pill no capsule marks wears.
+    pub fn resting(pill: (f32, f32)) -> Self {
+        Self { spans: [InkSpan { x0: pill.0, x1: pill.0 + pill.1, focus: 0.0, selected: 0.0 }; 5], n: 1 }
+    }
+}
+
+/// **The luminance of the ground where a capsule's ink flips**: dark ink (`ACCENT_INK`) on the
+/// capsule's side of it, the light ink on the other. Judged on the COMPOSITED backing, not on the
+/// capsule's alpha, because the capsule fades in over a plate that is already there: a linear ink
+/// crosses the plate's own luminance on the way (a label that "nearly vanishes while the grey plate
+/// brightens into the white one") where a flip never leaves the label on something it cannot be
+/// read from. 0.14 keeps the worse of the two inks (the resting white at 65%) above 3:1 on either
+/// side of the flip, over [`INK_GROUND`], with and without a selection plate under the capsule.
+const INK_FLIP_LUMA: f32 = 0.14;
+/// The ground the flip is judged over: the dark slate the app's pages stand on (a Library page at
+/// rest samples to `#29374d`). Every strip that wears this ink is drawn on a ground at least this
+/// dark, which is what the 3:1 above is graded against.
+const INK_GROUND: [f32; 4] = [41.0 / 255.0, 55.0 / 255.0, 77.0 / 255.0, 1.0];
+
+/// The relative luminance of [`INK_GROUND`] under a selection plate at `sel_alpha` and a focus
+/// capsule at `foc_alpha`, composited in that order.
+fn backing_luma(sel_plate: [f32; 4], sel_alpha: f32, foc_alpha: f32) -> f32 {
+    let over = |dst: [f32; 4], src: [f32; 4], a: f32| {
+        [dst[0] + (src[0] - dst[0]) * a, dst[1] + (src[1] - dst[1]) * a, dst[2] + (src[2] - dst[2]) * a, 1.0]
+    };
+    let c = over(INK_GROUND, sel_plate, sel_plate[3] * sel_alpha);
+    rel_luma(over(c, crate::ACCENT, crate::ACCENT[3] * foc_alpha))
+}
+
+/// Paint a pill's content once per [`InkSpan`], each time clipped to its stretch (`clip` is the
+/// painter the spans' x is in; `y`/`h` are the pill's rows, with air for ascenders): `draw(focus,
+/// selected)` receives the mixes to ink that stretch with. A pill with one stretch is drawn once,
+/// unclipped, exactly as before. The scissors are `ClipScope`s, which nest by intersection inside
+/// whatever the strip already clips to, and `gfx::clip_set` rounds every edge in physical space, so
+/// the stretches abut with no seam and no overlap.
+pub fn paint_inked(clip: Painter, spans: &InkSpans, y: f32, h: f32, mut draw: impl FnMut(f32, f32)) {
+    if let [only] = spans.as_slice() {
+        return draw(only.focus, only.selected);
+    }
+    for span in spans.as_slice() {
+        let _scissor = crate::screen::ClipScope::open_in(clip, Rect::new(span.x0, y - INK_AIR, span.x1 - span.x0, h + 2.0 * INK_AIR));
+        draw(span.focus, span.selected);
+    }
+}
+/// Rows above and below a pill that a stretch's scissor leaves open, for glyphs that stand out of it.
+const INK_AIR: f32 = 12.0;
 
 // ---- The shared top tab row: profile chip leads at the margin, the global destinations
 // (Home | Movies | TV Shows | Search) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
@@ -7145,9 +7272,10 @@ impl StripRender {
         let view = geometry.clip;
         let sx = self.tab_scroll.pos;
         let scrolls = content_w > view_w + 0.5 || sx.abs() > 0.5;
-        if scrolls {
-            p.clip(view);
-        }
+        // A `ClipScope`, not the bare `p.clip(view)`: a pill a capsule's edge crosses is painted in
+        // stretches, each in a scissor of its own, and a scope restores THIS clip when it closes
+        // where the bare one has no stack to restore.
+        let strip_clip = scrolls.then(|| crate::screen::ClipScope::open_in(p, view));
         let env = Env::inert();
         // The selection/focus fills, as ONE travelling capsule each (`top_strip`) rather than a
         // boolean fill per pill. They were placed in content space with `tab_pill_x`, so a single
@@ -7176,7 +7304,7 @@ impl StripRender {
                 // ink comes from how covered this pill is by the capsules above — never from its own
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
-                let (fm, sm) = self.top_strip.mixes((px, widths[i]));
+                let spans = self.top_strip.ink_spans((px, widths[i]), TabGround::Tracked { glass: glass_on });
                 match &faces[i] {
                     // An icon face is a MARK, and it takes its ink from exactly the same
                     // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
@@ -7185,19 +7313,21 @@ impl StripRender {
                         let d = TAB_ICON_D;
                         let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
                         let env = pulse.filter(|&(at, _)| at == i).map_or(0.0, |(_, e)| e);
-                        draw_tab_mark(p, *icon, ir, TabPill::mixed_ink(fm, sm), env);
+                        paint_inked(cp, &spans, TOP_BAR_Y, TAB_PILL_H, |fm, sm| {
+                            draw_tab_mark(p, *icon, ir, TabPill::mixed_ink(fm, sm), env);
+                        });
                     }
                     TabFace::Label(_) => {
-                        TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
-                            .mix(fm, sm)
-                            .draw(&env, p);
+                        paint_inked(cp, &spans, TOP_BAR_Y, TAB_PILL_H, |fm, sm| {
+                            TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
+                                .mix(fm, sm)
+                                .draw(&env, p);
+                        });
                     }
                 }
             }
         }
-        if scrolls {
-            p.clip_clear();
-        }
+        drop(strip_clip);
     })
     }
 }

@@ -29,7 +29,7 @@ use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 use super::breadcrumb::{self, Crumb};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{CtlPop, SelMark, TabGround, TabStrip};
+use super::widgets::{paint_inked, CtlPop, InkSpans, SelMark, TabGround, TabStrip};
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
@@ -331,13 +331,13 @@ impl PageHeader {
         });
     }
 
-    /// The `(focus, selected)` ink mixes of item `r`: how much of its plate the capsules cover. A
-    /// read-out is no pill and is never inked by one; a `lifted` control has no focus capsule under
-    /// it, so its ink stays the resting one.
-    fn mixes(&self, capsules: &TabStrip, r: &ItemRect, face: &Face<'_>, lifted: bool) -> (f32, f32) {
-        if face.readout || !(r.focusable || face.selected) { return (0.0, 0.0); }
-        let (focus, selected) = capsules.mixes((r.plate.x, r.plate.w));
-        (if lifted { 0.0 } else { focus }, selected)
+    /// The ink stretches of item `r`'s plate ([`TabStrip::ink_spans`]): how much of its label the
+    /// capsules cover, edge by edge. A read-out is no pill and is never inked by one; a `lifted`
+    /// control has no focus capsule under it (`ground` leaves it out), so its ink stays the resting
+    /// one.
+    fn spans(&self, capsules: &TabStrip, r: &ItemRect, face: &Face<'_>, ground: TabGround) -> InkSpans {
+        if face.readout || !(r.focusable || face.selected) { return InkSpans::resting((r.plate.x, r.plate.w)); }
+        capsules.ink_spans((r.plate.x, r.plate.w), ground)
     }
 
     /// Draw the row: the plates first (the selection's, then the focus capsule over it, through
@@ -354,7 +354,8 @@ impl PageHeader {
     /// painted as it says (a value cross-fading in place, a control leaving or arriving), every
     /// other face as `draw` paints it.
     pub fn draw_with(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>, swap: &HeaderSwap) {
-        capsules.draw(p, layout.top(), HEIGHT, TabGround::Bare { pop, focus: lifted.is_none() });
+        let ground = TabGround::Bare { pop, focus: lifted.is_none() };
+        capsules.draw(p, layout.top(), HEIGHT, ground);
         if let Some(glyph) = layout.glyph {
             icons::draw(p, Icon::Chevron, glyph, breadcrumb::GLYPH_INK);
         }
@@ -362,8 +363,11 @@ impl PageHeader {
             if lifted == Some(Lifted { item: index, lift: Lift::Away }) { continue; }
             let mut face = self.face(r.slot);
             if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i); }
-            let mix = self.mixes(capsules, r, &face, lifted.is_some());
-            self.draw_face_at(p, r.text, &face, (0.0, 0.0), mix);
+            // Inked by what is under it, stretch by stretch: a label a capsule's edge is crossing
+            // wears the capsule's ink on its side of the edge and the resting one on the other.
+            paint_inked(p, &self.spans(capsules, r, &face, ground), r.plate.y, r.plate.h, |focus, selected| {
+                self.draw_face_at(p, r.text, &face, (0.0, 0.0), (focus, selected));
+            });
         }
         for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right) {
             let face = Face { fade: Some(FaceFade { face: opacity, from_value: None, value_in: 1.0 }), ..Self::face_of(item) };

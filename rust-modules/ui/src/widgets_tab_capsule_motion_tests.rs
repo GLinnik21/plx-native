@@ -649,3 +649,118 @@ fn the_play_glyph_appears_exactly_where_the_press_plays() {
         Some(theme::TEXT_SECONDARY),
     );
 }
+
+// ---- ink by the capsule's drawn edge ---------------------------------------------------------
+
+/// The pill height the ink tests draw capsules at.
+const INK_H: f32 = 60.0;
+
+/// Every strip ground, with the focus pop a header or a season strip draws at.
+fn ink_grounds() -> [TabGround; 3] {
+    [TabGround::Tracked { glass: false }, TabGround::Plated { pop: CTRL_FOCUS_SCALE }, TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: true }]
+}
+
+/// Each strip ground with the ink its labels wear: the tab bar's and season strip's, and the page
+/// header's (a bare ground).
+fn ink_cases() -> Vec<(TabGround, fn(f32, f32) -> [f32; 4])> {
+    let mut cases: Vec<_> = ink_grounds().into_iter().map(|ground| (ground, TabPill::mixed_ink as fn(f32, f32) -> [f32; 4])).collect();
+    cases.push((TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: true }, header_ink));
+    cases
+}
+
+/// What column `x` of a strip stands on, as DRAWN: the dark ground the ink is solved over, the
+/// selection plate where its capsule is, the focus capsule over it where its (popped) one is. The
+/// capsule geometry is read the way `TabStrip::draw` paints it, not through `ink_spans`.
+fn backing_at(strip: &TabStrip, ground: TabGround, x: f32) -> [f32; 4] {
+    let (pop, plate) = match ground {
+        TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
+        TabGround::Plated { pop } => (pop, theme::TAB_PLATE_SELECTED_OVER),
+        TabGround::Bare { pop, .. } => (pop, theme::TAB_PLATE_SELECTED),
+    };
+    let covers = |c: &Capsule, pop: f32| {
+        let (cx, cw) = c.span();
+        let r = Rect::new(cx, 0.0, cw, INK_H).scaled(pop);
+        (c.alpha() > 0.004 && cw > 0.5 && x >= r.x && x < r.x + r.w).then(|| c.alpha())
+    };
+    let over = |dst: [f32; 4], src: [f32; 4], a: f32| theme::cross(dst, [src[0], src[1], src[2], 1.0], a);
+    let mut c = INK_GROUND;
+    if let Some(a) = covers(&strip.sel, 1.0) { c = over(c, plate, plate[3] * a); }
+    if let Some(a) = covers(&strip.foc, pop) { c = over(c, crate::ACCENT, a); }
+    c
+}
+
+/// The lowest contrast between the ink a pill wears and the backing under it, over every pixel
+/// column of the pill, as `(ratio, x)`: each column is inked by the stretch `ink_spans` puts it in.
+fn worst_ink_contrast(strip: &TabStrip, ground: TabGround, pill: (f32, f32)) -> (f32, f32) {
+    worst_contrast_of(strip, ground, pill, TabPill::mixed_ink)
+}
+
+/// The tab bar's ink and the page header's: the same stretches, two palettes (a header label rests
+/// at white 65% and a tab's at `TEXT_READING`).
+fn header_ink(focus: f32, selected: f32) -> [f32; 4] {
+    theme::cross(theme::cross(theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK, selected), crate::ACCENT_INK, focus)
+}
+
+fn worst_contrast_of(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_of: fn(f32, f32) -> [f32; 4]) -> (f32, f32) {
+    let spans = strip.ink_spans(pill, ground);
+    let mut worst = (f32::MAX, pill.0);
+    for column in (pill.0.floor() as i32)..((pill.0 + pill.1).ceil() as i32) {
+        let x = column as f32 + 0.5;
+        if x < pill.0 || x >= pill.0 + pill.1 { continue; }
+        let span = spans.as_slice().iter().find(|s| x >= s.x0 && x < s.x1).expect("the stretches tile the pill");
+        let backing = backing_at(strip, ground, x);
+        let ink = ink_of(span.focus, span.selected);
+        let ratio = contrast(theme::cross(backing, [ink[0], ink[1], ink[2], 1.0], ink[3]), backing);
+        if ratio < worst.0 { worst = (ratio, x); }
+    }
+    worst
+}
+
+/// **A label under a capsule's edge is readable on both sides of it** (the owner's "letters over
+/// the white plate are light, letters over the slate are dark"): across a whole travel from one
+/// pill to the next, on every strip ground, every pixel column of both pills the capsule is
+/// crossing keeps 3:1 against what is under it. A single mid-grey ink for the whole label cannot:
+/// it is wrong on whichever side of the edge it is not made for.
+#[test]
+fn a_label_a_capsule_is_crossing_stays_readable_on_both_sides_of_its_edge() {
+    let _g = serial_for_motion();
+    let w = widths_for(12);
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    for (ground, ink_of) in ink_cases() {
+        let mut s = TabStrip::new();
+        for _ in 0..90 { s.update(2, 4, span, SelMark::Travels, DT); }
+        let mut worst = (f32::MAX, 0, 0.0);
+        for frame in 0..90 {
+            s.update(2, 5, span, SelMark::Travels, DT);
+            for pill in [4, 5] {
+                let (ratio, x) = worst_contrast_of(&s, ground, span_of(&w, pill), ink_of);
+                if ratio < worst.0 { worst = (ratio, frame, x); }
+            }
+        }
+        assert!(worst.0 >= 3.0, "worst {:.2}:1 at frame {} x {} (3:1 wanted)", worst.0, worst.1, worst.2);
+    }
+}
+
+/// **Up into the header: the label never goes**. The focus capsule fades in over the selection
+/// plate that is already under the label (grey brightening into white), and leaves the same way:
+/// the label keeps 3:1 on every frame of both, because its ink changes sides of the plate's
+/// brightness in one step instead of crossing it.
+#[test]
+fn a_focus_capsule_fading_in_over_the_selection_plate_never_loses_the_label() {
+    let _g = serial_for_motion();
+    let w = widths_for(12);
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    for (ground, ink_of) in ink_cases() {
+        for (from, to) in [(-1, 3), (3, -1)] {
+            let mut s = TabStrip::new();
+            for _ in 0..90 { s.update(3, from, span, SelMark::Lands, DT); }
+            let mut worst = (f32::MAX, 0, 0.0);
+            for frame in 0..60 {
+                s.update(3, to, span, SelMark::Lands, DT);
+                let (ratio, x) = worst_contrast_of(&s, ground, span_of(&w, 3), ink_of);
+                if ratio < worst.0 { worst = (ratio, frame, x); }
+            }
+            assert!(worst.0 >= 3.0, "{from} -> {to}: worst {:.2}:1 at frame {} x {} (3:1 wanted)", worst.0, worst.1, worst.2);
+        }
+    }
+}
