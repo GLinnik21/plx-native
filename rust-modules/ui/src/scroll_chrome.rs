@@ -1,8 +1,8 @@
-//! **What a scrolled card page does with the chrome around it** — ONE set of rules for every page
-//! that scrolls a long grid (the Library, its Collections page, the Watchlist): the top chrome
-//! tucks away once the first row has gone, a 72 px fade of the page's ground takes the top edge,
-//! and a capsule restating the library's name and size appears only where the page's header names
-//! libraries ([`capsule_shown`]).
+//! **What a scrolled card page does with the chrome around it** — ONE set of rules for the pages
+//! that scroll a long grid under the tucking top chrome (the Library, its Collections page, the
+//! Watchlist): the chrome tucks away once the first row has gone, a 72 px fade of the page's ground
+//! takes the top edge, and a capsule restating the library's name and size appears only where the
+//! page's header names libraries ([`capsule_shown`]).
 //!
 //! Everything here is a pure function of the scroll position and the page's row pitch, so it adds
 //! no state to a screen (the tuck follows the scroll spring the page already owns, and a resting

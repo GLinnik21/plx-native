@@ -198,16 +198,21 @@ click (the click's own frame draws the frame before it), never at the commit, so
 tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the control is lifted.
 
 **The grid and its captions follow the Library.** Six columns of 250 x 375 posters from x 96, 285
-apart (the last column ends on the row's right text edge, x 1771), the first row at y 244, a scrolled
-row resting at y >= 120. The caption under a poster is the global Under posters setting (Settings >
+apart (the last column ends on the row's right text edge, x 1771), the first row at y 244, a focused
+row below the first resting at y 244 too. The caption under a poster is the global Under posters setting (Settings >
 Appearance; `plx_ui::caption_policy`): the Title switch (default off) and the Details picker, and only
 the focused row opens its band (0 / 80 / 112 px). A Watchlist row carries a title, a year and a kind:
 the default Details (year and length) reads its year, Genre, Video and Age rating have nothing to say
 for it, and an unplayable title's state sentence ("Coming soon", "Not on your servers", "Server
 offline") takes the details line whatever the picker shows, except Nothing, which shows no line at all.
-The grid rests on its first snap, the first row at y 120, so by then the header row has risen into the
-tab strip's band: it fades out over that scroll (`head_alpha`), the top chrome tucks over the same
-distance, and the capsule "Watchlist N" takes the top edge, over the 72 px fade of the page's ground, as on the Library (`plx_ui::scroll_chrome`, the Library's tuck ramp and settle edge).
+A focused row below the first rests with its posters at the first row's y, 244 (`GridSpec::resting`,
+`poster_grid::rest_scroll`: the Library's rule, one function for both pages), and the last rows of a
+long list rest lower because the document's end holds them. So the first scrolled rest is a whole row
+down. The header row fades out over one `TUCK_RAMP` of scroll (`head_alpha`), the top chrome tucks
+over the ramp that ends at one row pitch (`plx_ui::scroll_chrome::tuck`), and the 72 px fade of the
+page's ground takes the top edge, as on the Library. There is NO capsule: the header names no
+library, and the capsule restates the library the header names (`scroll_chrome::capsule_shown` is
+true only for 2+ names).
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
 menu: between the commit and the landing's first step nothing on the grid changes (tile slots and

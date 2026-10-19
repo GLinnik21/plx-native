@@ -80,7 +80,7 @@ pub mod page_header; // the library/collections page header row (CONTRACT FREEZE
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
-pub mod scroll_chrome; // the tuck ramp, capsule text and capsule predicate every scrolled card page shares (pure)
+pub mod scroll_chrome; // the tuck ramp, capsule text and capsule predicate the Library (and its Collections page) and the Watchlist share (pure)
 pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (live nav-pill glass)
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide

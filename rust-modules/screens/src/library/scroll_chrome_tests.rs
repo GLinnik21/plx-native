@@ -1,5 +1,5 @@
-//! The Library's use of the shared scroll chrome (`plx_ui::scroll_chrome`): the settle rule on its
-//! layout, and what a tucked page declares.
+//! The Library's use of the shared scroll chrome (`plx_ui::scroll_chrome`) and of the shared rest
+//! rule (`poster_grid::rest_scroll`, through its layout), and what a tucked page declares.
 use plx_ui::scroll_capsule;
 
 /// A focused row below the first settles with its poster top where the first row's is at rest

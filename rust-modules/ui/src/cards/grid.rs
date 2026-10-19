@@ -47,7 +47,8 @@ pub enum ScrollMode {
     /// The grid sits in a document whose page scroll another owner drives (the Library's All grid, every grid
     /// section of a `Stack`): the grid never steps or snaps a scroll of its own. The owner hands it the page
     /// with [`Grid::set_page`] before every `on` / `draw` / `place` call, reads the scroll the grid
-    /// WANTS for its focused row from [`Grid::reveal_target`], and the document shift a content
+    /// WANTS for its focused row from [`Grid::reveal_target`] ([`Grid::rest_target`] for a
+    /// [`resting`](GridSpec::resting) grid), and the document shift a content
     /// landing needs from [`Grid::landed_shift`]. `top` is then the first row's top in DOCUMENT
     /// space and `scroll` the owner's document offset.
     External,
@@ -516,9 +517,11 @@ impl Grid {
         })
     }
 
-    /// The scroll the last tick wanted for the focused row (`poster_grid::snap_row_in` against the
-    /// current scroll), `None` while focus is not in the grid. An external owner may take it or
-    /// apply its own reveal rule; the self-scrolling grid springs to it.
+    /// The scroll the last tick wanted for the focused row (`poster_grid::snap_row_in_for` against
+    /// the current scroll; for a [`resting`](GridSpec::resting) grid `rest_scroll` with no document
+    /// end, which [`rest_target`](Self::rest_target) holds to the owner's), `None` while focus is not
+    /// in the grid. An external owner may take it or apply its own reveal rule; the self-scrolling
+    /// grid springs to it.
     pub fn reveal_target(&self) -> Option<f32> {
         self.reveal.map(|(_, at)| at)
     }

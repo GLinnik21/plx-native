@@ -123,8 +123,11 @@ of a `cards::Stack` under the stack's. Both shipped grids are external; `ScrollM
 default a spec is built with and no screen runs it, so a scroll fault on a stack page is in
 `cards/stack.rs`, not in `Grid`. An external grid never steps a scroll: the owner calls
 `set_page(top, scroll)` before each
-`on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` (the
-Library does not: it reveals by its own rule over the settled layout) and applies the document
+`on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` for a
+snapping grid (`GridSpec::new`; a grid built with `GridSpec::resting` is read through
+`rest_target(end)` instead, because `reveal_target()` has no document end in it and `Stack::wanted`
+passes its own; the Library applies the same rule through `Layout::row_reveal` ->
+`poster_grid::rest_scroll`) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
 not home when focus is elsewhere. An owner whose columns, style or document top change at run time
 (the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
