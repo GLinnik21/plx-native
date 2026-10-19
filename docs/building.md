@@ -50,6 +50,13 @@ It runs from a Claude Code `SessionEnd` hook and from the hourly launchd agent `
 installs (`tools/install-disk-watch.sh`, macOS only — run it yourself; nothing here installs it
 for you). Logs land in `~/Library/Logs/plxnative-build-gc.log` (or `$PLX_GC_LOG`).
 
+A build also checks the budget when it starts: every cargo-running `make` target runs
+`make disk-preflight` first (`make -s print-disk-entries` lists them). With room it costs one
+`statvfs`; below the comfort line it evicts idle trees through the same planner, never the tree it
+is building (and the current checkout's other trees only lose their incremental dirs, and only when
+nothing cheaper covers the build), and it refuses only when everything it may take still cannot
+cover the build plus a 3 GiB reserve. `PLX_MIN_FREE_MB=0` skips it.
+
 The bundled FFmpeg is not rebuilt per checkout. Its source and object tree is machine-wide under
 `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`), keyed by configure flags and toolchain, so a
 fresh clone gets its own prefix in seconds rather than minutes.

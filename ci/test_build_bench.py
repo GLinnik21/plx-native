@@ -714,6 +714,9 @@ class MakefileWiringTests(unittest.TestCase):
 
     def make(self, *args, env=None):
         full = {k: v for k, v in os.environ.items() if k not in ("MAKEFLAGS", "MFLAGS", "RELEASE")}
+        # The recipes are under test; the disk preflight has its own test (ci/test_disk_preflight.py), and a real
+        # `make` would otherwise run it against this machine's disk and, below the comfort line, evict its trees.
+        full["PLX_DISK_BUDGET_DONE"] = "1"
         full.update(env or {})
         return subprocess.run(["make", *args], cwd=ROOT, capture_output=True, text=True, env=full)
 

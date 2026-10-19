@@ -720,7 +720,21 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   kind of tree) and re-probed for liveness (builder in the checkout, cargo or `make check` lock,
   open files, the idle window, a `/tmp` tree's ctime) immediately before it is renamed away. It
   does not stop for a held FFmpeg cache lock the way the other modes do, it never evicts the cargo
-  seed, and `-n` previews it. Tests may run it only against fixtures.)
+  seed, and `-n` previews it. Tests may run it only against fixtures. **Every build entry runs the
+  same planner first**: `make disk-preflight` (`python3 tools/disk-budget.py preflight --tree
+  <the tree this target builds into>`) is an order-only prerequisite of each cargo-running target
+  in the Makefile's `DISK_ENTRIES` (`make -s print-disk-entries`). At or above `PLX_GC_MIN_FREE_GIB`
+  (20) it is one `statvfs` (a median 21 ms with the interpreter start, measured 2026-10-19); below it, it
+  plans a reclaim to that line, sparing the tree it is building and every live tree (the current
+  checkout's incremental dirs in its other trees are rung 6, taken only when rungs 0-5 cannot cover
+  the build), hands the plan to `--evict`, and re-measures; it refuses (exit 1, naming what it kept and why) only when rungs 0-6
+  cannot cover the target's estimated need plus the `PLX_MIN_FREE_MB` reserve (3072; `0` turns the
+  preflight off). Its wait on a lock is bounded: a held `build-gc` auto lock is waited on for up to
+  `--wait-secs` (60) and the wait ends the moment the build fits; the eviction itself is not short
+  (a few multi-GiB deletions, `build-gc.sh --evict` capped at 900 s), so a target below the comfort
+  line can spend real time in the preflight before cargo starts. A recursive `$(MAKE)` inside an
+  entry passes `PLX_DISK_BUDGET_DONE=1`, which every nested preflight honours. The inventory is cached
+  for 10 minutes under `$PLX_BUILD_CACHE/disk-budget/` and dropped after an eviction.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

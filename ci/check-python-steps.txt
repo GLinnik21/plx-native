@@ -304,3 +304,12 @@ python3 ci/check-vfp.py --skip-if-missing
 # backdated fixture is never a candidate, the probes (`probe`, `tmp-trees`), and that collecting an inventory never rewrites a
 # lane's index. Synthetic inventories plus private temp repositories, a stubbed lsof, no real /tmp scan.
 python3 ci/test_disk_budget.py
+# The disk budget at every build entry: `make disk-preflight` is `tools/disk-budget.py preflight` and an ORDER-ONLY prerequisite of
+# every Makefile target that runs cargo. Static: the Makefile is parsed and every target whose recipe runs cargo (directly or through a
+# script) must be in `make -s print-disk-entries`, with the prerequisite after the `|`, before the build starts, and the recursive
+# `$(MAKE)` lines carrying PLX_DISK_BUDGET_DONE. Dynamic, on a fixture repository with PLX_GC_TEST_FREE_KIB and stubbed lsof/pgrep:
+# at comfort nothing starts and the planner is not imported; below the reserve with nothing to evict it refuses with the reason; below
+# comfort it evicts idle trees and never the tree being built; the marker and PLX_MIN_FREE_MB=0 are no-ops; the auto lock is
+# taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
+# trees. `make -n` and `make -s print-*` only, no cargo.
+python3 ci/test_disk_preflight.py

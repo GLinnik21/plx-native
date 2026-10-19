@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
-"""The disk budget: inventory of every derived build tree, and the planner that orders their eviction.
+"""The disk budget: inventory of every derived build tree, the planner that orders their eviction, and the
+preflight that every build entry runs.
 
     disk-budget.py report    [--root DIR] [--tree DIR] [--need-gib N]
     disk-budget.py reclaim   --to GIB [--emit] [--no-build] [--idle-min N] [--root DIR] [--tree DIR] [--need-gib N]
+    disk-budget.py preflight [--root DIR] [--tree DIR] [--need-gib N] [--wait-secs N]
     disk-budget.py tmp-trees [--root DIR]
     disk-budget.py probe     --tree DIR --class lane|fleet|tmp|leftover [...]
 
-WHY THIS EXISTS. Nothing checks, or makes room, when a build starts: the only build-time check refuses
-below 3 GiB for two targets, and the cleanup that exists runs on a clock (hourly, and at the end of a
-session). Between two ticks a fleet of lanes writes 3-8 GB each, and the cargo trees agents leave in
-`/tmp` were visible to no tool at all. `docs/disk-budget.md` is the design record: the measurements, the
-ladder below, the safety rules and the PR plan. This file is the inventory, the pure planner and the
-read-only questions asked of them; it deletes nothing and has no subcommand that could. The one deleting
-path is `build-gc.sh --evict`, which takes the plan `reclaim --emit` prints and re-checks every path
-against the live machine immediately before it renames it away. `make disk` prints `report` after
-build-gc's own table; `build-gc.sh --auto` takes its order from `reclaim`.
+WHY THIS EXISTS. Nothing used to check, or make room, when a build started, and the cleanup that exists runs
+on a clock (hourly, and at the end of a session). Between two ticks a fleet of lanes writes 3-8 GB each, and
+the cargo trees agents leave in `/tmp` were visible to no tool at all. `docs/disk-budget.md` is the design
+record: the measurements, the ladder below, the safety rules and the PR plan. This file is the inventory, the
+pure planner, the read-only questions asked of them and the preflight that drives them; it removes no build
+tree itself (its own deletions are its inventory cache file and its lock). The one path that deletes trees is
+`build-gc.sh --evict`, which takes the plan `reclaim --emit` prints and re-checks every path against the live
+machine immediately before it renames it away. `make disk` prints `report` after build-gc's own table; `build-gc.sh --auto` takes its order from
+`reclaim`.
+
+THE PREFLIGHT (`make disk-preflight`, an order-only prerequisite of every cargo-running target) makes room
+instead of only refusing. At or above the comfort line, and above the target's estimate plus the reserve, it
+is one `statvfs` and exits 0 before the imports below load. Below that it plans `reclaim --to <comfort>` for
+the tree being built, sparing the tree being built and every live tree (the CURRENT checkout's other trees lose only their incremental dirs, at rung 6), hands the plan to `build-gc.sh
+--evict`, re-reads free space and lets `settle` decide: it refuses (exit 1) only when rungs 0-6 cannot cover
+need + reserve. Its lock wait is bounded: build-gc's auto lock is waited on for `--wait-secs` (60) at most,
+and the wait ends the moment the build fits. The eviction itself is not short (`build-gc.sh --evict` is
+capped at 900 s), so a target below the comfort line can spend real time here before cargo starts. The inventory is cached for 10 minutes (`$PLX_BUILD_CACHE/disk-budget/`)
+and dropped after an eviction. Any failure of its own fails open; only free space below the reserve refuses.
+A recipe that re-enters make sets PLX_DISK_BUDGET_DONE=1 so the nested entries do not repeat it.
 
 THE PLANNER IS A PURE FUNCTION. `plan(inv, free, need, th, me, now, build_tree)` does no I/O: it is the one
 place where order and safety are decided, and `ci/test_disk_budget.py` feeds it synthetic inventories.
@@ -65,7 +78,7 @@ fixture, `cp -p`, a restore from an archive); a ctime cannot, so a backdated tre
 and is never "garbage that nobody wrote to for a day".
 
 Environment: PLX_GC_MIN_FREE_GIB (comfort, default 20), PLX_MIN_FREE_MB (reserve, default 3072),
-PLX_DISK_NEED_GIB (the build's estimate), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
+PLX_DISK_NEED_GIB (the build's estimate), PLX_DISK_BUDGET_DONE (preflight no-op), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
 ~/plx-fleet), PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories
 to look for `/tmp` trees in; default /tmp and $TMPDIR), and two TEST-ONLY overrides: PLX_GC_TEST_FREE_KIB
 (free space, the name build-gc.sh already uses) and PLX_GC_TEST_NOW (the clock, honoured only when
@@ -73,38 +86,26 @@ PLX_GC_TMP_ROOTS is set). `reclaim --emit` REFUSES to run with either override w
 PLX_FLEET_DIR or PLX_BUILD_CACHE is left to its default: a pretend emergency over the real default roots
 is how a test would delete the owner's real trees.
 """
-import argparse
-import ctypes
-import fcntl
-import importlib.util
 import os
-import re
-import shutil
-import stat
-import struct
-import subprocess
 import sys
-import tempfile
-import time
-from dataclasses import dataclass, replace
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# --- the preflight's fast path --------------------------------------------------------------------------
+# `make` runs `disk-budget.py preflight` before EVERY cargo build, so what it costs when there is room is
+# paid on every build. A Python start is ~30 ms; the imports below (subprocess, argparse, dataclasses,
+# ctypes ...) are as much again, and the answer, when the disk is above the comfort line, needs none of
+# them: one `statvfs`. So this block comes BEFORE them, uses only `os` and `sys`, and exits the process
+# itself. Anything it cannot answer on its own (an unknown option, free space below the line) falls
+# through to the full command, which takes the same decision again from the same numbers.
 GIB = 1 << 30
 MIB = 1 << 20
-
-# --- the thresholds, and where each comes from (docs/disk-budget.md, "The ladder") ------------------
 DEFAULT_COMFORT_GIB = 20         # the line `build-gc.sh --auto` already uses: ~an hour of fleet growth
-HYSTERESIS_GIB = 4               # about one cold host `target`, so the next build does not reclaim again
-DEFAULT_RESERVE_MIB = 3072       # `make disk-preflight`'s PLX_MIN_FREE_MB: the ENOSPC floor
-IDLE_SECS = 15 * 60              # a tree written in the last 15 minutes is somebody's current work
-TMP_GARBAGE_SECS = 24 * 3600     # a PlxNative /tmp tree this old is nobody's current work
-LEFTOVER_SECS = 24 * 3600        # cargo-seed's own LEFTOVER_MAX_AGE
+DEFAULT_RESERVE_MIB = 3072       # PLX_MIN_FREE_MB: the margin kept on top of a build's estimate (the bare floor if the preflight itself fails)
 MIN_NEED_GIB = 0.5
 
 # What a build is expected to ADD to its tree, measured (docs/disk-budget.md). The need is this minus
 # what the tree already holds, at least MIN_NEED_GIB. The ARM builds (0.6 GiB `tvdev`, 0.45 GiB
 # `release`) share the `target` / `target-release` names with larger host builds, so a build entry that
-# knows better passes its own number.
+# knows better passes its own number (`--need-gib`).
 NEED_GIB = {
     "target": 3.4,               # host debug, `make check`
     "target-fast": 2.7,
@@ -114,6 +115,117 @@ NEED_GIB = {
     "target-release": 0.45,
 }
 DEFAULT_NEED_GIB = 3.4
+DONE_MARKER = "PLX_DISK_BUDGET_DONE"     # set by a recipe that re-enters make: its parent already ran this
+
+
+def int_env(env, name, default):
+    value = env.get(name, "")
+    return int(value) if value.isdigit() else default
+
+
+def done_marker(env):
+    return env.get(DONE_MARKER, "") not in ("", "0")
+
+
+def nearest_existing(path):
+    """`path`, or the closest ancestor that exists: a target dir not yet created lives on its parent's volume."""
+    path = os.path.abspath(path)
+    while not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return path
+
+
+def free_at(path, env):
+    """Free bytes on the volume `path` will be written to (unprivileged, as `df` and shutil.disk_usage read
+    it). PLX_GC_TEST_FREE_KIB overrides it, as in build-gc.sh: a test's static disk."""
+    override = env.get("PLX_GC_TEST_FREE_KIB", "")
+    if override.isdigit():
+        return int(override) * 1024
+    st = os.statvfs(nearest_existing(path))
+    return st.f_bavail * st.f_frsize
+
+
+def explicit_need(option, env):
+    """The build's estimate in GiB when something states it: the --need-gib text, then PLX_DISK_NEED_GIB;
+    else None."""
+    for value in (option, env.get("PLX_DISK_NEED_GIB", "")):
+        if value:
+            try:
+                return float(value)
+            except ValueError:
+                pass
+    return None
+
+
+def upper_need(tree, option, env):
+    """The build's estimate in GiB with no inventory: stated, else the table's value for the tree's name."""
+    need = explicit_need(option, env)
+    if need is not None:
+        return need
+    return max(MIN_NEED_GIB, NEED_GIB.get(os.path.basename(tree.rstrip(os.sep)), DEFAULT_NEED_GIB))
+
+
+def fast_preflight(argv, env):
+    """0 when the build may start without reading anything but one number, else None (take the full path).
+    `argv` is the arguments after `preflight`. The rule is the planner's own `ok` test with the build's
+    UPPER estimate (the table value, not net of what the tree already holds), so it never says "go" where
+    the planner would say "reclaim"."""
+    if done_marker(env):
+        return 0
+    reserve = int_env(env, "PLX_MIN_FREE_MB", DEFAULT_RESERVE_MIB) * MIB
+    if reserve == 0:
+        return 0                 # PLX_MIN_FREE_MB=0: the documented way to skip the preflight
+    opts, args = {}, iter(argv)
+    for arg in args:
+        key, eq, value = arg.partition("=")
+        if key not in ("--tree", "--root", "--need-gib", "--wait-secs"):
+            return None
+        if not eq:
+            value = next(args, None)
+        if value is None:
+            return None
+        opts[key] = value
+    root = opts.get("--root") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tree = opts.get("--tree") or os.path.join(root, "rust-modules", "target")
+    need = upper_need(tree, opts.get("--need-gib"), env)
+    comfort = int_env(env, "PLX_GC_MIN_FREE_GIB", DEFAULT_COMFORT_GIB) * GIB
+    try:
+        free = free_at(tree, env)
+    except OSError:
+        return None
+    return 0 if free >= max(comfort, int(need * GIB) + reserve) else None
+
+
+if __name__ == "__main__" and sys.argv[1:2] == ["preflight"]:
+    _fast = fast_preflight(sys.argv[2:], os.environ)
+    if _fast is not None:
+        sys.exit(_fast)
+
+import argparse
+import ctypes
+import fcntl
+import hashlib
+import importlib.util
+import re
+import shutil
+import signal
+import stat
+import struct
+import subprocess
+import tempfile
+import time
+from dataclasses import asdict, dataclass, replace
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+# --- the thresholds, and where each comes from (docs/disk-budget.md, "The ladder") ------------------
+# (the comfort line, the reserve and the build estimates are defined above, with the fast path)
+HYSTERESIS_GIB = 4               # about one cold host `target`, so the next build does not reclaim again
+IDLE_SECS = 15 * 60              # a tree written in the last 15 minutes is somebody's current work
+TMP_GARBAGE_SECS = 24 * 3600     # a PlxNative /tmp tree this old is nobody's current work
+LEFTOVER_SECS = 24 * 3600        # cargo-seed's own LEFTOVER_MAX_AGE
 
 PLX_MARKERS = ("plx_", "libplx_", "plxnative")   # entry names that make a cargo tree ours
 PROFILE_SUBDIRS = (".fingerprint", "deps", "build", "incremental")
@@ -478,11 +590,6 @@ def tail_text(text: str, width: int) -> str:
 # --- the inventory: everything below touches the disk ------------------------------------------------
 def real(path: str) -> str:
     return os.path.realpath(path)
-
-
-def int_env(env, name: str, default: int) -> int:
-    value = env.get(name, "")
-    return int(value) if value.isdigit() else default
 
 
 def thresholds_from_env(env) -> Thresholds:
@@ -862,14 +969,25 @@ def parse_lsof(text: str, ignore_pids: Sequence[int] = ()) -> LiveSnapshot:
 
 
 def ancestor_pids() -> List[int]:
-    """This process and its parents: a `make disk` running in a checkout is not a build in it."""
+    """This process and its parents: a `make disk` running in a checkout is not a build in it.
+
+    One read of the process table, not a `ps -p` per hop: a process spawn is the expensive thing here
+    (build-gc.sh's walk makes the same single read). A `ps` that fails leaves just this process."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    parent: Dict[int, int] = {}
+    for line in out.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+            parent[int(fields[0])] = int(fields[1])
     pids, pid = [], os.getpid()
     for _ in range(32):
         if pid <= 1:
             break
         pids.append(pid)
-        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True)
-        pid = int(out.stdout.strip()) if out.stdout.strip().isdigit() else 0
+        pid = parent.get(pid, 0)
     return pids
 
 
@@ -1226,16 +1344,28 @@ def default_roots(env) -> List[str]:
     return missing
 
 
-def refuse_pretend_emergency(env) -> str:
+def refuse_pretend_emergency(env, root: Optional[str] = None) -> str:
     """Why a plan must not be made right now, or "". A test override (PLX_GC_TEST_FREE_KIB pretends the disk
     is full, PLX_GC_TEST_NOW pretends it is later) over the DEFAULT roots would plan the machine's real
-    trees as if they were the emergency; `report` is read-only and unaffected, a plan is not."""
+    trees as if they were the emergency; `report` is read-only and unaffected, a plan is not.
+
+    With `root` (the checkout the plan is for) there is a second half: the named roots may all be disposable
+    while the CHECKOUT is the real one, and `git worktree list` would hand the planner every real lane. Under
+    an override the checkout must lie under the common parent of the roots, and that parent must not be `/`."""
     overrides = [name for name in ("PLX_GC_TEST_FREE_KIB", "PLX_GC_TEST_NOW") if env.get(name)]
     missing = default_roots(env)
     if overrides and missing:
         return ("refusing to plan under %s while %s is left to its default: a pretend emergency over the real "
                 "trees is how a test would delete them. Point every root at a disposable directory." % (
                     "+".join(overrides), "+".join(missing)))
+    if overrides and root:
+        named = [fleet_dir(env), env.get("PLX_BUILD_CACHE", "")] + tmp_roots(env)
+        parent = os.path.commonpath([real(r) for r in named if r])
+        if parent == os.sep or not under(real(root), parent):
+            return ("refusing to plan under %s for the checkout %s: it lies outside %s, the common parent of the "
+                    "roots named for this run, so those roots are not what the plan would read. Point the roots "
+                    "(PLX_GC_TMP_ROOTS, PLX_FLEET_DIR, PLX_BUILD_CACHE) into a disposable directory that holds "
+                    "the checkout." % ("+".join(overrides), tilde(real(root)), tilde(parent)))
     return ""
 
 
@@ -1255,11 +1385,11 @@ def cmd_report(args, env) -> int:
 
 def cmd_reclaim(args, env) -> int:
     """The plan for a reclaim up to `--to` GiB free (comfort line = `--to`, goal = `--to` + hysteresis)."""
-    refusal = refuse_pretend_emergency(env)
+    root = real(args.root)
+    refusal = refuse_pretend_emergency(env, root)
     if refusal:
         print("disk-budget: " + refusal, file=sys.stderr)
         return 2
-    root = real(args.root)
     now = clock(env)
     th = replace(thresholds_from_env(env), comfort=int(args.to * GIB))
     if args.idle_min is not None:
@@ -1351,6 +1481,313 @@ def cmd_settle(args, env) -> int:
     return 0 if verdict == "ok" else 3
 
 
+# --- the preflight: make room before a build, or refuse -------------------------------------------------
+# `make disk-preflight` runs this before every Makefile target that starts cargo (an ORDER-ONLY prerequisite
+# of each, listed once as DISK_ENTRIES). The fast path above answers "there is room" in one statvfs. Below
+# the comfort line this plans a reclaim that spares the checkout being built for, hands the plan to
+# `build-gc.sh --evict` (the one deleter, which re-checks every path against the live machine), re-reads the
+# free space and decides on THAT: exit 0 to build, exit 1 only when the build would still not fit, i.e. the
+# whole ladder could not cover the build's estimate plus the reserve. It never blocks for long on a lock, and
+# it fails open: a planner that breaks must not stop a build that fits.
+INVENTORY_SCHEMA = 1
+INVENTORY_TTL_SECS = 10 * 60     # the walk costs seconds; builds in a row reuse it (an eviction drops it)
+DEFAULT_WAIT_SECS = 60           # on build-gc's auto lock: the holder is freeing space, so wait, then judge
+LOCK_POLL_SECS = 1.0
+EVICT_TIMEOUT_SECS = 900         # deleting a few multi-GiB trees; a wedged executor must not hang a build
+
+
+def device_of(path: str) -> int:
+    return os.stat(nearest_existing(path)).st_dev
+
+
+def inventory_to_json(inv: Inventory) -> dict:
+    out = asdict(inv)
+    out["schema"] = INVENTORY_SCHEMA
+    return out
+
+
+def inventory_from_json(data: dict) -> Inventory:
+    """The inverse of `inventory_to_json`. A cache of another shape is a miss, never a guess."""
+    try:
+        if data["schema"] != INVENTORY_SCHEMA:
+            raise ValueError("inventory cache schema %r, this tool reads %r" % (data["schema"], INVENTORY_SCHEMA))
+        trees = []
+        for raw in data["trees"]:
+            raw = dict(raw)
+            live = dict(raw["live"])
+            live["open_files"] = tuple(live["open_files"])
+            raw["live"] = Liveness(**live)
+            raw["incr_paths"] = tuple(raw["incr_paths"])
+            trees.append(Tree(**raw))
+        return Inventory(tuple(trees), data["volume_dev"], tuple(data["protected_prefixes"]), data["cache_root"],
+                         data["base_ref"], tuple(tuple(c) for c in data["checkouts"]))
+    except (KeyError, TypeError) as err:
+        raise ValueError("unreadable inventory cache: %r" % (err,)) from err
+
+
+def inventory_cache_path(root: str, env) -> str:
+    """One cache file per (checkout, roots): the inventory depends on all of them."""
+    key = "\n".join([root, fleet_dir(env), build_cache(env), os.pathsep.join(tmp_roots(env))])
+    return os.path.join(build_cache(env), "disk-budget", "inventory-%s.json" % hashlib.sha1(key.encode()).hexdigest()[:16])
+
+
+def load_inventory_cache(path: str) -> Optional[Inventory]:
+    try:
+        if time.time() - os.stat(path).st_mtime > INVENTORY_TTL_SECS:
+            return None
+        import json
+        with open(path) as fh:
+            return inventory_from_json(json.load(fh))
+    except (OSError, ValueError):
+        return None
+
+
+def store_inventory_cache(path: str, inv: Inventory) -> None:
+    """Atomic (a concurrent reader never sees half a file); a cache that cannot be written is just no cache."""
+    import json
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w") as fh:
+            json.dump(inventory_to_json(inv), fh)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def drop_inventory_cache(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def lock_dir(env) -> str:
+    """build-gc.sh's single-instance lock, at the path it uses (`AUTO_LOCK_DIR`)."""
+    return env.get("PLX_GC_LOCK_DIR") or os.path.join(env.get("TMPDIR") or "/tmp", "plx-build-gc-auto.lock")
+
+
+def lock_owner_alive(lock: str) -> bool:
+    """build-gc.sh's `owner_is_alive`: the recorded pid, else anything left in the recorded process group."""
+    def number(name: str) -> int:
+        try:
+            with open(os.path.join(lock, name)) as fh:
+                text = fh.read().strip()
+            return int(text) if text.isdigit() else 0
+        except OSError:
+            return 0
+    pid, pgid = number("pid"), number("pgid")
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except OSError:
+            pass
+    if pgid > 0:
+        try:
+            return subprocess.run(["pgrep", "-g", str(pgid)], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return True          # cannot tell: alive (the safe reading)
+    return False
+
+
+def take_lock(lock: str, env) -> str:
+    """"got", "held" (a live owner), or "unavailable" (the lock directory cannot be made at all). A lock
+    nobody owns and nobody touched for PLX_GC_LOCK_STALE_MIN (120) minutes is reclaimed, as build-gc does."""
+    stale_secs = int_env(env, "PLX_GC_LOCK_STALE_MIN", 120) * 60
+    for attempt in (0, 1):
+        try:
+            os.mkdir(lock)
+        except FileExistsError:
+            try:
+                idle = time.time() - os.stat(lock).st_mtime
+            except OSError:
+                continue                      # it vanished between the two calls: try again
+            if attempt or lock_owner_alive(lock) or idle <= stale_secs:
+                return "held"
+            aside = "%s.stale.%d" % (lock, os.getpid())
+            try:
+                os.rename(lock, aside)
+            except OSError:
+                return "held"
+            shutil.rmtree(aside, ignore_errors=True)
+            continue
+        except OSError:
+            return "unavailable"
+        for name, value in (("pid", os.getpid()), ("pgid", os.getpgrp())):
+            try:
+                with open(os.path.join(lock, name), "w") as fh:
+                    fh.write("%d\n" % value)
+            except OSError:
+                pass
+        return "got"
+    return "held"
+
+
+def run_evict(root: str, pl: Plan, env) -> Tuple[bool, str]:
+    """Hand the plan to `build-gc.sh --evict` from the checkout being built (it spares that checkout)."""
+    script = os.path.join(root, "tools", "build-gc.sh")
+    if not os.path.isfile(script):
+        return False, "tools/build-gc.sh is missing in %s" % tilde(root)
+    scratch = env.get("TMPDIR") if env.get("TMPDIR") and os.path.isdir(env["TMPDIR"]) else None
+    fd, planfile = tempfile.mkstemp(prefix="plx-disk-plan.", dir=scratch)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(emit(pl) + "\n")
+        proc = subprocess.run(["sh", script, "--evict", planfile], cwd=root, env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=EVICT_TIMEOUT_SECS)
+    except (OSError, subprocess.SubprocessError) as err:
+        return False, "build-gc.sh --evict did not complete (%s)" % (err.__class__.__name__,)
+    finally:
+        try:
+            os.unlink(planfile)
+        except OSError:
+            pass
+    return True, proc.stdout + proc.stderr
+
+
+def evicted_count(output: str) -> int:
+    match = re.search(r"^evict: (\d+) removed", output, re.M)
+    return int(match.group(1)) if match else 0
+
+
+def refusal_text(tree: str, free: int, need: int, th: Thresholds, why: str, evicted: int,
+                 live: Sequence[Tuple[str, int, str]] = (), note: str = "") -> str:
+    lines = ["disk-preflight: only %s free for %s; this build needs ~%s plus a %s reserve (%s). Starting it would "
+             "fail with ENOSPC (os error 28), which reads like a code failure." % (
+                 gib(free), tilde(tree), gib(need), gib(th.reserve), gib(need + th.reserve)),
+             "  %s" % why]
+    if note:
+        lines.append("  " + note)
+    lines.append("  evicted: %s" % ("%d path(s), and it is still short" % evicted if evicted else "nothing"))
+    for path, size, reason in live:
+        lines.append("  kept (in use): %s  %s  %s" % (tilde(path), size_text(size), reason))
+    lines.append("  next: `make disk` lists every tree and why it is kept; finish or stop the builds above; "
+                 "or set PLX_MIN_FREE_MB=0 to skip this check (a build that does not fit then fails with ENOSPC).")
+    return "\n".join(lines)
+
+
+def judge(tree: str, need: int, th: Thresholds, env, why: str, evicted: int = 0, note: str = "",
+          live: Sequence[Tuple[str, int, str]] = ()) -> int:
+    """The decision on free space RE-READ: `settle`'s rule, the one `build-gc.sh --evict` ends with."""
+    free = free_at(tree, env)
+    verdict, reason = settle(need, th.reserve, free)
+    if verdict == "ok":
+        return 0
+    print(refusal_text(tree, free, need, th, why or reason, evicted, live, note), file=sys.stderr)
+    return 1
+
+
+def plan_and_evict(args, env, root: str, tree: str, th: Thresholds) -> int:
+    now = clock(env)
+    cache = inventory_cache_path(root, env)
+    inv = load_inventory_cache(cache)
+    if inv is None:
+        inv = collect(root, env, Probes(env), now)
+        store_inventory_cache(cache, inv)
+    current = next((t.private_bytes for t in inv.trees if t.path == tree), 0)
+    need = int(args.need_gib * GIB) if args.need_gib is not None else estimate_need(tree, current, env)
+    free = free_at(tree, env)
+    pl = plan(inv, free, need, th, root, now, tree)
+    if pl.verdict == "ok":
+        return 0
+    if pl.verdict == "refuse" and not pl.uncertain:
+        # Nothing sized can cover it and no unsized sweep is in the plan: deleting what the ladder offers
+        # would cost the lanes their caches and still leave the build to fail.
+        print(refusal_text(tree, free, need, th, pl.reason, 0, pl.biggest_live), file=sys.stderr)
+        return 1
+    ran, output = run_evict(root, pl, env)
+    drop_inventory_cache(cache)
+    removed = evicted_count(output)
+    after = free_at(tree, env)
+    note = "" if ran else output
+    if ran and removed:
+        print("disk-preflight: evicted %d path(s) to make room; %s free now (was %s)" % (removed, gib(after), gib(free)),
+              file=sys.stderr)
+    elif not ran:
+        print("disk-preflight: could not evict (%s)" % output, file=sys.stderr)
+    return judge(tree, need, th, env, pl.reason, removed, note, pl.biggest_live)
+
+
+def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: int, lock: str) -> int:
+    """Another reclaim holds the lock: it is freeing space. Wait up to --wait-secs for it (or for the build to
+    fit), then judge on the free space read afterwards. Taking the lock over when the holder finishes is the
+    one case this plans for itself."""
+    deadline = time.monotonic() + args.wait_secs
+    while True:
+        if settle(need_upper, th.reserve, free_at(tree, env))[0] == "ok":
+            return 0
+        if time.monotonic() >= deadline:
+            return judge(tree, need_upper, th, env, "", note="another disk reclaim holds %s and did not free enough "
+                         "in %.0f s" % (tilde(lock), args.wait_secs))
+        time.sleep(min(LOCK_POLL_SECS, max(0.0, deadline - time.monotonic())))
+        got = take_lock(lock, env)
+        if got == "got":
+            return with_lock(args, env, root, tree, th, lock)
+        if got == "unavailable":
+            return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken" % tilde(lock))
+
+
+def with_lock(args, env, root: str, tree: str, th: Thresholds, lock: str) -> int:
+    """Hold build-gc's auto lock around the plan and the eviction; released on every way out."""
+    def on_signal(signum, frame):
+        raise SystemExit(128 + signum)
+    previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        return plan_and_evict(args, env, root, tree, th)
+    finally:
+        shutil.rmtree(lock, ignore_errors=True)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def cmd_preflight(args, env) -> int:
+    """Exit 0: build. Exit 1: refused, nothing the ladder may evict makes the build fit. Exit 2: not run."""
+    if done_marker(env):
+        return 0
+    th = thresholds_from_env(env)
+    if th.reserve == 0:
+        return 0
+    root = real(args.root)
+    tree = real(args.tree) if args.tree else os.path.join(root, "rust-modules", "target")
+    need_upper = int(upper_need(tree, str(args.need_gib) if args.need_gib is not None else None, env) * GIB)
+    try:
+        if free_at(tree, env) >= max(th.comfort, need_upper + th.reserve):
+            return 0
+    except OSError:
+        return 0                 # free space unreadable: not a reason to stop a build
+    try:
+        if device_of(tree) != device_of(root):
+            # The ladder's trees are on the checkout's volume: evicting them frees the wrong disk.
+            return judge(tree, need_upper, th, env, "",
+                         note="the tree is on another volume than the checkout, so nothing the ladder holds helps")
+        refusal = refuse_pretend_emergency(env, root)
+        if refusal:
+            print("disk-preflight: " + refusal, file=sys.stderr)
+            return 2
+        lock = lock_dir(env)
+        got = take_lock(lock, env)
+        if got == "got":
+            return with_lock(args, env, root, tree, th, lock)
+        if got == "unavailable":
+            return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken, so nothing is planned" % tilde(lock))
+        return wait_on_holder(args, env, root, tree, th, need_upper, lock)
+    except Exception as err:  # noqa: BLE001 - a planner that breaks must not stop a build that fits
+        print("disk-preflight: the planner failed (%s: %s); falling back to the plain %s floor" % (
+            err.__class__.__name__, err, gib(th.reserve)), file=sys.stderr)
+        free = free_at(tree, env)
+        if free < th.reserve:
+            print("disk-preflight: only %s free: a build would fail with ENOSPC. `make disk`, or "
+                  "PLX_MIN_FREE_MB=0 to skip this check." % gib(free), file=sys.stderr)
+            return 1
+        return 0
+
+
 def main(argv: Sequence[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="action", required=True)
@@ -1374,6 +1811,12 @@ def main(argv: Sequence[str]) -> int:
     cp.add_argument("--tree", help="the tree the next build writes (default: <root>/rust-modules/target)")
     cp.add_argument("--need-gib", type=float, help="the next build's estimate (default: by tree name)")
 
+    fp = with_root(sub.add_parser("preflight", help="before a build: make room, or refuse (exit 0 build, 1 refuse)"))
+    fp.add_argument("--tree", help="the tree the next build writes (default: <root>/rust-modules/target)")
+    fp.add_argument("--need-gib", type=float, help="the next build's estimate (default: by tree name)")
+    fp.add_argument("--wait-secs", type=float, default=DEFAULT_WAIT_SECS,
+                    help="how long to wait on a reclaim already running (default %d)" % DEFAULT_WAIT_SECS)
+
     tp = with_root(sub.add_parser("tmp-trees", help="print the PlxNative cargo trees outside any checkout"))
 
     pp = with_root(sub.add_parser("probe", help="is this tree safe to delete right now? exit 0: yes"))
@@ -1391,8 +1834,8 @@ def main(argv: Sequence[str]) -> int:
 
     args = ap.parse_args(argv)
     env = dict(os.environ)
-    return {"report": cmd_report, "reclaim": cmd_reclaim, "tmp-trees": cmd_tmp_trees, "probe": cmd_probe,
-            "settle": cmd_settle}[args.action](args, env)
+    return {"report": cmd_report, "reclaim": cmd_reclaim, "preflight": cmd_preflight, "tmp-trees": cmd_tmp_trees,
+            "probe": cmd_probe, "settle": cmd_settle}[args.action](args, env)
 
 
 if __name__ == "__main__":

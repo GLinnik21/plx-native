@@ -473,7 +473,7 @@ enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_m
 
 ### 2.6 Native crash capture
 
-**Sentry Native 0.17.3** — Copyright (c) 2019 Sentry and individual contributors. Licence:
+**Sentry Native 0.17.4** — Copyright (c) 2019 Sentry and individual contributors. Licence:
 **MIT** (`licenses/MIT.txt`). Its client library is statically linked into `plxnative`; the
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on

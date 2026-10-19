@@ -170,8 +170,19 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   refused). It never evicts the cargo seed, and unlike the other modes it does not stop for a
   held FFmpeg cache lock. Preview a plan with `python3 tools/disk-budget.py reclaim --to GIB
   --emit > plan; tools/build-gc.sh --evict plan -n`; never run `--evict` for real from a test
-  or an experiment outside a fixture. `make disk` stays the report to read before intervening
-  yourself, or when the volume needs relief faster than the automatic trigger provides it.
+  or an experiment outside a fixture. The budget is also checked at every build entry: each
+  cargo-running `make` target (`make -s print-disk-entries` lists them) takes `disk-preflight` as an
+  order-only prerequisite, which is `python3 tools/disk-budget.py preflight`. At or above the
+  comfort line (`PLX_GC_MIN_FREE_GIB`, 20) it is one `statvfs` and a Python start (tens of
+  milliseconds); below it, it evicts through the planner and `--evict`, which spare the tree being
+  built and every live tree (the current checkout's incremental dirs in its other trees go only when
+  nothing cheaper covers the build), and it refuses only when the whole ladder cannot cover the build
+  plus the `PLX_MIN_FREE_MB` reserve. That eviction is real deletion time before cargo starts, so a
+  `make` below the comfort line that sits in the preflight is working, not hung. A new
+  cargo-running target joins `DISK_ENTRIES` in the Makefile (`ci/test_disk_preflight.py` fails
+  until it does), and a `$(MAKE)` line inside an entry passes `PLX_DISK_BUDGET_DONE=1`. `make disk`
+  stays the report to read before intervening yourself, or when the volume needs relief faster than
+  the automatic trigger provides it.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
