@@ -138,11 +138,14 @@ impl Publication {
         effects
     }
     fn down(&self, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>) {
+        self.step(page, engine, Dir::Down);
+    }
+    fn step(&self, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, dir: Dir) {
         let mut links = Vec::new();
         <LibraryScreen as Screen<TestHost>>::links(page, &mut links);
-        let outcome = engine.move_dir(OWNER, page, &links, Dir::Down, &self.cx(engine));
+        let outcome = engine.move_dir(OWNER, page, &links, dir, &self.cx(engine));
         let Outcome::Moved { from, to, by } = outcome else {
-            panic!("fixture Down must move");
+            panic!("fixture {dir:?} must move");
         };
         self.deliver(page, engine, ScreenEvent::FocusMoved { from, to, by });
     }
@@ -263,16 +266,12 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             )
         )));
         let first = engine.current(OWNER).unwrap();
-        let selected = page
-            .libraries
-            .iter()
-            .find(|(_, index)| *index == incoming_index)
-            .unwrap()
-            .0;
+        assert_eq!(first.entry, page.entry);
+        assert_ne!(first.elem, deep.elem);
         assert_eq!(
-            first,
-            page.key(selected),
-            "first incoming focus is its selected library, not the outgoing deep card"
+            page.pair.detail.index_of(first.elem),
+            Some(0),
+            "first incoming focus is its first poster, not the outgoing deep card"
         );
         assert_eq!(page.scroll.pos, 0.0);
         assert_eq!(
@@ -280,7 +279,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             Some(deep.elem),
             "old history remains engine-owned, but cannot seat the incoming epoch"
         );
-        assert_eq!(engine.read(OWNER).remembered(new_grid), None);
+        assert_eq!(engine.read(OWNER).remembered(new_grid), Some(first.elem), "the new epoch remembers only its own first poster");
 
         // Mount's first ready tick changes Hold to In; the following tick advances alpha.
         incoming.frame(&mut page, &mut engine, 161);
@@ -304,7 +303,13 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         for n in 163..240 {
             incoming.frame(&mut page, &mut engine, n);
         }
-        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()), "the library name holds the header row");
+        assert_eq!(
+            page.grid_position(engine.current(OWNER)),
+            Some((0, 0)),
+            "arrival lands on the first poster"
+        );
+        incoming.step(&mut page, &mut engine, Dir::Up);
+        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()), "UP from the first poster reaches the header row");
         incoming.down(&mut page, &mut engine); // the header row -> the incoming grid's first row
         let (row, col) = page.grid_position(engine.current(OWNER)).expect("DOWN lands in the grid");
         assert_eq!(row, 0);
