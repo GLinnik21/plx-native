@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T18:33:08Z",
+ "generated": "2026-10-19T18:48:49Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -28.0,
-   "change7_pct": 40.9,
+   "change7_pct": 40.5,
    "d30": 675,
    "delta30": -189,
-   "delta7": 141,
+   "delta7": 140.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 271,
-   "n_prev": 209,
+   "n_prev": 210,
    "now": 486,
-   "prev7": 345,
+   "prev7": 346.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -107,10 +107,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.1,
+   "change30_pct": -37.2,
    "change7_pct": 31.6,
-   "d30": 669,
-   "delta30": -248,
+   "d30": 670.0,
+   "delta30": -249.0,
    "delta7": 101.0,
    "group": "ci",
    "id": "push_wait",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 96.4,
+   "change30_pct": 96.0,
    "change7_pct": 14.3,
-   "d30": 1110,
-   "delta30": 1070,
+   "d30": 1112.0,
+   "delta30": 1068.0,
    "delta7": 273.5,
    "group": "ci",
    "id": "minutes",
@@ -289,7 +289,7 @@
   {
    "change30_pct": 38.5,
    "change7_pct": 6.0,
-   "d30": 231.0,
+   "d30": 231,
    "delta30": 89.0,
    "delta7": 18.0,
    "group": "ci",
@@ -331,8 +331,8 @@
   {
    "change30_pct": 115.3,
    "change7_pct": 6.2,
-   "d30": 111.0,
-   "delta30": 128.0,
+   "d30": 111,
+   "delta30": 128,
    "delta7": 14,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -352,8 +352,8 @@
   {
    "change30_pct": 161.1,
    "change7_pct": -39.9,
-   "d30": 72.0,
-   "delta30": 116.0,
+   "d30": 72,
+   "delta30": 116,
    "delta7": -125,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -501,8 +501,8 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16.0,
-   "delta30": 2.0,
+   "d30": 16,
+   "delta30": 2,
    "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 673.0,
-   "delta30": -670.0,
+   "d30": 675,
+   "delta30": -672.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -789,7 +789,7 @@
    "to": 399.0
   },
   {
-   "change_pct": 40.9,
+   "change_pct": 40.5,
    "commits": [
     {
      "pr": 825,
@@ -842,7 +842,7 @@
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
     }
    ],
-   "from": 345,
+   "from": 346.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-19",
