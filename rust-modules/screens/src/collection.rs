@@ -1,9 +1,13 @@
 //! Owned collection page: a Person-like header over a stable six-column portrait grid. The
 //! Collection store owns resolution and paging; this screen owns only presentation state and the
 //! identity→element registry that lets Back restore the exact member tile.
-//! The heading is the page's own big title, so BACK is named the Settings family's way: "‹ Collections"
-//! (the parent page's own title) above the title, in the title column, through the one shared
-//! crumb painter ([`route_screen::draw_back_crumb`]); it is not focusable, and BACK already returns.
+//! The heading is the page's own big title, so BACK is named the Settings family's way: "‹ Parent"
+//! above the title, in the title column, through the one shared crumb painter
+//! ([`route_screen::draw_back_crumb`]); it is not focusable, and BACK already returns. The page is
+//! opened from the Collections page, a Home hub, a library page, Recommended, Search and an item's
+//! Detail, so Parent is the title of the entry BENEATH this one on the navigation stack, which the
+//! container reports ([`CollectionLike::back_to`], from `Host::views_over`) and this screen neither
+//! names nor is told by its opener; with no entry beneath (BACK leaves) it draws no caption.
 //! The page is a `plx_ui::cards::Stack` of three sections (`Sec`): the head (drawn here, one focus
 //! element when the summary truncates), the member grid (this screen supplies its `CardSource`) and
 //! the status read-outs. The stack owns the layout, the one scroll, the groups and their seats,
@@ -1082,7 +1086,26 @@ mod tests {
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
+    /// What this host's container reports as the title of the page beneath the screen: a catalog
+    /// string, as every title it reports is (a frame's text is graded against the catalog).
+    pub(super) fn parent() -> &'static str { plx_platform::i18n::msg::browse_chrome_home() }
     impl CollectionLike for CollectionHost {
+        fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
+        fn back_to<'a>(_cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> { Some(std::borrow::Cow::Borrowed(parent())) }
+    }
+
+    /// The same host with the Collection screen at the root of the page stack: BACK names nothing.
+    struct RootedHost;
+    impl Host for RootedHost {
+        type Arg = super::super::family::SettingsPage;
+        type Fx = AppFx;
+        type Msg = super::super::registry::AppMsg;
+        type Elem = u32;
+        type Views<'a> = plx_data::collection::CollectionView<'a>;
+        type Init = super::super::family::NoInit;
+        type Memory = PageMemory;
+    }
+    impl CollectionLike for RootedHost {
         fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
     }
 
@@ -1412,24 +1435,36 @@ mod tests {
         assert!(ITEMS_HEADING_Y + theme::size::HEADLINE as f32 <= GRID_TOP);
     }
 
-    /// **S21b: the Collection screen names its way back.** Its heading is its own big title (the
-    /// Settings family's shape, not the Library's header row), so the page says where BACK goes the
-    /// way that family does: "‹ Collections" above the title, the parent page's own title string.
-    /// The screen answers [`Screen::crumb`] with it and the frame actually draws it.
+    /// **The Collection screen names its way back with the host's answer.** Its heading is its own
+    /// big title (the Settings family's shape, not the Library's header row), so the page says where
+    /// BACK goes the way that family does: "‹ Parent" above the title. The name is the title of the
+    /// entry beneath it on the navigation stack, which the screen cannot see and the host reports
+    /// ([`CollectionLike::back_to`]); the screen answers [`Screen::crumb`] with it and the frame
+    /// draws that same string, and a host with no page beneath (BACK leaves) draws no caption.
     #[test]
-    fn the_collection_screen_names_its_parent_above_its_title() {
+    fn the_collection_screen_names_the_page_beneath_it_above_its_title() {
         use plx_ui::screen::DrawFrame;
         let _serial = plx_base::testlock::serial();
         let (store, mut screen) = seeded();
-        let parent = plx_platform::i18n::msg::browse_kind_collections();
         let context = cx(store.view(), None);
-        assert_eq!(Screen::<CollectionHost>::crumb(&screen, &context).as_deref(), Some(parent),
+        assert_eq!(Screen::<CollectionHost>::crumb(&screen, &context).as_deref(), Some(parent()),
             "the screen declares the place BACK returns to");
-        let runs = plx_gfx::text::capture_text_runs_for_test(|| {
+        let named = plx_gfx::text::capture_text_runs_for_test(|| {
             let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
             plx_gfx::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
         });
-        assert!(runs.iter().any(|run| run == parent), "the frame draws {parent:?}: {runs:?}");
+        assert!(named.iter().any(|run| run == parent()), "the frame draws {:?}: {named:?}", parent());
+
+        let rooted = Cx::<RootedHost> { views: store.view(), tick: Tick::default(), measure: &FixtureMeasure,
+            press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(EntryId(9)) };
+        assert_eq!(Screen::<RootedHost>::crumb(&screen, &rooted), None, "BACK leaves: nothing to declare");
+        let bare = plx_gfx::text::capture_text_runs_for_test(|| {
+            let mut f = DrawFrame::new(&rooted, plx_ui::Painter::recording());
+            plx_gfx::gfx::without_frame_clear(|| Screen::<RootedHost>::draw(&mut screen, &mut f));
+        });
+        let mut without = named.clone();
+        without.retain(|run| run != parent());
+        assert_eq!(bare, without, "…and the frame draws exactly the page without the caption");
     }
 
     /// **S21b geometry.** The crumb is in the title column, its band ends one `space::SM` above the

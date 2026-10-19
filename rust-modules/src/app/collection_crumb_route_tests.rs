@@ -69,6 +69,29 @@ fn opened_from_a_library_it_names_the_library() {
     assert_eq!(caption(&w).as_deref(), Some("Movies"));
 }
 
+/// From Search it names Search.
+#[test]
+fn opened_from_search_it_names_search() {
+    let mut w = World::new("crumb-from-search");
+    super::show_page(&mut w.d, AppArg::Search);
+    w.frames(60);
+    assert!(w.on(&AppArg::Search), "premise: Search is on top");
+    open_over_top(&mut w);
+    assert_eq!(caption(&w).as_deref(), Some(plx_platform::i18n::msg::browse_chrome_search()));
+}
+
+/// From an item's Detail it names the item, as that page titles itself.
+#[test]
+fn opened_from_an_item_detail_it_names_the_item() {
+    let mut w = World::detail_with_disc("crumb-from-detail", [7; 12]);
+    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        sid: plx_plex::plex::ServerId::UNSET, rk: "movie".into(), kind: "movie".into(),
+        title: "Synthetic film".into(), ..Default::default()
+    }));
+    open_over_top(&mut w);
+    assert_eq!(caption(&w).as_deref(), Some("Synthetic film"));
+}
+
 /// Rooted (the `--screen collection` boot trigger), BACK leaves the page stack: no caption.
 #[test]
 fn rooted_it_draws_no_caption() {

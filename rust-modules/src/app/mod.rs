@@ -113,6 +113,7 @@ pub(crate) use bootstrap::HomeIo;
 /// and `devcaps` — application facts — and because its state is now an `App` field.
 pub(crate) mod diagnostics;
 pub(crate) mod words;
+pub(crate) mod page_title;
 pub(crate) mod clock;
 mod clock_notice;
 mod recorder;

@@ -27,6 +27,10 @@
     "value": "Home",
     "description": "browse chrome home"
   },
+  "browse.chrome.search": {
+    "value": "Search",
+    "description": "browse chrome search"
+  },
   "browse.kind.movies": {
     "value": "Movies",
     "description": "browse kind movies"

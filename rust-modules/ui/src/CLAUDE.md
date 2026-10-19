@@ -454,10 +454,23 @@ row reads `Parent › Current` in that row (the Library family, `page_header`'s 
 heading is its own big title carries `‹ Parent` above that title, and both forms say the parent
 page's own title string (one catalog entry, never a second spelling). The big-title form has ONE
 painter, `route_screen::draw_back_crumb`: `draw_narrative` draws the Settings family's through it,
-and the Collection screen draws its `‹ Collections` through it in the title column, in the page's
+and the Collection screen draws its `‹ Parent` through it in the title column, in the page's
 top margin (`route_screen::CRUMB_RISE` above the title's cap top, so nothing below moved). Neither
 is a focus stop; BACK already returns. A page that wears the second form calls the painter rather
 than drawing a chevron of its own.
+
+**`‹ Parent` names the entry BENEATH the page on the navigation stack, read from the container
+once.** A page with ONE opener may name it (the Settings family, filmography: correct by
+construction), but the Collection screen is opened from the Collections page, a Home hub,
+Recommended, a library page, Search and an item's Detail, and a constant named the wrong place
+whenever BACK went elsewhere. So the dispatcher builds each page's context with the screen id of the
+entry beneath it (`NavStack::beneath_id`, folded in by `Host::views_over` through
+`CxParts::page_cx`; `None` for the root), and the host turns that kind into the title that page
+wears (`app::page_title`: Home, the library's name, Collections, Recommended, Watchlist, Search, an
+item's title; a page it does not name gets no caption). The screen reads it
+(`CollectionLike::back_to`), is never told by its opener, and draws no caption when BACK leaves the
+page stack or the page beneath has no name. A new big-title page that can be opened from several
+places reads the same answer rather than carrying a parent of its own.
 
 **It replaced `Press [BACK] to return` in the bottom action band across the whole family**, and the
 trade is the point: the hint spent a 60px band restating a key the remote already has and could not

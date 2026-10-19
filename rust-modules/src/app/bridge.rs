@@ -196,8 +196,7 @@ impl plx_screens::registry::CollectionLike for AppHost {
     }
 
     fn back_to<'a>(cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> {
-        let _ = cx.views.beneath;
-        Some(std::borrow::Cow::Borrowed(plx_platform::i18n::msg::browse_kind_collections())) // TEMPORARY: red against the old constant
+        super::page_title::of(cx.views.beneath?, &cx.views)
     }
 }
 
