@@ -184,6 +184,43 @@ fn a_wash_that_has_resolved_to_the_ground_is_flat() {
     );
 }
 
+/// **The ease finishes ON its target, and the wash says so itself.** A critically damped spring
+/// only approaches, so the wash lands a settled channel on its target (`idle::settled`'s purpose):
+/// the codes it rests on are then its target's, bit for bit, and a rest read from the springs is
+/// exact. While any channel is still travelling the wash is not at rest, a retarget takes it out
+/// of rest on the first step, and a wash already at rest stays there frame after frame.
+#[test]
+fn an_eased_wash_lands_on_its_target_and_reports_rest_only_then() {
+    let target = AmbientWash::keyed([[0.9, 0.4, 0.2], [0.2, 0.5, 0.9], [0.3, 0.8, 0.3], [0.7, 0.2, 0.6]], [AmbientWash::GROUND_W; 4]);
+    let mut w = AmbientWash::flat(theme::SURFACE_APP);
+    assert!(w.at_rest(), "a wash mounted on a colour is at rest");
+    let mut moving = 0;
+    for _ in 0..200 {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        w.step(target, AmbientWash::K, 1.0 / 60.0);
+        if w.at_rest() {
+            break;
+        }
+        moving += 1;
+    }
+    assert!(moving > 20, "the ease took its time ({moving} frames)");
+    assert!(w.at_rest(), "and finished");
+    let landed = w.corners.map(|c| c.map(|s| s.pos));
+    let wanted = target.map(|c| [c[0], c[1], c[2]]);
+    assert_eq!(landed, wanted, "on its target exactly, not within a tolerance of it");
+    for _ in 0..30 {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        w.step(target, AmbientWash::K, 1.0 / 60.0);
+        assert!(w.at_rest(), "a wash at rest stays there");
+        assert_eq!(w.corners.map(|c| c.map(|s| s.pos)), wanted, "and does not move");
+    }
+    let mut next = target;
+    next[0][0] += 0.1;
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    w.step(next, AmbientWash::K, 1.0 / 60.0);
+    assert!(!w.at_rest(), "a new target takes it out of rest on the first step");
+}
+
 #[test]
 fn page_ground_canonical_state_covers_every_held_target_and_spring_component() {
     let base = ground_hash(&PageGround::new());

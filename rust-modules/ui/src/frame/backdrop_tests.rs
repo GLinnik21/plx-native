@@ -721,3 +721,395 @@ fn content_above_the_dim_keeps_the_dim_in_the_menus_source() {
     let z = *s.entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
     assert_eq!(s.composite_dim(z), None, "and the composite applies no second dim");
 }
+
+// ---- The page wash under the chrome band --------------------------------------------------
+
+/// A wash `k` (tl, tr, br, bl) whose top corners sit `step` codes along an ease. The bottom corners
+/// stay put, as the Library's do (`PageGround::CARD_W` leans the wash at the top).
+fn wash_at(step: f32) -> [[f32; 3]; 4] {
+    let c = |code: f32| code / 255.0;
+    [
+        [c(39.0 + step), c(35.0 + step), c(33.0 + step)],
+        [c(38.0 + step), c(36.0 + step), c(40.0 + step)],
+        [c(30.0), c(30.0), c(31.0)],
+        [c(29.0), c(30.0), c(30.0)],
+    ]
+}
+
+/// One discovered frame of a page under the chrome band, in the order `dispatch.rs::draw_with`
+/// walks it: **the frame clear** (every page opens with `gfx::frame_clear`, which a discovery walk
+/// records as a full-canvas draw of its own, the Library's `lb.clear`), the page's ground, a card,
+/// then the tab bar's glass in `Z::CHROME`. `moving` is what the update phase reported (a spring in
+/// flight). Returns whether the band owes a source job.
+///
+/// The clear is NOT optional here: this list once began at the wash, which no real page does, and
+/// every wash test was green while the feature never ran on a device or in the simulator (the clear
+/// was the wash's predecessor in the glass's prefix, so "the wash is the first draw" never held).
+fn wash_frame(
+    sources: &Rc<RefCell<Sources>>,
+    ground: impl Fn(crate::Painter),
+    card_x: f32,
+    moving: bool,
+) -> bool {
+    wash_frame_with(sources, ground, card_x, moving, |p| {
+        let _chrome = layer(Z::CHROME, true);
+        declare_glass(p, Rect::new(28.0, 20.0, 1312.0, 100.0));
+    })
+}
+
+/// [`wash_frame`] with the glass left to the caller, declared after the page's own draws.
+fn wash_frame_with(
+    sources: &Rc<RefCell<Sources>>,
+    ground: impl Fn(crate::Painter),
+    card_x: f32,
+    moving: bool,
+    glass: impl Fn(crate::Painter),
+) -> bool {
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    if moving {
+        plx_machine::idle::note_motion();
+    }
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = discover(sources.clone());
+        let p = crate::Painter::root();
+        plx_gfx::gfx::frame_clear(crate::theme::CLEAR_RGB.0, crate::theme::CLEAR_RGB.1, crate::theme::CLEAR_RGB.2);
+        ground(p);
+        p.rect(Rect::new(card_x, 60.0, 200.0, 100.0), 8.0, [0.5; 4], [0.5; 4], 0.0);
+        glass(p);
+    }
+    let owed = {
+        let mut s = sources.borrow_mut();
+        s.resolve();
+        !s.jobs().is_empty()
+    };
+    commit(sources);
+    owed
+}
+
+/// A hand-fed wash whose springs are still easing (`resting` false): the frames of an ease.
+fn plain_wash(step: f32) -> impl Fn(crate::Painter) {
+    move |p| p.ambient(Rect::FULL, 1.0, wash_at(step), false)
+}
+
+/// The same wash with every spring landed (`resting` true), as `AmbientWash::draw` declares it
+/// from the frame its ease finishes.
+fn resting_wash(step: f32) -> impl Fn(crate::Painter) {
+    move |p| p.ambient(Rect::FULL, 1.0, wash_at(step), true)
+}
+
+/// **A wash easing under the chrome re-sources nothing.** `AmbientWash` dissolves each corner
+/// channel on its own spring, so a library switch (or a focus move onto art-less content) moves the
+/// wash's exact 8-bit codes by 2-6 EVERY frame; the ambient draw is full-screen, so it sits in the
+/// prefix of every live glass, and the exact-argument compare re-sourced the tab bar's band on
+/// each of those frames (GLASSDIFF `kind=ambient`, 77-83% of a switch's refreshing frames, ~0.8M
+/// Mali cycles and 2.7-7.1 ms of render thread each). Nothing else changes here.
+#[test]
+fn a_ramping_wash_under_the_chrome_captures_its_source_once() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let steps = [0.0, 2.0, 5.0, 9.0, 13.0, 18.0, 24.0, 27.0, 30.0, 31.0, 32.0, 33.0];
+    let owed: Vec<bool> = steps
+        .iter()
+        .map(|&s| wash_frame(&sources, plain_wash(s), 300.0, true))
+        .collect();
+    assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole ease: {owed:?}");
+    assert!(owed[0], "and it is the activation frame's");
+}
+
+/// **The settle frame refreshes once**, so the picture that stays on the panel is exact. The idle
+/// gate presents the first still frame after motion (`idle::should_present`), and that is the frame
+/// the band re-takes its source on: the wash it holds is then the one the page rests on.
+#[test]
+fn the_settle_frame_refreshes_once() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let mut owed = Vec::new();
+    for s in [0.0, 3.0, 8.0, 14.0, 21.0, 25.0] {
+        owed.push(wash_frame(&sources, plain_wash(s), 300.0, true));
+    }
+    for _ in 0..4 {
+        owed.push(wash_frame(&sources, resting_wash(25.0), 300.0, false));
+    }
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, vec![0, 6], "activation, then the first still frame: {owed:?}");
+}
+
+/// **A code the tail holds for a frame is not rest.** A critically damped spring's last stretch
+/// changes its 8-bit code less than once a frame, so the drawn wash repeats for a frame or two
+/// while the springs behind it still move. The wash says so itself (`resting` false), and the
+/// source is re-taken once, on the frame it says it has landed.
+#[test]
+fn a_code_the_tail_holds_for_a_frame_is_not_rest() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let mut owed = Vec::new();
+    for s in [0.0, 3.0, 8.0, 14.0, 21.0, 21.0, 24.0, 25.0, 25.0, 26.0] {
+        owed.push(wash_frame(&sources, plain_wash(s), 300.0, true));
+    }
+    for _ in 0..4 {
+        owed.push(wash_frame(&sources, resting_wash(26.0), 300.0, false));
+    }
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, vec![0, 10], "activation, then the frame the wash landed: {owed:?}");
+}
+
+/// **The wash's rest is its own**: a card, a spinner or a scroll elsewhere on the page can keep the
+/// page moving for as long as the wash has been still, and the picture that stays on the panel is
+/// still owed the wash it rests on.
+#[test]
+fn a_wash_at_rest_is_re_taken_while_something_else_still_moves() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let mut owed: Vec<bool> = [0.0, 4.0, 9.0, 15.0]
+        .iter()
+        .map(|&s| wash_frame(&sources, plain_wash(s), 300.0, true))
+        .collect();
+    owed.extend((0..4).map(|_| wash_frame(&sources, resting_wash(18.0), 300.0, true)));
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, vec![0, 4], "activation, then the wash's own rest: {owed:?}");
+}
+
+/// **A page dip is not rest.** `ui::nav` fades a page toward the app ground through the painter's
+/// alpha, which mixes the wash's corners toward `SURFACE_APP` and moves the drawn corners every
+/// frame with every spring at rest. Rest means the drawn corners have stopped, so the cascade must
+/// be the identity for it to count; the glass keeps taking the dip as a composite term.
+#[test]
+fn a_wash_at_rest_under_a_page_dip_owes_nothing() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let dip = |a: f32| move |p: crate::Painter| p.alpha(a).ambient(Rect::FULL, 1.0, wash_at(10.0), true);
+    let owed: Vec<bool> = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5].iter().map(|&a| wash_frame(&sources, dip(a), 300.0, true)).collect();
+    assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole dip: {owed:?}");
+}
+
+/// **A real ease re-takes the source once, at the wash's own rest, however its tail holds a code.**
+/// `AmbientWash` is twelve critically damped springs, and the codes it draws are those springs
+/// rounded to 8 bits: in the tail one channel moves less than a code a frame, so whole frames draw
+/// the previous frame's codes while the ease is still running (the simulator's library switch drew
+/// 7-8 such frames per ease). A held code is not rest; the wash's own springs are. This steps a
+/// REAL wash through two eases (the first from the flat app ground) with the page's update/draw
+/// order and holds the owed frames to: the activation frame, then ONE frame per ease, the first on
+/// which the wash itself says it has landed (`AmbientWash::at_rest`). It proves its own premise by
+/// counting the held codes, and keeps stepping long after the rest so a code that flipped late
+/// would show.
+#[test]
+fn a_real_ease_re_takes_the_source_once_at_the_washes_own_rest() {
+    use crate::widgets::AmbientWash;
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let wash = RefCell::new(AmbientWash::flat(crate::theme::SURFACE_APP));
+    let drawn = RefCell::new(Vec::<[[f32; 3]; 4]>::new());
+    let moving = RefCell::new(Vec::<bool>::new());
+    let eases = [
+        AmbientWash::keyed([[0.9, 0.4, 0.2], [0.2, 0.5, 0.9], [0.3, 0.8, 0.3], [0.7, 0.2, 0.6]], [AmbientWash::GROUND_W; 4]),
+        AmbientWash::keyed([[0.1, 0.7, 0.5], [0.8, 0.2, 0.3], [0.5, 0.5, 0.9], [0.9, 0.9, 0.2]], [AmbientWash::GROUND_W; 4]),
+    ];
+    let frame = |target: Option<[[f32; 4]; 4]>| {
+        wash_frame(
+            &sources,
+            |p| {
+                let mut w = wash.borrow_mut();
+                if let Some(t) = target {
+                    w.step(t, AmbientWash::K, 1.0 / 60.0);
+                }
+                moving.borrow_mut().push(!w.at_rest());
+                drawn.borrow_mut().push(w.drawn_corners());
+                w.draw(p, Rect::FULL);
+            },
+            300.0,
+            false,
+        )
+    };
+    let mut owed = vec![frame(None)];
+    let mut ease_at = Vec::new();
+    for target in eases {
+        ease_at.push(owed.len());
+        for _ in 0..120 {
+            owed.push(frame(Some(target)));
+        }
+    }
+    let (moving, drawn) = (moving.into_inner(), drawn.into_inner());
+    let mut expected = vec![0];
+    let mut held = 0;
+    for (n, &start) in ease_at.iter().enumerate() {
+        let end = ease_at.get(n + 1).copied().unwrap_or(owed.len());
+        let rest = (start..end).find(|&i| !moving[i]).expect("the ease comes to rest");
+        assert!(rest > start + 10, "ease {n} ran for a while before it rested: {rest}");
+        assert!((rest..end).all(|i| !moving[i]), "and stayed at rest");
+        held += (start + 1..rest).filter(|&i| drawn[i] == drawn[i - 1]).count();
+        expected.push(rest);
+    }
+    assert!(held >= 2, "the premise: the tails hold a drawn code while still moving ({held} frames)");
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, expected, "activation, then one re-take per ease at its rest: {owed:?}");
+}
+
+/// **The composite's wash term makes the wash the source holds the wash that is being drawn**, at
+/// every point the glass can sample: the source keeps frame 0's wash and the term owed on frame `n`
+/// is `drawn(n) - drawn(0)` there. The points are the whole chrome band and the margin the lens can
+/// push a sample out to (the shader reads `srcRGB` at the REFRACTED uv, up to the 38 px bevel off
+/// the fragment), clipped to the canvas.
+///
+/// The tolerance is the algebra's own: both sides are the same bilinear field, so the residue is
+/// f32 rounding, `1e-5` (a thousandth of an 8-bit code). What the GPU adds on top is bounded by
+/// construction, not measured here: the field mesh interpolates a bilinear wash linearly over 16x16
+/// cells, which twists it by at most `|tl - tr + br - bl| / 1024` (under half a code for any 8-bit
+/// corners), and `fs_glass.frag` evaluates the term in fp16 (`2^-11` relative to values under 0.25).
+#[test]
+fn the_composite_wash_term_is_each_frames_drawn_wash_less_the_captured_one_at_the_refracted_uv() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let bilinear = |k: [[f32; 3]; 4], x: f32, y: f32| -> [f32; 3] {
+        let (u, v) = (x / 1920.0, y / 1080.0);
+        std::array::from_fn(|i| {
+            let top = k[0][i] + (k[1][i] - k[0][i]) * u;
+            let bot = k[3][i] + (k[2][i] - k[3][i]) * u;
+            top + (bot - top) * v
+        })
+    };
+    assert!(wash_frame(&sources, plain_wash(0.0), 300.0, true), "frame 0 takes the source");
+    let baked = wash_at(0.0);
+    let (mut step, mut worst, mut largest) = (0.0f32, 0.0f32, 0.0f32);
+    for frame in 1..=12 {
+        step += 2.0 + (frame % 5) as f32; // 3, 4, 5, 6, 2, 3 ... codes: the ease's 2-6 per frame
+        assert!(!wash_frame(&sources, plain_wash(step), 300.0, true), "frame {frame} owes no source");
+        let term = sources
+            .borrow()
+            .composite_ground(Z::CHROME)
+            .unwrap_or_else(|| panic!("frame {frame}: the band owes a composite term"));
+        for y in (0..=190).step_by(10) {
+            for x in (0..=1920).step_by(60) {
+                let (x, y) = (x as f32, y as f32);
+                let (was, now, add) = (bilinear(baked, x, y), bilinear(wash_at(step), x, y), term.at(x, y));
+                for i in 0..3 {
+                    worst = worst.max((was[i] + add[i] - now[i]).abs());
+                    largest = largest.max(add[i].abs());
+                }
+            }
+        }
+    }
+    assert!(worst < 1e-5, "baked + term is the drawn wash to the algebra's rounding: {worst}");
+    assert!(largest > 40.0 / 255.0, "and the term is not vacuously small: {largest}");
+}
+
+/// **A wash that has not moved owes no term**, and one under an ink ramp is let through by what the
+/// ramp lets through: `weight = 1 - alpha` at the rect's top and bottom edge, linear between.
+#[test]
+fn the_wash_term_follows_the_ink_ramp_laid_over_the_wash() {
+    use crate::frame::backdrop::Ground;
+    // Every corner moved by `step` codes, so the difference is uniform and the weight alone shapes it.
+    let g = |step: f32, ink_a: [f32; 2]| Ground {
+        corners: wash_at(0.0).map(|c| c.map(|v| v + step / 255.0)),
+        rect: [0.0, 100.0, 1920.0, 400.0],
+        ink: [0.0, 0.0, 0.0],
+        ink_a,
+    };
+    assert!(g(0.0, [0.0; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "same wash, no term");
+    assert!(g(3.0, [0.25; 2]).delta(&g(0.0, [0.0; 2])).is_none(), "another ink is another source");
+    let t = g(10.0, [0.5, 0.0]).delta(&g(0.0, [0.5, 0.0])).expect("a moved wash owes a term");
+    let top = t.at(960.0, 100.0)[0];
+    let bottom = t.at(960.0, 500.0)[0];
+    let moved = 10.0 / 255.0;
+    assert!((top - 0.5 * moved).abs() < 1e-6, "half let through at the top: {top}");
+    assert!((bottom - moved).abs() < 1e-6, "all of it at the foot: {bottom}");
+    assert_eq!(t.at(960.0, -400.0), t.at(960.0, 100.0), "clamped above the rect");
+}
+
+/// **The guard: the wash stepping while a card moves under the band owes every frame.** The delta
+/// at composite is the wash's alone; a card under the region changes the filtered picture itself.
+#[test]
+fn a_wash_easing_with_a_card_moving_under_the_chrome_owes_every_frame() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let owed: Vec<bool> = (0..12)
+        .map(|i| wash_frame(&sources, plain_wash(3.0 * i as f32), 300.0 + 8.0 * i as f32, true))
+        .collect();
+    assert_eq!(owed, vec![true; 12]);
+}
+
+/// **An INKED wash strip is deferred too, and its ramp keys the source.** Home (and Detail) lay their
+/// atmospheric ramp over the wash in the same pass (`ambient_inked`, cut at the ramp's knees): the
+/// strip over the chrome band is a smooth field like the plain wash, so an ease under it re-sources
+/// nothing; the ramp's own alphas are the SOURCE's (a hero fading in is real change).
+#[test]
+fn an_inked_wash_strip_is_deferred_and_its_ramp_keys_the_source() {
+    let _g = plx_base::testlock::serial();
+    let strips = |step: f32, foot: f32| {
+        move |p: crate::Painter| {
+            let ink = [0.02, 0.02, 0.03, 1.0];
+            p.ambient_inked(Rect::new(0.0, 0.0, 1920.0, 400.0), wash_at(step), (ink, [0.0, foot]), false);
+            p.ambient_inked(Rect::new(0.0, 400.0, 1920.0, 680.0), wash_at(step), (ink, [foot, 0.6]), false);
+        }
+    };
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let eased: Vec<bool> = (0..12).map(|i| wash_frame(&sources, strips(3.0 * i as f32, 0.2), 300.0, true)).collect();
+    assert_eq!(eased.iter().filter(|&&o| o).count(), 1, "one capture for the whole ease: {eased:?}");
+    assert!(wash_frame(&sources, strips(36.0, 0.3), 300.0, true), "a ramp that moved is a new source");
+}
+
+/// **The hold hint's live glass takes the wash at composite too.** It stands on the page band, at
+/// the foot of the page, over the same ground; its region is the whole footprint of its rise.
+#[test]
+fn a_ramping_wash_under_the_hold_hint_captures_its_source_once() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let hint = |p: crate::Painter| {
+        assert!(crate::widgets::Glass::DYNAMIC_BACKDROP.backdrop_rising(
+            p,
+            Rect::new(720.0, 940.0, 480.0, 72.0),
+            0.0,
+            36.0,
+            [1.0; 4],
+            plx_gfx::gfx::GlassRim::Standing,
+            plx_gfx::gfx::GlassFace::NONE,
+            crate::theme::Material::UltraThin,
+        ));
+    };
+    let owed: Vec<bool> = (0..12)
+        .map(|i| wash_frame_with(&sources, plain_wash(3.0 * i as f32), 300.0, true, &hint))
+        .collect();
+    assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole ease: {owed:?}");
+}
+
+/// **A ground with art in it is never deferred.** `ambient_art` (tag 22, which `tex_carded_still`
+/// shares) paints a photograph into the wash: not a smooth field, and its picture is the source.
+#[test]
+fn an_art_ground_under_the_chrome_is_never_deferred() {
+    let _g = plx_base::testlock::serial();
+    let tex = 9_447;
+    plx_gfx::gfx::tex_ledger::specified(tex, 720, 480);
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let art = |step: f32| {
+        move |p: crate::Painter| {
+            p.ambient_art(
+                Rect::FULL,
+                wash_at(step),
+                tex,
+                Rect::new(0.0, 0.0, 1920.0, 800.0),
+                plx_gfx::gfx::UV_FULL,
+                [1.0; 4],
+                ([0.0; 4], [0.0; 2]),
+            )
+        }
+    };
+    let owed: Vec<bool> = (0..8).map(|i| wash_frame(&sources, art(3.0 * i as f32), 300.0, true)).collect();
+    plx_gfx::gfx::tex_ledger::deleted(tex);
+    assert_eq!(owed, vec![true; 8], "the art ground keeps the wash in the source");
+}
+
+/// **Two grounds under the region keep the wash in the source.** A ramp knee inside the glass's
+/// footprint cuts the wash into two bands (`AmbientWash::draw_ground`); the delta is one wash's.
+#[test]
+fn two_grounds_under_the_region_keep_the_wash_in_the_source() {
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let bands = |step: f32| {
+        move |p: crate::Painter| {
+            p.ambient(Rect::new(0.0, 0.0, 1920.0, 100.0), 1.0, wash_at(step), false);
+            p.ambient(Rect::new(0.0, 100.0, 1920.0, 980.0), 1.0, wash_at(step), false);
+        }
+    };
+    let owed: Vec<bool> = (0..8).map(|i| wash_frame(&sources, bands(3.0 * i as f32), 300.0, true)).collect();
+    assert_eq!(owed, vec![true; 8]);
+}

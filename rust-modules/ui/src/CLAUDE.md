@@ -583,6 +583,30 @@ tried first. None of it is reconstructable from the code without repeating the m
   Anything drawn above the dim under the glass (an opener lift, a lower glass in the DIM band,
   as the account menu's chip is) keeps the dim in the source, and that glass re-captures while
   the dim moves.
+  **The page's WASH is deferred the same way, as a DELTA** (`backdrop::Ground`,
+  `Painter::ambient` / `ambient_inked`, `fs_glass.frag`'s `u_wash_*`): `AmbientWash` eases each
+  corner on its own spring, so a library switch or an art-less focus move moves the exact 8-bit
+  codes every frame, and the wash is full-screen, so it sat in the prefix of every live glass
+  under it (the tab bar's band, the hold hint) and re-sourced each one on every frame of the ease.
+  Now a glass whose first draw under its region THAT CAN SHOW is a marked wash (the only one
+  there, covering the whole region, no dim and no lower glass under it) keys on the wash's rect and
+  ink and not its corners; the frame clear every page records first is overwritten by the opaque
+  wash and does not count (a test list that omits it passes while the feature never runs: the wash
+  tests record `gfx::frame_clear` as a page does); its source keeps the wash it was drawn under and the composite adds `wash now - wash
+  captured`, at the refracted uv, weighted by what the ink ramp lets through. **The marker is
+  DECLARED** (`declare_as`, never the tag): `ambient_art` (tag 22, a photograph in the ground) is
+  never marked, and a ramp knee inside the footprint (two washes) keeps the wash in the source.
+  **Bounded, not exact:** over card content the term adds the ease as if the wash showed
+  everywhere, so the error is at most the ease's amplitude times the content's coverage under the
+  filter, and it is gone when the wash comes to rest, where the source is re-taken ONCE. **Rest is
+  the wash's OWN statement**, not a reading of its codes or of the page: `AmbientWash::step` lands a
+  spring on its target the moment it settles, `AmbientWash::at_rest` (all twelve velocities exactly
+  zero) rides `Painter::ambient`'s `resting` to the glass, and the re-take fires on the frame it is
+  true and the held wash differs. A critically damped tail holds an 8-bit code for whole frames
+  while it moves, and a card can keep the page moving long after the wash is still, so neither
+  "the codes did not change" nor "nothing moves" is rest. A page dip (the painter's alpha mixing the
+  wash toward the app ground) is not rest either: `resting` counts only through an identity
+  cascade. A card moving under the band keeps every frame owed, as before.
 
 - **Freezing the host page is a separate, shared policy** — `Popover::caching_host()` +
   `ui::popover::host`. The mechanism is a REFUSAL at the renderer's one shared gate

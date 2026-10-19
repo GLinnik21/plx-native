@@ -1731,6 +1731,15 @@ video::-webkit-media-controls-start-playback-button {
   margin: 0;
   text-wrap: pretty;
 }
+.store-note p a {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-color: var(--color-white-a22);
+  text-underline-offset: 4px;
+}
+.store-note p a:hover {
+  color: var(--text-primary);
+}
 
 /* ---------- FAQ ---------- */
 .faq-section {

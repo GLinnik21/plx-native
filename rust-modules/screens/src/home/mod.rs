@@ -280,8 +280,11 @@ impl Backdrop {
 
     /// Is a direction key being held right now? The chrome glass blurs the page under it and
     /// reuses that blur only while the draw arguments beneath it are unchanged; a wash re-keyed
-    /// to every card of a held run changes them every frame (about 6 ms of GPU a late frame on
-    /// the TV). So the wash holds its target for the run and re-keys once the key rests.
+    /// to every card of a held run changes them every frame wherever the wash is not the plain
+    /// ground under the band (hero art or a ramp knee under it: about 6 ms of GPU a late frame on
+    /// the TV; over a plain wash the glass takes the ease at composite instead,
+    /// `backdrop::Ground`). So the wash holds its target for the run and re-keys once the key
+    /// rests.
     fn held(&self, ms: u32) -> bool {
         self.repeat_ms.is_some_and(|r| ms.wrapping_sub(r) <= WASH_REPEAT_GRACE_MS)
     }

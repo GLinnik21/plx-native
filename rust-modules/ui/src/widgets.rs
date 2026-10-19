@@ -3399,7 +3399,9 @@ fn ground_capped(c: [f32; 3]) -> [f32; 4] {
 /// target: its tail keeps changing the float's low bits for seconds after the eye has stopped being
 /// able to see it, and those bits are what the draw RECORDS, so a settled wash never compared equal
 /// from frame to frame and every blur snapshot taken over it was rebuilt. Recording and drawing the
-/// code instead makes a settled wash bit-stable (the springs themselves keep their full precision).
+/// code instead makes a settled wash bit-stable (the springs themselves keep their full precision;
+/// [`AmbientWash::step`] lands a settled spring on its target, so the code a wash rests on is its
+/// target's).
 fn code(v: f32) -> f32 {
     (v.clamp(0.0, 1.0) * 255.0).round() / 255.0
 }
@@ -3481,12 +3483,31 @@ impl AmbientWash {
     }
     /// Dissolve toward `target` at rate `k`. Every channel shares one rate, so the corners move as
     /// one wash rather than twelve independent fades.
+    ///
+    /// **A channel that has [`settled`](plx_machine::idle::settled) is landed on its target** (the
+    /// idle gate has stopped asking for frames for it, which is what that function's export is
+    /// for), so the wash's last drawn codes are the codes its target maps to, and [`at_rest`](Self::at_rest)
+    /// is exact. Without the landing a critically damped tail keeps moving the float's low bits
+    /// for seconds, and its 8-bit code can flip a frame after the wash was declared still.
     pub fn step(&mut self, target: [[f32; 4]; 4], k: f32, dt: f32) {
         for (c, t) in self.corners.iter_mut().zip(target) {
             for (sp, v) in c.iter_mut().zip(t) {
                 sp.step(v, k, dt);
+                if plx_machine::idle::settled(sp.pos, v, sp.vel) {
+                    // Change-guarded, so a wash already at rest reports nothing frame after frame.
+                    sp.jump(v);
+                }
             }
         }
+    }
+    /// **Has the ease finished: is every spring that drives this wash landed on its target?**
+    /// [`step`](Self::step) lands a spring the moment it settles and leaves its velocity at exactly
+    /// zero, and a spring that moved this frame carries a velocity, so zero velocity on all twelve
+    /// is the wash's own answer, independent of anything else on the page that is still moving. It
+    /// is what [`draw`](Self::draw) hands [`Painter::ambient`] for a glass over the wash to take
+    /// as the moment to re-take its source.
+    pub fn at_rest(&self) -> bool {
+        self.corners.iter().flatten().all(|sp| sp.vel == 0.0)
     }
     /// Is this wash within `eps` of the flat colour `c` on every corner channel? A wash that has
     /// resolved to the app's own clear colour is a ~2M-fragment full-screen fill that changes
@@ -3529,7 +3550,7 @@ impl AmbientWash {
     /// Detail's scrolling still (`gfx::draw_ambient` records the three gates that were tried and
     /// why each came back out).
     pub fn draw(&self, p: Painter, r: Rect) {
-        p.ambient(r, 1.0, self.drawn_corners());
+        p.ambient(r, 1.0, self.drawn_corners(), self.at_rest());
     }
     /// **Paint the whole GROUND over `r`: this wash, the photograph dissolving over it, and the
     /// screen's atmospheric ramp of scrim ink over both** — the same picture as
@@ -3559,6 +3580,7 @@ impl AmbientWash {
         let art = art.filter(|a| a.tex != 0);
         let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| plx_gfx::gfx::art_wash_ok());
         let art_taken = split.is_some();
+        let resting = self.at_rest();
         // The ramp sits over the art: it can only join the wash if the art did (or there is none).
         let ramp = ramp.filter(|_| plx_gfx::gfx::wash_ink_ok() && (art.is_none() || art_taken));
         let (over, bands) = match split {
@@ -3576,9 +3598,9 @@ impl AmbientWash {
         for band in bands.into_iter().flatten() {
             for b in cut_at(band, knees) {
                 if ramp.is_some() {
-                    p.ambient_inked(b, corners(b), ink(b));
+                    p.ambient_inked(b, corners(b), ink(b), resting);
                 } else {
-                    p.ambient(b, 1.0, corners(b));
+                    p.ambient(b, 1.0, corners(b), resting);
                 }
             }
         }
