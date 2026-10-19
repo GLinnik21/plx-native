@@ -426,11 +426,26 @@ pub(crate) mod tests {
             let glass = declared_glass(|| lift(&field));
             assert_eq!(glass.len(), 1, "frame {i}: the capsule is one frozen glass");
         }
-        // The field not latched yet: the flat capsule, still no live glass.
-        let unlatched = crate::underlay::UnderlayField::new();
-        let all = declared_all(|| lift(&unlatched));
-        assert!(all.iter().all(|p| p.kind() != "glass_frozen" && p.kind() != "backdrop"), "flat fallback");
         unlatch(tex);
+    }
+
+    /// **A lift whose ground has not latched draws NOTHING** (CONFIRM2 CB1). The field latches a frame
+    /// after the OK that opens the menu (`gfx::FIELD_READ_LAG_SWAPS`), and on that frame the lift used
+    /// to fall back to the flat `scrim_black(TAB_TRACK_A)` capsule over the capsule the bar had already
+    /// drawn UNDER it: the chip blinked near-black for one frame on every open (F3 `c/chip-open.png`
+    /// n=194), because the dim is 0 on that frame and nothing darkens the bar's own chip but the second
+    /// capsule. The bar's chip is on screen already; the lift owes the frame nothing until it has a ground.
+    #[test]
+    fn a_chip_lift_with_no_latched_ground_draws_nothing() {
+        let _g = plx_base::testlock::serial();
+        let profile = crate::widgets::ProfileChipRead { src: 0, thumb: "", initial: c"G", name: c"Guest", name_w: 60.0 };
+        let face = crate::widgets::chip_face(FACE, 1.0);
+        let unlatched = crate::underlay::UnderlayField::new();
+        for expand in [0.0, 1.0] {
+            let all = declared_all(|| crate::widgets::lift_profile_chip(Painter::root(), profile, expand, Some(face), &unlatched));
+            assert!(all.is_empty(), "unlatched ground, expand {expand}: no capsule, no avatar, no name; drew {:?}",
+                all.iter().map(|p| p.kind()).collect::<Vec<_>>());
+        }
     }
 
     /// **The rim's sharp source is the host snapshot**: `draw` hands the glass whatever
