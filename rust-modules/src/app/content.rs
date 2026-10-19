@@ -908,7 +908,8 @@ pub(crate) fn library_publish_shelves(
         && matches!(pages.top_arg(), Some(AppArg::Library | AppArg::LibraryRecommended { .. })) {
         // Apply through the store vocabulary at this boundary. The press check and commit
         // are adjacent; no queued boolean can outlive an input arm created later.
-        bridge.browse_run(library_publication_command(pages, target, hidden_page, at_head));
+        let committed = bridge.hubs_committed(target);
+        bridge.browse_run(library_publication_command(pages, target, hidden_page, at_head, committed));
     }
 }
 
@@ -1049,15 +1050,24 @@ fn home_tab_available(
     kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
 }
 
+/// **The Library pages' publication gate**: may the store land the hubs it staged, this frame?
+/// Always on a hidden page; on a visible one only at the page's head and, over `committed` shelves,
+/// only once no press is live. A live press protects the shelf under the finger, so what it
+/// protects is COMMITTED ground: a page's FIRST publication (`committed` false: nothing drawn yet)
+/// is never held by one. OK on the Recommended capsule pushes the page while its press still
+/// springs back (`Phase::Up` counts as live), and holding that first landing would keep the page on
+/// its spinner for as long as the spring takes to rest, forever on a frozen clock.
 fn library_publication_command(
     dispatcher: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     target: plx_data::stores::browse::SectionAddress,
     hidden_page: bool,
     at_head: bool,
+    committed: bool,
 ) -> plx_data::stores::browse::BrowseCmd {
+    let press_holds = committed && dispatcher.input.press.is_live();
     plx_data::stores::browse::BrowseCmd::Addressed { target,
         work: plx_data::stores::browse::LibraryWork::Hubs {
-            may_publish: hidden_page || (at_head && !dispatcher.input.press.is_live()),
+            may_publish: hidden_page || (at_head && !press_holds),
         },
     }
 }
@@ -1299,7 +1309,7 @@ mod library_publication_tests {
         let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
         let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
-            matches!(library_publication_command(d, target, hidden, head),
+            matches!(library_publication_command(d, target, hidden, head, true),
                 plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
         };
         assert!(allowed(&dispatcher, false, true));
@@ -1312,15 +1322,17 @@ mod library_publication_tests {
         assert!(allowed(&dispatcher, false, true));
     }
 
-    /// **A press whose activation is already delivered holds nothing up.** OK on the grid's
-    /// Recommended capsule pushes the page from `take_commit`, while the press is still springing back
-    /// (`Phase::Up`, not cancelled, so `is_live`). Nothing it pressed can move any more, yet the gate
-    /// keeps the page's landed hubs `Staged`, so `settled()` stays false and the page shows its
-    /// spinner. On a frozen clock (the frame dump's held repeat: same `T(v)`, `dt` 0) the spring never
-    /// rests, and the spinner the hold waits on never clears: crx-f3's dump of the Recommended page
-    /// stalled 120 s at virtual frame 479 on `library-spinner` with no open claim.
+    /// **A press gate protects COMMITTED ground, and a page's first publication has none.** OK on the
+    /// grid's Recommended capsule pushes the page from `take_commit`, while the press is still
+    /// springing back (`Phase::Up`, not cancelled, so `is_live`). The page's hubs are its whole
+    /// content and nothing is committed under that press yet, so holding their FIRST landing `Staged`
+    /// protects no shelf and only keeps `settled()` false: the page shows its spinner, and on a
+    /// frozen clock (the frame dump's held repeat: same `T(v)`, `dt` 0) the spring never rests and the
+    /// spinner never clears (crx-f3's dump of the Recommended page stalled 120 s at virtual frame 479
+    /// on `library-spinner` with no open claim). A RE-publication over committed shelves still waits
+    /// for the press: the shelf under the finger must not move.
     #[test]
-    fn a_press_that_already_activated_does_not_hold_visible_shelf_publication() {
+    fn a_first_publication_is_never_held_by_a_press_a_republication_is() {
         let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
         let press = &mut dispatcher.input.press;
@@ -1335,9 +1347,15 @@ mod library_publication_tests {
         // The frame dump's held repeat: the same instant, again and again.
         for _ in 0..600 { press.tick(now, 0.0); }
         assert!(press.is_active(), "premise: the activated press is still springing back");
-        assert!(matches!(library_publication_command(&dispatcher, target, false, true),
-            plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. }),
-            "the page an activated press opened may publish its hubs at its head");
+        let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, head, committed| {
+            matches!(library_publication_command(d, target, false, head, committed),
+                plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
+        };
+        assert!(allowed(&dispatcher, true, false),
+            "the page an activated press opened may publish its FIRST hubs at its head");
+        assert!(!allowed(&dispatcher, true, true),
+            "a re-publication over committed shelves still waits for the press to rest");
+        assert!(!allowed(&dispatcher, false, false), "and a first publication still lands only at the head");
     }
 
     /// A landing names rows, and only the Detail pages showing one of them are owed a re-read: the

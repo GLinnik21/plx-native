@@ -1195,6 +1195,12 @@ impl Bridge {
         self.stores.browse_run(cmd)
     }
 
+    /// Is any shelf of the addressed section committed? The Library pages' publication gate reads it
+    /// (`content::library_publication_command`).
+    pub(crate) fn hubs_committed(&self, target: plx_data::stores::browse::SectionAddress) -> bool {
+        self.stores.browse_hubs_committed(target)
+    }
+
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         self.stores.browse_discover_pump()
     }

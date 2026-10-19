@@ -163,6 +163,11 @@ impl Stores {
         self.browse.borrow_mut().run(cmd)
     }
 
+    /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
+    pub fn browse_hubs_committed(&self, target: browse::SectionAddress) -> bool {
+        self.browse.borrow().hubs_committed(target)
+    }
+
     pub fn browse_discover_pump(&self) -> StoreOutcome {
         self.browse.borrow_mut().discover_pump_with_gate(&self.landgate)
     }
