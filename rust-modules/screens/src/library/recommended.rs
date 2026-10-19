@@ -53,6 +53,11 @@ const PAGE_ROWS: usize = 2;
 /// The strip group the page's first row links up to (the shared top bar).
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
+/// The crumb's root link ("Movies"): the page's one control above the rows, a fixed element and
+/// group of its own (the same element the Collections page's crumb root has on the library page).
+const CRUMB_ELEM: u32 = super::toolbar::CRUMB_ROOT;
+const CRUMB_GROUP: GroupId = super::LIBRARY_GROUP;
+
 /// One hub's row: the published hub's identities and its `cards::Shelf`, which owns the pop, the
 /// scroll, the caption band, the draw, the stops and the placement.
 pub(super) struct Row {
@@ -446,6 +451,7 @@ impl RecommendedScreen {
         }
         let region = match elem {
             Some(elem) if self.shelves.iter().any(|row| row.heading_elem() == Some(elem)) => "heading",
+            Some(CRUMB_ELEM) => "crumb",
             Some(elem) if elem >= plx_ui::dispatch::STRIP_BASE => "strip",
             Some(_) => "library",
             None => "none",
@@ -568,13 +574,18 @@ impl RecommendedScreen {
                     self.scroll.jump(self.scroll_target);
                 }
             }
-        } else if key.elem >= plx_ui::dispatch::STRIP_BASE {
+        } else if key.elem == CRUMB_ELEM || key.elem >= plx_ui::dispatch::STRIP_BASE {
             self.scroll_target = 0.0;
         }
         self.relayout(Some(key));
     }
 
     fn activate<H: LibraryLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if elem == CRUMB_ELEM {
+            // The crumb's root link: back to the library page below.
+            fx.push(Fx::App(AppFx::Content(ContentReq::Back)));
+            return Handled::Yes;
+        }
         if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(elem)) {
             // OK on a linked heading opens the collection its row lists.
             if let Some(link) = H::section_hubs(cx).shelves().get(index).and_then(|shelf| shelf.link.as_ref()) {
@@ -732,6 +743,7 @@ impl<H: LibraryLike> Machine<H> for RecommendedScreen {
 impl RecommendedScreen {
     fn row_elems(&self, group: Option<GroupId>) -> Vec<u32> {
         let Some(group) = group else { return Vec::new() };
+        if group == CRUMB_GROUP { return vec![CRUMB_ELEM]; }
         self.shelves.iter().find_map(|row| {
             if row.group == group { return Some(row.elems.clone()); }
             row.heading.filter(|(heading, _)| *heading == group).map(|(_, elem)| vec![elem])
@@ -793,6 +805,7 @@ impl RecommendedScreen {
 
 impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        out.push(plx_ui::linked_heading::group_spec(CRUMB_GROUP, self.crumb_rect(cx, self.scroll_target)));
         for (index, row) in self.shelves.iter().enumerate() {
             let mut shelf = row_group(row.group, row.elems.len(), Rect::new(MARGIN_X,
                 shelf_y(&self.target_run, index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card);
@@ -807,6 +820,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         }
     }
     fn group_of(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        if *elem == CRUMB_ELEM { return Some(CRUMB_GROUP); }
         if let Some(row) = self.shelves.iter().find(|row| row.elems.contains(elem)) { return Some(row.group); }
         self.shelves.iter().find_map(|row| row.heading.filter(|(_, e)| e == elem)).map(|(group, _)| group)
     }
@@ -817,7 +831,9 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         next.and_then(|i| elems.get(i).copied()).map_or(Step::Edge, |elem| Step::Move(self.key(elem)))
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
-        let rect = if let Some((row, col)) = self.cell_of(*elem) {
+        let rect = if *elem == CRUMB_ELEM {
+            self.crumb_rect(cx, if at == At::Drawn { self.scroll.pos } else { self.scroll_target })
+        } else if let Some((row, col)) = self.cell_of(*elem) {
             if at == At::Drawn { return self.shelf_placed(row, elem, cx); }
             self.shelf_rect_at(row, col, cx)
         } else if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(*elem)) {
@@ -860,6 +876,33 @@ impl RecommendedScreen {
         f.painter.alpha(f.page_alpha)
     }
 
+    /// The page's breadcrumb, "<Library> › Recommended": the library's name is the link back, the
+    /// page's name sits on the selected plate. Placed on the header row like the Collections page's.
+    fn crumb<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> (plx_ui::breadcrumb::Crumb, plx_ui::breadcrumb::CrumbLayout) {
+        let crumb = plx_ui::breadcrumb::Crumb::new(
+            super::collections_page::root_label(&Self::library_title(cx), self.kind),
+            plx_platform::i18n::msg::library_header_recommended());
+        let layout = crumb.layout(cx.measure);
+        (crumb, layout)
+    }
+
+    /// The crumb's root plate at `scroll` (the row scrolls away with the page).
+    fn crumb_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>, scroll: f32) -> Rect {
+        let mut plate = self.crumb(cx).1.root_plate;
+        plate.y -= scroll;
+        plate
+    }
+
+    /// The page's title row: "<Library> › Recommended", the same crumb the Collections page has.
+    pub(super) fn draw_title<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
+        let (crumb, mut layout) = self.crumb(f.cx);
+        for rect in [&mut layout.root_text, &mut layout.root_plate, &mut layout.glyph, &mut layout.page_text, &mut layout.page_plate] {
+            rect.y -= self.scroll.pos;
+        }
+        let focused = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == CRUMB_ELEM);
+        crumb.draw(f.painter.alpha(f.page_alpha), &layout, focused);
+    }
+
     fn library_title<H: LibraryLike>(cx: &Cx<'_, H>) -> String {
         let directory = H::directory(cx);
         directory.current().and_then(|i| directory.sections().get(i)).map(|section| section.row.title.clone()).unwrap_or_default()
@@ -872,9 +915,7 @@ impl RecommendedScreen {
         plx_ui::profile::phase("rc.ground", || self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL));
         let p = f.painter.alpha(f.page_alpha);
         let env = Env::inert();
-        // The page's title: "Recommended", the library it belongs to after it.
-        ui_cards::draw_heading(p, plx_platform::i18n::msg::library_header_recommended(), &Self::library_title(f.cx),
-            MARGIN_X, CONTENT_TOP, SCR_W - 2.0 * MARGIN_X, f.measure);
+        self.draw_title(f);
         plx_ui::profile::phase("rc.rows", || {
             for index in self.shelf_window() {
                 #[cfg(test)] self.shelf_visits.set(self.shelf_visits.get() + 1);
@@ -959,9 +1000,12 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn memory(&self) -> PageMemory { PageMemory::Library(self.page_memory()) }
     fn links(&self, out: &mut Vec<Link>) {
+        // Strip, then the crumb's link back, then the rows: one column down the page.
+        out.push(Link { from: STRIP, dir: Dir::Down, to: CRUMB_GROUP });
+        out.push(Link { from: CRUMB_GROUP, dir: Dir::Up, to: STRIP });
         if self.shelves.is_empty() { return; }
-        out.push(Link { from: STRIP, dir: Dir::Down, to: self.first_group() });
-        out.push(Link { from: self.first_group(), dir: Dir::Up, to: STRIP });
+        out.push(Link { from: CRUMB_GROUP, dir: Dir::Down, to: self.first_group() });
+        out.push(Link { from: self.first_group(), dir: Dir::Up, to: CRUMB_GROUP });
         // One continuous document: a linked heading is its own block directly above its cards, so
         // UP from a card reaches it and DOWN returns to the remembered card.
         let mut document = Vec::new();

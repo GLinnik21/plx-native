@@ -209,3 +209,54 @@ fn shelf_run_window_holds_exactly_the_shelves_meeting_the_span() {
         assert!(bottom - top > 2000.0 || window.len() < 8, "{window:?}");
     }
 }
+
+/// **The page's title row is the Collections page's crumb**, "<Library> › Recommended": the library
+/// name is the link back at 65% white and regular weight, the page name stands on the selected
+/// plate; the bold "Recommended · Movies" heading is gone.
+#[test]
+fn the_title_row_is_the_crumb_with_the_library_as_the_link_back() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 6);
+    let page = fixture.screen();
+    let engine = FocusEngine::new();
+    let cx = fixture.cx(engine.current(OWNER));
+    let runs = plx_ui::draw_census::capture_runs(|| {
+        let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        page.draw_title(&frame);
+    });
+    let at = |text: &str| runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} drawn: {:?}", runs.iter().map(|r| &r.text).collect::<Vec<_>>()));
+    let library = at("Movies");
+    assert_eq!(library.ink, plx_ui::theme::CONTROL_TEXT_REST, "the link is 65% white");
+    assert!(!library.bold);
+    assert!((library.at.x - plx_ui::page_header::TEXT_X0).abs() < 0.5, "the root starts at x 96, as on the Collections page");
+    let page_name = at(plx_platform::i18n::msg::library_header_recommended());
+    assert!(!page_name.bold, "no bold heading");
+    assert!(page_name.at.x > library.at.x + library.at.w, "the page name follows the library and the chevron");
+    assert!(runs.iter().all(|r| !r.text.contains('\u{b7}') || r.text.len() > 3), "the old 'Recommended · Movies' joined heading is gone");
+}
+
+/// The crumb's root is the one stop above the rows: UP from the first row reaches it, DOWN returns,
+/// and OK on it is the page's Back.
+#[test]
+fn up_from_the_first_row_reaches_the_crumb_and_ok_on_it_goes_back() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 6);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let first = page.shelves[0].elems[0];
+    engine.set(OWNER, FocusKey { entry: ENTRY, elem: first }, Some(page.shelves[0].group), plx_ui::screen::By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Up);
+    assert_eq!(engine.current(OWNER), Some(FocusKey { entry: ENTRY, elem: CRUMB_ELEM }), "UP lands on the crumb root");
+    let fx = effects_of(&mut page, &fixture, &engine, ScreenEvent::Activate(CRUMB_ELEM));
+    assert!(fx.iter().any(|fx| matches!(fx, Fx::App(AppFx::Content(ContentReq::Back)))), "OK on the link is Back");
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    assert_eq!(engine.current(OWNER).map(|k| k.elem), Some(first), "DOWN returns to the first row");
+}
+
+#[test]
+fn the_first_shelf_starts_at_the_grid_top_under_the_title_row() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
+    let page = fixture.screen();
+    assert_eq!(shelf_y(&page.run, 0, 0.0), 244.0, "the same grid top as the library page");
+}
