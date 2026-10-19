@@ -26,6 +26,13 @@ pub const OVERHANG: f32 = 20.0;
 /// Top of the header row, and its height.
 pub const TOP: f32 = 148.0;
 pub const HEIGHT: f32 = 56.0;
+/// The header block: the row and the air under it. The first row of posters under a header stands
+/// this far below the row's top, at [`GRID_TOP`].
+pub const BLOCK_H: f32 = 96.0;
+/// Where the first grid row's posters stand under a header at rest (244): the line a focused row
+/// of a scrolled grid comes back to (`cards::GridSpec::resting`, the Library's `Layout::row_reveal`),
+/// well clear of the scroll capsule (`scroll_capsule::Y + H`, 118).
+pub const GRID_TOP: f32 = TOP + BLOCK_H;
 /// The least gap between two items' text runs: the plates' overhangs and a little air. See
 /// [`gap_between`] for the real one.
 pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;

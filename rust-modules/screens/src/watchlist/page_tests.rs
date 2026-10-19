@@ -994,6 +994,12 @@ fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
 
 // ---- the Library's grid and scroll chrome ----
 
+/// One row down: the first scrolled rest of the grid (a whole pitch, since a focused row rests at the
+/// first row's y), where the header has scrolled off.
+fn row_pitch() -> f32 {
+    plx_ui::consts::CARD_H + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
+}
+
 /// **The grid is the Library's**: six 250 x 375 posters from x 96, 285 apart (the last column ends on
 /// the header row's right text edge, x 1771), the first row at y 244 (the header row's foot), and
 /// the next row a poster and the collapsed caption band (40 px of air) lower.
@@ -1021,8 +1027,41 @@ fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
     use plx_ui::screen::Screen;
     let mut h = Harness::new(tiles(24));
     assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 0.0, "at rest nothing is tucked");
-    h.screen.jump_scroll(super::page::GRID_TOP - 120.0);
-    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the header is gone");
+    h.screen.jump_scroll(row_pitch());
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the first row has gone");
+}
+
+/// **A focused row below the first rests where the first row does** (owner finding 13): its
+/// posters' top at the first row's resting y (244), the row above still drawn over the top edge
+/// under the fade, as on the Library. The document's end clamps it: the last row of a long list
+/// cannot rest above the line, but it sits lower rather than scrolling past the end. Measured on an
+/// UNFOCUSED poster of the row, whose cell carries no focus pop.
+#[test]
+fn a_focused_row_below_the_first_rests_with_its_posters_at_244() {
+    use plx_ui::cards::conformance::CardHarness;
+    let mut h = Harness::new(tiles(40));
+    let cards = h.cards();
+    let at = |h: &Harness, i: usize| h.drawn_rect(cards[i], 1.0).expect("a drawn stop");
+    let first_row_y = at(&h, 0).y;
+    assert_eq!(first_row_y, 244.0, "premise: the first row stands at the header row's foot");
+    for row in [1, 2, 5] {
+        h.focus_index(row * 6 + 1);
+        h.run(300);
+        let y = at(&h, row * 6).y;
+        assert!((y - first_row_y).abs() < 0.5, "row {row} rests with its posters at {first_row_y}, not {y} (scroll {})", h.screen.scroll());
+    }
+    h.focus_index(5 * 6 + 1);
+    h.run(300);
+    let above = at(&h, 4 * 6);
+    assert!(above.y < 0.0 && above.y + above.h > 0.0, "the row above is still drawn over the top edge: {above:?}");
+
+    let last = 6;
+    h.focus_index(last * 6 + 1);
+    h.run(300);
+    let y = at(&h, last * 6).y;
+    assert!(y > first_row_y + 0.5, "the last row of the list sits lower than the line, the end clamps: {y}");
+    assert!(y + plx_ui::consts::CARD_H <= plx_ui::consts::SCR_H - plx_ui::consts::MARGIN_Y + 0.5, "and it is whole above the foot margin: {y}");
+    assert!(h.screen.scroll() < last as f32 * row_pitch(), "the end holds the scroll below the unclamped rest: {}", h.screen.scroll());
 }
 
 /// **The Watchlist has no capsule.** Its header names no library, so a scrolled page has nothing to
@@ -1035,8 +1074,7 @@ fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
     use plx_ui::scroll_capsule;
     let _g = plx_base::testlock::serial();
     let mut h = Harness::new(tiles(24));
-    let pitch = plx_ui::consts::CARD_H + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR;
-    h.screen.jump_scroll(pitch);
+    h.screen.jump_scroll(row_pitch());
     let paints = h.draw_paints();
     let fade = |p: &std::rc::Rc<plx_gfx::gfx::backdrop::Paint>| {
         p.kind() == "rect" && p.placed() == [0.0, 0.0, plx_ui::consts::SCR_W, scroll_capsule::FADE_H]
@@ -1051,10 +1089,10 @@ fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
 }
 
 /// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
-/// page on its first snap (the first row at the content edge, y 120): the header row has risen
-/// into the tab strip's band there, so it has faded out and the strip has tucked behind the
-/// capsule (red when the tuck ramp ran over the Library's first-row pitch: the page rested at
-/// tuck 0 with the row's labels drawn over the strip).
+/// page a whole row down (the row at the first row's y, 244): the header row has risen into the tab
+/// strip's band long before that, so it has faded out, and the strip has tucked (the tuck completes
+/// at that first rest; red when the ramp ran over a shorter distance and the page rested at tuck 0
+/// with the row's labels drawn over the strip).
 #[test]
 fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
     use plx_ui::screen::Screen;
@@ -1062,9 +1100,9 @@ fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
     h.focus_index(6);
     h.run(240);
     let rest = h.screen.scroll();
-    assert!((rest - (super::page::GRID_TOP - 120.0)).abs() < 0.5, "premise: the second row rests on the first snap, at {rest}");
-    assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first snap");
+    assert!((rest - row_pitch()).abs() < 0.5, "premise: the second row rests a whole row down, at {rest}");
+    assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first rest");
     assert!(super::page::head_alpha(rest) < 0.01, "and the header is gone");
     assert_eq!(super::page::head_alpha(0.0), 1.0);
-    assert!(super::page::head_alpha(rest * 0.5) > 0.0 && super::page::head_alpha(rest * 0.5) < 1.0, "it fades with the scroll");
+    assert!(super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) > 0.0 && super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) < 1.0, "it fades with the scroll");
 }

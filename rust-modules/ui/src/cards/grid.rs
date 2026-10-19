@@ -61,7 +61,8 @@ pub struct GridSpec {
     /// Top of the first row's posters in document space.
     pub top: f32,
     /// The content edge a scrolled row snaps to (`poster_grid::snap_row`), and the line rows above
-    /// the snapped one are culled against.
+    /// the snapped one are culled against. A [`resting`](Self::resting) grid snaps to no edge: its
+    /// edge is the screen's top, which culls only a row wholly off it.
     pub edge: f32,
     /// Whether the grid scrolls home when focus is not in it (a page with a header above the grid
     /// wants that). `false` leaves the scroll where it is for a page whose other focus zones must
@@ -77,12 +78,31 @@ pub struct GridSpec {
     /// Play a content change no focus move announced instead of cutting it (see
     /// [`animate_landings`](Self::animate_landings)).
     pub landings: bool,
+    /// Rows REST rather than snap (see [`resting`](Self::resting)).
+    pub rests: bool,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false }
+    }
+
+    /// **A grid whose rows rest where the first row does** (the Library's rule, `poster_grid::rest_scroll`):
+    /// a focused row below the first comes to rest with its poster top at the first row's resting
+    /// y (`top` at scroll 0), instead of snapping to an edge ([`new`](Self::new)). The document's end
+    /// holds the last rows lower; the owner applies it ([`Grid::rest_target`], which a `Stack`
+    /// calls with its own end), so this is a [`ScrollMode::External`] grid's rule. Rows above the
+    /// rested one stay drawn, under the page's chrome, as on the Library: nothing is culled that
+    /// the screen still shows, so the edge is the screen's top (0).
+    pub const fn resting(top: f32) -> Self {
+        Self { rests: true, ..Self::new(top, 0.0) }
+    }
+
+    /// The distance between two COLLAPSED rows' tops: what a page whose chrome tucks once the first
+    /// row has scrolled off (`scroll_chrome::tuck`) is told that distance is.
+    pub fn pitch(&self) -> f32 {
+        self.geom().pitch()
     }
 
     /// `cols` columns of `style` cards starting at x = `left` (a page with an alphabet rail, or
@@ -136,8 +156,8 @@ pub struct Grid {
     landed: Option<Landed>,
     /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
     shift: f32,
-    /// The scroll the focused row wants (see [`Grid::reveal_target`]).
-    reveal: Option<f32>,
+    /// The focused row and the scroll it wants (see [`Grid::reveal_target`]).
+    reveal: Option<(usize, f32)>,
     ahead: usize,
     asked: Option<(usize, usize)>,
     /// The first unloaded card in view the latest hole ask named.
@@ -315,7 +335,13 @@ impl Grid {
         }
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
-            poster_grid::snap_row_in_for(self.band_h(), &self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
+            let row = i / self.spec.cols;
+            let at = if self.spec.rests {
+                self.rest_scroll(row, f32::INFINITY)
+            } else {
+                poster_grid::snap_row_in_for(self.band_h(), &self.spec.geom(), self.scroll.pos + self.shift, row, src.len(), self.spec.top, self.spec.edge)
+            };
+            (row, at)
         });
         self.reveal = wanted;
         self.bands.tick(self.spec.style.k_scroll, dt);
@@ -327,7 +353,7 @@ impl Grid {
         if self.spec.scroll == ScrollMode::External {
             return;
         }
-        self.target = wanted.unwrap_or(home);
+        self.target = wanted.map_or(home, |(_, at)| at);
         self.scroll.step(self.target, K_SCROLL, dt);
         if (self.scroll.pos - self.target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
             fx.note(PresentEvent::Motion);
@@ -355,7 +381,15 @@ impl Grid {
             ScrollMode::Own => self.scroll.pos - sy0,
             ScrollMode::External => self.shift,
         };
-        let (geom, top, scroll, h, band_h) = (self.spec.geom(), self.spec.top, self.scroll.pos, self.spec.style.h, self.band_h());
+        // Whether a card is on screen is judged where the document stands AFTER this landing's move:
+        // an external owner applies `self.shift` once the grid has ticked, so the scroll it handed
+        // us is the one before it, and a row the move carries across the top edge (a ghost standing
+        // partly over it) would otherwise be judged a whole shift off screen and cut instead of fading.
+        let scroll = match self.spec.scroll {
+            ScrollMode::Own => self.scroll.pos,
+            ScrollMode::External => self.scroll.pos + self.shift,
+        };
+        let (geom, top, h, band_h) = (self.spec.geom(), self.spec.top, self.spec.style.h, self.band_h());
         let bands = self.bands.geometry();
         let slot = |i: usize| {
             let r = poster_grid::cell_in_for(band_h, &geom, i, top, 0.0, &bands);
@@ -486,7 +520,24 @@ impl Grid {
     /// current scroll), `None` while focus is not in the grid. An external owner may take it or
     /// apply its own reveal rule; the self-scrolling grid springs to it.
     pub fn reveal_target(&self) -> Option<f32> {
-        self.reveal
+        self.reveal.map(|(_, at)| at)
+    }
+
+    /// Whether the grid's rows rest where the first row does ([`GridSpec::resting`]).
+    pub fn rests(&self) -> bool {
+        self.spec.rests
+    }
+
+    /// A resting grid's scroll for its focused row, held to a document that ends at `end` (the
+    /// owner's furthest scroll with this focus): `poster_grid::rest_scroll`, the Library's rule.
+    /// `None` while focus is not in the grid.
+    pub fn rest_target(&self, end: f32) -> Option<f32> {
+        self.reveal.map(|(row, _)| self.rest_scroll(row, end))
+    }
+
+    fn rest_scroll(&self, row: usize, end: f32) -> f32 {
+        let growth = poster_grid::growth_before_for(self.band_h(), row, &poster_grid::settled(Some(row)));
+        poster_grid::rest_scroll(row, self.spec.geom().pitch(), growth, end)
     }
 
     /// External mode: hand the grid the page it is drawn on — the first row's top in document
@@ -536,6 +587,15 @@ impl Grid {
     /// after, and bounds its scroll by).
     pub fn height(&self, len: usize) -> f32 {
         poster_grid::row_top_in_for(self.band_h(), &self.spec.geom(), len.div_ceil(self.spec.cols), 0.0, &self.bands.geometry())
+    }
+
+    /// [`height`](Self::height) at the bands' DESTINATION: the focused row's caption band open when
+    /// `focused` (this grid holds the page's focus) and every other closed, wherever the springs are
+    /// now. A scroll bound computed against the live bands chases a moving goal for as long as
+    /// they animate (the same rule as the shelf's `Stack::settled_height`).
+    pub fn settled_height(&self, len: usize, focused: bool) -> f32 {
+        let bands = poster_grid::settled(self.bands.focused().filter(|_| focused));
+        poster_grid::row_top_in_for(self.band_h(), &self.spec.geom(), len.div_ceil(self.spec.cols), 0.0, &bands)
     }
 
     /// The cards the scroll can show out of `len`: what `draw` and `record_stops` touch.

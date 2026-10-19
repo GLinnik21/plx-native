@@ -376,6 +376,20 @@ pub fn snap_row_in_for(band_h: f32, g: &Geom, current: f32, row: usize, len: usi
         .unwrap_or(focused_top - edge)
 }
 
+/// **The rest rule: a focused row rests where the first row does.** The scroll that puts row `row`'s
+/// poster top at the first row's resting y: `row` pitches down, plus `growth_before`, the growth of
+/// every open band above it (none for the row the focus itself opened). Row 0 rests at the head,
+/// scroll 0. The document's end holds it at `max`: the last rows of a list cannot scroll past the
+/// end, so they rest lower. A row never rests above the line.
+///
+/// The Library's `Layout::row_reveal` (its grid, and the Collections page that is the same layout)
+/// and a [`Grid`](crate::cards::Grid) built with `GridSpec::resting` (the Watchlist) both land here,
+/// so the line (244 on those pages) is one rule, not two.
+pub fn rest_scroll(row: usize, pitch: f32, growth_before: f32, max: f32) -> f32 {
+    if row == 0 { return 0.0; }
+    (row as f32 * pitch + growth_before).min(max).max(0.0)
+}
+
 /// The label block a focused row shows under its posters for a band of `band_h`: the band less the
 /// air [`UNDER_LABEL_AIR`] below it ([`UNDER_LABEL_H`] for the legacy band), never negative.
 fn shown_band(band_h: f32) -> f32 {

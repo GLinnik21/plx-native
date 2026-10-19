@@ -50,7 +50,7 @@ const CUE_SIZE: std::os::raw::c_int = theme::size::LABEL;
 pub const HEADER_TOP: f32 = page_header::TOP;
 /// The header block: the row and the air under it, so the grid's first poster top is 96 under the
 /// row's top (244), as the Library's.
-pub const BLOCK_H: f32 = 96.0;
+pub const BLOCK_H: f32 = page_header::BLOCK_H;
 /// The grid's right edge: the row's right text edge.
 pub const GRID_RIGHT: f32 = page_header::TEXT_X1;
 

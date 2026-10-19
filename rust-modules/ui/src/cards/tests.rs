@@ -1851,6 +1851,7 @@ mod stack {
     const HEAD_H: f32 = 400.0;
     const ROW_STYLE: &RowStyle = &card_row::RowStyle::HOME;
     const COLS_SPEC: GridSpec = GridSpec::new(0.0, 96.0);
+    const RESTING_SPEC: GridSpec = GridSpec::resting(0.0);
 
     /// A page of a header, a shelf, a grid and a Retry-like overlay, over `Cards`.
     struct Page {
@@ -1863,6 +1864,8 @@ mod stack {
         aside: bool,
         /// A header tall enough that the shelf below it needs the page scrolled to be on screen.
         tall: bool,
+        /// The grid's rows REST ([`GridSpec::resting`]) instead of snapping to an edge.
+        rest: bool,
     }
 
     impl CardSource<FixtureHost> for &Cards {
@@ -1887,7 +1890,7 @@ mod stack {
                 out.push(SectionSpec::new(Sec::Aside, Kind::Custom { height: 0.0, focusable: true }, GroupId(6)).ranked(1));
             }
             out.push(SectionSpec::new(Sec::Row, Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(3)).ranked(1));
-            out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: COLS_SPEC }, GroupId(0)));
+            out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: if self.rest { RESTING_SPEC } else { COLS_SPEC } }, GroupId(0)));
             if self.status {
                 out.push(SectionSpec::new(Sec::Status, Kind::Overlay { rect: Rect::new(96.0, 460.0, 400.0, 80.0), focusable: true }, GroupId(9)).ranked(2));
             }
@@ -1918,10 +1921,15 @@ mod stack {
     type Mrig = PageRig<Msec, Multi>;
 
     fn rig(row: usize, items: usize) -> Rig {
+        rig_with(row, items, false)
+    }
+
+    /// [`rig`] with the grid's spec chosen up front: a grid keeps the spec it was built with.
+    fn rig_with(row: usize, items: usize, rest: bool) -> Rig {
         let ids = |base: u32, n: usize| (0..n as u32).map(|i| base + i).collect::<Vec<_>>();
         let mut r = PageRig {
             stack: Stack::new(ENTRY),
-            page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false, aside: false, tall: false },
+            page: Page { row: Cards::new(ids(100, row), false), items: Cards::new(ids(1000, items), false), revision: 1, status: false, pending: false, aside: false, tall: false, rest },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -1974,6 +1982,92 @@ mod stack {
         fn step(&self, elem: u32, dir: Dir) -> Step<u32> {
             self.stack.view(&self.page).neighbour(FocusKey { entry: ENTRY, elem }, dir, &self.cx())
         }
+    }
+
+    /// A page of a header and a RESTING grid of `items` cards (no shelf, so the first row stands at
+    /// the header's foot, y 400, when the page is at the top).
+    fn resting_rig(items: usize) -> Rig {
+        rig_with(0, items, true)
+    }
+
+    /// Where the poster of `elem` stands on screen now: the drawn rect of a card with no focus pop.
+    fn drawn_y(r: &Rig, elem: u32) -> f32 {
+        r.place(elem).expect("a placed card").rect.y
+    }
+
+    /// **A resting grid puts the focused row where the first row stands** (the Library's rule,
+    /// `poster_grid::rest_scroll`): focus a card of row `n` and the page rests with that row's
+    /// posters at the y the first row had at scroll 0, whatever the row. Measured on the row's
+    /// FIRST card while focus is on its second (the focus pop raises the focused card's rect). A
+    /// default grid snaps to its edge instead (its first snap puts row 0 on the edge, so row 1
+    /// stands a pitch under it), which the same walk pins as unchanged.
+    #[test]
+    fn a_resting_grid_rests_every_focused_row_where_the_first_row_stands() {
+        let mut r = resting_rig(60);
+        let first = drawn_y(&r, 1000);
+        assert_eq!(first, HEAD_H, "premise: the first row stands at the header's foot");
+        for row in [1u32, 2, 4, 7] {
+            r.go(1000 + row * 6 + 1, By::Dir);
+            r.run(300);
+            let y = drawn_y(&r, 1000 + row * 6);
+            assert!((y - first).abs() < 0.5, "row {row} rests at {first}, not {y} (scroll {})", r.stack.scroll());
+        }
+        r.go(1001, By::Dir);
+        r.run(300);
+        assert!(r.stack.scroll().abs() < 0.5, "row 0 rests at the head: {}", r.stack.scroll());
+
+        let mut snapping = rig(0, 60);
+        snapping.go(1007, By::Dir);
+        snapping.run(300);
+        let pitch = RowStyle::HOME.h + card_row::LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+        assert!((drawn_y(&snapping, 1006) - (96.0 + pitch)).abs() < 0.5,
+            "a default grid is unchanged: it rests on its first snap (row 0 on the edge, y 96), so row 1 stands a pitch under it: {}",
+            drawn_y(&snapping, 1006));
+    }
+
+    /// **The document's end holds the last rows lower**: a row whose rest would scroll past the end
+    /// of the page stands lower than the line, with its posters whole above the foot margin, and
+    /// the scroll is the page's own furthest (`Stack::max_scroll`, measured at the settled bands).
+    #[test]
+    fn a_resting_grid_is_held_by_the_documents_end() {
+        let mut r = resting_rig(60);
+        let first = drawn_y(&r, 1000);
+        let last_row = 9u32;
+        r.go(1000 + last_row * 6 + 1, By::Dir);
+        r.run(300);
+        let y = drawn_y(&r, 1000 + last_row * 6);
+        let pitch = RowStyle::HOME.h + card_row::LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+        assert!(r.stack.scroll() < last_row as f32 * pitch, "the end holds the scroll below the unclamped rest: {}", r.stack.scroll());
+        assert!(y > first + 0.5, "so the last row stands lower than the first row's line: {y}");
+        assert!((r.stack.scroll() - r.stack.max_scroll(&r.page, &r.cx())).abs() < 0.5, "at the page's furthest scroll");
+        assert!(y + RowStyle::HOME.h <= crate::consts::SCR_H - crate::consts::MARGIN_Y + 0.5, "with its posters above the foot margin");
+    }
+
+    /// **The end is measured against the SETTLED caption band**, not the one still opening: the
+    /// target a focus move names on the first frame is the one the page comes to rest at, so the
+    /// clamp does not chase the band for as long as it animates.
+    #[test]
+    fn a_resting_grids_target_is_the_destination_from_the_first_frame() {
+        let mut r = resting_rig(60);
+        r.go(1000 + 9 * 6 + 1, By::Dir);
+        r.run(1);
+        let first = r.stack.target();
+        r.run(300);
+        assert!(first > 0.0, "setup: the last row wants a scroll: {first}");
+        assert_eq!(r.stack.target(), first, "the end was the settled one from the first frame");
+        assert!((r.stack.scroll() - first).abs() < 0.5);
+    }
+
+    /// **The row above the rested one stays drawn**, under the page's chrome, as on the Library: a
+    /// resting grid culls only what is wholly off the screen's top (a snapping grid culls the row
+    /// over the edge).
+    #[test]
+    fn a_resting_grid_keeps_the_row_above_drawn() {
+        let mut r = resting_rig(60);
+        r.go(1000 + 4 * 6 + 1, By::Dir);
+        r.run(300);
+        let painted = r.stack.grid(Sec::Items).expect("the grid").painted(Painter::recording(), 60);
+        assert!(painted.contains(&(3 * 6)), "the row above (cards 18..24) is painted: {painted:?}");
     }
 
     #[test]

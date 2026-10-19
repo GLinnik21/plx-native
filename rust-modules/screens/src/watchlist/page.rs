@@ -133,19 +133,17 @@ pub enum WatchlistIn {
 // ── Geometry: `Watchlist.dc.html`, a 1920 x 1080 stage.
 
 /// The grid's first row of posters: 96 under the header row's top, as the Library's (244).
-pub const GRID_TOP: f32 = header::HEADER_TOP + header::BLOCK_H;
-/// The line a scrolled row snaps to: clear of the scroll capsule (the Library's settle rule).
-const CONTENT_TOP: f32 = 120.0;
+pub const GRID_TOP: f32 = plx_ui::page_header::GRID_TOP;
 /// Six columns of 250 posters from the row's text edge, 285 apart: the gap that puts the last
 /// column's right edge on the row's right text edge.
 const COLS: usize = 6;
 const GRID_GAP: f32 = (header::GRID_RIGHT - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
 
-/// How much of the header is left at `scroll`: all of it at the top, none once the first row has
-/// risen to the content edge (the header row has gone up into the tab strip's band by then), so a
+/// How much of the header is left at `scroll`: all of it at the top, none once the page has
+/// scrolled one tuck ramp (the header row has gone up into the tab strip's band by then), so a
 /// scrolled page leaves no remnant of the head above its rows.
 pub(crate) fn head_alpha(scroll: f32) -> f32 {
-    (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
+    (1.0 - scroll / plx_ui::scroll_chrome::TUCK_RAMP).clamp(0.0, 1.0)
 }
 
 /// The grid's cards: the shared home poster, at the Library's gap.
@@ -153,9 +151,11 @@ fn grid_style() -> plx_ui::cards::RowStyle {
     plx_ui::cards::RowStyle { gap: GRID_GAP, ..plx_ui::cards::RowStyle::HOME }
 }
 
-/// The grid's spec: top, snap edge, columns.
+/// The grid's spec: top, columns. Its rows REST, as the Library's do: a focused row below the first
+/// comes to rest with its posters at the first row's y (`GRID_TOP`, 244), held by the document's end
+/// (`GridSpec::resting`).
 fn grid_spec() -> GridSpec {
-    GridSpec::new(GRID_TOP, CONTENT_TOP).columns(COLS, grid_style(), MARGIN_X)
+    GridSpec::resting(GRID_TOP).columns(COLS, grid_style(), MARGIN_X)
 }
 
 /// The pill's focus element, below the card keys.
@@ -1111,11 +1111,11 @@ impl WatchlistScreen {
         self.stack.view(&self.page)
     }
 
-    /// How far the page has tucked the top chrome: the Library's ramp, complete at the grid's first
-    /// snap (the first row at the content edge), where the header has gone up into the chrome's band
-    /// ([`head_alpha`] reaches 0 at the same scroll).
+    /// How far the page has tucked the top chrome: the Library's ramp, complete once the first row
+    /// has scrolled off (the first scrolled rest is a whole row, one pitch, down). The header has
+    /// faded out long before ([`head_alpha`] reaches 0 after one ramp).
     fn tuck(&self) -> f32 {
-        plx_ui::scroll_chrome::tuck(self.stack.scroll(), GRID_TOP - CONTENT_TOP)
+        plx_ui::scroll_chrome::tuck(self.stack.scroll(), grid_spec().pitch())
     }
 
     /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground, as the

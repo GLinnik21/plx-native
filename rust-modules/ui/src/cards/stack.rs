@@ -776,6 +776,10 @@ impl<K: Copy + Eq> Stack<K> {
                     heading + style.h + card_row::under_band((n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
                 }
             }
+            Kind::Grid { .. } => match &self.bodies[n] {
+                Body::Grid(g) => g.settled_height(self.len_of(p, cx, n), n == focus),
+                _ => self.height(p, cx, n),
+            },
             _ => self.height(p, cx, n),
         }
     }
@@ -785,7 +789,9 @@ impl<K: Copy + Eq> Stack<K> {
     /// names, [`StackPage::reveal_with`]) otherwise.
     fn wanted<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         if let Body::Grid(g) = &self.bodies[i] {
-            return g.reveal_target().unwrap_or(self.target);
+            // a resting grid's row rests where the first row does, held by the document's end
+            let want = if g.rests() { g.rest_target(self.max_with_focus(p, cx, i)) } else { g.reveal_target() };
+            return want.unwrap_or(self.target);
         }
         if matches!(self.specs[i].kind, Kind::Overlay { .. }) {
             return self.target;

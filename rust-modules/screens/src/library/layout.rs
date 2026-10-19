@@ -16,12 +16,12 @@ pub(super) const SINGLE_LIBRARY_DY: f32 = 10.0;
 pub(super) const CONTENT_TOP: f32 = HEADER_Y;
 /// The header block: the header row (56) and the air under it, so the grid's first tile top lands
 /// on [`LIBRARY_GRID_TOP`] (244), 96 under the row's top.
-pub(super) const HEADER_BLOCK_H: f32 = 96.0;
+pub(super) const HEADER_BLOCK_H: f32 = plx_ui::page_header::BLOCK_H;
 pub(super) const LIBRARY_ROW_H: f32 = HEADER_BLOCK_H;
 /// Screen y of the first grid row's tile top at rest.
 #[cfg(test)]
 #[cfg(test)]
-pub(super) const LIBRARY_GRID_TOP: f32 = HEADER_Y + HEADER_BLOCK_H;
+pub(super) const LIBRARY_GRID_TOP: f32 = plx_ui::page_header::GRID_TOP;
 #[cfg(test)]
 pub(super) const GRID_PITCH: f32 = plx_ui::consts::CARD_H
     + plx_ui::cards::LABEL_BAND_COLLAPSED
@@ -166,8 +166,7 @@ impl Layout {
     /// it. Never below 0 and never past the end of the document: the last rows of a list settle
     /// lower. The Library's grid and the Collections page's are this one layout.
     pub(super) fn row_reveal(&self, row: usize) -> f32 {
-        let top = if row == 0 { 0.0 } else { self.row_top(row) - self.row_top(0) };
-        top.clamp(0.0, self.max_scroll())
+        plx_ui::cards::grid_rest_scroll(row, self.grid_pitch(), self.band_growth_before(row), self.max_scroll())
     }
 
     pub(super) fn first(&self) -> Option<Block> {
