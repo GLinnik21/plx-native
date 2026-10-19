@@ -1121,6 +1121,9 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
         // The column: bar, crumb, then the rows (a linked heading above its cards).
         self.with_regions(|regions| regions.links(out));
     }
+    fn holds_arrival(&self, dir: plx_ui::screen::Dir) -> bool {
+        self.with_regions(|regions| regions.holds(dir))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
 }
 

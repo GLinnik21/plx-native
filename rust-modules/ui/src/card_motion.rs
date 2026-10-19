@@ -14,6 +14,10 @@
 //! made, because `card_motion_metrics` and the poster-gate scenes count it; the dev trigger
 //! `plxnative-cardspeed=<px/s>` brings the old decline back ([`declines_request`]).
 //!
+//! The same history carries each card's ART phase ([`ArtPhase`]), which is how the shared card draw
+//! tells art that lands after a skeleton (it dissolves in, [`Scope::arrival`]) from art that was
+//! there at the card's first draw (it shows whole).
+//!
 //! This is render history, never LogicalState. Two reused vectors retain only the
 //! previous/current drawn frame; walking a 1000-item document does not retain 1000
 //! cards. Capacity follows peak simultaneous draws, with no fixed-cap eviction that
@@ -38,8 +42,23 @@ pub struct Identity {
     pub asset: u64,
 }
 
+/// **Where a card's art stood the last frame it was drawn**, carried in the same render history as
+/// its placement. It is what lets the shared card draw tell art that arrives LATE (drawn as a
+/// skeleton one frame, resident the next) from art that was there when the card first appeared
+/// (never a skeleton, so nothing to dissolve over): only the first fades in ([`Scope::arrival`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ArtPhase {
+    /// Nothing to dissolve: the art was there from the first draw, or its fade is done.
+    #[default]
+    Settled,
+    /// The card was drawn as a skeleton: whatever lands next is late.
+    Waiting,
+    /// The art landed at frame time `since` (ms) and is dissolving in over the skeleton.
+    Arriving { since: u32 },
+}
+
 #[derive(Clone, Copy)]
-struct Sample { id: Identity, occurrence: usize, x: f32, y: f32, ms: u32 }
+struct Sample { id: Identity, occurrence: usize, x: f32, y: f32, ms: u32, art: ArtPhase }
 
 #[derive(Default)]
 pub struct History {
@@ -52,12 +71,27 @@ impl History {
     pub fn begin(&mut self) { self.frame = self.frame.wrapping_add(1); }
 
     pub fn observe(&mut self, id: Identity, rect: Rect, ms: u32) -> Verdict {
-        self.observe_at(id, rect, ms, moving_limit())
+        self.observe_full(id, rect, ms).0
+    }
+
+    /// [`observe`](Self::observe) plus what the card's art stood at on its previous frame and the
+    /// slot its new sample took, for [`set_art`](Self::set_art).
+    fn observe_full(&mut self, id: Identity, rect: Rect, ms: u32) -> (Verdict, ArtPhase, usize) {
+        self.observe_with(id, rect, ms, moving_limit())
     }
 
     /// [`observe`](Self::observe) against an explicit speed limit (px/s). Only the `Moving`
     /// threshold depends on it: a card with no previous sample is `Unknown` at any limit.
     fn observe_at(&mut self, id: Identity, rect: Rect, ms: u32, limit: f32) -> Verdict {
+        self.observe_with(id, rect, ms, limit).0
+    }
+
+    /// Record where this frame's draw of the card's art ended up, for the next frame to read.
+    fn set_art(&mut self, slot: usize, art: ArtPhase) {
+        if let Some(sample) = self.current.get_mut(slot) { sample.art = art; }
+    }
+
+    fn observe_with(&mut self, id: Identity, rect: Rect, ms: u32, limit: f32) -> (Verdict, ArtPhase, usize) {
         if self.drawn_frame != self.frame {
             std::mem::swap(&mut self.previous, &mut self.current);
             self.current.clear();
@@ -80,8 +114,28 @@ impl History {
                 else if speed > limit { Verdict::Moving }
                 else { Verdict::Settled }
             });
-        self.current.push(Sample { id, occurrence, x, y, ms });
-        verdict
+        let art = self.previous.iter().find(|p| p.id == id && p.occurrence == occurrence)
+            .map_or(ArtPhase::Settled, |old| old.art);
+        self.current.push(Sample { id, occurrence, x, y, ms, art });
+        (verdict, art, self.current.len() - 1)
+    }
+}
+
+/// **The art phase after this frame's draw, and how much of the art shows**, from the phase the
+/// card's previous frame ended in, whether its texture is resident now (`hit`) and the frame time.
+/// Pure. A miss is `Waiting` (the skeleton is up and whatever lands is late); the first hit after
+/// a miss starts the dissolve ([`xfade::arrived`](crate::xfade::arrived), 0 at its start and 1
+/// after [`xfade::IN_MS`](crate::xfade::IN_MS)); a hit with nothing to dissolve over is fully
+/// shown. Frame time that goes backwards (a replay rewound) reads as the start.
+fn art_after(prev: ArtPhase, hit: bool, now: u32) -> (ArtPhase, f32) {
+    if !hit { return (ArtPhase::Waiting, 0.0) }
+    match prev {
+        ArtPhase::Settled => (ArtPhase::Settled, 1.0),
+        ArtPhase::Waiting => (ArtPhase::Arriving { since: now }, 0.0),
+        ArtPhase::Arriving { since } => {
+            let age = if now >= since { (now - since) as f32 } else { 0.0 };
+            if age >= crate::xfade::IN_MS { (ArtPhase::Settled, 1.0) } else { (ArtPhase::Arriving { since }, crate::xfade::arrived(age)) }
+        }
     }
 }
 
@@ -142,18 +196,39 @@ pub(super) fn frame_ms() -> u32 { FRAME_MS.with(Cell::get) }
 
 /// A card owns every art probe until its draw returns, including early returns.
 /// Calls outside this scope (hero art, logos, warm requests) have no card-motion gate.
-pub struct Scope(Option<Verdict>);
+pub struct Scope(Option<Verdict>, Option<Track>);
+/// The card's art history this scope may advance: its sample's slot and the phase it stood in.
+#[derive(Clone, Copy)]
+struct Track { slot: usize, prev: ArtPhase }
 impl Scope {
     pub fn card(id: Identity, rect: Rect) -> Self {
-        let v = HISTORY.with(|h| {
+        let (v, prev, slot) = HISTORY.with(|h| {
             let mut h = h.borrow_mut();
             #[cfg(feature = "devtriggers")]
             if h.frame != h.drawn_frame { super::card_motion_metrics::frame(); }
-            h.observe(id, rect, frame_ms())
+            h.observe_full(id, rect, frame_ms())
         });
-        Self::enter(v)
+        let mut scope = Self::enter(v);
+        scope.1 = Some(Track { slot, prev });
+        scope
     }
-    fn enter(v: Verdict) -> Self { Self(ADMISSION.with(|s| s.replace(Some(v)))) }
+    fn enter(v: Verdict) -> Self { Self(ADMISSION.with(|s| s.replace(Some(v))), None) }
+
+    /// **How much of the card's art shows this frame, 0..1**: the art-arrival fade of the shared
+    /// card draw. `hit` is whether the probe came back with a texture. Art that was there the first
+    /// time the card drew (a texture resident before the card was on screen) shows at once; art
+    /// that lands after the card drew a skeleton dissolves in over it on the page fade's own
+    /// duration and curve, instead of cutting in. A dissolve in flight asks the frame gate for the
+    /// next frame (a ms ramp is invisible to the spring instrumentation, as `Xfade::tick` says).
+    /// Call once per scope; a scope that tracks nothing (a test's, a card with no identity) shows
+    /// everything.
+    pub fn arrival(&self, hit: bool) -> f32 {
+        let Some(Track { slot, prev }) = self.1 else { return 1.0 };
+        let (phase, shown) = art_after(prev, hit, frame_ms());
+        HISTORY.with(|h| h.borrow_mut().set_art(slot, phase));
+        if matches!(phase, ArtPhase::Arriving { .. }) { plx_machine::idle::invalidate(); }
+        shown
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn moving_for_test() -> Self { Self::enter(Verdict::Moving) }
     #[cfg(any(test, feature = "test-support"))]

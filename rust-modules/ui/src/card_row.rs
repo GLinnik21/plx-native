@@ -903,13 +903,40 @@ pub fn draw_focused(
     label: &TileLabel,
     measure: &dyn plx_machine::machine::Measure,
 ) {
+    draw_focused_led(p, art, rect, s, sty, resume, label, measure, None);
+}
+
+/// Ask for the focused tile's art ahead of its draw: what [`draw_focused_led`] takes as `led`.
+/// The focused tile paints LAST (over its neighbours) and so, drawn in order, asks for its poster
+/// last; the source serves the newest frame's requests in the order they came, and the tile the
+/// reader is looking at waited for every other one (CONFIRM A1). A grid calls this before it
+/// paints the others and passes the answer to the draw, so the tile still resolves ONCE.
+/// `rect` and `s` are the draw's own.
+pub fn lead_focused(p: Painter, art: &Art<'_>, rect: Rect, s: f32) -> crate::widgets::ArtImage {
+    crate::widgets::lead_card_art(p, rect.scaled(1.0 / s), art, true, s)
+}
+
+/// [`draw_focused`] for a tile whose art was asked for ahead of its draw ([`lead_focused`]).
+/// `led` is that answer; `None` resolves in the draw.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_focused_led(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+    label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure,
+    led: Option<crate::widgets::ArtImage>,
+) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
     // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
-    card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
+    crate::widgets::card_named_led(p, rect.scaled(1.0 / s), art, None, rad, true, s, f, led);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }

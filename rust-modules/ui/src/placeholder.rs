@@ -494,6 +494,28 @@ pub fn skeleton(p: Painter, reason: Reason, key: &str, r: Rect, rad: f32) {
     painter(p).rect(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT, 0.0);
 }
 
+/// **The skeleton sheet under art that is dissolving in over it**, NOT counted: the picture is here,
+/// so the frame owes nothing to wait for (a frame dump must not hold on it, and the sentinel build
+/// must not paint it). Drawn exactly as [`skeleton`] draws, so the art fades over the sheet the
+/// card wore until it landed (`widgets::card_named`).
+pub fn skeleton_under(p: Painter, r: Rect, rad: f32) {
+    // placeholder-exempt: the art is resident and dissolving in over this sheet; nothing is awaited
+    #[cfg(not(feature = "placeholder-sentinel"))]
+    p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+    #[cfg(feature = "placeholder-sentinel")]
+    let _ = (p, r, rad);
+}
+
+/// [`skeleton_under`] for a tile whose placeholder is the flat sheened [`ground`] (a `Thumb` or
+/// `Person`).
+pub fn ground_under(p: Painter, r: Rect, rad: f32) {
+    // placeholder-exempt: the art is resident and dissolving in over this ground; nothing is awaited
+    #[cfg(not(feature = "placeholder-sentinel"))]
+    p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
+    #[cfg(feature = "placeholder-sentinel")]
+    let _ = (p, r, rad);
+}
+
 /// **A sheened face with `top`→`bot` fills**, counted: a placeholder that is not a skeleton token
 /// (the profile chip's disc). The sentinel build paints the flat sentinel in its place.
 pub fn face(p: Painter, reason: Reason, key: &str, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {

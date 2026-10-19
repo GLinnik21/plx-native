@@ -763,8 +763,18 @@ impl Grid {
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
         self.draw_leaving(f, p, src, &bands);
-        for (role, i) in self.draw_plan(src.len(), focus, &bands) {
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), role == DrawRole::Focus, &bands);
+        let plan = self.draw_plan(src.len(), focus, &bands);
+        // The focused card paints last, over its neighbours, but it is the card the reader is
+        // looking at: it asks the source for its poster FIRST, so it is the first one served
+        // (`card_row::lead_focused`). It still resolves once; the draw below reuses the answer.
+        let lead = plan.last().filter(|&&(role, _)| role == DrawRole::Focus).and_then(|&(_, i)| {
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let CardPaint { rect, p, .. } = self.card_paint(f, p, src, i, s, true, &bands)?;
+            Some(card_row::lead_focused(p, &src.art(i), rect, s))
+        });
+        for (role, i) in plan {
+            let led = lead.filter(|_| role == DrawRole::Focus);
+            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), role == DrawRole::Focus, &bands, led);
         }
         self.record_stops(f, p, src);
     }
@@ -855,7 +865,7 @@ impl Grid {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
-        self.draw_card(f, p, src, i, s, true, &self.bands.geometry());
+        self.draw_card(f, p, src, i, s, true, &self.bands.geometry(), None);
     }
 
     /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
@@ -918,13 +928,14 @@ impl Grid {
         s: f32,
         focused: bool,
         bands: &[GridBand],
+        led: Option<crate::widgets::ArtImage>,
     ) {
         let Some(CardPaint { rect, p, label }) = self.card_paint(f, p, src, i, s, focused, bands) else { return };
         if focused {
             let label = label.unwrap_or_default();
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
-            card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
+            card_row::draw_focused_led(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure, led);
             #[cfg(feature = "devtriggers")]
             if !p.is_recording() {
                 let at = p.to_screen(rect).0;

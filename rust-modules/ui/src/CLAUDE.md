@@ -106,6 +106,12 @@ screen does not re-seat anything (a scroll TARGET it sets against content that a
 in the scroll's own coordinates, `Grid::pending_shift`); and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
+The `Grid` asks for its FOCUSED card's art first even though that card paints last (over its
+neighbours): the source serves the newest frame's requests in the order they were made, so a seated
+first poster used to arrive after every sibling (`card_row::lead_focused` resolves it once, before
+the others, and `draw_focused_led` draws with that answer; one `card_motion` occurrence per card per
+frame, never a second `resolve_card_art`). A `Shelf` still asks in paint order.
+
 A `Shelf` built with `animate_landings(true)` (Home's Continue Watching row) PLAYS a landing that no
 move announced instead of cutting it (`cards/landing.rs`): a removed card fades out as a ghost, named by its
 element (`ghost_keys()`) so the owner keeps only the cards that left (`Arc` clones, while `landing_pending()`) and paints them
@@ -722,6 +728,13 @@ it) additionally paints the FILLED placeholders (skeletons, grounds, spinner dot
 cover) in the one exact `theme::PLACEHOLDER_SENTINEL` at alpha 1 with no sheen, so a frame scan can
 find them by pixel. The two oracles fail differently (the counter misses a site nobody hooked, the
 pixels miss a colour nobody overrode), which is why both exist.
+
+**Art that lands late dissolves in over its skeleton, and that skeleton is not counted**: a card whose
+texture arrives after it drew a skeleton (`card_motion::Scope::arrival`, the card's render history, not
+`LogicalState`) draws the art at `ArtImage::shown` over `placeholder::skeleton_under` / `ground_under`
+(exempt: the picture is here) on the page fade's own duration and curve (`xfade::arrived`); art that
+was resident at the card's first draw shows whole. The count must not include that sheet, or a frame
+dump (which holds on any counted placeholder at a frozen clock) would never write the dissolve's frame.
 
 **The count is zero or non-zero, never "how many"**: the page closure runs once per walk (discovery,
 each blur source job, the visible pass) and each walk ticks. **A page shown as a held image** (a

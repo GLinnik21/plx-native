@@ -185,6 +185,15 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     }
     /// The page's declared `Link`s (§7.3 step 3) — the strip→hero door among them.
     fn links(&self, _out: &mut Vec<Link>) {}
+    /// **Does the page hold this arrow key instead of letting it move focus?** Asked only while
+    /// nothing of the page holds focus: a page whose first seat is still on its way
+    /// ([`PageRegions::holds`](crate::page_regions::PageRegions::holds)) answers `true` for Down,
+    /// Left and Right, and the dispatcher then consumes the key BEFORE the page or the engine see
+    /// it, so it seats nothing and the arrival is still the page's to make when its cells land.
+    /// Defaults to `false`: the engine's no-focus fallback seats the first group it can.
+    fn holds_arrival(&self, _dir: Dir) -> bool {
+        false
+    }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
     }
@@ -380,6 +389,20 @@ pub enum Dir {
     Down,
     Left,
     Right,
+}
+
+impl Dir {
+    /// The direction an arrow key names; `None` for every other key.
+    pub fn of_key(key: plx_machine::machine::Key) -> Option<Dir> {
+        use plx_machine::machine::Key;
+        match key {
+            Key::Up => Some(Dir::Up),
+            Key::Down => Some(Dir::Down),
+            Key::Left => Some(Dir::Left),
+            Key::Right => Some(Dir::Right),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
