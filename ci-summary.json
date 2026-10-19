@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T18:56:52Z",
+ "generated": "2026-10-19T20:07:45Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,18 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 82.4,
+   "change7_pct": 78.2,
    "d30": null,
    "delta30": null,
-   "delta7": 173.0,
+   "delta7": 165.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 383,
-   "prev7": 210.0,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 376.0,
+   "prev7": 211,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -45,18 +45,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 48.6,
+   "change7_pct": 47.8,
    "d30": null,
    "delta30": null,
-   "delta7": 130.5,
+   "delta7": 128.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 399,
-   "prev7": 268.5,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 397.5,
+   "prev7": 269,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -28.0,
-   "change7_pct": 40.5,
+   "change7_pct": 40.1,
    "d30": 675,
    "delta30": -189,
-   "delta7": 140.0,
+   "delta7": 139,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 271,
-   "n_prev": 210,
+   "n_prev": 211,
    "now": 486,
-   "prev7": 346.0,
+   "prev7": 347,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -107,19 +107,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.5,
-   "change7_pct": 30.8,
-   "d30": 670.0,
-   "delta30": -251.5,
-   "delta7": 98.5,
+   "change30_pct": -38.0,
+   "change7_pct": 30.0,
+   "d30": 671,
+   "delta30": -255,
+   "delta7": 96,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 118,
-   "n_prev": 112,
-   "now": 418.5,
-   "prev7": 320.0,
+   "n_now": 117,
+   "n_prev": 113,
+   "now": 416,
+   "prev7": 320,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -137,10 +137,10 @@
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 157,
-   "prev7": 130.0,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 157.0,
+   "prev7": 130,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 95.5,
+   "change30_pct": 95.2,
    "change7_pct": 14.1,
-   "d30": 1112.0,
-   "delta30": 1062.5,
+   "d30": 1114,
+   "delta30": 1060.5,
    "delta7": 268.0,
    "group": "ci",
    "id": "minutes",
@@ -287,19 +287,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 38.1,
-   "change7_pct": 5.6,
-   "d30": 231,
-   "delta30": 88,
-   "delta7": 17.0,
+   "change30_pct": 37.9,
+   "change7_pct": 5.5,
+   "d30": 231.0,
+   "delta30": 87.5,
+   "delta7": 16.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 319,
-   "prev7": 302.0,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 318.5,
+   "prev7": 302,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,10 +329,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 115.3,
+   "change30_pct": 114.3,
    "change7_pct": 6.2,
-   "d30": 111,
-   "delta30": 128.0,
+   "d30": 111.5,
+   "delta30": 127.5,
    "delta7": 14.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -352,7 +352,7 @@
   {
    "change30_pct": 161.1,
    "change7_pct": -39.9,
-   "d30": 72,
+   "d30": 72.0,
    "delta30": 116.0,
    "delta7": -125.0,
    "group": "ci",
@@ -372,18 +372,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.5,
+   "change7_pct": 8.1,
    "d30": null,
    "delta30": null,
-   "delta7": 14.5,
+   "delta7": 14.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 186,
-   "prev7": 171.5,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 186.0,
+   "prev7": 172,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -401,10 +401,10 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 160,
-   "prev7": 141.0,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 160.0,
+   "prev7": 141,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -501,7 +501,7 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
+   "d30": 16.0,
    "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
@@ -564,17 +564,17 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 675,
-   "delta30": -672,
+   "d30": 676.0,
+   "delta30": -673.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 99,
-   "n_prev": 102,
-   "now": 3,
-   "prev7": 4.0,
+   "n_now": 98,
+   "n_prev": 103,
+   "now": 3.0,
+   "prev7": 4,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -667,7 +667,7 @@
    "to": 179.4
   },
   {
-   "change_pct": 82.4,
+   "change_pct": 78.2,
    "commits": [
     {
      "pr": 838,
@@ -720,15 +720,15 @@
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
-   "from": 210.0,
+   "from": 211,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 383
+   "to": 376.0
   },
   {
-   "change_pct": 48.6,
+   "change_pct": 47.8,
    "commits": [
     {
      "pr": 838,
@@ -781,15 +781,15 @@
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
-   "from": 268.5,
+   "from": 269,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 399
+   "to": 397.5
   },
   {
-   "change_pct": 40.5,
+   "change_pct": 40.1,
    "commits": [
     {
      "pr": 838,
@@ -842,7 +842,7 @@
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
-   "from": 346.0,
+   "from": 347,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-19",
@@ -911,7 +911,7 @@
    "to": 132.2
   },
   {
-   "change_pct": 30.8,
+   "change_pct": 30.0,
    "commits": [
     {
      "pr": 838,
@@ -964,12 +964,12 @@
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
-   "from": 320.0,
+   "from": 320,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-10-19",
    "threshold_pct": 15.0,
-   "to": 418.5
+   "to": 416
   },
   {
    "change_pct": 20.8,
@@ -1025,12 +1025,12 @@
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
-   "from": 130.0,
+   "from": 130,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 157
+   "to": 157.0
   }
  ],
  "schema": 2,
@@ -1045,19 +1045,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 399
+   "now": 397.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 383
+   "now": 376.0
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 319
+   "now": 318.5
   },
   {
    "group": "ci",
