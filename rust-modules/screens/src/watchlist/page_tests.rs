@@ -1014,8 +1014,8 @@ fn the_grid_is_the_librarys_six_columns_at_pitch_285_from_y_244() {
     assert_eq!((second.x, second.y), (96.0, 244.0 + 375.0 + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR));
 }
 
-/// **A scrolled page tucks the top chrome and shows the capsule "Watchlist N"**, as the Library does:
-/// untucked at rest, fully tucked once the header has scrolled off, and the page's total is the number.
+/// **A scrolled page tucks the top chrome**, as the Library does: untucked at rest, fully tucked
+/// once the header has scrolled off. (It leaves no capsule behind: the next test.)
 #[test]
 fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
     use plx_ui::screen::Screen;
@@ -1023,9 +1023,31 @@ fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
     assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 0.0, "at rest nothing is tucked");
     h.screen.jump_scroll(super::page::GRID_TOP - 120.0);
     assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the header is gone");
+}
+
+/// **The Watchlist has no capsule.** Its header names no library, so a scrolled page has nothing to
+/// restate: the chrome tucks and the 72 px fade of the ground takes the top edge, but no capsule
+/// (live glass at the board's x 96, y 54, 64 tall) and no "Watchlist 24" text stand over the rows.
+/// The Library draws the capsule only where its header names 2+ libraries; this page names none, so
+/// the one predicate (`plx_ui::scroll_chrome::capsule_shown`) says no here too.
+#[test]
+fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
+    use plx_ui::scroll_capsule;
+    let _g = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(24));
+    let pitch = plx_ui::consts::CARD_H + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR;
+    h.screen.jump_scroll(pitch);
+    let paints = h.draw_paints();
+    let fade = |p: &std::rc::Rc<plx_gfx::gfx::backdrop::Paint>| {
+        p.kind() == "rect" && p.placed() == [0.0, 0.0, plx_ui::consts::SCR_W, scroll_capsule::FADE_H]
+    };
+    assert_eq!(paints.iter().filter(|p| fade(p)).count(), 1, "the tucked page's top fade stays: {} paints", paints.len());
+    let capsule = paints.iter().filter(|p| p.kind() == "glass" && p.placed()[0] == scroll_capsule::X && p.placed()[1] == scroll_capsule::Y).count();
+    assert_eq!(capsule, 0, "no capsule glass at the board's x 96, y 54");
+    let in_capsule_band = |r: &plx_ui::Rect| r.y >= scroll_capsule::Y - 1.0 && r.y + r.h <= scroll_capsule::Y + scroll_capsule::H + 1.0;
     let texts = h.draw_texts();
-    assert!(texts.iter().any(|(t, _)| t == msg::watchlist_page_title()), "the capsule names the page: {texts:?}");
-    assert!(texts.iter().any(|(t, _)| t == "24"), "and counts its titles: {texts:?}");
+    assert!(!texts.iter().any(|(t, r)| in_capsule_band(r) && (t == msg::watchlist_page_title() || t == "24")),
+        "and no name or count in the capsule's band: {texts:?}");
 }
 
 /// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
