@@ -3905,6 +3905,10 @@ mod opener_route_tests;
 mod library_tab_arrival_tests;
 
 #[cfg(test)]
+#[path = "library_collections_arrival_tests.rs"]
+mod library_collections_arrival_tests;
+
+#[cfg(test)]
 #[path = "strip_home_pill_tests.rs"]
 mod strip_home_pill_tests;
 

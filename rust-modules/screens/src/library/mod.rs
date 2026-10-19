@@ -418,6 +418,17 @@ impl LibraryScreen {
             self.relayout(cx.focus.current);
             return;
         }
+        if collections_page::awaits_own_listing(self.listing, self.listed) {
+            // The store still holds the page beneath this one. The grid is empty and parked dark
+            // under the loading read-out (nothing to fade out, so the type request commits on the
+            // next frame), and the collections fade in once they exist.
+            self.pair.detail.clear_projection();
+            self.pair.master.clear_projection();
+            if !self.grid_fade.is_swapping() { self.grid_fade.mount(); }
+            self.readout = Readout::Loading;
+            self.relayout(cx.focus.current);
+            return;
+        }
         self.project_grid(cx);
         self.relayout(cx.focus.current);
         // The relayout hands the grid this frame's scroll, and with it the window it will paint:
@@ -425,6 +436,14 @@ impl LibraryScreen {
         // no-op when the window did not move).
         self.project_grid(cx);
         self.pair.master.refresh(cx, &mut self.keys);
+    }
+
+    /// Is the listing in the store this page's to project and to page through? Not while it holds
+    /// for another kind of library (`wanted_kind`), and not while the store still lists the page
+    /// beneath it (`collections_page::awaits_own_listing`): asking the driver for windows of a
+    /// listing about to be replaced only spends the round trips.
+    fn owns_listing(&self) -> bool {
+        self.wanted_kind.is_none() && !collections_page::awaits_own_listing(self.listing, self.listed)
     }
 
     fn project_grid<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -1140,7 +1159,7 @@ impl LibraryScreen {
                     self.relayout(focused);
                     // The scroll stepped and the grid was handed it: the cells it paints this
                     // frame (its window moved with the step) must hold keys before it draws.
-                    if self.wanted_kind.is_none() { self.project_grid(cx); }
+                    if self.owns_listing() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
                     if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
@@ -1174,7 +1193,7 @@ impl LibraryScreen {
                 }
                 // The dispatcher ticks the top page beneath a compact menu, but not buried pages.
                 // Cover pauses its control motion; it must not stop the query just committed above.
-                if let Some(target) = self.address(cx).filter(|_| self.wanted_kind.is_none()) {
+                if let Some(target) = self.address(cx).filter(|_| self.owns_listing()) {
                     let (lo, hi) = self.layout.visible_rows(self.scroll.pos);
                     let focus = cx.focus.current.filter(|key| key.entry == self.entry)
                         .and_then(|key| self.pair.detail.index_of(key.elem));

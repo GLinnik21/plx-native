@@ -19,6 +19,7 @@
 //! OK on a tile already opens the collection: `app::input::activate_card` routes a collection row
 //! to `ContentArg::Collection` through `collection_content_arg`, whatever page the row is on.
 use super::Listing;
+use plx_data::browse::LibraryType;
 use plx_data::stores::browse::SecKind;
 use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::breadcrumb::{Crumb, CrumbLayout};
@@ -42,6 +43,16 @@ pub fn sort_visible(declared_sorts: usize) -> bool {
 /// picked on the page below, a source change) must not re-seat it.
 pub fn syncs_section(listing: Listing) -> bool {
     listing != Listing::Collections
+}
+
+/// Is the page showing a listing that is not its own? The Collections page BORROWS the section's one
+/// store listing (`LibraryScreen::follow_listing_type`), so when it mounts the store still holds the
+/// page beneath it, the library's films (`listed` is that listing's type), until the answer to the
+/// page's own type-18 request is committed and lands. Until then the page has no content: it holds
+/// its grid empty under the loading read-out, the way a library switch does, instead of wearing the
+/// parent's tiles under its own crumb for as long as the round trip takes.
+pub fn awaits_own_listing(listing: Listing, listed: LibraryType) -> bool {
+    listing == Listing::Collections && listed != LibraryType::Collections
 }
 
 /// The crumb's root word: the library's own name, the one the header strip and the scroll capsule
