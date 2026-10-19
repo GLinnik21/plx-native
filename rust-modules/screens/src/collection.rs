@@ -1395,6 +1395,26 @@ mod tests {
         assert!(ITEMS_HEADING_Y + theme::size::HEADLINE as f32 <= GRID_TOP);
     }
 
+    /// **S21b: the Collection screen names its way back.** Its heading is its own big title (the
+    /// Settings family's shape, not the Library's header row), so the page says where BACK goes the
+    /// way that family does: "‹ Collections" above the title, the parent page's own title string.
+    /// The screen answers [`Screen::crumb`] with it and the frame actually draws it.
+    #[test]
+    fn the_collection_screen_names_its_parent_above_its_title() {
+        use plx_ui::screen::DrawFrame;
+        let _serial = plx_base::testlock::serial();
+        let (store, mut screen) = seeded();
+        let parent = plx_platform::i18n::msg::browse_kind_collections();
+        let context = cx(store.view(), None);
+        assert_eq!(Screen::<CollectionHost>::crumb(&screen, &context).as_deref(), Some(parent),
+            "the screen declares the place BACK returns to");
+        let runs = plx_gfx::text::capture_text_runs_for_test(|| {
+            let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
+            plx_gfx::gfx::without_frame_clear(|| Screen::<CollectionHost>::draw(&mut screen, &mut f));
+        });
+        assert!(runs.iter().any(|run| run == parent), "the frame draws {parent:?}: {runs:?}");
+    }
+
     /// C2: scrolling to a lower row rests the first visible row on the content edge, with the
     /// header gone and nothing of the row above it left showing.
     #[test]
