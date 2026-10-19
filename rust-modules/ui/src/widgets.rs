@@ -1292,8 +1292,8 @@ impl<const N: usize> CtlPop<N> {
         self.scale_with(i, crate::press::scale())
     }
     /// How far control `i` is into its focus, 0 (resting) to 1 (focused), read off the SAME lift
-    /// spring [`scale`](Self::scale) reads: the fill and ink of a control cross-fade on this, so
-    /// the plate arrives at the pace the pop does and never in a frame of its own
+    /// spring [`scale`](Self::scale) reads: the fill of a control cross-fades on this (its ink flips on
+    /// it), so the plate arrives at the pace the pop does and never in a frame of its own
     /// ([`ControlStyle::face_at`]). The press dip is NOT in it: a click dips the size, not the fill.
     pub fn focus(&self, i: usize) -> f32 {
         let pos = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
@@ -6081,11 +6081,28 @@ const INK_GROUND: [f32; 4] = [41.0 / 255.0, 55.0 / 255.0, 77.0 / 255.0, 1.0];
 /// The relative luminance of [`INK_GROUND`] under a selection plate at `sel_alpha` and a focus
 /// capsule at `foc_alpha`, composited in that order.
 fn backing_luma(sel_plate: [f32; 4], sel_alpha: f32, foc_alpha: f32) -> f32 {
-    let over = |dst: [f32; 4], src: [f32; 4], a: f32| {
-        [dst[0] + (src[0] - dst[0]) * a, dst[1] + (src[1] - dst[1]) * a, dst[2] + (src[2] - dst[2]) * a, 1.0]
-    };
     let c = over(INK_GROUND, sel_plate, sel_plate[3] * sel_alpha);
     rel_luma(over(c, crate::ACCENT, crate::ACCENT[3] * foc_alpha))
+}
+
+/// **The ink a plate is read in: the candidate with the best contrast against the plate as it is
+/// composited**, judged on the worse of the plate's two gradient stops (`stops`, laid over
+/// [`INK_GROUND`] by their own alpha, the ground every strip that wears this ink stands on) with
+/// the ink laid over each by ITS alpha. Ties keep the first candidate, so a plate that has not
+/// moved keeps the ink it had. This is the max-contrast choice `INK_FLIP_LUMA` stands in for on the
+/// pills (a luma threshold tuned to their 65% resting ink); for white against the dark ink it falls
+/// at plate luma ~0.18, ~4.6:1 on either side.
+fn best_ink(candidates: [[f32; 4]; 2], stops: [[f32; 4]; 2]) -> [f32; 4] {
+    let read = |ink: [f32; 4]| {
+        stops.iter().map(|s| over(INK_GROUND, *s, s[3])).map(|fill| contrast(over(fill, ink, ink[3]), fill)).fold(f32::MAX, f32::min)
+    };
+    if read(candidates[1]) > read(candidates[0]) { candidates[1] } else { candidates[0] }
+}
+
+/// `src` laid over the opaque `dst` at weight `a` (a straight lerp in display space, as the plain 888
+/// framebuffer blends); the result is opaque. The one composite every ink decision is judged on.
+fn over(dst: [f32; 4], src: [f32; 4], a: f32) -> [f32; 4] {
+    [dst[0] + (src[0] - dst[0]) * a, dst[1] + (src[1] - dst[1]) * a, dst[2] + (src[2] - dst[2]) * a, 1.0]
 }
 
 /// Paint a pill's content once per [`InkRegion`]: `draw(focus, selected)` receives the mixes to ink
@@ -8061,12 +8078,21 @@ impl ControlStyle {
         }
     }
 
-    /// **THE FOCUS-FILL RULE: one cross-fade, out = 1 - in.** The face at focus progress `t`
-    /// (0 = [`face`](Self::face)`(false, ..)`, 1 = `face(true, ..)`): every channel of the plate
-    /// (top, body, spent) and the ink, alpha included ([`theme::cross`]), is the same linear mix, so what the idle fill gives up the
-    /// focused fill takes and the two always sum to one. `t` is a focus spring
-    /// ([`CtlPop::focus`]), which is what keeps the plate from changing in a single frame while
-    /// the lift eases over twenty. Both rests are exactly the two states `face` already drew.
+    /// **THE FOCUS-FILL RULE: the plate cross-fades, out = 1 - in; the ink is CHOSEN.** The face at
+    /// focus progress `t` (0 = [`face`](Self::face)`(false, ..)`, 1 = `face(true, ..)`): every
+    /// channel of the plate (top, body, spent), alpha included ([`theme::cross`]), is the same linear
+    /// mix, so what the idle fill gives up the focused fill takes and the two always sum to one. `t`
+    /// is a focus spring ([`CtlPop::focus`]), which is what keeps the plate from changing in a single
+    /// frame while the lift eases over twenty. Both rests are exactly the two states `face` already
+    /// drew.
+    ///
+    /// **The ink is never a mix.** Its two rest inks sit at opposite ends of the plate's range
+    /// (white on the dark idle plate, dark on the near-white focused one), so any mix of them is a
+    /// grey on the plate's own mid-grey: the hero's Resume read at 1.10:1 half way through its
+    /// ramp. The ink is whichever rest ink reads best against the plate AS COMPOSITED at `t`
+    /// ([`best_ink`]), one flip where the two have equal contrast: the rule the nav strip's pills
+    /// wear (`TabStrip::pill_ink`), written as a contrast comparison here because these two inks are
+    /// full white and full dark rather than the pills' resting 65%.
     fn face_at(self, t: f32, ground: ControlGround, palette: ControlPalette) -> ControlFace {
         let idle = self.face(false, ground, palette);
         let focus = self.face(true, ground, palette);
@@ -8077,10 +8103,12 @@ impl ControlStyle {
         if t >= 1.0 {
             return focus;
         }
+        let top = theme::cross(idle.top, focus.top, t);
+        let body = theme::cross(idle.body, focus.body, t);
         ControlFace {
-            top: theme::cross(idle.top, focus.top, t),
-            body: theme::cross(idle.body, focus.body, t),
-            ink: theme::cross(idle.ink, focus.ink, t),
+            top,
+            body,
+            ink: best_ink([idle.ink, focus.ink], [top, body]),
             spent: theme::cross(idle.spent, focus.spent, t),
         }
     }
