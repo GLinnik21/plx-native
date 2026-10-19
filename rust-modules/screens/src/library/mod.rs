@@ -310,6 +310,38 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
 
+    /// The library names on the header row as `(element, directory section index)`, the `+N`
+    /// overflow stop last (its index is `usize::MAX`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_libraries(&self) -> Vec<(u32, usize)> { self.libraries.clone() }
+
+    /// The directory section index of the library the header's selection plate stands under, read
+    /// from the BUILT row (the same `selected_stop` the row's motion follows), `None` when the row
+    /// has no plate on a library name (one library: no names).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_plate_section(&self) -> Option<usize> {
+        let stop = self.header.as_ref()?.selected_stop()?;
+        self.libraries.iter().find(|(elem, _)| *elem == stop).map(|(_, section)| *section)
+    }
+
+    /// `(the focused grid row's poster top on screen at the scroll the page is travelling to, the
+    /// first row's poster top at scroll 0, the drawn scroll less the one travelled to)`: the settle
+    /// rule says the first two are the same line wherever the row is, bar the last rows of a list,
+    /// which rest lower; the third is 0 once the spring has arrived. `None` while focus is not on a
+    /// grid card.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_rest_line(&self, focus: Option<FocusKey<u32>>) -> Option<(f32, f32, f32)> {
+        let (row, _) = self.grid_position(focus)?;
+        Some((self.target_layout.row_y(row, self.scroll_target), self.target_layout.row_y(0, 0.0), self.scroll.pos - self.scroll_target))
+    }
+
+    /// Does the page draw the scroll capsule once its chrome has tucked? The one predicate
+    /// [`Self::draw`] asks (the header names two or more libraries to restate).
+    pub(super) fn capsule_wanted(&self) -> bool { plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_capsule_wanted(&self) -> bool { self.capsule_wanted() }
+
     /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
     /// draw of the page would put on screen now.
     #[cfg(any(test, feature = "test-support"))]
