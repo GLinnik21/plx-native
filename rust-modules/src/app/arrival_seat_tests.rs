@@ -189,11 +189,14 @@ fn land_collections(w: &mut World) { w.bridge.stores.browse.borrow_mut().seed_co
 
 fn land_watchlist(w: &mut World) { w.land_watchlist(); }
 
-const LOADING: [Loading; 4] = [
+fn land_shelves(w: &mut World) { w.land_shelves(); }
+
+const LOADING: [Loading; 5] = [
     Loading { name: "library, two libraries", mount: || World::movies_library_loading("loading-multi", true), land: land_films, back: "library:BackToHome" },
     Loading { name: "library, one library", mount: || World::movies_library_loading("loading-one", false), land: land_films, back: "library:BackToHome" },
     Loading { name: "collections", mount: || World::collections_loading("loading-collections"), land: land_collections, back: "content:Back" },
     Loading { name: "watchlist", mount: || World::watchlist_loading("loading-watchlist"), land: land_watchlist, back: "watchlist:Back" },
+    Loading { name: "recommended", mount: || World::recommended_pending("loading-recommended"), land: land_shelves, back: "content:Back" },
 ];
 
 #[test]

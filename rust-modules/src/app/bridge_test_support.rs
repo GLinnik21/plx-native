@@ -320,6 +320,22 @@ impl World {
         w
     }
 
+    /// The Recommended page opened from a section nothing has published shelves for yet: its FIRST
+    /// publication is still to come (`land_shelves`), so the page has no tile to seat.
+    pub(super) fn recommended_pending(name: &str) -> World {
+        let mut w = Self::movies_library_unshelved(name);
+        w.open_from_header(9, AppArg::LibraryRecommended { section: 0 });
+        w
+    }
+
+    /// The first hubs of the section the Recommended page waits for: the six shelves and the
+    /// landscape hero `build_shelves` seeds for a shelved world.
+    pub(super) fn land_shelves(&mut self) {
+        let mut browse = self.bridge.stores.browse.borrow_mut();
+        browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
+        browse.seed_landscape_for_test(0, "Synthetic show");
+    }
+
     /// The Recommended page, opened with OK on the Library header's Recommended control.
     pub(super) fn recommended(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
