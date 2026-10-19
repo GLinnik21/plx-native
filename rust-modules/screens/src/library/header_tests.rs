@@ -249,10 +249,15 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
 /// The kinds one descriptive draw of `page`, scrolled one grid pitch (the chrome fully tucked),
 /// declares: a capsule is a `glass` paint (the nav pill's live material).
 fn tucked_draw_kinds(fixture: &Fixture, page: &mut LibraryScreen, engine: &FocusEngine<u32>) -> Vec<(String, [f32; 4])> {
-    use plx_ui::screen::Screen;
     let pitch = page.layout.grid_pitch();
-    page.scroll.jump(pitch);
-    page.scroll_target = pitch;
+    draw_kinds_at(fixture, page, engine, pitch)
+}
+
+/// The kinds one descriptive draw of `page` declares with the page scrolled to exactly `scroll`.
+fn draw_kinds_at(fixture: &Fixture, page: &mut LibraryScreen, engine: &FocusEngine<u32>, scroll: f32) -> Vec<(String, [f32; 4])> {
+    use plx_ui::screen::Screen;
+    page.scroll.jump(scroll);
+    page.scroll_target = scroll;
     let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
     sources.borrow_mut().begin(vec![]);
     {
@@ -276,6 +281,40 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     let kinds = tucked_draw_kinds(&fixture, &mut two, &engine);
     assert!(kinds.iter().any(|(k, r)| k == "glass" && r[1] == plx_ui::scroll_capsule::Y), "two libraries: the capsule, as live glass");
     assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
+}
+
+/// **A two-library page declares no live glass while its chrome is still tucking.** The chrome
+/// band (the nav pill's live glass) and the capsule are two live glasses whose blur footprints
+/// meet; sharing a frame makes the band capture inline in the visible pass, +1.4M GPU cycles per
+/// frame and a quarter of the ramp's frames late on the television. So the tuck window hands the
+/// place over in sequence: the chrome leaves first (`tuck` reaches 1), and only then does the
+/// capsule arrive (`scroll_chrome::capsule_alpha`). At every scroll of the window the page
+/// declares the capsule only once the chrome has gone, and a page that has fully tucked declares
+/// exactly one, at the capsule's place.
+#[test]
+fn a_two_library_page_declares_no_live_glass_while_its_chrome_is_still_tucking() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, engine) = grid_page(2);
+    let pitch = page.layout.grid_pitch();
+    let (mut tucking, mut arriving) = (0, 0);
+    let mut s = pitch - plx_ui::scroll_chrome::TUCK_RAMP;
+    while s <= pitch {
+        let kinds = draw_kinds_at(&fixture, &mut page, &engine, s);
+        let glass = kinds.iter().filter(|(k, _)| k == "glass").count();
+        let tuck = <LibraryScreen as plx_ui::screen::Screen<TestHost>>::chrome_tuck(&page);
+        if tuck < 1.0 {
+            tucking += 1;
+            assert_eq!(glass, 0, "scroll {s}: the chrome is at tuck {tuck}, still on screen, so the capsule is not");
+        } else if glass > 0 {
+            arriving += 1;
+        }
+        s += 5.0;
+    }
+    assert!(tucking >= 2 && arriving >= 2, "premise: the window has frames of each half ({tucking} tucking, {arriving} arriving)");
+    let kinds = draw_kinds_at(&fixture, &mut page, &engine, pitch);
+    let capsules: Vec<_> = kinds.iter().filter(|(k, _)| k == "glass").collect();
+    assert_eq!(capsules.len(), 1, "fully tucked: exactly one live glass");
+    assert_eq!(capsules[0].1[1], plx_ui::scroll_capsule::Y, "and it is the capsule");
 }
 
 /// One frame of the page: its `Tick`, then the header drawn at that moment, as its rounded rects.

@@ -1195,8 +1195,9 @@ impl WatchlistScreen {
         self.stack.view(&self.page)
     }
 
-    /// How far the page has tucked the top chrome: the Library's ramp, complete once the first row
-    /// has scrolled off (the first scrolled rest is a whole row, one pitch, down). The header has
+    /// How far the page has tucked the top chrome: the Library's, over the first half of the window
+    /// that ends once the first row has scrolled off (the first scrolled rest is a whole row, one
+    /// pitch, down; the window's second half is the capsule's, which this page has none of). The header has
     /// faded out long before ([`head_alpha`] reaches 0 after one ramp).
     fn tuck(&self) -> f32 {
         plx_ui::scroll_chrome::tuck(self.stack.scroll(), grid_spec().pitch())
