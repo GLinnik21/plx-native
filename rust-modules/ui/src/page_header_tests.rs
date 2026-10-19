@@ -231,12 +231,13 @@ fn the_focus_capsule_travels_between_items_and_never_backwards() {
     assert!(path[0] < to - 4.0, "the first frame has not arrived: {path:?}");
 }
 
-/// **The selection plate lands under the focus capsule** ([`SelMark::Lands`]): pressing a library
-/// name selects it with the capsule already on its pill, so the plate is on the new item the
-/// first frame instead of crawling out from behind the accent one. A `Travels` strip, as the top
-/// bar's, would still be on its way.
+/// **The selection plate travels to the newly selected item, under the focus capsule** (design
+/// review S5: "OK moves the plate"): pressing a library name selects it with the capsule already
+/// on its pill, and the plate follows on the same plate spring instead of being CUT onto it in
+/// one frame. Every frame between is drawn: it never goes backwards, no frame covers more than a
+/// fraction of the way, it is on its way on the first frame and rests on the new plate.
 #[test]
-fn the_selection_plate_lands_on_the_new_item_the_first_frame() {
+fn the_selection_plate_travels_to_the_new_item_and_is_never_cut() {
     let page = header("Title");
     let layout = page.layout(1920.0, &Fixed);
     let (mut capsules, mut pop) = settled(&layout, 0, 0);
@@ -244,14 +245,18 @@ fn the_selection_plate_lands_on_the_new_item_the_first_frame() {
     let rects = rrects(&page, &layout, &capsules, &pop, None);
     assert_eq!(selection_plate(&rects).map(|r| r.x), Some(old.x), "the plate marks item 0");
 
-    let mut travelling = capsules;
-    PageHeader::step(&layout, 1, 1, &mut capsules, &mut pop, DT);
-    let plate = selection_plate(&rrects(&page, &layout, &capsules, &pop, None)).expect("the plate stays drawn");
-    assert_eq!((plate.x, plate.w), (new.x, new.w), "landed on item 1 in one frame");
-
-    travelling.update(1, 1, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Travels, DT);
-    let glide = selection_plate(&rrects(&page, &layout, &travelling, &pop, None)).expect("drawn");
-    assert!(glide.x < new.x - 1.0, "the contrast: a Travels plate is still on its way ({} < {})", glide.x, new.x);
+    let mut path = Vec::new();
+    for _ in 0..90 {
+        PageHeader::step(&layout, 1, 1, &mut capsules, &mut pop, DT);
+        path.push(selection_plate(&rrects(&page, &layout, &capsules, &pop, None)).expect("the plate stays drawn").cx());
+    }
+    let (from, to) = (old.cx(), new.cx());
+    let hop = to - from;
+    assert!(path[0] < to - 0.5 * hop, "the first frame is on its way, not landed: {path:?}");
+    assert!(path.windows(2).all(|w| w[1] >= w[0] - 0.01), "never backwards: {path:?}");
+    assert!(path.windows(2).all(|w| w[1] - w[0] < 0.6 * hop), "no frame is a cut: {path:?}");
+    assert!(path.iter().any(|x| *x > from + 4.0 && *x < to - 4.0), "a frame between the two items: {path:?}");
+    assert!((path.last().unwrap() - to).abs() < 0.5, "rests on item 1: {path:?}");
 }
 
 /// A `lifted` control (a menu has taken it out of the page) wears no focus capsule, while the
