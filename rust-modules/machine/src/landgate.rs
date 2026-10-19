@@ -951,6 +951,33 @@ mod tests {
         let _ = take_owed(A, "fake", || store.owed(), || store.take());
     }
 
+    /// The dump wait is a frame-thread wait on the network. The dispatcher drains the Browse pump
+    /// (`StoreWork::Browse`, `Bridge::step_app`) inside its `FrameScope`, and in dump mode that
+    /// pump's page take sleeps here until the worker's PMS round trip lands: a Collections page
+    /// over a 2 s `type=18` listing held the sim's main thread 3950 ms ("main-thread hang ended:
+    /// 3950ms in unlabeled"; SIGABRT at 2 s under the default guard). Every other frame-thread wait
+    /// passes the blocking gate (`plx_base::task::assert_may_block`), which refuses it inside a
+    /// frame unless a labelled exception is open; this one bypasses the gate, so the wait is
+    /// nobody's and reads as `unlabeled`.
+    #[test]
+    fn a_dump_wait_inside_a_frame_passes_the_blocking_gate() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump(std::time::Duration::from_secs(5));
+        let store = std::sync::Arc::new(FakeStore::default());
+        store.spawn(7, std::time::Duration::from_millis(50)); // the request is out; its answer is not
+        begin_frame(0);
+        let waited = {
+            let _frame = plx_base::task::FrameScope::enter();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                take_owed(A, "fake", || store.owed(), || store.take())
+            }))
+        };
+        let refused = waited.expect_err("the dump wait slept on the frame thread without passing the blocking gate");
+        let text = refused.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(text.contains("main-thread block"), "refused by the blocking gate, not by something else: {text}");
+    }
+
     /// Arming dump mode over a recording or a replay would silently wipe it: refused, loudly.
     #[test]
     #[should_panic(expected = "a recording or a replay already armed")]
