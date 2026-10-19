@@ -671,6 +671,12 @@ fn ink_cases() -> Vec<(TabGround, fn(f32, f32) -> [f32; 4])> {
 /// What column `x` of a strip stands on, as DRAWN: the dark ground the ink is solved over, the
 /// selection plate where its capsule is, the focus capsule over it where its (popped) one is. The
 /// capsule geometry is read the way `TabStrip::draw` paints it, not through `ink_spans`.
+///
+/// By COLUMN only: a capsule is taken as a rectangle spanning its x-extent, so these contracts
+/// grade the ink along the capsule's centre row and are blind to its rounded ends. Where a
+/// capsule's end is an arc, a glyph row above or below the centre is up to ~4 px short of the
+/// extreme `ink_spans` cuts at, and those pixels wear the capsule's ink over the slate (see the
+/// "not done" note in the FIX-B report); a 2-D contract is what the bands of a rounded cut need.
 fn backing_at(strip: &TabStrip, ground: TabGround, x: f32) -> [f32; 4] {
     let (pop, plate) = match ground {
         TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
