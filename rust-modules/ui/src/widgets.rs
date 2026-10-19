@@ -5071,6 +5071,8 @@ pub struct TabPill {
     mix: Option<(f32, f32)>,
     /// see [`TabPill::ink_only`]
     ink_only: bool,
+    /// see [`TabPill::inked`] — `None` = the weight follows `mix`.
+    weight: Option<f32>,
     /// see [`TabPill::ground`] — reaches [`TabStyle::Button`] and nothing else.
     ground: ControlGround,
 }
@@ -5091,6 +5093,7 @@ impl TabPill {
             plated: false,
             mix: None,
             ink_only: false,
+            weight: None,
             ground: ControlGround::Keyed,
         }
     }
@@ -5159,6 +5162,19 @@ impl TabPill {
     pub fn mix(mut self, focus: f32, selected: f32) -> Self {
         self.mix = Some((focus, selected));
         self
+    }
+    /// **This pill's label painted in one region of its [`PillInk`]**: the region's ink at mixes
+    /// `(focus, selected)` (what [`paint_inked`]'s callback is handed), the pill's own weight
+    /// ([`PillInk::weight`]). The regions of a pill are cut along a capsule's drawn edge and each
+    /// paints the WHOLE label clipped to its side, so only the INK may differ between them: a
+    /// weight taken from the region's own mixes drew the outside half of a label regular and the
+    /// inside half bold, two glyph sets whose strokes and advances differ, and a glyph the capsule's
+    /// arc crossed was painted by neither (the "s" of "TV Shows" lost on white). The page header
+    /// row, which never changes weight, is that rule already: one geometry, the colour split by
+    /// the coverage shader.
+    pub fn inked(mut self, ink: &PillInk, focus: f32, selected: f32) -> Self {
+        self.weight = Some(ink.weight());
+        self.mix(focus, selected)
     }
     /// The ink a strip-driven pill wears at mixes `(focus, selected)` — `TEXT_TERTIARY` →
     /// `TEXT_PRIMARY` as the selection capsule arrives, then all the way to `ACCENT_INK` as the focus
@@ -5232,7 +5248,7 @@ impl TabPill {
                 let plate_a = theme::TAB_PLATE_IDLE[3] * (1.0 - fm);
                 let fill = (self.plated && plate_a > 0.002)
                     .then(|| theme::with_a(theme::TAB_PLATE_IDLE, plate_a));
-                (fill, ink, sm.max(fm))
+                (fill, ink, self.weight.map_or(sm.max(fm), |w| w.clamp(0.0, 1.0)))
             }
             None => match self.style {
                 TabStyle::Button if self.focused => {
@@ -5599,11 +5615,12 @@ pub fn draw_strip(
         if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
             p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
         }
-        paint_inked(p, &strip.pill_ink(pill, ground), |fm, sm| {
+        let ink = strip.pill_ink(pill, ground);
+        paint_inked(p, &ink, |fm, sm| {
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
                 .plated()
                 .ink_only()
-                .mix(fm, sm)
+                .inked(&ink, fm, sm)
                 .draw(&env, p);
         });
     }
@@ -5913,7 +5930,9 @@ impl TabStrip {
         let sel_alpha = self.sel.alpha();
         let flip = |sel_alpha: f32| backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA;
         let (flip_in_plate, flip_off_plate) = (flip(sel_alpha), flip(0.0));
-        let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc };
+        let cover = (pill.x, pill.w);
+        let weight = self.sel.mix(cover).max(if draws_focus { self.foc.mix(cover) } else { 0.0 });
+        let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc, weight };
         // Every (in the plate, in the focus capsule) the pill's glyphs can be in, each with its ink;
         // the ones that wear the same ink are one region.
         let mut groups: [(f32, f32, [Option<bool>; 2], [bool; 2]); 4] = [(0.0, 0.0, [None; 2], [false; 2]); 4];
@@ -6004,6 +6023,7 @@ pub struct PillInk {
     n: usize,
     sel: Option<Rect>,
     foc: Option<Rect>,
+    weight: f32,
 }
 
 impl PillInk {
@@ -6013,7 +6033,15 @@ impl PillInk {
 
     /// One region over the whole pill at its resting ink: what a pill no capsule marks wears.
     pub fn resting() -> Self {
-        Self { regions: [InkRegion::RESTING; 4], n: 1, sel: None, foc: None }
+        Self { regions: [InkRegion::RESTING; 4], n: 1, sel: None, foc: None, weight: 0.0 }
+    }
+
+    /// **The weight the pill's label is drawn at, 0 regular .. 1 bold, the same in every region.**
+    /// The whole label's coverage by the capsules ([`TabStrip::mixes`], coverage x alpha, a focus
+    /// capsule a control does not draw left out), so it eases with the capsule on the clock the
+    /// fills run on. It is a property of the PILL, never of a region: see [`TabPill::inked`].
+    pub fn weight(&self) -> f32 {
+        self.weight
     }
 
     /// The mixes the pixel `(x, y)` wears (see [`TabStrip::ink_at`]).
@@ -7574,7 +7602,7 @@ impl StripRender {
                     TabFace::Label(_) => {
                         paint_inked(cp, &ink, |fm, sm| {
                             TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
-                                .mix(fm, sm)
+                                .inked(&ink, fm, sm)
                                 .ink_only()
                                 .draw(&env, p);
                         });

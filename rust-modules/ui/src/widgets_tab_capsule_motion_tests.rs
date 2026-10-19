@@ -803,3 +803,80 @@ fn the_ink_regions_follow_the_capsules_drawn_shapes() {
         assert!(ink.regions().iter().all(|r| r.focus == 0.0), "a lifted control wears no focus ink");
     }
 }
+
+// ---- one label, one glyph geometry ------------------------------------------------------------
+
+/// The top bar's pills as the device measures them (a bold label plus `TAB_PILL_PAD` either side,
+/// the icon faces square): Home, Movies, TV Shows, the Watchlist mark and Search.
+fn nav_widths() -> [f32; 5] {
+    [120.0 + 36.0, 160.0 + 36.0, 150.0 + 36.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W]
+}
+
+/// How the label of a pill is drawn in one ink region: the builder chain `draw_tab_row` and
+/// `draw_strip` run per region of [`paint_inked`], graded through the pill's own `face()`.
+fn region_label(ink: &PillInk, region: &InkRegion) -> TabPill {
+    TabPill::new(std::ptr::null(), theme::size::BODY, Rect::new(0.0, 0.0, 100.0, INK_H)).inked(ink, region.focus, region.selected)
+}
+
+/// **A label's glyphs are ONE geometry whichever ink a region paints them in.** The regions of a
+/// pill are cut along a capsule's drawn edge and each paints the WHOLE label, clipped to its side,
+/// so the clips tile the glyph only if every region rasterizes the same glyph. A weight taken from
+/// each region's own mixes (regular outside the capsule, bold inside) painted the outside half of
+/// "TV Shows" in the regular face and the inside half in the bold one, whose strokes and advance
+/// differ: the "s" the capsule's rounded end was crossing was painted by neither (frames 9-ink,
+/// n=128-130: white on the white capsule). The header row never drew bold, which is why it only
+/// ever lost a rim. Graded here over every hop of the real bar, both ways, on the strip's own
+/// regions: each region draws the label at the same weight.
+#[test]
+fn every_ink_region_of_a_label_is_drawn_at_the_same_weight() {
+    let _g = serial_for_motion();
+    let w = nav_widths();
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    let ground = TabGround::Tracked { glass: true };
+    let mut crossed = 0;
+    for (sel, from, to) in [(1, 1, 2), (1, 2, 3), (1, 3, 2), (1, 2, 1), (1, 3, 4), (1, 4, 0)] {
+        let mut s = TabStrip::new();
+        for _ in 0..90 { s.update(sel, from, span, SelMark::Travels, DT); }
+        for frame in 0..80 {
+            s.update(sel, to, span, SelMark::Travels, DT);
+            for pill in 0..w.len() {
+                let ink = s.pill_ink(Rect::new(span_of(&w, pill).0, 0.0, w[pill], INK_H), ground);
+                if ink.regions().len() < 2 { continue; }
+                crossed += 1;
+                let weights: Vec<f32> = ink.regions().iter().map(|r| region_label(&ink, r).face().2).collect();
+                assert!(
+                    weights.iter().all(|&x| (x - weights[0]).abs() < 1e-4),
+                    "{from} -> {to} frame {frame} pill {pill}: the regions draw the label at weights {weights:?}, so the capsule's arc crosses two different glyph sets"
+                );
+            }
+        }
+    }
+    assert!(crossed > 20, "the hops cross labels ({crossed} region splits seen)");
+}
+
+/// **No glyph pixel of the top bar is ever lost on the capsule**, over every hop of the real bar's
+/// pills (labels and the square icon faces) in both directions: the ink every pixel of every pill
+/// wears keeps 3:1 against the composited fill under it, decided per pixel centre from the drawn
+/// rounded shape (`backing_at_xy`; the antialiased rim pixel itself is a blend and is not graded,
+/// which is the "within 1 px of the drawn edge" skip). The pill a capsule's rounded end is crossing
+/// is the case: the label there is two inks cut along the arc and must stay one glyph set
+/// ([`every_ink_region_of_a_label_is_drawn_at_the_same_weight`]).
+#[test]
+fn the_top_bar_keeps_three_to_one_on_every_glyph_pixel_of_every_hop() {
+    let _g = serial_for_motion();
+    let w = nav_widths();
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    for ground in [TabGround::Tracked { glass: true }, TabGround::Tracked { glass: false }] {
+        for (sel, from, to) in [(1, 1, 2), (1, 2, 3), (1, 3, 4), (1, 4, 3), (1, 3, 2), (1, 2, 0), (1, 0, 3)] {
+            let mut s = TabStrip::new();
+            for _ in 0..90 { s.update(sel, from, span, SelMark::Travels, DT); }
+            for frame in 0..90 {
+                s.update(sel, to, span, SelMark::Travels, DT);
+                for pill in 0..w.len() {
+                    let (ratio, x, dy) = worst_contrast_2d(&s, ground, span_of(&w, pill), TabPill::mixed_ink);
+                    assert!(ratio >= 3.0, "{from} -> {to} frame {frame} pill {pill}: {ratio:.2}:1 at x {x} row {dy:+} (3:1 wanted)");
+                }
+            }
+        }
+    }
+}
