@@ -735,6 +735,10 @@ impl LibraryScreen {
         (self.layout.rows > 0).then(|| (self.layout.rows, self.layout.rows_per_screen()))
     }
 
+    /// The top chrome's and the capsule's drawn alphas, for the armed `focusx` probe line
+    /// (`app::bridge`): what a frame dump reads to hold the handoff to its contract.
+    pub fn probe_handoff(&self) -> (f32, f32) { (self.handoff.chrome(), self.handoff.capsule()) }
+
     pub fn probe_viewport(&self, focus: Option<FocusKey<u32>>) -> (&'static str, i32, i32, f32, f32) {
         if let Some((row, col)) = self.grid_position(focus) { return ("grid", row as i32, col as i32, 0.0, self.scroll.pos); }
         let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);

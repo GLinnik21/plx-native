@@ -2484,6 +2484,13 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             let _ = write!(out, "{} rk=", item.sid.raw());
             crate::focusprobe::push_rk(&mut out, &item.rk);
         } else { out.push_str("- rk=-"); }
+        // `plxnative-focusx`: the handoff's two drawn alphas (chrome, capsule) -- off by default, so
+        // the fingerprint grammar the replay recordings pin does not change.
+        #[cfg(feature = "devtriggers")]
+        if plx_base::devtrig::flag("focusx") {
+            let (chrome, capsule) = library.probe_handoff();
+            let _ = write!(out, " hand={chrome:.3},{capsule:.3}");
+        }
         return out;
     }
     if matches!(page.arg, AppArg::Search) {
