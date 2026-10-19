@@ -80,7 +80,7 @@ const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
 pub const SHAPE: [&str; 10] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,enter_remembered:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
     "LibraryHeader{switched:bool}",
@@ -185,7 +185,10 @@ pub struct LibraryScreen {
     /// is published with [`Seat::RememberedFirst`], so the DOWN that enters it lands on the tile the
     /// reader left in that library (the engine's remembered element, seeded from the store's
     /// snapshot when the engine has none), else on its first row. Every other DOWN from the header
-    /// keeps [`Seat::Remembered`]'s rule: the tile under the control it leaves.
+    /// keeps [`Seat::Remembered`]'s rule: the tile under the control it leaves. Not canon, like
+    /// `unfiltered`: it is armed by a switch and disarmed by the focus move into the grid, both
+    /// already in the recorded stream, and the focus it decides is in every frame's hash, so
+    /// leaving it out moves no state shape (`SCREEN_SHAPES_PIN`, the three replay recordings).
     enter_remembered: bool,
     section: Option<LibrarySectionIdentity>,
     epoch: Option<u32>,
@@ -1511,7 +1514,7 @@ impl LogicalState for LibraryScreen {
         self.pending.write(c);
         c.bool(self.ground_seeded);
         self.ground.write_motion(c);
-        c.bool(self.switched).bool(self.enter_remembered);
+        c.bool(self.switched);
         self.header_capsules.write_motion(c);
         self.header_pop.write_motion(c);
         PageMemory::Library(self.page_memory()).write(c);
