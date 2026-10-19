@@ -608,6 +608,17 @@ impl LibraryScreen {
         self.reseat(FocusTarget::ContainerGroup(group), fx);
     }
 
+    /// Seat `group` as the page's arrival (`seat_on`). The grid's tile that takes the seat arrives, a
+    /// restore's way ([`Grid::arrive`](plx_ui::cards::Grid::arrive)) never: it grows from rest on the
+    /// standard lift spring whether the page seated it under the dissolve or when a listing that
+    /// answered late landed its cells, and does not appear lifted in one frame.
+    fn seat_arrival<H: LibraryLike>(&mut self, group: GroupId, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if self.provisional == Some(group) && group == self.pair.groups_config().detail {
+            self.pair.detail.arrive();
+        }
+        self.seat_on(group, cx, fx);
+    }
+
     /// **This page's column** (`plx_ui::page_regions`): the header row, the status read-out when
     /// the listing failed and the grid when it has titles, with the A-Z rail beside the grid. The
     /// Library walks up it on BACK; the Collections page, pushed over the Library, does not (it
@@ -1302,7 +1313,7 @@ impl LibraryScreen {
                         let restoring = self.restore_scroll.is_some() || cx.focus.remembered(group)
                             .is_some_and(|elem| !self.placed.contains(&(group, elem)));
                         self.provisional = (group == self.first_group() && !restoring && !self.switched).then_some(group);
-                        self.seat_on(group, cx, fx);
+                        self.seat_arrival(group, cx, fx);
                         self.switched = false;
                     } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
                         // A landing moved the head out from under the page's own seat. Follow it, as a
@@ -1315,7 +1326,7 @@ impl LibraryScreen {
                         // A key of this page that nothing places any more is the seat itself gone
                         // (the status read-out clears as the grid lands), still the page's own.
                         if mine.is_none() || at.is_some_and(|group| group != seated) { self.provisional = None; }
-                        else if head != seated { self.provisional = Some(head); self.seat_on(head, cx, fx); }
+                        else if head != seated { self.provisional = Some(head); self.seat_arrival(head, cx, fx); }
                     }
                 }
                 // The dispatcher ticks the top page beneath a compact menu, but not buried pages.

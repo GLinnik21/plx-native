@@ -257,6 +257,9 @@ impl GridPart {
     /// lift begins on the first frame after. Set before each [`on`](Self::on).
     pub(super) fn dormant(&mut self, held: bool) { self.grid.dormant(held); }
 
+    /// The focus the page seats next is its arrival, not a restore ([`Grid::arrive`]).
+    pub(super) fn arrive(&mut self) { self.grid.arrive(); }
+
     /// The scale the focused card is drawn at now (see [`Grid::pop_probe`]).
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn pop_probe(&self, index: Option<usize>) -> f32 { self.grid.pop_probe(index) }

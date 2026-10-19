@@ -184,6 +184,9 @@ pub struct Grid {
     dormant: bool,
     /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The owner announced that the focus it just seated is an arrival ([`arrive`](Grid::arrive)),
+    /// not a restore: the next `FocusMoved` onto this grid grows from rest. Cleared by the tick.
+    arriving: bool,
 }
 
 impl Grid {
@@ -217,7 +220,17 @@ impl Grid {
             caption_policy: None,
             dormant: false,
             slept: false,
+            arriving: false,
         }
+    }
+
+    /// The owner is seating this grid's focus as the page's own ARRIVAL (its first poster, once the
+    /// cards have landed or the page's head has moved): the `FocusMoved` it raises grows from rest
+    /// on the standard lift spring, its caption band opening with it, as a deliberate move's does
+    /// and as the dormant grid's waking does, instead of being adopted whole like a restore (a
+    /// seat the reader left). One `FocusMoved` takes it; the tick after it clears what it left.
+    pub fn arrive(&mut self) {
+        self.arriving = true;
     }
 
     /// Hold every card at rest while the owner's page is still dissolving in (the twin of
@@ -266,9 +279,10 @@ impl Grid {
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem));
                 // A deliberate move is the only focus change the eye should see travel; a restore
                 // or a reconcile is adopted whole by the next tick.
-                let deliberate = matches!(by, By::Dir | By::Pointer);
+                let arrival = arrived.is_some() && std::mem::take(&mut self.arriving);
+                let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
                 if let Some(a) = arrived {
-                    self.seen = Seen::of(by, a);
+                    self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
                 self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
                 if let Some(i) = arrived.filter(|_| deliberate) {
@@ -298,6 +312,7 @@ impl Grid {
         self.shift = 0.0;
         let sy0 = self.scroll.pos;
         let awake = !self.dormant;
+        self.arriving = false;
         if self.dormant {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
             self.slept = true;
