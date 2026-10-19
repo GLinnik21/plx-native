@@ -278,6 +278,28 @@ class BuildGcTests(unittest.TestCase):
             self.assertIn(str(tgt), diagnostic,
                           "worktree target missing from --lanes output: " + diagnostic)
 
+    def test_the_managed_hostsim_tree_is_reclaimed_like_every_other_target_dir(self):
+        # `make test-hostsim` builds into `rust-modules/target-hostsim` (it replaced a hand recipe
+        # whose `/tmp/<dir>` trees nothing tracked). The derived-tree helpers glob `target*` rather
+        # than list names, so the dir needs no entry here -- this pins that, for both the narrow mode
+        # (`--incremental`: the cache only, the compiled output stays) and the whole-tree one
+        # (`--lanes`), in a linked worktree.
+        fixture = self.fixture(0, 0)
+        (lane,) = self._add_worktrees(fixture, 1, add_target=False)
+        tree = lane / "rust-modules/target-hostsim/debug"
+        for sub in ("incremental", "deps"):
+            (tree / sub).mkdir(parents=True)
+            (tree / sub / "sentinel").write_text("synthetic build output\n")
+        listed = self.run_gc(fixture, "--lanes", "-n")
+        self.assertIn(str(lane / "rust-modules/target-hostsim"), listed.stdout + listed.stderr)
+        narrow = self.run_gc(fixture, "--incremental")
+        self.assertEqual(narrow.returncode, 0, narrow.stdout + narrow.stderr)
+        self.assertFalse((tree / "incremental/sentinel").exists(), "the incremental cache was left behind")
+        self.assertTrue((tree / "deps/sentinel").exists(), "--incremental reached past the cache")
+        whole = self.run_gc(fixture, "--lanes")
+        self.assertEqual(whole.returncode, 0, whole.stdout + whole.stderr)
+        self.assertFalse((lane / "rust-modules/target-hostsim").exists(), "the lane's tree was left behind")
+
     def test_worktrees_mode_enumerates_past_the_first_record(self):
         # No target dir here: an untracked build tree would make every worktree read `dirty`,
         # which is a real (and correctly refused) state but not what this test is checking. This

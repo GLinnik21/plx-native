@@ -228,7 +228,7 @@ knows the set is theirs.
 | **player pipeline, demux, Starfish/ACB, the Load payload, `route/decision.rs`** | `make check` (pure `ff.rs` logic) → `./tests/run.py` (synthetic) → `--server` if selection is involved | the synthetic tier bypasses `metadata → plan → apply_plan` and false-PASSes an unread trigger via `engine`'s `_ =>` arm |
 | **track selection, resume, markers, Up Next, `/:/timeline`** | `./tests/run.py --server` — **only** | the synthetic tier reaches none of these; a bare `./tests/run.py` is not evidence about any of them |
 | **FFI / linkage / `dynlib!`** | `tools/fwcompat.py` → `make check` → **`make sim` or `make macapp`** → device | **there is no link error any more**; and the device cannot see an Apple-ABI variadic bug — see below |
-| **the release feature configuration** | `cargo +$(make -s print-rust-toolchain) check --lib --no-default-features` → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
+| **the release feature configuration** | `make check-nodef` (`cargo check --lib --no-default-features`) → `make RELEASE=1` | `make check`, `make` and `make sim` all build DEV features; a broken `RELEASE=1` is invisible to every one of them |
 | **the Makefile, packaging, the `.ipk`** | `make check` (flavour selftest) → `make ipk` (runs `ci/check-package.py`) → a real `make FLAVOR=… install` | the dev loop is `make deploy`, which scp's into an already-registered app dir and **never exercises the package** |
 
 ### The rows that carry a trap
@@ -290,7 +290,8 @@ coexist in one tree — so the usual case is caught for you. That tree is **`$TM
 crate's own `target/`: this checkout can live on a network mount, and cargo cannot take its
 incremental-session lock there (`os error 45`), which failed EVERY edit with a "RELEASE-CONFIG
 BREAK" that was really a filesystem answer. Set `CARGO_TARGET_DIR` to override. Confirm it is wired in `.claude/settings.json` before relying on it, run
-the command by hand before shipping regardless, and prefer `plx_base::devtrig::latched_flag!` over
+`make check-nodef` by hand before shipping regardless (it builds in the checkout's own `target/`, not
+that `$TMPDIR` tree), and prefer `plx_base::devtrig::latched_flag!` over
 hand-rolling a `#[cfg]`/`#[cfg(not)]` pair.
 
 **Packaging.** Two ipk bugs shipped undetected until 2026-08-02 — a missing

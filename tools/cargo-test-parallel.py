@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the per-crate `cargo test --lib` binaries CONCURRENTLY and keep `make check` honest about it.
 
-    tools/cargo-test-parallel.py [--jobs N] [--filter NAME ...] [--expect N] -- cargo [+tc] test --lib -p a -p b ...
+    tools/cargo-test-parallel.py [--jobs N] [--filter NAME ...] [--require-match] -- cargo [+tc] test --lib -p a -p b ...
 
 Why this exists. The workspace is 14 crates, so `cargo test --lib -p ... -p ...` builds 14 test
 binaries and RUNS THEM ONE AFTER ANOTHER (cargo has no parallel test execution). Before the split
@@ -43,6 +43,12 @@ What it does, in order:
 
 `--filter NAME` (repeatable) is the TESTNAME filter cargo takes positionally; it is passed to each
 binary. A binary with no match prints `0 passed ... N filtered out` and succeeds, as under cargo.
+`--require-match` makes the run fail (exit 1, after every binary has run and printed) when a filter
+was given and NO binary ran a test, i.e. every `test result:` line says `0 passed; 0 failed`: a
+mistyped test name otherwise reads as a green run of nothing. It is opt-in because the same
+filter is also used as a build-only run (`make test-fast T=nothing`, measured in
+docs/agent-reference.md), and `make test-hostsim` (one package, one filter, nothing else to
+look at) is its caller.
 Arguments after a SECOND `--` inside the cargo command are libtest flags and are passed through.
 
 SIGINT/SIGTERM/SIGHUP stop every running test binary's process group before exiting.
@@ -52,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -121,6 +128,19 @@ def libpath_var() -> str:
 
 def package_name(msg: dict) -> str:
     return msg["target"]["name"]
+
+
+RESULT_LINE = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored", re.M)
+
+
+def tally(outputs: list[str]) -> tuple[int, int]:
+    """(ran, ignored) summed over every libtest `test result:` line: ran = passed + failed."""
+    ran = ignored = 0
+    for text in outputs:
+        for passed, failed, skipped in RESULT_LINE.findall(text):
+            ran += int(passed) + int(failed)
+            ignored += int(skipped)
+    return ran, ignored
 
 
 class Run:
@@ -204,6 +224,8 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=int(os.environ.get("PLX_TEST_JOBS") or default_jobs()),
                     help="binaries run at once (default PLX_TEST_JOBS, else min(6, CPUs), at least 2)")
     ap.add_argument("--filter", action="append", default=[])
+    ap.add_argument("--require-match", action="store_true",
+                    help="fail when a --filter was given and no binary ran a test")
     ap.add_argument("--threads", type=int, default=int(os.environ.get("PLX_TEST_THREADS") or 0),
                     help="RUST_TEST_THREADS for each binary (0: an even share of the CPUs, at least 2)")
     ap.add_argument("cargo", nargs=argparse.REMAINDER)
@@ -326,6 +348,14 @@ def main() -> int:
             print(f"cargo-test-parallel: FAILED {r.name} (exit {r.code})")
         print("error: test failed, to rerun pass `--lib` for the failing package(s) with the same flags")
         return EX_TESTFAIL
+    if args.require_match and args.filter:
+        ran, ignored = tally([r.output.decode(errors="replace") for r in runs])
+        if ran == 0:
+            named = ", ".join(repr(f) for f in args.filter)
+            print(f"cargo-test-parallel: the filter {named} matched no test in any of the {len(runs)} "
+                  f"test binaries ({ignored} ignored): nothing ran, which is not a pass. Check the "
+                  f"spelling; libtest filters are substrings of the full test path.", file=sys.stderr)
+            return 1
     return 0
 
 

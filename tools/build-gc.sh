@@ -64,9 +64,9 @@ MAIN=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed '
 # The Makefile sets `CARGO_INCREMENTAL=0` in a linked worktree, with a long comment explaining why
 # a lane cut for one task must not pay a multi-gigabyte cache of its last build. That rule is
 # correct and it does not hold, because it lives in ONE of the several places a `cargo` runs here:
-# every agent (and `AGENTS.md`'s own `--no-default-features` gate) invokes cargo directly, and a
-# direct invocation never reads the Makefile. Measured 2026-09-17 across this machine's 113
-# worktrees: **12.9 GB of `target*/debug/incremental` inside LINKED worktrees**, on a volume with
+# every agent (and, until `make check-nodef` replaced it, `AGENTS.md`'s own `--no-default-features`
+# gate) invokes cargo directly, and a direct invocation never reads the Makefile. Measured 2026-09-17
+# across this machine's 113 worktrees: **12.9 GB of `target*/debug/incremental` inside LINKED worktrees**, on a volume with
 # 5.1 GiB free — i.e. the policy's whole stated saving, still on the disk, in the checkouts it
 # names.
 #
@@ -210,9 +210,10 @@ usage: tools/build-gc.sh [MODE] [-n]
                   build's estimate plus the reserve (exit 3 when it does not). Needs python3 and
                   tools/disk-budget.py. `-n` prints what it would remove and logs nothing.
   --incremental   delete `target*/debug/incremental` everywhere. Always safe: it is a compile
-                  cache. A linked worktree is not supposed to write one (the one sanctioned
-                  exception is the opt-in `make test-fast`, whose own `target-fast` this
-                  reclaims like any other; its next run is a cold build) — but the Makefile's
+                  cache. A linked worktree is not supposed to write one (the sanctioned
+                  exceptions are the opt-in `make test-fast` and `make test-hostsim`, whose own
+                  `target-fast` / `target-hostsim` this reclaims like any other; their next run
+                  is a cold build) — but the Makefile's
                   `CARGO_INCREMENTAL=0` only reaches the cargo runs `make` launches, and 12.9 GB
                   of them had accumulated past it by 2026-09-17, which is why this script now
                   installs the same rule as a `.cargo/config.toml` any cargo can see.
@@ -621,7 +622,7 @@ checkout_kb() {
 }
 
 # The derived-tree names, in one place. `rust-modules/target*` covers every feature set's dir
-# (target, -release, -sim, -lab, -sym, -macapp, -shots); the vendor entries are the FFmpeg and
+# (target, -release, -sim, -lab, -sym, -macapp, -shots, -fast, -hostsim); the vendor entries are the FFmpeg and
 # Sentry source and object trees, whose only product is the small prefix beside them.
 lane_trees() {
   for d in "$1"/rust-modules/target*; do

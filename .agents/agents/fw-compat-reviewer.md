@@ -372,13 +372,14 @@ infer past.)
   (14 GB on this checkout, per feature set, per worktree). Worse for your own job: any make
   invocation that is not a **pure query** and whose feature configuration differs from the stamp
   **deletes `pkg/plxnative` at parse time** — so `make RELEASE=1 <anything>` would destroy the very
-  binary you were about to grade. The only side-effect-free goals are the seven `print-*` queries
-  and `release-guard`; `make -s print-appdir` is safe, `make -p` is never (it prints unexpanded
+  binary you were about to grade. The side-effect-free goals are the `SIDE_EFFECT_FREE` list
+  (`grep '^SIDE_EFFECT_FREE' Makefile`: the `print-*` queries, `release-guard`, `make disk`,
+  `make check-nodef` and a few more); `make -s print-appdir` is safe, `make -p` is never (it prints unexpanded
   recursive variables).
 * Host-only tooling is fine and encouraged: `tools/fwcompat.py`, `ci/check-elf.sh`, the NDK's
   `arm-webos-linux-gnueabi-readelf` / `-objdump`, `cd rust-modules && cargo check`,
-  `make check`. **`make check` is NOT in `SIDE_EFFECT_FREE`** (Makefile line 358 — that list is
-  the seven `print-*` goals plus `release-guard`, and nothing else), so on a checkout whose last
+  `make check`. **`make check` is NOT in `SIDE_EFFECT_FREE`** (the Makefile line starting
+  `SIDE_EFFECT_FREE =` is the exact set), so on a checkout whose last
   build was `RELEASE=1`, a plain `make check` rewrites `pkg/.build-config` at parse time and takes
   `pkg/plxnative` and the staged `.so` files with it: the binary you were about to grade, gone
   before cargo has started. **Grade the ELF first and run host checks after**, or invoke

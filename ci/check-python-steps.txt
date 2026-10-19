@@ -84,6 +84,10 @@ python3 ci/test_tv_ssh.py
 python3 tools/plxnative-lab selftest
 # `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 python3 ci/test_test_fast.py
+# `make test-hostsim` / `make check-nodef`, the managed replacements for the `/tmp/<dir>` cargo recipes
+# AGENTS.md used to hand out: neither can put a cargo tree outside the checkout, and a filter that
+# matches no test fails instead of passing with "0 tests".
+python3 ci/test_managed_targets.py
 # The C unit tests (crash tracer, its signal handler, the shim's private log files), each compiled into
 # a private directory.
 make --no-print-directory check-c-unit

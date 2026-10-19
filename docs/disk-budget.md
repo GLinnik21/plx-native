@@ -333,16 +333,19 @@ lives in a `target*` dir that a host build fills with 3.4 or more, the storage h
 subtracts what the tree already holds, so the fast path never says "go" where the planner would
 say "reclaim".
 
-**Not hooked here.** `test-hostsim` and `check-nodef` do not exist on this branch (they are PR #845,
-`managed-hostsim-targets`). The static test that finds every target whose recipe runs cargo is
-generic, so whichever of the two PRs lands second fails until those targets are added to
-`DISK_ENTRIES`.
+**The managed `/tmp` replacements are entries too.** `make test-hostsim` builds into
+`rust-modules/target-hostsim` (the table's 3.5 GiB, so `DISK_TREE` names that dir, not the lane's
+`CARGO_TARGET_DIR`), and `make check-nodef` into the checkout's own `target` (or the
+`CARGO_TARGET_DIR` a lane exports), where the table's 3.4 GiB is an upper bound: it adds only `check`
+metadata beside `make lint`'s, so the planner subtracts what the tree already holds and a warm tree
+needs the 0.5 GiB minimum. Both came from PR #845, which landed after this branch was cut; the static
+test that finds every target whose recipe runs cargo is generic, and it failed on both until they
+were added to `DISK_ENTRIES`.
 
 ## Not done, and not determined
 
-- The hook that catches a direct `cargo`, `make test-hostsim` / `make check-nodef` (and with them
-  their preflight entries) and dedup are the PRs below. A direct `cargo` in a lane reaches no
-  preflight today.
+- The hook that catches a direct `cargo`, and dedup, are the PRs below. A direct `cargo` in a lane
+  reaches no preflight today.
 - The `--stale` sweep's yield is not estimated. Sizing it (superseded `deps/` hashes) is open; until
   then it counts as zero in the verdict and `settle` judges the measured result.
 - `--evict` asks `lsof` once per path (each probe takes its own snapshot, so a tree that turned live
@@ -364,5 +367,5 @@ generic, so whichever of the two PRs lands second fails until those targets are 
 | 2 (#848) | `build-gc.sh --evict`, `/tmp` discovery shared with the planner, `worktree_reason` against `origin/main` (and, because that makes `--auto` reach squash-merged lanes, `--worktrees` keeps a lane holding a non-build ignored file when unattended), `--auto` takes its order from the planner |
 | 3 (this) | `disk-preflight` becomes the planner's preflight (`disk-budget.py preflight`), an order-only prerequisite of every cargo-invoking target on this branch; `print-disk-entries`; `ci/test_disk_preflight.py` |
 | 4 | A `PreToolUse` hook that catches direct `cargo` in a Claude session |
-| 5 | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe |
+| 5 (#845, landed) | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe; hooked into `DISK_ENTRIES` by PR 3 |
 | 6 (optional) | `build-gc.sh --dedup` as rung 1 |
