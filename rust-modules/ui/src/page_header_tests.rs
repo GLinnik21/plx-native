@@ -1,5 +1,6 @@
 use super::*;
 use std::ffi::CStr;
+use crate::widgets::focus_pill;
 
 struct Fixed;
 impl Measure for Fixed {
@@ -66,21 +67,76 @@ fn names_that_do_not_fit_fold_into_plus_n_and_all_fit_when_there_is_room() {
     assert!(used + 40.0 <= 300.0);
 }
 
+/// **S4.** A header pill grows by a CONSTANT outset past its plate, whatever its label: the pill
+/// of "Movies" and of a long library name stand out by the same px (a scale made it 22 px a side
+/// for one and 45 for the other), and the first pill never reaches further left than the
+/// outset past the first plate.
 #[test]
-fn focus_pill_grows_by_the_control_scale() {
-    let l = header("Title").layout(1920.0, &Fixed);
-    let plate = l.items[0].plate;
-    let pill = plate.scaled(crate::widgets::CTRL_FOCUS_SCALE);
-    assert!((pill.w / plate.w - 1.07).abs() < 0.001);
+fn the_focus_pill_stands_a_constant_outset_past_its_plate_whatever_the_label_is() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("A Very Long Library Name Indeed Of Many Words", false)],
+        ..Default::default()
+    };
+    let page = PageHeader::new(spec, &[], &m);
+    let layout = page.layout(1920.0, &m);
+    assert!(layout.items[1].plate.w > 3.0 * layout.items[0].plate.w, "the two plates are very different widths");
+    for focused in 0..2 {
+        let (capsules, pop) = settled(&layout, -1, focused);
+        let cap = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("a focused item wears the capsule");
+        let plate = layout.items[focused as usize].plate;
+        assert!((plate.x - cap.x - PILL_FOCUS_OUTSET).abs() < 0.05, "item {focused}: left outset {}", plate.x - cap.x);
+        assert!((cap.x + cap.w - (plate.x + plate.w) - PILL_FOCUS_OUTSET).abs() < 0.05, "item {focused}: right outset");
+        assert!((plate.y - cap.y - PILL_FOCUS_OUTSET).abs() < 0.05 && (cap.h - plate.h - 2.0 * PILL_FOCUS_OUTSET).abs() < 0.05,
+            "item {focused}: the same outset above and below");
+        let pill = focus_pill(plate);
+        assert!((pill.x - cap.x).abs() < 0.05 && (pill.w - cap.w).abs() < 0.05, "item {focused}: focus_pill is the drawn extent");
+    }
+    let (capsules, pop) = settled(&layout, -1, 0);
+    let cap = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).unwrap();
+    assert!(cap.x >= TEXT_X0 - OVERHANG - PILL_FOCUS_OUTSET - 0.05, "no pill reaches past the first plate's outset: {}", cap.x);
 }
 
+/// **S9.** Neighbouring text runs stand `GAP` apart, and `GAP` is the focused pill's extent plus
+/// [`theme::space::SM`] of air before the neighbour's plate, for any widths.
 #[test]
-fn neighbouring_text_runs_stand_a_gap_apart_that_covers_the_pill_growth() {
-    assert_eq!(GAP, 48.0, "the floor: the board's 53px between visible text edges, less glyph side bearings");
+fn neighbouring_text_runs_stand_a_gap_apart_that_leaves_sm_of_air_past_the_focused_pill() {
+    assert_eq!(GAP, 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM, "plate, outset, air, plate");
     let l = header("Title").layout(1920.0, &Fixed);
     let (a, b) = (l.items[0].text, l.items[1].text);
-    assert_eq!(b.x - (a.x + a.w), gap_between(a.w, b.w));
-    assert!(gap_between(a.w, b.w) >= GAP);
+    assert_eq!(b.x - (a.x + a.w), GAP);
+}
+
+fn real(label: &str, selected: bool) -> HeaderItem {
+    HeaderItem { selected_plate: selected, ..item(label, None) }
+}
+
+/// The air between item `a`'s focused pill and the plate of the item `b` after it, in px, and the
+/// reverse (`b`'s pill and `a`'s plate): both are `SM`, whatever the names are.
+#[test]
+fn a_focused_pill_leaves_sm_of_air_before_its_neighbours_plate() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let m = ShippedMeasure;
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("LDN Films bamx23", false), real("A Very Long Library Name Indeed", false)],
+        overflow: 3,
+        right: vec![item("Collections", Some("12")), item("Recommended", None),
+            HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
+        ..Default::default()
+    };
+    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
+    for pair in l.items.windows(2) {
+        let group = |s: Slot| matches!(s, Slot::Right(_));
+        // The two groups are kept apart by CLUSTER_GAP, checked below; this is each group's own row.
+        if !(pair[0].focusable && pair[1].focusable) || group(pair[0].slot) != group(pair[1].slot) { continue; }
+        let (a, b) = (focus_pill(pair[0].plate), focus_pill(pair[1].plate));
+        let air = |pill: Rect, plate: Rect| (plate.x - (pill.x + pill.w)).max(pill.x - (plate.x + plate.w));
+        for (air, who) in [(air(a, pair[1].plate), "after"), (air(b, pair[0].plate), "before")] {
+            assert!((air - theme::space::SM).abs() < 0.01,
+                "{:?} and {:?}: {air} px of air {who} the focused pill", pair[0].slot, pair[1].slot);
+        }
+    }
 }
 
 #[test]
@@ -116,48 +172,6 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     assert!((last.text.x + last.text.w - 1771.0).abs() < 0.01, "the cluster still ends at the right text edge");
 }
 
-/// Does a focused, scaled pill on item `a` touch the plate of item `b` (or the reverse)? Items are
-/// adjacent on one row, so the x ranges decide.
-fn touches(a: Rect, b: Rect) -> bool {
-    let (sa, sb) = (a.scaled(crate::widgets::CTRL_FOCUS_SCALE), b.scaled(crate::widgets::CTRL_FOCUS_SCALE));
-    let hit = |p: Rect, q: Rect| p.x < q.x + q.w && q.x < p.x + p.w;
-    hit(sa, b) || hit(sb, a)
-}
-
-fn real(label: &str, selected: bool) -> HeaderItem {
-    HeaderItem { selected_plate: selected, ..item(label, None) }
-}
-
-#[test]
-fn a_focused_scaled_pill_never_touches_its_neighbours_plate() {
-    use plx_base::fontcov::advances::ShippedMeasure;
-    let m = ShippedMeasure;
-    let spec = PageHeaderSpec {
-        left: vec![real("Movies", true), real("LDN Films bamx23", false), real("A Very Long Library Name Indeed", false)],
-        overflow: 3,
-        right: vec![item("Collections", Some("12")), item("Recommended", None),
-            HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Date added")) }],
-        ..Default::default()
-    };
-    let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
-    for pair in l.items.windows(2) {
-        let group = |s: Slot| matches!(s, Slot::Right(_));
-        // The two groups are kept apart by CLUSTER_GAP, checked below; this is each group's own row.
-        if !(pair[0].focusable && pair[1].focusable) || group(pair[0].slot) != group(pair[1].slot) { continue; }
-        assert!(!touches(pair[0].plate, pair[1].plate),
-            "{:?} and {:?}: a focused pill grown 1.07 reaches its neighbour", pair[0].slot, pair[1].slot);
-    }
-}
-
-#[test]
-fn the_gap_between_two_items_grows_with_the_wider_plate() {
-    let narrow = gap_between(60.0, 60.0);
-    let wide = gap_between(60.0, 400.0);
-    assert!(wide > narrow, "{narrow} {wide}");
-    assert_eq!(gap_between(60.0, 400.0), gap_between(400.0, 60.0));
-    assert!(narrow >= GAP);
-}
-
 #[test]
 fn fit_left_and_layout_agree_on_the_gap() {
     use plx_base::fontcov::advances::ShippedMeasure;
@@ -166,10 +180,10 @@ fn fit_left_and_layout_agree_on_the_gap() {
     let spec = PageHeaderSpec { left: names.iter().map(|n| real(n, false)).collect(), ..Default::default() };
     let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
     let widths: Vec<f32> = l.items.iter().map(|i| i.text.w).collect();
-    let used = widths[0] + gap_between(widths[0], widths[1]) + widths[1];
+    let used = widths[0] + GAP + widths[1];
     assert_eq!(fit_left(&widths, used, 0.0), 2, "exactly fits");
     assert_eq!(fit_left(&widths, used - 1.0, 0.0), 1, "one px short");
-    assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + gap_between(widths[0], widths[1]));
+    assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + GAP);
 }
 
 // ── the row's motion, its crumb configuration and its focus group (T3) ──────────────────────────
@@ -204,7 +218,7 @@ fn the_focus_capsule_travels_between_items_and_never_backwards() {
     let (from, to) = (layout.items[0].plate.cx(), layout.items[1].plate.cx());
     let at_rest = focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).expect("a focused item wears the capsule");
     assert!((at_rest.cx() - from).abs() < 0.5, "settled on item 0");
-    assert!((at_rest.h / HEIGHT - crate::widgets::CTRL_FOCUS_SCALE).abs() < 0.001, "the capsule wears the control pop");
+    assert!((at_rest.h - HEIGHT - 2.0 * PILL_FOCUS_OUTSET).abs() < 0.01, "the capsule wears the focus outset");
 
     let mut path = Vec::new();
     for _ in 0..90 {
@@ -217,12 +231,13 @@ fn the_focus_capsule_travels_between_items_and_never_backwards() {
     assert!(path[0] < to - 4.0, "the first frame has not arrived: {path:?}");
 }
 
-/// **The selection plate lands under the focus capsule** ([`SelMark::Lands`]): pressing a library
-/// name selects it with the capsule already on its pill, so the plate is on the new item the
-/// first frame instead of crawling out from behind the accent one. A `Travels` strip, as the top
-/// bar's, would still be on its way.
+/// **The selection plate travels to the newly selected item, under the focus capsule** (design
+/// review S5: "OK moves the plate"): pressing a library name selects it with the capsule already
+/// on its pill, and the plate follows on the same plate spring instead of being CUT onto it in
+/// one frame. Every frame between is drawn: it never goes backwards, no frame covers more than a
+/// fraction of the way, it is on its way on the first frame and rests on the new plate.
 #[test]
-fn the_selection_plate_lands_on_the_new_item_the_first_frame() {
+fn the_selection_plate_travels_to_the_new_item_and_is_never_cut() {
     let page = header("Title");
     let layout = page.layout(1920.0, &Fixed);
     let (mut capsules, mut pop) = settled(&layout, 0, 0);
@@ -230,14 +245,18 @@ fn the_selection_plate_lands_on_the_new_item_the_first_frame() {
     let rects = rrects(&page, &layout, &capsules, &pop, None);
     assert_eq!(selection_plate(&rects).map(|r| r.x), Some(old.x), "the plate marks item 0");
 
-    let mut travelling = capsules;
-    PageHeader::step(&layout, 1, 1, &mut capsules, &mut pop, DT);
-    let plate = selection_plate(&rrects(&page, &layout, &capsules, &pop, None)).expect("the plate stays drawn");
-    assert_eq!((plate.x, plate.w), (new.x, new.w), "landed on item 1 in one frame");
-
-    travelling.update(1, 1, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Travels, DT);
-    let glide = selection_plate(&rrects(&page, &layout, &travelling, &pop, None)).expect("drawn");
-    assert!(glide.x < new.x - 1.0, "the contrast: a Travels plate is still on its way ({} < {})", glide.x, new.x);
+    let mut path = Vec::new();
+    for _ in 0..90 {
+        PageHeader::step(&layout, 1, 1, &mut capsules, &mut pop, DT);
+        path.push(selection_plate(&rrects(&page, &layout, &capsules, &pop, None)).expect("the plate stays drawn").cx());
+    }
+    let (from, to) = (old.cx(), new.cx());
+    let hop = to - from;
+    assert!(path[0] < to - 0.5 * hop, "the first frame is on its way, not landed: {path:?}");
+    assert!(path.windows(2).all(|w| w[1] >= w[0] - 0.01), "never backwards: {path:?}");
+    assert!(path.windows(2).all(|w| w[1] - w[0] < 0.6 * hop), "no frame is a cut: {path:?}");
+    assert!(path.iter().any(|x| *x > from + 4.0 && *x < to - 4.0), "a frame between the two items: {path:?}");
+    assert!((path.last().unwrap() - to).abs() < 0.5, "rests on item 1: {path:?}");
 }
 
 /// A `lifted` control (a menu has taken it out of the page) wears no focus capsule, while the
@@ -272,6 +291,31 @@ fn a_lifted_control_keeps_or_loses_its_label_as_the_page_asks() {
     let away = words(Some(Lifted { item: 3, lift: Lift::Away }));
     assert!(!away.iter().any(|t| t == "Collections"), "Away leaves it to the menu: {away:?}");
     assert_eq!(away.len() + 3, kept.len(), "only that item's label, separator and value went");
+}
+
+/// **S10: a title is plain text.** A [`HeaderItem::title`] wears no selection plate (the row has no
+/// selected item), takes no focus, and stands at full white, not a resting control's 65%; it takes
+/// the room a plate-wearing label would, so swapping the one for the other moves nothing.
+#[test]
+fn a_title_is_full_white_plain_text_with_no_plate_and_no_stop() {
+    let _g = plx_base::testlock::serial();
+    let sort = HeaderItem { fold_glyph: true, focusable: true, ..item("Sort", Some("Title")) };
+    let spec = |left: HeaderItem| PageHeaderSpec { left: vec![left], right: vec![sort.clone()], ..Default::default() };
+    let titled = PageHeader::new(spec(HeaderItem { title: true, ..item("Watchlist", None) }), std::slice::from_ref(&sort), &Fixed);
+    let plated = PageHeader::new(spec(real("Watchlist", true)), std::slice::from_ref(&sort), &Fixed);
+    let layout = titled.layout(1920.0, &Fixed);
+    let boxes = |l: &HeaderLayout| l.items.iter().map(|r| (r.text, r.plate)).collect::<Vec<_>>();
+    assert_eq!(boxes(&layout), boxes(&plated.layout(1920.0, &Fixed)), "the title takes the room a plated label takes");
+    assert_eq!(titled.selected(&layout), -1, "no item wears the plate");
+    let stops: Vec<Slot> = PageHeader::item_rects(&layout).iter().map(|(i, _)| layout.items[*i].slot).collect();
+    assert_eq!(stops, [Slot::Right(0)], "the title is not a stop");
+    let (capsules, pop) = settled(&layout, titled.selected(&layout), 1);
+    let rects = rrects(&titled, &layout, &capsules, &pop, None);
+    assert!(selection_plate(&rects).is_none(), "no plate under the title: {rects:?}");
+    let runs = crate::draw_census::capture_runs(|| titled.draw(Painter::recording(), &layout, &capsules, 1.0, None));
+    assert_eq!(runs.iter().find(|r| r.text == "Watchlist").expect("the title is drawn").ink, [1.0; 4]);
+    let plated_runs = crate::draw_census::capture_runs(|| plated.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    assert_eq!(plated_runs.iter().find(|r| r.text == "Watchlist").unwrap().ink, [1.0, 1.0, 1.0, 0.65], "a plain control label stays at 65%");
 }
 
 /// **A breadcrumb is a configuration of the row**: the placement is [`Crumb::layout`]'s, so the
@@ -379,10 +423,10 @@ fn a_surface_above_the_page_holds_the_rows_motion_but_focus_leaving_it_closes_it
     let alpha_after = |current: Option<FocusKey<u32>>| {
         let (mut capsules, mut pop) = settled(&layout, -1, 1);
         for _ in 0..60 { row.step(ENTRY, current, &mut capsules, &mut pop, DT); }
-        focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).map(|r| r.h / HEIGHT)
+        focus_capsule(&rrects(&page, &layout, &capsules, &pop, None)).map(|r| r.h)
     };
     let held = alpha_after(Some(FocusKey { entry: EntryId(8), elem: 0 }));
-    assert_eq!(held.map(|h| (h * 1000.0).round()), Some((crate::widgets::CTRL_FOCUS_SCALE * 1000.0).round()),
+    assert_eq!(held.map(|h| (h * 1000.0).round()), Some(((HEIGHT + 2.0 * PILL_FOCUS_OUTSET) * 1000.0).round()),
         "the menu's rows hold focus: the capsule stays up, at its pop");
     assert_eq!(alpha_after(Some(FocusKey { entry: ENTRY, elem: 11 })).map(|h| (h * 1000.0).round()), held.map(|h| (h * 1000.0).round()),
         "focus on the row's own stop is the same picture");
@@ -449,4 +493,155 @@ fn a_shared_row_hands_one_row_to_every_reader_until_the_key_changes() {
     assert_eq!(row.builds(), 1);
     let next = row.get(2, || "two".to_owned());
     assert_eq!((next.as_str(), first.as_str(), row.builds()), ("two", "one", 2), "a reader that holds the old row keeps it");
+}
+
+/// The right cluster with a slotted Collections control holding `value`, and its widest case.
+fn slotted(value: Option<&str>, readout: bool) -> (PageHeaderSpec, Vec<HeaderItem>) {
+    let collections = |value: Option<&str>| HeaderItem { value_slot: Some("9,999".into()), ..item("Collections", value) };
+    let mut right = vec![HeaderItem { value: value.map(Into::into), ..collections(None) }, item("Recommended", None)];
+    let mut widest = vec![collections(Some("9,999")), item("Recommended", None)];
+    if readout {
+        right.insert(0, HeaderItem { readout: true, focusable: false, ..item("24 of 27", None) });
+        widest.insert(0, right[0].clone());
+    }
+    (PageHeaderSpec { right, ..Default::default() }, widest)
+}
+
+fn row_with(value: Option<&str>) -> HeaderRow {
+    let (spec, widest) = slotted(value, false);
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[(1, 0), (2, 1)])
+}
+
+/// **A slotted control never moves its label** (a count that is unknown, one digit, two, or the
+/// widest the slot holds): the label stands at the slot's leading edge, the plate hugs what is
+/// drawn, and nothing after the control moves either.
+#[test]
+fn a_slotted_control_keeps_its_label_still_whatever_it_holds() {
+    let rows: Vec<HeaderRow> = [None, Some("4"), Some("12"), Some("9,999")].into_iter().map(row_with).collect();
+    let first = rows[0].layout.items[0];
+    for row in &rows {
+        let (collections, recommended) = (row.layout.items[0], row.layout.items[1]);
+        assert_eq!(collections.text.x, first.text.x, "the label is where it was");
+        assert_eq!(recommended.text, rows[0].layout.items[1].text, "and so is everything after it");
+        assert_eq!(collections.plate.w, collections.text.w + 2.0 * OVERHANG, "the plate hugs the text drawn");
+    }
+    assert!(rows[1].layout.items[0].text.w < rows[3].layout.items[0].text.w, "a short count draws a short run");
+    assert!(rows[0].layout.items[0].text.w < rows[1].layout.items[0].text.w, "and none draws the bare label");
+}
+
+/// **The read-out stands at the cluster's measured left edge**, not wherever the control after it
+/// puts it: it does not move when the Collections control comes, goes or is unknown.
+#[test]
+fn the_readout_stands_at_the_clusters_measured_left_edge() {
+    let (with, widest) = slotted(Some("4"), true);
+    let held = PageHeader::new(with, &widest, &Fixed).layout(1920.0, &Fixed);
+    let edge = TEXT_X1 - held.cluster_w;
+    assert_eq!(held.items[0].text.x, edge, "the read-out leads the cluster at its left edge");
+    let (mut without, _) = slotted(None, true);
+    without.right.remove(1);
+    let gone = PageHeader::new(without, &widest, &Fixed).layout(1920.0, &Fixed);
+    assert_eq!(gone.items[0].text.x, edge, "and stays there when the control is gone");
+    let (unknown, _) = slotted(None, true);
+    let bare = PageHeader::new(unknown, &widest, &Fixed).layout(1920.0, &Fixed);
+    assert_eq!(bare.items[0].text.x, edge, "or its count is not known yet");
+}
+
+/// Every text run of `row` drawn at swap `swap`, as `(text, x, alpha)`.
+fn swap_runs(row: &HeaderRow, swap: &HeaderSwap) -> Vec<(String, f32, f32)> {
+    crate::draw_census::capture_runs(|| row.draw_with(Painter::recording(), 0.0, &TabStrip::new(), 1.0, None, swap))
+        .into_iter().map(|run| (run.text, run.at.x, run.ink[3])).collect()
+}
+
+/// **A changed count cross-fades in place**: the old number leaves and the new one arrives at the
+/// same x, their opacities sum to one on every frame, the label is drawn once at one x, and the
+/// swap ends by itself on the new row alone.
+#[test]
+fn a_changed_count_cross_fades_in_place_on_the_content_swap_clock() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (row_with(Some("4")), row_with(Some("12")));
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_active());
+    let label_x = swap_runs(&new, &swap).iter().find(|(text, ..)| text == "Collections").unwrap().1;
+    let mut crossed = false;
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        let at = |text: &str| runs.iter().find(|(t, ..)| t == text).map(|(_, x, alpha)| (*x, *alpha));
+        let labels: Vec<_> = runs.iter().filter(|(text, ..)| text == "Collections").collect();
+        assert_eq!(labels.len(), 1, "one label, never two: {runs:?}");
+        assert_eq!(labels[0].1, label_x, "and it does not move");
+        if let (Some(from), Some(to)) = (at("4"), at("12")) {
+            assert_eq!(from.0, to.0, "the numbers share an x");
+            assert!((from.1 + to.1 - 1.0).abs() < 1e-4, "and their opacities sum to one: {from:?} {to:?}");
+            crossed = true;
+        }
+        swap.step(1.0 / 60.0);
+    }
+    assert!(crossed, "the two numbers shared frames");
+    assert!(!swap.is_active(), "the clock ran out");
+    let runs = swap_runs(&new, &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "4") && runs.iter().any(|(text, _, alpha)| text == "12" && *alpha == 1.0));
+}
+
+/// **A control the next row does not have fades out where it stood** (a library with no
+/// collections): its face is painted at the old x with a falling opacity, never cut, and the swap
+/// leaves the row exactly as the new row draws it.
+#[test]
+fn a_control_the_next_row_lacks_fades_out_in_place() {
+    let _g = plx_base::testlock::serial();
+    let old = row_with(Some("4"));
+    let (spec, widest) = slotted(None, false);
+    let page = PageHeader::new(PageHeaderSpec { right: spec.right[1..].to_vec(), ..spec }, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    let new = row_of(page, layout, &[(2, 0)]);
+    let old_x = old.layout.items[0].text.x;
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    let mut alphas = Vec::new();
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        if let Some((_, x, alpha)) = runs.iter().find(|(text, ..)| text == "Collections") {
+            assert_eq!(*x, old_x, "it fades where it stood");
+            alphas.push(*alpha);
+        }
+        swap.step(1.0 / 60.0);
+    }
+    assert!(alphas.len() >= 6, "several frames of fade, not a cut: {alphas:?}");
+    assert!(alphas.windows(2).all(|pair| pair[1] <= pair[0]), "falling: {alphas:?}");
+    assert!((alphas[0] - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "from fully there: {alphas:?}");
+    assert!(swap_runs(&new, &swap).iter().all(|(text, ..)| text != "Collections"), "and gone once the clock ran out");
+}
+
+/// **A label a capsule's shape crosses is painted once per ink region, each in its own ink**: the
+/// part under the white focus capsule in the dark accent ink and the rest in the resting white,
+/// split along the capsule's drawn shape (the regions are `TabStrip::pill_ink`'s, the per-fragment
+/// cut each is painted through is the ink program's).
+#[test]
+fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
+    let _g = plx_base::testlock::serial();
+    let h = header("Title");
+    let l = h.layout(1920.0, &Fixed);
+    let (mut capsules, mut pop) = settled(&l, -1, 0);
+    // Travel to the next item until the capsule's edge stands inside the first one's plate.
+    let plate = l.items[0].plate;
+    let mut frame = None;
+    for _ in 0..60 {
+        PageHeader::step(&l, -1, 1, &mut capsules, &mut pop, DT);
+        let spans = capsules.pill_ink(plate, TabGround::Bare { pop: 1.0, focus: true });
+        if spans.regions().len() > 1 { frame = Some(spans); break; }
+    }
+    let spans = frame.expect("the capsule's shape crosses the first plate on its way");
+    let label = &h.spec().left.first().map_or_else(|| h.spec().right[0].label.clone(), |item| item.label.clone());
+    let runs: Vec<_> = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &capsules, 1.0, None))
+        .into_iter().filter(|run| &run.text == label).collect();
+    assert_eq!(runs.len(), spans.regions().len(), "one paint of the label per region");
+    let same = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4);
+    for (run, region) in runs.iter().zip(spans.regions()) {
+        let want = if region.focus > 0.5 { crate::ACCENT_INK } else { theme::CONTROL_TEXT_REST };
+        assert!(same(run.ink, want), "the region {region:?} wears its own ink: {:?} (wanted {want:?})", run.ink);
+    }
+    assert!(runs.iter().any(|run| same(run.ink, crate::ACCENT_INK)) && runs.iter().any(|run| same(run.ink, theme::CONTROL_TEXT_REST)),
+        "both inks are on the label: the capsule is half across it");
 }

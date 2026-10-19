@@ -1,6 +1,7 @@
 //! The page header: the Library's one row (`plx_ui::page_header::PageHeader`, container left 76 /
 //! right 129, top 148, 56 tall, text edges x 96 and x 1771). The title "Watchlist" stands on the
-//! left on the selected plate, as the Collections page's crumb does; on the right a filter
+//! left as plain text (`HeaderItem::title`: no plate, which means "current among siblings", and no
+//! pill, which means "focusable"; design review S10); on the right a filter
 //! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
 //! [`READOUT_GAP`] before the control) and the one control, "Sort & Filter · <value> ▾".
 //!
@@ -16,7 +17,7 @@ use plx_machine::machine::Measure;
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, Lift, PageHeader, PageHeaderSpec, Slot};
 #[cfg(feature = "devtriggers")]
 use plx_ui::theme;
-use plx_ui::widgets::{CtlPop, TabStrip, CTRL_FOCUS_SCALE};
+use plx_ui::widgets::{focus_pill, CtlPop, TabStrip, PILL_FOCUS_OUTSET};
 use plx_ui::{Painter, Rect};
 
 /// The count the page holds: the whole list, or what a Type / Show filter leaves of it. Only the
@@ -77,7 +78,7 @@ impl Row {
         use plx_platform::i18n::msg;
         let left = vec![HeaderItem {
             label: msg::watchlist_page_title().to_owned(),
-            selected_plate: true,
+            title: true,
             ..Default::default()
         }];
         let mut right = Vec::new();
@@ -108,10 +109,10 @@ impl Row {
         self.control().plate
     }
 
-    /// The control as the focused pill draws it, [`CTRL_FOCUS_SCALE`] over the plate: where the menu's
+    /// The control as the focused pill draws it, [`PILL_FOCUS_OUTSET`] past the plate: where the menu's
     /// morph starts and ends when focus is on the control.
     pub fn pill(&self) -> Rect {
-        self.plate().scaled(CTRL_FOCUS_SCALE)
+        focus_pill(self.plate())
     }
 
     /// The row as one focus group (`id`), for the page's declaration of its header section.
@@ -119,9 +120,9 @@ impl Row {
         self.row.focus(entry, id, (0.0, 0.0), Rect::FULL)
     }
 
-    /// The title's plate, in document space.
+    /// The title's box (its text and the room a plate would take), in document space.
     #[cfg(test)]
-    pub fn title_plate(&self) -> Rect {
+    pub fn title_box(&self) -> Rect {
         self.row.layout.items[0].plate
     }
 
@@ -150,9 +151,9 @@ impl Row {
     }
 
     /// The control as the menu's morph opener face, label only (no plate of its own: the morph
-    /// draws the plate), placed so its plate is `anchor` less the focus scale.
+    /// draws the plate), placed so its plate is `anchor` less the focus outset.
     pub fn draw_face(&self, p: Painter, anchor: Rect, focused: bool) {
-        self.row.draw_face(p, super::page::PILL_ELEM, anchor.scaled(1.0 / CTRL_FOCUS_SCALE), focused);
+        self.row.draw_face(p, super::page::PILL_ELEM, anchor.inset(PILL_FOCUS_OUTSET), focused);
     }
 }
 

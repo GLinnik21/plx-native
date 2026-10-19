@@ -71,8 +71,8 @@ fn one_library_draws_no_names_and_two_draw_both() {
 fn the_picked_library_takes_the_last_visible_slot() {
     let widths = [200.0, 180.0, 220.0, 160.0, 240.0];
     assert_eq!(pack_names(&widths, 0, 4000.0, 90.0, 8), [0, 1, 2, 3, 4], "everything fits: all names, in order");
-    let gap = plx_ui::page_header::gap_between;
-    let tight = 200.0 + 180.0 + 220.0 + gap(200.0, 180.0) + gap(180.0, 220.0) + 90.0 + gap(220.0, 90.0) + 1.0;
+    let gap = plx_ui::page_header::GAP;
+    let tight = 200.0 + 180.0 + 220.0 + gap + gap + 90.0 + gap + 1.0;
     let cut = pack_names(&widths, 1, tight, 90.0, 8);
     assert_eq!(cut, [0, 1, 2], "a pick inside the cut keeps its place");
     let cut = pack_names(&widths, 4, tight, 90.0, 8);
@@ -233,7 +233,7 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     // The pill is the row's motion: it fades in under the focused control over a few frames.
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill = page.header.row().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    let pill = plx_ui::widgets::focus_pill(page.header.row().unwrap().plate(SORTFILTER).unwrap());
     let drawn = |page: &LibraryScreen, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(&engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
@@ -351,8 +351,8 @@ fn header_rrects_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engi
     plx_ui::draw_census::capture(|| page.draw_header(&frame)).into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
 }
 
-/// The focus pill (the one rounded rect taller than the 56 px plates, since it grows by
-/// `CTRL_FOCUS_SCALE`) after one frame, as its centre x; `None` when no pill is drawn.
+/// The focus pill (the one rounded rect taller than the 56 px plates, since it stands out by
+/// `PILL_FOCUS_OUTSET`) after one frame, as its centre x; `None` when no pill is drawn.
 fn pill_centre_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Option<f32> {
     let pills: Vec<f32> = header_rrects_after_a_frame(fixture, page, engine, ms).iter()
         .filter(|rect| rect.h > plx_ui::page_header::HEIGHT + 1.0 && rect.h < plx_ui::page_header::HEIGHT * 1.2)
@@ -393,10 +393,10 @@ fn the_header_focus_pill_travels_to_the_next_name_instead_of_jumping() {
 
 /// **Switching library keeps the row's motion** (owner: "pills have no transitions"; the screen
 /// holds the capsules, never the built row). OK on the name the pill sits on switches the library:
-/// the selection plate lands under the pill on that frame, and the pill neither restarts from the
-/// left, nor fades, nor moves; the row is rebuilt for the new library and its motion state is not.
+/// the selection plate travels to the pill (it is never cut onto it), and the pill neither restarts
+/// from the left, nor fades, nor moves; the row is rebuilt for the new library and its motion state is not.
 #[test]
-fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
+fn a_library_switch_keeps_the_rows_pill_and_travels_the_plate_to_the_picked_name() {
     let _guard = plx_base::testlock::serial();
     let (fixture, mut page, mut engine) = grid_page(3);
     let current = page.view_section(&fixture.cx(&engine));
@@ -411,7 +411,10 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
     let plate = page.header.row().unwrap().plate(other).unwrap();
     assert!((rest - plate.cx()).abs() < 0.5, "settled under the name that will be picked");
     let selected_under = |rects: &[plx_ui::Rect]| rects.iter().any(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01 && (r.cx() - plate.cx()).abs() < 1.0);
-    assert!(!selected_under(&header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16)), "premise: the old library wears the plate");
+    let plate_cx = |rects: &[plx_ui::Rect]| rects.iter().find(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01).map(|r| r.cx());
+    let before_rects = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16);
+    assert!(!selected_under(&before_rects), "premise: the old library wears the plate");
+    let old_cx = plate_cx(&before_rects).expect("premise: the old library's plate is drawn");
 
     let motion = |page: &LibraryScreen| {
         let mut canon = plx_machine::machine::Canon::new();
@@ -430,8 +433,15 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
         assert!((pill[0] - rest).abs() < 0.5, "frame {frame}: and stays where it was ({} vs {rest})", pill[0]);
         // Frame 5 is where `flush` hands the pick to the store and `pending` is consumed. The
         // fixture has no store behind it to move the directory's current library, so the page then
-        // reads the old library again; while the switch is pending, the plate is under the name.
-        assert!(frame > 4 || selected_under(&rects), "frame {frame}: the plate is under the picked name from the first frame");
+        // reads the old library again; while the switch is pending, the plate TRAVELS to the name
+        // (design review S5: it is never cut onto it): on its way on the first frame, nearer
+        // the name every frame, on it when it arrives.
+        if frame <= 4 {
+            let at = plate_cx(&rects).expect("the plate stays drawn through the switch");
+            let left = (at - plate.cx()).abs();
+            assert!(left < (old_cx - plate.cx()).abs() - 0.5, "frame {frame}: the plate has left the old library ({at} from {old_cx})");
+            assert!(frame > 1 || left > 1.0, "the plate is on its way on the first frame, not cut onto the name ({at} vs {})", plate.cx());
+        }
     }
 }
 
@@ -446,7 +456,7 @@ fn the_held_focus_pill_is_not_drawn_under_an_open_menu_and_is_still_up_when_it_c
     let key = page.key(SORTFILTER);
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill_w = page.header.row().unwrap().plate(SORTFILTER).unwrap().w * plx_ui::widgets::CTRL_FOCUS_SCALE;
+    let pill_w = page.header.row().unwrap().plate(SORTFILTER).unwrap().w + 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET;
     let pills = |page: &LibraryScreen, engine: &FocusEngine<u32>, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
@@ -491,4 +501,147 @@ fn the_header_row_is_built_once_per_key_not_once_per_frame() {
     assert_eq!(page.header.builds(), built + 1, "a library switch builds the row once");
     for _ in 0..60 { page.sync(&fixture.cx(&engine)); }
     assert_eq!(page.header.builds(), built + 1, "and the frames after it build none");
+}
+
+/// One frame of the page, then every text run the header draws at that moment.
+fn header_runs_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Vec<plx_ui::draw_census::Run> {
+    fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    let cx = fixture.cx(engine);
+    let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+    plx_ui::draw_census::capture_runs(|| page.draw_header(&frame))
+}
+
+/// What the Collections control looks like on one frame: where its label stands, and how opaque each
+/// number beside it is, as `(label x, [(number, alpha)])`.
+fn collections_face(runs: &[plx_ui::draw_census::Run], numbers: &[&str]) -> Option<(f32, Vec<(String, f32)>)> {
+    let label = runs.iter().find(|run| run.text == "Collections")?;
+    let counts = runs.iter().filter(|run| numbers.contains(&run.text.as_str()))
+        .map(|run| (run.text.clone(), run.ink[3])).collect();
+    Some((label.at.x, counts))
+}
+
+/// **A library switch moves nothing in the Collections control** (spec: "OK on a library: ... count
+/// and Collections number cross-fade ... Nothing resizes"). The row follows the press at once while
+/// the probe is still answering for the library it left, and the control used to read "Collections"
+/// with no number for that whole window (its label jumped 37 px, then jumped back when the number
+/// landed). The count it had stays until the new one is known, then the two cross-fade in place.
+#[test]
+fn a_library_switch_keeps_the_collections_label_still_and_cross_fades_its_count() {
+    let _guard = plx_base::testlock::serial();
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    land_collections(1, Ok(4));
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    let current = page.view_section(&fixture.cx(&engine));
+    let other = page.libraries.iter().find(|(_, index)| Some(*index) != current).unwrap().0;
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..10 { ms += 16; rest = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["4", "2"]); }
+    let (label_x, counts) = rest.expect("premise: the control is drawn");
+    assert_eq!(counts, [("4".to_string(), 1.0)], "premise: it wears the count the first library has");
+
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(other));
+    let mut shown = Vec::new();
+    for frame in 1..=60 {
+        ms += 16;
+        // The press reaches the store (the directory's current library moves) a few frames in, and
+        // the new library's probe lands a few frames after that.
+        if frame == 6 { fixture.publish(1, 36); }
+        if frame == 12 { land_collections(2, Ok(2)); }
+        let face = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["4", "2"]);
+        let (x, counts) = face.unwrap_or_else(|| panic!("frame {frame}: the Collections control vanished"));
+        assert!((x - label_x).abs() < 0.01, "frame {frame}: the label moved ({label_x} -> {x}), counts {counts:?}");
+        let visible: f32 = counts.iter().map(|(_, alpha)| *alpha).sum();
+        assert!(visible >= 0.99, "frame {frame}: the count dipped to {visible} between two counts: {counts:?}");
+        shown.push(counts);
+    }
+    assert_eq!(shown.first().unwrap().first().map(|(text, _)| text.as_str()), Some("4"), "the old count stays while the new one is unknown");
+    assert!(shown.iter().any(|counts| counts.len() == 2), "the two numbers share frames: that is a cross-fade, not a cut: {shown:?}");
+    assert_eq!(shown.last().unwrap(), &[("2".to_string(), 1.0)], "and it settles on the new count");
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+}
+
+/// Switch the page from the library that has `from` collections to the other one, whose probe
+/// answers `to` twelve frames in, and return the Collections control as it looks on each of 60
+/// frames: `(label x, label alpha, [(number, alpha)])`.
+fn switch_and_watch(from: u32, to: Result<u32, crate::registry::Forbidden>, numbers: &[&str]) -> Vec<(f32, f32, Vec<(String, f32)>)> {
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    land_collections(1, Ok(from));
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    let current = page.view_section(&fixture.cx(&engine));
+    let other = page.libraries.iter().find(|(_, index)| Some(*index) != current).unwrap().0;
+    let mut ms = 0;
+    for _ in 0..10 { ms += 16; header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms); }
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(other));
+    let mut frames = Vec::new();
+    for frame in 1..=60 {
+        ms += 16;
+        if frame == 6 { fixture.publish(1, 36); }
+        if frame == 12 { land_collections(2, to); }
+        let runs = header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms);
+        let label = runs.iter().find(|run| run.text == "Collections").map(|run| (run.at.x, run.ink[3]));
+        let counts = collections_face(&runs, numbers).map(|(_, counts)| counts).unwrap_or_default();
+        frames.push((label.map_or(f32::NAN, |label| label.0), label.map_or(0.0, |label| label.1), counts));
+    }
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    frames
+}
+
+/// **A count of another width lands in the same place**: the control is placed for a four-digit
+/// count, so a switch from "4" to "1,234" moves nothing, and the two cross-fade like any other.
+#[test]
+fn a_count_of_another_width_lands_without_moving_the_label() {
+    let _guard = plx_base::testlock::serial();
+    let frames = switch_and_watch(4, Ok(1234), &["4", "1,234"]);
+    let x = frames[0].0;
+    for (n, (label_x, _, counts)) in frames.iter().enumerate() {
+        assert!((label_x - x).abs() < 0.01, "frame {}: the label moved ({x} -> {label_x}), counts {counts:?}", n + 1);
+    }
+    assert_eq!(frames.last().unwrap().2, [("1,234".to_string(), 1.0)]);
+}
+
+/// **A library with no collections fades the control out where it stood** (never "· 0", never a
+/// cut): the old count stays until the answer lands, then label and count dissolve together on the
+/// swap clock, over several frames, the label at the x it always had.
+#[test]
+fn a_library_without_collections_fades_the_control_out_in_place() {
+    let _guard = plx_base::testlock::serial();
+    let frames = switch_and_watch(4, Ok(0), &["4", "0"]);
+    let (x, rest) = (frames[0].0, frames[0].1);
+    assert!(rest > 0.5, "premise: the label is drawn at its resting ink ({rest})");
+    assert_eq!(frames[0].2, [("4".to_string(), 1.0)], "the old count stays until the answer lands");
+    let mut faded = Vec::new();
+    for (n, (label_x, alpha, counts)) in frames.iter().enumerate() {
+        assert!(counts.iter().all(|(text, _)| text != "0"), "frame {}: never '· 0'", n + 1);
+        if *alpha > 0.0 { assert!((label_x - x).abs() < 0.01, "frame {}: the label moved ({x} -> {label_x})", n + 1); }
+        if *alpha > 0.0 && *alpha < rest - 0.01 { faded.push(*alpha); }
+    }
+    assert!(faded.len() >= 5, "the control dissolves over several frames, it is not cut: {faded:?}");
+    assert!(faded.windows(2).all(|pair| pair[1] <= pair[0]), "and only ever fainter: {faded:?}");
+    let last = frames.last().unwrap();
+    assert!(last.1 == 0.0 && last.2.is_empty(), "and it is gone once the clock has run: {last:?}");
+}
+
+/// **The first count lands without moving the label** too: a page that has not heard from the
+/// probe reads "Collections" bare, and the number fades in beside a label that stays put.
+#[test]
+fn the_first_count_fades_in_beside_a_label_that_stays_put() {
+    let _guard = plx_base::testlock::serial();
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    let (fixture, mut page, mut engine) = grid_page(2);
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..10 { ms += 16; rest = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["7"]); }
+    let (x, counts) = rest.expect("premise: the control is drawn");
+    assert!(counts.is_empty(), "premise: bare until the probe answers");
+    land_collections(1, Ok(7));
+    let mut seen = Vec::new();
+    for frame in 1..=30 {
+        ms += 16;
+        let (label_x, counts) = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["7"]).unwrap();
+        assert!((label_x - x).abs() < 0.01, "frame {frame}: the label moved ({x} -> {label_x})");
+        seen.push(counts.first().map_or(0.0, |(_, alpha)| *alpha));
+    }
+    assert!(seen.iter().any(|alpha| *alpha > 0.0 && *alpha < 1.0), "the number fades, it does not blink on: {seen:?}");
+    assert_eq!(*seen.last().unwrap(), 1.0);
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
 }

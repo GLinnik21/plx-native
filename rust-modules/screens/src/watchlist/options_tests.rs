@@ -123,7 +123,7 @@ fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_pan
     assert_eq!(m.popover().open_style(), plx_ui::popover::OpenStyle::Morph);
     let panel = m.panel_rect(&ShippedMeasure);
     let f0 = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
-    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (the 1.07 plate), not the panel");
+    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (the plate and its outset), not the panel");
     assert!(f0.rect.h < panel.h);
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
@@ -225,16 +225,37 @@ fn the_pill_face_still_records_its_label() {
 #[test]
 fn the_row_is_the_librarys_geometry() {
     let row = header::Row::new(&FixtureMeasure, "Date added", None);
-    let title = row.title_plate();
-    assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's plate: text at x 96, overhang 20");
+    let title = row.title_box();
+    assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's box: text at x 96, the room a plate would take overhangs 20");
     let plate = row.plate();
     assert_eq!((plate.y, plate.h), (148.0, 56.0));
     assert_eq!(plate.x + plate.w, 1771.0 + 20.0, "the control's text ends on x 1771; its plate overhangs");
     let pill = row.pill();
     assert_eq!(pill.cy(), plate.cy());
-    assert!((pill.w / plate.w - plx_ui::widgets::CTRL_FOCUS_SCALE).abs() < 1.0e-4, "the focused pill is the plate at 1.07");
+    assert!((pill.w - plate.w - 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET).abs() < 1.0e-4, "the focused pill is the plate and its outset");
     assert_eq!(header::GRID_RIGHT, 1771.0);
     assert_eq!(header::HEADER_TOP + header::BLOCK_H, 244.0);
+}
+
+/// **S10: the Watchlist's title is plain text.** The selection plate means "current among
+/// siblings" and the white pill means "focusable", and the title is neither: it is the page's name,
+/// so it stands at full white on the bare ground with no plate under it, whatever the focus does
+/// (the design review's S10: "Watchlist" sat on a plate that no sibling shared).
+#[test]
+fn the_title_is_plain_text_with_no_plate_under_it() {
+    use plx_machine::machine::EntryId;
+    use plx_ui::widgets::{CtlPop, TabStrip};
+    let _g = plx_base::testlock::serial();
+    let row = header::Row::new(&ShippedMeasure, "Default", None);
+    let (mut capsules, mut pop) = (TabStrip::new(), CtlPop::<1>::new());
+    for _ in 0..180 { row.step(EntryId(1), None, &mut capsules, &mut pop, 1.0 / 60.0); }
+    let title = row.title_box();
+    let plates = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let under_title: Vec<_> = plates.iter().filter(|(tag, r)| *tag == 2 && r.x <= title.x + title.w && r.x + r.w >= title.x).collect();
+    assert!(under_title.is_empty(), "a plate is drawn under the title: {under_title:?}");
+    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let name = runs.iter().find(|r| r.text == msg::watchlist_page_title()).expect("the title is drawn");
+    assert_eq!(name.ink, [1.0, 1.0, 1.0, 1.0], "the title is full white, not a resting control's 65%");
 }
 
 /// **A count is a filter read-out and nothing else** (the Library's rule): "6 of 14" while a filter
@@ -344,7 +365,7 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
             long.sort = sort;
             for count in [Count::All(88888), Count::Of { shown: 88888, total: 88888 }] {
                 let row = header::Row::new(&ShippedMeasure, &long.summary(), Some(count));
-                let (title_end, cluster) = (row.title_plate().x + row.title_plate().w, row.cluster_left());
+                let (title_end, cluster) = (row.title_box().x + row.title_box().w, row.cluster_left());
                 if cluster < title_end + plx_ui::page_header::CLUSTER_GAP {
                     bad.push(format!("{tag} {sort:?} {count:?}: the cluster starts at x {cluster:.0}, the title's plate ends {title_end:.0}"));
                 }

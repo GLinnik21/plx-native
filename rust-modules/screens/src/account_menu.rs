@@ -438,9 +438,9 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     /// panel's placement is its own (it hangs under the top bar), not a function of the chip's
     /// rect.
     fn scrim(&self) -> Scrim {
-        // The SHEET role: how dark the page goes behind this menu, the peak the container ramps
-        // with the appear spring (`ModalStack::draw_scrims`).
-        Scrim::lifting(plx_ui::theme::underlay::DIM_SHEET, plx_ui::widgets::redraw_profile_chip)
+        // The COMPACT role, as every menu hung off a chip: how dark the page goes behind this menu,
+        // the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
+        Scrim::lifting(plx_ui::theme::underlay::DIM_COMPACT, plx_ui::widgets::redraw_profile_chip)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -514,6 +514,17 @@ mod tests {
     }
     fn menu_rows(menu: &AccountMenuScreen) -> Vec<Action> {
         (0..menu.form.table.n_rows() as usize).filter_map(|i| menu.form.id_at(i).copied()).collect()
+    }
+
+    /// N4: the account menu is a compact menu hanging off a chip, the same object as the card menu
+    /// and the Library / Watchlist Sort & Filter menus, so it darkens the page by their ONE weight
+    /// (it read 28% beside their 20% under the SHEET role, which is for a surface that takes a
+    /// side of the screen).
+    #[test]
+    fn the_account_menu_dims_the_page_by_the_compact_menus_one_weight() {
+        let menu = AccountMenuScreen::new(EntryId(1));
+        let scrim = <AccountMenuScreen as Screen<MenuHost>>::scrim(&menu);
+        assert_eq!(scrim.alpha, plx_ui::theme::underlay::DIM_COMPACT);
     }
 
     /// A host whose only view is the Session publication — the one fact the menu reads off it.

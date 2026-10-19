@@ -1069,6 +1069,11 @@ impl Painter {
         if self.records() { return; }
         let t = self.c(tint);
         let m = self.place(r);
+        // A plain mask (an icon) inside an ink clip (`widgets::paint_inked`) is cut per fragment by
+        // the clip's rounded shapes, through the text program: it samples the same coverage alpha.
+        if rad == 0.0 && uv == plx_gfx::gfx::UV_FULL && plx_gfx::text::draw_mask_inked(tex, m.x, m.y, m.w, m.h, t.as_ptr()) {
+            return;
+        }
         plx_gfx::gfx::draw_tex_uv(tex, uv, m.x, m.y, m.w, m.h, self.px(rad), t.as_ptr());
     }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.

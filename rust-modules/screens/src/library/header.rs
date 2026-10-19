@@ -21,12 +21,12 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     if n == 0 || cap == 0 { return Vec::new(); }
     let selected = selected.min(n - 1);
     let span = |picks: &[usize]| picks.iter().map(|&i| widths[i]).sum::<f32>()
-        + picks.windows(2).map(|w| page_header::gap_between(widths[w[0]], widths[w[1]])).sum::<f32>();
+        + page_header::GAP * picks.len().saturating_sub(1) as f32;
     let all: Vec<usize> = (0..n).collect();
     if n <= cap && span(&all) <= budget { return all; }
     // "+N" takes the end of the row, one gap after the last name.
     let with_more = |picks: &[usize]| span(picks) + picks.last()
-        .map_or(0.0, |&last| page_header::gap_between(widths[last], more_w)) + more_w;
+        .map_or(0.0, |_| page_header::GAP) + more_w;
     for k in (1..n.min(cap)).rev() {
         let mut picks: Vec<usize> = (0..k).collect();
         if selected >= k { picks[k - 1] = selected; }
@@ -119,9 +119,12 @@ impl LibraryScreen {
         }
         if self.collections != CollectionsControl::Hidden {
             let value = match self.collections { CollectionsControl::Count(n) => Some(locale.number(i64::from(n))), _ => None };
-            right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections,
+            // A count of up to four digits fits the slot; the label stands at the slot's leading edge
+            // whatever the count is, or whether it is known yet.
+            let slot = Some(locale.number(9_999));
+            right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections, value_slot: slot.clone(),
                 ..item(msg::library_header_collections()) });
-            widest.push(HeaderItem { value: Some(locale.number(9_999)), ..item(msg::library_header_collections()) });
+            widest.push(HeaderItem { value: slot.clone(), value_slot: slot, ..item(msg::library_header_collections()) });
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
             ..item(msg::library_header_recommended()) });
@@ -168,17 +171,28 @@ impl LibraryScreen {
 
     /// Rebuild everything the header row is made of: the Collections control's state, the names
     /// that fit (`self.libraries`), and the cached geometry.
+    ///
+    /// **A switch in flight keeps the control as it was.** Choosing a library moves the row to it
+    /// at once, but the probe answers only for the directory's CURRENT library, so for a few frames
+    /// the new one has no answer, and an unknown answer would read as "Collections" with no number:
+    /// the label would jump by the number's width and jump back when it landed. While the grid is
+    /// still dissolving to the new library ([`Xfade::is_swapping`]) an unknown answer therefore
+    /// changes nothing, and the row's [`HeaderSwap`] cross-fades the count when the real one lands.
+    /// A probe slower than the grid's arrival ends the hold: the control then reads as it does
+    /// before its first answer (a refused or failed probe must not pin the library left behind).
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
-        self.collections = self.view_section(cx)
+        let answer = self.view_section(cx)
             .and_then(|index| H::directory(cx).sections().get(index).map(|section| section.key))
             .and_then(|key| u32::try_from(key).ok())
             .map_or(CollectionsControl::Unknown, |key| CollectionsControl::of(H::collections_count(cx, key)));
+        if answer != CollectionsControl::Unknown || !self.grid_fade.is_swapping() { self.collections = answer; }
         self.note_unfiltered(cx);
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);
         if self.header.is_current(key) { return; }
         let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
+        if let Some(old) = self.header.row() { self.header_swap.begin(old, &row); }
         self.header.install(key, row);
     }
 
@@ -287,6 +301,7 @@ impl LibraryScreen {
     /// One frame of the row's motion: the focus capsule travels to the focused control, the
     /// selection plate lands under it. Focus off the row (or a menu holding it) closes the pop.
     pub(super) fn step_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, dt: f32) {
+        self.header_swap.step(dt);
         let Some(row) = self.header.row() else { return };
         row.step(self.entry, cx.focus.current, &mut self.header_capsules, &mut self.header_pop, dt);
     }
@@ -297,13 +312,14 @@ impl LibraryScreen {
         let Some(row) = self.header.row() else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let top = layout::HEADER_Y - self.scroll.pos;
-        if !super::draw::document_band_visible(p, top, page_header::HEIGHT, plx_ui::widgets::CTRL_FOCUS_SCALE) { return; }
+        // The pill's outset (2 px) is far inside the cast's padding the band is grown by, so the band needs no pop.
+        if !super::draw::document_band_visible(p, top, page_header::HEIGHT, 1.0) { return; }
         // A control a menu has lifted out of the page (`Screen::opener`) wears no pill here: the
         // menu is its only copy, and the board shows it as plain text while the panel is open.
         // The dispatcher decides when it stands down (`lifted_opener`: a closing menu whose focus
         // moved off the opener), so a lift is always the control's whole menu-open stretch, during
         // which the engine's focus is on the menu's rows and the row's motion HOLDS.
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| (key.elem, page_header::Lift::Plain));
-        row.draw(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
+        row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
     }
 }

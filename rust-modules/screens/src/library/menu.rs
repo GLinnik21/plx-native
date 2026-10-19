@@ -21,9 +21,6 @@ use plx_ui::table::MENU_MAX_W;
 use plx_ui::Rect;
 use std::borrow::Cow;
 
-/// The "+N" list's panel: left edge and least width, from the `LibraryMore` board.
-const SOURCES_X: f32 = 330.0;
-const SOURCES_W: f32 = 560.0;
 // The compact Library menu's existing corner geometry.
 const PANEL_RADIUS: f32 = 20.0;
 
@@ -442,17 +439,19 @@ impl LibraryMenu {
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
     /// rows, never narrower than the control's focused pill), hung off the anchor's left edge and
-    /// pulled back so the right edge stays inside the keep-out.
+    /// pulled back so the right edge stays inside the keep-out. ONE placement for every kind: the
+    /// "+N" list opens under its "+N" pill exactly as Sort & Filter does; it differs only in its
+    /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
+    /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
-        let pill = Rect::new(x, y, w, h).scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
-        let mut width = self.form.table.menu_panel_width_from(measure, pill);
-        if self.kind == LibraryMenuKind::Sources {
-            width = width.max(SOURCES_W);
-            // The board hangs the list at x 330 under the names, whatever "+N"'s own x is.
-            return Rect::new(SOURCES_X, (y + h + 16.0).clamp(96.0, 984.0 - height), width, height);
-        }
+        let pill = plx_ui::widgets::focus_pill(Rect::new(x, y, w, h));
+        let width = if self.kind == LibraryMenuKind::Sources {
+            self.form.table.menu_panel_width_to(measure, pill, plx_ui::page_header::TEXT_X1 - 96.0)
+        } else {
+            self.form.table.menu_panel_width_from(measure, pill)
+        };
         Rect::new(
             // The panel's right edge lines up with the header's right text edge (x 1771).
             x.clamp(96.0, (plx_ui::page_header::TEXT_X1 - width).max(96.0)),
@@ -1348,7 +1347,7 @@ mod tests {
         let mut menu = LibraryMenu::new(EntryId(7), arg);
         menu.apply_draft(filter_draft(false, None, true));
         let frame = menu.frame(&FixtureMeasure);
-        let pill = 400.0 * plx_ui::widgets::CTRL_FOCUS_SCALE;
+        let pill = 400.0 + 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET;
         assert!(frame.w >= pill, "the panel {} is narrower than its control's pill {pill}", frame.w);
         assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
     }

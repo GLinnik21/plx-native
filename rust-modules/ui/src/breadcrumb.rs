@@ -1,10 +1,12 @@
 //! **Breadcrumb** — the header row's left side on a page pushed from a library page:
 //! "Films › Collections".
 //!
-//! The mock (`Collections.dc.html`, the header row) is a 56 px flex row at left 76 with an 8 px gap:
+//! The mock (`Collections.dc.html`, the header row) is a 56 px flex row at left 76:
 //! the root is a link (BODY, white 65%, 20 px of padding each side), the `›` is an aria-hidden span
-//! with `margin: 0 -4px` holding a 22 px chevron at white 50%, and the page name sits on the
-//! selected plate (`TAB_PLATE_SELECTED`) at full white. So the root's text starts at x 96 like a
+//! holding a 22 px chevron at white 50%, and the page name sits on the
+//! selected plate (`TAB_PLATE_SELECTED`) at full white. The mock's 8 px gap and `-4px` margin put the
+//! chevron 4 px from the root's plate, which the root's focused pill then covers; here the chevron
+//! stands [`AIR`] clear of that pill and of the page plate (design review S9). So the root's text starts at x 96 like a
 //! library name on the Library header, and the page name's plate is the one object the eye reads as
 //! "you are here".
 //!
@@ -21,12 +23,15 @@ use std::ffi::CString;
 use plx_machine::machine::Measure;
 
 use super::page_header::{HEIGHT, OVERHANG, TEXT_X0, TOP};
+use super::widgets::focus_pill;
 use super::{theme, Rect};
 
-/// The flex gap between the root, the glyph span and the page name.
-pub const GAP: f32 = 8.0;
-/// The glyph span's side margin (`margin: 0 -4px`).
-pub const GLYPH_MARGIN: f32 = -4.0;
+/// The air each side of the glyph's box: between the root's FOCUSED pill (its plate plus the focus
+/// outset) and the glyph, and between the glyph and the page name's plate. The same air
+/// [`page_header::GAP`] leaves between two neighbours, so the chevron reads as a separator with room
+/// either side and not as part of the pill it follows (design review S9: it stood 4 px past the
+/// plate, ~8 px from the glyph's ink, and a focused pill covered most of that).
+pub const AIR: f32 = theme::space::SM;
 /// The chevron's box.
 pub const GLYPH_SIZE: f32 = 22.0;
 /// The root's ink: white at 65%, the header's resting control text.
@@ -77,10 +82,12 @@ impl Crumb {
         let page_w = text_w(&self.page, false, measure);
         let root_text = Rect::new(TEXT_X0, TOP, root_w, HEIGHT);
         let root_plate = Rect::new(TEXT_X0 - OVERHANG, TOP, root_w + 2.0 * OVERHANG, HEIGHT);
-        // flex gap, then the span's negative margin on its left; the same on its right.
-        let gx = root_plate.x + root_plate.w + GAP + GLYPH_MARGIN;
+        // The glyph's box stands `AIR` clear of the root's FOCUSED pill, and the page plate `AIR`
+        // clear of the box.
+        let pill = focus_pill(root_plate);
+        let gx = pill.x + pill.w + AIR;
         let glyph = Rect::new(gx, TOP + (HEIGHT - GLYPH_SIZE) * 0.5, GLYPH_SIZE, GLYPH_SIZE);
-        let px = gx + GLYPH_SIZE + GLYPH_MARGIN + GAP;
+        let px = gx + GLYPH_SIZE + AIR;
         let page_plate = Rect::new(px, TOP, page_w + 2.0 * OVERHANG, HEIGHT);
         let page_text = Rect::new(px + OVERHANG, TOP, page_w, HEIGHT);
         CrumbLayout { root_text, root_plate, glyph, page_text, page_plate }
@@ -102,16 +109,20 @@ mod tests {
         assert_eq!((l.page_plate.y, l.page_plate.h), (148.0, 56.0));
     }
 
-    /// `gap 8` + `margin 0 -4px` on a 22 px span: the glyph starts 4 px past the root plate and the
-    /// page plate starts 4 px past the glyph, so the glyph box overlaps neither plate by more than
-    /// the margin and the pair reads as one phrase.
+    /// **S9.** The chevron is a separator measured from the root's FOCUSED pill: [`AIR`] (`space::SM`)
+    /// of air between the pill's extent and the glyph's box, and the same between the box and the
+    /// page name's plate. The glyph box is its own 22 px square, centred on the row.
     #[test]
-    fn the_glyph_sits_in_its_own_span_between_the_plates() {
-        let l = Crumb::new("Films", "Collections").layout(&ShippedMeasure);
-        assert_eq!(l.glyph.x - (l.root_plate.x + l.root_plate.w), GAP + GLYPH_MARGIN);
-        assert_eq!(l.page_plate.x - (l.glyph.x + l.glyph.w), GAP + GLYPH_MARGIN);
-        assert_eq!((l.glyph.w, l.glyph.h), (22.0, 22.0));
-        assert_eq!(l.glyph.y + l.glyph.h * 0.5, l.root_plate.y + l.root_plate.h * 0.5, "centred on the row");
+    fn the_glyph_stands_sm_clear_of_the_focused_root_pill_and_of_the_page_plate() {
+        for root in ["Movies", "Films", "A Very Long Library Name Indeed Of Many Words"] {
+            let l = Crumb::new(root, "Collections").layout(&ShippedMeasure);
+            let pill = crate::widgets::focus_pill(l.root_plate);
+            assert_eq!(AIR, theme::space::SM);
+            assert!((l.glyph.x - (pill.x + pill.w) - AIR).abs() < 0.01, "{root}: {} px from the focused pill", l.glyph.x - (pill.x + pill.w));
+            assert!((l.page_plate.x - (l.glyph.x + l.glyph.w) - AIR).abs() < 0.01, "{root}: {} px to the page plate", l.page_plate.x - (l.glyph.x + l.glyph.w));
+            assert_eq!((l.glyph.w, l.glyph.h), (22.0, 22.0));
+            assert_eq!(l.glyph.y + l.glyph.h * 0.5, l.root_plate.y + l.root_plate.h * 0.5, "centred on the row");
+        }
     }
 
     #[test]
@@ -129,16 +140,5 @@ mod tests {
         let grew = b.root_text.w - a.root_text.w;
         assert!(grew > 0.0);
         assert!((b.page_plate.x - a.page_plate.x - grew).abs() < 0.01);
-    }
-
-    /// The focused root pill (plate grown by the control scale) must clear the page name's plate,
-    /// for a short root and for a very long one.
-    #[test]
-    fn the_focused_root_pill_never_reaches_the_page_plate() {
-        for root in ["Movies", "LDN Films bamx23", "A Very Long Library Name Indeed Of Many Words"] {
-            let l = Crumb::new(root, "Recommended").layout(&ShippedMeasure);
-            let pill = l.root_plate.scaled(crate::widgets::CTRL_FOCUS_SCALE);
-            assert!(pill.x + pill.w < l.page_plate.x, "{root}: pill ends {} past plate at {}", pill.x + pill.w, l.page_plate.x);
-        }
     }
 }
