@@ -13,8 +13,9 @@
 //! focus engine's own remembered element (seeded by `LibraryScreen::seed_cursor` from the store's
 //! snapshot when the engine has none); the page only publishes the grid with `Seat::RememberedFirst`
 //! until the grid is entered (`enter_remembered`). A library not visited before opens on its first
-//! row, and any other DOWN from the header keeps the engine's square-closing rule (the tile under
-//! the control), which `outside_a_switch_down_from_the_header_still_lands_under_the_control` pins.
+//! row, and any other DOWN from the header is the page's round trip (`PageRegions::CONTENT_HEAD_SEAT`:
+//! the cell the last UP left from), which `outside_a_switch_down_from_the_header_returns_to_the_cell_up_left_from`
+//! pins.
 //! Driven with `FocusGrid` (a key-only walk cannot leave a deep tile remembered while focus is on
 //! the header) and two `LibrarySelect`s, then keys.
 
@@ -116,23 +117,26 @@ fn a_library_switched_back_to_lands_down_on_the_tile_it_was_left_at_and_scrolls_
     assert_eq!(w.grid_cell(), Some((8, 4)), "Down lands on the tile the library was left at");
     assert!(w.scroll_target() > 1000.0, "and the page scrolls to it ({})", w.scroll_target());
 
-    // The exception is for that one entry: once in the grid, the ordinary rule is back.
+    // Once in the grid the rule is the page's one rule: Up then Down is a round trip, to the cell
+    // Up left from (design review S2), not to the tile under the control.
     for _ in 0..8 { w.press(Key::Up); }
     assert_eq!(w.grid_cell(), Some((0, 4)), "premise: Up walked back to the first row");
     w.press(Key::Up);
     assert!(w.on_header(), "premise: Up from the first row reaches the header");
     w.press(Key::Down);
-    assert_eq!(w.grid_cell(), Some((0, 0)), "a later Down lands under the control again");
+    assert_eq!(w.grid_cell(), Some((0, 4)), "a later Down returns to the cell Up left from");
 }
 
 #[test]
-fn outside_a_switch_down_from_the_header_still_lands_under_the_control() {
-    // The engine's square-closing rule (`Seat::Remembered`, `focus::projects_across`): a DOWN into a
-    // card grid lands on the card under the control it leaves, not on a remembered cell rows away.
-    // Only the DOWN that follows a library switch is the reader's way back to the tile they left.
+fn outside_a_switch_down_from_the_header_returns_to_the_cell_up_left_from() {
+    // `PageRegions::CONTENT_HEAD_SEAT` (routes.md R3): a DOWN into the card grid lands on the cell
+    // the last UP left from, the page's one round trip. The tile under the control is the answer
+    // only when nothing is remembered (`navigation_tests`). A library switch's Down is the same
+    // cell: the tile the reader left that library at.
     let mut w = World::movies_library("r15-square", true);
     w.frames(30);
-    assert!(w.on_header(), "premise: the page opens with focus on the header");
+    w.climb_into_header();
+    assert!(w.on_header(), "premise: Up from the arrival tile reaches the header");
     w.press(Key::Down);
     for key in [Key::Right, Key::Right, Key::Down, Key::Down, Key::Down] { w.press(key); }
     assert_eq!(w.grid_cell(), Some((3, 2)), "premise: the walk reached a tile off the first column");
@@ -141,5 +145,5 @@ fn outside_a_switch_down_from_the_header_still_lands_under_the_control() {
     w.press(Key::Up);
     assert!(w.on_header(), "premise: Up from the first row reaches the header");
     w.press(Key::Down);
-    assert_eq!(w.grid_cell(), Some((0, 0)), "Down from the library's name lands on the tile under it");
+    assert_eq!(w.grid_cell(), Some((0, 2)), "Down from the library's name returns to the cell Up left from");
 }

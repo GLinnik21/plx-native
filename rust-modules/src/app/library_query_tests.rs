@@ -113,8 +113,8 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         script_key(Key::Down, tick(167)),
     );
     let (item, _) = rig.library_selection(&d, new_entry, d.focus()).unwrap();
-    // Down from the header lands on the grid's first row under the control it left (the engine
-    // picks by x), never on the old query's bookmark.
+    // Down from the header lands on the grid's first row (the new entry remembers nothing, so
+    // the engine projects under the control it left), never on the old query's bookmark.
     let slot: usize = item.rk.parse().expect("synthetic ratingKeys are slot numbers");
     assert!(
         (1..=6).contains(&slot),
@@ -330,8 +330,9 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         tick(290),
         script_key(Key::Down, tick(290)),
     );
-    // DOWN from the heading lands in the grid's first row, under the chip it left
-    // (`focus::projects_across`); the reset memory above is what the rail's door reads.
+    // DOWN from the heading lands in the grid's first row (the reset left nothing remembered, so
+    // `CONTENT_HEAD_SEAT` projects under the chip it left); the reset memory above is what the
+    // rail's door reads.
     let page = d
         .top_screen()
         .unwrap()

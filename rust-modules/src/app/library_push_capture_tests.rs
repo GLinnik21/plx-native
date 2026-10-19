@@ -19,7 +19,10 @@ enum Case { First, Revisit, OtherKind }
 fn push_trace(case: Case) -> Vec<Row> {
     let revisit = case == Case::Revisit;
     struct Cleanup;
-    impl Drop for Cleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
+    impl Drop for Cleanup { fn drop(&mut self) {
+        plx_ui::containers::transition::set_page_image_held(false);
+        plx_plex::plex::reset_servers_for_test();
+    } }
     let _cleanup = Cleanup;
     let session = plx_plex::plex::session::TempSession::new("library-push-capture");
     session.watching("u-library-push-capture");
@@ -59,6 +62,8 @@ fn push_trace(case: Case) -> Vec<Row> {
         let Some(entry) = d.nav.top_page().map(|e| e.id) else { return };
         let quiescent = !plx_machine::idle::page_layout_moving();
         let paint = image.plan(entry, transition.in_flight(), transition.page_alpha(), ms, valid, quiescent);
+        // What the dispatcher states after planning: the Library reads it to hold its seat at rest.
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
         match paint {
             PagePaint::Capture => { image.captured(entry); valid = true; }
             PagePaint::ReplacementCapture => { image.replacement_captured(entry); valid = true; }

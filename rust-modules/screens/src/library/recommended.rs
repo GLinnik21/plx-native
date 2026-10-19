@@ -897,6 +897,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             }
             out.push(shelf);
         }
+        self.with_regions(|regions| regions.seat_content_head(out));
     }
     fn group_of(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
         if *elem == CRUMB_ELEM { return Some(CRUMB_GROUP); }

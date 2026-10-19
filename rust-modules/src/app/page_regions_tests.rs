@@ -50,7 +50,7 @@ const LEAVES: [&str; 3] = ["library:BackToHome", "content:Back", "watchlist:Back
 struct Row {
     name: &'static str,
     mount: fn() -> Rig,
-    /// The region the page seats on its first arrival (model §4.1).
+    /// The region the page seats on its first arrival (model §4.1): the content, on every page.
     arrival: Place,
     /// The header stop Up from the content lands on when focus has not been on the row yet (the
     /// crumb root, the Sort & Filter pill). `None`: the stop focus last used on the row, which is
@@ -73,14 +73,14 @@ struct Row {
 
 const ROWS: [Row; 4] = [
     Row {
-        name: "Library", mount: movies_library, arrival: Place::Header, up_lands: None, own_pill: TAB_KEY_MOVIES,
+        name: "Library", mount: movies_library, arrival: Place::Content, up_lands: Some("collections"), own_pill: TAB_KEY_MOVIES,
         back_from_content: &[Out::Stay(Place::Content), Out::Stay(Place::Header), Out::Stay(Place::Nav), Out::Leave("library:BackToHome")],
         back_from_header: &[Out::Stay(Place::Nav), Out::Leave("library:BackToHome")],
         back_from_nav: &[Out::Leave("library:BackToHome")],
         leaves_to: AppArg::Home, opener: None,
     },
     Row {
-        name: "Collections", mount: collections, arrival: Place::Header, up_lands: Some("crumb"), own_pill: TAB_KEY_MOVIES,
+        name: "Collections", mount: collections, arrival: Place::Content, up_lands: Some("crumb"), own_pill: TAB_KEY_MOVIES,
         back_from_content: &[Out::Stay(Place::Content), Out::Leave("content:Back")],
         back_from_header: &[Out::Leave("content:Back")],
         back_from_nav: &[Out::Leave("content:Back")],
@@ -202,6 +202,11 @@ impl Rig {
     fn open_from_header(&mut self, name: &str, want: AppArg) {
         let (_, stops) = self.header();
         let elem = stops.iter().find(|(stop, _)| *stop == name).unwrap_or_else(|| panic!("no {name} stop in {stops:?}")).1;
+        // The page arrives in its first poster: Up reaches the header row.
+        for _ in 0..3 {
+            if self.region() == Some(Place::Header) { break; }
+            self.press(Key::Up);
+        }
         for _ in 0..stops.len() + 1 {
             if self.elem() == Some(elem) { break; }
             self.press(Key::Right);

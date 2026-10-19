@@ -45,14 +45,24 @@ pub(super) struct Script {
 }
 
 impl Script {
+    /// The writes plex.tv was sent, in order.
+    pub(super) fn writes(&self) -> Vec<([u8; 12], Intent)> {
+        self.writes.lock().unwrap().clone()
+    }
+
     pub(super) fn new(titles: &[u8]) -> Arc<Script> {
+        Self::with_kinds(titles, |_| WatchKind::Movie)
+    }
+
+    /// `titles` with the kind `kind_of` names for each number.
+    pub(super) fn with_kinds(titles: &[u8], kind_of: impl Fn(u8) -> WatchKind) -> Arc<Script> {
         Arc::new(Script {
             items: titles
                 .iter()
                 .map(|n| WatchItem {
                     hex: encode_hex(&[*n; 12]),
                     guid: guid(*n),
-                    kind: Some(WatchKind::Movie),
+                    kind: Some(kind_of(*n)),
                     title: Some(format!("Title {n}")),
                     added_at: Some(1_000 - i64::from(*n)),
                     ..Default::default()

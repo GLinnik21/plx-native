@@ -23,7 +23,11 @@
 //! **Travel is the same on every page.** Up from the head of the content seats the header; Up from
 //! the header seats the page's OWN pill on the bar (`TabContainer::strip_selected`, one rule in the
 //! dispatcher's strip seat); Down from the bar seats the header, and from the header the content.
-//! Left and Right on the header stop at its ends. [`PageRegions::links`] is where that column is
+//! Left and Right on the header stop at its ends. **Up then Down is a round trip**: the head of the
+//! content seats the cell the last Up left from ([`CONTENT_HEAD_SEAT`], written once by
+//! [`PageRegions::seat_content_head`]), the tile under the header's stop only when it has no
+//! memory. Every page ARRIVES in its content ([`Arrival::Content`]; the header is one Up away, and
+//! stands as the seat only while the content has nothing to seat). [`PageRegions::links`] is where that column is
 //! written, so a page that declares a `Link` involving `STRIP`, its header group or the head of its
 //! content by hand has a second declaration of the column.
 //!
@@ -43,7 +47,7 @@
 //! names only `screen` types, `GroupId` and `dispatch::STRIP_BASE`.
 use crate::containers::tabs::STRIP;
 use crate::dispatch::STRIP_BASE;
-use crate::screen::{Dir, Link, Step};
+use crate::screen::{Dir, GroupSpec, Link, Seat, Step};
 use plx_machine::machine::{EntryId, FocusKey, GroupId};
 
 /// Where focus is on a page, in the column's terms.
@@ -65,6 +69,15 @@ pub enum Arrival {
     Header,
     Content,
 }
+
+/// **The seat of the content's head, on every page.** The cell the last Up left from, so the press
+/// that follows it down again is a round trip whatever stop of the header the walk ended on; the
+/// projection under the stop only when the head has no memory to return to. The engine's
+/// [`Seat::Remembered`] closes a square instead (an UP or DOWN into a card lattice lands under
+/// the key it leaves, `focus::projects_across`), which is right between two rows of cards and
+/// wrong for the header, a row of controls whose stops mean nothing to a column of cards.
+/// [`Seat::RememberedNear`] is the engine's "remembered, else projected", and no row is too far.
+pub const CONTENT_HEAD_SEAT: Seat = Seat::RememberedNear { rows: u8::MAX };
 
 /// What one BACK does, as a step for the page to execute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +128,16 @@ impl PageRegions<'_> {
         for pair in column.windows(2) {
             out.push(Link { from: pair[0], dir: Dir::Down, to: pair[1] });
             out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });
+        }
+    }
+
+    /// **Seat the head of the content by [`CONTENT_HEAD_SEAT`]** in the `groups` a page has just
+    /// declared. A head the page seats otherwise (a linked heading's row, a grid entered after a
+    /// library switch) keeps its own: only the engine's default `Seat::Remembered` is replaced.
+    pub fn seat_content_head(&self, groups: &mut [GroupSpec]) {
+        let Some(&head) = self.content.first() else { return };
+        for spec in groups.iter_mut().filter(|spec| spec.id == head && matches!(spec.seat, Seat::Remembered)) {
+            spec.seat = CONTENT_HEAD_SEAT;
         }
     }
 

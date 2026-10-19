@@ -401,6 +401,9 @@ pub enum Seat {
     /// its first element. Linked shelf headings use this for their one DOWN transition; ordinary
     /// row-to-row movement keeps [`Seat::Remembered`]'s square-closing projection.
     RememberedFirst,
+    /// The group's remembered element when it is within `rows` element-sizes of the key the move
+    /// leaves, else the one projected under that key; `u8::MAX` is "remembered, else projected"
+    /// ([`crate::page_regions::CONTENT_HEAD_SEAT`]).
     RememberedNear { rows: u8 },
     First,
     Projected,

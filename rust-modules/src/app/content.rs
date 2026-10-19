@@ -755,40 +755,54 @@ fn watchlist_requests(app: &mut App) {
     for (source, request, ret) in app.bridge.take_watchlist_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
-        // The Sort & Filter value comes from the surface over the page, not from the page.
-        if let WatchlistOut::SetOptions(options) = &request {
-            if app.pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
-                app.bridge.watchlist_set_options(options);
-            }
+        // The Sort & Filter value comes from the surface over the page, not from the page, so it
+        // is not gated on the asking page holding input.
+        if !matches!(request, WatchlistOut::SetOptions(_))
+            && (app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)))
+        {
             continue;
         }
-        if app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
-        match request {
-            WatchlistOut::Back | WatchlistOut::Tab(_) | WatchlistOut::Account => {
-                watchlist_navigation(&mut app.pages, &mut app.bridge, &request, ret);
+        watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret, &mut app.ok_armed);
+    }
+}
+
+/// **One request the Watchlist page or its Sort & Filter surface made, performed**, after the loop's
+/// gates (the asking page still holds input on the Watchlist route; a `SetOptions` is gated on
+/// nothing but a Watchlist page being on the stack). Shared with the tests' pump for the reason
+/// [`library_navigation`] is: a test that presses OK on the pill sees the menu the TV opens.
+pub(crate) fn watchlist_request(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, entry: EntryId,
+    request: plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>, ok_armed: &mut bool,
+) {
+    use plx_screens::watchlist::page::WatchlistOut;
+    match request {
+        WatchlistOut::SetOptions(options) => {
+            if pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
+                rig.watchlist_set_options(&options);
             }
-            WatchlistOut::Retry => app.bridge.watchlist_retry(),
-            WatchlistOut::OpenOptions => {
-                let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
-                bridge::open_watchlist_menu(&mut app.pages, arg);
-            }
-            WatchlistOut::Hold { guid, state, copy, .. } => {
-                let Some(arg) = app.bridge.watchlist_hold_arg(&mut app.pages, entry, ret.focus, &guid, state, copy)
-                    else { continue };
-                bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
-            }
-            // The catalog page of a title no server holds, by the tile's guid (a guid the service
-            // does not form as `plex://movie|show/<hex>` has no page to open).
-            WatchlistOut::OpenCatalog(guid) => {
-                if let Some(hex) = bridge::hex_of_guid(&guid) {
-                    bridge::open_catalog(&mut app.pages, hex, Some(ret));
-                }
-            }
-            // The page pushes a matched copy's Detail itself (`ContentReq::Push`), and the surface
-            // is the only sender of the options value (handled above).
-            WatchlistOut::OpenDetail(_) | WatchlistOut::SetOptions(_) => {}
         }
+        WatchlistOut::Back | WatchlistOut::Tab(_) | WatchlistOut::Account => {
+            watchlist_navigation(pages, rig, &request, ret);
+        }
+        WatchlistOut::Retry => rig.watchlist_retry(),
+        WatchlistOut::OpenOptions => {
+            let Some(arg) = rig.watchlist_menu_arg(pages, entry) else { return };
+            bridge::open_watchlist_menu(pages, arg);
+        }
+        WatchlistOut::Hold { guid, state, copy, .. } => {
+            let Some(arg) = rig.watchlist_hold_arg(pages, entry, ret.focus, &guid, state, copy) else { return };
+            bridge::open_item_menu(pages, arg);
+            *ok_armed = false;
+        }
+        // The catalog page of a title no server holds, by the tile's guid (a guid the service
+        // does not form as `plex://movie|show/<hex>` has no page to open).
+        WatchlistOut::OpenCatalog(guid) => {
+            if let Some(hex) = bridge::hex_of_guid(&guid) {
+                bridge::open_catalog(pages, hex, Some(ret));
+            }
+        }
+        // The page pushes a matched copy's Detail itself (`ContentReq::Push`).
+        WatchlistOut::OpenDetail(_) => {}
     }
 }
 

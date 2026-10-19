@@ -41,17 +41,31 @@ impl GridBand {
 /// ten thousand rows costs exactly as much as a short one; no per-frame allocation or row walk.
 pub struct GridBands {
     focus: Option<usize>,
-    slots: [(Option<usize>, Spring); MAX_GRID_BANDS],
+    slots: [Slot; MAX_GRID_BANDS],
     /// What the focused caption band shows (CONTRACT FREEZE: P3 sizes the band from it). A pref
     /// input, not motion: it is not in [`write`](Self::write).
     caption_policy: crate::caption_policy::CaptionPolicy,
+}
+
+/// One band: the row it opens under, the card of that row whose caption it carries (known once the
+/// row has held focus on a tick, so a band that closes behind a focus move still knows whose
+/// caption fades with it) and the spring that opens and closes it.
+#[derive(Clone, Copy)]
+struct Slot {
+    row: Option<usize>,
+    card: Option<usize>,
+    spring: Spring,
+}
+
+impl Slot {
+    const EMPTY: Self = Self { row: None, card: None, spring: Spring::at(0.0) };
 }
 
 impl GridBands {
     pub fn new() -> Self {
         Self {
             focus: None,
-            slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS],
+            slots: [Slot::EMPTY; MAX_GRID_BANDS],
             caption_policy: crate::caption_policy::CaptionPolicy::DEFAULT,
         }
     }
@@ -79,40 +93,61 @@ impl GridBands {
         if self.focus == row { return; }
         self.focus = row;
         if !animate {
-            self.slots = [(None, Spring::at(0.0)); MAX_GRID_BANDS];
-            if let Some(row) = row { self.slots[0] = (Some(row), Spring::at(1.0)); }
+            self.slots = [Slot::EMPTY; MAX_GRID_BANDS];
+            if let Some(row) = row { self.slots[0] = Slot { row: Some(row), card: None, spring: Spring::at(1.0) }; }
             return;
         }
         let Some(row) = row else { return };
-        if self.slots.iter().any(|(r, _)| *r == Some(row)) { return; }
+        if self.slots.iter().any(|s| s.row == Some(row)) { return; }
         // A stream faster than remote repeat can fill the bounded pool. Retire the smallest
         // closing band, never the focused row; normal input leaves several spare slots.
-        let at = self.slots.iter().position(|(r, _)| r.is_none()).unwrap_or_else(|| {
-            self.slots.iter().enumerate().min_by(|(_, a), (_, b)| a.1.pos.total_cmp(&b.1.pos))
+        let at = self.slots.iter().position(|s| s.row.is_none()).unwrap_or_else(|| {
+            self.slots.iter().enumerate().min_by(|(_, a), (_, b)| a.spring.pos.total_cmp(&b.spring.pos))
                 .map_or(0, |(at, _)| at)
         });
-        self.slots[at] = (Some(row), Spring::at(0.0));
+        self.slots[at] = Slot { row: Some(row), card: None, spring: Spring::at(0.0) };
+    }
+
+    /// Note which card of the focused row `row` the focus is on, so the band, once it closes behind
+    /// a move, still knows whose caption it carries ([`closing`](Self::closing)). A card outside the
+    /// focused row is not noted.
+    pub fn note_card(&mut self, row: usize, card: usize) {
+        if self.focus != Some(row) { return; }
+        if let Some(slot) = self.slots.iter_mut().find(|s| s.row == Some(row)) { slot.card = Some(card); }
+    }
+
+    /// The bands closing behind a focus move, as `(row, card, expansion)`: each is the caption of
+    /// `card` (the one the row held focus on) at its band's own progress. The focused row's band is
+    /// not among them; a band with no card noted (a row that never held a tick) or fully shut is not.
+    pub fn closing(&self) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
+        self.slots.iter().filter_map(|s| {
+            let (row, card) = (s.row?, s.card?);
+            (self.focus != Some(row) && s.spring.pos > 0.0).then_some((row, card, s.spring.pos))
+        })
     }
 
     pub fn tick(&mut self, k: f32, dt: f32) {
-        for (row, spring) in &mut self.slots {
-            let Some(r) = *row else { continue };
+        for slot in &mut self.slots {
+            let Some(r) = slot.row else { continue };
             let target = f32::from(self.focus == Some(r));
-            spring.step(target, k, dt);
-            if target == 0.0 && spring.pos.abs() < 1.0e-5 && spring.vel.abs() < 1.0e-4 { *row = None; }
+            slot.spring.step(target, k, dt);
+            if target == 0.0 && slot.spring.pos.abs() < 1.0e-5 && slot.spring.vel.abs() < 1.0e-4 { *slot = Slot::EMPTY; }
         }
     }
 
     pub fn geometry(&self) -> [GridBand; MAX_GRID_BANDS] {
-        self.slots.map(|(row, spring)| row.map_or(GridBand::CLOSED,
-            |row| GridBand { row, expansion: spring.pos }))
+        self.slots.map(|s| s.row.map_or(GridBand::CLOSED,
+            |row| GridBand { row, expansion: s.spring.pos }))
     }
 
     pub fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.option(self.focus, |c, row| { c.u32(row as u32); });
-        c.seq(self.slots.iter().filter(|(row, _)| row.is_some()).count());
-        for (row, spring) in &self.slots {
-            if let Some(row) = row { c.u32(*row as u32).f32(spring.pos).f32(spring.vel); }
+        c.seq(self.slots.iter().filter(|s| s.row.is_some()).count());
+        for s in &self.slots {
+            if let Some(row) = s.row {
+                c.u32(row as u32).f32(s.spring.pos).f32(s.spring.vel);
+                c.option(s.card, |c, card| { c.u32(card as u32); });
+            }
         }
     }
 }
@@ -490,15 +525,18 @@ mod tests {
         let closing = geometry.iter().find(|b| b.row == 0).unwrap().expansion;
         assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
         assert!((opened + closing - 1.0).abs() < 0.0001);
-        assert_eq!(card_row::band_reveal(opened), 0.0, "caption waits until its space is open");
+        assert!(
+            (card_row::band_fade(opened) + card_row::band_fade(closing) - 1.0).abs() < 0.0001,
+            "the two captions of a move are one hand-over, out = 1 - in"
+        );
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
-        assert_eq!(bands.slots.iter().filter(|(r, _)| r.is_some()).count(), 1);
-        assert!(card_row::band_reveal(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
+        assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
+        assert!(card_row::band_fade(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
-        assert!(bands.slots.iter().all(|(r, _)| r.is_none()));
+        assert!(bands.slots.iter().all(|s| s.row.is_none()));
     }
 
     /// The pop is armed from rest by a deliberate move, adopted whole when focus arrives
@@ -530,11 +568,11 @@ mod tests {
         for row in 1..200 {
             bands.focus(Some(row), true);
             bands.tick(RowStyle::EPISODE.k_scroll, 1.0 / 240.0);
-            assert!(bands.slots.iter().any(|(r, _)| *r == Some(row)));
-            assert!(bands.slots.iter().filter(|(r, _)| r.is_some()).count() <= MAX_GRID_BANDS);
+            assert!(bands.slots.iter().any(|s| s.row == Some(row)));
+            assert!(bands.slots.iter().filter(|s| s.row.is_some()).count() <= MAX_GRID_BANDS);
         }
         for _ in 0..120 { bands.tick(RowStyle::EPISODE.k_scroll, 1.0 / 60.0); }
-        assert_eq!(bands.slots.iter().filter(|(r, _)| r.is_some()).count(), 1);
+        assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
         assert!(bands.geometry().iter().find(|b| b.row == 199).unwrap().expansion > 0.999);
         let before = bands.geometry();
         bands.focus(Some(199), true);
