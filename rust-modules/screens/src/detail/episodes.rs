@@ -264,7 +264,7 @@ fn state(ep: &Episode) -> State {
             Glyph::Play
         },
         label: if ep.dur_ms > 0 {
-            plx_ui::fmt::dur_long(ep.dur_ms)
+            plx_ui::fmt::duration(ep.dur_ms)
         } else {
             String::new()
         },

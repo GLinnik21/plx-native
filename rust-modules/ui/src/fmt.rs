@@ -1,18 +1,35 @@
-//! Tiny shared display formatters — ONE home for the duration/clock strings so the same value
-//! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
-//! drift this replaces).
+//! Tiny shared display formatters — ONE home for the duration/clock/release-date strings so the
+//! same value can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs
+//! "0 hr 45 min" drift this replaces).
 
-pub fn converts_on_server() -> &'static str { plx_platform::i18n::msg::core_converts_on_server() }
+use plx_platform::i18n::{msg, LocaleContext, MonthWidth};
 
-/// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
-pub fn dur_short(ms: i64) -> String {
-    let mins = (ms / 60_000).max(0);
-    let (h, m) = (mins / 60, mins % 60);
-    if h > 0 {
-        plx_platform::i18n::msg::core_duration_short_hours(h, m)
-    } else {
-        plx_platform::i18n::msg::core_duration_short_minutes(m)
-    }
+pub fn converts_on_server() -> &'static str { msg::core_converts_on_server() }
+
+/// **The one duration** — a film's or episode's length, "2h 14m" / "14m", on every screen that
+/// tells one (the captions under posters, the detail hero, About's Run Time, the episode rows, the
+/// source list, the Info card, the HUD). There used to be a compact form ("10m", "2h 14m") and a
+/// spelled-out one ("14 min"), and which a value wore depended on the screen it was on; the shape
+/// has one home now and the minutes-first split lives in [`duration_minutes_in`] only.
+pub fn duration(ms: i64) -> String {
+    duration_in(plx_platform::i18n::current(), ms)
+}
+
+/// [`duration`] for a context other than the thread's (a caption that carries its own).
+pub fn duration_in(cx: &LocaleContext, ms: i64) -> String {
+    duration_minutes_in(cx, ms / 60_000)
+}
+
+/// [`duration`] from whole minutes (a fact the server already gave in minutes).
+pub fn duration_minutes_in(cx: &LocaleContext, mins: i64) -> String {
+    let (h, m) = split_hours(mins);
+    if h > 0 { msg::core_duration_hours_in(cx, h, m) } else { msg::core_duration_minutes_in(cx, m) }
+}
+
+/// Whole minutes as `(hours, minutes)`, a negative count read as none.
+fn split_hours(mins: i64) -> (i64, i64) {
+    let mins = mins.max(0);
+    (mins / 60, mins % 60)
 }
 
 /// **Seconds-scale duration** — "4.5 s" / "12 s". The two formatters above are minute-scale and
@@ -31,6 +48,58 @@ pub fn secs_short(ms: i64) -> String {
     }
 }
 
+/// **N3: one duration, one release phrase.** The length of a film is one shape on every screen, and
+/// the unreleased title's date line is one phrase on both pages that tell it.
+#[cfg(test)]
+mod one_shape_tests {
+    use super::*;
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+
+    const MINUTE: i64 = 60_000;
+
+    #[test]
+    fn a_duration_is_one_compact_shape_whatever_the_screen() {
+        let _g = language_on_this_thread_for_test(Preference::from_tag("en"));
+        for (ms, want) in [(10 * MINUTE, "10m"), (134 * MINUTE, "2h 14m"), (14 * MINUTE, "14m"), (60 * MINUTE, "1h 0m"),
+            (0, "0m"), (-5 * MINUTE, "0m"), (134 * MINUTE + 59_999, "2h 14m")] {
+            assert_eq!(duration(ms), want, "{ms} ms");
+        }
+        let cx = plx_platform::i18n::current();
+        assert_eq!(duration_minutes_in(cx, 134), duration_in(cx, 134 * MINUTE), "minutes and milliseconds are one rule");
+        assert_eq!(time_left(8 * MINUTE), "8 min left");
+        assert_eq!(time_left(62 * MINUTE), "1 hr 2 min left");
+        assert_eq!(time_left(1), "1 min left", "time left never reads zero");
+        assert_eq!(time_left_minutes_in(cx, 0), "1 min left");
+    }
+
+    #[test]
+    fn every_shipped_language_tells_a_duration_with_both_numbers() {
+        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
+            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+            let (hours, minutes) = (duration(134 * MINUTE), duration(14 * MINUTE));
+            assert!(hours.contains('2') && hours.contains("14"), "{tag}: {hours}");
+            assert!(minutes.contains("14") && !minutes.contains('0'), "{tag}: {minutes}");
+        }
+    }
+
+    #[test]
+    fn the_release_phrase_is_one_word_at_either_width_and_none_for_a_bad_date() {
+        let _g = language_on_this_thread_for_test(Preference::from_tag("en"));
+        assert_eq!(coming_on("2027-03-12", MonthWidth::Medium).as_deref(), Some("Coming 12 Mar"));
+        assert_eq!(coming_on("2027-03-12", MonthWidth::Long).as_deref(), Some("Coming 12 March"));
+        for bad in ["", "tomorrow", "2027-13-40", "2027-02-30", "2027-03", "2027-03-12-01"] {
+            assert_eq!(coming_on(bad, MonthWidth::Medium), None, "{bad:?}");
+        }
+        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
+            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+            let lead = msg::watchlist_state_coming_on("");
+            let (medium, long) = (coming_on("2027-03-12", MonthWidth::Medium).unwrap(), coming_on("2027-03-12", MonthWidth::Long).unwrap());
+            assert!(medium.starts_with(lead.trim_end()), "{tag}: {medium} vs {lead:?}");
+            assert!(long.starts_with(lead.trim_end()), "{tag}: {long} vs {lead:?}");
+        }
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn seconds_scale_durations_keep_the_distinctions_that_matter() {
@@ -42,27 +111,34 @@ fn seconds_scale_durations_keep_the_distinctions_that_matter() {
     assert_eq!(secs_short(-1), "0.0 s");
 }
 
-/// Spelled-out duration — "2 hr 15 min" / "45 min" (detail hero + About "Run Time").
-pub fn dur_long(ms: i64) -> String {
-    let mins = (ms / 60_000).max(0);
-    let (h, m) = (mins / 60, mins % 60);
-    if h > 0 {
-        plx_platform::i18n::msg::core_duration_long_hours(h, m)
-    } else {
-        plx_platform::i18n::msg::core_duration_long_minutes(m)
-    }
-}
-
 /// Time-remaining for a Continue-Watching item — "8 min left" / "1 hr 2 min left" (rounded up to
 /// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
 pub fn time_left(remaining_ms: i64) -> String {
-    let mins = ((remaining_ms + 59_999) / 60_000).max(1);
-    let (h, m) = (mins / 60, mins % 60);
-    if h > 0 {
-        plx_platform::i18n::msg::core_time_left_hours(h, m)
-    } else {
-        plx_platform::i18n::msg::core_time_left_minutes(m)
+    time_left_minutes_in(plx_platform::i18n::current(), (remaining_ms + 59_999) / 60_000)
+}
+
+/// [`time_left`] from whole minutes, in a given context; at least a minute (the line promises
+/// time, and "0 min left" is none).
+pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
+    let (h, m) = split_hours(mins.max(1));
+    if h > 0 { msg::core_time_left_hours_in(cx, h, m) } else { msg::core_time_left_minutes_in(cx, m) }
+}
+
+/// **The one release-date phrase** — "Coming 12 Mar" — for an unreleased title: the Watchlist's focus
+/// caption and the catalogue page's line both read it, so the word cannot differ between them (one
+/// said "Releasing", the other "Coming"). `release` is `YYYY-MM-DD` (what `originallyAvailableAt`
+/// carries); anything else, or a day the calendar lacks, is no phrase. The width is the surface's:
+/// a caption under a poster takes the abbreviated month, a page line with room the whole one.
+pub fn coming_on(release: &str, width: MonthWidth) -> Option<String> {
+    let mut parts = release.split('-');
+    let _year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
     }
+    let date = plx_platform::i18n::current().month_day(month, day, width)?;
+    Some(msg::watchlist_state_coming_on(&date))
 }
 
 /// Playback clock — "1:23:45" past the hour, else "3:45" (scrubber clocks, chapter stamps).
@@ -117,8 +193,7 @@ pub fn collection_count(subtype: Option<&str>, n: i64) -> String {
 }
 
 /// [`collection_count`] in `cx`'s language, for the formatters that carry a locale.
-pub fn collection_count_in(cx: &plx_platform::i18n::LocaleContext, subtype: Option<&str>, n: i64) -> String {
-    use plx_platform::i18n::msg;
+pub fn collection_count_in(cx: &LocaleContext, subtype: Option<&str>, n: i64) -> String {
     match subtype {
         Some("movie") => msg::browse_person_films_in(cx, n),
         Some("show") => msg::browse_person_shows_in(cx, n),

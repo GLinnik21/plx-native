@@ -371,7 +371,7 @@ fn watchlist_strings_render_in_every_shipped_language() {
     assert_eq!(msg::watchlist_action_remove_show_in(&es), "Quitar serie…");
     let fr = LocaleContext::resolve(Preference::Fr, None, None, None, None);
     let date = fr.month_day(3, 12, MonthWidth::Medium).unwrap();
-    assert_eq!(msg::watchlist_state_releasing_on_in(&fr, &date), "Sortie le 12 mars");
+    assert_eq!(msg::watchlist_state_coming_on_in(&fr, &date), "Sortie le 12 mars");
     let en = LocaleContext::resolve(Preference::En, None, None, None, None);
     assert_eq!(msg::watchlist_page_sort_filter_in(&en), "Sort & Filter");
     for preference in SHIPPED {

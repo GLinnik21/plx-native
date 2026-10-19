@@ -219,7 +219,7 @@ if present — probe P3 — else lazily from that item's metadata, focused tile 
 | state | mark / caption | OK | hold |
 |---|---|---|---|
 | playable | PMS tick/progress | Detail{sid,rk} of chosen copy | Card kind (sid,rk) + Remove |
-| coming soon, unmatched | clock, "Releasing 12 Mar" | Catalog{hex} | Catalog: Go to … — Remove |
+| coming soon, unmatched | clock, "Coming 12 Mar" | Catalog{hex} | Catalog: Go to … — Remove |
 | coming soon, matched Reachable (Q6) | clock kept (proposal) | Detail{sid,rk} | Card kind + Remove |
 | on no server | circle-slash; 55% wash rest / 25% focus | Catalog{hex} | Catalog |
 | server offline | server-slash, cached progress | Catalog{hex} (server-slash status + progress caption) | Catalog (no Play/Mark-watched) |
@@ -494,7 +494,7 @@ Page ground: AmbientWash keyed to focused title's UltraBlur colours, as Home and
 Empty states: full-screen read-out (verdict y=372, no glyph, sentence case): empty list, and
 "filter left nothing". DS rule change: verdict in PRIMARY text colour, body secondary,
 everywhere. App text never elides (ui/src/CLAUDE.md).
-Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Releasing 12
+Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Coming 12
 Mar"). ICU4X dates numeric only today (`platform/src/i18n/mod.rs:151-163`); need month-name
 format for En/Es/Be (`SHIPPED`, `mod.rs:22`).
 

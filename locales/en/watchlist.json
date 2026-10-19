@@ -53,14 +53,7 @@
   },
   "watchlist.state.coming_on": {
     "value": "Coming {date}",
-    "description": "Coming-soon caption on a Watchlist title with a known release date. The date is a short month-and-day phrase such as 12 March.",
-    "args": {
-      "date": "str"
-    }
-  },
-  "watchlist.state.releasing_on": {
-    "value": "Releasing {date}",
-    "description": "Focus caption on an unreleased Watchlist tile with a known release date. The date is a short month-and-day phrase such as 12 Mar.",
+    "description": "The one release-date phrase of an unreleased title: the Watchlist's focus caption and the catalogue page's line. The date is a short month-and-day phrase such as 12 Mar (caption) or 12 March (page).",
     "args": {
       "date": "str"
     }

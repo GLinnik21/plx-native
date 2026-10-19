@@ -13,7 +13,6 @@
   "watchlist.action.remove": "Выдаліць са спісу для прагляду",
   "watchlist.action.remove_show": "Выдаліць серыял са спісу…",
   "watchlist.state.coming_on": "Выйдзе {date}",
-  "watchlist.state.releasing_on": "Выходзіць {date}",
   "watchlist.state.coming_soon": "Хутка",
   "watchlist.state.on_no_server": "Няма на вашых серверах",
   "watchlist.state.server_offline": "Сервер адключаны",

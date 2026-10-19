@@ -13,7 +13,6 @@
   "watchlist.action.remove": "Von der Merkliste entfernen",
   "watchlist.action.remove_show": "Serie entfernen…",
   "watchlist.state.coming_on": "Ab {date}",
-  "watchlist.state.releasing_on": "Erscheint am {date}",
   "watchlist.state.coming_soon": "Demnächst",
   "watchlist.state.on_no_server": "Nicht auf deinen Servern",
   "watchlist.state.server_offline": "Server offline",

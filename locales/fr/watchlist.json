@@ -13,7 +13,6 @@
   "watchlist.action.remove": "Retirer de la liste de suivi",
   "watchlist.action.remove_show": "Retirer la série…",
   "watchlist.state.coming_on": "Sortie le {date}",
-  "watchlist.state.releasing_on": "Sortie le {date}",
   "watchlist.state.coming_soon": "Bientôt",
   "watchlist.state.on_no_server": "Pas sur vos serveurs",
   "watchlist.state.server_offline": "Serveur hors ligne",

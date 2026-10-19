@@ -1,10 +1,8 @@
 {
   "core.system_default": "Langue du système",
   "core.converts_on_server": "Converti sur le serveur",
-  "core.duration_short_hours": "{hours} h {minutes} min",
-  "core.duration_short_minutes": "{minutes} min",
-  "core.duration_long_hours": "{hours} h {minutes} min",
-  "core.duration_long_minutes": "{minutes} min",
+  "core.duration_hours": "{hours} h {minutes} min",
+  "core.duration_minutes": "{minutes} min",
   "core.time_left_hours": "{hours} h {minutes} min restantes",
   "core.time_left_minutes": "{minutes} min restantes",
   "core.seconds": "{seconds} s",

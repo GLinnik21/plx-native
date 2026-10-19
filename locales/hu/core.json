@@ -1,10 +1,8 @@
 {
   "core.system_default": "Rendszer alapértelmezése",
   "core.converts_on_server": "Konvertálás a szerveren",
-  "core.duration_short_hours": "{hours} ó {minutes} p",
-  "core.duration_short_minutes": "{minutes} p",
-  "core.duration_long_hours": "{hours} óra {minutes} perc",
-  "core.duration_long_minutes": "{minutes} perc",
+  "core.duration_hours": "{hours} ó {minutes} p",
+  "core.duration_minutes": "{minutes} p",
   "core.time_left_hours": "Még {hours} óra {minutes} perc",
   "core.time_left_minutes": "Még {minutes} perc",
   "core.seconds": "{seconds} mp",

@@ -8,35 +8,20 @@
     "args": {},
     "description": "Shared display formatter: converts_on_server"
   },
-  "core.duration_short_hours": {
+  "core.duration_hours": {
     "value": "{hours}h {minutes}m",
     "args": {
       "hours": "i64",
       "minutes": "i64"
     },
-    "description": "Shared display formatter: duration_short_hours"
+    "description": "The one duration (length of a film or episode) in hours and minutes, on every screen that tells one: captions, hero, About, Info card, HUD, source list."
   },
-  "core.duration_short_minutes": {
+  "core.duration_minutes": {
     "value": "{minutes}m",
     "args": {
       "minutes": "i64"
     },
-    "description": "Shared display formatter: duration_short_minutes"
-  },
-  "core.duration_long_hours": {
-    "value": "{hours} hr {minutes} min",
-    "args": {
-      "hours": "i64",
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_long_hours"
-  },
-  "core.duration_long_minutes": {
-    "value": "{minutes} min",
-    "args": {
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_long_minutes"
+    "description": "The one duration under an hour, in minutes. See core.duration_hours."
   },
   "core.time_left_hours": {
     "value": "{hours} hr {minutes} min left",

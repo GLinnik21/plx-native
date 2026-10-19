@@ -303,7 +303,7 @@ impl InfoPanelState {
                 meta.push(year.to_string());
             }
             if dur_ms > 0 {
-                meta.push(plx_ui::fmt::dur_short(dur_ms));
+                meta.push(plx_ui::fmt::duration(dur_ms));
             }
             let meta_line = (!meta.is_empty()).then(|| meta.join("   \u{b7}   "));
 

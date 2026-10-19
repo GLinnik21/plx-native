@@ -1164,7 +1164,7 @@ mod tests {
         }
         let events = std::cell::RefCell::new(Vec::new());
         facts_flow(
-            &["13 Jun 2024", "1 hr 57 min"],
+            &["13 Jun 2024", "1h 57m"],
             "",
             |text, _, _, _| {
                 events.borrow_mut().push(Event::Run(text.into()));

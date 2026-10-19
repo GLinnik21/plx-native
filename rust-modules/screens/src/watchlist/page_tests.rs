@@ -92,9 +92,9 @@ fn captions_carry_the_state_sentence_with_the_month_date() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     let mut row = super::cards_harness::row(1);
     row.release = Some("2027-03-12".into());
-    assert_eq!(default_caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming 12 Mar");
     // Q6: coming soon AND matched keeps the clock, so it keeps the date.
-    assert_eq!(default_caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::ComingSoonMatched), "Coming 12 Mar");
     assert_eq!(default_caption(&row, TileState::NotOnAnyServer), "Not on your servers");
     assert_eq!(default_caption(&row, TileState::ServerOffline), "Server offline");
     assert_eq!(default_caption(&row, TileState::Available), "2001");
