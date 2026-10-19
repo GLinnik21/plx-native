@@ -166,7 +166,8 @@ pub struct LibraryScreen {
     header_pop: plx_ui::widgets::CtlPop<1>,
     /// The row's content swap: the Collections count cross-fading in place when a rebuilt row
     /// changes it, the control fading out when the new library has none. Held beside the capsules
-    /// for the same reason, and NOT canon, like them it is paint: `collections` itself is no part
+    /// for the same reason (a library switch replaces the row), but unlike them it is NOT hashed
+    /// into the canon: the capsules' position steers the next frame, while `collections` is no part
     /// of the screen's shape (a recording never probes), so the swap has nothing to be a function of.
     header_swap: plx_ui::page_header::HeaderSwap,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.

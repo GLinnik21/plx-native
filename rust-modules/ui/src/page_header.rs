@@ -63,7 +63,9 @@ pub fn gap_between(a: f32, b: f32) -> f32 {
     let widest_plate = a.max(b) + 2.0 * OVERHANG;
     GAP + (super::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 * widest_plate
 }
-/// Text edge to text edge between a read-out and the control after it.
+/// The least text-edge to text-edge gap between a read-out and the control after it (the gap the
+/// cluster is sized with). The read-out is anchored at the cluster's measured left edge, so the gap
+/// grows by however much narrower the live cluster is than its widest case.
 pub const READOUT_GAP: f32 = 64.0;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
@@ -83,8 +85,8 @@ pub struct HeaderItem {
     pub focusable: bool,
     /// Drawn quieter (an owner handle, an unavailable control).
     pub dimmed: bool,
-    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and [`READOUT_GAP`] before the next
-    /// item.
+    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and at least [`READOUT_GAP`] before
+    /// the next item.
     pub readout: bool,
     /// A control whose value is a count that comes and goes ("Collections · 4"): the widest value it
     /// ever wears, measured once. The control is PLACED for that width whatever it holds now, with

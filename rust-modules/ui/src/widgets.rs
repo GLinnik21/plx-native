@@ -5255,7 +5255,8 @@ impl View for TabPill {
 // animate *between* pills — which is why the selection used to vanish from one pill and reappear on
 // the next in a single frame. The highlight is therefore hoisted out of the pill and into the STRIP,
 // which knows every pill's span and can carry one fill from one to another. The pill keeps only its
-// label, its constant ground, and the ink it derives from how covered it is.
+// label, its constant ground, and the ink the strip hands it for each stretch of that label
+// ([`TabStrip::ink_spans`]).
 //
 // Shared by the top tab bar (`draw_tab_row`) and the detail page's season tabs, per the owner
 // directive recorded above [`TAB_PILL_H`]: the two rows are ONE control, and one control has one
@@ -5342,6 +5343,16 @@ impl Capsule {
                 self.a.step(0.0, K_TAB_CAP_A, dt);
             }
         }
+    }
+    /// This capsule as DRAWN: its rect for a strip whose pills stand `h` tall at `top`, popped about
+    /// its own centre by `scale`, with its alpha — or `None` while it is not worth a pass (sub-code
+    /// alpha, or a sub-pixel width). [`TabStrip::draw`] paints exactly this and
+    /// [`TabStrip::ink_spans`] cuts a label at exactly its x-extent, so the fill and the ink read ONE
+    /// answer to "where is the capsule" and cannot drift apart.
+    fn drawn(&self, top: f32, h: f32, scale: f32) -> Option<(Rect, f32)> {
+        let (x, w) = self.span();
+        let a = self.alpha();
+        (a > 0.004 && w > 0.5).then(|| (Rect::new(x, top, w, h).scaled(scale), a))
     }
     /// Content-space `(x, w)` as drawn this frame.
     #[inline]
@@ -5625,14 +5636,13 @@ impl TabStrip {
     /// opaque focus capsule is a label nobody can read.
     pub fn draw(&self, p: Painter, top: f32, h: f32, ground: TabGround) {
         let cap = |c: &Capsule, col: [f32; 4], rim: Option<[f32; 4]>, scale: f32, cast: bool| {
-            let (x, w) = c.span();
-            let a = c.alpha();
             // sub-code alpha or a sub-pixel width is nothing on screen but still a full rrect pass
-            if a > 0.004 && w > 0.5 {
-                // The pop + press dip, about the capsule's own centre — 1.0 for a tracked strip,
-                // which never scales. The RADIUS stays keyed to the drawn height so a scaled capsule
-                // is still a capsule rather than a rounded rectangle.
-                let r = Rect::new(x, top, w, h).scaled(scale);
+            // (`Capsule::drawn` is `None` for it).
+            //
+            // The pop + press dip, about the capsule's own centre — 1.0 for a tracked strip, which
+            // never scales. The RADIUS stays keyed to the drawn height so a scaled capsule is still
+            // a capsule rather than a rounded rectangle.
+            if let Some((r, a)) = c.drawn(top, h, scale) {
                 let h = r.h;
                 // The lift every other focused control face wears (`control_cast`, via
                 // `Button::plate`) — owner correction, 2026-09-06: a plated strip's focused pill IS
@@ -5712,8 +5722,10 @@ impl TabStrip {
             TabGround::Tracked { .. } => cap(&self.foc, crate::ACCENT, None, 1.0, false),
         }
     }
-    /// The `(focus, selected)` mixes pill `pill` (content-space `(x, w)`) should ink itself with —
-    /// hand straight to [`TabPill::mix`].
+    /// The `(focus, selected)` WHOLE-LABEL coverage of pill `pill` (content-space `(x, w)`) by each
+    /// capsule. It is NOT what a pill is inked with: one mix for the whole label is the mid-grey that
+    /// is illegible on both sides of a capsule's edge. A draw path takes [`TabStrip::ink_spans`] and
+    /// paints through [`paint_inked`]; this grades the coverage those stretches are cut from.
     pub fn mixes(&self, pill: (f32, f32)) -> (f32, f32) {
         (self.foc.mix(pill), self.sel.mix(pill))
     }
@@ -5733,12 +5745,9 @@ impl TabStrip {
             TabGround::Plated { pop } => (pop, true, theme::TAB_PLATE_SELECTED_OVER),
             TabGround::Tracked { .. } => (1.0, true, theme::OVERLAY_FOCUS_PILL),
         };
-        // A capsule's span as DRAWN (`draw`'s own guard and its pop about the capsule's centre), or
-        // `None` while it is not on screen.
-        let drawn = |c: &Capsule, pop: f32| {
-            let (x, w) = c.span();
-            (c.alpha() > 0.004 && w > 0.5).then(|| (x + (w - w * pop) * 0.5, x + (w + w * pop) * 0.5))
-        };
+        // A capsule's span as DRAWN (`Capsule::drawn`, the one `draw` paints), or `None` while it
+        // is not on screen.
+        let drawn = |c: &Capsule, pop: f32| c.drawn(0.0, 1.0, pop).map(|(r, _)| (r.x, r.x + r.w));
         let sel = drawn(&self.sel, 1.0);
         let foc = if draws_focus { drawn(&self.foc, focus_pop) } else { None };
         // The pill's own ends and every capsule edge strictly inside it, in order (no allocation:
@@ -7308,7 +7317,7 @@ impl StripRender {
             if vis.w > 0.5 {
                 // ink comes from what the capsules above cover of this pill, edge by edge — never from
                 // its own booleans, or a mid-travel label could darken toward ACCENT_INK with nothing
-                // bright under it (`ink_spans` is the one rule the fill and the ink both read).
+                // bright under it (`ink_spans` cuts at the edges `Capsule::drawn` paints, so the fill and the ink agree).
                 let spans = self.top_strip.ink_spans((px, widths[i]), TabGround::Tracked { glass: glass_on });
                 match &faces[i] {
                     // An icon face is a MARK, and it takes its ink from exactly the same
