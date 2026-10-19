@@ -77,6 +77,7 @@ pub mod panel_motion; // the resize/page-slide spring of the in-player table pop
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod page_header; // the library/collections page header row (CONTRACT FREEZE: P1 refines)
+pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the pages' links, BACK and first seat
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
