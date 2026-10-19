@@ -1609,7 +1609,7 @@ impl Painter {
         plx_gfx::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
     /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
-    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the Watchlist header's). At `0.0` this IS
+    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the DS8 title tracking, unused since the Watchlist took the Library's header row). At `0.0` this IS
     /// `text`. The discovery pass sees the string's untracked declaration (the tracked draw only moves
     /// glyph gaps inside it); the recording pass prewarms the per-cluster strings the live draw uses.
     #[allow(clippy::too_many_arguments)]

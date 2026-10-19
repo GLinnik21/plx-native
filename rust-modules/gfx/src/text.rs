@@ -2117,7 +2117,8 @@ pub fn draw_text(
     }
 }
 
-/// Tracking of the Watchlist header title (design board: `letter-spacing: -0.5px`). CSS puts the
+/// Tracking of the Watchlist board's header title (design board: `letter-spacing: -0.5px`; the page's
+/// header is the Library's row now and draws no tracked text). CSS puts the
 /// spacing after every character; here it goes BETWEEN characters (n-1 gaps, see
 /// [`text_width_tracked`]), so a centred or right-aligned title has no trailing gap and the board's
 /// trailing 0.5 px is not reproduced (shipped layout wins; the difference is sub-pixel).
