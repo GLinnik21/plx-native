@@ -1312,6 +1312,34 @@ mod library_publication_tests {
         assert!(allowed(&dispatcher, false, true));
     }
 
+    /// **A press whose activation is already delivered holds nothing up.** OK on the grid's
+    /// Recommended capsule pushes the page from `take_commit`, while the press is still springing back
+    /// (`Phase::Up`, not cancelled, so `is_live`). Nothing it pressed can move any more, yet the gate
+    /// keeps the page's landed hubs `Staged`, so `settled()` stays false and the page shows its
+    /// spinner. On a frozen clock (the frame dump's held repeat: same `T(v)`, `dt` 0) the spring never
+    /// rests, and the spinner the hold waits on never clears: crx-f3's dump of the Recommended page
+    /// stalled 120 s at virtual frame 479 on `library-spinner` with no open claim.
+    #[test]
+    fn a_press_that_already_activated_does_not_hold_visible_shelf_publication() {
+        let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
+        let press = &mut dispatcher.input.press;
+        press.begin(0);
+        press.release(100);
+        let mut now = 0;
+        while !press.take_commit(now) {
+            now += 16;
+            press.tick(now, 0.016);
+            assert!(now < 5_000, "the press never committed");
+        }
+        // The frame dump's held repeat: the same instant, again and again.
+        for _ in 0..600 { press.tick(now, 0.0); }
+        assert!(press.is_active(), "premise: the activated press is still springing back");
+        assert!(matches!(library_publication_command(&dispatcher, target, false, true),
+            plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. }),
+            "the page an activated press opened may publish its hubs at its head");
+    }
+
     /// A landing names rows, and only the Detail pages showing one of them are owed a re-read: the
     /// covered one is deferred, and a page navigated to later is not touched. One server's row
     /// never reaches another server's page of the same key.
