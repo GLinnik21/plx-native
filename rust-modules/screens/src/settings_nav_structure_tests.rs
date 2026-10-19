@@ -236,6 +236,173 @@ fn the_details_picker_opens_seated_on_the_stored_line_not_its_first_row() {
     }
 }
 
+/// Puts every Playback live setting back to what it was when the test began.
+struct PlaybackCells {
+    quality: plx_media::route::Quality,
+    direct_play: plx_media::route::DirectPlayMode,
+    size: plx_media::route::SubtitleSize,
+    position: plx_media::route::SubtitlePosition,
+    hdr: plx_media::route::HdrOverlayBrightness,
+    next_episode: plx_media::route::NextEpisodeMode,
+    deck_press: plx_media::route::DeckPress,
+    skip: plx_media::route::SkipInterval,
+}
+impl PlaybackCells {
+    fn capture() -> Self {
+        use plx_media::route as r;
+        PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), size: r::subtitle_size(),
+            position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(),
+            deck_press: r::deck_press(), skip: r::skip_interval() }
+    }
+}
+impl Drop for PlaybackCells {
+    fn drop(&mut self) {
+        use plx_media::route as r;
+        r::restore_quality(self.quality); r::restore_direct_play_mode(self.direct_play);
+        r::restore_subtitle_size(self.size); r::restore_subtitle_position(self.position);
+        r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode);
+        r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
+    }
+}
+
+/// Open the page `build` mounts, walk to the row `row` and press OK; the page it pushed must be
+/// `dest`, seated on `line` (the checked line, never the first row); BACK pops to the row.
+fn assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
+    label: &str, build: &dyn Fn() -> (Dispatcher<InnerHost>, SurfaceRig, EntryId), row: u32, dest: SettingsPage, line: u32)
+{
+    assert_ne!(line, 0, "{label}: a stored first row cannot tell a seated picker from an unseated one");
+    let (d, rig, id) = build();
+    let mut w = Walk { d, rig, id, ms: 0 };
+    w.ms = settle_frames(&mut w.d, &mut w.rig, 16);
+    w.ms = walk_to(&mut w.d, &mut w.rig, w.ms, row);
+    w.press(Key::Ok);
+    assert_eq!(path(&w.d, w.id).matches(&segment(dest)).count(), 1, "{label}: OK on key {row} pushed {dest:?}: {}", path(&w.d, w.id));
+    assert_eq!(w.elem(), Some(line), "{label}: the pushed page opens on its checked line: {}", path(&w.d, w.id));
+    w.press(Key::Back);
+    assert_eq!(path(&w.d, w.id).matches(&segment(dest)).count(), 0, "{label}: BACK popped {dest:?}: {}", path(&w.d, w.id));
+    assert_eq!(w.elem(), Some(row), "{label}: BACK re-seats the row that opened the page");
+}
+
+/// **Every Settings page that pushes a page with a checked line opens it on that line**, and BACK
+/// re-seats the row it came from. The pushed page asks for its seat from `Mount`, and
+/// `RouteSurface::request` queues the destination's default first-row seat BEFORE that mount runs;
+/// queued after, it put every one of them back on the first row. Each row stores the LAST line of
+/// its ladder, so a first-row seat is a red row:
+/// Playback (Quality, Direct play, Subtitle size, Subtitle position, HDR overlay, Next episode,
+/// Deck press, Skip interval), Audio & Subtitles (Audio language, Subtitle mode, Subtitle language,
+/// Forced subtitles), Under posters (Details), the Settings root (Language). The Interface
+/// resolution picker is not in the table: its row exists only where the platform offers it.
+#[test]
+fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
+    use plx_media::route as r;
+    use plx_plex::plex::session as ses;
+    let _g = plx_base::testlock::serial();
+    let _sess = seated_scratch_session("nav-structure-checked-lines");
+
+    // Playback: the live setting each picker reads, set to the last line of its ladder.
+    let _cells = PlaybackCells::capture();
+    let quality = *r::available_quality_ladder().last().expect("a quality ladder");
+    let ladder_last = |len: usize| (len - 1) as u32;
+    r::restore_quality(quality);
+    r::restore_direct_play_mode(r::DirectPlayMode::Disabled);
+    r::restore_subtitle_size(*ses::SubtitleSize::LADDER.last().unwrap());
+    r::restore_subtitle_position(*ses::SubtitlePosition::LADDER.last().unwrap());
+    r::restore_hdr_overlay_brightness(*ses::HdrOverlayBrightness::LADDER.last().unwrap());
+    r::restore_next_episode_mode(*ses::NextEpisodeMode::LADDER.last().unwrap());
+    r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
+    r::restore_skip_interval(*ses::SkipInterval::LADDER.last().unwrap());
+    let lines = |kind: PickerKind| match kind {
+        PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
+        PickerKind::DirectPlay => 2,
+        PickerKind::SubtitleSize => ladder_last(ses::SubtitleSize::LADDER.len()),
+        PickerKind::SubtitlePosition => ladder_last(ses::SubtitlePosition::LADDER.len()),
+        PickerKind::HdrOverlay => ladder_last(ses::HdrOverlayBrightness::LADDER.len()),
+        PickerKind::NextEpisode => ladder_last(ses::NextEpisodeMode::LADDER.len()),
+        PickerKind::DeckPress => ladder_last(ses::DeckPress::LADDER.len()),
+        PickerKind::SkipInterval => ladder_last(ses::SkipInterval::LADDER.len()),
+        other => panic!("{other:?} is not a Playback picker"),
+    };
+    let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
+    assert_eq!(playback.len(), 8, "every Playback picker is in the table: {playback:?}");
+    for &(row, dest) in &playback {
+        let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
+        assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
+            &format!("playback {kind:?}"), &|| consent_opened(SettingsPage::Playback), row, dest, lines(kind));
+    }
+
+    // Under posters: Details, the fourth ladder line.
+    {
+        use ses::{UnderPosters, UnderPostersDetails};
+        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore });
+        let items = super::under_posters::nav_items_for_test();
+        assert_eq!(items.len(), 1, "{items:?}");
+        let (row, dest) = items[0];
+        assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row("under posters", &|| consent_opened(SettingsPage::UnderPosters), row, dest,
+            super::under_posters::details_elem_for_test(UnderPostersDetails::AgeRatingScore));
+    }
+
+    // Audio & Subtitles: the account's stored answers.
+    {
+        use plx_plex::plex::account::AudioPreferences;
+        let previous = ses::current_snapshot();
+        struct Restore(std::sync::Arc<ses::CurrentProfile>);
+        impl Drop for Restore {
+            fn drop(&mut self) { ses::publish_profile_for_test(self.0.user.clone(), self.0.generation); }
+        }
+        let _restore = Restore(previous);
+        let user = ses::UserRef { id: 7, uuid: "nav-structure-checked-lines".into(), ..Default::default() };
+        ses::publish_profile_for_test(Some(user.clone()), 81);
+        let language_line = |code: &str| 1 + plx_plex::plex::languages::picker().position(|l| l.code == code)
+            .unwrap_or_else(|| panic!("{code} is in the language picker")) as u32;
+        let prefs = AudioPreferences { stated_language: Some("fr".into()), subtitle_language: Some("de".into()),
+            subtitle_mode: 2, subtitle_forced: 3, ..Default::default() };
+        let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 81, prefs.clone());
+        let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::AudioSubtitles, Some(&prefs));
+        assert_eq!(items.len(), 4, "every Audio & Subtitles picker is in the table: {items:?}");
+        for &(row, dest) in &items {
+            let SettingsPage::Picker(kind) = dest else { panic!("an Audio row pushes a picker: {dest:?}") };
+            let line = match kind {
+                PickerKind::AudioLanguage => language_line("fr"),
+                PickerKind::SubtitleLanguage => language_line("de"),
+                PickerKind::SubtitleMode => 2,
+                PickerKind::ForcedSubtitles => 3,
+                other => panic!("{other:?} is not an Audio & Subtitles picker"),
+            };
+            assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(&format!("audio {kind:?}"), &|| {
+                let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
+                frame(&mut d, &mut rig, 32, vec![]);
+                let Some(registry::PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
+                    panic!("the page asks its host for the load");
+                };
+                reply.send(registry::AccountPreferenceReply { request: Some(request.clone()), outcome: Ok(snapshot.clone()) }).unwrap();
+                frame(&mut d, &mut rig, 48, vec![]);
+                (d, rig, id)
+            }, row, dest, line);
+        }
+    }
+
+    // The Settings root: the Language page, on the saved language. (The Interface resolution picker
+    // is pushed only where the platform offers a resolution choice, `offers_ui_resolution`: the host
+    // root has no such row, so that one picker is the TV's to verify.)
+    {
+        let language = *LANGUAGES.last().expect("a language list");
+        let _saved = SavedLanguageForTest::new(language);
+        let root = root_items();
+        let row_of = |dest: SettingsPage| root.iter().find(|(_, d)| *d == dest).map(|(row, _)| *row)
+            .unwrap_or_else(|| panic!("the root has a row for {dest:?}: {root:?}"));
+        assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row("root language", &opened,
+            row_of(SettingsPage::Language), SettingsPage::Language, LangId::Choice(language).key().0);
+    }
+}
+
+struct SavedLanguageForTest(plx_platform::i18n::Preference);
+impl SavedLanguageForTest {
+    fn new(value: plx_platform::i18n::Preference) -> Self { Self(plx_platform::i18n::saved_preference_for_test(value)) }
+}
+impl Drop for SavedLanguageForTest {
+    fn drop(&mut self) { plx_platform::i18n::saved_preference_for_test(self.0); }
+}
+
 /// **Settings > Libraries > Under posters, walked with the remote** (`routes.md` R13): from the
 /// Settings root, Down to the row and OK; the Title switch toggles; Details opens the picker, BACK
 /// from it re-seats Details with nothing written; a pick writes, pops when durable and the row reads
