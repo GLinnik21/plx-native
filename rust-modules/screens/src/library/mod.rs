@@ -1149,10 +1149,6 @@ impl LibraryScreen {
                             // A library chosen with OK leaves focus on the header, where the name is.
                             _ if self.switched => LIBRARY_GROUP,
                             Some(Block::Grid(_)) => self.pair.groups_config().detail,
-                            // Arriving at the head of a library with titles lands on the first
-                            // poster (spec: "first visit lands on the first TITLE"); UP from the
-                            // grid is what reaches the header.
-                            Some(Block::LibraryRow) if self.pair.detail.total() > 0 => self.pair.groups_config().detail,
                             _ => self.first_group(),
                         };
                         // Only the page's OWN head seat is provisional. Any restore is the reader's:
