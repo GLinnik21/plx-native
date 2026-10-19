@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T05:33:27Z",
+ "generated": "2026-10-19T06:31:12Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.0,
+   "change30_pct": -34.2,
    "change7_pct": 41.0,
-   "d30": 782.0,
-   "delta30": -297.0,
+   "d30": 737,
+   "delta30": -252,
    "delta7": 141.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 264,
+   "n_now": 265,
    "n_prev": 208,
-   "now": 485.0,
+   "now": 485,
    "prev7": 344.0,
    "shown": true,
    "state": "worse",
@@ -86,10 +86,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -44.7,
+   "change30_pct": -44.0,
    "change7_pct": 34.2,
-   "d30": 778,
-   "delta30": -348.0,
+   "d30": 768.0,
+   "delta30": -338.0,
    "delta7": 109.5,
    "group": "ci",
    "id": "push_wait",
@@ -246,10 +246,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 87.0,
+   "change30_pct": 91.2,
    "change7_pct": 14.0,
-   "d30": 1166,
-   "delta30": 1015,
+   "d30": 1140.5,
+   "delta30": 1040.5,
    "delta7": 268,
    "group": "ci",
    "id": "minutes",
@@ -288,10 +288,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.7,
+   "change30_pct": 43.3,
    "change7_pct": 7.1,
-   "d30": 224.5,
-   "delta30": 98.0,
+   "d30": 225,
+   "delta30": 97.5,
    "delta7": 21.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -330,10 +330,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 122.4,
+   "change30_pct": 125.6,
    "change7_pct": 4.8,
-   "d30": 107,
-   "delta30": 131,
+   "d30": 105.5,
+   "delta30": 132.5,
    "delta7": 11.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -353,8 +353,8 @@
   {
    "change30_pct": 156.8,
    "change7_pct": -39.9,
-   "d30": 74,
-   "delta30": 116,
+   "d30": 74.0,
+   "delta30": 116.0,
    "delta7": -126.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -501,8 +501,8 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
-   "delta30": 2,
+   "d30": 16.0,
+   "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 768.0,
-   "delta30": -765.0,
+   "d30": 758,
+   "delta30": -755.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 485.0
+   "to": 485
   },
   {
    "change_pct": 34.2,
