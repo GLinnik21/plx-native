@@ -5785,14 +5785,21 @@ pub fn draw_blur_backdrop(
             if !BLUR_IN_PASS && (request.refresh || backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
                 // Activation and newly exposed geometry capture the framebuffer prefix HERE:
                 // the layer walker has reached, but has not drawn, this glass's z ceiling.
-                if !backdrop::begin_inline_capture(request.z) { return false; }
-                BLUR_VALID=false;
-                let r = backdrop::region(request.z).unwrap_or(Rect::new(x,y,w,h));
-                blur_snapshot(blur_region_for(backdrop::rises(request.z), r.x,r.y,r.w,r.h));
-                if !retain_backdrop(request.z) {
-                    backdrop::capture_failed(request.z);
-                    return false;
-                }
+                // `inl` (armed `FRAMEDROP` spans only, empty otherwise, like `src`): one INLINE
+                // capture, so a probe counts the frames that took this path (a glass beneath a
+                // lower live glass) instead of inferring them from tile counts.
+                let captured = plx_base::diag::spans::span("inl", || {
+                    if !backdrop::begin_inline_capture(request.z) { return false; }
+                    BLUR_VALID=false;
+                    let r = backdrop::region(request.z).unwrap_or(Rect::new(x,y,w,h));
+                    blur_snapshot(blur_region_for(backdrop::rises(request.z), r.x,r.y,r.w,r.h));
+                    if !retain_backdrop(request.z) {
+                        backdrop::capture_failed(request.z);
+                        return false;
+                    }
+                    true
+                });
+                if !captured { return false; }
             }
             retained = backdrop::image(request.z);
             let Some(image) = retained.as_ref() else { return false; };

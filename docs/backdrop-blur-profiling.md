@@ -1678,3 +1678,18 @@ drops into a baseline.
 - New FRAMEDROP spans: `text` (a glyph-cache miss), `host`, `src`, `warm` and `warmdrain`. They
   are there so the television can attribute what is left. The GPU-side `clear` waits and the 1080p
   backdrop upload are not addressed here.
+
+### 2026-10-19: a direct job plus an inline capture on one frame is a tile class the bins never named
+
+The 4096 / ~6050 / ~4912 bins (above) assume ONE refresh per frame. A frame with two glasses whose
+blur footprints meet has two: the lower glass runs its direct job (about +825 tiles for the Library's
+scroll capsule) and the upper one is a composite band that captures INLINE in the visible pass
+(about +1800 to +2100 tiles), so the frame lands at 6300 to 7000 tiles, above every bin. The
+Library's tuck ramp with the capsule up was exactly that on every ramp frame (mean 12.91M GPU
+cycles against 10.73M for the same page with one library and no capsule; 25.6% of the ramp's frames
+late against 2.4%): the inline capture costs about 1.4M more than the band's direct job. The page
+now sequences the two (`scroll_chrome::tuck` then `capsule_alpha`), so a ramp frame carries one
+direct job. With `plxnative-framedrop` armed the new `inl` span times each inline capture, so a leg
+counts them directly: a frame with `inl` in its `spans=` took the inline path. Two caveats: the
+per-pass split of the inline increment (copy, render-pass split, chain) is not measured, and the
+~6050 class is not unique to inline captures (frames with no glass job at all land there too).
