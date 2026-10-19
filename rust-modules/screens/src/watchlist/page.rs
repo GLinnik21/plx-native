@@ -1132,6 +1132,10 @@ impl WatchlistScreen {
             rail: None,
             back_walks_header: false,
             arrival: Arrival::Content,
+            // The Sort & Filter pill holds the seat until the first title lands and then hands it to
+            // the tile (`follow_seat`, `watchlist/opening_tests.rs`); its OK opens a menu, it leaves
+            // nothing. Not yet part of the "seat nothing while loading" rule.
+            pending: None,
         })
     }
 

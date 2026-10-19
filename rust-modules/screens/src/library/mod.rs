@@ -634,13 +634,37 @@ impl LibraryScreen {
             rail: Some(self.pair.groups_config().master),
             back_walks_header: self.listing != Listing::Collections,
             arrival: Arrival::Content,
+            // The grid's cells are on their way: until they land (or the listing fails or comes back
+            // empty) the page seats nothing, instead of a header control whose OK leaves the page.
+            pending: (self.readout == Readout::Loading).then_some(self.pair.groups_config().detail),
         })
     }
 
     /// The group the page seats on its first arrival: its first poster once the grid has one, the
-    /// header row while it has none (`PageRegions::first_seat`).
-    fn first_group(&self) -> GroupId {
-        self.with_regions(|regions| regions.first_seat()).unwrap_or(STRIP)
+    /// header row when the listing is loaded and empty, the read-out's control when it failed, and
+    /// `None` while it is still loading (`PageRegions::first_seat`): then the page holds no seat
+    /// (`PageRegions::unseat`).
+    fn first_group(&self) -> Option<GroupId> {
+        self.with_regions(|regions| regions.first_seat())
+    }
+
+    /// The group the page seats once its listing has something to show: a library chosen with OK
+    /// leaves focus on the header, where the name is; a grid with cells in view seats its poster;
+    /// anything else is the page's first seat. `None` while the listing is still loading.
+    fn arrival_group(&self) -> Option<GroupId> {
+        match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
+            _ if self.switched => Some(LIBRARY_GROUP),
+            Some(Block::Grid(_)) => Some(self.pair.groups_config().detail),
+            _ => self.first_group(),
+        }
+    }
+
+    /// Seat `first_group`, or hold the page unseated while its listing is loading: the one place a
+    /// page's "arrive in the content" request is made.
+    fn reseat_first<H: LibraryLike>(&self, fx: &mut Effects<'_, H>) {
+        if let Some(target) = self.with_regions(|regions| regions.first_seat().map(FocusTarget::ContainerGroup).or_else(|| regions.unseat())) {
+            self.reseat(target, fx);
+        }
     }
 
     fn current_viewport(&self) -> Option<LibraryViewport> {
@@ -1105,7 +1129,7 @@ impl LibraryScreen {
                     self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
                 match first_row {
                     Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
-                    None => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+                    None => self.reseat_first(fx),
                 }
             }
             BackStep::Header => self.reseat(FocusTarget::ContainerGroup(LIBRARY_GROUP), fx),
@@ -1201,6 +1225,13 @@ impl LibraryScreen {
                 // reconcile is adopted whole by its next tick so a page returning from a Detail
                 // push lands as it was left.
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
+                // The engine seats a page it has just mounted in the first group it can (the bar), before a
+                // page whose listing is still loading has anything to seat. Such a page holds no seat
+                // instead (`PageRegions::unseat`); the reader's first key (`initial` is theirs to clear,
+                // below) or the cells landing seat it.
+                if self.initial && !self.switched && from.is_none() && to.entry == self.entry {
+                    if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
+                }
                 if matches!(by, By::Dir | By::Pointer) {
                     self.initial = false;
                     self.provisional = None;
@@ -1298,21 +1329,16 @@ impl LibraryScreen {
                     if self.owns_listing() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
-                    if self.initial && self.layout.first().is_some() && self.seed_cursor(cx, fx) {
+                    let arrival = if self.initial && self.layout.first().is_some() { self.arrival_group() } else { None };
+                    if let Some(group) = arrival.filter(|_| self.seed_cursor(cx, fx)) {
                         self.initial = false;
-                        let group = match self.layout.seat_for_scroll(self.scroll.pos, self.layout.visible_rows(self.scroll.pos).0) {
-                            // A library chosen with OK leaves focus on the header, where the name is.
-                            _ if self.switched => LIBRARY_GROUP,
-                            Some(Block::Grid(_)) => self.pair.groups_config().detail,
-                            _ => self.first_group(),
-                        };
                         // Only the page's OWN head seat is provisional. Any restore is the reader's:
                         // a restored scroll (a saved viewport or bookmark, at the head or not) names
                         // the block they left, and a remembered cursor in the seated group is where
                         // `Seat::Remembered` puts them back — neither may follow a landing.
                         let restoring = self.restore_scroll.is_some() || cx.focus.remembered(group)
                             .is_some_and(|elem| !self.placed.contains(&(group, elem)));
-                        self.provisional = (group == self.first_group() && !restoring && !self.switched).then_some(group);
+                        self.provisional = (Some(group) == self.first_group() && !restoring && !self.switched).then_some(group);
                         self.seat_arrival(group, cx, fx);
                         self.switched = false;
                     } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
@@ -1326,7 +1352,7 @@ impl LibraryScreen {
                         // A key of this page that nothing places any more is the seat itself gone
                         // (the status read-out clears as the grid lands), still the page's own.
                         if mine.is_none() || at.is_some_and(|group| group != seated) { self.provisional = None; }
-                        else if head != seated { self.provisional = Some(head); self.seat_arrival(head, cx, fx); }
+                        else if let Some(head) = head.filter(|head| *head != seated) { self.provisional = Some(head); self.seat_arrival(head, cx, fx); }
                     }
                 }
                 // The dispatcher ticks the top page beneath a compact menu, but not buried pages.
@@ -1355,6 +1381,12 @@ impl LibraryScreen {
                 if matches!(input.kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Pointer { .. }
                     | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
                     self.provisional = None;
+                }
+                // An arrow or a pointer acting on a page that has seated nothing yet is the reader's own
+                // move: the cells that land afterwards must not take the seat from it.
+                if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }
+                    | InputKind::Pointer { .. } | InputKind::Click { .. } | InputKind::Drag { .. }) {
+                    self.initial = false;
                 }
                 // A pointer on a control confirms it the way activating it does.
                 if let InputKind::Pointer { hit: Some(hit), .. } | InputKind::Click { hit: Some(hit), .. }
@@ -1406,6 +1438,9 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             self.pair.detail.groups(cx, out);
         }
         self.with_regions(|regions| regions.seat_content_head(&mut out[content..]));
+        // A grid with no cells declares no group; the pending one is declared empty so a fresh enter
+        // naming it seats nothing (`PageRegions::unseat`) rather than falling back to the header.
+        self.with_regions(|regions| regions.declare_pending(out));
         // After a library was chosen, the DOWN into its grid is the reader's way back to where they
         // were: the engine's remembered tile, across the vertical door that otherwise projects.
         if self.enter_remembered {

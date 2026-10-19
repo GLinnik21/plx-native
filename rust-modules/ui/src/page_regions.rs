@@ -27,7 +27,14 @@
 //! content seats the cell the last Up left from ([`CONTENT_HEAD_SEAT`], written once by
 //! [`PageRegions::seat_content_head`]), the tile under the header's stop only when it has no
 //! memory. Every page ARRIVES in its content ([`Arrival::Content`]; the header is one Up away, and
-//! stands as the seat only while the content has nothing to seat). [`PageRegions::links`] is where that column is
+//! stands as the seat only when the content is loaded and has nothing to seat). **While the
+//! content's listing is still loading ([`PageRegions::pending`]) the page seats NOTHING**: no
+//! focus mark, OK does nothing, BACK is [`PageRegions::back`] with `at: None`. The header's first
+//! control may be one whose OK leaves the page (the Collections page's Back crumb, the Library's
+//! "Collections" push), so it is never the arrival seat of a page that has no tile to seat yet.
+//! A directional key seats the header (the engine's no-focus fallback), and that move is the
+//! page's own "the reader has moved", so the cells that land afterwards do not pull focus.
+//! [`PageRegions::links`] is where that column is
 //! written, so a page that declares a `Link` involving `STRIP`, its header group or the head of its
 //! content by hand has a second declaration of the column.
 //!
@@ -47,7 +54,7 @@
 //! names only `screen` types, `GroupId` and `dispatch::STRIP_BASE`.
 use crate::containers::tabs::STRIP;
 use crate::dispatch::STRIP_BASE;
-use crate::screen::{Dir, GroupSpec, Link, Seat, Step};
+use crate::screen::{AxisMask, Dir, EdgeRule, ElemKind, FocusTarget, GroupKind, GroupSpec, Link, Seat, Step};
 use plx_machine::machine::{EntryId, FocusKey, GroupId};
 
 /// Where focus is on a page, in the column's terms.
@@ -111,6 +118,12 @@ pub struct PageRegions<'a> {
     pub back_walks_header: bool,
     /// The region the first arrival seats.
     pub arrival: Arrival,
+    /// **The content group whose cells are still on their way**: `Some` from the page's mount until
+    /// its listing is loaded (cells landed, loaded and empty, or failed), `None` after. While it is
+    /// `Some` and the content holds no group yet, [`first_seat`](Self::first_seat) is `None`: the
+    /// page seats nothing, and [`unseat`](Self::unseat) is the one request that makes the engine hold
+    /// it.
+    pub pending: Option<GroupId>,
 }
 
 impl PageRegions<'_> {
@@ -161,13 +174,41 @@ impl PageRegions<'_> {
     }
 
     /// The group the first arrival seats: the header or the head of the content by the page's
-    /// [`Arrival`], whichever exists when the preferred one does not (the Watchlist before its
-    /// first title has landed seats its header).
+    /// [`Arrival`], whichever exists when the preferred one does not. **`None` while the content is
+    /// [pending](Self::pending)**: a page whose listing is still loading seats nothing, so no
+    /// control stands as the arrival (loaded and empty, and failed, keep the header and the
+    /// read-out's control).
     pub fn first_seat(&self) -> Option<GroupId> {
         match self.arrival {
             Arrival::Header => self.header.or_else(|| self.content.first().copied()),
-            Arrival::Content => self.content.first().copied().or(self.header),
+            Arrival::Content => match self.content.first() {
+                Some(&head) => Some(head),
+                None if self.pending.is_some() => None,
+                None => self.header,
+            },
         }
+    }
+
+    /// **The one path to the unseated state**: the fresh enter a page asks for when
+    /// [`first_seat`](Self::first_seat) is `None`. It names the pending group, which
+    /// [`declare_pending`](Self::declare_pending) declares empty, and the engine clears the scope for
+    /// a fresh enter into an empty group (`FocusEngine::enter`) instead of falling back to the
+    /// first non-empty group, the header. `None` when the page has something to seat.
+    pub fn unseat<K>(&self) -> Option<FocusTarget<K>> {
+        self.first_seat().is_none().then_some(self.pending).flatten().map(FocusTarget::FirstInGroup)
+    }
+
+    /// **Declare the [pending](Self::pending) group in `groups`** when the page has not (an empty
+    /// grid declares no group at all): zero elements at the head of the content, which the engine's
+    /// enter reads as "nothing to seat here" and a directional key skips (`move_dir` seats the
+    /// first group with elements, the header). A group the page did declare is left alone.
+    pub fn declare_pending(&self, groups: &mut Vec<GroupSpec>) {
+        let Some(id) = self.pending.filter(|id| !groups.iter().any(|spec| spec.id == *id)) else { return };
+        let extent = groups.last().map_or(crate::Rect::new(0.0, 0.0, 1.0, 1.0), |spec| {
+            crate::Rect::new(spec.extent.x, spec.extent.y + spec.extent.h, spec.extent.w, 1.0)
+        });
+        groups.push(GroupSpec { id, kind: GroupKind::Free, seat: Seat::Remembered, reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Geometric; 4], extent, len: 0, elem: ElemKind::Card });
     }
 
     /// **What BACK does** with focus in `at` (`None`: nothing of this page holds focus) and the
@@ -211,6 +252,7 @@ pub fn row_neighbour(entry: EntryId, stops: &[u32], key: FocusKey<u32>, dir: Dir
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen::{AxisMask, EdgeRule, ElemKind, GroupKind};
 
     const HEADER: GroupId = GroupId(1);
     const GRID: GroupId = GroupId(2);
@@ -219,7 +261,7 @@ mod tests {
     const E: EntryId = EntryId(9);
 
     fn regions<'a>(content: &'a [GroupId], walks: bool, arrival: Arrival) -> PageRegions<'a> {
-        PageRegions { header: Some(HEADER), content, rail: Some(RAIL), back_walks_header: walks, arrival }
+        PageRegions { header: Some(HEADER), content, rail: Some(RAIL), back_walks_header: walks, arrival, pending: None }
     }
 
     fn link(from: GroupId, dir: Dir, to: GroupId) -> Link { Link { from, dir, to } }
@@ -266,6 +308,45 @@ mod tests {
         assert_eq!(regions(&[], false, Arrival::Content).first_seat(), Some(HEADER));
         assert_eq!(PageRegions { header: None, ..regions(&[GRID], false, Arrival::Header) }.first_seat(), Some(GRID));
         assert_eq!(PageRegions { header: None, ..regions(&[], false, Arrival::Header) }.first_seat(), None);
+    }
+
+    #[test]
+    fn nothing_is_seated_while_the_arrival_region_is_still_loading() {
+        let loading = |content: &'static [GroupId], arrival| PageRegions { pending: Some(GRID), ..regions(content, false, arrival) };
+        // Loading: the content is declared but holds no cells, so the page seats nothing (the header's
+        // first control may be a Back crumb whose OK leaves the page).
+        assert_eq!(loading(&[], Arrival::Content).first_seat(), None);
+        assert_eq!(PageRegions { header: None, ..loading(&[], Arrival::Content) }.first_seat(), None);
+        // Cells landed: the content, whatever else is still pending.
+        assert_eq!(loading(&[GRID], Arrival::Content).first_seat(), Some(GRID));
+        // Loaded and empty (or failed, which puts its read-out in the content): not pending.
+        assert_eq!(regions(&[], false, Arrival::Content).first_seat(), Some(HEADER));
+        assert_eq!(regions(&[STATUS], false, Arrival::Content).first_seat(), Some(STATUS));
+        // The header-arrival page has no pending content to wait for.
+        assert_eq!(loading(&[], Arrival::Header).first_seat(), Some(HEADER));
+        // The one path to the unseated state: a fresh enter naming the pending group, which the page
+        // declares empty, so the engine clears the scope instead of falling back to the header.
+        assert_eq!(loading(&[], Arrival::Content).unseat::<u32>().map(|target| matches!(target, FocusTarget::FirstInGroup(GRID))), Some(true));
+        assert!(regions(&[], false, Arrival::Content).unseat::<u32>().is_none());
+    }
+
+    #[test]
+    fn a_pending_group_is_declared_empty_so_an_enter_naming_it_seats_nothing() {
+        let page = PageRegions { pending: Some(GRID), ..regions(&[], false, Arrival::Content) };
+        let spec = |id| GroupSpec { id, kind: GroupKind::Free, seat: Seat::Remembered, reachable: AxisMask::BOTH,
+            edge: [EdgeRule::Stop; 4], extent: crate::Rect::new(0.0, 0.0, 10.0, 10.0), len: 3, elem: ElemKind::Control };
+        let mut out = vec![spec(HEADER)];
+        page.declare_pending(&mut out);
+        assert_eq!(out.iter().map(|spec| (spec.id, spec.len)).collect::<Vec<_>>(), [(HEADER, 3), (GRID, 0)]);
+        // Idempotent, and a group the page did declare is left alone.
+        page.declare_pending(&mut out);
+        assert_eq!(out.len(), 2);
+        let mut landed = vec![spec(HEADER), spec(GRID)];
+        page.declare_pending(&mut landed);
+        assert_eq!(landed.iter().map(|spec| spec.len).collect::<Vec<_>>(), [3, 3]);
+        let mut none = vec![spec(HEADER)];
+        regions(&[], false, Arrival::Content).declare_pending(&mut none);
+        assert_eq!(none.len(), 1, "a page that is not pending declares nothing extra");
     }
 
     #[test]

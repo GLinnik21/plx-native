@@ -68,6 +68,9 @@ const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 /// group of its own (the same element the Collections page's crumb root has on the library page).
 const CRUMB_ELEM: u32 = super::toolbar::CRUMB_ROOT;
 const CRUMB_GROUP: GroupId = super::LIBRARY_GROUP;
+/// The shelves' place before any row has landed: declared empty (`PageRegions::declare_pending`), so
+/// a page whose hubs are still loading can hold no seat (`PageRegions::unseat`).
+const SHELVES_GROUP: GroupId = GroupId(0x4c49_4214);
 
 /// One hub's row: the published hub's identities and its `cards::Shelf`, which owns the pop, the
 /// scroll, the caption band, the draw, the stops and the placement.
@@ -424,12 +427,23 @@ impl RecommendedScreen {
             rail: None,
             back_walks_header: false,
             arrival: Arrival::Content,
+            // No publication yet: the page seats nothing until its first row lands (or it learns
+            // there are none), not the crumb whose OK pops the page.
+            pending: (self.readout == Readout::Loading).then_some(SHELVES_GROUP),
         })
     }
 
-    /// The group the page seats on its first arrival: the first row (its heading, when it has one).
-    fn first_group(&self) -> GroupId {
-        self.with_regions(|regions| regions.first_seat()).unwrap_or(STRIP)
+    /// The group the page seats on its first arrival: the first row (its heading, when it has one);
+    /// `None` while the hubs are still loading (`PageRegions::first_seat`).
+    fn first_group(&self) -> Option<GroupId> {
+        self.with_regions(|regions| regions.first_seat())
+    }
+
+    /// Seat `first_group`, or hold the page unseated while its hubs are loading.
+    fn reseat_first<H: LibraryLike>(&self, fx: &mut Effects<'_, H>) {
+        if let Some(target) = self.with_regions(|regions| regions.first_seat().map(FocusTarget::ContainerGroup).or_else(|| regions.unseat())) {
+            self.reseat(target, fx);
+        }
     }
 
     /// **BACK**, decided by [`PageRegions::back`] and executed here: a scrolled page first returns
@@ -451,10 +465,10 @@ impl RecommendedScreen {
                 let seat = self.shelves.first().and_then(|row| row.elems.get(column.min(row.elems.len().saturating_sub(1))));
                 match seat {
                     Some(&elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
-                    None => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+                    None => self.reseat_first(fx),
                 }
             }
-            BackStep::Content => self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx),
+            BackStep::Content => self.reseat_first(fx),
             BackStep::Header => self.reseat(FocusTarget::ContainerGroup(CRUMB_GROUP), fx),
             BackStep::Nav => self.reseat(FocusTarget::ContainerGroup(STRIP), fx),
             BackStep::Leave => fx.push(Fx::App(AppFx::Content(ContentReq::Back))),
@@ -747,8 +761,13 @@ impl RecommendedScreen {
             ScreenEvent::Cover => self.live = false,
             ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
-            ScreenEvent::FocusMoved { to, by, .. } => {
+            ScreenEvent::FocusMoved { from, to, by } => {
                 self.shelves_on(ev, cx, fx);
+                // The engine seats a mounted page in the first group it can (the bar) before its hubs
+                // have landed: a page still loading holds no seat instead (`PageRegions::unseat`).
+                if self.initial && from.is_none() && to.entry == self.entry {
+                    if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
+                }
                 if matches!(by, By::Dir | By::Pointer) { self.initial = false; }
                 self.reveal_focus(*to, *by, cx);
             }
@@ -773,7 +792,7 @@ impl RecommendedScreen {
                     // The page's own first seat: the first row, once there is one.
                     if self.initial && self.readout == Readout::Rows {
                         self.initial = false;
-                        self.reseat(FocusTarget::ContainerGroup(self.first_group()), fx);
+                        self.reseat_first(fx);
                     }
                 }
                 if let Some(target) = self.address(cx) {
@@ -789,6 +808,12 @@ impl RecommendedScreen {
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
+                // An arrow or a pointer acting on a page that has seated nothing yet is the reader's
+                // own move: the rows that land afterwards must not take the seat from it.
+                if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }
+                    | InputKind::Pointer { .. } | InputKind::Click { .. } | InputKind::Drag { .. }) {
+                    self.initial = false;
+                }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, 0.0))
                         .clamp(0.0, max_scroll(&self.target_run));
@@ -898,6 +923,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             out.push(shelf);
         }
         self.with_regions(|regions| regions.seat_content_head(out));
+        self.with_regions(|regions| regions.declare_pending(out));
     }
     fn group_of(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
         if *elem == CRUMB_ELEM { return Some(CRUMB_GROUP); }
@@ -926,7 +952,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             let elems = self.row_elems(Some(group));
             if let Some(elem) = elems.get(index.min(elems.len().saturating_sub(1))) { return self.key(*elem); }
         }
-        self.row_elems(Some(self.first_group())).first().copied().map(|elem| self.key(elem))
+        self.first_group().and_then(|group| self.row_elems(Some(group)).first().copied()).map(|elem| self.key(elem))
             .unwrap_or_else(|| self.key(plx_ui::dispatch::STRIP_BASE))
     }
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {

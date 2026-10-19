@@ -171,7 +171,8 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         let mut engine = FocusEngine::new();
         let mut page = LibraryScreen::new(ENTRY, INSTANCE, SecKind::Movie);
         outgoing.deliver(&mut page, &mut engine, ScreenEvent::Mount);
-        let first_group = page.first_group();
+        // The listing is still loading, so the page has no arrival seat of its own: the test seats the header.
+        let first_group = page.first_group().unwrap_or(super::LIBRARY_GROUP);
         outgoing.deliver(
             &mut page,
             &mut engine,

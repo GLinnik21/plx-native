@@ -238,7 +238,12 @@ impl World {
     /// library per source, so the Movies header names one library.
     pub(super) fn new(name: &str) -> World { Self::build(name, false) }
 
-    fn build(name: &str, two_libraries: bool) -> World {
+    fn build(name: &str, two_libraries: bool) -> World { Self::build_listing(name, two_libraries, true) }
+
+    /// [`Self::build`], the library's films answered (`answered`) or its listing held LOADING
+    /// (`BrowseStore::hold_listing_for_test`): a test server is a closed port whose fetch fails at once,
+    /// so a listing that is still on its way needs the hold.
+    fn build_listing(name: &str, two_libraries: bool, answered: bool) -> World {
         let (serial, session) = Self::lock(name);
         plx_plex::plex::reset_servers_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
@@ -256,7 +261,7 @@ impl World {
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
             let mut browse = bridge.stores.browse.borrow_mut();
-            browse.seed_items_for_test(120);
+            if answered { browse.seed_items_for_test(120); } else { browse.hold_listing_for_test(); }
             browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
             browse.seed_landscape_for_test(0, "Synthetic show");
         }
@@ -269,6 +274,23 @@ impl World {
     pub(super) fn movies_library(name: &str, two_libraries: bool) -> World {
         let mut w = Self::build(name, two_libraries);
         w.open_library();
+        w
+    }
+
+    /// The Movies library opened while its listing is still LOADING (held, never answered): the page
+    /// that has no tile to seat yet. `two_libraries` pins "Film Club" beside "Movies".
+    pub(super) fn movies_library_loading(name: &str, two_libraries: bool) -> World {
+        let mut w = Self::build_listing(name, two_libraries, false);
+        w.open_library();
+        w
+    }
+
+    /// The Collections page, opened with OK on the Library header's Collections control, its own
+    /// listing held LOADING (the Library under it is answered, so the control is there to press).
+    pub(super) fn collections_loading(name: &str) -> World {
+        let mut w = Self::movies_library(name, false);
+        w.bridge.stores.browse.borrow_mut().hold_listing_for_test();
+        w.open_from_header(8, AppArg::LibraryCollections { section: 0 });
         w
     }
 

@@ -3582,6 +3582,13 @@ pub fn queue_discovery_for_owner_test(
     ));
 }
 
+/// Take the single-flight flag the listing's page fetch waits on, and never give it back: no page is
+/// asked for, so the listing stays `Loading` (`BrowseStore::hold_listing_for_test`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_listing_for_owner_test(adapter: &BrowseAdapter) {
+    adapter.fetching.store(true, Ordering::SeqCst);
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
     plx_base::testlock::assert_held("browse's section table (seed_items_for_test)");

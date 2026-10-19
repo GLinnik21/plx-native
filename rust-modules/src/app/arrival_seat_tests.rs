@@ -169,3 +169,95 @@ fn a_listing_that_lands_after_the_dissolve_lifts_its_first_poster_from_rest() {
     assert!(lift[0] < 1.0 + (full - 1.0) * 0.5, "the lift is adopted whole on the frame the listing lands: {} of {full}: {lift:?}", lift[0]);
     assert!(lift.windows(2).all(|pair| pair[1] >= pair[0] - 1e-4), "the lift is not a monotone rise: {lift:?}");
 }
+
+/// **While a page's listing is still loading the page seats nothing** (the arrival seat is never a
+/// control whose OK leaves the page, and with no tile yet there is none to take): no focus mark, OK
+/// does nothing, BACK leaves as it does from a page with nothing focused, a directional key seats the
+/// engine's no-focus fallback (the reader's own move, which the cells that land afterwards do not
+/// undo), and with no key the cells that land seat the first poster.
+struct Loading {
+    name: &'static str,
+    mount: fn() -> World,
+    /// The answer the page is waiting for.
+    land: fn(&mut World),
+    /// The request BACK raises from a page with nothing focused.
+    back: &'static str,
+}
+
+fn land_films(w: &mut World) { w.bridge.stores.browse.borrow_mut().seed_items_for_test(120); }
+fn land_collections(w: &mut World) { w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12); }
+
+const LOADING: [Loading; 3] = [
+    Loading { name: "library, two libraries", mount: || World::movies_library_loading("loading-multi", true), land: land_films, back: "library:BackToHome" },
+    Loading { name: "library, one library", mount: || World::movies_library_loading("loading-one", false), land: land_films, back: "library:BackToHome" },
+    Loading { name: "collections", mount: || World::collections_loading("loading-collections"), land: land_collections, back: "content:Back" },
+];
+
+#[test]
+fn a_page_whose_listing_is_loading_seats_nothing_and_ok_does_nothing() {
+    let mut fails = Vec::new();
+    for row in &LOADING {
+        let mut w = (row.mount)();
+        if w.focus().is_some() { fails.push(format!("{}: seated {:?} ({}) while loading", row.name, w.elem(), region(&w))); }
+        let top = w.d.top_arg().cloned();
+        let performed = w.press(Key::Ok);
+        if !performed.is_empty() { fails.push(format!("{}: OK with nothing seated raised {performed:?}", row.name)); }
+        if w.d.top_arg().cloned() != top { fails.push(format!("{}: OK with nothing seated changed the page", row.name)); }
+        if w.focus().is_some() { fails.push(format!("{}: OK seated {:?}", row.name, w.elem())); }
+    }
+    assert!(fails.is_empty(), "{} pages seat while loading:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// BACK from a page with nothing focused is the leave it is from the bar: the Library goes Home, the
+/// Collections page pops to the Library that opened it.
+#[test]
+fn back_from_a_page_that_seats_nothing_leaves_it() {
+    let mut fails = Vec::new();
+    for row in &LOADING {
+        let mut w = (row.mount)();
+        let performed = w.press(Key::Back);
+        if !performed.iter().any(|label| label.starts_with(row.back)) {
+            fails.push(format!("{}: BACK with nothing seated performed {performed:?}, not {}", row.name, row.back));
+        }
+    }
+    assert!(fails.is_empty(), "{} pages do not leave on BACK:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// **A directional key seats the engine's no-focus fallback, and the cells that land afterwards leave
+/// it there**: the press is the reader's own move, so the landing does not pull focus to the first
+/// poster. The fallback is the first group the page can offer, which on every page that wears the bar
+/// is the bar, on the page's own pill (OK on it is the tab it is already on); the header is one Down.
+#[test]
+fn a_directional_key_seats_the_bar_and_the_landing_cells_do_not_take_it_back() {
+    let mut fails = Vec::new();
+    for row in &LOADING {
+        for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
+            let mut w = (row.mount)();
+            let performed = w.press(key);
+            if region(&w) != "nav" { fails.push(format!("{}: {key:?} seated the {} ({:?}), not the bar", row.name, region(&w), w.elem())); continue; }
+            if !performed.is_empty() { fails.push(format!("{}: {key:?} raised {performed:?}", row.name)); }
+            let seat = w.elem();
+            (row.land)(&mut w);
+            w.frames(90);
+            if w.elem() != seat { fails.push(format!("{}: after {key:?} the landing cells moved focus from {seat:?} to {:?} ({})", row.name, w.elem(), region(&w))); }
+            // And the header is one Down from there, as on any page.
+            w.press(Key::Down);
+            if region(&w) != "header" { fails.push(format!("{}: Down from the bar reached the {}, not the header", row.name, region(&w))); }
+        }
+    }
+    assert!(fails.is_empty(), "{} pages take the seat back:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// With no key, the cells that land seat the first poster (the arrival, which lifts from rest:
+/// `a_listing_that_lands_after_the_dissolve_lifts_its_first_poster_from_rest`).
+#[test]
+fn the_cells_that_land_seat_the_first_poster_when_the_reader_has_not_moved() {
+    let mut fails = Vec::new();
+    for row in &LOADING {
+        let mut w = (row.mount)();
+        (row.land)(&mut w);
+        w.frames(90);
+        if region(&w) != "content" { fails.push(format!("{}: the landing seated the {} ({:?}), not a poster", row.name, region(&w), w.elem())); }
+    }
+    assert!(fails.is_empty(), "{} pages do not seat their first poster:\n{}", fails.len(), fails.join("\n"));
+}

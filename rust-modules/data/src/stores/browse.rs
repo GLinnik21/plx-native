@@ -276,6 +276,16 @@ impl BrowseStore {
         crate::browse::seed_collections_for_owner_test(&mut self.state, count);
     }
 
+    /// **Hold the listing's fetch**: the single-flight flag stays taken, so the page the section is
+    /// waiting for is never asked for and nothing lands. A host test's server is a closed port, whose
+    /// fetch fails at once; a page that wants to be read while its listing is LOADING needs the
+    /// listing to stay so. A seeded listing ([`seed_items_for_test`](Self::seed_items_for_test)) still
+    /// lands over the hold.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_listing_for_test(&mut self) {
+        crate::browse::hold_listing_for_owner_test(&self.adapter);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_sources_for_test(&mut self, count: usize, reachable: bool) {
         crate::browse::seed_sources_for_owner_test(&mut self.state, count, reachable);
