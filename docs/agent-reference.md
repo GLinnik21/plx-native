@@ -660,7 +660,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `df` is what is really free.** None of this reclaim has to be run by
   hand anymore: `tools/build-gc.sh --auto` runs the same modes on its own, staged by free-space
   pressure, from a `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs —
-  `make disk` remains the report to read before deciding whether to intervene yourself.)
+  `make disk` remains the report to read before deciding whether to intervene yourself. Its last
+  section is the disk budget (`tools/disk-budget.py report`, `docs/disk-budget.md`): each tree's
+  PRIVATE bytes, which is what deleting it really frees and not what `du` says, the PlxNative cargo
+  trees under `/tmp` that nothing above can see, and the order a reclaim would take them in. It is
+  read-only, and no mode acts on its plan yet.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

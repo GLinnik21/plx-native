@@ -161,7 +161,10 @@ for a in "$@"; do
 
 usage: tools/build-gc.sh [MODE] [-n]
 
-  (no mode)       report every checkout's derived trees, the shared cache and free space
+  (no mode)       report every checkout's derived trees, the shared cache and free space, then
+                  the disk budget (tools/disk-budget.py report): each tree's PRIVATE bytes, the
+                  PlxNative cargo trees under /tmp, and what a reclaim WOULD take, in order.
+                  Read-only: it deletes nothing, and no mode here acts on its plan yet
   --incremental   delete `target*/debug/incremental` everywhere. Always safe: it is a compile
                   cache. A linked worktree is not supposed to write one (the one sanctioned
                   exception is the opt-in `make test-fast`, whose own `target-fast` this
@@ -1155,6 +1158,17 @@ report)
            "$(fmt_kb "$(du -sk "$cache/cargo-seed" 2>/dev/null | awk '{print $1}')")" "$cache/cargo-seed"
   fi
   df -h "$ROOT" | tail -1 | awk '{print "volume              " $4 " free of " $2}'
+  # The disk budget's verdicts (tools/disk-budget.py, docs/disk-budget.md): the private bytes each
+  # tree would really free (`du` above counts APFS clones in full), the PlxNative cargo trees under
+  # /tmp that nothing above can see, and the order a reclaim WOULD take them in. Read-only. It is
+  # run, not sourced, and a failure of it must not end the report: this script is `set -eu`, and
+  # the table above is complete without it. The existence test is for the synthetic repositories
+  # ci/test_build_gc.py builds, which copy this script alone.
+  if [ -f "$ROOT/tools/disk-budget.py" ] && command -v python3 >/dev/null 2>&1; then
+    echo
+    python3 "$ROOT/tools/disk-budget.py" report --root "$ROOT" \
+      || echo "  (tools/disk-budget.py report failed; the table above stands on its own)"
+  fi
   echo
   echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --seed | --lanes | --worktrees | --all   (add -n to preview)"
   ;;

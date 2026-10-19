@@ -287,3 +287,9 @@ python3 ci/gen-third-party-notices.py --check
 # --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
 python3 ci/test_check_vfp.py
 python3 ci/check-vfp.py --skip-if-missing
+# tools/disk-budget.py, the disk budget's inventory and planner (docs/disk-budget.md): the ladder's order, stopping at the line,
+# refusing only when the whole ladder cannot free the build's estimate plus the reserve, and NEVER planning the current checkout,
+# a live, tracked, pkg/, vendor/ or non-PlxNative tree; private-byte accounting under hard links; `origin/main` merged detection
+# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing. Synthetic inventories plus
+# private temp repositories, no lsof, no real /tmp scan.
+python3 ci/test_disk_budget.py
