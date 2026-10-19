@@ -153,8 +153,9 @@ pub struct Paint {
     /// This draw is a modal dim a glass above it may apply at composite instead ([`paint_dim`]).
     /// Not part of equality: `values` already carries its exact arguments.
     pub dim: Option<Dim>,
-    /// This draw is the page's wash, the first thing under a glass, which that glass may take as a
-    /// DELTA at composite instead of re-filtering it ([`paint_ground`]). Not part of equality.
+    /// This draw is the page's wash, the first thing under a glass that can show (the frame clear
+    /// below it is overwritten), which that glass may take as a DELTA at composite instead of
+    /// re-filtering it ([`paint_ground`]). Not part of equality.
     pub ground: Option<Ground>,
 }
 
@@ -184,8 +185,8 @@ pub const DIM_COMMAND: u64 = 998;
 /// [`Paint`]'s padded bounds: the bilinear is taken over this one), and the ink ramp laid over it
 /// in the same pass (`ambient_inked`; zero alphas for none).
 ///
-/// A wash is an OPAQUE bilinear field and the first draw of a page, so the picture under a glass is
-/// `content over wash`. While the wash eases and nothing else changes, `filter(content over wash')`
+/// A wash is an OPAQUE bilinear field and the page's ground (drawn over the frame clear, which it
+/// overwrites), so the picture under a glass is `content over wash`. While the wash eases and nothing else changes, `filter(content over wash')`
 /// differs from the source the glass holds by `filter(visible * (wash' - wash))`: the glass adds
 /// `wash' - wash` at composite, as if the wash showed everywhere, and the source is re-taken when the
 /// wash settles ([`Ground::delta`], [`Sources::resolve`]). Bounded, not exact: see [`GroundDelta`].
@@ -447,7 +448,8 @@ pub fn paint_dim(rect: Rect, values: Vec<u64>, dim: Dim) {
 }
 /// [`paint`] for the page's WASH: the same exact-argument record, plus the corners, rect and ink a
 /// glass needs to take it as a delta at composite ([`Ground`]). Whether a given glass does is decided
-/// per glass in [`Sources::resolve`]: only when it is the first and only wash under its region.
+/// per glass in [`Sources::resolve`]: only when it is the first draw that can show under its region
+/// and the only wash there.
 pub fn paint_ground(rect: Rect, values: Vec<u64>, ground: Ground) {
     paint_with(rect, values, None, Some(ground))
 }
@@ -758,8 +760,8 @@ pub struct Entry {
     /// any other way has it baked in, and is stale the moment [`dim`](Self::dim) says otherwise.
     captured_dim: bool,
     /// This frame's wash, when this glass takes it as a DELTA at composite rather than filtering it
-    /// into its source (see [`Ground`]): the wash is the first draw under the region and the only
-    /// one, nothing dims it, and the band replays directly. Its signature then records the wash as
+    /// into its source (see [`Ground`]): the wash is the first draw under the region that can show
+    /// and the only one, nothing dims it, and the band replays directly. Its signature then records the wash as
     /// the bare [`GROUND_COMMAND`]. `None`: the wash, if any, is in the source as before.
     ground: Option<Ground>,
     /// The wash the retained image was drawn under: what the composite's delta is taken against.

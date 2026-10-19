@@ -588,9 +588,11 @@ tried first. None of it is reconstructable from the code without repeating the m
   corner on its own spring, so a library switch or an art-less focus move moves the exact 8-bit
   codes every frame, and the wash is full-screen, so it sat in the prefix of every live glass
   under it (the tab bar's band, the hold hint) and re-sourced each one on every frame of the ease.
-  Now a glass whose FIRST draw under its region is a marked wash (the only one there, covering the
-  whole region, no dim and no lower glass under it) keys on the wash's rect and ink and not its
-  corners; its source keeps the wash it was drawn under and the composite adds `wash now - wash
+  Now a glass whose first draw under its region THAT CAN SHOW is a marked wash (the only one
+  there, covering the whole region, no dim and no lower glass under it) keys on the wash's rect and
+  ink and not its corners; the frame clear every page records first is overwritten by the opaque
+  wash and does not count (a test list that omits it passes while the feature never runs: the wash
+  tests record `gfx::frame_clear` as a page does); its source keeps the wash it was drawn under and the composite adds `wash now - wash
   captured`, at the refracted uv, weighted by what the ink ramp lets through. **The marker is
   DECLARED** (`declare_as`, never the tag): `ambient_art` (tag 22, a photograph in the ground) is
   never marked, and a ramp knee inside the footprint (two washes) keeps the wash in the source.
