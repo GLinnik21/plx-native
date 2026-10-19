@@ -687,23 +687,47 @@ pub fn art_crop(art: &Art) -> crate::Crop {
     }
 }
 
+/// **What a card's art resolved to this frame**: the texture and its decoded size, and how much of
+/// it shows. `shown` is below 1 only while art that landed AFTER its card had drawn a skeleton
+/// dissolves in over that skeleton ([`crate::card_motion::Scope::arrival`]); a texture that was
+/// there from the card's first draw, and a card with no texture, are 1 and 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArtImage {
+    pub tex: u32,
+    pub w: f32,
+    pub h: f32,
+    pub shown: f32,
+}
+
+impl ArtImage {
+    /// No texture: the skeleton (or ground) is the whole picture.
+    pub const NONE: ArtImage = ArtImage { tex: 0, w: 0.0, h: 0.0, shown: 1.0 };
+}
+
 /// A not-yet-loaded skeleton falls back to a rimmed fill (no shadow until the art arrives).
 /// The source-facing half of the card primitive, also exercised without a GPU in
 /// host admission tests. The same final rect then goes to the card composite below.
 /// Text-only prewarming neither observes placement nor starts image work.
-pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f32, f32) {
-    if p.is_recording() { return (0, 0.0, 0.0); }
-    let _admission = art.motion_identity()
+///
+/// **One call per card per frame.** It opens the card's motion scope (`card_motion::Scope::card`),
+/// which counts a second call for the same art as a second occurrence of the card with a history
+/// of its own. A caller that must ask earlier than it paints (the grid's focused card, painted
+/// last but asked first, [`lead_card_art`]) resolves here once and hands the result to
+/// [`card_named_led`], never calls this twice.
+pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> ArtImage {
+    if p.is_recording() { return ArtImage::NONE; }
+    let admission = art.motion_identity()
         .map(|id| crate::card_motion::Scope::card(id, p.to_screen(rect).0));
-    let image = card_art_request(art).map_or((0, 0.0, 0.0), |(srv, path, w, h)| resolve_tex_wh_on(srv, path, w, h, 0));
+    let (tex, w, h) = card_art_request(art).map_or((0, 0.0, 0.0), |(srv, path, w, h)| resolve_tex_wh_on(srv, path, w, h, 0));
     #[cfg(feature = "devtriggers")]
     {
-        crate::card_motion_metrics::draw(image.0 != 0);
+        crate::card_motion_metrics::draw(tex != 0);
         if let Some((srv, path, w, h)) = card_art_request(art) {
-            crate::card_probe::art(srv, path, w, h, image.0 != 0);
+            crate::card_probe::art(srv, path, w, h, tex != 0);
         }
     }
-    image
+    let shown = admission.as_ref().map_or(1.0, |scope| scope.arrival(tex != 0));
+    ArtImage { tex, w, h, shown }
 }
 
 /// The `(server, path, width, height)` [`resolve_card_art`] asks the source for, for a screen that
@@ -727,6 +751,15 @@ pub fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f
     card_named(p, frame, art, None, rad, focused, scale, f)
 }
 
+/// Ask for a card's art NOW, for [`card_named_led`] to draw later: what [`card_named`] resolves,
+/// at the rect it would resolve at (`frame` scaled by `scale` for a focused card), so the card's
+/// one motion occurrence is this call's. The source serves the newest frame's requests in the
+/// order they were made, so a card painted last (the focused one) that asks first gets its poster
+/// first.
+pub fn lead_card_art(p: Painter, frame: Rect, art: &Art<'_>, focused: bool, scale: f32) -> ArtImage {
+    resolve_card_art(p, if focused { frame.scaled(scale) } else { frame }, art)
+}
+
 /// [`card`] for a caller whose art is a bare path to a collection's thumb and who knows the
 /// collection's name (the collection page's header): when the thumb is a server composite and so
 /// resolves to our baked fan, `fan_name` is set over it (`collection_tile::draw_fan_name`), as the
@@ -739,13 +772,29 @@ pub fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f
 #[allow(clippy::too_many_arguments)]
 pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad: f32, focused: bool,
     scale: f32, f: f32) {
+    card_named_led(p, frame, art, fan_name, rad, focused, scale, f, None)
+}
+
+/// **The art of a card painted AFTER it is asked for**: [`card_named`] for a caller that already
+/// resolved `art` with [`lead_card_art`] this frame, which is how the grid's focused card (the last
+/// one painted, over its neighbours) still asks for its poster first. `led` is that answer;
+/// `None` resolves here, as [`card_named`] does. The rect `led` was resolved at must be the one
+/// `lead_card_art` derived from the same `frame` and `scale`, so the card's motion history sees
+/// one placement, not two.
+#[allow(clippy::too_many_arguments)]
+pub fn card_named_led(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad: f32, focused: bool,
+    scale: f32, f: f32, led: Option<ArtImage>) {
     // Text prewarming visits an offscreen page. This leaf has no text: starting
     // image work here would bypass on-screen admission, and pollute its history.
     if p.is_recording() { return; }
     let r = if focused { frame.scaled(scale) } else { frame };
     // All card variants resolve inside their final placement scope. Neither the
     // screen nor its springs can forget to report a new positional expression.
-    let image = resolve_card_art(p, r, &art);
+    let image = led.unwrap_or_else(|| resolve_card_art(p, r, &art));
+    // Art that landed late dissolves in over the skeleton the card wore until now: the texture is
+    // drawn at `shown` and the placeholder underneath it (uncounted: the art is here).
+    let shown = image.shown;
+    let pa = p.alpha(shown);
     match art {
         Art::Poster(m) => {
             // **The ROW's server, not the current one.** A `thumb` path is a key on the server that
@@ -755,7 +804,7 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
             // also re-pointed `current`; the moment that stopped, the Library grid of a friend's
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
-            let (t, tw, th) = image;
+            let ArtImage { tex: t, w: tw, h: th, .. } = image;
             if let Some(name) = neutral_collection_name(m.as_ref()) {
                 // A collection with no artwork of its own: nothing will ever resolve, so a skeleton
                 // would read as loading forever. It wears its mark and name instead, and no state
@@ -764,11 +813,12 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                 return;
             }
             if t != 0 {
-                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                if shown < 1.0 { crate::placeholder::skeleton_under(p, r, rad); }
+                pa.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
                 // A collection whose thumb is the server's composite is drawn as our baked fan,
                 // which leaves its name to be set live — on every tile, focused or not.
                 if let Some(m) = m.filter(|m| m.kind == TileKind::Collection && m.composite_thumb) {
-                    crate::collection_tile::draw_fan_name(p, frame, r, m.title);
+                    crate::collection_tile::draw_fan_name(pa, frame, r, m.title);
                 }
             } else {
                 // Counted where it is DRAWN: `Art::Poster(None)` (a not-yet-loaded index) and an
@@ -809,11 +859,12 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
             }
         }
         Art::Thumb { key, .. } => {
-            let (t, tw, th) = image;
+            let ArtImage { tex: t, w: tw, h: th, .. } = image;
             if t != 0 {
-                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                if shown < 1.0 { crate::placeholder::ground_under(p, r, rad); }
+                pa.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
                 if let Some(name) = fan_name {
-                    crate::collection_tile::draw_fan_name(p, frame, r, name);
+                    crate::collection_tile::draw_fan_name(pa, frame, r, name);
                 }
             } else {
                 crate::placeholder::ground(p, crate::placeholder::Reason::CardGround, key, r, rad);
@@ -826,15 +877,16 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
         // mark for months for precisely that reason. A shelf of episodes needs the mark as much as
         // a shelf of films does.
         Art::Still(m) => {
-            let (t, tw, th) = image;
+            let ArtImage { tex: t, w: tw, h: th, .. } = image;
             let band = m.map_or(STILL_SCRIM_H_1, |m| {
                 if m.show_title.is_empty() && m.title.is_empty() { STILL_SCRIM_H_1 } else { STILL_SCRIM_H }
             });
+            if t != 0 && shown < 1.0 { crate::placeholder::skeleton_under(p, r, rad); }
             let fused = !tile_glass_armed()
-                && p.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));
+                && pa.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));
             if !fused {
                 if t != 0 {
-                    p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                    pa.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
                 } else {
                     // `tex_carded_still` returns false for texture 0 before it paints anything, so
                     // a still with no picture ALWAYS lands here (`a_still_with_no_texture_is_never_fused`).
@@ -842,7 +894,7 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
                     crate::placeholder::skeleton(p, crate::placeholder::Reason::CardSkeleton,
                         m.map_or("", |m| still_key(&m)), r, rad);
                 }
-                if m.is_some() { still_ground(p, r, rad, band, STILL_SCRIM_A); }
+                if m.is_some() { still_ground(pa, r, rad, band, STILL_SCRIM_A); }
             }
             // **No watched DISC.** `Library Screens.dc.html` E: "the watched disc is suppressed
             // whenever a stateLine is present — one mark per tile, and the line is it." Every
@@ -856,9 +908,10 @@ pub fn card_named(p: Painter, frame: Rect, art: Art, fan_name: Option<&str>, rad
             let _ = m;
         }
         Art::Person { key, .. } => {
-            let (t, tw, th) = image;
+            let ArtImage { tex: t, w: tw, h: th, .. } = image;
             if t != 0 {
-                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                if shown < 1.0 { crate::placeholder::ground_under(p, r, rad); }
+                pa.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
                 person_ground(p, key, r, rad);
                 // Only for a person the server has NO headshot of — an unresolved texture with a
@@ -8847,6 +8900,10 @@ mod poster_mark_tests;
 #[cfg(test)]
 #[path = "widgets_placeholder_tests.rs"]
 mod placeholder_tests;
+
+#[cfg(test)]
+#[path = "widgets_art_arrival_tests.rs"]
+mod art_arrival_tests;
 
 #[cfg(test)]
 #[path = "widgets_ambient_ground_tests.rs"]
