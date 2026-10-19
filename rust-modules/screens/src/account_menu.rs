@@ -636,6 +636,9 @@ mod tests {
         let read = published(false);
         let mut menu = AccountMenuScreen::new(EntryId(0));
         step(&mut menu, &read, ScreenEvent::Mount);
+        // the dispatcher hands the surface the chip's live drawn rect before every draw
+        // (`Screen::opener_rect`); this rig has no dispatcher, so it plays that part
+        <AccountMenuScreen as Screen<MenuHost>>::opener_rect(&mut menu, plx_ui::widgets::chip_cap(0.0, 0.0));
         let settled = menu.frame(&plx_ui::fixture::FixtureMeasure);
         assert!(settled.w > 120.0 && settled.h > 120.0, "rig: the menu built its rows ({settled:?})");
         let mut ms = 0;
