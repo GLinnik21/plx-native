@@ -334,6 +334,9 @@ pub mod draw_census {
         /// The horizontal dissolve ([`Painter::text_fade`]) as ABSOLUTE screen x, `(from, to)`:
         /// glyph alpha 1 at `from`, 0 at `to`. `None` for a run drawn plain.
         pub fade: Option<(f32, f32)>,
+        /// The LEADING dissolve, the mirror of `fade`, as ABSOLUTE screen x `(from, to)`: glyph
+        /// alpha 0 at `from`, 1 at `to`. `None` for a run with no leading band.
+        pub lead: Option<(f32, f32)>,
     }
     thread_local! {
         static RUNS: RefCell<Option<Vec<Run>>> = const { RefCell::new(None) };
@@ -1666,7 +1669,7 @@ impl Painter {
                 draw_census::note_run(draw_census::Run {
                     text: unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
                     size: sz, ink: self.c(col), bold: bold != 0, align, at,
-                    clip: draw_census::clip(), fade: None,
+                    clip: draw_census::clip(), fade: None, lead: None,
                 });
             }
             return w;
@@ -1712,6 +1715,7 @@ impl Painter {
     }
     /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
     /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
+    /// [`text_fade_edges`](Self::text_fade_edges) with no leading band.
     #[allow(clippy::too_many_arguments)]
     pub fn text_fade(
         self,
@@ -1724,6 +1728,25 @@ impl Painter {
         fade_from: f32,
         fade_to: f32,
     ) -> f32 {
+        self.text_fade_edges(s, x, y, sz, col, bold, None, Some((fade_from, fade_to)))
+    }
+    /// [`text`](Self::text) dissolving at either END of the string, measured in px from its left
+    /// edge: `trail` is glyph alpha 1→0 between `from`..`to` (the string's tail into a clip or a
+    /// truncation mark), `lead` is glyph alpha 0→1 between `from`..`to` (its head, out of the
+    /// window it has glided past: a marquee run is cut by the LEFT of its window as well as the
+    /// right). `None` leaves a band off and costs the shader nothing (see `text::draw_text_fade`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_fade_edges(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        bold: c_int,
+        lead: Option<(f32, f32)>,
+        trail: Option<(f32, f32)>,
+    ) -> f32 {
         if frame::backdrop::discovering() {
             let (width,height)=declared_text_bounds(s,sz,bold);
             self.declare(Rect::new(x,y,width,height),101,|data| {
@@ -1732,8 +1755,8 @@ impl Painter {
                 sz.record(data);
                 col.record(data);
                 bold.record(data);
-                fade_from.record(data);
-                fade_to.record(data);
+                trail.record(data);
+                lead.record(data);
             });
             return width;
         }
@@ -1747,9 +1770,10 @@ impl Painter {
                 if !s.is_null() {
                     let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
                     draw_census::note_text(text.clone(), at);
+                    let absolute = |b: Option<(f32, f32)>| b.map(|(from, to)| (at.x + from, at.x + to));
                     draw_census::note_run(draw_census::Run {
                         text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
-                        clip: draw_census::clip(), fade: Some((at.x + fade_from, at.x + fade_to)),
+                        clip: draw_census::clip(), fade: absolute(trail), lead: absolute(lead),
                     });
                 }
             }
@@ -1764,7 +1788,8 @@ impl Painter {
             c.as_ptr(),
             0,
             bold,
-            Some((fade_from, fade_to)),
+            trail,
+            lead,
             None,
             None,
             self.screen_zoom(),
@@ -1826,6 +1851,7 @@ impl Painter {
             c.as_ptr(),
             0,
             bold,
+            None,
             None,
             shift(top),
             shift(bot),
