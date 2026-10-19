@@ -723,7 +723,10 @@ impl Bridge {
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-        let e = d.nav.entry(entry).filter(|e| e.arg == AppArg::Library)?;
+        // The grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library screen: a card pressed on any of them is read from the same place.
+        let e = d.nav.entry(entry).filter(|e| matches!(e.arg,
+            AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. }))?;
         let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };

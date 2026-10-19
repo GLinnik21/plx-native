@@ -6318,6 +6318,95 @@ mod lifecycle_regression_tests {
         });
     }
 
+    /// **The owner's path, through the whole application**: the Library's Collections page (its
+    /// listing fetched from a server answering as PMS does), OK on a collection tile, OK on a member
+    /// of the collection. Returns the app once the member's OK has been given, with the requests
+    /// the server saw.
+    fn collections_page_to_member_ok() -> Option<(Rig, u32)> {
+        let rig = Rig::serving_with(|request: &str| {
+            if request.contains("type=18") && request.contains("/library/sections/") {
+                return r#"{"MediaContainer":{"size":1,"totalSize":1,"Metadata":[
+                    {"ratingKey":"50001","key":"/library/collections/50001/children","type":"collection",
+                     "subtype":"movie","title":"Set","titleSort":"Set","childCount":"3","smart":"0",
+                     "librarySectionID":1,"librarySectionTitle":"Movies"}]}}"#.into();
+            }
+            if request.contains("/library/collections/50001/children") {
+                return r#"{"MediaContainer":{"size":3,"totalSize":3,"Metadata":[
+                    {"ratingKey":"7001","type":"movie","title":"First","year":2001,"librarySectionID":1},
+                    {"ratingKey":"7002","type":"movie","title":"Second","year":2002,"librarySectionID":1},
+                    {"ratingKey":"7003","type":"movie","title":"Third","year":2003,"librarySectionID":1}]}}"#.into();
+            }
+            if request.starts_with("GET /library/metadata/") || request.starts_with("GET /library/collections/") {
+                return r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"50001","type":"collection","title":"Set","childCount":"3"}]}}"#.into();
+            }
+            r#"{"MediaContainer":{"size":0}}"#.into()
+        })?;
+        let mut rig = rig;
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.release.send(()).unwrap();
+        rig.app.bridge.seed_registered_browse_for_test([rig.sid, rig.sid]);
+        super::super::bridge::nav_select_tab(&mut rig.app.pages, AppArg::Library);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::LibraryCollections { section: 0 });
+        for _ in 0..120 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        let page = rig.app.pages.nav.top_page().unwrap();
+        assert!(page.arg == AppArg::LibraryCollections { section: 0 }, "premise: the Collections page is on top");
+        let instance = rig.app.pages.nav.instance_of(page.id).unwrap();
+        rig.app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Library(plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 })))));
+        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(rig.app.bridge.grid_tile_for_test(0).is_some(), "premise: the page lists the server's collection");
+        press_ok(&mut rig.app, &mut t);
+        for _ in 0..60 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        assert_eq!(super::super::words::route_word(&rig.app.route()), "collection",
+            "OK on the collection tile opens the collection");
+        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        // Down off the header onto the first member, rest, then OK.
+        let tick = |t: u32| plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 };
+        for _ in 0..3 {
+            if rig.app.bridge.collection_card_focused(&rig.app.pages) { break; }
+            let down = plx_ui::fixture::key(plx_machine::machine::Key::Down, tick(t));
+            step(&mut rig.app, &mut t, vec![down]);
+            let up = plx_ui::fixture::key_up(plx_machine::machine::Key::Down, tick(t));
+            step(&mut rig.app, &mut t, vec![up]);
+            for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+        }
+        assert!(rig.app.bridge.collection_card_focused(&rig.app.pages), "premise: a member holds the focus");
+        press_ok(&mut rig.app, &mut t);
+        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+        Some((rig, t))
+    }
+
+    fn press_ok(app: &mut App, t: &mut u32) {
+        let tick = |t: u32| plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 };
+        let down = plx_ui::fixture::key(plx_machine::machine::Key::Ok, tick(*t));
+        step(app, t, vec![down]);
+        for _ in 0..3 { step(app, t, vec![]); }
+        let up = plx_ui::fixture::key_up(plx_machine::machine::Key::Ok, tick(*t));
+        step(app, t, vec![up]);
+    }
+
+    #[test]
+    fn a_member_ok_on_a_collection_opened_from_the_collections_page_opens_its_detail() {
+        let _serial = plx_base::testlock::serial();
+        let Some((mut rig, mut t)) = collections_page_to_member_ok() else { return };
+        assert_eq!(super::super::words::route_word(&rig.app.route()), "detail",
+            "OK on a member opens its detail page");
+        // BACK walks the way it came: the collection, then the Collections page.
+        for (word, listing) in [("collection", false), ("library", true)] {
+            let tick = plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 };
+            step(&mut rig.app, &mut t, vec![plx_ui::fixture::key(plx_machine::machine::Key::Back, tick)]);
+            let tick = plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 };
+            step(&mut rig.app, &mut t, vec![plx_ui::fixture::key_up(plx_machine::machine::Key::Back, tick)]);
+            for _ in 0..60 { step(&mut rig.app, &mut t, vec![]); }
+            assert_eq!(super::super::words::route_word(&rig.app.route()), word, "BACK returns to the {word} page");
+            assert_eq!(matches!(rig.app.route(), AppArg::LibraryCollections { .. }), listing);
+        }
+    }
+
     /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
     /// the server's answer still parked, and the answer then agrees with it.
     #[test]
