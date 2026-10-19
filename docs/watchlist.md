@@ -206,7 +206,7 @@ the default Details (year and length) reads its year, Genre, Video and Age ratin
 for it, and an unplayable title's state sentence ("Coming soon", "Not on your servers", "Server
 offline") takes the details line whatever the picker shows, except Nothing, which shows no line at all.
 Scrolled past the first row the top chrome tucks and the capsule "Watchlist N" takes the top edge,
-over the 72 px fade of the page's ground, as on the Library (`screens/src/scroll_chrome.rs`).
+over the 72 px fade of the page's ground, as on the Library (`plx_ui::scroll_chrome`, the Library's tuck ramp and settle edge).
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
 menu: between the commit and the landing's first step nothing on the grid changes (tile slots and

@@ -135,7 +135,7 @@ pub enum WatchlistIn {
 /// The grid's first row of posters: 96 under the header row's top, as the Library's (244).
 pub const GRID_TOP: f32 = header::HEADER_TOP + header::BLOCK_H;
 /// The line a scrolled row snaps to: clear of the scroll capsule (the Library's settle rule).
-const CONTENT_TOP: f32 = crate::scroll_chrome::SETTLE_MIN_Y;
+const CONTENT_TOP: f32 = plx_ui::scroll_chrome::SETTLE_MIN_Y;
 /// Six columns of 250 posters from the row's text edge, 285 apart: the gap that puts the last
 /// column's right edge on the row's right text edge.
 const COLS: usize = 6;
@@ -1109,7 +1109,7 @@ impl WatchlistScreen {
 
     /// How far the page has tucked the top chrome: the Library's ramp over the first row's pitch.
     fn tuck(&self) -> f32 {
-        crate::scroll_chrome::tuck(self.stack.scroll(), grid_style().h + plx_ui::cards::LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR)
+        plx_ui::scroll_chrome::tuck(self.stack.scroll(), grid_style().h + plx_ui::cards::LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR)
     }
 
     /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground and the
@@ -1133,7 +1133,7 @@ impl WatchlistScreen {
             ListState::Ready { total } => total.max(self.page.tiles.len()),
             _ => self.page.tiles.len(),
         };
-        let (name, count) = crate::scroll_chrome::capsule_parts(
+        let (name, count) = plx_ui::scroll_chrome::capsule_parts(
             plx_platform::i18n::msg::watchlist_page_title(),
             total as i64,
             plx_ui::scroll_capsule::label_budget(),

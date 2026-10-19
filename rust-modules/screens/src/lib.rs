@@ -28,7 +28,6 @@ pub mod filmography;
 pub mod home;
 pub mod item_menu;
 pub mod library;
-pub(crate) mod scroll_chrome; // the scrolled-page chrome rules the Library's pages and the Watchlist share
 pub mod search;
 pub mod family;
 pub mod legal;
