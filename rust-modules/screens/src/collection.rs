@@ -327,10 +327,11 @@ struct Page {
     focus_index: Option<usize>,
     /// The index a Back is restoring to, from the saved memory.
     restore_index: Option<usize>,
-    /// Saved kept counts a return sends the store once it is open.
-    restore_counts: Option<(usize, Vec<u8>)>,
-    /// The total and kept counts as of the last sync, saved with the page.
-    counts: (usize, Vec<u8>),
+    /// Saved kept counts (with the generation of the listing they came from) a return sends the
+    /// store once it is open.
+    restore_counts: Option<(usize, Vec<u8>, u32)>,
+    /// The total, kept counts and listing generation as of the last sync, saved with the page.
+    counts: (usize, Vec<u8>, u32),
     /// The window last sent to the store.
     sent_window: Option<(std::ops::Range<usize>, Option<usize>, Option<usize>)>,
     /// The end of the last range the grid asked for.
@@ -388,7 +389,7 @@ impl Page {
     fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
         self.project(collection, None);
-        self.counts = (collection.total, collection.kept_counts());
+        self.counts = (collection.total, collection.kept_counts(), collection.generation());
         self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
         self.links_c.clear();
@@ -691,7 +692,7 @@ impl CollectionScreen {
             page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
                 proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true, None), CString::default()),
                 return_pending: false, focus_elem: None, restore_elem: None,
-                focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new()),
+                focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new(), 0),
                 sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
@@ -792,7 +793,8 @@ impl CollectionScreen {
         self.page.header_marked |= memory.header_marked;
         self.page.restore_index = memory.focus_index;
         // The counts are sent to the store once it is open (see `Enter`).
-        self.page.restore_counts = Some((memory.total, memory.counts.clone())).filter(|(_, c)| !c.is_empty());
+        self.page.restore_counts = Some((memory.total, memory.counts.clone(), memory.generation))
+            .filter(|(_, c, _)| !c.is_empty());
         self.page.restore_elem = memory.focus_elem;
     }
 
@@ -803,7 +805,7 @@ impl CollectionScreen {
             .filter(|&e| e != HEADER_ELEM && e != RETRY_ELEM).or(self.page.focus_elem);
         let index = elem.and_then(|e| self.page.proj.index.get(&e).copied()).or(self.page.focus_index);
         CardPageMemory { cards: self.page.cards.clone(), header_marked: self.page.header_marked,
-            total: self.page.counts.0, counts: self.page.counts.1.clone(),
+            total: self.page.counts.0, counts: self.page.counts.1.clone(), generation: self.page.counts.2,
             focus_index: index, focus_elem: elem }
     }
 
@@ -975,10 +977,10 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             }
             ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
                 self.request_store(self.entry_want(), fx);
-                if let Some((total, counts)) = self.page.restore_counts.take() {
+                if let Some((total, counts, generation)) = self.page.restore_counts.take() {
                     fx.push(plx_machine::machine::Fx::App(AppFx::Store(
                         plx_data::stores::StoreId::Collection,
-                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Restore { total, counts }),
+                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Restore { total, counts, generation }),
                     )));
                 }
                 fx.invalidate(Provenance::Nav); Handled::Yes
@@ -1365,6 +1367,62 @@ mod tests {
         assert!(new < full - 0.001, "the new member grows from rest: {new}");
     }
 
+    /// DEBUG-6 (the owner, on the TV): closing a card's hold menu blanked EVERY poster of the row to
+    /// the not-yet-loaded skeleton for the whole close, then all art came back at once. The page is
+    /// live under the menu and the store still holds every member, but the dismissal reaches the
+    /// page as the dispatcher's `Uncover`, `RestoreMemory(the memory the nav kept when the menu was
+    /// pushed)`, `Enter(Restored)` (`ui::dispatch` `push_lifecycle`), and the page answered it with
+    /// `CollectionCmd::Restore`, which put back the saved page directory with no rows: every member
+    /// became a hole (`Art::Poster(None)`, which the shared card draws as `placeholder::skeleton`)
+    /// until the children page was read again. The store's commands run on the real store here.
+    #[test]
+    fn dismissing_a_hold_menu_leaves_every_member_drawn_with_its_art() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.replace_items_for_test((0..6).map(|i| PmsMovie {
+            thumb: format!("/library/metadata/{i}/thumb/1"), ..item(&format!("m{i}")) }).collect()));
+        tick_at(&mut screen, &store, None, 32);
+        let a = screen.key_at(store.view().current().unwrap(), 0);
+        for n in 0..30 { tick_at(&mut screen, &store, Some(a), 48 + n * 16); }
+        // The page's draw census: the art each card stands in for while its texture is not resident
+        // (a host test has no textures, so every card is counted, under its member's poster path; a
+        // member the store does not hold is counted under an empty key).
+        let drawn = |screen: &mut CollectionScreen, store: &plx_data::stores::collection::CollectionStore| {
+            let (_, frame) = plx_ui::placeholder::capture_declared(|| {
+                let cx = cx(store.view(), Some(a));
+                let mut f = DrawFrame::new(&cx, Painter::root());
+                Screen::<CollectionHost>::draw(screen, &mut f);
+            });
+            let mut keys: Vec<String> = frame.entries.into_iter()
+                .filter(|e| e.reason == plx_ui::placeholder::Reason::CardSkeleton).map(|e| e.key).collect();
+            keys.sort();
+            keys
+        };
+        let before = drawn(&mut screen, &store);
+        assert_eq!(before.len(), 6, "the six members are drawn: {before:?}");
+        assert!(before.iter().all(|k| !k.is_empty()), "each one as its own poster: {before:?}");
+
+        // The hold menu is pushed over the page: the nav keeps the page's memory as the request's
+        // return (`ret.memory`), and the page is covered for the length of the menu.
+        let memory = Screen::<CollectionHost>::memory_at(&screen, Some(a));
+        step(&mut screen, ScreenEvent::Cover, &cx(store.view(), Some(a)));
+        for n in 0..60 { tick_at(&mut screen, &store, Some(a), 600 + n * 16); }
+
+        // BACK dismisses it, and the page hears what the dispatcher delivers; whatever it asks of
+        // the collection store is run on the store, as the application's store adapter does.
+        for ev in [ScreenEvent::Uncover, ScreenEvent::RestoreMemory(memory), ScreenEvent::Enter(plx_ui::screen::Enter::Restored)] {
+            for out in step(&mut screen, ev, &cx(store.view(), Some(a))) {
+                if let plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(cmd))) = out.fx {
+                    store.run(cmd);
+                }
+            }
+        }
+        tick_at(&mut screen, &store, Some(a), 1600);
+        assert_eq!(drawn(&mut screen, &store), before,
+            "the first frame after the menu's dismissal draws every member as its own poster, not as a not-yet-loaded \
+             skeleton (an empty key): the store held all of them");
+        assert!(store.view().current().unwrap().item(0).is_some(), "the store still holds the first member");
+    }
+
     /// The failed page's read-out is the shared page read-out (#268): page-placed, the untyped
     /// "can't reach" glyph Home and the Library carry, and never drawn over the live header —
     /// with a three-line summary the glyph shrinks or drops, without one it keeps its full size.
@@ -1627,10 +1685,13 @@ mod tests {
         let out = step(&mut back, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
         let sent = out.iter().find_map(|e| match &e.fx {
             plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
-                CollectionCmd::Restore { total, counts }))) => Some((*total, counts.len())),
+                CollectionCmd::Restore { total, counts, generation }))) => Some((*total, counts.len(), *generation)),
             _ => None,
         });
-        assert_eq!(sent, Some((5000, 84)), "the saved directory goes back to the store");
+        let generation = store.view().current().unwrap().generation();
+        assert_ne!(generation, 0, "the store opened this listing");
+        assert_eq!(sent, Some((5000, 84, generation)),
+            "the saved directory goes back to the store with the generation of the listing it was saved from");
     }
 
     /// A slot whose page is not held draws the not-yet-loaded card, and becomes its member's card

@@ -14,9 +14,12 @@ pub enum CollectionCmd {
     /// The screen's window: the indices it shows, the focused index and a pending restore target.
     /// Every landing evicts the pages outside these (see `PageCache::evict`).
     Window { wanted: Range<usize>, focus: Option<usize>, restore: Option<usize> },
-    /// A restore's saved kept counts, one per page of a `total`-item listing. With them the
-    /// restore reads only its target's pages; without them the listing is read forward to it.
-    Restore { total: usize, counts: Vec<u8> },
+    /// A restore's saved kept counts, one per page of a `total`-item listing, and the
+    /// [`generation`](crate::collection::Collection::generation) of the listing they were saved
+    /// from. With them the restore reads only its target's pages; without them the listing is read
+    /// forward to it. A store still holding that listing (the page was only covered, never closed)
+    /// ignores them and keeps its rows and its own counts, however far it has read since.
+    Restore { total: usize, counts: Vec<u8>, generation: u32 },
     Close,
     Reset,
     /// Optimistic view-state edit (`viewstate::publish_view`), including the fan-out's copies.

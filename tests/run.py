@@ -5983,6 +5983,52 @@ def fps_trigger_files(scene):
     return files
 
 
+# The statistics a scene may grade `fps_floor` on (`fps_floor_stat`); the first is the default.
+FPS_FLOOR_STATS = ("median", "live")
+
+
+def fps_floor_verdict(samples, floor, stat="median", windows=None):
+    """Grade a scene's post-warmup `fps=` windows against its `fps_floor`.
+
+    Returns `(passed, detail_suffix)`. The question is "is this screen still animating, at rate";
+    a FROZEN animator reads ~0.5/s, the keepalive alone, which no floor in this range can confuse
+    with a healthy one. What statistic answers it depends on the scene's duty cycle:
+
+    * `median` (the default) — the median window must read at least `floor`. Deliberately NOT the
+      2nd-lowest the way `loop_floor` and `fps_ceiling` are. Under the present gate a frame rate is
+      intermittent BY DESIGN, so on a scene that bounces rather than animates continuously (the
+      `*-nav` pair reverse every 1400 ms, of which only ~210 ms is fading) a 1-second window can
+      land entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav ran
+      min=0, median=15 with a healthy fade.
+    * `live` — at least `windows` of the graded windows must each read at least `floor` (a window
+      that did is LIVE). For a scene whose graded windows are a live stretch followed by a long
+      idle tail, so that the median and the mean both read the tail's share and not the animation:
+      `library-switch` grades the back half of a 14-step switch cycle (about eight live seconds, the
+      idle steps among them reading 5-12 on the television) plus the spent-cycle tail (`0 1 0 1 0 1`,
+      the keepalive), and the tail is the same whether the cycle ended or the animator froze. The
+      median of those windows read 7-11 for one animation; the mean (8.8-13.3) passes an animator
+      that froze after two graded seconds (H3 4.07, H7 4.43, H9 4.21) and a frozen run plus one
+      50 fps window (3.8-4.7) at any floor that also passes the healthy runs. A count of live windows
+      is what a freeze takes away: healthy runs hold 8 or 9 of them, a freeze after N live seconds
+      holds N, a frozen run 0, a frozen run with a burst 1. What it does not see is a freeze AFTER the
+      first `windows` live seconds: that reads as a cycle that ended early, and only a scene-specific
+      count of the cycle's steps could tell them apart.
+    """
+    if stat not in FPS_FLOOR_STATS:
+        raise ValueError(f"fps_floor_stat {stat!r}: want one of {', '.join(FPS_FLOOR_STATS)}")
+    sf = sorted(samples)
+    med = sf[len(sf) // 2]
+    if stat == "live":
+        if not isinstance(windows, int) or windows < 1:
+            raise ValueError("fps_floor_stat 'live' needs fps_floor_windows, a count of at least 1")
+        live = sum(1 for n in sf if n >= floor)
+        shown = (f"live={live} of n={len(sf)} windows at >= {floor} fps (need {windows}; total={sum(sf)}, "
+                 f"median={med}, min={sf[0]}, max={sf[-1]}) vs fps_floor {floor} (live windows)")
+        return live >= windows, " | " + shown
+    shown = f"median={med} fps (min={sf[0]}, max={sf[-1]}, n={len(sf)}) vs fps_floor {floor}"
+    return med >= floor, " | " + shown
+
+
 def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                   instrumented=False, log_suffix="", before_run=None):
     name = scene["name"]
@@ -6124,18 +6170,8 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
 
     # `fps_floor`: for a scene whose whole point is that an ANIMATION keeps running. Graded on
     # `fps=` because `loop=` counts loop iterations and cannot see a frozen animator — the trap that
-    # let a frozen route dip and a stopped spinner both ship.
-    #
-    # Graded on the MEDIAN, deliberately NOT on the 2nd-lowest the way `loop_floor` and
-    # `fps_ceiling` are. Under the present gate a frame rate is intermittent BY DESIGN — that is the
-    # whole feature — so on a scene that bounces rather than animates continuously (the `*-nav` pair
-    # reverse every 1400ms, of which only ~210ms is fading) a 1-second heartbeat window can land
-    # entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav ran min=0,
-    # median=15 with a perfectly healthy fade, and even the oscillator scenes are bursty now that
-    # the settle predicate lets them idle between steps (home-grid min=11, median=41).
-    # The median answers the question actually being asked — "is this screen animating at all, at
-    # rate" — while a FROZEN animator reads ~0.5/s, the keepalive alone, which no threshold in this
-    # range can confuse with a healthy one. Fill-rate regressions are `loop_floor`'s job, not this.
+    # let a frozen route dip and a stopped spinner both ship. The statistic is `fps_floor_stat`
+    # (the MEDIAN unless the scene opts into a count of LIVE windows); see `fps_floor_verdict`.
     f_floor = scene.get("fps_floor")
     if f_floor is not None:
         presf = parse_fps(lines, route, overlay)[warmup:]
@@ -6144,11 +6180,10 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                    f"build without the fps= field, or the scene never reached this screen")
             print(f"    [FAIL] {msg}")
             return False, msg
-        sf = sorted(presf)
-        med = sf[len(sf) // 2]
-        ok = ok and med >= f_floor
-        detail += (f" | median={med} fps (min={sf[0]}, max={sf[-1]}, n={len(presf)}) "
-                   f"vs fps_floor {f_floor}")
+        ok_fl, detail_fl = fps_floor_verdict(presf, f_floor, scene.get("fps_floor_stat", "median"),
+                                             scene.get("fps_floor_windows"))
+        ok = ok and ok_fl
+        detail += detail_fl
 
     # `fps_ceiling`: the INVERSE assertion — this scene wants the app to stop presenting.
     # `loop_floor` still guards loop liveness so a wedged loop cannot pass by presenting nothing;
@@ -6804,7 +6839,7 @@ def main():
             else:
                 gates = "gate=?"
             if s.get("fps_floor") is not None:
-                gates += f" fps_floor={s['fps_floor']}"
+                gates += f" fps_floor={s['fps_floor']}" + (f"({s['fps_floor_stat']}>={s['fps_floor_windows']})" if s.get("fps_floor_stat") == "live" else "")
             if s.get("fps_ceiling") is not None:
                 gates += f" fps_ceiling={s['fps_ceiling']}"
             if s.get("worst_ceiling_ms") is not None:

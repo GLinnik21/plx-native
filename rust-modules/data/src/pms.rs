@@ -312,9 +312,10 @@ pub struct PmsAdapter {
     next_request: AtomicU32,
     /// Workers spawned through [`spawn_fetch`] whose landing [`take_landings`] has not yet taken:
     /// `+1` on the main thread before the worker exists, `-1` when the OS refuses the spawn, `-n`
-    /// when a take moves `n` landings out. It is the claim dump mode's `take_all_owed` waits on
-    /// ([`owed`]), and it has to live here rather than on [`Src::fetching`], which clears when a
-    /// landing is APPLIED, after the take that delivered it. Every admitted worker answers exactly
+    /// when a take moves `n` landings out. It is the claim dump mode's `take_all_owed` reads
+    /// ([`owed`]): the blocking dump waits on it, the paced one starves the take and the frame dump
+    /// holds the iteration. It has to live here rather than on [`Src::fetching`], which clears when
+    /// a landing is APPLIED, after the take that delivered it. Every admitted worker answers exactly
     /// once (a panicking fetch posts a failure), so it reaches zero. A request handed to a
     /// launcher that does not call [`spawn_fetch`] (a replay) is never counted. It lives on the
     /// adapter, so a reset's rotation retires the old count with the old mailbox.
@@ -345,8 +346,9 @@ pub fn owed_count_for_test(adapter: &PmsAdapter) -> u32 { adapter.owed.load(Orde
 pub fn hub_gen_for_test(state: &PmsState) -> u32 { state.hub_gen }
 
 /// Is a worker spawned through [`spawn_fetch`] still owing this adapter a landing? Read by the
-/// landing gate's dump mode, which waits for the answer a request it issued owes
-/// (`plx_machine::landgate::Gate::take_all_owed`).
+/// landing gate's dump mode, which delivers the answer a request it issued owes
+/// (`plx_machine::landgate::Gate::take_all_owed`): the blocking dump waits for it, the paced dump
+/// (the frame dump's) returns nothing and names the store until it is in.
 pub fn owed(adapter: &PmsAdapter) -> bool {
     adapter.owed.load(Ordering::SeqCst) > 0
 }

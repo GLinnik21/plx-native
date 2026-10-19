@@ -1,5 +1,5 @@
 //! **Dump mode, the gfx half** (the deterministic frame dump; its landing half is
-//! `plx_machine::landgate::Gate::arm_dump`).
+//! `plx_machine::landgate::Gate::arm_dump_paced`, the form the driver arms).
 //!
 //! A dump writes frames from virtual time, so every wall-clock-dependent decision that reaches
 //! logical state must be a constant. The ones that live here are listed below:
@@ -109,7 +109,7 @@
 //! * `src/dev/framedump.rs` (the driver): [`arm`], [`set_held_repeat`] and the read in `idle_dt`.
 //!
 //! Two other switches exist and are not this one: the landing gate's own
-//! (`plx_machine::landgate::Gate::arm_dump`, which `machine` keeps because it may not name `gfx`)
+//! (`plx_machine::landgate::Gate::arm_dump_paced`, or `arm_dump` for a caller off the frame thread, which `machine` keeps because it may not name `gfx`)
 //! and the placeholder counter's (`plx_ui::placeholder`, armed per thread).
 //!
 //! **A runtime switch, off by default.** [`arm`] is called by the dump driver only; nothing in a

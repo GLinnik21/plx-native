@@ -1425,7 +1425,8 @@ impl Bridge {
     /// (`HubsStore::owed`) and the controlled-Home Browse discovery. The `Fetch`-based stores
     /// (metadata, person, collection, search, view state) keep their claim inside the store and
     /// answer through `take_owed` alone, so a request spawned this iteration is seen by NEXT
-    /// iteration's take, which waits for it (`plx_machine::landgate`'s module doc).
+    /// iteration's take, which holds the picture until the answer is in (`Gate::take_starved`,
+    /// `plx_machine::landgate`'s module doc).
     #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
     pub(crate) fn open_claims(&self) -> Vec<&'static str> {
         let mut open = Vec::new();
@@ -2114,9 +2115,10 @@ impl Bridge {
     /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
     /// relaxed atomic load and the same call.
     fn take_hubs_results(&self) -> AppResults {
-        // Dump mode waits here for every hub request the previous execution of this site (or the
+        // Dump mode gives this site every hub request the previous execution of this site (or the
         // frame's own work) spawned, so a request issued in iteration k lands in k+1 whatever the
-        // worker's timing. The claim is the adapter's own count (`HubsStore::owed`).
+        // worker's timing: the blocking dump waits for them, the frame dump's paced one holds the
+        // frame until they are in. The claim is the adapter's own count (`HubsStore::owed`).
         let mut results = self.stores.landgate.take_all_owed(StoreId::Hubs.ord(), StoreId::Hubs.name(),
             |_| self.stores.hubs.owed(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());

@@ -1028,8 +1028,10 @@
         "plxnative-library": true,
         "plxnative-libswitch": true
       },
-      "fps_floor": 8,
-      "_fps_floor_note": "Measured healthy median 18 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 8 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
+      "fps_floor": 4,
+      "fps_floor_stat": "live",
+      "fps_floor_windows": 6,
+      "_fps_floor_note": "Graded as a COUNT OF LIVE WINDOWS (`fps_floor_stat` live, tests/run.py `fps_floor_verdict`): at least `fps_floor_windows` (6) of the post-warmup 1 s `fps=` windows must each draw at least `fps_floor` (4) frames. Not the median, which flips on the phase of the switch cycle, and not the mean, which a freeze cannot move enough. The oscillator steps one switch every 1.4 s through a 14-step cycle that has idle steps with the two-library mock, and the graded windows (the harness drops the first 6) are the back of that cycle, about eight live seconds, followed by the spent-cycle tail `0 1 0 1 0 1`, the keepalive. Measured on the television 2026-10-19, phase H builds H3 H5 H7 H9: graded windows `21 30 11 11 33 18 11 10 | 0 1 0 1 0 1` (H3; H5 the same with one 50 at the very end, H7 `21 35 12 5 32 22 7 10`, H9 `21 32 12 8 32 19 10 9`), so the MEDIAN read 7 to 12 for one animation and failed the old floor 8 on H7 (7), while the live-window count is 8 on all four (9 with H5's tail burst) and 8 or 9 on all six recorded series in tests/test_harness.py. A frozen animator reads ~0.5/s, the keepalive alone: 0 live windows. The MEAN was tried and rejected: an animator that freezes after two graded seconds still averages 4.07 (H3), 4.43 (H7), 4.21 (H9), and a frozen run with one 50-60 fps window 3.8-4.7, both above any floor that also passes the healthy 10.4-10.6; those two have 2 and 1 live windows. What this does not catch is a freeze after the first six live seconds, which reads as a cycle that ended early. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting. (Before #843 the same scene read a healthy median 18 on device 2026-07-31 and its floor was 8 on the median.)"
     },
     {
       "name": "library-idle",

@@ -7468,6 +7468,101 @@ class FpsMock(unittest.TestCase):
         s["walk"]["max_rows"] = 3
         return s
 
+    # --- library-switch: the draw-rate floor does not flip on the phase of the switch cycle ---
+    # The scene's own heartbeats (`fps=` per 1 s window, route=library) on the television, 2026-10-19,
+    # one tuple per build of the same tree (phase H, built and run by the collections-redesign
+    # lane). The grader skips the first `warmup_s` (6) and grades the rest, so the graded window is
+    # the back half of the 14-step switch cycle plus the idle tail where the cycle is spent
+    # (`0 1 0 1 0 1`: the keepalive). Which steps land in which second moves between boots, so the
+    # graded MEDIAN read 7-11 for the same animation and failed fps_floor 8 on H7 (median 7).
+    SWITCH_SERIES = {
+        "H3": [49, 57, 42, 33, 17, 12, 21, 30, 11, 11, 33, 18, 11, 10, 0, 1, 0, 1, 0, 1],
+        "H5": [49, 56, 41, 32, 18, 12, 21, 31, 11, 11, 33, 18, 11, 11, 0, 1, 0, 1, 0, 1, 50],
+        "H7": [47, 57, 39, 33, 21, 8, 21, 35, 12, 5, 32, 22, 7, 10, 0, 1, 0, 1, 0, 1],
+        "H9": [48, 57, 41, 34, 19, 11, 21, 32, 12, 8, 32, 19, 10, 9, 0, 1, 0, 1, 0, 1],
+        # the lowest-total healthy run on record (tuck-E) and one with the idle steps elsewhere
+        "tuck-E": [56, 34, 3, 33, 20, 10, 20, 16, 6, 9, 31, 19, 10, 9, 0, 1, 0, 1, 0, 1],
+        "tv3-847-L1b": [49, 33, 3, 33, 19, 11, 20, 16, 9, 32, 32, 20, 10, 3, 1, 6, 13, 0, 1, 0],
+    }
+
+    @staticmethod
+    def _library_beat(fps):
+        return f"loop=60 route=library fps={fps} worstframe=1.0ms carried=0 dropped=0 budget=0/0"
+
+    def _run_switch(self, series):
+        log = [self.SYN] + [self._library_beat(n) for n in series]
+        return self._run_scene(copy.deepcopy(self.scenes["library-switch"]), log, {})
+
+    def test_library_switch_passes_every_phase_of_the_cycle(self):
+        for build, series in self.SWITCH_SERIES.items():
+            ok, detail = self._run_switch(series)
+            self.assertTrue(ok, f"{build} {series}: {detail}")
+
+    def test_library_switch_still_fails_a_frozen_animator(self):
+        # a frozen animator draws the keepalive alone, ~0.5 swaps/s, for the whole run
+        for frozen in ([1, 0] * 10, [0, 1] * 10, [1] * 20, [0] * 20):
+            ok, detail = self._run_switch(frozen)
+            self.assertFalse(ok, f"{frozen}: {detail}")
+            self.assertIn("fps_floor", detail)
+
+    def test_library_switch_fails_an_animator_that_freezes_partway(self):
+        # the keepalive tail of a SPENT cycle reads 0 1 0 1; a frozen animator reads it from the freeze
+        # on, so the graded windows (the first six are warmup) end in the same tail either way. A mean
+        # over them cannot tell the two apart (H3 4.07, H7 4.43, H9 4.21 after two live graded seconds,
+        # against 10.4-10.6 healthy); the number of windows that were LIVE can.
+        warmup = 6
+        for build in ("H3", "H5", "H7", "H9"):
+            healthy = self.SWITCH_SERIES[build]
+            for live in (0, 1, 2, 3, 4, 5):
+                froze = healthy[:warmup + live] + [0, 1] * ((len(healthy) - warmup - live + 1) // 2)
+                froze = froze[:len(healthy)]
+                ok, detail = self._run_switch(froze)
+                self.assertFalse(ok, f"{build} frozen after {live} graded seconds {froze}: {detail}")
+                self.assertIn("fps_floor", detail)
+
+    def test_library_switch_fails_a_frozen_animator_with_one_burst(self):
+        # a frozen run plus one 50-60 fps window (a teardown flush, a stray repaint) is not an animation
+        for burst in (50, 60):
+            for at in (7, 12, 19):
+                series = [0, 1] * 10
+                series[at] = burst
+                ok, detail = self._run_switch(series)
+                self.assertFalse(ok, f"{series}: {detail}")
+
+    def test_library_switch_still_fails_an_animator_at_a_quarter_of_the_rate(self):
+        slow = [round(n / 4) for n in self.SWITCH_SERIES["H3"]]
+        ok, detail = self._run_switch(slow)
+        self.assertFalse(ok, f"{slow}: {detail}")
+
+    def test_fps_floor_stat_defaults_to_the_median_and_names_a_known_statistic(self):
+        # every scene that grades fps_floor on something else says so with a statistic the grader knows
+        for name, scene in self.scenes.items():
+            stat = scene.get("fps_floor_stat")
+            if stat is not None:
+                self.assertIn(stat, run.FPS_FLOOR_STATS, name)
+                self.assertIsNotNone(scene.get("fps_floor"), f"{name}: a statistic without a floor")
+            self.assertEqual("fps_floor_windows" in scene, stat == "live",
+                             f"{name}: fps_floor_windows belongs to the live statistic and only to it")
+            if stat == "live":
+                self.assertIsInstance(scene["fps_floor_windows"], int, name)
+                self.assertGreaterEqual(scene["fps_floor_windows"], 1, name)
+        # the opt-in is the library-switch scene and nothing else: every other scene keeps the median
+        self.assertEqual({n for n, sc in self.scenes.items() if sc.get("fps_floor_stat")}, {"library-switch"})
+        ok, detail = run.fps_floor_verdict([5, 5, 5, 5, 5, 40, 40], 10)
+        self.assertFalse(ok)
+        self.assertIn("median=5 fps (min=5, max=40, n=7) vs fps_floor 10", detail)
+        # live: a window is live at >= the floor, and the count must reach `windows`
+        ok, detail = run.fps_floor_verdict([5, 5, 5, 3, 0, 1, 40], 4, "live", 4)
+        self.assertTrue(ok)
+        self.assertIn("live=4 of n=7 windows at >= 4 fps (need 4;", detail)
+        self.assertFalse(run.fps_floor_verdict([5, 5, 5, 3, 0, 1, 40], 4, "live", 5)[0])
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "p95")
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "live")
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "mean")
+
     def _walk_log(self, server=None, fps=40, keys=6):
         out = [server or self.SYN, "hubs: landed — 90 items, 3 shelves"] + [self._beat(fps=1)] * 3
         for _ in range(keys):
