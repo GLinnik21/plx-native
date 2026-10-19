@@ -28,7 +28,7 @@
 //! * A recorded landing that never arrives is counted as `missing` when the replay ends.
 //!
 //! **The due-frame wait is REPLAY-ONLY, bounded and taken at most once per (frame, owner, store)**
-//! (dump mode's `take_owed` wait is a separate poll with its own fail-closed timeout, below), so a store
+//! (dump mode's `take_owed` is separate, below: a blocking poll with its own fail-closed timeout, or the paced form's hold), so a store
 //! whose landing is due at a site that will not produce it cannot spend the budget twice on one
 //! frame. It is a stop-gap for one specific reason, worth saying plainly: the honest end state is
 //! §5.5's closed replay, where the recorded payload is INJECTED and no fetch happens at all. That
@@ -49,15 +49,17 @@
 //! their recorded frames exactly as they did. Gating a whole `pump()` would have suppressed the
 //! spawn that produces the very landing being waited for.
 //!
-//! **Dump mode** ([`Gate::arm_dump`], the deterministic frame dump) is the third way to arm a
-//! gate, and the one that needs no recording. The replay gate above keys a landing to a RECORDED
+//! **Dump mode** ([`Gate::arm_dump_paced`], the form the deterministic frame dump arms, and
+//! [`Gate::arm_dump`], its blocking twin) is the third way to arm a gate, and the one that needs no
+//! recording. The replay gate above keys a landing to a RECORDED
 //! frame; a dump has no recording, so it aims to make the landing frame a function of the request
 //! instead: a request issued in iteration k lands on the next execution of its site, whatever the
 //! worker's timing, including a request that superseded an earlier one whose worker is still out
 //! (a stale answer neither ends the wait nor releases the new request's claim). A site that asks
 //! through [`Gate::take_owed`] / [`Gate::take_all_owed`] says whether a request it spawned is still
 //! unanswered (`owed`, the site's own in-flight marker, per MAILBOX: a store-wide one would make
-//! one mailbox's pump wait on another's); the take polls until mail arrives. The marker is never
+//! one mailbox's pump wait on another's); the take delivers it (the blocking form polls until mail
+//! arrives; the paced form, below, returns nothing until it has). The marker is never
 //! cleared by the worker finishing, but WHEN it clears differs by site, and so does what keeps a
 //! stale answer from clearing it:
 //!
