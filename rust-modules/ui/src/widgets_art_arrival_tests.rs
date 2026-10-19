@@ -181,3 +181,64 @@ fn the_skeleton_under_a_dissolving_poster_is_not_counted() {
         assert_eq!(f.count, 0, "frame {n}: the art is here and dissolving in, nothing is owed: {f:?}");
     }
 }
+
+/// **A glass source replay must not take the visible walk's history** (DEBUG-5; FRAMES-4 a1-coll:
+/// the seated Collections tile went from skeleton to whole art and name in ONE frame).
+///
+/// The frame structure is `app::run::draw`'s non-player path: the DISCOVERY walk
+/// (`backdrop::discover`), then one REPLAY of the page per stale glass source
+/// (`backdrop::enter(sources, ceiling)`, `blur_snapshot_direct`), then the VISIBLE walk
+/// (`glass.walk(Z::ALL)`, "main.ui"). Each walk draws the card, so each is an occurrence in
+/// `card_motion`'s history. A replay runs only on a frame whose glass source went stale, and the
+/// dissolve that starts when late art lands is exactly what makes the header glass's source stale:
+/// measured in the simulator (`frames/debug5/a1-coll-t3`), the seated tile had 2 draws a frame
+/// until its fan landed, then 3 for the ten frames of its dissolve. The visible walk's draw moved
+/// from occurrence 1 to occurrence 2, which had no sample the frame before, so it read as art
+/// "there from the first draw" and showed whole while the discovery and replay draws dissolved.
+/// A card whose art lands while a replay already ran the frame before (the Library's seated card,
+/// a1-lib) keeps its occurrence and dissolves, which is why only some seated cards popped.
+///
+/// What the VISIBLE walk draws is what the panel shows; it must dissolve whatever replays ran.
+#[test]
+fn late_art_dissolves_in_the_visible_walk_when_a_glass_source_replay_starts_with_it() {
+    use crate::frame::backdrop::{self, Sources, Z};
+    use std::{cell::RefCell, rc::Rc};
+    let _guard = plx_base::testlock::serial();
+    rig();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let owner = 9_106;
+    let art = || Art::Poster(Some(poster(owner)));
+    // One frame as the application draws it: `(discovery, replay if a source is stale, visible)`.
+    let frame = |n: u32, replay: bool| -> (f32, Option<f32>, f32) {
+        crate::card_motion::begin_frame(frame_ms(n));
+        let discovered = {
+            let _walk = backdrop::discover(sources.clone());
+            resolve_card_art(Painter::root(), RECT, &art()).shown
+        };
+        let replayed = replay.then(|| {
+            let _walk = backdrop::enter(sources.clone(), Z::CHROME);
+            resolve_card_art(Painter::root(), RECT, &art()).shown
+        });
+        let _walk = backdrop::enter(sources.clone(), Z::ALL);
+        (discovered, replayed, resolve_card_art(Painter::root(), RECT, &art()).shown)
+    };
+    // The page is still: no glass source is stale, nothing replays, the card is a skeleton.
+    for n in 0..5 {
+        assert_eq!(frame(n, false).2, 0.0, "frame {n}: a skeleton (no texture handed out yet)");
+    }
+    land();
+    // The art lands; its dissolve keeps the glass above it stale, so a replay runs every frame of it.
+    let drawn: Vec<_> = (5..30).map(|n| frame(n, n < 15)).collect();
+    let visible: Vec<f32> = drawn.iter().map(|d| d.2).collect();
+    assert_eq!(visible[0], 0.0, "the landing frame still shows the skeleton in the VISIBLE walk: {visible:?}");
+    assert!(visible.windows(2).all(|w| w[1] >= w[0] && w[1] - w[0] < 0.25), "a dissolve, never a step: {visible:?}");
+    let whole = visible.iter().position(|&a| a == 1.0).expect("the art ends whole");
+    assert!(whole >= 5, "the visible art takes at least five frames to come in, got {whole}: {visible:?}");
+    // A source walk replays the visible frame: the glass must filter the picture the panel shows.
+    for (i, (discovered, replayed, shown)) in drawn.iter().enumerate() {
+        assert_eq!(*discovered, *shown, "frame {i} after landing: the discovery walk draws what is shown");
+        if let Some(replayed) = replayed {
+            assert_eq!(*replayed, *shown, "frame {i} after landing: the glass source replay draws what is shown");
+        }
+    }
+}
