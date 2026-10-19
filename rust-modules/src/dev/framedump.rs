@@ -30,7 +30,7 @@
 //! prewarm drain, then the debt sample), then the draw, then [`after_draw`], which decides.
 //!
 //! **The hold rule.** A frame is written only when nothing says the picture is still in flux: no
-//! placeholder was drawn (`placeholder::take`), no upload is queued (`tex::has_pending`), the poster
+//! placeholder was drawn (`placeholder::take`; bar a store's loading state while the landing lag holds its answer out, see "Landings"), no upload is queued (`tex::has_pending`), the poster
 //! source is idle (`tex::source_idle`), no landing claim is open (`Bridge::open_claims`), no landing
 //! take is waiting on an answer that is still out (`owed:<store>`, see "Landings") and the
 //! dispatcher carries no work into its next iteration (`Dispatcher::work_carried`: a pressed key's
@@ -112,6 +112,18 @@
 //! slower than `L` frames holds the picture on `owed:<store>` at that frame). With no lag a take lands
 //! on the next execution of its site, which is what every storyboard's rests were tuned on.
 //!
+//! **A lagged page's loading placeholders are not debt either** ([`owed_placeholders`]). The page of a
+//! lagged store draws its loading state (the Working read-out, a spinner, the Detail's "Loading"
+//! title: `Reason::is_loading_state`), and virtual time advances only when a frame is written, so
+//! holding on that placeholder would never reach the frame the lag waits for and the run would end
+//! on `PLXNATIVE_DUMP_MAX_HOLD_MS` naming `placeholder`. While a store is lagged this iteration
+//! those placeholders, and only those, are excused; a card's art, a logo or a backdrop still hold,
+//! and so does any draw past the entry cap. They are still COUNTED where it matters: the written
+//! frame's `debt` column and `frames_with_debt` record the loading frames the film holds, so
+//! `site_video.py gates` rejects a lagged render as a deliverable, which is right: it is a capture
+//! of a loading state, never the demo. With no lag armed nothing is excused and the "no placeholders
+//! in a demo video" rule holds as written.
+//!
 //! **Claims.** Session-adapter drains and stores outside `open_claims` cannot change what is drawn
 //! without a placeholder or a claim: every request-driven landing either paints a placeholder until
 //! it lands (card art, spinners, logos, the Detail spinner), or is a landing take that holds the
@@ -159,7 +171,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use plx_machine::machine::{Key, Tick};
-use plx_ui::placeholder::{self, Entry, Reason};
+use plx_ui::placeholder::{self, Entry, Frame, Reason};
 
 use crate::app::App;
 
@@ -202,7 +214,8 @@ pub(crate) fn land_lag_frames(ms: u32) -> u64 {
 /// What one iteration observed about whether the picture is still in flux.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Sample {
-    /// `placeholder::take().count`: placeholders the draw showed.
+    /// Placeholders the draw showed that are DEBT ([`owed_placeholders`]: `placeholder::take().count`,
+    /// less a loading state the landing lag is deliberately holding out).
     pub placeholders: u32,
     /// `tex::has_pending()`: an upload or an eviction notice is queued.
     pub tex_pending: bool,
@@ -217,6 +230,52 @@ pub(crate) struct Sample {
     pub carried: bool,
     /// Landing takes whose answer is still out (`Gate::take_starved`), by store name.
     pub starved: Vec<String>,
+}
+
+impl Sample {
+    /// The whole iteration's sample: `self` is the pre-draw half (the takes and the text drain have
+    /// run), `after` what was observed once the draw was done (its `placeholders` field is ignored:
+    /// the draw's [`Frame`] is the count, read through [`owed_placeholders`]), and `lagged` the stores
+    /// the landing lag held back this iteration. The one place the driver combines them, so a test
+    /// of the hold rule runs the code the driver runs.
+    pub(crate) fn with_draw(&self, after: Sample, frame: &Frame, lagged: &[String]) -> Sample {
+        let mut claims = self.claims.clone();
+        for c in after.claims {
+            if !claims.contains(&c) {
+                claims.push(c);
+            }
+        }
+        let mut starved = self.starved.clone();
+        for n in after.starved {
+            if !starved.contains(&n) {
+                starved.push(n);
+            }
+        }
+        Sample {
+            placeholders: owed_placeholders(frame, lagged),
+            tex_pending: self.tex_pending || after.tex_pending,
+            source_busy: self.source_busy || after.source_busy,
+            page_image: after.page_image,
+            claims,
+            carried: after.carried,
+            starved,
+        }
+    }
+}
+
+/// The placeholders a draw shows that are DEBT. All of them, unless the landing lag is holding a
+/// store's answer back this iteration (`lagged` non-empty): the page is then deliberately showing
+/// its loading state, so the placeholders that ARE a loading state ([`Frame::loading_state`]) are the
+/// picture the dump was asked to film and not something to wait out. Every other placeholder
+/// (a card's art, a logo, a backdrop) stays debt, and so does a draw past the entry cap, whose
+/// reason is unknown. With no lag armed `lagged` is always empty, so no placeholder is ever excused
+/// and the "no placeholders in a demo video" rule holds as written.
+pub(crate) fn owed_placeholders(frame: &Frame, lagged: &[String]) -> u32 {
+    if lagged.is_empty() {
+        frame.count
+    } else {
+        frame.count - frame.loading_state()
+    }
 }
 
 /// Why this frame must be held, in a fixed order; empty means the frame may be written.
@@ -718,31 +777,16 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
             return true;
         }
         let frame = placeholder::take();
-        let post = Sample {
-            placeholders: frame.count,
-            tex_pending: d.pre.tex_pending || plx_ui::tex::has_pending(),
-            source_busy: d.pre.source_busy || !plx_ui::tex::source_idle(),
+        let after = Sample {
+            placeholders: 0,
+            tex_pending: plx_ui::tex::has_pending(),
+            source_busy: !plx_ui::tex::source_idle(),
             page_image: app.pages.held_page_image().is_some(),
-            claims: {
-                let mut c = d.pre.claims.clone();
-                for n in open_claims_but(app, &d.lagged) {
-                    if !c.contains(&n) {
-                        c.push(n);
-                    }
-                }
-                c
-            },
+            claims: open_claims_but(app, &d.lagged),
             carried: app.pages.work_carried(),
-            starved: {
-                let mut s = d.pre.starved.clone();
-                for n in app.bridge.landgate().take_starved() {
-                    if !s.contains(&n) {
-                        s.push(n);
-                    }
-                }
-                s
-            },
+            starved: app.bridge.landgate().take_starved(),
         };
+        let post = d.pre.with_draw(after, &frame, &d.lagged);
         if !d.cfg.allow_absent && !frame.absent.is_empty() {
             let why = format!("a settled-absent placeholder is on screen (no clearLogo will arrive): {}", describe(&frame.absent));
             d.fail(why);
@@ -1036,5 +1080,108 @@ mod tests {
         assert!(j.ends_with("}\n"));
         let ok = Summary::default().to_json();
         assert!(ok.contains("\"failed\":null"));
+    }
+
+    // ---- the landing lag against the driver's hold rule ---------------------------------------
+
+    fn frame_of(entries: &[Reason], count: u32) -> Frame {
+        Frame {
+            count,
+            entries: entries.iter().map(|&reason| Entry { reason, key: String::new() }).collect(),
+            absent: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_loading_state_is_debt_unless_the_lag_is_holding_a_store_out() {
+        let page = frame_of(&[Reason::WorkingReadout, Reason::DetailSpinner], 2);
+        assert_eq!(owed_placeholders(&page, &[]), 2, "no lag armed: every placeholder is debt");
+        assert_eq!(owed_placeholders(&page, &["collection".to_string()]), 0, "a lagged store's loading state is the picture");
+        let art = frame_of(&[Reason::WorkingReadout, Reason::CardSkeleton, Reason::HeroLogoText], 3);
+        assert_eq!(owed_placeholders(&art, &["collection".to_string()]), 2,
+            "a card's art and a hero's logo wait on the poster source, lag or not");
+        let capped = frame_of(&[Reason::WorkingReadout], 9);
+        assert_eq!(owed_placeholders(&capped, &["collection".to_string()]), 8,
+            "a draw whose reason was not kept is never excused");
+    }
+
+    /// The driver's iteration over a real paced gate with a lag, a real `Working` read-out drawn
+    /// while the page's answer is out, and the driver's own sample and `decide` (`Sample::with_draw`),
+    /// minus the GL read-back and the app around it. A held iteration repeats at the same virtual
+    /// frame; the loop is bounded by a count, never a clock. Returns, per WRITTEN frame, the placeholder
+    /// count its draw showed.
+    fn film_a_slow_page(lag: u64, frames: usize) -> Vec<u32> {
+        use std::sync::atomic::{AtomicBool, Ordering as O};
+        use std::sync::{Arc, Mutex};
+        let store = plx_data::stores::StoreId::Collection;
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump_paced(lag);
+        let claim = Arc::new(AtomicBool::new(true)); // the page's request is out from the start
+        let mailbox: Arc<Mutex<Option<u32>>> = Arc::default();
+        // The worker answers after a real delay that is long next to an iteration and short next to a test.
+        let m = Arc::clone(&mailbox);
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(15));
+            *m.lock().unwrap() = Some(7); // the claim is released by the take, never by the worker finishing
+        });
+        placeholder::arm();
+        let (mut v, mut landed, mut written, mut why) = (0u64, false, Vec::new(), Vec::new());
+        for _ in 0..2_000_000u32 {
+            gate.dump_frame(v);
+            let answer = gate.take_owed(store.ord(), store.name(), || claim.load(O::SeqCst),
+                || mailbox.lock().unwrap().take());
+            if answer.is_some() {
+                claim.store(false, O::SeqCst);
+                landed = true;
+            }
+            let lagged = gate.take_lagged();
+            let pre = Sample { starved: gate.take_starved(), ..Sample::default() };
+            placeholder::reset();
+            if !landed {
+                // The host has no GL: `declared` runs the real draw as a discovery walk, in which every
+                // primitive declares itself and the placeholder counter sees what a frame would.
+                placeholder::declared(|| {
+                    plx_ui::widgets::StatusOverlay::new(plx_ui::Rect::FULL, c"Loading", plx_ui::widgets::StatusKind::Working)
+                        .draw_measured(&plx_ui::Env::inert(), plx_ui::Painter::root(), &plx_ui::fixture::FixtureMeasure);
+                });
+            }
+            let frame = placeholder::take();
+            let after = Sample { starved: gate.take_starved(), ..Sample::default() };
+            let post = pre.with_draw(after, &frame, &lagged);
+            match decide(&post) {
+                Action::Write => {
+                    written.push(frame.count);
+                    v += 1;
+                    if written.len() == frames {
+                        placeholder::disarm();
+                        worker.join().unwrap();
+                        return written;
+                    }
+                }
+                Action::Hold => {
+                    why = hold_reasons(&post);
+                    if !post.starved.is_empty() {
+                        std::thread::sleep(Duration::from_micros(PACE_SLEEP_US));
+                    }
+                }
+            }
+        }
+        panic!("the dump never finished: {} frames written, stuck at virtual frame {v} on {why:?}", written.len());
+    }
+
+    #[test]
+    fn a_lagged_loading_page_writes_its_loading_frames_then_its_landed_ones_and_terminates() {
+        let _guard = plx_base::testlock::serial();
+        let written = film_a_slow_page(12, 20);
+        assert_eq!(written.len(), 20);
+        assert!(written[..12].iter().all(|&n| n > 0), "the 12 lagged frames show the loading state: {written:?}");
+        assert!(written[12..].iter().all(|&n| n == 0), "the frames after the landing show the page: {written:?}");
+    }
+
+    #[test]
+    fn without_a_lag_the_page_never_writes_a_loading_frame() {
+        let _guard = plx_base::testlock::serial();
+        let written = film_a_slow_page(0, 8);
+        assert!(written.iter().all(|&n| n == 0), "the loop held for the answer instead: {written:?}");
     }
 }

@@ -192,6 +192,38 @@ impl Reason {
             Reason::DetailBackdrop => "detail-backdrop",
         }
     }
+
+    /// Is this placeholder a page's LOADING STATE: it stands for a store request that is out and goes
+    /// when the answer lands (a spinner, the "Loading" read-out, the Detail's "Loading" title, an
+    /// episode strip dimmed for its season, the Person page's skeleton lines and cards)? The art
+    /// placeholders (a card's skeleton or ground, a backdrop, a logo, an avatar, a still) wait on
+    /// the poster source instead, and a page-sized spinner of onboarding, sign-in or the profile
+    /// picker waits on the session; neither is a store's loading state. The dump driver excuses
+    /// these, and only these, while its landing lag is deliberately holding a store's answer out
+    /// (`dev::framedump`, "The landing lag"), so a slow page is filmed with the loading frames its
+    /// user would see.
+    pub fn is_loading_state(self) -> bool {
+        // Exhaustive on purpose: a new `Reason` must be classified here, not fall into a default.
+        match self {
+            Reason::SkeletonBar
+            | Reason::SkeletonSheet
+            | Reason::DetailSpinner
+            | Reason::SeasonSpinner
+            | Reason::LibrarySpinner
+            | Reason::WorkingReadout
+            | Reason::DetailTitle
+            | Reason::StaleEpisodes => true,
+            Reason::CardSkeleton
+            | Reason::CardGround
+            | Reason::InfoPanelStill
+            | Reason::ProfileChip
+            | Reason::PageSpinner
+            | Reason::HeroLogoText
+            | Reason::HeroLogoAbsent
+            | Reason::HomeBackdrop
+            | Reason::DetailBackdrop => false,
+        }
+    }
 }
 
 /// One counted placeholder draw.
@@ -220,6 +252,14 @@ impl Frame {
     /// How many of this frame's placeholders were drawn for `reason`.
     pub fn of(&self, reason: Reason) -> usize {
         self.entries.iter().filter(|e| e.reason == reason).count()
+    }
+
+    /// How many of this frame's placeholders are a page's loading state ([`Reason::is_loading_state`]).
+    /// Counted from the kept entries, which are a prefix of the draws: a draw past [`ENTRY_CAP`]
+    /// has no known reason and is never counted here, so `count - loading_state()` can only
+    /// over-state what is left over.
+    pub fn loading_state(&self) -> u32 {
+        self.entries.iter().filter(|e| e.reason.is_loading_state()).count() as u32
     }
 }
 
