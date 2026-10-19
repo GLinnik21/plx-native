@@ -1982,7 +1982,7 @@ impl HomeScreen {
         .map(ControlPalette::ambient)
         .unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
-        // The fill rides the lift spring (`CtlPop::focus`) so plate and ink cross-fade with the pop;
+        // The fill rides the lift spring (`CtlPop::focus`) so the plate cross-fades (and the ink flips) with the pop;
         // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
         let fill = |i| if live { self.hero_pop.focus(i) } else { f32::from(focus == Some(Located::Hero(i))) };
         Button::new(label.as_ptr(), theme::size::BODY, pill)
