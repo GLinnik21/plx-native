@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, DrawFrame, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, FocusSource, ReturnState, Screen, ScreenEvent,
 };
 
 

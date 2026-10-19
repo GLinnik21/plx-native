@@ -92,7 +92,6 @@ fn every_shipped_language_words_a_show_without_an_english_leak() {
 #[test]
 fn the_band_opens_only_the_focused_row_by_its_height() {
     for (band, open) in [(80.0, 40.0), (112.0, 72.0), (0.0, 0.0)] {
-        assert_eq!(card_row::band_open_for(band), open);
         assert_eq!(card_row::under_band_for(band, 0.0), LABEL_BAND_COLLAPSED);
         assert_eq!(card_row::under_band_for(band, 1.0) - LABEL_BAND_COLLAPSED, open);
         let g = poster_grid::Geom::DEFAULT;

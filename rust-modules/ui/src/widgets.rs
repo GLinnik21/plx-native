@@ -5929,7 +5929,9 @@ impl TabStrip {
 
     /// The `(focus, selected)` mixes the pixel at `(x, y)` of `pill`'s glyphs is inked with: the
     /// region whose side of each capsule's drawn shape the pixel is on. Pure, and the one rule
-    /// [`paint_inked`]'s fragments answer, so it is what the contract tests grade.
+    /// [`paint_inked`]'s fragments answer, so it is what the contract tests grade (a CPU mirror of
+    /// the shader's rule: the product never calls it, so it stands behind the test gate).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn ink_at(&self, pill: Rect, ground: TabGround, x: f32, y: f32) -> (f32, f32) {
         self.pill_ink(pill, ground).at(x, y)
     }
@@ -5993,6 +5995,7 @@ impl PillInk {
     }
 
     /// The mixes the pixel `(x, y)` wears (see [`TabStrip::ink_at`]).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn at(&self, x: f32, y: f32) -> (f32, f32) {
         let side = |shape: Option<Rect>| shape.is_some_and(|r| capsule_contains(r, x, y));
         let (in_sel, in_foc) = (side(self.sel), side(self.foc));

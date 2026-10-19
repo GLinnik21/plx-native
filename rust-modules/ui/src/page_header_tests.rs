@@ -44,6 +44,12 @@ fn right_cluster_width_does_not_change_with_the_value() {
     assert_eq!(a.left_budget, b.left_budget);
 }
 
+/// The focusable items' slots in focus order: the stops [`HeaderFocus`] seats, read off the layout
+/// (a read-out or a lone title carries no stop).
+fn stops(layout: &HeaderLayout) -> Vec<Slot> {
+    layout.items.iter().filter(|r| r.focusable).map(|r| r.slot).collect()
+}
+
 #[test]
 fn overflow_is_an_item_between_the_names_and_the_controls_and_read_outs_take_no_focus() {
     let h = header("Title");
@@ -53,18 +59,7 @@ fn overflow_is_an_item_between_the_names_and_the_controls_and_read_outs_take_no_
     let mut spec = h.spec().clone();
     spec.right.insert(0, HeaderItem { focusable: false, ..item("312 of 1,284", None) });
     let l = PageHeader::new(spec, &[], &Fixed).layout(1920.0, &Fixed);
-    assert!(PageHeader::item_rects(&l).iter().all(|(i, _)| l.items[*i].slot != Slot::Right(0)));
-}
-
-#[test]
-fn names_that_do_not_fit_fold_into_plus_n_and_all_fit_when_there_is_room() {
-    let widths = [100.0, 100.0, 100.0, 100.0];
-    assert_eq!(fit_left(&widths, 10_000.0, 40.0), 4);
-    // 4 names = 400 + 3*GAP; a budget of 300 leaves room for 1 name once "+N" (40) is reserved.
-    let n = fit_left(&widths, 300.0, 40.0);
-    assert!(n < 4 && n >= 1, "{n}");
-    let used: f32 = widths[..n].iter().sum::<f32>() + GAP * (n - 1) as f32;
-    assert!(used + 40.0 <= 300.0);
+    assert!(stops(&l).iter().all(|slot| *slot != Slot::Right(0)));
 }
 
 /// **S4.** A header pill grows by a CONSTANT outset past its plate, whatever its label: the pill
@@ -172,17 +167,16 @@ fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
     assert!((last.text.x + last.text.w - 1771.0).abs() < 0.01, "the cluster still ends at the right text edge");
 }
 
+/// The layout stands names one `GAP` apart, the gap the Library's `pack_names` budgets with
+/// (`library::header::pack_names`, the rule the product packs by).
 #[test]
-fn fit_left_and_layout_agree_on_the_gap() {
+fn names_stand_one_gap_apart() {
     use plx_base::fontcov::advances::ShippedMeasure;
     let m = ShippedMeasure;
     let names = ["Movies", "LDN Films bamx23"];
     let spec = PageHeaderSpec { left: names.iter().map(|n| real(n, false)).collect(), ..Default::default() };
     let l = PageHeader::new(spec, &[], &m).layout(1920.0, &m);
     let widths: Vec<f32> = l.items.iter().map(|i| i.text.w).collect();
-    let used = widths[0] + GAP + widths[1];
-    assert_eq!(fit_left(&widths, used, 0.0), 2, "exactly fits");
-    assert_eq!(fit_left(&widths, used - 1.0, 0.0), 1, "one px short");
     assert_eq!(l.items[1].text.x, l.items[0].text.x + widths[0] + GAP);
 }
 
@@ -304,8 +298,7 @@ fn a_title_is_full_white_plain_text_with_no_plate_and_no_stop() {
     let boxes = |l: &HeaderLayout| l.items.iter().map(|r| (r.text, r.plate)).collect::<Vec<_>>();
     assert_eq!(boxes(&layout), boxes(&plated.layout(1920.0, &Fixed)), "the title takes the room a plated label takes");
     assert_eq!(titled.selected(&layout), -1, "no item wears the plate");
-    let stops: Vec<Slot> = PageHeader::item_rects(&layout).iter().map(|(i, _)| layout.items[*i].slot).collect();
-    assert_eq!(stops, [Slot::Right(0)], "the title is not a stop");
+    assert_eq!(stops(&layout), [Slot::Right(0)], "the title is not a stop");
     let (capsules, pop) = settled(&layout, titled.selected(&layout), 1);
     let rects = rrects(&titled, &layout, &capsules, &pop, None);
     assert!(selection_plate(&rects).is_none(), "no plate under the title: {rects:?}");
@@ -354,8 +347,7 @@ fn a_crumb_lays_out_where_crumb_layout_says_and_only_its_root_takes_focus() {
     assert_eq!((name.plate, name.text, name.focusable), (want.page_plate, want.page_text, false));
     assert_eq!(layout.glyph, Some(want.glyph), "the chevron stands where the crumb puts it");
 
-    let stops: Vec<Slot> = PageHeader::item_rects(&layout).iter().map(|(i, _)| layout.items[*i].slot).collect();
-    assert_eq!(stops, [Slot::CrumbRoot, Slot::Right(0)], "the root and Sort, not the title");
+    assert_eq!(stops(&layout), [Slot::CrumbRoot, Slot::Right(0)], "the root and Sort, not the title");
     assert_eq!(page.selected(&layout), page_at as i32, "the page name is the selected plate");
     let alone = PageHeader::new(PageHeaderSpec { right: vec![sort.clone()], ..Default::default() }, std::slice::from_ref(&sort), &Fixed)
         .layout(1920.0, &Fixed);

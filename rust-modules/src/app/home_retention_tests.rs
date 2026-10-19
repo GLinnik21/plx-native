@@ -2,6 +2,7 @@
 //! worker-result addressing and directory-discovery landing order.
 
 use super::*;
+use plx_ui::screen::DrawFrame;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame, frame_with_tap, frame_with_results};
