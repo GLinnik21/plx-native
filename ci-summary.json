@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T20:14:47Z",
+ "generated": "2026-10-19T20:21:24Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 78.2,
+   "change7_pct": 74.9,
    "d30": null,
    "delta30": null,
-   "delta7": 165.0,
+   "delta7": 158,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 376.0,
+   "now": 369,
    "prev7": 211,
    "shown": true,
    "state": "worse",
@@ -45,17 +45,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 47.8,
+   "change7_pct": 47.2,
    "d30": null,
    "delta30": null,
-   "delta7": 128.5,
+   "delta7": 127,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 397.5,
+   "now": 396,
    "prev7": 269,
    "shown": true,
    "state": "worse",
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.0,
-   "change7_pct": 30.0,
+   "change30_pct": -38.2,
+   "change7_pct": 29.5,
    "d30": 671,
-   "delta30": -255,
-   "delta7": 96,
+   "delta30": -256.5,
+   "delta7": 94.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 113,
-   "now": 416,
+   "now": 414.5,
    "prev7": 320,
    "shown": true,
    "state": "worse",
@@ -132,14 +132,14 @@
    "change7_pct": 20.8,
    "d30": null,
    "delta30": null,
-   "delta7": 27.0,
+   "delta7": 27,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 157.0,
+   "now": 157,
    "prev7": 130,
    "shown": true,
    "state": "worse",
@@ -287,18 +287,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.9,
-   "change7_pct": 5.5,
+   "change30_pct": 37.7,
+   "change7_pct": 5.3,
    "d30": 231.0,
-   "delta30": 87.5,
-   "delta7": 16.5,
+   "delta30": 87.0,
+   "delta7": 16,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 318.5,
+   "now": 318,
    "prev7": 302,
    "shown": true,
    "state": "flat",
@@ -317,9 +317,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 29,
+   "n_now": 30,
    "n_prev": 0,
-   "now": 310,
+   "now": 310.0,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -375,14 +375,14 @@
    "change7_pct": 8.1,
    "d30": null,
    "delta30": null,
-   "delta7": 14.0,
+   "delta7": 14,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 186.0,
+   "now": 186,
    "prev7": 172,
    "shown": true,
    "state": "flat",
@@ -396,14 +396,14 @@
    "change7_pct": 13.5,
    "d30": null,
    "delta30": null,
-   "delta7": 19.0,
+   "delta7": 19,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 160.0,
+   "now": 160,
    "prev7": 141,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 29,
+   "n_now": 30,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -566,14 +566,14 @@
    "change7_pct": -25.0,
    "d30": 676.0,
    "delta30": -673.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 103,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 219.1,
    "commits": [
     {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
-    {
      "pr": 839,
      "sha": "046f3058d",
      "title": "Dolby Vision: keep the declaration when the server copies the video"
@@ -657,6 +652,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 56.2,
@@ -667,13 +667,8 @@
    "to": 179.4
   },
   {
-   "change_pct": 78.2,
+   "change_pct": 74.9,
    "commits": [
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
     {
      "pr": 839,
      "sha": "046f3058d",
@@ -718,6 +713,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 211,
@@ -725,16 +725,11 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 376.0
+   "to": 369
   },
   {
-   "change_pct": 47.8,
+   "change_pct": 47.2,
    "commits": [
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
     {
      "pr": 839,
      "sha": "046f3058d",
@@ -779,6 +774,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 269,
@@ -786,16 +786,11 @@
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 397.5
+   "to": 396
   },
   {
    "change_pct": 40.1,
    "commits": [
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
     {
      "pr": 839,
      "sha": "046f3058d",
@@ -840,6 +835,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 347,
@@ -853,11 +853,6 @@
    "change_pct": 32.6,
    "commits": [
     {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
-    {
      "pr": 839,
      "sha": "046f3058d",
      "title": "Dolby Vision: keep the declaration when the server copies the video"
@@ -901,6 +896,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 99.7,
@@ -911,13 +911,8 @@
    "to": 132.2
   },
   {
-   "change_pct": 30.0,
+   "change_pct": 29.5,
    "commits": [
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
     {
      "pr": 839,
      "sha": "046f3058d",
@@ -962,6 +957,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 320,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-19",
    "threshold_pct": 15.0,
-   "to": 416
+   "to": 414.5
   },
   {
    "change_pct": 20.8,
    "commits": [
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
     {
      "pr": 839,
      "sha": "046f3058d",
@@ -1023,6 +1018,11 @@
      "pr": 843,
      "sha": "a397e151a",
      "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
+    },
+    {
+     "pr": 854,
+     "sha": "1a91d21c2",
+     "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
     }
    ],
    "from": 130,
@@ -1030,7 +1030,7 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 157.0
+   "to": 157
   }
  ],
  "schema": 2,
@@ -1045,25 +1045,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 397.5
+   "now": 396
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 376.0
+   "now": 369
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 318.5
+   "now": 318
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 310
+   "now": 310.0
   }
  ],
  "slowest_local": [
