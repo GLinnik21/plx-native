@@ -723,6 +723,89 @@ fn worst_contrast_of(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_
     worst
 }
 
+/// What the pixel `(x, y)` of a strip whose pills stand `INK_H` tall from y 0 stands on, as DRAWN:
+/// like [`backing_at`] but each capsule is the ROUNDED rect `TabStrip::draw` paints (its rect popped
+/// about its centre, corner radius half its height), so a pixel above or below the centre row that
+/// is outside the arc is on the slate. A hard decision per pixel centre (`d <= 0`): the antialiased
+/// rim pixel itself is a blend and is not graded.
+fn backing_at_xy(strip: &TabStrip, ground: TabGround, x: f32, y: f32) -> [f32; 4] {
+    let (pop, plate) = match ground {
+        TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
+        TabGround::Plated { pop } => (pop, theme::TAB_PLATE_SELECTED_OVER),
+        TabGround::Bare { pop, .. } => (pop, theme::TAB_PLATE_SELECTED),
+    };
+    let covers = |c: &Capsule, pop: f32| {
+        let (cx, cw) = c.span();
+        let r = Rect::new(cx, 0.0, cw, INK_H).scaled(pop);
+        let rad = (r.h * 0.5).min(r.w * 0.5);
+        let q = ((x - (r.x + r.w * 0.5)).abs() - (r.w * 0.5 - rad), (y - (r.y + r.h * 0.5)).abs() - (r.h * 0.5 - rad));
+        let d = q.0.max(0.0).hypot(q.1.max(0.0)) + q.0.max(q.1).min(0.0) - rad;
+        (c.alpha() > 0.004 && cw > 0.5 && d <= 0.0).then(|| c.alpha())
+    };
+    let over = |dst: [f32; 4], src: [f32; 4], a: f32| theme::cross(dst, [src[0], src[1], src[2], 1.0], a);
+    let mut c = INK_GROUND;
+    if let Some(a) = covers(&strip.sel, 1.0) { c = over(c, plate, plate[3] * a); }
+    if let Some(a) = covers(&strip.foc, pop) { c = over(c, crate::ACCENT, a); }
+    c
+}
+
+/// The lowest contrast between the ink the pixels of a pill wear and what is under them, over every
+/// glyph row of the pill (the 34 rows a label's ascenders and descenders stand on, centre +-17) and
+/// every pixel column, as `(ratio, x, dy)`: the 2-D grade the column-only ones cannot give.
+fn worst_contrast_2d(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_of: fn(f32, f32) -> [f32; 4]) -> (f32, f32, f32) {
+    let rect = Rect::new(pill.0, 0.0, pill.1, INK_H);
+    let mut worst = (f32::MAX, pill.0, 0.0);
+    for column in (pill.0.floor() as i32)..((pill.0 + pill.1).ceil() as i32) {
+        let x = column as f32 + 0.5;
+        if x < pill.0 || x >= pill.0 + pill.1 { continue; }
+        for k in -17..17 {
+            let y = INK_H * 0.5 + k as f32 + 0.5;
+            let (focus, selected) = strip.ink_at(rect, ground, x, y);
+            let backing = backing_at_xy(strip, ground, x, y);
+            let ink = ink_of(focus, selected);
+            let ratio = contrast(theme::cross(backing, [ink[0], ink[1], ink[2], 1.0], ink[3]), backing);
+            if ratio < worst.0 { worst = (ratio, x, y - INK_H * 0.5); }
+        }
+    }
+    worst
+}
+
+/// **A capsule's ends are ROUND, and the ink follows them**: a glyph row above or below the centre
+/// row is inside the capsule only where the arc is, 2-4 px further in than the capsule's x-extreme
+/// (the rows an ascender or a descender stand on). The ink the pixel wears is decided by the DRAWN
+/// shape per pixel, so on every glyph row, across a travel and across the fade-in, every pixel of
+/// every pill keeps 3:1 against what is under it, on every strip ground.
+#[test]
+fn a_label_a_capsule_is_crossing_stays_readable_on_every_glyph_row_not_only_the_centre_one() {
+    let _g = serial_for_motion();
+    let w = widths_for(12);
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    for (ground, ink_of) in ink_cases() {
+        let mut s = TabStrip::new();
+        for _ in 0..90 { s.update(2, 4, span, SelMark::Travels, DT); }
+        let mut worst = (f32::MAX, 0, 0.0, 0.0);
+        for frame in 0..90 {
+            s.update(2, 5, span, SelMark::Travels, DT);
+            for pill in [4, 5] {
+                let (ratio, x, dy) = worst_contrast_2d(&s, ground, span_of(&w, pill), ink_of);
+                if ratio < worst.0 { worst = (ratio, frame, x, dy); }
+            }
+        }
+        assert!(worst.0 >= 3.0, "travel: worst {:.2}:1 at frame {} x {} row {:+} from the centre (3:1 wanted)", worst.0, worst.1, worst.2, worst.3);
+        for (from, to) in [(-1, 3), (3, -1)] {
+            let mut s = TabStrip::new();
+            for _ in 0..90 { s.update(3, from, span, SelMark::Lands, DT); }
+            let mut worst = (f32::MAX, 0, 0.0, 0.0);
+            for frame in 0..60 {
+                s.update(3, to, span, SelMark::Lands, DT);
+                let (ratio, x, dy) = worst_contrast_2d(&s, ground, span_of(&w, 3), ink_of);
+                if ratio < worst.0 { worst = (ratio, frame, x, dy); }
+            }
+            assert!(worst.0 >= 3.0, "{from} -> {to}: worst {:.2}:1 at frame {} x {} row {:+} from the centre (3:1 wanted)", worst.0, worst.1, worst.2, worst.3);
+        }
+    }
+}
+
 /// **A label under a capsule's edge is readable on both sides of it** (the owner's "letters over
 /// the white plate are light, letters over the slate are dark"): across a whole travel from one
 /// pill to the next, on every strip ground, every pixel column of both pills the capsule is

@@ -5782,6 +5782,12 @@ impl TabStrip {
         }
         out
     }
+
+    /// The `(focus, selected)` mixes the pixel at `(x, y)` of `pill` is inked with.
+    pub fn ink_at(&self, pill: Rect, ground: TabGround, x: f32, _y: f32) -> (f32, f32) {
+        let spans = self.ink_spans((pill.x, pill.w), ground);
+        spans.as_slice().iter().find(|s| x >= s.x0 && x < s.x1).map_or((0.0, 0.0), |s| (s.focus, s.selected))
+    }
 }
 
 /// A stretch `[x0, x1)` of a pill, in the strip's content space, and the `(focus, selected)` mixes
