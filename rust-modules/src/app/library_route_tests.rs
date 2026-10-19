@@ -99,8 +99,9 @@ struct Step {
 
 fn nothing(_: &mut World) {}
 
-/// The Movies library, reached by its strip pill, settled.
-fn library(w: &mut World) { w.open_library(); }
+/// The Movies library, reached by its strip pill, settled, with focus climbed into its header (the
+/// page arrives in its first poster, one Up below the header the rows below start from).
+fn library(w: &mut World) { w.open_library(); w.climb_into_header(); }
 
 fn press(key: Key, did: &str, top: &str, at: impl Into<String>) -> Step {
     Step { key, did: did.into(), top: top.into(), at: at.into(), prep: nothing }
@@ -200,10 +201,12 @@ fn the_collections_page_opens_from_its_control_and_back_returns_to_it() {
         setup: library,
         start: "header:collections",
         steps: vec![
-            press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "header:crumb"),
+            // The listing has not answered in this rig, so the page reads Failed and arrives on its
+            // Retry (the content region's first stop); BACK leaves the page from there.
+            press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
             press(Key::Back, "content:Back", "library", "header:collections"),
             // …and again: the control is still the one that opens it.
-            press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "header:crumb"),
+            press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
             press(Key::Back, "content:Back", "library", "header:collections"),
         ],
         end: |w| {
@@ -224,18 +227,18 @@ fn a_collection_opens_from_the_collections_page_to_a_film_and_every_back_returns
         setup: library,
         start: "header:collections",
         steps: vec![
-            /* 0 */ press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "header:crumb"),
-            /* 1 */ after(collections_answered, press(Key::Down, "", "collections", "grid:0,0")),
-            /* 2 */ press(Key::Right, "", "collections", "grid:0,1"),
-            /* 3 */ press(Key::Ok, "library:Detail", "collection", "page:0"),
+            /* 0 */ press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
+            // The answer lands under the page's own seat, which follows it into the first tile.
+            /* 1 */ after(collections_answered, press(Key::Right, "", "collections", "grid:0,1")),
+            /* 2 */ press(Key::Ok, "library:Detail", "collection", "page:0"),
             // The screen opens on its header (elem 0) until its members arrive; its grid numbers
             // them from 4096, six to a row.
-            /* 4 */ after(members_answered, press(Key::Down, "", "collection", "page:4102")),
-            /* 5 */ press(Key::Right, "", "collection", "page:4103"),
-            /* 6 */ press(Key::Ok, "content:Push", "detail", "page:0"),
-            /* 7 */ press(Key::Back, "content:Back", "collection", "@6"),
-            /* 8 */ press(Key::Back, "content:Back", "collections", "@3"),
-            /* 9 */ press(Key::Back, "content:Back", "library", "@0"),
+            /* 3 */ after(members_answered, press(Key::Down, "", "collection", "page:4102")),
+            /* 4 */ press(Key::Right, "", "collection", "page:4103"),
+            /* 5 */ press(Key::Ok, "content:Push", "detail", "page:0"),
+            /* 6 */ press(Key::Back, "content:Back", "collection", "@5"),
+            /* 7 */ press(Key::Back, "content:Back", "collections", "@2"),
+            /* 8 */ press(Key::Back, "content:Back", "library", "@0"),
         ],
         end: no_checks,
     }]);
@@ -272,7 +275,8 @@ fn the_crumb_root_pops_to_the_library_and_up_from_it_is_the_movies_pill() {
             setup: library,
             start: "header:collections",
             steps: vec![
-                press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "header:crumb"),
+                press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
+                press(Key::Up, "", "collections", "header:crumb"),
                 press(Key::Up, "", "collections", "nav:movies"),
                 press(Key::Down, "", "collections", "header:crumb"),
                 press(Key::Ok, "content:Back", "library", "header:collections"),
@@ -308,6 +312,7 @@ fn many_libraries(w: &mut World) {
     }
     w.bridge.refresh_browse_directory();
     w.open_library();
+    w.climb_into_header();
     let (names, folded) = w.library().probe_names();
     assert_eq!(names.iter().map(|(_, section)| *section).collect::<Vec<_>>(), [0, 4], "premise: the visible names");
     assert_eq!(folded, [6, 8, 10, 12], "premise: the folded libraries");
@@ -384,6 +389,7 @@ fn to_sort_filter() -> Vec<Step> {
 
 fn with_genres(w: &mut World) {
     w.open_library();
+    w.climb_into_header();
     let genre = |id: &str, title: &str| GenreEntry { id: id.into(), title: title.into() };
     w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
     w.frames(30);
@@ -444,6 +450,7 @@ fn a_filter_shows_n_of_m_beside_the_control_and_clears_when_reset() {
 fn lettered(w: &mut World) {
     w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
     w.open_library();
+    w.climb_into_header();
     w.frames(30);
 }
 
@@ -515,10 +522,11 @@ fn the_rail_is_entered_only_from_the_last_column_and_walks_over_empty_letters() 
             start: "header:collections",
             steps: {
                 let mut steps = vec![
-                    press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "header:crumb"),
-                    after(collections_lettered, press(Key::Down, "", "collections", "grid:0,0")),
+                    press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
+                    // The answer lands under the page's own seat, which follows it into the first tile.
+                    after(collections_lettered, press(Key::Right, "", "collections", "grid:0,1")),
                 ];
-                steps.extend((1..=5).map(|col| press(Key::Right, "", "collections", format!("grid:0,{col}"))));
+                steps.extend((2..=5).map(|col| press(Key::Right, "", "collections", format!("grid:0,{col}"))));
                 steps.extend([
                     press(Key::Right, "", "collections", "rail:A"),
                     press(Key::Left, "", "collections", "@-1"),
@@ -553,6 +561,7 @@ fn wears_the_library_route(w: &World, page: &str) -> Vec<String> {
 fn the_three_library_pages_wear_one_route_word_and_the_tab_bar() {
     let mut w = World::new("r16-word");
     w.open_library();
+    w.climb_into_header();
     let mut fails = wears_the_library_route(&w, "the grid");
     w.press(Key::Ok);
     w.frames(40);
@@ -572,6 +581,7 @@ fn the_three_library_pages_wear_one_route_word_and_the_tab_bar() {
 fn opening_collections_again_does_not_stack_a_second_page() {
     let mut w = World::new("r16-twice");
     w.open_library();
+    w.climb_into_header();
     let base = w.d.nav.tabs.stack.depth();
     // A double press: the second OK lands while the first push is still on its way.
     w.tap(Key::Ok, 0);

@@ -29,8 +29,10 @@ fn recommended_target(r: &World) -> f32 {
 
 fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.5 }
 
-/// Down from the header into the grid, then `rows` more: settled on row `rows`.
+/// Up into the header (the page arrives in its first poster), Down from it into the grid, then
+/// `rows` more: settled on row `rows`.
 fn down_to_row(r: &mut World, rows: usize) {
+    r.climb_into_header();
     r.press(Key::Down);
     assert_eq!(at(r), Some(At::Grid(0)), "premise: Down from the header enters the grid's first row");
     for row in 1..=rows {
@@ -43,6 +45,8 @@ fn down_to_row(r: &mut World, rows: usize) {
 fn down_tucks_the_chrome_and_each_row_rests_on_the_first_rows_line() {
     let mut r = World::movies_library("route-scroll-down", true);
     assert!(near(r.tuck(), 0.0), "the chrome is shown on arrival");
+    assert_eq!(at(&r), Some(At::Grid(0)), "the page arrives in its first row");
+    r.climb_into_header();
     r.press(Key::Down);
     assert_eq!(at(&r), Some(At::Grid(0)));
     let (y, first, _) = r.library().probe_rest_line(r.d.focus()).expect("a card is focused");
@@ -345,7 +349,6 @@ fn a_down_into_the_tucked_grid_and_an_up_back_never_leave_a_band_to_capture_inli
     use plx_ui::frame::backdrop::Z;
     let mut r = World::movies_library("route-scroll-glass", true);
     assert!(r.library().probe_capsule_wanted(), "premise: two libraries, so the page draws the capsule");
-    r.press(Key::Down);
     assert_eq!(at(&r), Some(At::Grid(0)), "premise: the first row is focused");
     let mut glass = plx_ui::frame::glass::GlassPlan::new();
     let mut trip = Vec::new();

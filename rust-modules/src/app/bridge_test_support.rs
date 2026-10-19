@@ -466,6 +466,16 @@ impl World {
         assert!(self.on(&want), "premise: OK on the header stop {elem} opened the wanted page");
     }
 
+    /// Up from where focus is until it stands on one of the Library header's stops (at most three
+    /// presses: the page arrives in its first poster, one Up from the header; a scrolled page
+    /// takes more). A no-op when focus is already there.
+    pub(super) fn climb_into_header(&mut self) {
+        for _ in 0..3 {
+            if self.on_header() { return; }
+            self.press(Key::Up);
+        }
+    }
+
     /// Is focus on the top bar's strip (the nav)?
     pub(super) fn on_nav(&self) -> bool { self.elem().is_some_and(|elem| elem >= plx_ui::dispatch::STRIP_BASE) }
 
@@ -494,10 +504,7 @@ impl World {
     /// `elem` (an element id) and stop there. The page arrives in its first poster, so a walk that
     /// starts below the header climbs into it with Up first.
     pub(super) fn walk_header_to(&mut self, elem: u32) {
-        for _ in 0..3 {
-            if self.on_header() { break; }
-            self.press(Key::Up);
-        }
+        self.climb_into_header();
         let stops = self.library().probe_header_stops();
         let place = |stop: Option<u32>| stops.iter().position(|(_, e)| Some(*e) == stop);
         for _ in 0..stops.len() + 1 {

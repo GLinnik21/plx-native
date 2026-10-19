@@ -132,7 +132,8 @@ fn outside_a_switch_down_from_the_header_still_lands_under_the_control() {
     // Only the DOWN that follows a library switch is the reader's way back to the tile they left.
     let mut w = World::movies_library("r15-square", true);
     w.frames(30);
-    assert!(w.on_header(), "premise: the page opens with focus on the header");
+    w.climb_into_header();
+    assert!(w.on_header(), "premise: Up from the arrival tile reaches the header");
     w.press(Key::Down);
     for key in [Key::Right, Key::Right, Key::Down, Key::Down, Key::Down] { w.press(key); }
     assert_eq!(w.grid_cell(), Some((3, 2)), "premise: the walk reached a tile off the first column");

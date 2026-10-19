@@ -418,7 +418,7 @@ thread_local! {
 /// screen reads it through [`page_image_held`] on its NEXT tick, so a layout animation it started
 /// is not stepped under an image that hides it and then stretches the hold (`cards::Shelf`'s
 /// animated landings).
-pub(crate) fn set_page_image_held(held: bool) {
+pub fn set_page_image_held(held: bool) {
     PAGE_IMAGE_HELD.with(|h| h.set(held));
 }
 
