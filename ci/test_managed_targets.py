@@ -10,9 +10,11 @@ matters, that neither can put a cargo tree outside the checkout:
 
 * `test-hostsim` builds into `rust-modules/target-hostsim` (relative, so it resolves inside the
   checkout), whatever `CARGO_TARGET_DIR` the caller exported; it is incremental in that dir only,
-  runs `plxnative-modules` with `--features hostsim`, gives the run a throwaway runtime dir that is
-  removed afterwards, and FAILS when the `T=` filter matches no test (libtest says `0 passed` and
-  exits 0, which a mistyped name reads exactly like a green run);
+  runs `plxnative-modules` (or the `C=<crate>` named, spelled as for `test-crate`: `plx_media`,
+  `media`, `app`, several allowed; the SAME recipe, so the same dir and the same rules) with
+  `--features hostsim`, gives the run a throwaway runtime dir that is removed afterwards, and FAILS
+  when the `T=` filter matches no test (libtest says `0 passed` and exits 0, which a mistyped name
+  reads exactly like a green run);
 * `check-nodef` sets no target dir of its own (so cargo's default, `rust-modules/target`, or the
   `CARGO_TARGET_DIR` a fleet lane exports for `make check` too), runs the non-incremental
   `check --lib --no-default-features` and never carries HOST_ENV or the telemetry words (they would
@@ -89,6 +91,48 @@ class TestHostsim(unittest.TestCase):
             (line,) = fake.bin_calls()
             self.assertTrue(line.endswith("args=lifecycle_regression_tests"), line)
             self.assertIn("rust-modules/" + TDIR, out.stdout)
+
+    def test_c_names_the_crate_under_test_and_changes_nothing_else(self):
+        # plx_media's own hostsim tests (player/engine.rs, pump.rs, route/decision.rs) are not in the
+        # application crate's test binary: C= is how they get the managed dir instead of a /tmp one.
+        spellings = {
+            "": "-p plxnative-modules",
+            "C=app": "-p plxnative-modules",
+            "C=plxnative-modules": "-p plxnative-modules",
+            "C=plx_media": "-p plx_media",
+            "C=media": "-p plx_media",
+            "C=plx_ui media": "-p plx_ui -p plx_media",
+            "C=app plx_media": "-p plxnative-modules -p plx_media",
+        }
+        for spelling, packages in spellings.items():
+            with self.subTest(spelling=spelling):
+                with FakeCargoHome() as fake:
+                    args = ["T=some_test"] + ([spelling] if spelling else [])
+                    out = fake.run("test-hostsim", *args, env=LANE_ENV)
+                    self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+                    (call,) = fake.calls()
+                    self.assertEqual(call["incremental"], "1")
+                    self.assertEqual(call["target_dir"], TDIR)
+                    self.assertEqual(inside_checkout(call), Path(TDIR))
+                    self.assertRegex(call["args"], r"^\+\S+ test --lib " + re.escape(packages)
+                                     + r" --features hostsim --no-run --message-format=json-render-diagnostics$")
+                    self.assertIn(packages.replace("-p ", ""), out.stdout.replace("\n", " "))
+
+    def test_c_keeps_the_filter_and_the_zero_tests_failure(self):
+        with FakeCargoHome() as fake:
+            out = fake.run("test-hostsim", "C=plx_media", "T=no_such_test", env={"FAKE_PASSED": "0"})
+            self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertIn("matched no test", out.stderr)
+        with FakeCargoHome() as fake:
+            out = fake.run("test-hostsim", "C=plx_media", "T=a_real_one", env={"FAKE_PASSED": "2"})
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+            (line,) = fake.bin_calls()
+            self.assertTrue(line.endswith("args=a_real_one"), line)
+
+    def test_c_is_one_recipe_not_a_second_one(self):
+        text = (ROOT / "Makefile").read_text()
+        self.assertEqual(len(re.findall(r"^test-hostsim:", text, re.M)), 1)
+        self.assertEqual(len(re.findall(r"--features hostsim", recipe_body("test-hostsim"))), 1)
 
     def test_the_throwaway_runtime_dir_is_removed_afterwards(self):
         with FakeCargoHome() as fake:
@@ -200,6 +244,13 @@ class TheDirIsManaged(unittest.TestCase):
         text = (ROOT / "tools/cargo-seed.py").read_text()
         kinds = re.search(r"^KINDS\s*=\s*\(([^)]*)\)", text, flags=re.M).group(1)
         self.assertNotIn("hostsim", kinds)
+
+    def test_the_docs_spell_the_plx_media_loop_as_c_not_as_make_check_only(self):
+        agents = (ROOT / "AGENTS.md").read_text()
+        self.assertIn("make test-hostsim\n  [C=<crate>] [T=filter]", agents)
+        self.assertIn("C=plx_media", agents)
+        self.assertNotIn("pass alone", agents)
+        self.assertIn("make test-hostsim [C=<crate>] [T=filter]", (ROOT / "docs" / "agent-reference.md").read_text())
 
     def test_the_agent_facing_docs_no_longer_hand_out_a_tmp_cargo_tree(self):
         offenders = []

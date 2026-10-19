@@ -108,16 +108,17 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `ci/list-caps.ini`.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
-- `make test-crate` does NOT enable `hostsim`: the application crate's tests under
-  `#[cfg(all(test, feature = "hostsim"))]` (`app/run.rs` `lifecycle_regression_tests`, the
-  player-return rig) run as `make test-hostsim [T=filter]`. It covers that crate only: the
-  `hostsim` tests inside `plx_media` (`player/engine.rs`, `pump.rs`, `route/decision.rs`) are
-  compiled by `make check`'s hostsim pass alone, so a `T=` naming one fails "matched no test" even
-  when spelled right. It runs `cargo test --lib -p plxnative-modules --features hostsim` on the pinned
+- `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
+  (the application crate's `app/run.rs` `lifecycle_regression_tests`, the player-return rig;
+  `plx_media`'s `player/engine.rs`, `pump.rs`, `route/decision.rs`) run as `make test-hostsim
+  [C=<crate>] [T=filter]`. `C` defaults to the application crate; `C=plx_media` (or `C=media`)
+  runs that crate's `hostsim` tests, the same ones `make check`'s hostsim pass runs for it. It runs
+  `cargo test --lib -p <crate> --features hostsim` on the pinned
   toolchain with a throwaway `PLXNATIVE_RUNTIME_DIR` (removed afterwards), incrementally in its own
   gitignored `rust-modules/target-hostsim`: inside the checkout, so `make disk` and
   `tools/build-gc.sh` see it and it goes with the worktree, like `target-fast`. A `T=` that matches
-  no test FAILS (libtest reports `0 passed` and exits 0 for a mistyped name). Do not hand-roll a
+  no test FAILS (libtest reports `0 passed` and exits 0 for a mistyped name), which includes a
+  correctly spelled test that lives in another crate than `C`. Do not hand-roll a
   cargo run whose `CARGO_TARGET_DIR` points into `/tmp`: nothing tracks those trees, and 28 of them
   (45.6 GiB) had piled up there when this target replaced the recipe. The "matches nothing, exits 0" trap
   still applies to `make test-crate T=` and `make test-fast T=`. `git add` explicit paths: an

@@ -1668,10 +1668,16 @@ test-crate:
 	  $(HOST_ENV) \
 	  python3 ../tools/test-crate.py --suite '$(UNIT_SUITE)' --cargo 'cargo +$(RUST_TOOLCHAIN)' $(if $(DEPS),--deps) $(if $(T),--filter '$(T)') $(C)
 
-# `make test-hostsim [T=filter]` -- the application crate's `hostsim` tests: the ones under
-# `#[cfg(all(test, feature = "hostsim"))]` (`app/run.rs` `lifecycle_regression_tests`, the
-# player-return rig), which `test-fast` and `test-crate` do not compile because the feature is off in
-# the default set. It is the managed form of what AGENTS.md used to hand out as a recipe,
+# `make test-hostsim [C=<crate>...] [T=filter]` -- the `hostsim` tests: the ones under
+# `#[cfg(all(test, feature = "hostsim"))]` (the application crate's `app/run.rs`
+# `lifecycle_regression_tests`, the player-return rig; `plx_media`'s `player/engine.rs`, `pump.rs`,
+# `route/decision.rs`), which `test-fast` and `test-crate` do not compile because the feature is off
+# in the default set. `C` is the crate under test, spelled as for `test-crate` (`C=plx_media` or
+# `C=media`; the application crate, the default, is `C=app`; several allowed), and it is the ONLY
+# thing `C` changes: the same recipe, the same managed dir, the same `--require-match`. The features
+# are the crate's own plus `hostsim`, not the application crate's defaults the full suite unifies in
+# (`test-crate` documents that gap); `C=plx_media` measured identical to the suite's line (1839
+# passed, 60 ignored, 2026-10-19). It is the managed form of what AGENTS.md used to hand out as a recipe,
 # `CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> cargo test --lib -p plxnative-modules --features
 # hostsim`: every agent picked its own `/tmp/<dir>`, nothing tracked them, and on 2026-10-19 there
 # were 28 PlxNative cargo trees there, 45.6 GiB, none of them known to `make disk` or `build-gc`.
@@ -1699,16 +1705,17 @@ test-crate:
 # matches no test FAIL: libtest prints `0 passed ... N filtered out` and exits 0, which a mistyped
 # `T=` reads exactly like a green run. Refused under RELEASE=1 like `test-fast`.
 TEST_HOSTSIM_TDIR = target-hostsim
+HOSTSIM_PKGS = $(foreach c,$(or $(strip $(C)),app),$(if $(filter app,$(c)),plxnative-modules,$(if $(filter plx_% plxnative-modules,$(c)),$(c),plx_$(c))))
 .PHONY: test-hostsim
 test-hostsim:
 	@$(if $(RELEASE),echo "make test-hostsim: refused under RELEASE=1 -- it runs the default-plus-hostsim feature set incrementally; RELEASE=1 is the shipping feature set (use make check-nodef for that)." >&2; exit 1,:)
-	@echo "test-hostsim: incremental hostsim tests of plxnative-modules in rust-modules/$(TEST_HOSTSIM_TDIR) -- see 'make disk'; reclaim it with: tools/build-gc.sh --incremental (cache) or rm -rf rust-modules/$(TEST_HOSTSIM_TDIR)"
+	@echo "test-hostsim: incremental hostsim tests of $(HOSTSIM_PKGS) in rust-modules/$(TEST_HOSTSIM_TDIR) -- see 'make disk'; reclaim it with: tools/build-gc.sh --incremental (cache) or rm -rf rust-modules/$(TEST_HOSTSIM_TDIR)"
 	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
 	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_HOSTSIM_TDIR) \
 	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) --require-match $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules --features hostsim
+	  $(UNIT_RUN) --require-match $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib $(addprefix -p ,$(HOSTSIM_PKGS)) --features hostsim
 
 # `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features`: devtools,
 # devtriggers and threadcheck off, what `RELEASE=1` builds). `make check`, `make` and `make sim` all

@@ -300,23 +300,34 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   about one run in three when started alone in a fresh process (300 runs, with a shared and with a
   private runtime dir) and is hidden in the suite by the tests that run before it in the same
   process. Adopting it would also need the tool on every machine and CI job.
-- `make test-hostsim [T=filter]` — the `hostsim`-feature unit tests of the application crate
-  (`#[cfg(all(test, feature = "hostsim"))]`: `app/run.rs` `lifecycle_regression_tests`, the
-  player-return rig), which `test-fast` and `test-crate` do not build. It runs `cargo test --lib -p
-  plxnative-modules --features hostsim` on the pinned toolchain through `$(UNIT_RUN)`, with a fresh
-  `PLXNATIVE_RUNTIME_DIR` (the `hostsim` feature is what makes it steerable) that the recipe removes
-  on exit, and with `--require-match`: a `T=` that matches no test exits 1 instead of reporting `0
-  passed` and passing. It is **incremental, by design**, in its own `rust-modules/target-hostsim`
+- `make test-hostsim [C=<crate>] [T=filter]` — the `hostsim`-feature unit tests
+  (`#[cfg(all(test, feature = "hostsim"))]`: the application crate's `app/run.rs`
+  `lifecycle_regression_tests`, the player-return rig; `plx_media`'s `player/engine.rs`, `pump.rs`,
+  `route/decision.rs`), which `test-fast` and `test-crate` do not build. `C` names the crate under
+  test, spelled as for `test-crate` (`C=plx_media`, `C=media`; several allowed) and defaulting to
+  the application crate (`C=app`); it changes nothing else, so there is one recipe, one managed dir
+  and one `--require-match` for all of them. It runs `cargo test --lib -p <crate> --features
+  hostsim` on the pinned toolchain through `$(UNIT_RUN)`, with a fresh `PLXNATIVE_RUNTIME_DIR` (the
+  `hostsim` feature is what makes it steerable) that the recipe removes on exit, and with
+  `--require-match`: a `T=` that matches no test exits 1 instead of reporting `0 passed` and
+  passing, which includes a correctly spelled test that lives in another crate than `C`. The
+  features are the crate's own plus `hostsim`, not the application crate's defaults that the full
+  suite unifies in (the gap `test-crate` exists to close, `plx_plex` 458 tests against 466): for
+  `C=plx_media` that made no difference, 1839 passed / 60 ignored, the line `make check`'s hostsim
+  pass prints for the crate (measured 2026-10-19); another crate with `devtriggers`-gated tests
+  would run fewer. It is **incremental, by design**, in its own `rust-modules/target-hostsim`
   (gitignored), for the reason `test-fast` is: the Makefile's measured policy keeps shared and
   linked-worktree builds non-incremental, and this is the same opt-in edit loop for the one test set
   `test-fast` cannot run. `test-fast`'s measured edit-rebuild (~10 s against 31-32 s) is for the
   14-crate default-feature suite, not this one-package build, and so is its ~2.7 GB; this tree was
-  1.7 GB after a cold build of `lifecycle_regression_tests` (62 tests, 31 s wall, 2026-10-19). `make
-  disk` lists the tree, and `tools/build-gc.sh --incremental` (cache only) or `--lanes` (whole
-  tree), or `rm -rf rust-modules/target-hostsim`, reclaims it. It replaces the former hand-run
-  recipe that pointed `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any
-  checkout, so no tool counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused under
-  `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+  1.7 GB after a cold build of `lifecycle_regression_tests` (62 tests, 31 s wall, 2026-10-19), and
+  2.9 GB once `C=plx_media` had run too, because a layer crate built alone compiles a second
+  feature variant of the shared dependencies into the same dir. `make disk` lists the tree, and
+  `tools/build-gc.sh --incremental` (cache only) or `--lanes` (whole tree), or `rm -rf
+  rust-modules/target-hostsim`, reclaims it. It replaces the former hand-run recipe that pointed
+  `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
+  counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
+  under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
   --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
   not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
