@@ -161,12 +161,13 @@ impl Layout {
         (self.doc_h() - (SCR_H - CONTENT_TOP) + MARGIN_Y).max(0.0)
     }
 
+    /// The scroll that seats `row` with its poster top where the FIRST row's is at rest (the grid
+    /// top, y 244), so focus reads on one line whether you are at the top of the library or deep in
+    /// it. Never below 0 and never past the end of the document: the last rows of a list settle
+    /// lower. The Library's grid and the Collections page's are this one layout.
     pub(super) fn row_reveal(&self, row: usize) -> f32 {
-        // The first row rests at the top of the page, header in view.
-        let top = if row == 0 { 0.0 } else { self.row_top(row) };
-        let scroll = top.clamp(0.0, self.max_scroll());
-        // A row never rests above the capsule's clearance.
-        super::scroll_chrome::settle_scroll(scroll, CONTENT_TOP + top - scroll)
+        let top = if row == 0 { 0.0 } else { self.row_top(row) - self.row_top(0) };
+        top.clamp(0.0, self.max_scroll())
     }
 
     pub(super) fn first(&self) -> Option<Block> {
@@ -363,12 +364,10 @@ mod tests {
         // header directly above it stays on screen. Snapping past it would scroll away the
         // controls the moment focus entered the grid.
         assert_eq!(lay.row_reveal(0), 0.0);
-        assert_ne!(
-            lay.row_reveal(0),
-            lay.grid_top(),
-            "…which is NOT the row's own top edge — every other row is"
-        );
-        assert_eq!(lay.row_reveal(3), lay.grid_top() + 3.0 * GRID_PITCH);
+        // …and every other row is seated with its top where the first row's is at rest, so
+        // the delta from row 0 is the rows between them.
+        assert_eq!(lay.row_reveal(3), 3.0 * GRID_PITCH);
+        assert_eq!(lay.row_y(3, lay.row_reveal(3)), lay.row_y(0, 0.0));
         // …and the clamp is the document's, so the last rows share one resting scroll
         assert_eq!(lay.row_reveal(39), lay.max_scroll());
     }
@@ -392,7 +391,7 @@ mod tests {
         assert!((lay.cell_x(lay.cols() - 1) + lay.card_w() - GRID_RIGHT).abs() < 0.01);
         assert!((lay.card_w() / lay.card_h() - RowStyle::EPISODE.w / RowStyle::EPISODE.h).abs() < 0.001);
         assert!(lay.grid_pitch() < GRID_PITCH);
-        assert_eq!(lay.row_reveal(8), lay.grid_top() + 8.0 * lay.grid_pitch());
+        assert_eq!(lay.row_reveal(8), 8.0 * lay.grid_pitch());
         let last = lay.row_reveal(39);
         assert!(lay.row_y(39, last) + lay.grid_pitch() <= SCR_H - MARGIN_Y + 0.01);
         let (lo, hi) = lay.visible_rows(lay.row_reveal(8));

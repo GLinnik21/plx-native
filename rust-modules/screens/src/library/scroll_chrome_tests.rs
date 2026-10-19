@@ -32,13 +32,30 @@ fn a_resting_page_has_a_constant_tuck_so_it_asks_for_no_frames() {
     assert!(!moving, "the tuck is derived from the scroll spring; it animates nothing itself");
 }
 
+/// A focused row below the first settles with its poster top where the first row's is at rest
+/// (the grid top, y 244): focus reads on one line at the top of a library and deep in it. At the
+/// end of the list the document cannot scroll further, so the last row may sit lower.
 #[test]
-fn rows_settle_at_120_or_lower_and_the_clamp_never_pushes_down() {
-    assert_eq!(settle_scroll(500.0, 130.0), 500.0, "already clear");
-    assert_eq!(settle_scroll(500.0, 120.0), 500.0);
-    assert_eq!(settle_scroll(500.0, 100.0), 480.0, "pulled back by the 20 px deficit");
-    assert_eq!(settle_scroll(10.0, -50.0), 0.0, "never below the page top");
-    assert!(SETTLE_MIN_Y >= scroll_capsule::Y + scroll_capsule::H, "clear of the capsule");
+fn a_focused_row_settles_at_the_first_rows_resting_y() {
+    use super::layout::{Layout, LIBRARY_GRID_TOP};
+    let lay = Layout::new(true, 400);
+    assert_eq!(lay.row_y(0, lay.row_reveal(0)), LIBRARY_GRID_TOP);
+    assert_eq!(LIBRARY_GRID_TOP, 244.0);
+    for row in [1, 2, 5, 40, 200] {
+        let focused = lay.with_grid_focus(Some(row));
+        assert_eq!(focused.row_y(row, focused.row_reveal(row)), LIBRARY_GRID_TOP, "row {row} rests at 244");
+    }
+    let last = lay.rows - 1;
+    let focused = lay.with_grid_focus(Some(last));
+    let y = focused.row_y(last, focused.row_reveal(last));
+    assert!(y >= LIBRARY_GRID_TOP, "the last row never rests above the line: {y}");
+    assert_eq!(focused.row_reveal(last), focused.max_scroll(), "the end clamps, it does not scroll past it");
+    assert!(y > LIBRARY_GRID_TOP, "the last row of a long list sits lower: {y}");
+}
+
+#[test]
+fn a_settled_row_is_clear_of_the_capsule() {
+    assert!(super::layout::LIBRARY_GRID_TOP >= scroll_capsule::Y + scroll_capsule::H);
 }
 
 #[test]
@@ -67,16 +84,6 @@ fn the_right_edge_is_the_last_column_of_whatever_the_grid_has() {
     assert!(on_last_column(Some(11), 6));
     assert!(on_last_column(Some(3), 4), "the episode grid has four columns");
     assert!(!on_last_column(Some(3), 0));
-}
-
-#[test]
-fn every_grid_row_rests_clear_of_the_capsule() {
-    use super::layout::Layout;
-    let lay = Layout::new(false, 400);
-    for row in 0..lay.rows {
-        let rest = lay.row_y(row, lay.row_reveal(row));
-        assert!(rest >= SETTLE_MIN_Y - 0.01 || lay.row_reveal(row) == 0.0, "row {row} rests at {rest}");
-    }
 }
 
 /// The paints one descriptive draw of `page` declares (`frame::backdrop::discover`: primitives are
