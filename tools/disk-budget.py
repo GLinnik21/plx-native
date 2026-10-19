@@ -29,7 +29,8 @@ THE LADDER (docs/disk-budget.md; LRU, least recently built first, within each ru
     2  incremental dirs of OTHER idle lanes (the main checkout waits for rung 6)
     3  younger PlxNative `/tmp` trees, idle >= 15 min
     4  whole derived trees of OTHER idle lanes
-    5  the `--stale` sweep (not sized; planned only when the main checkout is not the current one)
+    5  the `--stale` sweep (not sized; planned unless the main checkout IS the current one: from a lane, or
+       with `--no-build` as `--auto` runs it, it is planned; from the main checkout with a build in view it is not)
     6  budget-critical only: the main checkout's incremental dirs, then the CURRENT checkout's
        incremental dirs in trees other than the one being built
 

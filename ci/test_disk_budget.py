@@ -398,7 +398,7 @@ class Rung6AndRefusal(unittest.TestCase):
 
     def test_an_unsized_stale_sweep_counts_as_zero_so_a_refusal_stays_reachable(self):
         # The main checkout's `--stale` sweep cannot be sized ahead of time. Treating it as "might free enough"
-        # made a refusal unreachable whenever a main checkout existed (every real machine), so it counts as 0
+        # made a refusal unreachable whenever a sweep was in the plan, so it counts as 0
         # in the verdict: the plan still carries the sweep, in its rung-5 slot, and `settle` judges the free
         # space `build-gc.sh --evict` re-reads after running it.
         i = inv(self.main, self.mine, self.building, self.small)

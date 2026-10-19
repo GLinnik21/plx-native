@@ -638,9 +638,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` (or a planner-chosen
   `--evict PLAN`, below) is how you get it back —
   every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes
-  finished lane checkouts. `--stale` is the one mode that also reaches into the MAIN checkout's
-  own `rust-modules/target` (age-gated only there, never the newest hash per crate), because
-  cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
+  finished lane checkouts. The MAIN checkout is reached only narrowly: `--stale` sweeps the
+  superseded hashes in its `deps/` (age-gated only there, never the newest hash per crate),
+  `--incremental` and `--all` clear its incremental dirs, `--evict` takes those only as rung 6
+  (the planner's last), and none of them removes its `target` dir itself. The `--stale` reach
+  exists because cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
   `plxnative_modules-*` files across 6 dead hashes, 5.5 GB, all last written 2026-09-17. Measured
   2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo

@@ -36,7 +36,7 @@ Build trees are per-checkout and large. `make disk` reports what this machine is
 rebuild. Run `tools/build-gc.sh --orphans` after tearing down a set of worktrees: lane target
 directories live outside the repo and outlive the worktree that made them. `--worktrees` is
 different in kind, not degree: it removes FINISHED lane checkouts themselves (clean, unlocked,
-already on `main`) — not just their build output — so it is not part of `--all`.
+already on `origin/main`) — not just their build output — so it is not part of `--all`.
 
 None of the above has to be run by hand: `tools/build-gc.sh --auto` reclaims on its own, gated by
 free space on the volume (`PLX_GC_MIN_FREE_GIB`, default 20) and by a lane idle guard

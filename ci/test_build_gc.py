@@ -977,8 +977,8 @@ class BuildGcTests(unittest.TestCase):
         self.assertTrue((plane0 / "rust-modules/target/sentinel").exists(), "deleted without a planner to re-probe with")
 
     def test_evict_goes_on_while_an_ffmpeg_build_holds_the_cache_lock_and_leaves_its_entry(self):
-        # Every other mode refuses for a held FFmpeg lock (assert_live_refusal). This one never writes under the
-        # cache, and an FFmpeg build is when the disk is likeliest to be short.
+        # Every other mode refuses for a held FFmpeg lock (assert_live_refusal). This one never touches the FFmpeg
+        # cache's live entries, and an FFmpeg build is when the disk is likeliest to be short.
         fixture, (lane0, _) = self.evict_fixture(pid=os.getpid(), pgid=0)
         repo, env, sentinels, lock = fixture
         orphan = sentinels[1].parents[2]
@@ -1099,6 +1099,47 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(current.returncode, 1, out)      # the whole tree is refused
         self.assertFalse(incr.exists(), out)
         self.assertTrue((lane0 / "rust-modules/target/sentinel").exists(), "took more than its incremental dir: " + out)
+
+    def test_evict_run_from_a_lane_never_takes_that_lanes_own_tree_at_rungs_0_2_4(self):
+        # The checkout `--evict` runs from is the one about to build (the build-entry preflight runs there), so
+        # it gives up ONLY a rung-6 incremental dir in mode current. A plan naming its own tree at the rungs
+        # other lanes give up is never written for a build, and taking it would be pure waste; a `--no-build`
+        # plan made by hand from a lane can name it, so the line is SPARED (skipped, exit 0), not refused. The
+        # same line run from the main checkout is taken.
+        fixture, (lane0, lane1) = self.evict_fixture()
+        for name in ("build-gc.sh", "disk-budget.py", "cargo-seed.py", "check-lock.py"):
+            (lane0 / "tools").mkdir(exist_ok=True)
+            shutil.copy(ROOT / "tools" / name, lane0 / "tools" / name)
+        own = lane0 / "rust-modules/target"
+        # ...and a lane that keeps its CARGO_TARGET_DIR in the fleet dir is the same checkout
+        fleet_own = self.make_tree(Path(fixture[1]["PLX_FLEET_DIR"]) / "lane0/target", incremental=True)
+        for tree in (own, fleet_own):
+            for rung, scope, sub in ((0, "tree", ""), (2, "incremental", "debug/incremental"), (4, "tree", "")):
+                for mode in ("normal", "current"):
+                    with self.subTest(tree=tree.parent.name, rung=rung, scope=scope, mode=mode):
+                        plan = self.write_plan(fixture, [("evict", rung, scope, 8, "lane0", 0, mode, tree / sub)])
+                        result = self.run_evict(fixture, plan, cwd=lane0)
+                        out = result.stdout + result.stderr
+                        self.assertEqual(result.returncode, 0, out)
+                        self.assertIn("spared: the checkout --evict runs from", out)
+                        self.assertTrue((tree / "sentinel").exists(), "took the running checkout's own tree: " + out)
+                        self.assertTrue((tree / "debug/incremental/work-product").exists(), out)
+            with self.subTest(tree=tree.parent.name, rung=6, mode="normal"):
+                plan = self.write_plan(fixture, [("evict", 6, "incremental", 8, "lane0", 0, "normal",
+                                                  tree / "debug/incremental")])
+                result = self.run_evict(fixture, plan, cwd=lane0)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)    # refused outright
+                self.assertTrue((tree / "debug/incremental/work-product").exists())
+        plan = self.write_plan(fixture, [("evict", 6, "incremental", 8, "lane0", 0, "current",
+                                          fleet_own / "debug/incremental")])
+        taken = self.run_evict(fixture, plan, cwd=lane0)
+        self.assertEqual(taken.returncode, 0, taken.stdout + taken.stderr)
+        self.assertFalse((fleet_own / "debug/incremental").exists(), taken.stdout + taken.stderr)
+        self.assertTrue((fleet_own / "sentinel").exists(), "took more than its incremental dir")
+        plan = self.write_plan(fixture, [("evict", 4, "tree", 8, "lane0", 0, "normal", own)])
+        elsewhere = self.run_evict(fixture, plan)         # the same line, run from the main checkout
+        self.assertEqual(elsewhere.returncode, 0, elsewhere.stdout + elsewhere.stderr)
+        self.assertFalse(own.exists(), elsewhere.stdout + elsewhere.stderr)
 
     def test_evict_dry_run_prints_the_plan_and_changes_nothing_and_logs_nothing(self):
         fixture, (lane0, lane1) = self.evict_fixture()

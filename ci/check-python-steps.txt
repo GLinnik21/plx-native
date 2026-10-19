@@ -39,7 +39,7 @@ python3 ci/test_build_bench.py
 # one record per day (a same-day re-run replaces it), nothing written for a failed benchmark, a red `check` costing only
 # its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
 python3 ci/test_build_history.py
-# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every reclaim mode refuses under a held FFmpeg lock, a
+# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every OTHER reclaim mode refuses under a held FFmpeg lock, a
 # live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window),
 # `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
 # names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an

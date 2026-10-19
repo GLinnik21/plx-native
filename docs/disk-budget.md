@@ -95,12 +95,14 @@ be refused: free space still below the estimate plus the reserve.
 
 A **refusal** is the planner saying the whole ladder cannot free the build's estimate plus the
 reserve. The `--stale` sweep cannot be sized ahead of time, so it counts as ZERO in the verdict (an
-earlier version counted it as "might free enough", which made a refusal unreachable on every real
-machine, since every real machine has a main checkout). A plan whose sized actions fall short is a
-`refuse` even with the sweep in it; the sweep still stays in the plan at its rung-5 slot, `--evict`
-runs it there, re-reads free space and `settle` judges the result: `ok` if the sweep made room,
-`REFUSE` if not. `--stale` always runs from the checkout that owns the main `target`, so the sweep is
-planned whenever a main checkout exists.
+earlier version counted it as "might free enough", which made a refusal unreachable whenever a sweep
+was in the plan). A plan whose sized actions fall short is a `refuse` even with the sweep in it; the
+sweep still stays in the plan at its rung-5 slot, `--evict` runs it there, re-reads free space and
+`settle` judges the result: `ok` if the sweep made room, `REFUSE` if not. The sweep is planned off the
+main checkout's tree, and only while that tree is not in use and the main checkout is not the current
+one: from a lane, or with `--no-build` (which has no current checkout, and is how `--auto` runs the
+planner), it is planned at rung 5; from the main checkout with a build in view (`report`, or `reclaim`
+without `--no-build`) the current checkout is spared and no sweep is planned.
 
 **The cargo seed is never planned, at any age.** Earlier text had it at rung 5 after a week unused.
 That measured as a bad trade: the lanes cloned from it share its blocks, so deleting it frees
@@ -199,7 +201,9 @@ from a future planner must all fail safe, so nothing is taken on its word.
 2. *What rung it may be.* The (kind of tree, rung, scope) must be an eviction the ladder makes: the
    main checkout gives up only an `incremental` dir at rung 6 and never its whole `target`; the
    checkout `--evict` runs from gives up only a rung-6 `incremental` in mode `current`; a leftover
-   or tombstone only rung 0.
+   or tombstone only rung 0. A line that names the running checkout's own tree at rung 0, 2 or 4
+   (a `reclaim --no-build` plan made from a lane can) is **skipped** as "spared", not refused: it
+   is a fair eviction, just not from the checkout about to build.
 3. *Whether it is live, asked again immediately before the rename.* A builder (`cargo`, `rustc`,
    `make`, `cc1`, the ARM `gcc`) with its working directory in the owning checkout, and
    `disk-budget.py probe`: a held cargo build lock, a held per-checkout `make check` lock, any open
@@ -220,8 +224,9 @@ It ends with `settle:`: whether the free space it re-read covers the plan's `nee
 `would remove` for what it would take and writes no log.
 
 **Concurrency.** Every other `build-gc.sh` mode refuses outright while an FFmpeg cache lock is held,
-because a build is writing into the shared cache. `--evict` does not: it never writes under the
-cache (bar a tombstone nothing reads), and an FFmpeg build is exactly when the disk is likeliest to
+because a build is writing into the shared cache. `--evict` does not: it never touches the FFmpeg
+cache's live entries (bar a `.tombstone.` nothing reads), though it does remove day-old `cargo-seed`
+leftovers (`.tmp.`, `.restore.`, `.old.`), and an FFmpeg build is exactly when the disk is likeliest to
 be short. It does take the builder-in-checkout and per-tree locks above. The one exception to "ignores the FFmpeg
 lock" is the `stale` line: it runs `build-gc.sh --stale` as a child, which keeps its own preflight and
 declines (its message is printed in the output) while an FFmpeg build holds the cache lock; the sweep then
@@ -231,11 +236,10 @@ it.
 
 **`build-gc.sh --auto`** is the planner followed by `--evict`. Always `--orphans` first, unconditionally.
 Below `PLX_GC_MIN_FREE_GIB` free (default 20): `--worktrees` restricted to lanes idle for at least
-`PLX_GC_IDLE_MIN` minutes (default 60, worktree and fleet build tree, as `--lanes` has always judged
-a lane under `--auto`), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
+`PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
 $PLX_GC_IDLE_MIN --emit` into a temporary file and `--evict` on it. It replaces five fixed stages
 (`--incremental`, `--worktrees`, `--lanes`, `--stale`, `--seed`) with the planner's order, which
-differs in four ways: the main checkout's incremental cache is the last resort (rung 6) instead of
+differs: the main checkout's incremental cache is the last resort (rung 6) instead of
 the first stage; a lane's vendor build trees are not touched (they are not derived from cargo; only
 `--lanes` and `--all` take them); the cargo seed is never evicted; PlxNative trees left under `/tmp`
 are now in scope; and the stop line is the threshold plus 4 GiB. A planner that fails or is missing

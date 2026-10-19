@@ -146,7 +146,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - **`make disk` before and after a fleet.** Build trees are per-checkout; the cargo
   **incremental cache**, not FFmpeg, is most of the bulk.
   `tools/build-gc.sh --incremental|--lanes|--stale|--all` deletes only rebuildable output. After tearing
-  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `main` —
+  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `origin/main` —
   which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
   target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
   `docs/agent-reference.md` keeps the measurements behind this. None of this has to be run by

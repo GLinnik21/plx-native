@@ -169,7 +169,7 @@ What keeps that in check:
 - **`make disk`** (`tools/build-gc.sh`) reports every checkout's derived trees, the external lane
   trees under `$PLX_FLEET_DIR`, and the free space, in one table; `tools/build-gc.sh
   --orphans | --incremental | --lanes | --worktrees | --all` reclaims. Nothing it deletes is
-  anything but `make` output or a lane worktree already fully on `main`. Run it when a lane starts
+  anything but `make` output or a lane worktree already fully on `origin/main`. Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
 - **`tools/build-gc.sh --auto` reclaims on its own**, gated by free space on the volume and by an
@@ -366,7 +366,7 @@ first so `read -r sha wt` still puts the whole tail in `wt`. Verified 2026-08-23
 the `UNMERGED:` branch actually fires.)
 
 **This whole check-then-remove sequence is what `tools/build-gc.sh --worktrees` automates** — run
-it once `<integration>` has landed on `main`, then `--orphans`. It never deletes a branch, only the
+it once `<integration>` has landed on `main` and a `git fetch` has brought the squash in (it judges against `origin/main`), then `--orphans`. It never deletes a branch, only the
 worktree (reporting a left branch by name so you decide by hand). A squash-merged lane whose lines
 `main` has since changed again reads `unmerged` and needs the manual check above.
 
