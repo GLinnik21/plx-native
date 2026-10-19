@@ -591,8 +591,9 @@ mod ink_tests {
         }
     }
 
-    /// The collection mark at the sizes its tile draws it (`collection_tile::glyph_px` across a
-    /// grid poster's rest and pop, and a shelf's): full opacity inside, nothing on the border.
+    /// The collection mark at the sizes its tiles draw it (`collection_tile::glyph_px` of each
+    /// page's RESTING tile width; a focus pop does not change the size, the card's zoom grows the
+    /// cached mask): full opacity inside, nothing on the border.
     #[test]
     fn the_collection_mark_rasterizes_clean_at_its_tile_sizes() {
         for px in [64, 72, 76, 80, 84] {

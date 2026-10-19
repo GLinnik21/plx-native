@@ -57,6 +57,41 @@ fn mounting_the_collections_page_asks_the_store_for_the_collections_listing() {
     assert_eq!(staged_type(&page), None);
 }
 
+/// The page borrows the section's store listing, so on mount the store still lists the page
+/// beneath it (the films). Until its own answer lands the page shows none of that: an empty grid
+/// under the loading read-out, parked dark so the request commits at once, and one fade-in when
+/// the collections exist. (`app::bridge::library_collections_arrival_tests` is the same rule
+/// through the route dip.)
+#[test]
+fn the_page_shows_none_of_the_films_while_the_collections_are_in_flight() {
+    let _guard = plx_base::testlock::serial();
+    let films = Fixture::new();
+    let mut page = collections_page();
+    let mut ms = 0;
+    let mut frame = |page: &mut LibraryScreen, fixture: &Fixture| {
+        ms += 16;
+        run(page, fixture, ScreenEvent::Tick(Tick { ms, dt_us: 16_000 }));
+        page.probe_content()
+    };
+    run(&mut page, &films, ScreenEvent::Mount);
+    let (page_alpha, grid_alpha, loading, _, tiles) = page.probe_content();
+    assert_eq!((tiles, loading), (0, true), "the mount frame holds no film: alpha {}", page_alpha * grid_alpha);
+    for i in 0..30 {
+        let (page_alpha, grid_alpha, loading, _, tiles) = frame(&mut page, &films);
+        assert!(tiles == 0 && loading, "frame {i} drew {tiles} films at alpha {}", page_alpha * grid_alpha);
+    }
+    let landed = as_collections(3);
+    let mut shown = Vec::new();
+    for _ in 0..30 {
+        let (page_alpha, grid_alpha, loading, _, tiles) = frame(&mut page, &landed);
+        if tiles > 0 && page_alpha * grid_alpha > 0.0 { shown.push(tiles); }
+        assert!(!loading || tiles == 0, "the read-out cleared before the tiles were there");
+    }
+    assert!(!shown.is_empty() && shown.iter().all(|n| *n == 3), "only the collections were drawn: {shown:?}");
+    let (page_alpha, grid_alpha, loading, _, tiles) = page.probe_content();
+    assert!(page_alpha * grid_alpha >= 0.99 && !loading && tiles == 3);
+}
+
 #[test]
 fn the_page_that_listed_collections_is_not_asked_again() {
     let _guard = plx_base::testlock::serial();
