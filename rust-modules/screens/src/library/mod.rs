@@ -330,6 +330,12 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
 
+    /// The two caption lines (title, details) the grid draws under tile `i` of `view`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_caption(&self, view: plx_data::stores::browse::ListingView<'_>, i: usize) -> [Option<String>; 2] {
+        self.pair.detail.probe_caption(view, i)
+    }
+
     /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header_builds(&self) -> u32 { self.header.builds() }

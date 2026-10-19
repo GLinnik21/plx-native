@@ -4008,6 +4008,9 @@ mod header_cache_route_tests;
 #[cfg(test)]
 #[path = "library_memory_route_tests.rs"]
 mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "under_posters_route_tests.rs"]
+mod under_posters_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {
