@@ -15,11 +15,14 @@ pub const SETTLE_MIN_Y: f32 = 120.0;
 /// The scroll distance over which the chrome tucks, ending when the first row has gone.
 pub const TUCK_RAMP: f32 = 120.0;
 
-/// How far the top chrome is tucked at `scroll` (0 shown .. 1 gone). `first_row_pitch` is the
-/// distance the first row takes to scroll off; the tuck completes there and starts [`TUCK_RAMP`]
-/// before it, so scroll 0 is always 0 and everything past the first row is 1.
-pub fn tuck(scroll: f32, first_row_pitch: f32) -> f32 {
-    let end = first_row_pitch.max(TUCK_RAMP);
+/// How far the top chrome is tucked at `scroll` (0 shown .. 1 gone). `gone_at` is the scroll at which
+/// whatever stands under the chrome at rest has scrolled off: the Library passes its first row's
+/// pitch (its rows snap one at a time, so the first scrolled rest is a whole row down), a page whose
+/// grid rests on its FIRST snap (the first row at the content edge) passes the distance to that snap.
+/// The tuck completes there and starts [`TUCK_RAMP`] before it, so scroll 0 is always 0 and
+/// everything past `gone_at` is 1.
+pub fn tuck(scroll: f32, gone_at: f32) -> f32 {
+    let end = gone_at.max(TUCK_RAMP);
     ((scroll - (end - TUCK_RAMP)) / TUCK_RAMP).clamp(0.0, 1.0)
 }
 

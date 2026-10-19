@@ -1015,16 +1015,34 @@ fn the_grid_is_the_librarys_six_columns_at_pitch_285_from_y_244() {
 }
 
 /// **A scrolled page tucks the top chrome and shows the capsule "Watchlist N"**, as the Library does:
-/// untucked at rest, fully tucked once the first row has gone, and the page's total is the number.
+/// untucked at rest, fully tucked once the header has scrolled off, and the page's total is the number.
 #[test]
-fn the_top_chrome_tucks_once_the_first_row_has_scrolled_off() {
+fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
     use plx_ui::screen::Screen;
     let mut h = Harness::new(tiles(24));
     assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 0.0, "at rest nothing is tucked");
-    let pitch = 375.0 + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR;
-    h.screen.jump_scroll(pitch);
-    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the first row is gone");
+    h.screen.jump_scroll(super::page::GRID_TOP - 120.0);
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the header is gone");
     let texts = h.draw_texts();
     assert!(texts.iter().any(|(t, _)| t == msg::watchlist_page_title()), "the capsule names the page: {texts:?}");
     assert!(texts.iter().any(|(t, _)| t == "24"), "and counts its titles: {texts:?}");
+}
+
+/// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
+/// page on its first snap (the first row at the content edge, y 120): the header row has risen
+/// into the tab strip's band there, so it has faded out and the strip has tucked behind the
+/// capsule (red when the tuck ramp ran over the Library's first-row pitch: the page rested at
+/// tuck 0 with the row's labels drawn over the strip).
+#[test]
+fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(24));
+    h.focus_index(6);
+    h.run(240);
+    let rest = h.screen.scroll();
+    assert!((rest - (super::page::GRID_TOP - 120.0)).abs() < 0.5, "premise: the second row rests on the first snap, at {rest}");
+    assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first snap");
+    assert!(super::page::head_alpha(rest) < 0.01, "and the header is gone");
+    assert_eq!(super::page::head_alpha(0.0), 1.0);
+    assert!(super::page::head_alpha(rest * 0.5) > 0.0 && super::page::head_alpha(rest * 0.5) < 1.0, "it fades with the scroll");
 }

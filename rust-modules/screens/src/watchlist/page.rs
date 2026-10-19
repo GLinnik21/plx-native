@@ -141,6 +141,13 @@ const CONTENT_TOP: f32 = plx_ui::scroll_chrome::SETTLE_MIN_Y;
 const COLS: usize = 6;
 const GRID_GAP: f32 = (header::GRID_RIGHT - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
 
+/// How much of the header is left at `scroll`: all of it at the top, none once the first row has
+/// risen to the content edge (the header row has gone up into the tab strip's band by then), so a
+/// scrolled page leaves no remnant of the head above its rows.
+pub(crate) fn head_alpha(scroll: f32) -> f32 {
+    (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
+}
+
 /// The grid's cards: the shared home poster, at the Library's gap.
 fn grid_style() -> plx_ui::cards::RowStyle {
     plx_ui::cards::RowStyle { gap: GRID_GAP, ..plx_ui::cards::RowStyle::HOME }
@@ -651,7 +658,7 @@ impl<H: ContentLike> StackPage<H> for Page {
         }
     }
 
-    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, _scroll: f32) {
+    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, scroll: f32) {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
@@ -660,6 +667,7 @@ impl<H: ContentLike> StackPage<H> for Page {
                 // While the Sort & Filter menu is up the control is the menu's (its `opener`,
                 // lifted out of this pass): the menu draws the only copy, dissolving into its panel.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
+                let p = p.alpha(head_alpha(scroll));
                 self.header_row(f.measure).draw(p, r.y, on, lifted);
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
@@ -1107,9 +1115,11 @@ impl WatchlistScreen {
         self.stack.view(&self.page)
     }
 
-    /// How far the page has tucked the top chrome: the Library's ramp over the first row's pitch.
+    /// How far the page has tucked the top chrome: the Library's ramp, complete at the grid's first
+    /// snap (the first row at the content edge), where the header has gone up into the chrome's band
+    /// ([`head_alpha`] reaches 0 at the same scroll).
     fn tuck(&self) -> f32 {
-        plx_ui::scroll_chrome::tuck(self.stack.scroll(), grid_style().h + plx_ui::cards::LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR)
+        plx_ui::scroll_chrome::tuck(self.stack.scroll(), GRID_TOP - CONTENT_TOP)
     }
 
     /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground and the
