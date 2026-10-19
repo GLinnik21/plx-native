@@ -98,7 +98,7 @@ candidates.
 - A tree that holds a tracked file.
 - A live tree: a builder (`cargo`, `rustc`, `make`, `cc1`, the ARM `gcc`) with its working directory
   in the tree's checkout, any open file under the tree, a held cargo build lock, a held per-checkout
-  `make check` lock, or an `lsof` that could not answer (ignorance counts as live).
+  `make check` lock, or an `lsof` that is missing, fails or prints nothing (ignorance counts as live).
 - The current checkout, except rung 6, and there only trees other than the one being built, and only
   when no other process holds a file or a cargo lock in them. `make` itself runs in the current
   checkout, so for it the working-directory test cannot be used and the per-tree locks decide.
