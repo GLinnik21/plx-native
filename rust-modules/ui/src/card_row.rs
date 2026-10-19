@@ -946,6 +946,22 @@ pub fn draw_focused_led(
     measure: &dyn plx_machine::machine::Measure,
     led: Option<crate::widgets::ArtImage>,
 ) {
+    draw_focused_tile_led(p, art, rect, s, sty, resume, led);
+    draw_label(p, rect, s, sty, label, measure);
+}
+
+/// [`draw_focused_led`] without the label block: the lifted tile, its sheen and its resume bar.
+/// For a caller that paints the label on its own turn (the grid paints every caption beneath
+/// every tile, [`draw_label`] first).
+pub fn draw_focused_tile_led(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+    led: Option<crate::widgets::ArtImage>,
+) {
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
     // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
@@ -956,7 +972,6 @@ pub fn draw_focused_led(
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
-    draw_label(p, rect, s, sty, label, measure);
 }
 
 /// The label block under a tile drawn at `rect` (scale `s`) alone, without the tile: what

@@ -69,6 +69,9 @@ struct Cards {
     captioned: bool,
 }
 
+/// The census tag [`Cards::overlay`] notes after each tile it is handed.
+const TILE_PAINTED: u64 = 9999;
+
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
         Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false }
@@ -114,6 +117,8 @@ impl CardSource<FixtureHost> for Cards {
         self.before
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
+        // a tile is on screen: a marker in the draw census, so a test reads the order of paint
+        crate::draw_census::note(TILE_PAINTED, p.to_screen(tile.rect).1);
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
         self.painted.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1, p.opacity()));
         self.focused.borrow_mut().push((self.elems[i], tile.focused));
@@ -1784,6 +1789,40 @@ fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
     assert!(first > 0.0 && first < 0.5 && lift > 0.0 && lift < 0.5, "the caption and the lift start together, from nothing: caption {first}, lift {lift}");
     assert!(trace.windows(2).all(|w| w[1].0 >= w[0].0 - 1e-4), "the caption does not open monotonically: {trace:?}");
     assert!((trace[79].0 - 1.0).abs() < 0.01 && (trace[79].1 - 1.0).abs() < 0.01, "caption and lift both end full: {:?}", trace[79]);
+}
+
+/// **Captions are painted beneath the tiles (CONFIRM judgment 1).** A caption used to paint with its
+/// card: the focused card's after the whole page of tiles, so an arriving details line was over the
+/// poster tops of the row below it (fixc-after-down1: at n=17 the line sat over the next row's
+/// poster top at ~50% of the band's opening). Draw order only, no timing: every caption of the
+/// frame is painted before any tile.
+#[test]
+fn captions_are_painted_beneath_every_tile() {
+    let policy = crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: crate::caption_policy::DetailsKind::YearLength,
+    };
+    let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
+    r.src.captioned = true;
+    r.sect.set_caption_policy(policy);
+    r.run(2);
+    r.land_focus(100, By::Dir);
+    r.run(200);
+    let cx = r.cx();
+    let tile = r.sect.place(&cx, &r.src, &100, At::Drawn).expect("the focused card").rect;
+    let log = crate::draw_census::capture(|| {
+        let mut f = DrawFrame::new(&cx, Painter::recording());
+        r.sect.draw(&mut f, Painter::recording(), &r.src);
+    });
+    // the caption's text runs: in the focused card's column, in the band under it
+    let band = tile.y + tile.h..tile.y + tile.h + crate::caption_policy::band_h(&policy);
+    let captions: Vec<usize> = log.iter().enumerate()
+        .filter(|(_, (tag, at))| *tag == 100 && band.contains(&at.y) && at.x >= tile.x - 1.0 && at.x < tile.x + tile.w)
+        .map(|(k, _)| k).collect();
+    assert!(captions.len() >= 2, "the title and the details line are on screen: {log:?}");
+    let first_tile = log.iter().position(|(tag, _)| *tag == TILE_PAINTED).expect("the grid paints tiles");
+    assert!(captions.iter().all(|&k| k < first_tile),
+        "every caption run (log positions {captions:?}) comes before the first tile primitive ({first_tile})");
 }
 
 /// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
