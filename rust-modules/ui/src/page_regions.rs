@@ -304,7 +304,7 @@ mod tests {
     fn the_first_seat_is_the_arrival_region_or_whichever_exists() {
         assert_eq!(regions(&[GRID], false, Arrival::Header).first_seat(), Some(HEADER));
         assert_eq!(regions(&[GRID], false, Arrival::Content).first_seat(), Some(GRID));
-        // The Watchlist before a title has landed: no content yet, so the header holds the seat.
+        // A list that landed empty (the Watchlist with nothing on it): no content, so the header holds the seat.
         assert_eq!(regions(&[], false, Arrival::Content).first_seat(), Some(HEADER));
         assert_eq!(PageRegions { header: None, ..regions(&[GRID], false, Arrival::Header) }.first_seat(), Some(GRID));
         assert_eq!(PageRegions { header: None, ..regions(&[], false, Arrival::Header) }.first_seat(), None);

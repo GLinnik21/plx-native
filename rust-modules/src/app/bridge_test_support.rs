@@ -319,8 +319,24 @@ impl World {
 
     /// The Watchlist over `script`, opened by its strip pill.
     pub(super) fn watchlist_over(name: &str, script: std::sync::Arc<super::watchlist_press_tests::Script>) -> World {
+        Self::watchlist_built(name, script, false)
+    }
+
+    /// The Watchlist opened while its first read is still ON ITS WAY (`hold_reads`), the page that
+    /// has no tile to seat yet; [`Self::land_watchlist`] lets the read through.
+    pub(super) fn watchlist_loading(name: &str) -> World {
+        Self::watchlist_built(name, super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>()), true)
+    }
+
+    /// The held read of [`Self::watchlist_loading`] answers.
+    pub(super) fn land_watchlist(&mut self) {
+        super::watchlist_press_tests::release_reads(&mut self.bridge);
+    }
+
+    fn watchlist_built(name: &str, script: std::sync::Arc<super::watchlist_press_tests::Script>, held: bool) -> World {
         let (serial, session) = Self::lock(name);
-        let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
+        let (d, mut bridge) = super::watchlist_press_tests::rig_over(&script);
+        if held { super::watchlist_press_tests::hold_reads(&mut bridge); }
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
                 bridge.watchlist_for_test().pump();

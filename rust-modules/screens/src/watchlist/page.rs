@@ -342,6 +342,22 @@ impl Page {
         self.rebuild();
     }
 
+    /// **This page's column** (`plx_ui::page_regions`): the Sort & Filter header, then the grid once
+    /// it has a cell. The page arrives in its content and BACK leaves for Home from the top of it; it
+    /// does not walk the header. **While the first read has not landed the grid is
+    /// [pending](PageRegions::pending)**: the page seats nothing (no tile to seat, and the pill is
+    /// not the arrival), and the tiles that land seat the first one unless the reader moved first.
+    fn regions(&self) -> PageRegions<'static> {
+        PageRegions {
+            header: Some(HEADER_GROUP),
+            content: if self.cells.is_empty() { &[] } else { &[GRID_GROUP] },
+            rail: None,
+            back_walks_header: false,
+            arrival: Arrival::Content,
+            pending: (self.list == ListState::Loading).then_some(GRID_GROUP),
+        }
+    }
+
     /// The header row for the options and count as they are now: the one held, unless one of them
     /// (or the locale) moved since it was built.
     fn header_row(&self, measure: &dyn plx_machine::machine::Measure) -> std::rc::Rc<header::Row> {
@@ -682,6 +698,12 @@ impl<H: ContentLike> StackPage<H> for Page {
         }
     }
 
+    /// The grid's place while the first read is on its way, declared empty so a fresh enter naming it
+    /// seats nothing (`PageRegions::declare_pending`).
+    fn extra_groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        self.regions().declare_pending(out);
+    }
+
     fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, scroll: f32) {
         let p = f.painter.alpha(f.page_alpha);
         match k {
@@ -741,8 +763,9 @@ pub struct WatchlistScreen {
     /// this element through the reflow, not whichever title the new list puts at the old index.
     focus_elem: Option<u32>,
     /// The page's own arrival seat, while nobody has chosen another (the screens guide's "a seat
-    /// nobody chose follows the head"): the group it last seated, `None` once the reader acts, the
-    /// page is restored, or the first tile holds it. See [`follow_seat`](Self::follow_seat).
+    /// nobody chose follows the head"): the group it last seated (`Some(None)`: it asked to seat
+    /// nothing, while the first read is on its way), `None` once the reader acts, the page is
+    /// restored, or the first tile holds it. See [`follow_seat`](Self::follow_seat).
     seat: Option<Option<GroupId>>,
     /// Seats this page asked the engine for whose `Enter` has not come back yet: those are the
     /// page's own, not a new arrival.
@@ -1099,17 +1122,28 @@ impl WatchlistScreen {
     /// tab's mint asks for group 0, the grid, but the page mounts before its rows are fed: with the
     /// grid empty the engine fell back to the first group it was given, the strip, at its left end
     /// (the account chip). Search seats its field and the Library its head the same way, through a
-    /// fresh `Enter` addressed to themselves. While the seat is still the page's own, the header's
-    /// pill holds it until the first tiles land, and then the first tile does.
+    /// fresh `Enter` addressed to themselves. While the first read is on its way the page seats
+    /// NOTHING (`PageRegions::unseat`, the rule the Library and Recommended follow), and the first
+    /// tile takes the arrival when it lands unless the reader has moved first; a list that landed
+    /// empty or failed keeps the header's pill.
+    fn seat_first<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
+        let (want, target) = self.with_regions(|regions| {
+            (regions.first_seat(), regions.first_seat().map(FocusTarget::FirstInGroupAnimated).or_else(|| regions.unseat()))
+        });
+        // The first tile is where the arrival ends: nothing lands above it to follow.
+        self.seat = (want != Some(GRID_GROUP)).then_some(want);
+        if let Some(target) = target {
+            self.seat_own(target, fx);
+        }
+    }
+
+    /// Re-seat the arrival when what the page can offer has moved (`seat_first`), while it is still
+    /// the page's own.
     fn follow_seat<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) {
         let Some(seated) = self.seat else { return };
-        let want = self.with_regions(|regions| regions.first_seat()).unwrap_or(HEADER_GROUP);
-        if seated == Some(want) {
-            return;
+        if seated != self.with_regions(|regions| regions.first_seat()) {
+            self.seat_first(fx);
         }
-        // The first tile is where the arrival ends: nothing lands above it to follow.
-        self.seat = (want != GRID_GROUP).then_some(Some(want));
-        self.seat_own(FocusTarget::FirstInGroupAnimated(want), fx);
     }
 
     /// Ask the engine to seat `focus` as the page's OWN seat: counted in [`own_enters`], so the
@@ -1121,22 +1155,9 @@ impl WatchlistScreen {
         fx.push(Fx::Deliver(fx.from(), Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
     }
 
-    /// **This page's column** (`plx_ui::page_regions`): the Sort & Filter header, then the grid once
-    /// it has a cell (before that the header holds the arrival seat). The page arrives in its
-    /// content and BACK leaves for Home from the top of it; it does not walk the header.
+    /// **This page's column** (`plx_ui::page_regions`): see [`Page::regions`].
     fn with_regions<R>(&self, then: impl FnOnce(&PageRegions<'_>) -> R) -> R {
-        let content: &[GroupId] = if self.page.cells.is_empty() { &[] } else { &[GRID_GROUP] };
-        then(&PageRegions {
-            header: Some(HEADER_GROUP),
-            content,
-            rail: None,
-            back_walks_header: false,
-            arrival: Arrival::Content,
-            // The Sort & Filter pill holds the seat until the first title lands and then hands it to
-            // the tile (`follow_seat`, `watchlist/opening_tests.rs`); its OK opens a menu, it leaves
-            // nothing. Not yet part of the "seat nothing while loading" rule.
-            pending: None,
-        })
+        then(&self.page.regions())
     }
 
     /// **BACK**, decided by [`PageRegions::back`] and executed here: a scrolled page first returns
@@ -1437,10 +1458,7 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
                         }
                     }
                     // The container's mint: a page shown for the first time in this visit.
-                    Enter::Fresh { .. } => {
-                        self.seat = Some(None);
-                        self.follow_seat(fx);
-                    }
+                    Enter::Fresh { .. } => self.seat_first(fx),
                     // Restored (an evicted page coming back): the seat is the reader's.
                     Enter::Restored => {
                         self.seat = None;

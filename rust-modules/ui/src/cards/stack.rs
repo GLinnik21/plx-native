@@ -217,6 +217,9 @@ pub trait StackPage<H: Host> {
     fn wide_extent(&self, _k: Self::Key) -> bool {
         true
     }
+    /// Groups the page declares beyond its sections' own, appended after them (the group of a
+    /// listing still on its way: `PageRegions::declare_pending`).
+    fn extra_groups(&self, _cx: &Cx<'_, H>, _out: &mut Vec<GroupSpec>) {}
     /// The focus group of a focusable `Custom` / `Overlay` section.
     fn plain_group(&self, _cx: &Cx<'_, H>, _k: Self::Key, id: GroupId, extent: Rect) -> GroupSpec {
         GroupSpec {
@@ -1079,6 +1082,7 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
                 _ => {}
             }
         }
+        p.extra_groups(cx, out);
     }
 
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
