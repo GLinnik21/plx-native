@@ -308,7 +308,7 @@ fn many_libraries(w: &mut World) {
     }
     w.bridge.refresh_browse_directory();
     w.open_library();
-    let (names, folded) = w.library_page().probe_names();
+    let (names, folded) = w.library().probe_names();
     assert_eq!(names.iter().map(|(_, section)| *section).collect::<Vec<_>>(), [0, 4], "premise: the visible names");
     assert_eq!(folded, [6, 8, 10, 12], "premise: the folded libraries");
 }
@@ -316,7 +316,7 @@ fn many_libraries(w: &mut World) {
 /// The fold after a pick: the picked name has the LAST visible slot, the one it took returns to the
 /// list, and the store (not just the header) is on the new library.
 fn the_pick_took_the_last_slot(w: &mut World) -> Vec<String> {
-    let (names, folded) = w.library_page().probe_names();
+    let (names, folded) = w.library().probe_names();
     let visible: Vec<usize> = names.iter().map(|(_, section)| *section).collect();
     let mut fails = Vec::new();
     if visible != [0, 12] { fails.push(format!("the names are {visible:?}, expected the picked 12 in the last slot after 0")); }
@@ -328,7 +328,7 @@ fn the_pick_took_the_last_slot(w: &mut World) -> Vec<String> {
 }
 
 fn nothing_was_picked(w: &mut World) -> Vec<String> {
-    let (names, folded) = w.library_page().probe_names();
+    let (names, folded) = w.library().probe_names();
     let visible: Vec<usize> = names.iter().map(|(_, section)| *section).collect();
     let mut fails = Vec::new();
     if visible != [0, 4] || folded != [6, 8, 10, 12] { fails.push(format!("the fold changed: names {visible:?}, list {folded:?}")); }
@@ -574,8 +574,8 @@ fn opening_collections_again_does_not_stack_a_second_page() {
     w.open_library();
     let base = w.d.nav.tabs.stack.depth();
     // A double press: the second OK lands while the first push is still on its way.
-    w.tap(Key::Ok);
-    w.tap(Key::Ok);
+    w.tap(Key::Ok, 0);
+    w.tap(Key::Ok, 0);
     w.frames(80);
     assert!(w.on(&AppArg::LibraryCollections { section: 0 }), "premise: the Collections page is up, not {}", top(&w));
     assert_eq!(w.d.nav.tabs.stack.depth(), base + 1, "two OKs opened one page");

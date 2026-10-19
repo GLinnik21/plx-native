@@ -376,6 +376,28 @@ impl RouteSurface {
         }
         let popping = matches!(op, NavOp::Pop);
         self.inner.request(op, ReturnState::default());
+        // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
+        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
+        // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
+        // Privacy and every other page here — harmless on a POP, where the key IS meant to name
+        // whichever page is being returned to and the `remembered` list above already looked up
+        // its saved row, but wrong on a PUSH: the destination has never been entered, so
+        // `ContainerGroup` would hand `seat_in` the OUTGOING page's remembered row instead of the
+        // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
+        // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
+        // a push uses it.
+        //
+        // **…AND IT QUEUES IT BEFORE THE DESTINATION'S MOUNT RUNS.** The engine takes the Enters in
+        // the order they are queued and the last one wins, and a page that wants another seat (the
+        // Details picker on its checked line, the Language page on the chosen language) asks for it
+        // from its `Mount`, which `run_inner` below delivers. Queued after that, this default put
+        // every such page back on its first row.
+        if !popping {
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(GroupId(0)) })),
+            ));
+        }
         self.run_inner(cx, fx);
         // An entry the container no longer knows about (a completed Pop's own page, retired and
         // pruned inside `run_inner` above) can never be revisited under this `EntryId` — a fresh
@@ -397,34 +419,27 @@ impl RouteSurface {
             self.push.route.jump(false);
             self.push.open = true;
         }
-        // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
-        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
-        // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
-        // Privacy and every other page here — harmless on a POP, where the key IS meant to name
-        // whichever page is being returned to and the `remembered` list above already looked up
-        // its saved row, but wrong on a PUSH: the destination has never been entered, so
-        // `ContainerGroup` would hand `seat_in` the OUTGOING page's remembered row instead of the
-        // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
-        // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
-        // it is used on every arm below EXCEPT the one that found a saved elem to restore.
-        let focus = match (popping, self.inner.top().map(|e| e.id)) {
-            (true, Some(eid)) => self
-                .remembered
-                .iter()
-                .find(|(e, _)| *e == eid)
-                .map(|(_, elem)| {
-                    FocusTarget::Elem(FocusKey {
-                        entry: self.entry,
-                        elem: *elem,
+        // A pop returns to a page that has been entered: the row it left from, else its first.
+        if popping {
+            let focus = match self.inner.top().map(|e| e.id) {
+                Some(eid) => self
+                    .remembered
+                    .iter()
+                    .find(|(e, _)| *e == eid)
+                    .map(|(_, elem)| {
+                        FocusTarget::Elem(FocusKey {
+                            entry: self.entry,
+                            elem: *elem,
+                        })
                     })
-                })
-                .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
-            _ => FocusTarget::FirstInGroup(GroupId(0)),
-        };
-        fx.push(Fx::Deliver(
-            MachineId::Instance(self.id),
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
-        ));
+                    .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
+                None => FocusTarget::FirstInGroup(GroupId(0)),
+            };
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
+            ));
+        }
         fx.invalidate(Provenance::Nav);
     }
 

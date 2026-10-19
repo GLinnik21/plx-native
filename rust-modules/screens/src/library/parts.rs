@@ -445,6 +445,14 @@ impl GridPart {
     #[cfg(test)]
     pub(super) fn swap_for_test(&mut self, a: usize, b: usize) { self.windows[0].elems.swap(a, b); }
 
+    /// The two caption lines (title, details) the grid would draw under tile `i` of `view` now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn probe_caption(&self, view: plx_data::stores::browse::ListingView<'_>, i: usize) -> [Option<String>; 2] {
+        let label = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view, policy: caption_policy() }.tile_label(i);
+        let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|c| c.to_string_lossy().into_owned());
+        [text(&label.title), text(&label.caption)]
+    }
+
     #[cfg(test)]
     pub(super) fn publication_ops(&self) -> (usize, usize) {
         (self.test_ops.slot_visits, self.test_ops.known_probes)
@@ -525,6 +533,13 @@ impl GridSrc<'_, '_> {
     /// The listing is the section's collections: the Collections page's tiles (caption "N films",
     /// smart mark) rather than the library's.
     fn collections(&self) -> bool { self.view.library_type() == plx_data::browse::LibraryType::Collections }
+
+    /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
+    fn tile_label(&self, i: usize) -> ui_cards::TileLabel {
+        let Some(item) = self.view.item(i) else { return Default::default() };
+        if self.collections() { return collection_label(item); }
+        grid_label(item, &self.policy)
+    }
 }
 
 /// A collection tile's label on the Collections page: the lines the Under posters setting asks
@@ -547,11 +562,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
-    fn label(&self, i: usize) -> ui_cards::TileLabel {
-        let Some(item) = self.view.item(i) else { return Default::default() };
-        if self.collections() { return collection_label(item); }
-        grid_label(item, &self.policy)
-    }
+    fn label(&self, i: usize) -> ui_cards::TileLabel { self.tile_label(i) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }

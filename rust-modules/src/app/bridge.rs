@@ -3999,10 +3999,7 @@ mod person_lifecycle_tests;
 mod collection_lifecycle_tests;
 
 // The route-test lanes: key-driven tests of the Library / Collections redesign's routes, over one
-// shared driver (`route_test_support`).
-#[cfg(test)]
-#[path = "route_test_support.rs"]
-mod route_test_support;
+// shared driver (`test_support::World`).
 #[cfg(test)]
 #[path = "library_switch_route_tests.rs"]
 mod library_switch_route_tests;
@@ -4015,6 +4012,12 @@ mod header_cache_route_tests;
 #[cfg(test)]
 #[path = "library_reread_route_tests.rs"]
 mod library_reread_route_tests;
+#[cfg(test)]
+#[path = "library_memory_route_tests.rs"]
+mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "under_posters_route_tests.rs"]
+mod under_posters_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

@@ -10,7 +10,7 @@
 //! the section's listing), and the test would pass on the buggy code.
 
 use super::*;
-use super::route_test_support::{Guard, Rig};
+use super::test_support::World;
 use super::super::reread::{self, Reread, Action, COVER_FRAMES};
 use plx_screens::registry::ContentArg;
 
@@ -28,8 +28,7 @@ fn every_page_of_the_library_family_owes_a_read_back() {
 
 #[test]
 fn the_collections_and_recommended_pages_hold_the_cards_the_library_holds() {
-    let _guard = Guard::new("reread-family-held-keys");
-    let r = Rig::new(false);
+    let r = World::new("reread-family-held-keys");
     let library = r.bridge.held_keys(&AppArg::Library);
     assert!(!library.is_empty(), "premise: the seeded library holds cards");
     assert_eq!(r.bridge.held_keys(&collections()), library, "the Collections page holds the section's listing");
@@ -37,9 +36,8 @@ fn the_collections_and_recommended_pages_hold_the_cards_the_library_holds() {
 }
 
 /// `page` alone on the stack, mounted, over a store holding 120 items and six shelves.
-fn alone(name: &str, page: AppArg) -> (Guard, Rig) {
-    let guard = Guard::new(name);
-    let mut r = Rig::new(false);
+fn alone(name: &str, page: AppArg) -> World {
+    let mut r = World::new(name);
     super::show_page(&mut r.d, page.clone());
     r.frames(60);
     // The Collections page asks the store for its own listing when it mounts; its answer is what it shows.
@@ -48,14 +46,14 @@ fn alone(name: &str, page: AppArg) -> (Guard, Rig) {
     assert!(r.d.top_arg() == Some(&page), "premise: the page is on top");
     assert_eq!(r.d.nav.tabs.stack.entries.len(), 1, "premise: nothing else on the stack owes the read");
     assert!(r.bridge.read_back_pending_for_test().is_empty(), "premise: nothing is owed yet");
-    (guard, r)
+    r
 }
 
 /// The app comes back to the foreground with the page on top: the server moved on while it was away.
 #[test]
 fn a_resume_with_the_collections_or_recommended_page_on_top_reads_it_back() {
     for (name, page) in [("collections", collections()), ("recommended", recommended())] {
-        let (_guard, mut r) = alone("reread-family-resume", page);
+        let mut r = alone("reread-family-resume", page);
         let mut reread = Reread::default();
         reread.resume();
         reread::run(&mut reread, &mut r.d, &mut r.bridge);
@@ -67,7 +65,7 @@ fn a_resume_with_the_collections_or_recommended_page_on_top_reads_it_back() {
 #[test]
 fn a_collections_or_recommended_page_covered_by_a_detail_is_read_back() {
     for (name, page) in [("collections", collections()), ("recommended", recommended())] {
-        let (_guard, mut r) = alone("reread-family-covered", page);
+        let mut r = alone("reread-family-covered", page);
         super::nav_push(&mut r.d, AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: "d".into() }));
         r.frames(2);
         assert_eq!(r.d.nav.tabs.stack.entries.len(), 2, "premise: the Detail is over the page");

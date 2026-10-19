@@ -2,12 +2,12 @@
 //! Watchlist tuck the top chrome as a long grid scrolls under the keys, where a focused row rests,
 //! and what Up reaches first while the chrome is tucked.
 //!
-//! Key-driven on a real `Dispatcher<AppHost>` (`route_test_support::Rig`): `chrome_tuck` is read from
+//! Key-driven on a real `Dispatcher<AppHost>` (`bridge_test_support::World`): `chrome_tuck` is read from
 //! the screen on top, the way the dispatcher reads it, so a screen that stopped tucking, or tucked
 //! at the wrong scroll, fails here and not on the television.
 
 use super::*;
-use super::route_test_support::{Guard, Rig};
+use super::test_support::World;
 use super::test_support::tick;
 use plx_screens::library::RecommendedScreen;
 
@@ -15,14 +15,14 @@ use plx_screens::library::RecommendedScreen;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum At { Grid(usize), Header, Nav }
 
-fn at(r: &Rig) -> Option<At> {
+fn at(r: &World) -> Option<At> {
     if r.on_nav() { Some(At::Nav) }
     else if r.on_header() { Some(At::Header) }
     else { r.grid_cell().map(|(row, _)| At::Grid(row)) }
 }
 
 /// The scroll target of the Recommended page on top.
-fn recommended_target(r: &Rig) -> f32 {
+fn recommended_target(r: &World) -> f32 {
     r.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref::<RecommendedScreen>())
         .expect("the Recommended page is on top").probe_scroll_target()
 }
@@ -30,7 +30,7 @@ fn recommended_target(r: &Rig) -> f32 {
 fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.5 }
 
 /// Down from the header into the grid, then `rows` more: settled on row `rows`.
-fn down_to_row(r: &mut Rig, rows: usize) {
+fn down_to_row(r: &mut World, rows: usize) {
     r.press(Key::Down);
     assert_eq!(at(r), Some(At::Grid(0)), "premise: Down from the header enters the grid's first row");
     for row in 1..=rows {
@@ -41,8 +41,7 @@ fn down_to_row(r: &mut Rig, rows: usize) {
 
 #[test]
 fn down_tucks_the_chrome_and_each_row_rests_on_the_first_rows_line() {
-    let _guard = Guard::new("route-scroll-down");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("route-scroll-down", true);
     assert!(near(r.tuck(), 0.0), "the chrome is shown on arrival");
     r.press(Key::Down);
     assert_eq!(at(&r), Some(At::Grid(0)));
@@ -62,8 +61,7 @@ fn down_tucks_the_chrome_and_each_row_rests_on_the_first_rows_line() {
 
 #[test]
 fn up_from_a_tucked_row_walks_the_rows_first_then_the_header_then_the_nav() {
-    let _guard = Guard::new("route-scroll-up");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("route-scroll-up", true);
     down_to_row(&mut r, 5);
     assert!(near(r.tuck(), 1.0), "premise: tucked on row 5");
     // What scrolls first: the rows. Each Up moves one row and the page follows it, the chrome
@@ -83,17 +81,15 @@ fn up_from_a_tucked_row_walks_the_rows_first_then_the_header_then_the_nav() {
 
 #[test]
 fn the_capsule_is_wanted_only_where_the_header_names_two_libraries() {
-    let _guard = Guard::new("route-scroll-capsule");
-    let two = Rig::movies_library(true);
-    assert!(two.library().probe_capsule_wanted(), "two libraries on the header: the capsule restates the one on view");
-    let one = Rig::movies_library(false);
-    assert!(!one.library().probe_capsule_wanted(), "one library: nothing to restate");
+    // One world at a time (it holds the serial lock): each is built, asked and dropped in turn.
+    let wanted = |two_libraries| World::movies_library("route-scroll-capsule", two_libraries).library().probe_capsule_wanted();
+    assert!(wanted(true), "two libraries on the header: the capsule restates the one on view");
+    assert!(!wanted(false), "one library: nothing to restate");
 }
 
 #[test]
 fn the_collections_page_tucks_but_wears_no_capsule() {
-    let _guard = Guard::new("route-scroll-collections");
-    let mut r = Rig::collections(true);
+    let mut r = World::collections("route-scroll-collections", true);
     assert!(!r.library().probe_capsule_wanted(), "the Collections header is a crumb: it names no libraries");
     r.press(Key::Down);
     for _ in 0..3 { r.press(Key::Down); }
@@ -103,8 +99,7 @@ fn the_collections_page_tucks_but_wears_no_capsule() {
 
 #[test]
 fn the_recommended_page_scrolls_but_never_tucks_the_chrome() {
-    let _guard = Guard::new("route-scroll-recommended");
-    let mut r = Rig::recommended();
+    let mut r = World::recommended("route-scroll-recommended");
     for _ in 0..8 { r.press(Key::Down); }
     assert!(recommended_target(&r) > 0.5, "premise: eight Downs scrolled the shelves");
     assert!(near(r.tuck(), 0.0), "the Recommended page does not override `chrome_tuck`: the bar stays, tuck {}", r.tuck());
@@ -112,8 +107,7 @@ fn the_recommended_page_scrolls_but_never_tucks_the_chrome() {
 
 #[test]
 fn the_watchlist_tucks_and_draws_no_capsule() {
-    let _guard = Guard::new("route-scroll-watchlist");
-    let mut r = Rig::watchlist();
+    let mut r = World::watchlist("route-scroll-watchlist");
     for _ in 0..8 { r.press(Key::Down); }
     assert!(near(r.tuck(), 1.0), "the Watchlist tucks the chrome once its first row has gone, tuck {}", r.tuck());
 }
@@ -123,7 +117,7 @@ fn the_watchlist_tucks_and_draws_no_capsule() {
 #[derive(Default)]
 struct Watched { menu_frames: u32, menu_at_tuck: Vec<String>, strip_off_top: Vec<String> }
 
-fn watch(r: &Rig, seen: &mut Watched) {
+fn watch(r: &World, seen: &mut Watched) {
     if super::account_menu_up(&r.d) {
         seen.menu_frames += 1;
         if r.tuck() > 0.99 { seen.menu_at_tuck.push(format!("frame {}: the account menu is up and the chrome fully tucked", r.frame)); }
@@ -136,7 +130,7 @@ fn watch(r: &Rig, seen: &mut Watched) {
 }
 
 /// `keys`, one every `gap + 1` frames, watched on every frame.
-fn drive(r: &mut Rig, keys: &[Key], gap: u32, seen: &mut Watched) {
+fn drive(r: &mut World, keys: &[Key], gap: u32, seen: &mut Watched) {
     for key in keys {
         r.step(script_key(*key, tick(r.frame + 1)));
         watch(r, seen);
@@ -156,7 +150,7 @@ fn drive(r: &mut Rig, keys: &[Key], gap: u32, seen: &mut Watched) {
 /// What this does NOT cover: the pointer. A click does not need a key route to the strip; it resolves
 /// against the hit map, and `a_click_on_the_chip_lands_only_where_the_bar_is_drawn` below is the test
 /// of that (the bar's stops are registered where the bar is drawn, and none once it is not).
-fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> Rig, deep: fn(&mut Rig), leaves: &[&[Key]], gaps: &[u32]) {
+fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> World, deep: fn(&mut World), leaves: &[&[Key]], gaps: &[u32]) {
     for &gap in gaps {
         for leave in leaves {
             let mut r = mount();
@@ -176,32 +170,29 @@ fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> Ri
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_library() {
-    let _guard = Guard::new("route-chip-library");
-    the_account_menu_never_opens_over_a_tucked_page("library", || Rig::movies_library(true), |r| down_to_row(r, 8),
+    the_account_menu_never_opens_over_a_tucked_page("library", || World::movies_library("route-chip-library", true), |r| down_to_row(r, 8),
         &[&[Key::Back; 3], &[Key::Up; 10]], &[0, 1, 2]);
 }
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_collections_page() {
-    let _guard = Guard::new("route-chip-collections");
     // BACK on the Collections page leaves it (its first press returns the scroll to the top, its
     // second pops the page), so only Up walks to the strip here.
-    the_account_menu_never_opens_over_a_tucked_page("collections", || Rig::collections(true), |r| down_to_row(r, 8), &[&[Key::Up; 10]], &[0, 1, 2]);
+    the_account_menu_never_opens_over_a_tucked_page("collections", || World::collections("route-chip-collections", true), |r| down_to_row(r, 8), &[&[Key::Up; 10]], &[0, 1, 2]);
 }
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_watchlist() {
-    let _guard = Guard::new("route-chip-watchlist");
-    the_account_menu_never_opens_over_a_tucked_page("watchlist", Rig::watchlist, |r| for _ in 0..8 { r.press(Key::Down); }, &[&[Key::Up; 16]], &[1, 2, 3]);
+    the_account_menu_never_opens_over_a_tucked_page("watchlist", || World::watchlist("route-chip-watchlist"), |r| for _ in 0..8 { r.press(Key::Down); }, &[&[Key::Up; 16]], &[1, 2, 3]);
 }
 
 /// The chip's stop on the last presented hit map: its rect and clip, or `None` when the bar registered none.
-fn chip_stop(r: &Rig) -> Option<(plx_ui::Rect, plx_ui::Rect)> {
+fn chip_stop(r: &World) -> Option<(plx_ui::Rect, plx_ui::Rect)> {
     r.d.last_stops().iter().find(|s| s.key.elem == plx_ui::widgets::TAB_KEY_CHIP).map(|s| (s.rect, s.clip))
 }
 
 /// Press Down until the chrome is part way up (`lo < tuck < hi`), checking every frame of the scroll.
-fn until_tuck_between(r: &mut Rig, lo: f32, hi: f32) {
+fn until_tuck_between(r: &mut World, lo: f32, hi: f32) {
     for _ in 0..8 {
         r.step(script_key(Key::Down, tick(r.frame + 1)));
         for _ in 0..40 {
@@ -224,62 +215,70 @@ fn until_tuck_between(r: &mut Rig, lo: f32, hi: f32) {
 /// * part way up: the chip's stop is the lifted rect, a click there opens the menu, and a click at the
 ///   part of the resting rect the bar has left does not;
 /// * fully tucked: the bar registers no stop and a click at the chip's resting place opens nothing.
-fn a_click_on_the_chip_lands_only_where_the_bar_is_drawn(name: &str, mount: fn() -> Rig, deep: fn(&mut Rig)) {
+///
+/// Each state mounts its own world, one after the other (a world holds the serial lock, which is not
+/// re-entrant, so the last one is gone before the next is mounted).
+fn a_click_on_the_chip_lands_only_where_the_bar_is_drawn(name: &str, mount: fn() -> World, deep: fn(&mut World)) {
     use plx_ui::widgets::CHIP_FRAME;
-    let menu_after = |r: &mut Rig, x: f32, y: f32| { r.click(x, y); super::account_menu_up(&r.d) };
+    let menu_after = |r: &mut World, x: f32, y: f32| { r.click(x, y); super::account_menu_up(&r.d) };
     let rest = CHIP_FRAME;
 
-    let mut r = mount();
-    r.present_bar();
-    let (rect, _) = chip_stop(&r).unwrap_or_else(|| panic!("{name}: an untucked bar registers the chip"));
-    assert_eq!((rect.x, rect.y, rect.w, rect.h), (rest.x, rest.y, rest.w, rest.h), "{name}: untucked, the stop is the frame");
-    assert!(menu_after(&mut r, rest.cx(), rest.cy()), "{name}: premise: a click on the untucked chip opens the account menu");
+    {
+        let mut r = mount();
+        r.present_bar();
+        let (rect, _) = chip_stop(&r).unwrap_or_else(|| panic!("{name}: an untucked bar registers the chip"));
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (rest.x, rest.y, rest.w, rest.h), "{name}: untucked, the stop is the frame");
+        assert!(menu_after(&mut r, rest.cx(), rest.cy()), "{name}: premise: a click on the untucked chip opens the account menu");
+    }
 
     // Part way up: the click at the bottom edge of the RESTING rect is below the lifted chip.
-    let mut r = mount();
-    until_tuck_between(&mut r, 0.15, 0.6);
-    let lift = plx_ui::screen::chrome_lift(r.tuck());
-    r.present_bar();
-    let below = (rest.cx(), rest.y + rest.h - 1.0);
-    assert!(below.1 > rest.y - lift + rest.h, "{name}: premise: the resting rect's bottom edge is below the lifted chip");
-    let (rect, clip) = chip_stop(&r).unwrap_or_else(|| panic!("{name}: a half-tucked bar still registers the chip"));
-    assert!(!menu_after(&mut r, below.0, below.1), "{name}: a click where the chip RESTS, with the bar lifted off it, opens no menu");
-    assert_eq!((rect.x, rect.y, rect.w, rect.h), (rest.x, rest.y - lift, rest.w, rest.h), "{name}: the stop is where the lifted chip is drawn");
-    let seen = rect.intersect(clip);
-    assert!(seen.w > 0.0 && seen.h > 0.0, "{name}: premise: part of the lifted chip is on canvas");
+    {
+        let mut r = mount();
+        until_tuck_between(&mut r, 0.15, 0.6);
+        let lift = plx_ui::screen::chrome_lift(r.tuck());
+        r.present_bar();
+        let below = (rest.cx(), rest.y + rest.h - 1.0);
+        assert!(below.1 > rest.y - lift + rest.h, "{name}: premise: the resting rect's bottom edge is below the lifted chip");
+        let (rect, clip) = chip_stop(&r).unwrap_or_else(|| panic!("{name}: a half-tucked bar still registers the chip"));
+        assert!(!menu_after(&mut r, below.0, below.1), "{name}: a click where the chip RESTS, with the bar lifted off it, opens no menu");
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (rest.x, rest.y - lift, rest.w, rest.h), "{name}: the stop is where the lifted chip is drawn");
+        let seen = rect.intersect(clip);
+        assert!(seen.w > 0.0 && seen.h > 0.0, "{name}: premise: part of the lifted chip is on canvas");
+    }
 
     // …and the click where the lifted chip IS drawn opens it.
-    let mut r = mount();
-    until_tuck_between(&mut r, 0.15, 0.6);
-    r.present_bar();
-    let (rect, clip) = chip_stop(&r).expect("a half-tucked bar still registers the chip");
-    let seen = rect.intersect(clip);
-    assert!(menu_after(&mut r, seen.cx(), seen.cy()), "{name}: a click on the lifted chip, where it is drawn, opens the menu");
+    {
+        let mut r = mount();
+        until_tuck_between(&mut r, 0.15, 0.6);
+        r.present_bar();
+        let (rect, clip) = chip_stop(&r).expect("a half-tucked bar still registers the chip");
+        let seen = rect.intersect(clip);
+        assert!(menu_after(&mut r, seen.cx(), seen.cy()), "{name}: a click on the lifted chip, where it is drawn, opens the menu");
+    }
 
     // Fully tucked: no bar, no stop, and a click at the chip's resting place reaches no chip.
-    let mut r = mount();
-    deep(&mut r);
-    assert!(r.tuck() > 0.99, "{name}: premise: tucked");
-    r.present_bar();
-    let registered = r.d.last_stops().iter().filter(|s| s.key.elem >= plx_ui::dispatch::STRIP_BASE).count();
-    assert!(!menu_after(&mut r, rest.cx(), rest.cy()), "{name}: a click at the chip's resting place, with no bar drawn, opens no menu");
-    assert_eq!(registered, 0, "{name}: a fully tucked bar registers no stop for its chip or its pills");
+    {
+        let mut r = mount();
+        deep(&mut r);
+        assert!(r.tuck() > 0.99, "{name}: premise: tucked");
+        r.present_bar();
+        let registered = r.d.last_stops().iter().filter(|s| s.key.elem >= plx_ui::dispatch::STRIP_BASE).count();
+        assert!(!menu_after(&mut r, rest.cx(), rest.cy()), "{name}: a click at the chip's resting place, with no bar drawn, opens no menu");
+        assert_eq!(registered, 0, "{name}: a fully tucked bar registers no stop for its chip or its pills");
+    }
 }
 
 #[test]
 fn a_click_on_the_chip_lands_only_where_the_library_bar_is_drawn() {
-    let _guard = Guard::new("route-chip-click-library");
-    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("library", || Rig::movies_library(true), |r| down_to_row(r, 8));
+    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("library", || World::movies_library("route-chip-click-library", true), |r| down_to_row(r, 8));
 }
 
 #[test]
 fn a_click_on_the_chip_lands_only_where_the_collections_bar_is_drawn() {
-    let _guard = Guard::new("route-chip-click-collections");
-    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("collections", || Rig::collections(true), |r| down_to_row(r, 8));
+    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("collections", || World::collections("route-chip-click-collections", true), |r| down_to_row(r, 8));
 }
 
 #[test]
 fn a_click_on_the_chip_lands_only_where_the_watchlist_bar_is_drawn() {
-    let _guard = Guard::new("route-chip-click-watchlist");
-    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("watchlist", Rig::watchlist, |r| for _ in 0..8 { r.press(Key::Down); });
+    a_click_on_the_chip_lands_only_where_the_bar_is_drawn("watchlist", || World::watchlist("route-chip-click-watchlist"), |r| for _ in 0..8 { r.press(Key::Down); });
 }
