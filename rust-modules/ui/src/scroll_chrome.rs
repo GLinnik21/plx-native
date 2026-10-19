@@ -4,6 +4,12 @@
 //! the top edge, and a capsule restating the library's name and size appears only where the page's
 //! header names libraries ([`capsule_shown`]).
 //!
+//! **Home keeps its chrome and uses only the spatial half.** Its tab bar and profile chip are the
+//! landing page's navigation, so Home owns no [`Handoff`] and never tucks (`Screen::chrome_tuck`
+//! stays 0); its shelf headings ride the page under the shown chrome and fade by where they stand,
+//! through [`clearance_under_shown_chrome`], the very rule a Handoff's [`clearance`](Handoff::clearance)
+//! is at tuck 0. A page whose chrome DOES tuck owns the state below.
+//!
 //! **A clock, not the scroll's position.** [`Handoff`] is a small state a page owns and steps once
 //! a frame. It used to be two pure functions of the scroll position, which made the handoff exactly
 //! as fast as the exponential scroll spring happens to be: the capsule took 40 frames to arrive
@@ -201,6 +207,16 @@ impl Handoff {
     pub fn capsule(&self) -> f32 {
         self.capsule
     }
+}
+
+/// **[`Handoff::clearance`] for a page whose chrome never tucks** (Home): how much of a page-riding
+/// row whose top stands at `top` (screen y) the SHOWN chrome leaves clear, 0..1 — 0 while the top
+/// is at or above the band's resting bottom ([`TOP_BAR_BOTTOM`](crate::widgets::TOP_BAR_BOTTOM),
+/// 130), 1 from [`CLEARANCE_RAMP`] below it, a smoothstep between. Pure in the row's place, so it
+/// is continuous under a reversal and a jump, and it has no clock and no state: a heading that
+/// rides up the page fades by where it stands and is gone before it reaches the chip.
+pub fn clearance_under_shown_chrome(top: f32) -> f32 {
+    Handoff::new().clearance(top)
 }
 
 /// The scroll target from which the chrome tucks. `gone_at` is floored at the hysteresis span so a
@@ -565,6 +581,23 @@ mod tests {
         assert_eq!(gone.chrome(), 0.0);
         assert_eq!(gone.clearance(CLEARANCE_RAMP), 1.0, "a chrome that has gone keeps a row out of nothing");
         assert_eq!(gone.clearance(0.0), 0.0, "only the screen's own top edge");
+    }
+
+    /// **A page that keeps its chrome (Home) asks the same rule a shown Handoff answers.** A heading
+    /// whose top is at or above the chrome's bottom edge is gone, one [`CLEARANCE_RAMP`] below it is
+    /// whole, and the answer is exactly `Handoff::new().clearance` at every height, so there is one
+    /// rule and Home holds no copy of it.
+    #[test]
+    fn a_page_that_keeps_its_chrome_asks_the_shown_handoffs_rule() {
+        let bottom = crate::widgets::TOP_BAR_BOTTOM;
+        assert_eq!(clearance_under_shown_chrome(bottom), 0.0);
+        assert_eq!(clearance_under_shown_chrome(0.0), 0.0);
+        assert_eq!(clearance_under_shown_chrome(bottom + CLEARANCE_RAMP), 1.0);
+        assert_eq!(clearance_under_shown_chrome(crate::page_header::TOP), 1.0, "a row at its rest is whole");
+        for i in 0..=40 {
+            let top = bottom - 20.0 + i as f32 * 2.0;
+            assert_eq!(clearance_under_shown_chrome(top), Handoff::new().clearance(top), "at {top}");
+        }
     }
 
     /// **Up from a scrolled page, through the real scroll spring, never draws the row where the chrome

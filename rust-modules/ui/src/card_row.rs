@@ -549,11 +549,12 @@ pub fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, vw: f32
 ///
 /// [`heading_clearance`] is this number tapered by a proximity ramp, so it is the CEILING of that
 /// function and never a value it merely happens to reach. It is named and public because a screen
-/// has to RESERVE room for it: the home grid's vertical reveal bounds the scroll so a raised
-/// heading cannot SETTLE inside the shared top band (`crate::screens::home`'s `row_reveal_band` — a
-/// row travelling to that destination still crosses the band, under chrome drawn after it, exactly
-/// as its cards do), and it can only do that arithmetic if the lift is a fact it can ask for rather
-/// than one that lives inside a draw. Written out by hand at the call site it would be the same three terms in two
+/// has to RESERVE room for it: the home grid rests the focused shelf with its heading at
+/// `GRID_TOP_Y − TITLE_DY` and `GRID_TOP_Y` clears the chip by this lift (a row travelling to that
+/// destination still crosses the shared top band, under chrome drawn after it, exactly as its cards
+/// do, and its heading fades there by where it stands: `scroll_chrome::clearance_under_shown_chrome`),
+/// and it can only do that arithmetic if the lift is a fact it can ask for rather than one that
+/// lives inside a draw. Written out by hand at the call site it would be the same three terms in two
 /// places, and a change to `focus_scale` would move the drawn heading while leaving the layout that
 /// makes room for it behind.
 #[inline]
@@ -2221,7 +2222,7 @@ mod tests {
 
     /// The full clearance a HOME shelf's heading needs over a popped tile — asked of
     /// [`heading_lift_max`] rather than restating its three terms, because a screen now RESERVES
-    /// this same number in its layout (the home grid's `row_reveal_band`) and a test that re-derived it
+    /// this same number in its layout (the home grid's `GRID_TOP_Y` clearance) and a test that re-derived it
     /// would keep passing while the two drifted.
     fn full() -> f32 {
         heading_lift_max(&RowStyle::HOME)

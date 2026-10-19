@@ -119,7 +119,9 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// answers from a `scroll_chrome::Handoff` it owns (the Library, Collections and the Watchlist:
     /// decided from the scroll target, run on the `xfade` clock); the handoff reports its own motion
     /// to the idle gate, so a running one asks for frames and a resting page keeps the frame loop
-    /// asleep.
+    /// asleep. A page that keeps its chrome shown (Home, the landing page's navigation) answers 0
+    /// and keeps what it rides under the chrome clear of it with
+    /// `scroll_chrome::clearance_under_shown_chrome` instead.
     fn chrome_tuck(&self) -> f32 {
         0.0
     }

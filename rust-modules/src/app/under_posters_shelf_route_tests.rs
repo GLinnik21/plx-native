@@ -12,9 +12,9 @@ use super::test_support::World;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
 
 /// Holds the live setting on its default for the test and puts it back after it.
-struct Cell;
+pub(super) struct Cell;
 impl Cell {
-    fn default() -> Self {
+    pub(super) fn default() -> Self {
         plx_media::route::restore_under_posters(UnderPosters::DEFAULT);
         Cell
     }
@@ -41,7 +41,7 @@ const AGE_SCORE: &str = "PG-13 \u{b7} 7.8";
 /// 80 of 100 minutes left, as the deck words it.
 fn left() -> String { plx_ui::fmt::time_left(80 * 60 * 1000) }
 
-fn set(w: &mut World, title: bool, details: Details) {
+pub(super) fn set(w: &mut World, title: bool, details: Details) {
     plx_media::route::restore_under_posters(UnderPosters { title, details });
     w.frames(60);
 }

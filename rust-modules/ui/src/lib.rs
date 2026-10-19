@@ -81,7 +81,7 @@ pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the p
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
-pub mod scroll_chrome; // the chrome/capsule handoff state a page owns, plus the capsule text and predicate, shared by the Library (and its Collections page) and the Watchlist
+pub mod scroll_chrome; // the chrome/capsule handoff state a page owns, plus the capsule text and predicate, owned by the Library (and its Collections page) and the Watchlist; Home shares only its spatial clearance rule
 pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (live nav-pill glass)
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
@@ -1643,10 +1643,15 @@ impl Painter {
             let (width,height)=declared_text_bounds(s,sz,bold);
             #[cfg(any(test, feature = "test-support"))]
             if !s.is_null() {
-                draw_census::note_text(
-                    unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
-                    self.place(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height)),
-                );
+                let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                let at = self.place(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height));
+                draw_census::note_text(text.clone(), at);
+                // The discovery walk is the one a whole page is drawn through on a host, so the
+                // run's ink (with the cascade's alpha folded in) is read here too.
+                draw_census::note_run(draw_census::Run {
+                    text, size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                    clip: draw_census::clip(), fade: None, lead: None,
+                });
             }
             self.declare(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height),100,|data| {
                 use frame::backdrop::Value;

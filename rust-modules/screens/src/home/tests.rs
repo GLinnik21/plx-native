@@ -1047,36 +1047,52 @@ fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
         lift,
     )
 }
-fn settled_scroll(rows: usize, focus_row: usize, current: f32) -> f32 {
-    let (lo, hi) = row_reveal_band(shelf_top_settled(focus_row, focus_row));
-    ui_cards::reveal(current, lo, hi, grid_max_scroll(rows))
-}
-fn from_below(rows: usize) -> f32 {
-    grid_max_scroll(rows) + ROW_PITCH
+/// The heading's place on the page without the focus pop's lift: what the chrome's clearance rule
+/// judges it at (`draw_grid`).
+fn heading_place(row: usize, focus_row: usize, scroll: f32) -> f32 {
+    heading_y(GRID_TOP_Y + shelf_top_settled(row, focus_row) - scroll, 0.0)
 }
 
 #[test]
 fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
-    assert!(heading_top(0, 0, settled_scroll(5, 0, from_below(5))) >= top_band_bottom());
+    assert!(heading_top(0, 0, rest_scroll(0, 5)) >= top_band_bottom());
 }
 
+/// **At rest a heading is whole or it is gone, never half under the chrome**, for every focused
+/// shelf of every column height: the rest is ONE scroll per focused shelf (no history, and no
+/// Under posters band in it), a heading below the chrome is drawn whole, and any other is faded to
+/// nothing by where it stands (`scroll_chrome`'s clearance). The old check graded a heading against
+/// the band's BOTTOM edge only, so a heading standing in the band (54..130) under the chip passed.
 #[test]
 fn no_shelf_heading_settles_inside_the_shared_top_band() {
-    const HEADING_MAX_H: f32 = 2.0 * theme::size::HEADLINE as f32;
     for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
-            let scrolls = [
-                settled_scroll(rows, focus_row, 0.0),
-                settled_scroll(rows, focus_row, from_below(rows)),
-            ];
+            let scroll = rest_scroll(focus_row, rows);
             for row in 0..rows {
-                let ys = [
-                    heading_top(row, focus_row, scrolls[0]),
-                    heading_top(row, focus_row, scrolls[1]),
-                ];
-                let (lo, hi) = (ys[0].min(ys[1]), ys[0].max(ys[1]));
-                assert!(lo >= top_band_bottom() || hi + HEADING_MAX_H <= top_band_bottom());
+                let place = heading_place(row, focus_row, scroll);
+                let clear = plx_ui::scroll_chrome::clearance_under_shown_chrome(place);
+                assert!(clear == 0.0 || clear == 1.0,
+                    "rows {rows}, focus {focus_row}: shelf {row}'s heading rests at {place}, {clear} clear of the chrome");
+                if clear == 1.0 {
+                    assert!(heading_top(row, focus_row, scroll) >= top_band_bottom(), "rows {rows}, focus {focus_row}: shelf {row}");
+                }
             }
+        }
+    }
+}
+
+/// The focused shelf's heading rests where the first shelf's does, at every focus the column's end
+/// does not hold lower, and the Under posters band is not in that rest.
+#[test]
+fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
+    let rows = SWEEP_ROWS;
+    let at_top = heading_place(0, 0, rest_scroll(0, rows));
+    for focus_row in 0..rows {
+        let scroll = rest_scroll(focus_row, rows);
+        if scroll < grid_max_scroll(rows) {
+            assert_eq!(heading_place(focus_row, focus_row, scroll), at_top, "focus {focus_row}");
+        } else {
+            assert!(heading_place(focus_row, focus_row, scroll) >= at_top, "focus {focus_row}: the end holds it lower, never higher");
         }
     }
 }
@@ -1088,24 +1104,16 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
     let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
     for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
-            for scroll in [
-                settled_scroll(rows, focus_row, 0.0),
-                settled_scroll(rows, focus_row, from_below(rows)),
-            ] {
-                let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - scroll;
-                assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y);
-            }
+            let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - rest_scroll(focus_row, rows);
+            assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y);
         }
     }
 }
 
 #[test]
 fn the_grids_resting_top_is_the_highest_a_shelf_may_settle() {
-    assert_eq!(row_reveal_band(0.0).1, 0.0);
-    assert_eq!(
-        row_reveal_band(shelf_top_settled(3, 3)).1,
-        shelf_top_settled(3, 3)
-    );
+    assert_eq!(rest_scroll(0, 8), 0.0);
+    assert_eq!(rest_scroll(3, 8), shelf_top_settled(3, 3));
     assert!(heading_top(0, 0, 0.0) - top_band_bottom() >= theme::space::XS);
 }
 

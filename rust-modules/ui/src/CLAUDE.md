@@ -150,7 +150,9 @@ default a spec is built with and no screen runs it, so a scroll fault on a stack
 snapping grid (`GridSpec::new`; a grid built with `GridSpec::resting` is read through
 `rest_target(end)` instead, because `reveal_target()` has no document end in it and `Stack::wanted`
 passes its own; the Library applies the same rule through `Layout::row_reveal` ->
-`poster_grid::rest_scroll`) and applies the document
+`poster_grid::rest_scroll`, and Home's shelf grid through `home::rest_scroll` -> `cards::grid_rest_scroll`,
+so the focused shelf rests with its heading at `GRID_TOP_Y - TITLE_DY` whatever the Under posters band
+and whichever way focus arrived) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
 not home when focus is elsewhere. An owner whose columns, style or document top change at run time
 (the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
@@ -560,7 +562,9 @@ tried first. None of it is reconstructable from the code without repeating the m
   it. The Library's chrome band and its scroll capsule are the case: the page owns one
   `scroll_chrome::Handoff`, decided on the key frame from the scroll target and run on the `xfade`
   clock, in sequence in both directions (the departing glass fades to exactly 0 and only then does
-  the arriving one start), so no frame has both. The chip and the
+  the arriving one start), so no frame has both. Home keeps its nav and chip shown and owns no
+  `Handoff`; a heading that rides under them fades by where it stands through the same spatial rule
+  (`scroll_chrome::clearance_under_shown_chrome`). The chip and the
   tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
   apart the same way. Any new live glass that can stand within a band's blur reach of another
   (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.
