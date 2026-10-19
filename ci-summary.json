@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T11:09:59Z",
+ "generated": "2026-10-19T11:51:55Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": -28.7,
-   "change7_pct": 40.9,
-   "d30": 682.0,
-   "delta30": -196.0,
-   "delta7": 141,
+   "change7_pct": 40.7,
+   "d30": 681,
+   "delta30": -195.5,
+   "delta7": 140.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 269,
+   "n_now": 270,
    "n_prev": 209,
-   "now": 486,
+   "now": 485.5,
    "prev7": 345,
    "shown": true,
    "state": "worse",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 58.2,
+   "change30_pct": 57.9,
    "change7_pct": 5.5,
-   "d30": 610,
-   "delta30": 355.0,
+   "d30": 611.0,
+   "delta30": 354.0,
    "delta7": 50.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -266,10 +266,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.1,
+   "change30_pct": 40.8,
    "change7_pct": 6.6,
-   "d30": 227.5,
-   "delta30": 93.5,
+   "d30": 228.0,
+   "delta30": 93.0,
    "delta7": 20.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -308,10 +308,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 119.4,
+   "change30_pct": 117.4,
    "change7_pct": 4.8,
-   "d30": 108.5,
-   "delta30": 129.5,
+   "d30": 109.5,
+   "delta30": 128.5,
    "delta7": 11.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -329,10 +329,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 161.0,
+   "change30_pct": 164.6,
    "change7_pct": -39.5,
-   "d30": 73.0,
-   "delta30": 117.5,
+   "d30": 72.0,
+   "delta30": 118.5,
    "delta7": -124.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -478,10 +478,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 31.0,
+   "change30_pct": 35.7,
    "change7_pct": -2.6,
-   "d30": 14.5,
-   "delta30": 4.5,
+   "d30": 14,
+   "delta30": 5.0,
    "delta7": -0.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -520,10 +520,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.3,
+   "change30_pct": 45.5,
    "change7_pct": 14.3,
-   "d30": 12,
-   "delta30": 4.0,
+   "d30": 11.0,
+   "delta30": 5.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -789,7 +789,7 @@
    "to": 400
   },
   {
-   "change_pct": 40.9,
+   "change_pct": 40.7,
    "commits": [
     {
      "pr": 836,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 486
+   "to": 485.5
   },
   {
    "change_pct": 32.8,
