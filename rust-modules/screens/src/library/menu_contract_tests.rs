@@ -93,7 +93,8 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let mut fresh_groups = Vec::new();
     fresh.groups(&cx_changed, &mut fresh_groups);
     assert_ne!(anchor_bits(fresh_groups[0].extent), anchor_bits(old_extent), "a new open releases the old anchor");
-    assert_eq!(fresh_groups[0].extent.x, 760.0, "the +N list hangs from its +N pill's near edge, as Sort & Filter does");
+    assert_eq!(fresh_groups[0].extent.x, 760.0 - plx_ui::widgets::PILL_FOCUS_OUTSET,
+        "the +N list hangs from its +N pill's near edge (the focused pill's outer edge), as Sort & Filter does");
 }
 
 #[test]
@@ -286,10 +287,11 @@ fn the_plus_n_list_hangs_from_its_pill_and_fits_its_widest_row() {
     with_cx(|cx| {
         let frame = menu.frame(cx.measure);
         let widest = menu.form.table.measured_width(cx.measure);
-        assert_eq!(frame.x, 648.0, "the near edge is the +N pill's");
+        assert_eq!(frame.x, 648.0 - plx_ui::widgets::PILL_FOCUS_OUTSET, "the near edge is the +N pill's outer edge");
         assert_eq!(frame.y, 148.0 + 56.0 + 16.0, "16 under the pill, as Sort & Filter");
         assert!(widest > plx_ui::table::MENU_MAX_W, "the fixture name must outgrow the shared cap ({widest})");
         assert!(frame.w >= widest, "the panel fits its widest row ({} < {widest})", frame.w);
-        assert!(frame.x + frame.w <= plx_ui::page_header::TEXT_X1 + 0.5, "inside the safe width");
+        let safe = plx_ui::consts::SAFE;
+        assert!(frame.x + frame.w <= safe.x + safe.w + 0.5, "inside the safe frame");
     });
 }

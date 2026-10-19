@@ -272,6 +272,18 @@ pub enum OpenStyle {
     Morph,
 }
 
+/// **Where a header menu's panel of width `w` starts across, hung under its opener `pill`** (the
+/// focused pill, outset included): the panel's NEAR edge is the opener's OUTER edge, the edge it
+/// morphs from, so the lit opener and the panel read as one object. The near edge is the one on
+/// the side of the screen the opener sits on: a control in the right half (the Library's and the
+/// Watchlist's Sort & Filter) hangs from its right edge, one in the left half (the "+N" libraries
+/// list) from its left. The result is held inside `keep` (the safe frame) and never moves the
+/// panel off the opener's edge otherwise: not by a screen's own text edge, not by a per-page offset.
+pub fn hang_x(pill: Rect, w: f32, keep: Rect) -> f32 {
+    let x = if pill.cx() > keep.cx() { pill.x + pill.w - w } else { pill.x };
+    x.clamp(keep.x, (keep.x + keep.w - w).max(keep.x))
+}
+
 /// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
 /// [`Opener::NONE`] can be a `const`.
 fn draw_nothing() {}

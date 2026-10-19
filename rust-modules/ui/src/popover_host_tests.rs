@@ -238,6 +238,21 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
     }
 }
 
+/// **NV1: a panel's near edge is its opener's outer edge**, one rule for every header menu: a control
+/// in the right half hangs the panel from its right edge, one in the left half from its left, and
+/// the safe frame only ever pulls a panel back, never off the opener's edge otherwise.
+#[test]
+fn a_panel_hangs_from_its_openers_outer_edge() {
+    let keep = crate::consts::SAFE;
+    let right = crate::Rect::new(1589.0, 146.0, 204.0, 60.0);
+    let left = crate::Rect::new(120.0, 146.0, 230.0, 60.0);
+    assert_eq!(crate::popover::hang_x(right, 316.0, keep) + 316.0, right.x + right.w, "right control: right edges flush");
+    assert_eq!(crate::popover::hang_x(left, 316.0, keep), left.x, "left control: left edges flush");
+    assert_eq!(crate::popover::hang_x(right, right.w, keep), right.x, "a panel as wide as its pill is the pill's own span");
+    let at_edge = crate::Rect::new(keep.x - 2.0, 146.0, 100.0, 60.0);
+    assert_eq!(crate::popover::hang_x(at_edge, 300.0, keep), keep.x, "held inside the safe frame");
+}
+
 /// DS7: every popover that does not opt in keeps the shared fade+slide, byte for byte.
 #[test]
 fn the_default_popover_keeps_the_shared_fade_and_slide() {
