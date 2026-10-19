@@ -690,7 +690,9 @@ pub struct Stream {
     pub dovi_bl_compat_id: i64,
     /// `DOVIELPresent` — an enhancement layer rides in the file (Profile 7's dual layer). We feed
     /// a single elementary stream and cannot interleave a second one, so this is disqualifying on
-    /// its own, and it is the ONLY field that identifies P7 (whose compat id is 6, not 0).
+    /// its own unless the feed path converts the stream to Profile 8.1 (a Profile 7 with a
+    /// cross-compatible base layer; see `Dovi::converts_to_p81`), and it is the ONLY field that
+    /// identifies P7 (whose compat id is 6, not 0).
     #[serde(rename = "DOVIELPresent", default, deserialize_with = "de_i64")]
     pub dovi_el_present: i64,
     // ---- the remaining four DOVI keys, DESCRIPTIVE ONLY. The three above decide whether the base

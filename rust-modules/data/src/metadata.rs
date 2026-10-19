@@ -427,8 +427,10 @@ impl Cast {
 /// IS an HDR10 stream — ignoring the RPU costs the dynamic metadata and nothing else. It is not
 /// fine for **Profile 5**, which is single-layer IPT-PQ with no HDR10 fallback: decoded as
 /// ordinary HEVC it is not a dimmer picture but a WRONG one, with the washed, pink-green cast of
-/// IPT read as YCbCr. And it cannot work at all for **Profile 7**, whose picture is split across
-/// two layers we cannot interleave.
+/// IPT read as YCbCr. **Profile 7** splits its picture across two layers we cannot interleave,
+/// and is played only because the feed path converts it: a Profile 7 whose base layer is
+/// cross-compatible becomes a single-layer Profile 8.1 on the way to the pipeline (see
+/// [`Dovi::converts_to_p81`]); any other dual layer cannot work at all.
 ///
 /// All zero is "the server said nothing", which is also what a non-DV stream produces — see
 /// [`Dovi::base_layer_unusable`] for why silence must never convict.
@@ -523,17 +525,21 @@ impl Dovi {
     /// - the direct-play gate **when no node will be sent** (`presentation` is written in terms of
     ///   this, so the two can never contradict each other), and
     /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
-    ///   hands us the identical elementary stream one container down, and the Load payload built
-    ///   for that path declares nothing. `route::build_stream` reads it for both
-    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
-    ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
-    ///   file, so the same pixels arriving by another route are as wrong as they ever were.
+    ///   hands us the identical elementary stream one container down. A copy of a usable base
+    ///   layer keeps the file's declaration (the DOVI record travels in the stream, so the Load
+    ///   payload describes it as a direct play's would), but a copy of an unusable one (Profile 5)
+    ///   is refused and never declared. `route::build_stream` reads it for both
+    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate): the same pixels
+    ///   arriving by another route are as wrong as they ever were.
     ///
     /// Two disqualifiers, and they are found by different fields:
-    /// - **an enhancement layer** (`el_present`, Profile 7) — one elementary stream is all the
-    ///   pipeline feeds, so the other layer simply never arrives. This is the only test that
-    ///   catches P7: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`,
-    ///   which sails through any `== 0` check.
+    /// - **an enhancement layer** (`el_present`) — one elementary stream is all the pipeline
+    ///   feeds, so the other layer simply never arrives. This is the only test that catches a dual
+    ///   layer: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`, which
+    ///   sails through any `== 0` check. The one exception is a Profile 7 the feed path converts
+    ///   ([`converts_to_p81`](Self::converts_to_p81)): what reaches the decoder is its base layer,
+    ///   which is the HDR10 picture it always was, so a copy of it is a copy of a displayable
+    ///   stream.
     /// - **no cross-compatible base layer** (Profile 5 / `bl_compat == 0`) — IPT-PQ, which an
     ///   HEVC decoder will happily decode and a panel will happily show, incorrectly.
     ///
@@ -559,7 +565,26 @@ impl Dovi {
         if !self.present {
             return false;
         }
+        if self.converts_to_p81() {
+            return false;
+        }
         self.el_present || self.profile == 5 || (self.profile > 0 && self.bl_compat == 0)
+    }
+
+    /// PURE: **a Profile 7 the feed path converts to Profile 8.1** — dual-layer (`el_present`)
+    /// with a cross-compatible base layer (`bl_compat != 0`; a UHD Blu-ray remux reports 6, the
+    /// only value the Dolby profile table assigns to profile 7). `plx_media`'s
+    /// `ff::packet_to_annexb` performs the conversion `dovi_tool -m 2` does: the enhancement
+    /// layer's NALs are dropped and each RPU is rewritten to 8.1, so the pipeline is fed exactly
+    /// the single-layer shape a Profile 8.1 file has. What is lost is the enhancement layer's own
+    /// contribution — a full enhancement layer's residual detail above the base layer — and
+    /// nothing else: the base layer and the dynamic metadata reach the panel.
+    ///
+    /// Profile 5 is untouched by this (no enhancement layer, `bl_compat` 0), and so is a Profile 7
+    /// whose base layer is not cross-compatible: there is no picture the conversion could leave,
+    /// so that one is still refused as `dual-layer`.
+    pub fn converts_to_p81(&self) -> bool {
+        self.present && self.el_present && self.profile == 7 && self.bl_compat != 0
     }
 
     /// PURE: **how this stream will be presented** — the ONE predicate behind both halves of the
@@ -569,21 +594,24 @@ impl Dovi {
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
     /// definite [`Supported`](plx_platform::devcaps::dv::DvCapability::Supported), and
-    /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
-    /// payload's H265 guard silently discarded the node.
+    /// `video_carries_dv` ([`dv_video_codec`]) closes the old Profile 9 disagreement where the gate
+    /// declared AVC and the payload's codec guard silently discarded the node.
     ///
     /// The four arms, and why each is where it is:
     ///
     /// - **not `present`** → [`DvPresentation::NotDv`]. No Dolby Vision, nothing to say, and
     ///   nothing to refuse. This is every ordinary file in the library.
-    /// - **`el_present`** → refuse, always, `signal` or not. Profile 7 splits its picture across a
-    ///   base and an enhancement layer; the pipeline feeds ONE elementary stream and cannot
-    ///   interleave the other, so no payload key makes it displayable. (This is also the only
-    ///   thing that identifies a dual-layer file: the dev server's P7 reports `bl_compat = 6`.)
-    ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
-    ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
-    ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
-    /// - **no node will be sent** (capability absent/unknown, non-HEVC output, a profile the
+    /// - **`el_present`** → refuse, always, `signal` or not — unless the feed path converts it
+    ///   ([`converts_to_p81`](Self::converts_to_p81)), in which case it continues to the arms
+    ///   below as the single-layer Profile 8.1 that is actually fed, and is declared as profile 8.
+    ///   Any other dual layer splits its picture across a base and an enhancement layer; the
+    ///   pipeline feeds ONE elementary stream and cannot interleave the other, so no payload key
+    ///   makes it displayable. (This is also the only thing that identifies a dual-layer file:
+    ///   the dev server's P7 reports `bl_compat = 6`.) It is deliberately checked BEFORE the
+    ///   declaration arm — which is what keeps the emitted node's `trackType` at `"single"` and,
+    ///   with `encryptionType` fixed at `"clear"`, makes the pipeline's `dv-dual-svp`
+    ///   secure-video-path flag unreachable. We cannot satisfy that flag.
+    /// - **no node will be sent** (capability absent/unknown, output that is neither HEVC nor AV1, a profile the
     ///   server never named, or Profile 5 with the trigger armed) → fall back to
     ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
     ///   That is what makes "keep the refusal for any case where we would not send the node" a
@@ -598,23 +626,31 @@ impl Dovi {
     ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
     ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
     ///   and one the panel puts in Dolby Vision mode.
+    ///
+    ///   AV1 (Profile 10) is declared the same way, on a set whose codec table lists an AV1 decoder
+    ///   (the direct-play gate's own condition). That half is NOT from a decompile: it was measured
+    ///   on a webOS 6 set (LG C1, 2026-10-18), where an AV1 Profile 10.1 direct play put the panel
+    ///   in Dolby Vision, and is unmeasured on any other firmware.
     pub fn presentation(
         &self,
         signal: bool,
         capability: plx_platform::devcaps::dv::DvCapability,
-        video_is_hevc: bool,
+        video_carries_dv: bool,
     ) -> DvPresentation {
         if !self.present {
             return DvPresentation::NotDv;
         }
-        if self.el_present {
+        // A converted Profile 7 is a single layer by the time it is fed, so only a dual layer the
+        // feed path cannot convert is refused here.
+        let converted = self.converts_to_p81();
+        if self.el_present && !converted {
             return DvPresentation::Refuse("dual-layer");
         }
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
         let declare = capability == plx_platform::devcaps::dv::DvCapability::Supported
-            && video_is_hevc
+            && video_carries_dv
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
             return if self.base_layer_unusable() {
@@ -624,11 +660,13 @@ impl Dovi {
             };
         }
         DvPresentation::Declare(DolbyHdrInfo {
-            profile_id: self.profile,
+            // A converted Profile 7 declares what is fed: profile 8, one layer.
+            profile_id: if converted { 8 } else { self.profile },
             // Honest derivation, and unreachable as `"dual"` while the `el_present` arm above
-            // returns first — written this way so that the day an interleaver exists, the payload
-            // follows the refusal being relaxed instead of quietly lying about the track.
-            track_type: if self.el_present { "dual" } else { "single" },
+            // returns first for every dual layer that is not converted — written this way so that
+            // the day an interleaver exists, the payload follows the refusal being relaxed instead
+            // of quietly lying about the track.
+            track_type: if self.el_present && !converted { "dual" } else { "single" },
             // Never `"all"`: paired with `trackType: "dual"` that is what sets `dv-dual-svp`, the
             // secure-video-path flag, which this app cannot satisfy.
             encryption_type: "clear",
@@ -637,19 +675,19 @@ impl Dovi {
 
     /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
     /// signal. Call once at a route boundary; installed playback must retain the returned value.
-    pub fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
+    pub fn presentation_now(&self, video_carries_dv: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
             plx_platform::devcaps::dv::capability(),
-            video_is_hevc,
+            video_carries_dv,
         )
     }
 
-    pub fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
+    pub fn decision_now(&self, video_carries_dv: bool) -> DvDecision {
         let capability = plx_platform::devcaps::dv::capability();
         DvDecision {
             capability,
-            presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
+            presentation: self.presentation(!dv_withheld(), capability, video_carries_dv),
         }
     }
 }
@@ -786,6 +824,14 @@ plx_base::devtrig::latched_flag!(
     /// capability answer nor a reload re-evaluates the installed play.
     pub fn dv_withheld = "nodv";
 );
+
+/// Can a Dolby Vision declaration ride on this video codec (the source's own spelling, `"hevc"`,
+/// `"av1"`)? HEVC carries Profiles 5, 7 and 8; AV1 carries Profile 10. Anything else (an AVC
+/// Profile 9, VP9) is never declared, because the Load payload names the codec the node is read
+/// against and the pipeline has no Dolby Vision path for it.
+pub fn dv_video_codec(vcodec: &str) -> bool {
+    vcodec.eq_ignore_ascii_case("hevc") || vcodec.eq_ignore_ascii_case("av1")
+}
 
 /// Prewarm both payload diagnostics before the first frame scope. Their getters are subsequently
 /// filesystem-free even when preview or payload construction first reaches them during a frame.
@@ -2595,8 +2641,9 @@ pub struct PlayingItem {
     pub bitrate: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
     /// frame size above and for the same reason: the local fallback never asks PMS, so a file
-    /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
-    /// otherwise be fed to the decoder verbatim and shown in the wrong colours. See [`Dovi`].
+    /// whose base layer we cannot display correctly (Profile 5, or a dual layer the feed path does
+    /// not convert to Profile 8.1) would otherwise be fed to the decoder verbatim and shown in the
+    /// wrong colours. See [`Dovi`].
     pub dovi: Dovi,
     pub markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip

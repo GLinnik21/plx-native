@@ -169,12 +169,14 @@ What keeps that in check:
 - **`make disk`** (`tools/build-gc.sh`) reports every checkout's derived trees, the external lane
   trees under `$PLX_FLEET_DIR`, and the free space, in one table; `tools/build-gc.sh
   --orphans | --incremental | --lanes | --worktrees | --all` reclaims. Nothing it deletes is
-  anything but `make` output or a lane worktree already fully on `main`. Run it when a lane starts
+  anything but `make` output or a lane worktree already fully on `origin/main` (with its ignored files:
+  by hand `-n` lists the ones that are not build output, e.g. `src/config.local.h`; `--auto` keeps such a lane). Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
-- **`tools/build-gc.sh --auto` runs the same reclaim on its own**, staged by free space on the
-  volume and, for `--lanes`, by an idle guard that spares a lane touched inside the last hour —
-  from a `SessionEnd` hook and an optional hourly `make disk-watch` launchd agent. You do not have
+- **`tools/build-gc.sh --auto` reclaims on its own**, gated by free space on the volume and by an
+  idle guard that spares a lane touched inside the last hour, in the order `tools/disk-budget.py`
+  plans (`docs/disk-budget.md`) — from a `SessionEnd` hook and an optional hourly `make disk-watch`
+  launchd agent. You do not have
   to remember `make disk` for an ordinary fleet; it stays the report to read when deciding whether
   to intervene by hand, or when a lane needs reclaiming faster than the automatic pressure trigger.
 - **A linked worktree does not write an incremental cache.** The Makefile sets
@@ -185,7 +187,9 @@ What keeps that in check:
   else and the main checkout keeps its cache. `CARGO_INCREMENTAL=1` in the environment still
   overrides both — the right call only for a lane genuinely doing long iterative work, and for the
   host unit loop that opt-in is `make test-fast` (own `rust-modules/target-fast`, ~2.7 GB, reclaimed
-  by `tools/build-gc.sh --incremental` or `--lanes`) rather than exporting it everywhere.
+  by `tools/build-gc.sh --incremental` or `--lanes`), and for the app crate's `hostsim` tests
+  `make test-hostsim` (own `rust-modules/target-hostsim`, reclaimed the same way), rather than
+  exporting it everywhere or pointing a hand-run `cargo` at a `/tmp` dir nothing tracks.
 - **A fresh lane's first build is seeded with an APFS clone of the third-party output**
   (`tools/cargo-seed.py`, called from the Makefile in linked worktrees only). The registry crates and
   (once also the build-std sysroot) are the same bytes in every lane — cargo's hash for them does not depend on
@@ -200,9 +204,9 @@ What keeps that in check:
   seed's, the lane builds cold exactly as before. Builds are still per-checkout. **`du` counts a
   clone's blocks in full**, in the seed and in every lane cloned from it, so `make disk` overstates
   what is on the volume once lanes are seeded: `df` is the truth. `tools/build-gc.sh --cache` prunes
-  a seed nothing has used for 30 days, and `--auto` runs `--seed` (7 days) as its last stage when
-  free space is below the threshold, so a seed whose donor lanes are gone does not hold ~1.3 GB
-  for a month.
+  a seed nothing has used for 30 days, and `--seed` (7 days, by hand) prunes it sooner; `--auto`
+  never evicts it, because the lanes cloned from it share its blocks and deleting it frees almost
+  nothing.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 
@@ -365,7 +369,7 @@ first so `read -r sha wt` still puts the whole tail in `wt`. Verified 2026-08-23
 the `UNMERGED:` branch actually fires.)
 
 **This whole check-then-remove sequence is what `tools/build-gc.sh --worktrees` automates** — run
-it once `<integration>` has landed on `main`, then `--orphans`. It never deletes a branch, only the
+it once `<integration>` has landed on `main` and a `git fetch` has brought the squash in (it judges against `origin/main`), then `--orphans`. It never deletes a branch, only the
 worktree (reporting a left branch by name so you decide by hand). A squash-merged lane whose lines
 `main` has since changed again reads `unmerged` and needs the manual check above.
 

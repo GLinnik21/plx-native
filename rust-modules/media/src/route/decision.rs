@@ -391,12 +391,18 @@ pub struct PlaybackSession {
     /// payload consumes `stream_dv_decision` below: re-evaluating this record after a late probe
     /// would make a reload describe a different route from the one which passed the gate.
     ///
-    /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
-    /// the only DV file that reaches those paths is one we refused to declare in the first place.
+    /// `Dovi::NONE` on a re-encode: what arrives then is the server's output, not the file. A
+    /// remux that copies the video keeps it, because the DOVI record travels in the copied stream.
     stream_dovi: plx_data::metadata::Dovi,
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
     stream_dv_decision: plx_data::metadata::DvDecision,
+    /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
+    /// frozen at the resolve whatever route was taken. `stream_dovi` above is what is being fed;
+    /// a rebuild that copies the video (an audio switch, a seek, Original recovery) hands this on
+    /// again instead of losing it with the first re-encode.
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
     /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
     /// `contents.immersive` node turns on it ([`crate::player::engine`]).
     ///
@@ -540,6 +546,8 @@ impl PlaybackSession {
         stream_fps: 0.0,
         stream_dovi: plx_data::metadata::Dovi::NONE,
         stream_dv_decision: plx_data::metadata::DvDecision::NONE,
+        src_dovi: plx_data::metadata::Dovi::NONE,
+        src_dv_decision: plx_data::metadata::DvDecision::NONE,
         stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
@@ -624,6 +632,8 @@ impl PlaybackSession {
             stream_fps,
             stream_dovi,
             stream_dv_decision,
+            src_dovi,
+            src_dv_decision,
             stream_immersive,
             title,
             ctxline,
@@ -688,6 +698,8 @@ impl PlaybackSession {
             stream_fps: *stream_fps,
             stream_dovi: *stream_dovi,
             stream_dv_decision: *stream_dv_decision,
+            src_dovi: *src_dovi,
+            src_dv_decision: *src_dv_decision,
             stream_immersive: *stream_immersive,
             title: *title,
             ctxline: *ctxline,
@@ -4106,8 +4118,10 @@ pub(super) struct AutoHlsInstalled {
 impl AutoHlsInstalled {
     /// The fields the install wrote to the session, on a projection: the reducer's restore point of
     /// a claim must describe the stream the landing installed ([`advance_claim_snapshot`]). HLS is
-    /// a full H.264/AAC encode: source FPS, Dolby Vision and E-AC3 JOC/Atmos belong to the Original
-    /// elementary streams and may not survive this route transition.
+    /// a full H.264/AAC encode that never copies the video (`transcode_query`: `copy_ok = !hls && …`,
+    /// so `directStream=0`): source FPS and E-AC3 JOC/Atmos belong to the Original elementary
+    /// streams and do not survive this route transition, and an HLS rung carries no Dolby Vision
+    /// declaration.
     pub(super) fn apply_to_projection(&self, p: &mut AppliedRouteProjection) {
         p.auto_original_watched = false;
         p.contract.remux = false;
@@ -4353,6 +4367,10 @@ pub(super) struct OriginalRecoveryPlan {
     /// read that carries the id of a remux that is still running with 503 (`docs/pms-api.md` M8).
     direct_session: String,
     src_acodec: String,
+    /// The file's own Dolby Vision record and declaration ([`PlaybackSession::src_dovi`]): what an
+    /// Original remux that copies the video hands on.
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
 }
 
 impl OriginalRecoveryPlan {
@@ -4460,6 +4478,8 @@ fn plan_original_recovery(
         namespace,
         direct_session,
         src_acodec: ps.src_acodec.clone(),
+        src_dovi: ps.src_dovi,
+        src_dv_decision: ps.src_dv_decision,
         candidate,
         expected: expected.clone(),
         cause,
@@ -4485,6 +4505,10 @@ pub(super) struct PreparedOriginalRemux {
     force_burn: bool,
     vcodec: String,
     acodec: String,
+    /// The Dolby Vision the remux feeds: the file's own when the server copies the video, else
+    /// `NONE` ([`copied_video_dv`]).
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     enhancement: EnhancementOutcome,
     /// The route's ticket as the PMS half's own commit left it; the install re-checks it, because
     /// when the PMS half ran on a worker the route may have moved again before the landing drained.
@@ -5373,23 +5397,24 @@ pub fn stream_acodec(ps: &PlaybackSession) -> String {
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
     ps.stream_fps
 }
-/// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node.
-/// `Dovi::NONE` for anything the server is transcoding or remuxing, and for a DV file we refused
-/// to declare — in every one of those cases the payload must say nothing.
+/// The fed file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node: a direct
+/// play's, or a server remux's that copies the video. `Dovi::NONE` for a re-encode and for a DV
+/// file we refused to declare — there the payload must say nothing.
 pub fn stream_dovi(ps: &PlaybackSession) -> plx_data::metadata::Dovi {
     let s = &*ps;
-    if s.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&s.stream_vcodec) {
         s.stream_dovi
     } else {
         // Last-line consistency guard for dev declarations and future route mutations: the LG
-        // payload cannot truthfully describe Dolby Vision on a non-HEVC elementary stream.
+        // payload cannot truthfully describe Dolby Vision on an elementary stream that is neither
+        // HEVC nor AV1.
         plx_data::metadata::Dovi::NONE
     }
 }
 /// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
 /// this is the value the Load payload must consume without consulting the live capability cache.
 pub fn stream_dv_presentation(ps: &PlaybackSession) -> plx_data::metadata::DvPresentation {
-    if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&ps.stream_vcodec) {
         ps.stream_dv_decision.presentation
     } else {
         plx_data::metadata::DvPresentation::NotDv
@@ -5400,13 +5425,6 @@ pub fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecisio
     ps.stream_dv_decision
 }
 
-/// Server output (HLS encode, progressive encode or container remux) carries no client-frozen
-/// source declaration. Centralizing the paired reset prevents a future route mutation from
-/// clearing the raw metadata while leaving a stale `Declare` behind for Load.
-fn clear_output_dv(session: &mut PlaybackSession) {
-    session.stream_dovi = plx_data::metadata::Dovi::NONE;
-    session.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
-}
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -5535,7 +5553,7 @@ fn set_stream_declaration_with_capability(
         presentation: dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vc.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vc),
         ),
     };
     if decision.presentation.refusal().is_some() {
@@ -7472,9 +7490,9 @@ fn playback_preview_with_capability(
         Some(capability) => d.dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vcodec.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vcodec),
         ),
-        None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
+        None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     let mode = direct_play_mode();
     if mode == DirectPlayMode::Forced {
@@ -8445,6 +8463,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             stream_fps: plan.fps,
             stream_dovi: plan.dovi,
             stream_dv_decision: plan.dv_decision,
+            src_dovi: plan.src_dovi,
+            src_dv_decision: plan.src_dv_decision,
             stream_immersive: plan.immersive,
             title,
             ctxline,
@@ -8600,6 +8620,13 @@ fn prepare_original_remux(
         let _ = c.transcode_stop(&replacement);
         return None;
     }
+    // A server that did not answer follows the contract: a remux copies, a forced burn re-encodes.
+    let (dovi, dv_decision) = copied_video_dv(
+        decision.as_ref(),
+        &enhanced_remux_contract(audio, force_burn),
+        plan.src_dovi,
+        plan.src_dv_decision,
+    );
     let (vcodec, acodec) = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
@@ -8623,6 +8650,8 @@ fn prepare_original_remux(
         force_burn,
         vcodec,
         acodec,
+        dovi,
+        dv_decision,
         enhancement,
         ticket,
     }))
@@ -8646,7 +8675,8 @@ fn install_original_remux(
         s.stream_vcodec = prepared.vcodec.clone();
         s.stream_acodec = prepared.acodec.clone();
         s.stream_fps = video_copy_fps(&s.cur_contract, s.src_fps);
-        clear_output_dv(s);
+        s.stream_dovi = prepared.dovi;
+        s.stream_dv_decision = prepared.dv_decision;
         s.stream_immersive = false;
     } };
     crate::player::log(&format!("decision output: v={} a={}", prepared.vcodec, prepared.acodec));
@@ -8866,6 +8896,8 @@ pub(super) struct RetranscodeClaimInputs {
     expected: WorkerTicket,
     src_vcodec: String,
     src_acodec: String,
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
     carried_audio: Option<CarriedAudio>,
 }
 
@@ -8876,6 +8908,8 @@ pub(super) struct AppliedRetranscode {
     url: String,
     vcodec: String,
     acodec: String,
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
     /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
@@ -8959,6 +8993,8 @@ pub(super) struct PreparedEncode {
     url: String,
     vcodec: String,
     acodec: String,
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
 }
@@ -9014,10 +9050,18 @@ pub(super) fn request_retranscode(
         return None;
     }
     let output_codecs = decision_codecs(&decision).unwrap_or((fallback_vcodec, fallback_acodec));
+    let (dovi, dv_decision) = copied_video_dv(
+        Some(&decision),
+        &contract,
+        inputs.src_dovi,
+        inputs.src_dv_decision,
+    );
     Some(PreparedEncode {
         url: inputs.client.transcode_start_url(&sp).to_url(),
         vcodec: output_codecs.0,
         acodec: output_codecs.1,
+        dovi,
+        dv_decision,
         contract,
         enhancement: classify_outcome(Some(&decision), inputs.carried_audio.as_ref(), audio),
         qsess,
@@ -9062,12 +9106,14 @@ pub(super) fn commit_retranscode(
         "retranscode rk={} audio={} sub={} offset={} -> transcode start",
         inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    let PreparedEncode { qsess, url, vcodec, acodec, contract, enhancement } = prepared;
+    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement } = prepared;
     Ok(AppliedRetranscode {
         qsess,
         url,
         vcodec,
         acodec,
+        dovi,
+        dv_decision,
         contract,
         enhancement,
         ticket,
@@ -9127,6 +9173,8 @@ fn prepare_retranscode_inputs(
         expected: expected.clone(),
         src_vcodec: ps.src_vcodec.clone(),
         src_acodec: ps.src_acodec.clone(),
+        src_dovi: ps.src_dovi,
+        src_dv_decision: ps.src_dv_decision,
         carried_audio: ps.cur_audio.clone(),
         rk,
     })
@@ -9144,8 +9192,8 @@ pub(super) fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjec
     p.stream_vcodec = applied.vcodec.clone();
     p.stream_acodec = applied.acodec.clone();
     p.stream_fps = video_copy_fps(&applied.contract, p.src_fps);
-    p.stream_dovi = plx_data::metadata::Dovi::NONE;
-    p.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
+    p.stream_dovi = applied.dovi;
+    p.stream_dv_decision = applied.dv_decision;
     p.stream_immersive = false;
 }
 
@@ -10128,9 +10176,9 @@ pub struct EnhTestFixture {
     pub base_present: bool,
     /// The base route's own Dolby Vision declaration (I7).
     pub dv_declared: bool,
-    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
-    /// enhancement layer) — a source the offer must refuse regardless of `dv_declared`, since a
-    /// declaration only ever accompanies a USABLE base layer.
+    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5, or a dual
+    /// layer the feed path does not convert to 8.1) — a source the offer must refuse regardless of
+    /// `dv_declared`, since a declaration only ever accompanies a USABLE base layer.
     pub dv_base_unusable: bool,
     /// `None` = server default audio, facts unknown (fails closed). `Some(capable)` = a known
     /// carried track with or without `canNormalizeLoudness`.

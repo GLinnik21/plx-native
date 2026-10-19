@@ -28,6 +28,19 @@ pub fn paused() -> bool {
 pub fn set_paused(v: bool) {
     crate::player::TX.commit_paused(v)
 }
+
+/// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps
+/// `TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
+/// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
+/// under the viewer's pause, whose hold fences the Load's first Play behind a prime and leaves the
+/// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
+/// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
+/// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
+/// `is_live`): over a live one this would leave its pause standing while `TX` reads Playing.
+pub fn commit_viewer_resume_for_load() {
+    crate::player::claim_hold::note_user_transport();
+    crate::player::TX.commit_paused(false);
+}
 /// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
 /// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
 /// three that needs the current state at all.
@@ -102,7 +115,11 @@ pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
     }
 }
 
-/// The only two inputs which may claim an OS-suspended playback session.
+/// The only two inputs which may claim a parked playback session — one an OS suspend parked, or
+/// one the pipeline's decoder release did (`app::run::park_on_decoder_release`). `DidForeground`
+/// restores the saved clock; `PlayKey` is a press that asks to play, which restores it Playing at
+/// the exact saved offset: the remote's PLAY key, or a toggle press (PLAYPAUSE, a click on no
+/// control) that wakes a decoder-release park saved Paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundInput {
     DidForeground,
@@ -251,6 +268,19 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
                     ..
                 }
         )
+    }
+
+    /// The clock a [`claim`](Self::claim) would restore with `DidForeground`: the saved snapshot's
+    /// while it is `Suspended`, or the prepared one's after a refused Load. `None` in every state
+    /// whose claim restores no clock, so a press can ask what the parked session would come back
+    /// as before choosing the input it claims with.
+    pub fn claimable_clock(&self) -> Option<ForegroundClock> {
+        match self.state {
+            ForegroundState::Suspended { clock, .. } | ForegroundState::Prepared { clock, .. } => {
+                Some(clock)
+            }
+            _ => None,
+        }
     }
 
     /// `ClockPending` belongs to an already-loaded player. If a later real exit has removed that
@@ -962,6 +992,32 @@ mod transport_target_tests {
 }
 
 #[cfg(test)]
+mod viewer_resume_for_load_tests {
+    use std::sync::atomic::Ordering;
+
+    /// **A restore that Loads Playing starts with the viewer's pause gone.** The park leaves
+    /// `TX.paused` standing and the Load arms its clock hold from it, so the helper must clear it
+    /// with no Engine in hand, and must not open the paused-seek preroll on the way.
+    #[test]
+    fn commit_viewer_resume_for_load_clears_the_standing_pause() {
+        let _guard = plx_base::testlock::serial();
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::player::TX.commit_paused(self.0);
+            }
+        }
+        let _restore = Restore(crate::player::TX.paused.load(Ordering::Acquire));
+        crate::player::TX.commit_paused(true);
+
+        super::commit_viewer_resume_for_load();
+        assert!(!super::paused(), "the viewer's Play is published");
+        assert!(!super::viewer_paused());
+        assert!(!crate::player::TX.seek_preroll_active(), "no preroll opens for a Playing Load");
+    }
+}
+
+#[cfg(test)]
 mod foreground_resume_tests {
     use super::*;
 
@@ -1054,6 +1110,35 @@ mod foreground_resume_tests {
             self.clock_calls += 1;
             Self::answer(&mut self.clocks)
         }
+    }
+
+    /// **Only a snapshot a claim would restore has a claimable clock.** `Suspended` and `Prepared`
+    /// carry the clock a `DidForeground` claim restores; every other state's claim restores none
+    /// (it is idle, owned by another claimant, or past its Load).
+    #[test]
+    fn claimable_clock_reads_only_the_claimable_snapshot() {
+        let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
+        assert_eq!(lifecycle.claimable_clock(), None);
+        for clock in [ForegroundClock::Paused, ForegroundClock::Playing] {
+            lifecycle.suspend(73_000_000_000, clock);
+            assert_eq!(lifecycle.claimable_clock(), Some(clock), "Suspended {clock:?}");
+            lifecycle.state = ForegroundState::Prepared {
+                id: 1,
+                resume_ns: 73_000_000_000,
+                clock,
+            };
+            assert_eq!(lifecycle.claimable_clock(), Some(clock), "Prepared {clock:?}");
+        }
+        lifecycle.state = ForegroundState::LoadPending {
+            id: 1,
+            attempt: 11,
+            resume_ns: 73_000_000_000,
+            clock: ForegroundClock::Paused,
+        };
+        assert_eq!(lifecycle.claimable_clock(), None, "a pending Load is past its claim");
+        lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
+        let _ = lifecycle.claim(ForegroundInput::DidForeground);
+        assert_eq!(lifecycle.claimable_clock(), None, "a Claimed snapshot is another claimant's");
     }
 
     #[test]
@@ -1153,6 +1238,59 @@ mod foreground_resume_tests {
         assert_eq!(
             actuator.after_loads,
             vec![(Some(11), ForegroundClock::Paused, true)]
+        );
+        assert_eq!(lifecycle.state, ForegroundState::Idle);
+    }
+
+    /// **PLAY chooses the clock, not the offset.** The press that rebuilds a parked session may be
+    /// the remote's PLAY key; the claim then restores a paused snapshot Playing at the exact saved
+    /// offset (no `RESUME_REWIND_NS`) and feeds the Load that clock, which is what keeps the
+    /// one-frame paused-seek preroll closed.
+    #[test]
+    fn play_key_resumes_a_paused_snapshot_playing_at_the_saved_offset() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut lifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.suspend(73_000_000_000, ForegroundClock::Paused);
+        let mut actuator = FakeActuator {
+            prepare: vec![crate::player::ResumeOutcome::Prepared],
+            loads: vec![ForegroundLoadStart::Launched(11)],
+            statuses: vec![ForegroundLoadStatus::Started],
+            clocks: vec![true],
+            ..FakeActuator::default()
+        };
+
+        assert_eq!(
+            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator),
+            ForegroundActivation::Launched
+        );
+        assert_eq!(
+            actuator.prepare_calls,
+            vec![73_000_000_000],
+            "PLAY must not rewind a paused save"
+        );
+        assert_eq!(
+            actuator.before_loads,
+            vec![(73_000_000_000, ForegroundClock::Playing)],
+            "the Load carries the PLAY intent, so no paused-seek preroll is armed"
+        );
+        assert_eq!(
+            lifecycle.state,
+            ForegroundState::LoadPending {
+                id: 1,
+                attempt: 11,
+                resume_ns: 73_000_000_000,
+                clock: ForegroundClock::Playing,
+            }
+        );
+        assert_eq!(actuator.clock_calls, 0);
+        assert_eq!(
+            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
+            ForegroundPollOutcome::Started
+        );
+        assert_eq!(actuator.clock_calls, 1, "a started Playing Load issues PlayClock once");
+        assert_eq!(
+            actuator.after_loads,
+            vec![(Some(11), ForegroundClock::Playing, true)]
         );
         assert_eq!(lifecycle.state, ForegroundState::Idle);
     }

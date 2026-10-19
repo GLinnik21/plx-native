@@ -16,7 +16,7 @@ cargo):
   nightly toolchain: asking for more than one thread on the stable pin is a Makefile error that
   names the fix, rather than a cargo failure in the middle of a recipe;
 * the flag reaches exactly the host test recipes (`check-cargo-unit-default`, `-hostsim`,
-  `test-fast`, `test-crate`, `build-bench`) when it is on, and NO recipe when it is off, so a CI
+  `test-fast`, `test-crate`, `test-hostsim`, `build-bench`) when it is on, and NO recipe when it is off, so a CI
   recipe is the command it always was;
 * it is never exported and no ARM, simulator, clippy or package line, and no workflow, names it, so a
   release or simulator build cannot pick it up;
@@ -39,7 +39,7 @@ SCRUBBED = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "RELEASE", "SYMBOLS", "LAB", "FL
             "GITHUB_ACTIONS", "ARM_PROFILE", "HOST_THREADS")
 FLAG = "CARGO_BUILD_RUSTFLAGS"
 HOST_RECIPES = (("check-cargo-unit-default",), ("check-cargo-unit-hostsim",), ("test-fast",),
-                ("test-crate", "C=plx_base"), ("build-bench",))
+                ("test-crate", "C=plx_base"), ("test-hostsim",), ("build-bench",))
 
 
 def make(*args: str, env: dict[str, str] | None = None) -> str:
@@ -109,7 +109,7 @@ class Recipes(unittest.TestCase):
                                 ("RELEASE", ["RELEASE=1"], None), ("stable", ["FLAVOR=stable"], None)):
             # those goals refuse RELEASE=1 outright
             goals = [goal for goal in HOST_RECIPES
-                     if not (goal[0] in ("test-fast", "test-crate", "build-bench") and what in ("RELEASE",))]
+                     if not (goal[0] in ("test-fast", "test-crate", "test-hostsim", "build-bench") and what in ("RELEASE",))]
             with self.subTest(f"{what}: {', '.join(goal[0] for goal in goals)}"):
                 out = make("-n", *[word for goal in goals for word in goal], *args, env=env)
                 self.assertNotIn(FLAG, out)

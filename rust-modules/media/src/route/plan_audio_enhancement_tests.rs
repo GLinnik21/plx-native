@@ -232,13 +232,14 @@ fn named_unfetched_audio_keeps_its_id_and_fails_closed() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-/// Owner decision: a declared Dolby Vision source whose base layer IS self-displayable (P7/P8)
-/// gets the enhancement too — the remux plays the HDR10 base layer and simply never re-declares
-/// Dolby Vision (a remux was never able to carry `DolbyHdrInfo` at all — see `fill_direct_plan`'s
-/// own doc — so this drops nothing a remux could have kept).
+/// A declared Dolby Vision source whose base layer IS self-displayable (P7/P8) gets the
+/// enhancement too, and the remux keeps the declaration: the server copies the video, so the
+/// elementary stream still carries the DOVI configuration record the Load payload describes.
+/// (Measured on the dev PMS, `docs/pms-api.md` M9: the copied output keeps the DOVI record; a
+/// Jellyfin DirectStream, `-codec:v copy`, showed the same.)
 #[test]
 #[cfg(feature = "devtriggers")]
-fn dv_declared_p8_usable_base_is_enhanced_remux_without_dv() {
+fn dv_declared_p8_usable_base_is_enhanced_remux_that_keeps_dv() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
@@ -248,14 +249,17 @@ fn dv_declared_p8_usable_base_is_enhanced_remux_without_dv() {
             item
         },
         |env, _| env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported));
+    let direct = r.plan.auto_original.as_ref().map(|c| c.dv_decision);
     assert!(
-        r.plan.auto_original.as_ref().is_some_and(|c| c.dv_decision.presentation.declared().is_some()),
+        direct.is_some_and(|d| d.presentation.declared().is_some()),
         "precondition: the P8 direct play would have declared DolbyHdrInfo",
     );
     assert_enhanced(&r);
-    assert!(
-        r.plan.dv_decision.presentation.declared().is_none(),
-        "the remux never carries DolbyHdrInfo — Dolby Vision turns off while the enhancement is on",
+    assert_eq!(r.plan.dovi, p8(), "the copied video keeps its raw record");
+    assert_eq!(
+        Some(r.plan.dv_decision),
+        direct,
+        "the remux declares what the direct play would have: the video is copied, not re-encoded",
     );
     plx_plex::plex::reset_servers_for_test();
 }

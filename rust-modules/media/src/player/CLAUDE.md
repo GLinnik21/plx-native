@@ -117,8 +117,21 @@ something.
   no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
   `decoder_revoked`; the app loop parks the session exactly as an app switch does
   (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
-  claim that rebuilds it at the saved spot and clock. Every other `type=18` after a picture is
-  still only logged.
+  claim that rebuilds it at the saved spot. The claiming press chooses the clock (`run::wake_input`,
+  whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click on no control — on the
+  player only that click is the toggle; a click on the scrub bar, a disc or a tab is a plain wake) over a save that was Paused, claim with `ForegroundInput::PlayKey`
+  and come back Playing at the exact saved offset; every other press, PAUSE included, claims with `DidForeground`
+  and keeps the saved clock. OK is deliberately one of those: it is also how a viewer dismisses
+  the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
+  was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
+  A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
+  (`PlayerForegroundActuator::before_load` → `lifecycle::commit_viewer_resume_for_load`):
+  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
+  hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
+  before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
+  order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY
+  key (`key_play` over a Paused snapshot) takes the same path. Every other `type=18` after a
+  picture is still only logged.
   **And the frame rate IS a discriminator, measured on the dev set the same day:** a 4K H.264 24p
   direct play declared at 60 makes the pipeline announce `frameRate:24` and then `:30` for the same
   stream (a 24p picture on a 30 fps lattice — the judder the maintainer saw on the Auto 4K rung);
@@ -412,7 +425,9 @@ something.
   the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
-  failure without repeating route preparation, and applies the saved clock only after `Started`.
+  failure without repeating route preparation, and issues the clock's native Play only after
+  `Started` (a Playing restore over a standing pause publishes the viewer's resume BEFORE the
+  Load, `before_load`, so the Load is not armed under it).
   Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes

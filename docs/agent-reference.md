@@ -136,7 +136,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   stack is mostly a chain, so cargo has little to run side by side and the front end (parse,
   type-check, borrow-check) is single-threaded per crate by default. `-Zthreads=N` (N = the core
   count, capped at 8) parallelises it for the host `cargo test` recipes (`check-cargo-unit-default`,
-  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `build-bench`) through
+  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `test-hostsim`, `build-bench`) through
   `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores) on nightly, `make build-bench`
   non-incremental edit-rebuilds, medians of 5: `plx_base` leaf 20.1 s to 17.8 s, `plx_ui` 10.7 to
   7.8, `plx_screens` 8.3 to 5.7, app 4.8 to 2.9; the incremental `test-fast` loop is unchanged
@@ -235,7 +235,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   fourth request that never comes; every other test in that binary that takes `serial()` (190 call sites) queued
   behind it). In the single pre-split binary that wait overlapped with everything else, which is why the
   suite then ran in 60.5 s and the split alone cost 23 s. Every recipe that runs the suite
-  (`check-cargo-unit-default`, `check-cargo-unit-hostsim`, `test-fast`) therefore wraps the same
+  (`check-cargo-unit-default`, `check-cargo-unit-hostsim`, `test-fast`, `test-hostsim`) therefore wraps the same
   `cargo ... test --lib -p ...` line in `tools/cargo-test-parallel.py` (`$(UNIT_RUN)`): it builds
   with `--no-run --message-format=json-render-diagnostics`, runs the reported test executables with
   a bounded job count (`PLX_TEST_JOBS`, default `min(6, CPUs)`; each binary gets its share of
@@ -247,7 +247,9 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   including its literal `test result:` line.
   It keeps the gate honest: every binary runs even after a failure (exit 101 if any failed), a
   package that produced no test executable, or a build that reported none, is an error, and a
-  failed build returns cargo's status. `ci/test_cargo_test_parallel.py` pins those. CI is
+  failed build returns cargo's status. The opt-in `--require-match` (only `test-hostsim` passes it)
+  also fails a run whose filter ran no test in any binary, because libtest prints `0 passed ...
+  filtered out` and exits 0 for a mistyped name. `ci/test_cargo_test_parallel.py` pins those. CI is
   unchanged: its unit jobs call the same make targets. Measured the same day on the 10-core Mac
   (binaries already built): 78.8 s sequential -> 17.9 s with 4 jobs and 14 s with 6 or more, after
   the fixes to the 16 s test and to `plx_plex`'s TEST-NET connect-timeout test. The remaining long
@@ -298,6 +300,48 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   about one run in three when started alone in a fresh process (300 runs, with a shared and with a
   private runtime dir) and is hidden in the suite by the tests that run before it in the same
   process. Adopting it would also need the tool on every machine and CI job.
+- `make test-hostsim [C=<crate>] [T=filter]` — the `hostsim`-feature unit tests
+  (`#[cfg(all(test, feature = "hostsim"))]`: the application crate's `app/run.rs`
+  `lifecycle_regression_tests`, the player-return rig; `plx_media`'s `player/engine.rs`, `pump.rs`,
+  `route/decision.rs`), which `test-fast` and `test-crate` do not build. `C` names the crate under
+  test, spelled as for `test-crate` (`C=plx_media`, `C=media`; several allowed) and defaulting to
+  the application crate (`C=app`); it changes nothing else, so there is one recipe, one managed dir
+  and one `--require-match` for all of them. It runs `cargo test --lib -p <crate> --features
+  hostsim` on the pinned toolchain through `$(UNIT_RUN)`, with a fresh `PLXNATIVE_RUNTIME_DIR` (the
+  `hostsim` feature is what makes it steerable) that the recipe removes on exit, and with
+  `--require-match`: a `T=` that matches no test exits 1 instead of reporting `0 passed` and
+  passing, which includes a correctly spelled test that lives in another crate than `C`. The
+  features are the crate's own plus `hostsim`, not the application crate's defaults that the full
+  suite unifies in (the gap `test-crate` exists to close, `plx_plex` 458 tests against 466): for
+  `C=plx_media` that made no difference, 1839 passed / 60 ignored, the line `make check`'s hostsim
+  pass prints for the crate (measured 2026-10-19); another crate with `devtriggers`-gated tests
+  would run fewer. It is **incremental, by design**, in its own `rust-modules/target-hostsim`
+  (gitignored), for the reason `test-fast` is: the Makefile's measured policy keeps shared and
+  linked-worktree builds non-incremental, and this is the same opt-in edit loop for the one test set
+  `test-fast` cannot run. `test-fast`'s measured edit-rebuild (~10 s against 31-32 s) is for the
+  14-crate default-feature suite, not this one-package build, and so is its ~2.7 GB; this tree was
+  1.7 GB after a cold build of `lifecycle_regression_tests` (62 tests, 31 s wall, 2026-10-19), and
+  2.9 GB once `C=plx_media` had run too, because a layer crate built alone compiles a second
+  feature variant of the shared dependencies into the same dir. `make disk` lists the tree, and
+  `tools/build-gc.sh --incremental` (cache only) or `--lanes` (whole tree), or `rm -rf
+  rust-modules/target-hostsim`, reclaims it. It replaces the former hand-run recipe that pointed
+  `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
+  counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
+  under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+- `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
+  --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
+  not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
+  `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
+  its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a
+  unit by package, target, kind, mode, features and profile: of the 165 units this check needs, 139
+  third-party units match `make lint`'s exactly (a `--unit-graph` comparison, nothing compiled) and
+  are reused, while all 26 workspace units differ in features (the application crate no longer
+  forwards `devtools`, `devtriggers` and `threadcheck`, so the layer crates get `default` only) and
+  coexist beside lint's under their own hashes; `cargo check` writes no unhashed artifact that
+  could collide. The price is cargo's build-directory lock: a `make check-nodef` started while
+  another cargo runs in the same tree waits for it. The recipe carries neither `HOST_ENV` nor
+  `TELEMETRY_ENV`: both change the third-party units it shares with lint. It never touches the
+  release binaries (`SIDE_EFFECT_FREE`).
 - **CI build health** — four tools keep the build from growing unnoticed, and none of them is a
   device gate.
   - *Timings artifact.* `host-unit-default` compiles the test binary in its own step with
@@ -636,17 +680,21 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   and this repo already keys a separate `rust-modules/target*` per configuration and multiplies
   that again per worktree.
   (**`make disk` is how you see what that has come to**, across every checkout at once, and
-  `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` is how you get it back —
+  `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` (or a planner-chosen
+  `--evict PLAN`, below) is how you get it back —
   every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes
-  finished lane checkouts. `--stale` is the one mode that also reaches into the MAIN checkout's
-  own `rust-modules/target` (age-gated only there, never the newest hash per crate), because
-  cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
+  finished lane checkouts, and with them their ignored files (`-n` lists the ones that are not
+  build output; `--auto` keeps a lane that holds any). The MAIN checkout is reached only narrowly: `--stale` sweeps the
+  superseded hashes in its `deps/` (age-gated only there, never the newest hash per crate),
+  `--incremental` and `--all` clear its incremental dirs, `--evict` takes those only as rung 6
+  (the planner's last), and none of them removes its `target` dir itself. The `--stale` reach
+  exists because cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
   `plxnative_modules-*` files across 6 dead hashes, 5.5 GB, all last written 2026-09-17. Measured
   2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
   **incremental cache alone was 24 GB** and FFmpeg, the usual suspect, was 2.6 GB. A linked
-  worktree is not supposed to write an incremental cache at all (the one sanctioned exception is
-  the opt-in `make test-fast`) — the Makefile says so beside
+  worktree is not supposed to write an incremental cache at all (the sanctioned exceptions are
+  the opt-in `make test-fast` and `make test-hostsim`) — the Makefile says so beside
   `RUST_FEATFLAGS`, but it can only say it to the cargo runs `make` launches, and a direct
   `cargo test`/`cargo check` in a lane wrote one anyway: 12.9 GB of them, measured 2026-09-17.
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
@@ -659,9 +707,20 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   stripped from the seed, builds stay per-checkout, and `PLX_CARGO_SEED=off` disables it. Because
   a clone shares blocks, **`du` (and so `make disk`'s per-checkout numbers) counts them in full:
   `df` is what is really free.** None of this reclaim has to be run by
-  hand anymore: `tools/build-gc.sh --auto` runs the same modes on its own, staged by free-space
-  pressure, from a `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs —
-  `make disk` remains the report to read before deciding whether to intervene yourself.)
+  hand anymore: `tools/build-gc.sh --auto` reclaims on its own, gated by free-space pressure, from a
+  `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs — `--orphans`, then
+  `--worktrees` for lanes idle past `PLX_GC_IDLE_MIN` and holding no non-build ignored file, then the planner's order — and `make disk`
+  remains the report to read before deciding whether to intervene yourself. Its last
+  section is the disk budget (`tools/disk-budget.py report`, `docs/disk-budget.md`): each tree's
+  PRIVATE bytes, which is what deleting it really frees and not what `du` says, the PlxNative cargo
+  trees under `/tmp` that nothing above can see, and the order a reclaim would take them in. The
+  report is read-only. `tools/disk-budget.py reclaim --to GIB --emit` writes that order as a plan
+  file and `tools/build-gc.sh --evict PLAN` deletes what it names — and only that: every path is
+  re-derived from the machine (a derived PlxNative build tree, a rung the ladder makes from that
+  kind of tree) and re-probed for liveness (builder in the checkout, cargo or `make check` lock,
+  open files, the idle window, a `/tmp` tree's ctime) immediately before it is renamed away. It
+  does not stop for a held FFmpeg cache lock the way the other modes do, it never evicts the cargo
+  seed, and `-n` previews it. Tests may run it only against fixtures.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`
@@ -1465,7 +1524,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   puts it back rather than resuming a session with nothing on screen. It then
   tracks one exact Load attempt at a time,
   follows reducer-approved superseding or rollback attempts, retries an exact failure without
-  repeating route preparation, and applies the saved clock only after `Started`. In-app
+  repeating route preparation, and issues the clock's native Play only after `Started` (a Playing
+  restore over a standing pause publishes the viewer's resume BEFORE the Load, so the Load is not
+  armed under it). In-app
   Home/Settings are *overlays* and do **not** fire these — only a real OS app-switch does. Preserve
   the suspend/reload pairing if you touch playback or routing.
 - **Crash forensics has two layers.** With error-report consent and a compiled Sentry endpoint,

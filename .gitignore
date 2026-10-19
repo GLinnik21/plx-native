@@ -47,6 +47,10 @@ rust-modules/target-macapp/
 # `make test-fast` — the opt-in INCREMENTAL host unit loop, in its own tree so its incremental
 # cache never lands in the `target` that `make check` and CI use.
 rust-modules/target-fast/
+# `make test-hostsim` — the same shape for the application crate's `hostsim` tests: its own tree,
+# in the checkout so `make disk` / `tools/build-gc.sh` see it and `git add -A` cannot commit it.
+# (`make check-nodef` has no dir of its own: it builds into `target/` above.)
+rust-modules/target-hostsim/
 # `make LAB=1` and `make LAB=1 sim` — the Lab Diagnostics feature set gets its own build trees for
 # the reason every other feature set does (cargo does not hash its output; see the Makefile).
 rust-modules/target-lab/

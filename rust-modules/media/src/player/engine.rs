@@ -1065,7 +1065,10 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 ///   branch falls THROUGH into the Dolby Vision tail; there is no DVHE/DVH1 entry in its codec
 ///   table (those literals belong to AdaptivePipeline's RFC-6381 parser, a different pipeline).
 ///   LG's own Chromium client also reports `codec.video = "H265"` for a Dolby Vision stream. The
-///   `video == "H265"` guard below is therefore a consistency check, not a translation.
+///   codec guard below is therefore a consistency check, not a translation. It also admits
+///   `"AV1"` (Profile 10) with the codec string unchanged likewise; that the AV1 branch reaches
+///   the same tail is measured on a webOS 6 set, not decompiled
+///   ([`plx_data::metadata::Dovi::presentation`]).
 /// - **`profileId` must be a JSON integer** (`getInt`). Quoting it would leave the `-1` sentinel.
 /// - **the library's injected platform metadata is not a safety gate.** libplayerAPIs injects
 ///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` at the root, but libpf enables DV from
@@ -1088,13 +1091,13 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentat
         ));
         return p.to_string();
     }
-    if video != "H265" {
+    if video != "H265" && video != "AV1" {
         // Unreachable by construction — `route` records the DV layering on the direct-play branch
-        // only, and that branch's payload codec is the file's own hevc — so this is the guard that
-        // says so out loud rather than declaring Dolby Vision over an H264 elementary stream. A
-        // malformed sourceInfo does not fail loudly; it wedges the sink.
+        // only, and that branch's payload codec is the file's own hevc or av1 — so this is the
+        // guard that says so out loud rather than declaring Dolby Vision over an H264 elementary
+        // stream. A malformed sourceInfo does not fail loudly; it wedges the sink.
         log(&format!(
-            "dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265",
+            "dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265 or AV1",
             n.profile_id
         ));
         return p.to_string();
@@ -3811,6 +3814,60 @@ mod payload_tests {
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
+    /// An AV1 Profile 10.1 direct play (HDR10-compatible base) on a set with confirmed Dolby Vision
+    /// support carries the node like an HEVC Profile 8 does, with the codec string left at `"AV1"`.
+    /// VP9 never does: no Dolby Vision profile rides on it.
+    #[test]
+    fn an_av1_profile_10_direct_play_declares_dolby_vision() {
+        let p10 = Dovi {
+            present: true,
+            profile: 10,
+            bl_compat: 1,
+            el_present: false,
+            ..Dovi::NONE
+        };
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "av1",
+            "eac3",
+            23.976,
+            p10,
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        assert_eq!(crate::route::stream_dovi(&ps).profile, 10);
+        let payload = build_av_payload(
+            &ps,
+            "AV1",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(payload.contains(r#""video":"AV1""#), "{payload}");
+        assert!(
+            payload.contains(r#""DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":10}"#),
+            "{payload}"
+        );
+
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "vp9",
+            "eac3",
+            23.976,
+            p10,
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        assert!(crate::route::stream_dv_presentation(&ps).declared().is_none());
+        let payload = build_av_payload(
+            &ps,
+            "VP9",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
     #[test]
     fn late_capability_result_does_not_change_installed_decision() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -3981,11 +4038,32 @@ mod payload_tests {
     }
 
     /// The three ways the node is NOT sent, each of which must leave the payload byte-identical:
-    /// a file with no Dolby Vision, a Dolby Vision file we refuse (the dual-layer P7 — declaring a
-    /// layer we cannot feed is worse than refusing it), and the disarmed trigger, which is what a
-    /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
+    /// a file with no Dolby Vision, a Dolby Vision file we refuse (a dual layer without a
+    /// cross-compatible base layer — declaring a layer we cannot feed is worse than refusing it),
+    /// and the disarmed trigger, which is what a `RELEASE=1` build compiles in and what every boot
+    /// without `/tmp/plxnative-dv` does today.
     #[test]
     fn nothing_is_spliced_unless_the_stream_is_declared() {
+        let unconvertible_p7 = Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 0,
+            el_present: true,
+            ..Dovi::NONE
+        };
+        for dv in [
+            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            unconvertible_p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        ] {
+            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
+        }
+    }
+
+    /// A Profile 7 with a cross-compatible base layer is fed as the 8.1 `ff::packet_to_annexb`
+    /// makes of it, and the node says so: `profileId` 8, one track — never 7, never `"dual"`.
+    #[test]
+    fn a_converted_profile_7_declares_profile_8_single() {
         let p7 = Dovi {
             present: true,
             profile: 7,
@@ -3993,13 +4071,15 @@ mod payload_tests {
             el_present: true,
             ..Dovi::NONE
         };
-        for dv in [
-            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        let out = with_dolby_hdr_info(
+            PAYLOAD_AV,
+            "H265",
             p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
-            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
-        ] {
-            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
-        }
+        );
+        const NODE: &str =
+            r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":8}"#;
+        assert!(out.contains(NODE), "{out}");
+        assert_eq!(out.replace(NODE, ""), PAYLOAD_AV);
     }
 
     /// **What we actually send for a Dolby Atmos track**, at the key path `libpf` reads

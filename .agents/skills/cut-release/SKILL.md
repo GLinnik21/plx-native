@@ -59,8 +59,7 @@ there: everywhere else `RELEASE=1` is still yours to remember.
 
 The one exception, and it is safe to lean on: a **pure query** — any of the
 `print-*` goals, plus the other build-nothing goals (`SIDE_EFFECT_FREE` in the Makefile is the
-source: `QUERY_GOALS`, `release-guard`, `lab-guard`, `disk`, `build-bench*`; transcribing the list
-here is how it went one short the first time it was written) is exempted from that
+list: `grep '^SIDE_EFFECT_FREE' Makefile`; it has gone stale every time someone transcribed it here) is exempted from that
 parse-time deletion, precisely so that asking the Makefile a question mid-release cannot discard the
 binary you are about to publish. Mixing a query with a real goal is not a query and does stamp.
 

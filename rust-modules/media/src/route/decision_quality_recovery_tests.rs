@@ -260,12 +260,7 @@ fn dv_decision_survives_reload_recovery_and_rollback() {
         false,
         plx_platform::devcaps::dv::DvCapability::Supported,
     ));
-    clear_output_dv(&mut ps);
-    assert_eq!(
-        stream_dv_decision(&ps),
-        plx_data::metadata::DvDecision::NONE,
-        "the shared remux/transcode output reset clears the declaration",
-    );
+    // The copy rule itself (`copied_video_dv`) is covered in `plan_dolby_vision_tests.rs`.
 
     restore_quality(Quality::Original);
     install_active_encoder("");
