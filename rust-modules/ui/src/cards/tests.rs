@@ -4084,3 +4084,28 @@ fn a_fast_repeat_of_downs_never_cuts_a_caption() {
     let trace = caption_trace(8, &[0, 7, 14, 21, 28, 35], 90);
     assert_captions_follow_their_bands(&trace);
 }
+
+/// **One hand-over, on the one progress, from the key frame.** The departing and the arriving
+/// caption are `out = 1 - in` of the band spring that moves their gaps (the rule the Grid landing's
+/// leaving copy and arriving card are drawn by, `Landing::leaving`): each caption's alpha IS its
+/// own band's expansion, with no easing laid over the spring's own. Eased again, the hand-over
+/// is invisible on the key frame (the caption moved 0.1 % while its gap had opened 2 %) and the
+/// arriving caption is still 5 % in when its gap is 14 % open: it starts late, not in the scroll's
+/// first half.
+#[test]
+fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
+    let trace = caption_trace(4, &[0], 30);
+    // sample 1 is the frame the key lands on: both captions are already moving
+    assert!(trace[0][1].alpha < 0.99 && trace[1][1].alpha > 0.01,
+        "the hand-over does not start on the key frame: out {:?}, in {:?}", trace[0][1], trace[1][1]);
+    // through the move, each caption is its band's progress and the pair is complementary
+    for t in 0..=14 {
+        let (out, inn) = (trace[0][t], trace[1][t]);
+        assert!((out.alpha - out.open).abs() < 0.01,
+            "frame {t}: the departing caption {:.3} is not its band's progress {:.3}", out.alpha, out.open);
+        assert!((inn.alpha - inn.open).abs() < 0.01,
+            "frame {t}: the arriving caption {:.3} is not its band's progress {:.3}", inn.alpha, inn.open);
+        assert!((out.alpha + inn.alpha - 1.0).abs() < 0.01,
+            "frame {t}: out {:.3} + in {:.3} is not one hand-over", out.alpha, inn.alpha);
+    }
+}
