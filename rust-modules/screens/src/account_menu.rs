@@ -43,6 +43,7 @@ use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
+use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::Rect;
 
@@ -239,6 +240,11 @@ pub struct AccountMenuScreen {
     /// ([`plx_session::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
     built: bool,
+    /// The open/close motion: the panel MORPHS out of the profile chip and back into it
+    /// (`Popover::morphing` + `open_from`, the path every header menu takes: one opener rule,
+    /// design review S11). It owns the glass's arrival; the chip itself is the host's opener lift
+    /// ([`Screen::scrim`]'s `lifting`), so this draws no chip of its own.
+    popover: Popover,
 }
 
 impl AccountMenuScreen {
@@ -250,6 +256,7 @@ impl AccountMenuScreen {
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
+            popover: Popover::new().morphing(),
         }
     }
 
@@ -317,8 +324,15 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let switch_refused = H::auth(cx).0.switch_refused;
         match ev {
-            ScreenEvent::Mount => self.build(switch_refused),
+            ScreenEvent::Mount => {
+                self.popover.open_from(Some(plx_ui::widgets::CHIP_PILL));
+                self.build(switch_refused)
+            }
+            // However the surface was dismissed (BACK, a pick, the host's own press), the panel
+            // runs the morph back into the chip.
+            ScreenEvent::Closing => self.popover.dismiss(),
             ScreenEvent::Tick(tick) => {
+                self.popover.update(tick.dt());
                 if self.session_watch.changed() || switch_refused != self.switch_refused {
                     self.built = false;
                 }
@@ -428,11 +442,11 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel unfurls from
-    /// and the only thing on screen the panel is about, so dimming it under its own menu is the
-    /// same bug the focused card had. Only the DRAW half of the legacy `Opener` is used: this
-    /// panel's placement is its own (it hangs under the top bar), not a function of the chip's
-    /// rect.
+    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel grows out of
+    /// ([`plx_ui::widgets::CHIP_PILL`], the morph's origin) and the only thing on screen the panel
+    /// is about, so dimming it under its own menu is the same bug the focused card had. Only the
+    /// DRAW half of the legacy `Opener` is used: the panel's settled placement is its own (it
+    /// hangs under the top bar); the chip's rect is where the morph starts and ends.
     fn scrim(&self) -> Scrim {
         // The COMPACT role, as every menu hung off a chip: how dark the page goes behind this menu,
         // the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
@@ -443,9 +457,12 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;
         let r = self.frame(measure);
-        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
+        // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
+        // container's appear: the panel begins and ends as the chip it grows from.
+        let m = self.popover.content_painter_on(f.painter, 0.0);
+        self.popover.panel(m, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
-            self.form.table.draw(p, r, measure);
+            self.popover.morph_rows(m, r, PANEL_RAD, |m| self.form.table.draw(m, r, measure));
         });
         for elem in (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)) {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {

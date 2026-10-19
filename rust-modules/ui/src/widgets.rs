@@ -2520,6 +2520,13 @@ const fn chip_cap(e: f32, name_w: f32) -> Rect {
     )
 }
 
+/// **The chip's resting surround** — the capsule at no unfurl (`chip_cap(0, _)`: the avatar plus
+/// [`TAB_TRACK_PAD`] all round, a circle). It is the one extent of the chip that holds in every
+/// state, and so the pill the profile menu's panel grows out of and shrinks back into
+/// (`Popover::open_from`): the focused chip the host lifts above the dim (`redraw_profile_chip`)
+/// is this capsule or this capsule widened rightward, never anything else.
+pub const CHIP_PILL: Rect = chip_cap(0.0, 0.0);
+
 /// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
 const K_CHIP: f32 = 300.0;
 
