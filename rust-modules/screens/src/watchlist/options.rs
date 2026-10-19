@@ -11,7 +11,7 @@ use plx_ui::widgets::Ground;
 use plx_ui::{theme, Painter, Rect};
 
 /// The Type section: `Movies & Shows` / `Movies` / `TV Shows`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum TypeFilter {
     #[default]
     All,
@@ -20,7 +20,7 @@ pub enum TypeFilter {
 }
 
 /// The Show section: `All` / `Released` / `On your servers`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ShowFilter {
     #[default]
     All,
@@ -36,6 +36,16 @@ pub struct WatchlistOptionsState {
     pub sort: SortKey,
     pub descending: bool,
     pub show: ShowFilter,
+}
+
+/// A fingerprint of the value, for what is built from it (the header row's key).
+impl std::hash::Hash for WatchlistOptionsState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.type_.hash(state);
+        std::mem::discriminant(&self.sort).hash(state);
+        self.descending.hash(state);
+        self.show.hash(state);
+    }
 }
 
 impl Default for WatchlistOptionsState {

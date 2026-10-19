@@ -128,6 +128,10 @@ pub struct RecommendedScreen {
     /// focus pop: the shared `PageHeader` motion, held by the page that wears the row.
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
+    /// The crumb row itself, held by the one rule every header row is held by
+    /// (`plx_ui::page_header::SharedRow`): built when the library's name, the kind or the locale
+    /// changes, not per question. Derived from the store's directory; not canon.
+    header_row: plx_ui::page_header::SharedRow<HeaderRow>,
     /// The standing "Hold OK for options" hint over a card. Paint-only.
     hold_hint: plx_ui::hold_hint::HoldHint,
     /// The held range last sent to the store, with the section it was for, so the command goes out
@@ -266,6 +270,7 @@ impl RecommendedScreen {
             initial: true, readout: Readout::Loading, live: true,
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false, sweep_down: true,
             header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(),
+            header_row: plx_ui::page_header::SharedRow::new(),
             hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
             hold_sent: None,
             #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
@@ -523,6 +528,10 @@ impl RecommendedScreen {
     /// The scroll the page is travelling to: 0 at its top.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
+
+    /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header_builds(&self) -> u32 { self.header_row.builds() }
 
     /// The header row's group and its stops (the crumb root alone), as the library page's
     /// `toolbar_group` / `probe_header_stops` answer for theirs.
@@ -948,16 +957,30 @@ impl RecommendedScreen {
 
     /// The page's header row, "<Library> › Recommended": the shared `PageHeader` configured with a
     /// crumb (the library's name is the link back, the page's name sits on the selected plate), the
-    /// same row the Collections page wears. Built on demand from the library's name; its one stop
-    /// is the crumb's root.
-    fn header<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> HeaderRow {
-        let crumb = Crumb::new(
-            super::collections_page::root_label(&Self::library_title(cx), self.kind),
-            plx_platform::i18n::msg::library_header_recommended());
-        let page = PageHeader::new(PageHeaderSpec { crumb: Some(crumb), ..Default::default() }, &[], cx.measure);
-        let layout = page.layout(SCR_W, cx.measure);
-        let root = layout.items.iter().position(|item| item.slot == Slot::CrumbRoot).unwrap_or(0);
-        HeaderRow::new(page, layout, vec![(CRUMB_ELEM, root)])
+    /// same row the Collections page wears. Built from the library's name when that, the kind or
+    /// the locale changes and held until then ([`Self::header_key`]); its one stop is the crumb's
+    /// root.
+    fn header<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> std::rc::Rc<HeaderRow> {
+        self.header_row.get(self.header_key(cx), || {
+            let crumb = Crumb::new(
+                super::collections_page::root_label(Self::library_title(cx), self.kind),
+                plx_platform::i18n::msg::library_header_recommended());
+            let page = PageHeader::new(PageHeaderSpec { crumb: Some(crumb), ..Default::default() }, &[], cx.measure);
+            let layout = page.layout(SCR_W, cx.measure);
+            let root = layout.items.iter().position(|item| item.slot == Slot::CrumbRoot).unwrap_or(0);
+            HeaderRow::new(page, layout, vec![(CRUMB_ELEM, root)])
+        })
+    }
+
+    /// A fingerprint of everything [`Self::header`] builds the row from: the locale (the page's
+    /// name), the library's name and the kind (the root word's fallback).
+    fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
+        Self::library_title(cx).hash(&mut h);
+        matches!(self.kind, SecKind::Movie).hash(&mut h);
+        h.finish()
     }
 
     /// `row` as this page's header focus group, at its scroll.
@@ -971,9 +994,9 @@ impl RecommendedScreen {
             self.header_pop.scale_with(0, f.press.scale), None);
     }
 
-    fn library_title<H: LibraryLike>(cx: &Cx<'_, H>) -> String {
+    fn library_title<'a, H: LibraryLike>(cx: &Cx<'a, H>) -> &'a str {
         let directory = H::directory(cx);
-        directory.current().and_then(|i| directory.sections().get(i)).map(|section| section.row.title.clone()).unwrap_or_default()
+        directory.current().and_then(|i| directory.sections().get(i)).map_or("", |section| section.row.title.as_str())
     }
 
     fn draw_page<H: LibraryLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {

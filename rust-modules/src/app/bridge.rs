@@ -3994,6 +3994,21 @@ mod person_lifecycle_tests;
 #[path = "collection_lifecycle_tests.rs"]
 mod collection_lifecycle_tests;
 
+// The route-test lanes: key-driven tests of the Library / Collections redesign's routes, over one
+// shared driver (`route_test_support`).
+#[cfg(test)]
+#[path = "route_test_support.rs"]
+mod route_test_support;
+#[cfg(test)]
+#[path = "library_switch_route_tests.rs"]
+mod library_switch_route_tests;
+#[cfg(test)]
+#[path = "library_scroll_route_tests.rs"]
+mod library_scroll_route_tests;
+#[cfg(test)]
+#[path = "header_cache_route_tests.rs"]
+mod header_cache_route_tests;
+
 #[cfg(test)]
 mod preference_effect_tests {
     use super::*;

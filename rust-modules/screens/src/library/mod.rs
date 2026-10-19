@@ -155,15 +155,15 @@ pub struct LibraryScreen {
     libraries: Vec<(u32, usize)>,
     /// The directory sections the fold hid behind "+N" (what the Sources list shows).
     folded: Vec<u32>,
-    /// The header row as `sync` last built it (`header.rs`); `None` before the first sync.
-    header: Option<plx_ui::page_header::HeaderRow>,
+    /// The header row as `sync` last built it (`header.rs`): rebuilt only when [`Self::header_key`]
+    /// moves (`RowCache`, the one rule the Recommended page and the Watchlist hold their row by).
+    /// No row before the first sync.
+    header: plx_ui::page_header::RowCache<plx_ui::page_header::HeaderRow>,
     /// The header row's pills: the focus capsule and the selection plate, and the focus pop. Held
     /// HERE and not in the row, so a library switch (which replaces the whole row) does not start
     /// them over: the capsule travels from the old stop to the new.
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
-    /// [`Self::header_key`] of the row `header` was built from.
-    header_key: Option<u64>,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
@@ -251,7 +251,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: None, header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_key: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
@@ -329,6 +329,42 @@ impl LibraryScreen {
     /// The scroll the page is travelling to: 0 at its top.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
+
+    /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_header_builds(&self) -> u32 { self.header.builds() }
+
+    /// The library names on the header row as `(element, directory section index)`, the `+N`
+    /// overflow stop last (its index is `usize::MAX`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_libraries(&self) -> Vec<(u32, usize)> { self.libraries.clone() }
+
+    /// The directory section index of the library the header's selection plate stands under, read
+    /// from the BUILT row (the same `selected_stop` the row's motion follows), `None` when the row
+    /// has no plate on a library name (one library: no names).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_plate_section(&self) -> Option<usize> {
+        let stop = self.header.row()?.selected_stop()?;
+        self.libraries.iter().find(|(elem, _)| *elem == stop).map(|(_, section)| *section)
+    }
+
+    /// `(the focused grid row's poster top on screen at the scroll the page is travelling to, the
+    /// first row's poster top at scroll 0, the drawn scroll less the one travelled to)`: the settle
+    /// rule says the first two are the same line wherever the row is, bar the last rows of a list,
+    /// which rest lower; the third is 0 once the spring has arrived. `None` while focus is not on a
+    /// grid card.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_rest_line(&self, focus: Option<FocusKey<u32>>) -> Option<(f32, f32, f32)> {
+        let (row, _) = self.grid_position(focus)?;
+        Some((self.target_layout.row_y(row, self.scroll_target), self.target_layout.row_y(0, 0.0), self.scroll.pos - self.scroll_target))
+    }
+
+    /// Does the page draw the scroll capsule once its chrome has tucked? The one predicate
+    /// [`Self::draw`] asks (the header names two or more libraries to restate).
+    pub(super) fn capsule_wanted(&self) -> bool { plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_capsule_wanted(&self) -> bool { self.capsule_wanted() }
 
     /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
     /// draw of the page would put on screen now.
@@ -1152,10 +1188,10 @@ impl LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.seat_wanted = None;
-                let header_before = self.header_key;
+                let header_before = self.header.key();
                 self.sync(cx);
                 // The Collections count (or any other header input) landed this frame.
-                if self.header_key != header_before { fx.invalidate(Provenance::Landing(fx.from())); }
+                if self.header.key() != header_before { fx.invalidate(Provenance::Landing(fx.from())); }
                 if self.watch_readout(cx) {
                     fx.invalidate(Provenance::Landing(fx.from()));
                 }

@@ -1107,3 +1107,35 @@ fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
     assert_eq!(super::page::head_alpha(0.0), 1.0);
     assert!(super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) > 0.0 && super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) < 1.0, "it fades with the scroll");
 }
+
+/// **The header row is built once per key, not once per question.** The page asks for the row in its
+/// focus questions, its placement, its motion and its paint, many times a frame; it is built when
+/// the options, the narrowed count or the locale change and held otherwise, by the one rule the
+/// Library's and the Recommended page's rows are held by (`plx_ui::page_header::SharedRow`). A list
+/// that grows or shrinks unfiltered changes nothing the row draws, so it builds nothing.
+#[test]
+fn the_header_row_is_built_once_per_key_not_once_per_question() {
+    let mut h = Harness::new(tiles(3));
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 3 }));
+    h.run(10);
+    h.draw();
+    let built = h.screen.probe_header_builds();
+    assert!(built >= 1, "premise: the row is built");
+    for _ in 0..20 {
+        h.run(3);
+        h.draw();
+        h.reconcile();
+    }
+    assert_eq!(h.screen.probe_header_builds(), built, "sixty frames of motion, questions and paint build no row");
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 4 }));
+    h.run(5);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built, "an unfiltered count is never drawn, so a new one builds nothing");
+    h.screen.input(WatchlistIn::Options(WatchlistOptionsState { sort: super::options::SortKey::Title, ..Default::default() }));
+    h.run(5);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built + 1, "a new sort rewords the pill: one build");
+    h.run(30);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
+}

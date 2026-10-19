@@ -116,7 +116,7 @@ impl LibraryScreen {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
             let p = f.painter.alpha(f.page_alpha);
             plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
-            if plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) {
+            if self.capsule_wanted() {
                 if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
                     let (name, count) = plx_ui::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total());
                     plx_ui::scroll_capsule::draw(p, &name, &count, tuck, f.measure);

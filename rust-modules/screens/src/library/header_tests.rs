@@ -196,7 +196,7 @@ fn the_overflow_stays_visible_wherever_focus_is_in_the_row() {
         fixture.direction(&mut page, &mut engine, Dir::Right);
         page.sync(&fixture.cx(&engine));
         assert_eq!(page.libraries, before, "focus on {} changed the fold", at(&engine));
-        assert!(page.header.as_ref().unwrap().plate(MORE).is_some());
+        assert!(page.header.row().unwrap().plate(MORE).is_some());
     }
 }
 
@@ -233,7 +233,7 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     // The pill is the row's motion: it fades in under the focused control over a few frames.
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill = page.header.as_ref().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    let pill = page.header.row().unwrap().plate(SORTFILTER).unwrap().scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
     let drawn = |page: &LibraryScreen, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(&engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
@@ -311,7 +311,7 @@ fn the_header_focus_pill_travels_to_the_next_name_instead_of_jumping() {
     let mut ms = 0;
     let mut rest = None;
     for _ in 0..120 { ms += 16; rest = pill_centre_after_a_frame(&fixture, &mut page, &mut engine, ms); }
-    let plates = page.header.as_ref().unwrap();
+    let plates = page.header.row().unwrap();
     let (from, to) = (plates.plate(first).unwrap().cx(), plates.plate(second).unwrap().cx());
     assert!(to > from + 40.0, "two names with room between them");
     assert!((rest.expect("a focused name wears the pill") - from).abs() < 1.0, "settled on the first name");
@@ -343,7 +343,7 @@ fn a_library_switch_keeps_the_rows_pill_and_lands_the_plate_under_it() {
     let mut rest = None;
     for _ in 0..90 { ms += 16; rest = pill_centre_after_a_frame(&fixture, &mut page, &mut engine, ms); }
     let rest = rest.expect("a focused name wears the pill");
-    let plate = page.header.as_ref().unwrap().plate(other).unwrap();
+    let plate = page.header.row().unwrap().plate(other).unwrap();
     assert!((rest - plate.cx()).abs() < 0.5, "settled under the name that will be picked");
     let selected_under = |rects: &[plx_ui::Rect]| rects.iter().any(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01 && (r.cx() - plate.cx()).abs() < 1.0);
     assert!(!selected_under(&header_rrects_after_a_frame(&fixture, &mut page, &mut engine, ms + 16)), "premise: the old library wears the plate");
@@ -381,7 +381,7 @@ fn the_held_focus_pill_is_not_drawn_under_an_open_menu_and_is_still_up_when_it_c
     let key = page.key(SORTFILTER);
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     for frame in 1..=60 { fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })); }
-    let pill_w = page.header.as_ref().unwrap().plate(SORTFILTER).unwrap().w * plx_ui::widgets::CTRL_FOCUS_SCALE;
+    let pill_w = page.header.row().unwrap().plate(SORTFILTER).unwrap().w * plx_ui::widgets::CTRL_FOCUS_SCALE;
     let pills = |page: &LibraryScreen, engine: &FocusEngine<u32>, lifted: Option<FocusKey<u32>>| {
         let cx = fixture.cx(engine);
         let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
@@ -407,4 +407,23 @@ fn the_held_focus_pill_is_not_drawn_under_an_open_menu_and_is_still_up_when_it_c
     // The menu closes: focus is back on the control, the page draws it, and the pill is still up.
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     assert_eq!(pills(&page, &engine, None), 1, "the first frame after the menu is the pill, not a fade-in");
+}
+
+/// **The header row is built once per key, not once per frame.** `sync` runs every frame; the row
+/// (text measurement, packing) is rebuilt only when something it is made of changed: a library
+/// switch builds exactly one, and the frames either side of it build none. The same rule holds the
+/// Recommended page's and the Watchlist's rows (`plx_ui::page_header::RowCache`).
+#[test]
+fn the_header_row_is_built_once_per_key_not_once_per_frame() {
+    let _guard = plx_base::testlock::serial();
+    let (mut fixture, mut page, engine) = grid_page(2);
+    let built = page.header.builds();
+    assert!(built >= 1, "premise: the row is built");
+    for _ in 0..60 { page.sync(&fixture.cx(&engine)); }
+    assert_eq!(page.header.builds(), built, "sixty idle frames build no row");
+    fixture.publish(1, 36);
+    page.sync(&fixture.cx(&engine));
+    assert_eq!(page.header.builds(), built + 1, "a library switch builds the row once");
+    for _ in 0..60 { page.sync(&fixture.cx(&engine)); }
+    assert_eq!(page.header.builds(), built + 1, "and the frames after it build none");
 }
