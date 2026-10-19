@@ -540,7 +540,7 @@ ARM_PROFILE_FLAG = $(if $(filter release,$(ARM_PROFILE)),--release,--profile $(A
 #
 # A HOST_THREADS above 1 on a non-nightly toolchain is a hard error here rather than a cargo failure
 # in the middle of a recipe. Which recipes: ONLY the host `cargo test` / `check-cargo-unit-*` builds,
-# `test-fast`, `test-crate` and `build-bench` carry `$(HOST_ENV)`. It is NOT exported, so the ARM
+# `test-fast`, `test-crate`, `test-hostsim` and `build-bench` carry `$(HOST_ENV)`. It is NOT exported, so the ARM
 # staticlib recipes (which set RUSTFLAGS themselves), the simulators' builds, clippy and the package
 # steps never see it (ci/test_host_threads.py pins both). 0 and 1 mean the serial front end. A
 # RUSTFLAGS the caller exported wins over it (cargo reads CARGO_BUILD_RUSTFLAGS last).
@@ -780,7 +780,11 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # SEE the refusal message the cut-release skill quotes. Without it, asking that question on a
 # different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
 # libraries — measured, by a reviewer, mid-review.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk build-bench build-bench-quick
+#
+# `test-hostsim` and `check-nodef` join `build-bench` for the same reason: each only runs host cargo
+# in a tree under `rust-modules/`, builds none of the TV artifacts, and must not delete a release
+# binary because its caller's configuration differs from the stamp.
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk build-bench build-bench-quick test-hostsim check-nodef
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
@@ -1663,6 +1667,79 @@ test-crate:
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
 	  python3 ../tools/test-crate.py --suite '$(UNIT_SUITE)' --cargo 'cargo +$(RUST_TOOLCHAIN)' $(if $(DEPS),--deps) $(if $(T),--filter '$(T)') $(C)
+
+# `make test-hostsim [T=filter]` -- the application crate's `hostsim` tests: the ones under
+# `#[cfg(all(test, feature = "hostsim"))]` (`app/run.rs` `lifecycle_regression_tests`, the
+# player-return rig), which `test-fast` and `test-crate` do not compile because the feature is off in
+# the default set. It is the managed form of what AGENTS.md used to hand out as a recipe,
+# `CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> cargo test --lib -p plxnative-modules --features
+# hostsim`: every agent picked its own `/tmp/<dir>`, nothing tracked them, and on 2026-10-19 there
+# were 28 PlxNative cargo trees there, 45.6 GiB, none of them known to `make disk` or `build-gc`.
+#
+# The target dir is `rust-modules/$(TEST_HOSTSIM_TDIR)`, INSIDE the checkout like `target-fast`: it is
+# gitignored, `tools/build-gc.sh --incremental` drops its `debug/incremental` and `--lanes` /
+# `--all` the whole tree (both glob `rust-modules/target*`), and it goes with the worktree.
+# `tools/cargo-seed.py` never touches it (it handles only `target` and `target-release`).
+#
+# INCREMENTAL, FORCED ON, for the reason `test-fast` is: this is an inner loop you ask for by
+# typing the target, not something `check` does. The only measured numbers for such a loop are
+# `test-fast`'s (full default-feature suite, 5 interleaved rounds, 2026-10-01: edit-rebuild ~10 s
+# against 31-32 s non-incremental; cold 51.7 s against 46.2 s; tree ~2.7 GB against ~1.0 GB; see
+# `test-fast` below). They are not hostsim's own -- this one builds the application crate only --
+# so the claim here is the direction, not the figures; the PR that added this target reports one
+# measured cold build and tree size. It is forced rather than `?=`, because a linked worktree
+# exports `CARGO_INCREMENTAL=0` (above) and would otherwise turn the loop into the slow path it
+# exists to avoid; and it is safe for the disk because the cache lives in this dir only, which
+# build-gc reclaims. Nothing in `check*`, `lint` or CI names the dir.
+#
+# The same environment as `check-cargo-unit-hostsim` (pinned toolchain, throwaway
+# `PLXNATIVE_RUNTIME_DIR` -- honoured here because `hostsim` is what makes it steerable --, the
+# telemetry words and HOST_ENV), run through $(UNIT_RUN) so the binary gets its own runtime
+# subdirectory and an empty TMPDIR it must leave empty. `--require-match` makes a filter that
+# matches no test FAIL: libtest prints `0 passed ... N filtered out` and exits 0, which a mistyped
+# `T=` reads exactly like a green run. Refused under RELEASE=1 like `test-fast`.
+TEST_HOSTSIM_TDIR = target-hostsim
+.PHONY: test-hostsim
+test-hostsim:
+	@$(if $(RELEASE),echo "make test-hostsim: refused under RELEASE=1 -- it runs the default-plus-hostsim feature set incrementally; RELEASE=1 is the shipping feature set (use make check-nodef for that)." >&2; exit 1,:)
+	@echo "test-hostsim: incremental hostsim tests of plxnative-modules in rust-modules/$(TEST_HOSTSIM_TDIR) -- see 'make disk'; reclaim it with: tools/build-gc.sh --incremental (cache) or rm -rf rust-modules/$(TEST_HOSTSIM_TDIR)"
+	@set -e; d=$$(mktemp -d /tmp/plxnative-check.XXXXXX); trap 'rm -rf "'"$$d"'"' EXIT; \
+	cd rust-modules && CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=$(TEST_HOSTSIM_TDIR) \
+	  PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
+	  $(TELEMETRY_ENV) \
+	  $(HOST_ENV) \
+	  $(UNIT_RUN) --require-match $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules --features hostsim
+
+# `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features`: devtools,
+# devtriggers and threadcheck off, what `RELEASE=1` builds). `make check`, `make` and `make sim` all
+# build the DEV features, so a break that only the release set has is invisible to every one of them
+# (docs/agent-reference.md; AGENTS.md says when to run it). It replaces the hand command
+# `CARGO_INCREMENTAL=0 cargo +<pin> check --manifest-path rust-modules/Cargo.toml --lib
+# --no-default-features`, which agents ran into their own `/tmp/<x>-nodef` trees.
+#
+# It SHARES the checkout's `target` (or the `CARGO_TARGET_DIR` a fleet lane exports, as `lint` and
+# `make check` do) and adds no tree. Sharing is safe, measured 2026-10-19 with `cargo ...
+# --unit-graph` (nothing compiled) against the units `make lint` builds: of the 165 units this command needs, 139 are
+# third-party crates whose package, target, mode, features and profile are identical to lint's, so
+# cargo reuses their artifacts; the 26 others are the workspace crates, whose FEATURES differ
+# (`--no-default-features` stops the app package forwarding devtools / devtriggers / threadcheck into
+# every layer crate), so each gets its own metadata hash and file names and coexists with the dev
+# set instead of replacing it. `check` writes only hashed `.rmeta`, so there is no unhashed output
+# for the two to collide on (the `.a` collision that gave RELEASE its own dir does not apply).
+# It must therefore NOT carry $(HOST_ENV) or $(TELEMETRY_ENV): they would change RUSTFLAGS or
+# build-script inputs and make the third-party units differ from lint's. The cost of sharing is
+# cargo's build-directory lock, which makes this wait for a `cargo` already running in the same
+# tree for as long as that one invocation lasts.
+#
+# The seed restore is the same line `lint` starts with: `restore` only fills an ABSENT dir, so a
+# fresh lane whose first cargo call is this one would otherwise create `target` unseeded and every
+# later `make check` there would build third-party cold. `CARGO_INCREMENTAL=0`: a one-shot gate has
+# no use for an incremental cache, and (unlike `test-hostsim`) there is no loop here.
+.PHONY: check-nodef
+check-nodef:
+	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
+	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its

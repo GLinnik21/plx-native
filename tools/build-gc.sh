@@ -163,9 +163,10 @@ usage: tools/build-gc.sh [MODE] [-n]
 
   (no mode)       report every checkout's derived trees, the shared cache and free space
   --incremental   delete `target*/debug/incremental` everywhere. Always safe: it is a compile
-                  cache. A linked worktree is not supposed to write one (the one sanctioned
-                  exception is the opt-in `make test-fast`, whose own `target-fast` this
-                  reclaims like any other; its next run is a cold build) — but the Makefile's
+                  cache. A linked worktree is not supposed to write one (the sanctioned
+                  exceptions are the opt-in `make test-fast` and `make test-hostsim`, whose own
+                  `target-fast` / `target-hostsim` this reclaims like any other; their next run
+                  is a cold build) — but the Makefile's
                   `CARGO_INCREMENTAL=0` only reaches the cargo runs `make` launches, and 12.9 GB
                   of them had accumulated past it by 2026-09-17, which is why this script now
                   installs the same rule as a `.cargo/config.toml` any cargo can see.
@@ -518,7 +519,7 @@ checkout_kb() {
 }
 
 # The derived-tree names, in one place. `rust-modules/target*` covers every feature set's dir
-# (target, -release, -sim, -lab, -sym, -macapp, -shots); the vendor entries are the FFmpeg and
+# (target, -release, -sim, -lab, -sym, -macapp, -shots, -fast, -hostsim); the vendor entries are the FFmpeg and
 # Sentry source and object trees, whose only product is the small prefix beside them.
 lane_trees() {
   for d in "$1"/rust-modules/target*; do
