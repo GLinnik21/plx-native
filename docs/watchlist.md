@@ -155,7 +155,7 @@ this id lives on another service with another token). `IntentLedger`:
   is a member (intents in flight included), **Off** when the list is `Ready` and it is absent,
   otherwise **Unknown**, which every surface draws as the Add face.
 
-**Surfaces.** The Detail hero's bookmark disc is second after Play/Resume (`ELEM_WATCHLIST`, unlabeled,
+**Surfaces.** The Detail hero's bookmark disc is second after Play/Resume (`ELEM_WATCHLIST`, a circle that names itself with a caption under it while focused, "Add to Watchlist" / "On Watchlist", through the shared `hero_layout::draw_name`,
 outline when off the list, filled when on; the fill rises from the bottom with a 3 px ribbon drop on a
 flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
 (`HeroSet::watchlist`).
