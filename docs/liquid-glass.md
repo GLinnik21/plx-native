@@ -14,6 +14,17 @@ menu opened (`gfx::draw_glass_frozen`), and the frame's dim is applied to both a
 live version it replaced measured about 2 to 2.6M Mali GPU cycles a frame over the field ground;
 read the 2026-09-19 text below as the pre-DS6 history it is.
 
+**The live glass takes the page's wash at composite (2026-10-19).** The tab bar's band and the hold
+hint stand on a full-screen wash that eases on springs through a library switch, which moved the
+exact corner codes by 2-6 every frame and re-sourced both glasses on each (measured on the TV before
+the fix: 77-83% of a switch's refreshing frames, about 0.8M Mali cycles and 2.7-7.1 ms of render
+thread apiece). The wash is now a delta in `fs_glass.frag` (`u_wash_*`, `backdrop::Ground`): the
+source keeps the wash it was drawn under, the composite adds `wash now - wash captured` at the
+refracted uv, and the source is re-taken once when the wash's own springs have landed on their
+target (`AmbientWash::at_rest`; a held 8-bit code in the tail is not rest). Bounded, not exact, over card
+content: the error is the ease's amplitude times the content's coverage under the filter, gone at
+rest. Art grounds, a ramp knee under the region and a moving card keep the wash in the source.
+
 **Glass was CHROME-ONLY from 2026-09-19 until DS6.** Its users are the top bar's standing track, the profile
 chip's capsule, the dev tile band and the one non-interactive standing note, the "Hold OK for
 options" capsule (`ui::hold_hint`: Home's, and on the other card screens once per screen kind per run). Popover panels — the menus, the alert panels, the person bio,
