@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T08:47:11Z",
+ "generated": "2026-10-19T10:17:32Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -27,15 +27,15 @@
    "change7_pct": 87.6,
    "d30": null,
    "delta30": null,
-   "delta7": 183,
+   "delta7": 183.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 392,
-   "prev7": 209,
+   "prev7": 209.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -48,15 +48,15 @@
    "change7_pct": 50.9,
    "d30": null,
    "delta30": null,
-   "delta7": 135,
+   "delta7": 135.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 400,
-   "prev7": 265,
+   "prev7": 265.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -67,7 +67,7 @@
   {
    "change30_pct": -29.2,
    "change7_pct": 40.9,
-   "d30": 686.0,
+   "d30": 686,
    "delta30": -200.0,
    "delta7": 141.0,
    "group": "ci",
@@ -86,19 +86,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.2,
-   "change7_pct": 32.6,
-   "d30": 677,
-   "delta30": -252,
-   "delta7": 104.5,
+   "change30_pct": -36.8,
+   "change7_pct": 32.8,
+   "d30": 673.0,
+   "delta30": -248.0,
+   "delta7": 105,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 117,
-   "n_prev": 114,
+   "n_prev": 113,
    "now": 425,
-   "prev7": 320.5,
+   "prev7": 320,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -108,72 +108,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.9,
+   "change7_pct": 8.0,
    "d30": null,
    "delta30": null,
-   "delta7": 317.1,
-   "group": "local",
-   "id": "bench.check",
-   "kind": "local",
-   "label": "make check, the whole gate",
-   "n_now": 6,
-   "n_prev": 3,
-   "now": 1343.6,
-   "parts": [
-    {
-     "id": "bench.check.cargo",
-     "label": "make check: cargo branch",
-     "now": 1342.0
-    },
-    {
-     "id": "bench.check.python",
-     "label": "make check: python branch",
-     "now": 982.5
-    }
-   ],
-   "prev7": 1026.6,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 30.9,
-   "d30": null,
-   "delta30": null,
-   "delta7": 317.0,
-   "group": "local",
-   "id": "bench.check.cargo",
-   "kind": "local",
-   "label": "make check: cargo branch",
-   "n_now": 6,
-   "n_prev": 3,
-   "now": 1342.0,
-   "parent": "bench.check",
-   "prev7": 1025.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 2.3,
-   "d30": null,
-   "delta30": null,
-   "delta7": 0.5,
+   "delta7": 1.7,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 21.7,
+   "now": 22.9,
    "prev7": 21.2,
    "shown": true,
    "state": "flat",
@@ -184,17 +129,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.5,
+   "change7_pct": 16.6,
    "d30": null,
    "delta30": null,
-   "delta7": 4.7,
+   "delta7": 6.3,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 42.5,
+   "now": 44.0,
    "prev7": 37.8,
    "shown": true,
    "state": "flat",
@@ -205,17 +150,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.0,
+   "change7_pct": 1.2,
    "d30": null,
    "delta30": null,
-   "delta7": -0.9,
+   "delta7": 0.5,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 46.0,
+   "now": 47.5,
    "prev7": 47.0,
    "shown": true,
    "state": "flat",
@@ -226,18 +171,51 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.4,
+   "change7_pct": 19.9,
    "d30": null,
    "delta30": null,
-   "delta7": 11.7,
+   "delta7": 20.5,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 114.7,
+   "now": 123.5,
    "prev7": 103.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 23.6,
+   "d30": null,
+   "delta30": null,
+   "delta7": 241.9,
+   "group": "local",
+   "id": "bench.check",
+   "kind": "local",
+   "label": "make check, the whole gate",
+   "n_now": 7,
+   "n_prev": 3,
+   "now": 1268.5,
+   "parts": [
+    {
+     "id": "bench.check.cargo",
+     "label": "make check: cargo branch",
+     "now": 1267.0
+    },
+    {
+     "id": "bench.check.python",
+     "label": "make check: python branch",
+     "now": 973.0
+    }
+   ],
+   "prev7": 1026.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -250,15 +228,15 @@
    "change7_pct": 14.0,
    "d30": 1112.0,
    "delta30": 1068.0,
-   "delta7": 267,
+   "delta7": 268.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 83,
-   "n_prev": 85,
+   "n_prev": 84,
    "now": 2180,
-   "prev7": 1913,
+   "prev7": 1911.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -267,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 59.0,
+   "change30_pct": 58.6,
    "change7_pct": 5.5,
-   "d30": 607,
-   "delta30": 358.0,
+   "d30": 608.5,
+   "delta30": 356.5,
    "delta7": 50.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -288,19 +266,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.4,
+   "change30_pct": 42.0,
    "change7_pct": 6.6,
-   "d30": 225.5,
-   "delta30": 95.5,
-   "delta7": 20,
+   "d30": 226,
+   "delta30": 95,
+   "delta7": 20.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 321,
-   "prev7": 301,
+   "prev7": 301.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -376,15 +354,15 @@
    "change7_pct": 11.2,
    "d30": null,
    "delta30": null,
-   "delta7": 19,
+   "delta7": 19.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 188,
-   "prev7": 169,
+   "prev7": 169.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -415,18 +393,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 18.2,
+   "change7_pct": 18.6,
    "d30": null,
    "delta30": null,
-   "delta7": 24,
+   "delta7": 24.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 156,
-   "prev7": 132,
+   "prev7": 131.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -457,17 +435,39 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.5,
+   "change7_pct": 23.6,
    "d30": null,
    "delta30": null,
-   "delta7": 116.5,
+   "delta7": 242.0,
+   "group": "local",
+   "id": "bench.check.cargo",
+   "kind": "local",
+   "label": "make check: cargo branch",
+   "n_now": 7,
+   "n_prev": 3,
+   "now": 1267.0,
+   "parent": "bench.check",
+   "prev7": 1025.0,
+   "shown": false,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 12.4,
+   "d30": null,
+   "delta30": null,
+   "delta7": 107.0,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 3,
-   "now": 982.5,
+   "now": 973.0,
    "parent": "bench.check",
    "prev7": 866.0,
    "shown": false,
@@ -520,10 +520,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.0,
+   "change30_pct": 39.1,
    "change7_pct": 14.3,
-   "d30": 10,
-   "delta30": 6.0,
+   "d30": 11.5,
+   "delta30": 4.5,
    "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -564,17 +564,17 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 677.0,
-   "delta30": -674.0,
-   "delta7": -1,
+   "d30": 677,
+   "delta30": -674,
+   "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 97,
-   "n_prev": 105,
+   "n_prev": 104,
    "now": 3,
-   "prev7": 4,
+   "prev7": 4.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -584,17 +584,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 28.8,
+   "change7_pct": 22.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.2,
+   "delta7": 0.1,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 7,
+   "n_now": 8,
    "n_prev": 5,
-   "now": 0.8,
+   "now": 0.7,
    "prev7": 0.6,
    "shown": false,
    "state": "flat",
@@ -720,7 +720,7 @@
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
     }
    ],
-   "from": 209,
+   "from": 209.0,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-19",
@@ -781,7 +781,7 @@
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
     }
    ],
-   "from": 265,
+   "from": 265.0,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-19",
@@ -850,7 +850,7 @@
    "to": 486.0
   },
   {
-   "change_pct": 32.6,
+   "change_pct": 32.8,
    "commits": [
     {
      "pr": 836,
@@ -903,134 +903,12 @@
      "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
     }
    ],
-   "from": 320.5,
+   "from": 320,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-10-19",
    "threshold_pct": 15.0,
    "to": 425
-  },
-  {
-   "change_pct": 30.9,
-   "commits": [
-    {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
-     "pr": 835,
-     "sha": "de030644b",
-     "title": "Locales: Hungarian (Magyar) UI language"
-    },
-    {
-     "pr": 822,
-     "sha": "2cb770755",
-     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
-    },
-    {
-     "pr": 817,
-     "sha": "d28ab6473",
-     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
-    },
-    {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
-    {
-     "pr": 839,
-     "sha": "046f3058d",
-     "title": "Dolby Vision: keep the declaration when the server copies the video"
-    },
-    {
-     "pr": 846,
-     "sha": "a5307a98b",
-     "title": "Disk budget: inventory, eviction planner and a read-only report"
-    },
-    {
-     "pr": 848,
-     "sha": "8b2a13f95",
-     "title": "build-gc --evict: carry out the disk planner's plan, and drive it from --auto"
-    },
-    {
-     "pr": 845,
-     "sha": "d16d986dd",
-     "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
-    }
-   ],
-   "from": 1026.6,
-   "id": "bench.check",
-   "label": "make check, the whole gate",
-   "since": "2026-10-18",
-   "threshold_pct": 25.0,
-   "to": 1343.6
-  },
-  {
-   "change_pct": 30.9,
-   "commits": [
-    {
-     "pr": 836,
-     "sha": "b55c88f3c",
-     "title": "CI: re-baseline the ARM binary size budget at 13,799,944 bytes"
-    },
-    {
-     "pr": 835,
-     "sha": "de030644b",
-     "title": "Locales: Hungarian (Magyar) UI language"
-    },
-    {
-     "pr": 822,
-     "sha": "2cb770755",
-     "title": "HEVC: strip HDR10+ wherever it sits in an SEI NAL"
-    },
-    {
-     "pr": 817,
-     "sha": "d28ab6473",
-     "title": "Direct play: recover a plain-http body that ends early, goes silent or cannot be crossed"
-    },
-    {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
-     "pr": 838,
-     "sha": "3ac9e03fd",
-     "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
-    },
-    {
-     "pr": 839,
-     "sha": "046f3058d",
-     "title": "Dolby Vision: keep the declaration when the server copies the video"
-    },
-    {
-     "pr": 846,
-     "sha": "a5307a98b",
-     "title": "Disk budget: inventory, eviction planner and a read-only report"
-    },
-    {
-     "pr": 848,
-     "sha": "8b2a13f95",
-     "title": "build-gc --evict: carry out the disk planner's plan, and drive it from --auto"
-    },
-    {
-     "pr": 845,
-     "sha": "d16d986dd",
-     "title": "make: test-hostsim and check-nodef, managed in-checkout target dirs"
-    }
-   ],
-   "from": 1025.0,
-   "id": "bench.check.cargo",
-   "label": "make check: cargo branch",
-   "since": "2026-10-18",
-   "threshold_pct": 25.0,
-   "to": 1342.0
   }
  ],
  "schema": 2,
@@ -1071,7 +949,7 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1343.6
+   "now": 1268.5
   },
   {
    "group": "local",
@@ -1083,19 +961,19 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 114.7
+   "now": 123.5
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 46.0
+   "now": 47.5
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 42.5
+   "now": 44.0
   }
  ],
  "thresholds": {
