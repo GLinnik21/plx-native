@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T08:01:35Z",
+ "generated": "2026-10-19T08:11:21Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -29.3,
-   "change7_pct": 41.0,
+   "change30_pct": -29.2,
+   "change7_pct": 41.3,
    "d30": 686.0,
-   "delta30": -201.0,
-   "delta7": 141.0,
+   "delta30": -200.0,
+   "delta7": 142.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 269,
    "n_prev": 208,
-   "now": 485,
+   "now": 486,
    "prev7": 344.0,
    "shown": true,
    "state": "worse",
@@ -86,10 +86,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.2,
+   "change30_pct": -37.0,
    "change7_pct": 33.1,
-   "d30": 679.0,
-   "delta30": -252.5,
+   "d30": 677,
+   "delta30": -250.5,
    "delta7": 106.0,
    "group": "ci",
    "id": "push_wait",
@@ -246,10 +246,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 95.7,
+   "change30_pct": 96.1,
    "change7_pct": 14.0,
-   "d30": 1114,
-   "delta30": 1066.5,
+   "d30": 1112.0,
+   "delta30": 1068.5,
    "delta7": 267.5,
    "group": "ci",
    "id": "minutes",
@@ -267,18 +267,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.2,
-   "change7_pct": 6.4,
+   "change30_pct": 59.5,
+   "change7_pct": 5.9,
    "d30": 607,
-   "delta30": 365.5,
-   "delta7": 58.5,
+   "delta30": 361,
+   "delta7": 54,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 30,
+   "n_now": 31,
    "n_prev": 27,
-   "now": 972.5,
+   "now": 968,
    "prev7": 914,
    "shown": true,
    "state": "flat",
@@ -288,10 +288,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.9,
+   "change30_pct": 42.6,
    "change7_pct": 6.8,
-   "d30": 225,
-   "delta30": 96.5,
+   "d30": 225.5,
+   "delta30": 96.0,
    "delta7": 20.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -482,14 +482,14 @@
    "change7_pct": -5.0,
    "d30": null,
    "delta30": null,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 30,
+   "n_now": 31,
    "n_prev": 27,
-   "now": 19.0,
+   "now": 19,
    "prev7": 20,
    "shown": false,
    "state": "flat",
@@ -523,15 +523,15 @@
    "change30_pct": 60.0,
    "change7_pct": 14.3,
    "d30": 10,
-   "delta30": 6.0,
-   "delta7": 2.0,
+   "delta30": 6,
+   "delta7": 2,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 30,
+   "n_now": 31,
    "n_prev": 27,
-   "now": 16.0,
+   "now": 16,
    "prev7": 14,
    "shown": false,
    "state": "flat",
@@ -564,7 +564,7 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 677,
+   "d30": 677.0,
    "delta30": -674.0,
    "delta7": -1.0,
    "group": "ci",
@@ -789,7 +789,7 @@
    "to": 402.0
   },
   {
-   "change_pct": 41.0,
+   "change_pct": 41.3,
    "commits": [
     {
      "pr": 666,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 485
+   "to": 486
   },
   {
    "change_pct": 33.1,
@@ -1039,7 +1039,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 972.5
+   "now": 968
   },
   {
    "group": "ci",
