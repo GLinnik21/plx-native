@@ -6528,6 +6528,7 @@ class FpsMock(unittest.TestCase):
                                  "home-recent-paging-held-remote-wan", "home-hint",
                                  *self.PAGING_SURFACES,
                                  "library-shelves-deep", "library-burst", "library-hold",
+                                 "library-recommended",
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
                                  "show-detail", "home-hold", "collection-hold", "home-tap",
