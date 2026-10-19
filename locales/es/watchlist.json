@@ -1,13 +1,6 @@
 {
   "watchlist.page.title": "Lista de seguimiento",
   "watchlist.page.sort_filter": "Ordenar y filtrar",
-  "watchlist.page.sort_filter_summary": "Ordenar y filtrar · {summary}",
-  "watchlist.page.count_all": {
-    "one": "{count} título",
-    "many": "{count} títulos",
-    "other": "{count} títulos"
-  },
-  "watchlist.page.count_of": "{shown} de {total}",
   "watchlist.filter.sort_default": "Predeterminado",
   "watchlist.filter.type_heading": "Tipo",
   "watchlist.filter.type_all": "Películas y series",

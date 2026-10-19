@@ -1,13 +1,6 @@
 {
   "watchlist.page.title": "Watchlist",
   "watchlist.page.sort_filter": "Ordina e filtra",
-  "watchlist.page.sort_filter_summary": "Ordina e filtra · {summary}",
-  "watchlist.page.count_all": {
-    "one": "{count} titolo",
-    "many": "{count} titoli",
-    "other": "{count} titoli"
-  },
-  "watchlist.page.count_of": "{shown} di {total}",
   "watchlist.filter.sort_default": "Predefinito",
   "watchlist.filter.type_heading": "Tipo",
   "watchlist.filter.type_all": "Film e serie",

@@ -1,12 +1,6 @@
 {
   "watchlist.page.title": "Merkliste",
   "watchlist.page.sort_filter": "Sortieren & Filtern",
-  "watchlist.page.sort_filter_summary": "Sortieren & Filtern · {summary}",
-  "watchlist.page.count_all": {
-    "one": "{count} Titel",
-    "other": "{count} Titel"
-  },
-  "watchlist.page.count_of": "{shown} von {total}",
   "watchlist.filter.sort_default": "Standard",
   "watchlist.filter.type_heading": "Typ",
   "watchlist.filter.type_all": "Filme & Serien",

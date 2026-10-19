@@ -1,14 +1,6 @@
 {
   "watchlist.page.title": "Спіс для прагляду",
   "watchlist.page.sort_filter": "Сартаванне і фільтр",
-  "watchlist.page.sort_filter_summary": "Сартаванне і фільтр · {summary}",
-  "watchlist.page.count_all": {
-    "one": "{count} назва",
-    "few": "{count} назвы",
-    "many": "{count} назваў",
-    "other": "{count} назвы"
-  },
-  "watchlist.page.count_of": "{shown} з {total}",
   "watchlist.filter.sort_default": "Па змаўчанні",
   "watchlist.filter.type_heading": "Тып",
   "watchlist.filter.type_all": "Фільмы і серыялы",
