@@ -3100,6 +3100,19 @@ impl CircleButton {
         room - (Self::cap_open_w(d, 0.0) - d)
     }
 
+    /// **The glyph's drawn side and the raster it is drawn from**, for a disc whose laid-out height is
+    /// `base_h` popped by `scale`. The raster is the REST size (`base_h` x [`DISC_ICON_RATIO`], a
+    /// whole pixel, so a disc at rest draws it 1:1 as it always has) and does not depend on `scale`:
+    /// the pop stretches that one mask over a box that grows with the spring. The side used to be
+    /// rounded off the POPPED height and handed to the rasterizer as its size, so the glyph was drawn
+    /// from a different cached mask each time the spring crossed a whole pixel, and the last of them
+    /// came on the frame it settled: the filled bookmark's edge re-rastered (122-225 px) with nothing
+    /// moving. One mask for the control's life cannot swap on any frame.
+    fn glyph_size(base_h: f32, scale: f32) -> (f32, i32) {
+        let raster = (base_h * DISC_ICON_RATIO).round();
+        (raster * scale, raster as i32)
+    }
+
     /// The label width a capsule of DRAWN width `w` was sized for — the exact inverse of
     /// [`cap_w`](Self::cap_w) at the same `e`, so the widget can recover what its caller measured
     /// without being handed it a second time (two numbers that must agree are two numbers that can
@@ -3168,7 +3181,7 @@ impl View for CircleButton {
             // vector glyph at the shared DISC_ICON_RATIO box, so every round control carries its
             // icon at one ratio — centred on the DISC, sliding to the open capsule's lead inset as
             // the unfurl opens (see `DISC_LABEL_LEAD`).
-            let isz = (d * DISC_ICON_RATIO).round();
+            let (isz, raster) = Self::glyph_size(base.h, self.scale);
             let closed_inset = (d - isz) * 0.5;
             // the capsule's own air rides the pop with it, so a popped capsule is the same shape
             // scaled and not a wider one wearing the original padding
@@ -3180,11 +3193,11 @@ impl View for CircleButton {
             let ix = r.x + closed_inset + (lead - closed_inset) * e;
             let dy = self.fill.map_or(0.0, |(_, _, dy)| dy * self.scale);
             let glyph = Rect::new(ix, r.y + (r.h - isz) * 0.5 + dy, isz, isz);
-            crate::icons::draw(p, icon, glyph, ink);
+            crate::icons::draw_raster(p, icon, glyph, raster, ink);
             if let Some((filled, fill, _)) = self.fill.filter(|&(_, f, _)| f > 0.0) {
                 let h = glyph.h * fill;
                 p.clip(Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h));
-                crate::icons::draw(p, filled, glyph, ink);
+                crate::icons::draw_raster(p, filled, glyph, raster, ink);
                 p.clip_clear();
             }
             if let Some((text, _, label_w)) = unfurl {

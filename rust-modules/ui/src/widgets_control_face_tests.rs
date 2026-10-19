@@ -845,3 +845,27 @@ fn the_ink_over_a_focus_ramp_is_one_of_the_two_rest_inks_and_flips_once() {
         assert_eq!(ControlStyle::Accent.face_at(1.0, ground, palette).ink, lit.ink);
     }
 }
+
+/// **A disc's glyph is drawn from ONE mask for the whole of its pop.** The glyph's raster size used
+/// to be rounded off the POPPED height, so `icons::draw` (which keys its cache on the box it is
+/// handed) swapped masks each time the lift spring crossed a whole pixel, and the last swap landed on
+/// the frame the spring settled: the filled hero bookmark re-rastered (122-225 px) with nothing
+/// moving. `icons::draw` returns early for a recording painter, so the choice is graded where it is
+/// made: `CircleButton::glyph_size`.
+#[test]
+fn a_discs_glyph_keeps_one_raster_across_its_whole_pop() {
+    let base_h = StatusOverlay::CTRL_H;
+    // The old arithmetic, to show the swap the new one removes: the mask the popped box asked for.
+    let old = |scale: f32| crate::icons::icon_raster_px((base_h * scale * DISC_ICON_RATIO).round() as i32);
+    assert_ne!(old(1.0), old(CTRL_FOCUS_SCALE), "the pop crossed a whole pixel of the old raster");
+    let (rest_side, rest_raster) = CircleButton::glyph_size(base_h, 1.0);
+    assert_eq!(rest_side, rest_raster as f32, "at rest the mask is drawn 1:1");
+    assert_eq!(rest_raster, crate::icons::icon_raster_px(rest_raster));
+    // Sampled finely across the dip (0.9x) through the pop (1.07x) and the settle exactly on it.
+    for tick in 0..=170 {
+        let scale = 0.9 + tick as f32 * 0.001;
+        let (side, raster) = CircleButton::glyph_size(base_h, scale);
+        assert_eq!(raster, rest_raster, "scale {scale}: the glyph changed mask");
+        assert!((side - rest_side * scale).abs() < 1e-3, "scale {scale}: the box follows the spring continuously");
+    }
+}
