@@ -31,29 +31,9 @@ pub enum RenderStrategy {
     VideoPlane,
 }
 
-/// Borrowed frame data passed to a [`Scrim::lift`]. Shared chrome comes from its application's
-/// captured owner, while the material is the face the application-owned `GlassPlan` resolved and
-/// the normal chrome draw published for this frame. Fixtures without either capability use
-/// `None`; drawing never recovers either value from globals.
-#[derive(Clone, Copy, Default)]
-pub struct ScrimLiftRead<'a> {
-    pub chrome: Option<crate::widgets::ChromeRead<'a>>,
-    pub bar_material: Option<plx_gfx::gfx::GlassFace>,
-    /// The stack's latched underlay field, set by `ModalStack::draw_lifts` (the dispatcher cannot
-    /// know it): the frozen ground a lifted element's glass stands on instead of the live page.
-    /// `None` outside a stack, and before the field has latched.
-    pub field: Option<&'a crate::underlay::UnderlayField>,
-}
-
-pub type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);
-
-/// The [`Scrim::lift`] of a surface with nothing to lift — a named `fn` rather than a closure, so
-/// [`Scrim::NONE`] can be a `const`. (`popover::Opener::NONE` carries its own twin of this for the
-/// legacy popovers; the two disappear together when the last of those becomes a surface.)
-fn no_lift(_: ScrimLiftRead<'_>) {}
-
-/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3), and the one element it
-/// lifts back out of that dim.
+/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3). The element a surface was
+/// opened from is lifted back out of that dim by the dispatcher's one lift pass, not here
+/// ([`Screen::opener`], [`Screen::bar_opener`]).
 ///
 /// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
 /// sits between the page and the surface's own glass, so it is part of what that glass looks
@@ -77,21 +57,6 @@ pub struct Scrim {
     /// spring and by `nav::page_alpha`, so the dim ramps with the panel and dips with a route
     /// change exactly as `Popover::scrim` did.
     pub alpha: f32,
-    /// Re-draw the element this surface was opened FROM, ABOVE the dim AND the panel (drawn after
-    /// every surface, [`ModalStack::draw_lifts`]) — the profile chip, a focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
-    /// the visual argument), and a bare `fn` — rather than a closure — because only the element's
-    /// own screen knows where it landed and how to paint it, and this is minted as a `const` on
-    /// that screen's own `Screen::scrim`.
-    ///
-    /// Its [`ScrimLiftRead`] argument carries the shared top bar's borrowed render values for this
-    /// frame: captured profile/labels and focus unfurl from the rig's chrome owner, plus the face
-    /// published by the application-owned `GlassPlan`. [`ModalStack::draw_lifts`] passes that one
-    /// typed context to every lift it calls (spec phase 12, PX-WIDGETS). Thus a bare `fn` needs no
-    /// `Bridge` borrow and performs no global/session read while drawing; a surface with nothing to
-    /// lift ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores it (`no_lift`).
-    ///
-    /// [`ModalStack::draw_lifts`]: crate::containers::modal::ModalStack::draw_lifts
-    pub lift: ScrimLift,
     /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
     /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
     pub source: UnderlaySource,
@@ -112,29 +77,18 @@ pub enum UnderlaySource {
 }
 
 impl Scrim {
-    /// No dim and nothing to lift — every page, and every surface that draws its own ground.
+    /// No dim — every page, and every surface that draws its own ground.
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
-        lift: no_lift,
         source: UnderlaySource::Page,
     };
 
-    /// A dim of `alpha` with nothing lifted out of it. `alpha` is a `theme::underlay::DIM_*`
+    /// A dim of `alpha`. `alpha` is a `theme::underlay::DIM_*`
     /// role, never a literal (`containers::tests::no_surface_states_its_own_dim_weight`).
     pub const fn dim(alpha: f32) -> Scrim {
         Scrim {
             alpha,
-            lift: no_lift,
-            source: UnderlaySource::Page,
-        }
-    }
-
-    /// A dim of `alpha` with `lift` re-drawn above it.
-    pub const fn lifting(alpha: f32, lift: ScrimLift) -> Scrim {
-        Scrim {
-            alpha,
-            lift,
-            source: UnderlaySource::Page,
+                source: UnderlaySource::Page,
         }
     }
 
@@ -144,8 +98,7 @@ impl Scrim {
     pub const fn over_video(alpha: f32) -> Scrim {
         Scrim {
             alpha,
-            lift: no_lift,
-            source: UnderlaySource::Flat,
+                source: UnderlaySource::Flat,
         }
     }
 }
@@ -270,6 +223,20 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }
+    /// **The member of the shared top bar this surface hangs from** (the profile chip), for a surface
+    /// whose opener is CHROME rather than a page element. It is the same opener rule as
+    /// [`opener`](Self::opener) with the host resolved by the dispatcher (the page on top, whose bar
+    /// it is), so `Dispatcher::lifted_opener` answers for it too and the lift pass
+    /// (`Z::OPENER`) asks the rig to redraw the member lit above the dim and the panel
+    /// (`Rig::lift_bar_member`). `None` (the default) for every other screen.
+    fn bar_opener(&self) -> Option<H::Elem> {
+        None
+    }
+    /// **Where the bar member this surface hangs from is DRAWN this frame** (its rest rect through
+    /// the host page's tuck, the same rect the lift draws at), handed to the surface before every
+    /// draw so its morph starts and ends on the live opener, not on a rect measured once at mount.
+    /// Called only for a surface that answers [`bar_opener`](Self::bar_opener).
+    fn opener_rect(&mut self, _drawn: crate::Rect) {}
     /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
     /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
     /// opener; a page answering `true` here keeps it up instead, because focus moved only because

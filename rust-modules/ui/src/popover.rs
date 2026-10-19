@@ -272,6 +272,18 @@ pub enum OpenStyle {
     Morph,
 }
 
+/// **Where a header menu's panel of width `w` starts across, hung under its opener `pill`** (the
+/// focused pill, outset included): the panel's NEAR edge is the opener's OUTER edge, the edge it
+/// morphs from, so the lit opener and the panel read as one object. The near edge is the one on
+/// the side of the screen the opener sits on: a control in the right half (the Library's and the
+/// Watchlist's Sort & Filter) hangs from its right edge, one in the left half (the "+N" libraries
+/// list) from its left. The result is held inside `keep` (the safe frame) and never moves the
+/// panel off the opener's edge otherwise: not by a screen's own text edge, not by a per-page offset.
+pub fn hang_x(pill: Rect, w: f32, keep: Rect) -> f32 {
+    let x = if pill.cx() > keep.cx() { pill.x + pill.w - w } else { pill.x };
+    x.clamp(keep.x, (keep.x + keep.w - w).max(keep.x))
+}
+
 /// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
 /// [`Opener::NONE`] can be a `const`.
 fn draw_nothing() {}
@@ -391,12 +403,31 @@ impl Popover {
     ) -> Option<crate::popover_morph::Frame> {
         (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel, rad))
     }
+    /// The opener's rect the morph grows from and lands back on: the one handed to
+    /// [`open_from`](Self::open_from) / [`track_opener`](Self::track_opener), `None` before either.
+    pub fn opener(&self) -> Option<Rect> {
+        self.from
+    }
+    /// **Where the morph is on its one 0..1 progress** (0 = the opener's rect, 1 = the panel), `None`
+    /// for a popover that is not [`morphing`](Self::morphing). The reading the overlay's scrim is
+    /// compared with: the scrim and the morph begin and reverse on the same frame
+    /// (`ModalStack`'s held tick, `ScreenEvent::Closing`).
+    pub fn morph_progress(&self) -> Option<f32> {
+        (self.style == OpenStyle::Morph).then(|| self.morph.frame(None, Rect::FULL, 0.0).progress)
+    }
     /// [`open`](Self::open) for a [`morphing`](Self::morphing) popover whose opener has a measured
     /// rect: the panel grows out of `from` (the pill). Pass [`Opener::rect`]; `None` is the
     /// fade+scale fallback, which is what a plain `open` gives.
     pub fn open_from(&mut self, from: Option<Rect>) {
         self.open();
         self.from = from;
+    }
+    /// **Re-read the opener's rect while the popover is up**: a morphing popover whose opener MOVES
+    /// (the profile chip rides the bar's tuck) starts and ends its morph on the opener's live drawn
+    /// rect, not on the rect measured when it opened. The same rect the lit copy of the opener is
+    /// drawn at, handed in before every draw.
+    pub fn track_opener(&mut self, drawn: Rect) {
+        self.from = Some(drawn);
     }
     /// (re)open: restart the fade+slide from 0.
     pub fn open(&mut self) {
@@ -710,9 +741,9 @@ impl Popover {
 
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
     /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
-    /// an opener: the morphing rect and radius, the glass at FULL strength once the fill has begun
-    /// to cross (over the lit opener the host keeps), and its shadow on the fill's share. The fallback: the glass fades in on the fill's share.
-    fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
+    /// an opener: the morphing rect and radius, the glass AND its shadow on the fill's
+    /// share (one ramp, over the lit opener the host keeps). The fallback: the glass fades in on the fill's share, its shadow whole.
+    pub(crate) fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
         }
@@ -720,7 +751,10 @@ impl Popover {
         if f.ground_alpha <= 0.0 {
             return None;
         }
-        let (alpha, shadow) = if self.from.is_some() { (1.0, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
+        // ONE ramp for the glass and its shadow, the fill's share of the morph's progress: a rect
+        // that has left the opener is never at full strength, so the first and last glass frame
+        // are a soft edge under the lit opener rather than an opaque slab hanging below it.
+        let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
         Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow })
     }
 

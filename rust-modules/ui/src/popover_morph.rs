@@ -2,8 +2,7 @@
 //! sliding in on [`crate::popover::K_APPEAR`]. Selected per popover (see
 //! [`crate::popover::Popover::morphing`], the ONE selector; open it with
 //! [`crate::popover::Popover::open_from`] and the opener's rect, and `Popover::panel` lays the glass
-//! at full strength at the morphing rect and radius; only the fade-and-slide fallback fades the glass
-//! in). The item hold menu is not a morph: it keeps the opener lift and the shared appear.
+//! at the morphing rect and radius on the one fill ramp below). The item hold menu is not a morph: it keeps the opener lift and the shared appear.
 //!
 //! **Every header menu (the Library's, the Watchlist's Sort & Filter, the profile menu) morphs the
 //! GLASS ONLY.** Their opener is not part of the morph: the host's opener lift paints it lit above
@@ -26,9 +25,10 @@
 //! animate. Everything but the rows' scale is a function of [`Frame::progress`], the slower of the
 //! two rect springs (0 = the opener's rect, 1 = the panel):
 //!
-//! - the glass's SHADOW crosses in over the first [`FILL_AT`] of the progress, a smoothstep
-//!   ([`Frame::ground_alpha`]): the glass itself is laid at full strength from the first frame, over
-//!   the lit opener, so the surface is covered on every frame;
+//! - the glass and its SHADOW cross in together over the first [`FILL_AT`] of the progress, a
+//!   smoothstep ([`Frame::ground_alpha`]): the ONE ramp, so a rect that has left the lit opener is
+//!   never opaque (an opaque first frame hung a slab ~25 px below the pill, N-b); the opener is lit
+//!   above the glass on every frame, so the surface is covered while the ramp runs;
 //! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`], once the glass has taken over,
 //!   and are opaque by [`ROWS_OPAQUE_AT`]; on a close they are gone while the rect is still well
 //!   larger than the pill. They are clipped to the current rect (`Popover::morph_rows`), so no row
@@ -85,9 +85,8 @@ pub struct Frame {
     pub radius: f32,
     /// The morph's progress, 0 = the opener's rect, 1 = the panel: the slower rect spring.
     pub progress: f32,
-    /// The glass's share of the fill (0 = none, 1 = all glass). With an opener the glass is laid
-    /// at FULL strength once this is above 0 and this is its shadow's share; for the fallback it
-    /// is the glass's alpha.
+    /// The glass's share of the fill (0 = none, 1 = all glass): the alpha of the glass, with an
+    /// opener also its shadow's (the one ramp); for the fallback the glass's alpha alone.
     pub ground_alpha: f32,
     /// Alpha of the panel's rows: 0 until [`ROWS_FROM_AT`], so a row is only ever drawn on a
     /// surface whose fill is all glass.

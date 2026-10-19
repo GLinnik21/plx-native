@@ -580,7 +580,10 @@ pub struct FixtureModal {
     /// When set the dim is over the video plane (`Scrim::over_video`).
     pub scrim_over_video: bool,
     /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
-    pub scrim_lift: Option<super::screen::ScrimLift>,
+    /// The bar member this surface hangs from ([`Screen::bar_opener`]), and the rect the dispatcher
+    /// last handed it ([`Screen::opener_rect`]).
+    pub bar_opener: Option<u32>,
+    pub opener_seen: Vec<super::Rect>,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
     /// this surface's own `draw` ran. The two together are how a host test observes that the
     /// scrim landed inside the PAGE PASS rather than with the panel — see
@@ -635,7 +638,8 @@ impl FixtureModal {
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
             scrim_over_video: false,
-            scrim_lift: None,
+            bar_opener: None,
+            opener_seen: Vec::new(),
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
             render: RenderReport::NONE,
@@ -829,6 +833,12 @@ impl Screen<FixtureHost> for FixtureModal {
     fn opener(&self) -> Option<(plx_machine::machine::EntryId, Option<FocusKey<u32>>)> {
         self.opener
     }
+    fn bar_opener(&self) -> Option<u32> {
+        self.bar_opener
+    }
+    fn opener_rect(&mut self, drawn: super::Rect) {
+        self.opener_seen.push(drawn);
+    }
     fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.held_faces.push(!f.painter.records());
     }
@@ -837,10 +847,7 @@ impl Screen<FixtureHost> for FixtureModal {
         if self.scrim_over_video {
             return super::screen::Scrim::over_video(self.scrim_alpha);
         }
-        match self.scrim_lift {
-            Some(lift) => super::screen::Scrim::lifting(self.scrim_alpha, lift),
-            None => super::screen::Scrim::dim(self.scrim_alpha),
-        }
+        super::screen::Scrim::dim(self.scrim_alpha)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.draw_at = draw_order();
@@ -1045,11 +1052,9 @@ pub struct FixtureRig {
     pub ls2_pumps: u32,
     pub opaque_route_calls: Vec<bool>,
     pub clears: u32,
-    scrim_name: std::ffi::CString,
-    scrim_initial: std::ffi::CString,
-    scrim_labels: Vec<super::widgets::TabFace>,
-    scrim_expand: f32,
-    scrim_chrome: bool,
+    /// Every bar member the lift pass was asked to redraw (`Rig::lift_bar_member`), with the
+    /// presentation it was asked under.
+    pub bar_lifts: Vec<(u32, super::screen::NavPresentation)>,
     us: u64,
 }
 
@@ -1073,21 +1078,9 @@ impl FixtureRig {
             ls2_pumps: 0,
             opaque_route_calls: Vec::new(),
             clears: 0,
-            scrim_name: std::ffi::CString::default(),
-            scrim_initial: std::ffi::CString::default(),
-            scrim_labels: Vec::new(),
-            scrim_expand: 0.0,
-            scrim_chrome: false,
+            bar_lifts: Vec::new(),
             us: 0,
         }
-    }
-
-    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, faces: &[super::widgets::TabFace], expand: f32) {
-        self.scrim_name = std::ffi::CString::new(name).unwrap();
-        self.scrim_initial = std::ffi::CString::new(initial).unwrap();
-        self.scrim_labels = faces.to_vec();
-        self.scrim_expand = expand;
-        self.scrim_chrome = true;
     }
 }
 
@@ -1122,18 +1115,13 @@ impl Rig<FixtureHost> for FixtureRig {
             );
         }
     }
-    fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
-        self.scrim_chrome.then(|| super::widgets::ChromeRead {
-            profile: super::widgets::ProfileChipRead {
-                src: 0,
-                thumb: "",
-                initial: &self.scrim_initial,
-                name: &self.scrim_name,
-                name_w: 0.0,
-            },
-            labels: super::widgets::TabLabels { generation: 1, faces: &self.scrim_labels },
-            chip_expand: self.scrim_expand,
-        })
+    /// A bar member the fixture draws at a fixed resting rect, through the page's tuck.
+    fn bar_member_rect(&self, _elem: u32, presented: super::screen::NavPresentation) -> Option<super::Rect> {
+        Some(presented.chrome_rect(super::Rect::new(76.0, 40.0, 60.0, 60.0)))
+    }
+    fn lift_bar_member(&mut self, elem: u32, presented: super::screen::NavPresentation,
+        _material: Option<plx_gfx::gfx::GlassFace>, _ground: &super::underlay::UnderlayField) {
+        self.bar_lifts.push((elem, presented));
     }
     fn split(&mut self) -> Split<'_, FixtureHost> {
         Split {

@@ -314,7 +314,7 @@ impl OptionsMenu {
     pub fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let safe = plx_ui::consts::SAFE;
         let w = self.table.menu_panel_width_from(measure, self.pill);
-        let x = (self.pill.x + self.pill.w - w).max(safe.x);
+        let x = plx_ui::popover::hang_x(self.pill, w, safe);
         let h = self.table.measured_height().min(safe.h);
         // Hung under the pill; a menu taller than the room below it slides up rather than cutting
         // its last rows off (the ten-row menu fits under the header on a 1080 frame in every

@@ -903,7 +903,7 @@ impl<H: AppLike + crate::registry::MetadataLike> Screen<H> for ItemMenuScreen {
         None
     }
     /// The modal dim. **The TILE is lifted back out of it, and the lift is the HOST PAGE's to
-    /// draw** — only the screen that drew an element knows where it landed, and a `Scrim::lift` is
+    /// draw** — only the screen that drew an element knows where it landed, and the dispatcher's lift pass is
     /// a bare `fn()` with nothing to borrow a page through. So this asks for the dim alone, and
     /// the dispatcher's lift pass (`Dispatcher::draw_with`, after the last surface) — the ONE
     /// owner, reading this surface's own [`ItemMenuScreen::opener`] rather than a copy kept on the

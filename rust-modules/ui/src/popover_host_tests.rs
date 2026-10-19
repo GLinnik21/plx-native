@@ -187,6 +187,79 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     pop.close();
 }
 
+/// **N-b: the glass leaves its opener as a ramp, never as an opaque slab.** The first glass frame of
+/// an open (and the last of a close) used to be laid at FULL strength while the springs had already
+/// pushed its rect ~25 px past the lit opener, so a ~165x62 dark slab hung under the pill for one
+/// frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener: whenever the glass
+/// stands outside the opener's rect, its alpha AND its shadow are the morph's one fill ramp, so it is
+/// never opaque on the frame it first appears or last shows.
+#[test]
+fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
+    let _g = plx_base::testlock::serial();
+    let openers = [
+        ("Library Sort & Filter", crate::Rect::new(1589.0, 146.0, 204.0, 60.0)),
+        ("Collections +N", crate::Rect::new(1180.0, 146.0, 118.0, 60.0)),
+        ("the libraries menu", crate::Rect::new(94.0, 146.0, 230.0, 60.0)),
+        ("the account chip", crate::widgets::chip_cap(1.0, 60.0)),
+        ("the account chip at rest, a circle", crate::widgets::chip_cap(0.0, 0.0)),
+    ];
+    for (name, pill) in openers {
+        let panel = crate::Rect::new(pill.x, pill.y + pill.h + 14.0, 316.0, 400.0);
+        let outside = |r: crate::Rect| r.x < pill.x - 1.0 || r.y < pill.y - 1.0 || r.x + r.w > pill.x + pill.w + 1.0 || r.y + r.h > pill.y + pill.h + 1.0;
+        let check = |pop: &crate::popover::Popover, what: &str, frame: usize, shown: &mut Vec<f32>| {
+            let Some(g) = pop.ground(panel, RAD) else { return };
+            let fill = crate::popover_morph::fill_at(pop.morph_frame(Some(pill), panel, RAD).unwrap().progress);
+            shown.push(g.alpha);
+            if outside(g.rect) {
+                assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,
+                    "{name} {what} frame {frame}: glass {} / shadow {} past the opener outruns the fill ramp {fill}", g.alpha, g.shadow);
+            }
+        };
+        let mut pop = crate::popover::Popover::new().morphing();
+        pop.open_from(Some(pill));
+        // the morph begins ON the opener, in its own corner: the lit opener's rect and its round
+        // surround (half its height), so the glass first stands exactly under the control
+        let begin = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+        assert_eq!((begin.rect, begin.radius), (pill, pill.h * 0.5), "{name}: the first frame is the opener's rect and corner");
+        let mut opening = Vec::new();
+        for n in 0..240 {
+            pop.update(1.0 / 60.0);
+            check(&pop, "open", n, &mut opening);
+        }
+        assert!(opening.first().is_some_and(|a| *a < 1.0), "{name}: the first glass frame is not opaque: {opening:?}");
+        assert!(opening.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{name}: the glass only strengthens while opening");
+        pop.dismiss();
+        let mut closing = Vec::new();
+        for n in 0..240 {
+            pop.update(1.0 / 60.0);
+            if !pop.visible() {
+                break;
+            }
+            check(&pop, "close", n, &mut closing);
+        }
+        assert!(closing.last().is_some_and(|a| *a < 1.0), "{name}: the last glass frame is not opaque: {closing:?}");
+        let end = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+        assert_eq!((end.rect, end.radius), (pill, pill.h * 0.5), "{name}: the close lands on the opener's rect and corner");
+        assert!(closing.windows(2).all(|w| w[1] <= w[0] + 1e-4), "{name}: the glass only weakens while closing");
+        pop.close();
+    }
+}
+
+/// **NV1: a panel's near edge is its opener's outer edge**, one rule for every header menu: a control
+/// in the right half hangs the panel from its right edge, one in the left half from its left, and
+/// the safe frame only ever pulls a panel back, never off the opener's edge otherwise.
+#[test]
+fn a_panel_hangs_from_its_openers_outer_edge() {
+    let keep = crate::consts::SAFE;
+    let right = crate::Rect::new(1589.0, 146.0, 204.0, 60.0);
+    let left = crate::Rect::new(120.0, 146.0, 230.0, 60.0);
+    assert_eq!(crate::popover::hang_x(right, 316.0, keep) + 316.0, right.x + right.w, "right control: right edges flush");
+    assert_eq!(crate::popover::hang_x(left, 316.0, keep), left.x, "left control: left edges flush");
+    assert_eq!(crate::popover::hang_x(right, right.w, keep), right.x, "a panel as wide as its pill is the pill's own span");
+    let at_edge = crate::Rect::new(keep.x - 2.0, 146.0, 100.0, 60.0);
+    assert_eq!(crate::popover::hang_x(at_edge, 300.0, keep), keep.x, "held inside the safe frame");
+}
+
 /// DS7: every popover that does not opt in keeps the shared fade+slide, byte for byte.
 #[test]
 fn the_default_popover_keeps_the_shared_fade_and_slide() {
@@ -239,7 +312,11 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
             assert!((f.radius - RAD).abs() < 0.5 && (f.rect.h - panel.h).abs() < 1.0, "a snap at settle: {f:?}");
             continue;
         }
-        assert!(declared[0] == want(f.rect, f.radius)[0], "mid-open: the morph rect and radius, the face whole: {f:?}");
+        // The glass rides the fill's one ramp, painter alpha and face together (N-b: no opaque slab
+        // past the opener), and is whole once the fill is.
+        let a = f.ground_alpha;
+        let ramped = expected(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a));
+        assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
         assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
     }

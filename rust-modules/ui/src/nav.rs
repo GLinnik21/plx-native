@@ -26,7 +26,7 @@
 //! Two alphas, and the split is the whole design. [`page_alpha`] is for content the swap replaces;
 //! [`chrome_alpha`] is for the **shared top tab bar**, the SAME control on Home, the Library and
 //! Search, which must hold still while the pages swap under it. Its readers are the ones that draw
-//! outside a page's own `DrawFrame` — `ui::popover`'s panel and scrim, `widgets::redraw_profile_chip`,
+//! outside a page's own `DrawFrame` — `ui::popover`'s panel and scrim, `widgets::lift_profile_chip`,
 //! and the glass track's "am I settled enough to sample the ground" test.
 //!
 //! [`view_tab`] is the other half of "the control acknowledges the press on the press frame": the

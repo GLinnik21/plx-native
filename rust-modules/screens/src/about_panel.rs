@@ -611,7 +611,7 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
     fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn.
     ///
-    /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
+    /// **Nothing is LIFTED back out of it.** `Screen::opener` / `Screen::bar_opener` exist for a panel that is ABOUT an
     /// element still on screen; this one is about the card it was opened from and says everything
     /// that card says, at length — lifting it would put a truncated copy of this panel's own first
     /// three runs alongside it. The mock lifts nothing either.

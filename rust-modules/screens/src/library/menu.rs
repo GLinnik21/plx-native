@@ -451,13 +451,13 @@ impl LibraryMenu {
         plx_ui::widgets::focus_pill(Rect::new(x, y, w, h))
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
-    /// rows, never narrower than the control's focused pill), hung off the anchor's left edge and
-    /// pulled back so the right edge stays inside the keep-out. ONE placement for every kind: the
+    /// rows, never narrower than the control's focused pill), hung off the opener's near edge
+    /// ([`plx_ui::popover::hang_x`]) and held inside the safe frame. ONE placement for every kind: the
     /// "+N" list opens under its "+N" pill exactly as Sort & Filter does; it differs only in its
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [x, y, _, h] = self.arg.anchor.map(f32::from_bits);
+        let [_, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let pill = self.pill();
         let width = if self.kind == LibraryMenuKind::Sources {
@@ -466,8 +466,8 @@ impl LibraryMenu {
             self.form.table.menu_panel_width_from(measure, pill)
         };
         Rect::new(
-            // The panel's right edge lines up with the header's right text edge (x 1771).
-            x.clamp(96.0, (plx_ui::page_header::TEXT_X1 - width).max(96.0)),
+            // The shared rule: the panel's near edge is the opener's outer edge (NV1).
+            plx_ui::popover::hang_x(pill, width, plx_ui::consts::SAFE),
             (y + h + 16.0).clamp(96.0, 984.0 - height),
             width,
             height,
@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sort_filter_panel_ends_at_the_header_text_edge_and_lifts_its_control() {
+    fn the_sort_filter_panel_is_flush_with_its_opener_and_lifts_its_control() {
         let _guard = plx_base::testlock::serial();
         let arg = |kind, opener| LibraryMenuArg {
             host: plx_machine::machine::InstanceId(8),
@@ -1346,7 +1346,10 @@ mod tests {
         let mut menu = LibraryMenu::new(EntryId(7), arg(LibraryMenuKind::SortFilter, Some((EntryId(3), 5))));
         menu.apply_draft(filter_draft(false, None, true));
         let frame = menu.frame(&FixtureMeasure);
-        assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
+        // NV1: the near edge IS the opener's outer edge (the focused pill, 1792), not the header's
+        // text edge 1771 that sits 21 px inside the control's plate.
+        let pill_edge = 1640.0 + 150.0 + plx_ui::widgets::PILL_FOCUS_OUTSET;
+        assert!((frame.x + frame.w - pill_edge).abs() < 0.01, "right edge {} is the opener's edge {pill_edge}", frame.x + frame.w);
         assert_eq!(
             <LibraryMenu as Screen<HostFixture>>::opener(&menu),
             Some((EntryId(3), Some(FocusKey { entry: EntryId(3), elem: 5 }))),
@@ -1427,7 +1430,7 @@ mod tests {
 
     /// **The panel is never narrower than the control's pill** (the Watchlist's menu hangs by the
     /// same rule, `TableView::menu_panel_width_from`): a wide control, here 400 px, gets a panel as
-    /// wide as its focused pill, and the right edge still ends on the header's text edge.
+    /// wide as its focused pill, and the right edge still ends on that pill's outer edge.
     #[test]
     fn the_sort_filter_panel_is_never_narrower_than_its_controls_pill() {
         let _guard = plx_base::testlock::serial();
@@ -1444,7 +1447,8 @@ mod tests {
         let frame = menu.frame(&FixtureMeasure);
         let pill = 400.0 + 2.0 * plx_ui::widgets::PILL_FOCUS_OUTSET;
         assert!(frame.w >= pill, "the panel {} is narrower than its control's pill {pill}", frame.w);
-        assert!((frame.x + frame.w - 1771.0).abs() < 0.01, "right edge {} is the text edge 1771", frame.x + frame.w);
+        let pill_edge = 1371.0 + 400.0 + plx_ui::widgets::PILL_FOCUS_OUTSET;
+        assert!((frame.x + frame.w - pill_edge).abs() < 0.01, "right edge {} is the opener's edge {pill_edge}", frame.x + frame.w);
     }
 
     include!("menu_contract_tests.rs");
