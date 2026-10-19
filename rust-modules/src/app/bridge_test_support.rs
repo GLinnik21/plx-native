@@ -400,14 +400,17 @@ impl World {
         panic!("the top page wears no header row");
     }
 
-    /// Walk Right along the Library header to the stop `elem` (an element id) and stop there.
+    /// Walk along the Library header (Right, or Left when the stop lies behind focus) to the stop
+    /// `elem` (an element id) and stop there.
     pub(super) fn walk_header_to(&mut self, elem: u32) {
-        let n = self.library().probe_header_stops().len();
-        for _ in 0..n + 1 {
+        let stops = self.library().probe_header_stops();
+        let place = |stop: Option<u32>| stops.iter().position(|(_, e)| Some(*e) == stop);
+        for _ in 0..stops.len() + 1 {
             if self.elem() == Some(elem) { return; }
-            self.press(Key::Right);
+            let behind = place(self.elem()).zip(place(Some(elem))).is_some_and(|(at, want)| want < at);
+            self.press(if behind { Key::Left } else { Key::Right });
         }
-        assert_eq!(self.elem(), Some(elem), "premise: Right along the header reached the stop");
+        assert_eq!(self.elem(), Some(elem), "premise: the arrows along the header reached the stop");
     }
 }
 
