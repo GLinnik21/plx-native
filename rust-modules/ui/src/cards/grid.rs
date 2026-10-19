@@ -193,6 +193,11 @@ impl Grid {
         self.bands.set_caption_policy(policy);
     }
 
+    /// The policy the grid's band follows, `None` while it is on the legacy band.
+    pub fn caption_policy(&self) -> Option<crate::caption_policy::CaptionPolicy> {
+        self.caption_policy
+    }
+
     /// The focused band's height: the policy's (0 / 80 / 112), else the legacy band.
     pub fn band_h(&self) -> f32 {
         self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)

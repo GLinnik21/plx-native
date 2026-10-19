@@ -26,3 +26,6 @@ mod reflow_tests;
 
 #[cfg(test)]
 mod opening_tests;
+
+#[cfg(test)]
+mod caption_tests;

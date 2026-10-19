@@ -26,6 +26,12 @@ const UNPLAYABLE: [TileState; 5] = [
     TileState::Unknown,
 ];
 
+/// The details line the default Under posters policy words for `row` (empty: no line).
+fn default_caption(row: &plx_data::watchlist::model::WatchRow, state: TileState) -> String {
+    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT)
+        .caption.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn screen(n: usize) -> WatchlistScreen {
     WatchlistScreen::new(tiles(n), WatchlistOptionsState::default())
 }
@@ -87,19 +93,19 @@ fn captions_carry_the_state_sentence_with_the_month_date() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     let mut row = super::cards_harness::row(1);
     row.release = Some("2027-03-12".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
     // Q6: coming soon AND matched keeps the clock, so it keeps the date.
-    assert_eq!(caption::caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
-    assert_eq!(caption::caption(&row, TileState::NotOnAnyServer), "Not on your servers");
-    assert_eq!(caption::caption(&row, TileState::ServerOffline), "Server offline");
-    assert_eq!(caption::caption(&row, TileState::Available), "2001");
-    assert_eq!(caption::caption(&row, TileState::Unknown), "2001");
+    assert_eq!(default_caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::NotOnAnyServer), "Not on your servers");
+    assert_eq!(default_caption(&row, TileState::ServerOffline), "Server offline");
+    assert_eq!(default_caption(&row, TileState::Available), "2001");
+    assert_eq!(default_caption(&row, TileState::Unknown), "2001");
     row.release = None;
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.release = Some("soon".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.year = None;
-    assert_eq!(caption::caption(&row, TileState::Available), "");
+    assert_eq!(default_caption(&row, TileState::Available), "");
 }
 
 /// **One mark per tile, and the no-server wash is quieter under focus** (TileStates board).

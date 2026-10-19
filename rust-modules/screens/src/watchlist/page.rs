@@ -467,7 +467,7 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     }
     fn label(&self, i: usize) -> TileLabel {
         match self.page.tiles.get(i) {
-            Some(t) => TileLabel::titled(&t.row.title, &caption::caption(&t.row, t.state)),
+            Some(t) => caption::label(&t.row, t.state, &caption::policy()),
             None => TileLabel::default(),
         }
     }
@@ -541,7 +541,7 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
     /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
     fn label(&self, i: usize) -> TileLabel {
         match self.tiles.get(i).copied().flatten() {
-            Some((t, _)) => TileLabel::titled(&t.row.title, &caption::caption(&t.row, t.state)),
+            Some((t, _)) => caption::label(&t.row, t.state, &caption::policy()),
             None => TileLabel::default(),
         }
     }
@@ -628,6 +628,11 @@ impl<H: ContentLike> StackPage<H> for Page {
             log: &self.art_log,
         };
         grid.paint_ghosts(f, p, &ghosts);
+    }
+
+    /// The grid's focused band follows the Under posters setting, as the Library's does.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (k == Sec::Items).then(caption::policy)
     }
 
     fn plain_group(&self, _cx: &Cx<'_, H>, _k: Sec, id: GroupId, extent: Rect) -> GroupSpec {
@@ -1116,6 +1121,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn scale_of<H: ContentLike>(&self, cx: &Cx<'_, H>, elem: &u32) -> Option<f32> {
         self.stack.view(&self.page).scale_of(cx, elem)
+    }
+
+    /// Test support: the focused caption band's height the grid opens (0 / 80 / 112 by the policy).
+    #[cfg(test)]
+    pub(crate) fn band_h(&self) -> Option<f32> {
+        self.stack.grid(Sec::Items).map(|g| g.band_h())
     }
 
     /// Test support: the page scroll.

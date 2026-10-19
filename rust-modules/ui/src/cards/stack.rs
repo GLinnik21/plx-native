@@ -240,6 +240,12 @@ pub trait StackPage<H: Host> {
     fn draw_heading(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _lift: f32) {}
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
+    /// The Under posters policy grid section `k` opens its focused caption band by (0 / 80 / 112 px,
+    /// `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 92 px): a page
+    /// whose captions are not the Under posters setting's keeps it.
+    fn caption_policy(&self, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {
+        None
+    }
     /// The cards grid section `k`'s landing is fading out, painted BEFORE the grid's own cards so
     /// the ones that slid over their cells cover them. A page that keeps the cards it removed
     /// paints them with [`Grid::paint_ghosts`] (named by [`Grid::ghost_keys`]); the default keeps none.
@@ -588,6 +594,13 @@ impl<K: Copy + Eq> Stack<K> {
 
     /// Hand every grid the page: its top in document space and the scroll.
     fn sync_pages<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
+        for i in 0..self.bodies.len() {
+            if let (Body::Grid(g), Some(policy)) = (&mut self.bodies[i], p.caption_policy(self.specs[i].key)) {
+                if g.caption_policy() != Some(policy) {
+                    g.set_caption_policy(policy);
+                }
+            }
+        }
         self.retop(p, cx);
         for i in 0..self.bodies.len() {
             if let Body::Grid(g) = &mut self.bodies[i] {
