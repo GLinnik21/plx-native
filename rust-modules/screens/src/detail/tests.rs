@@ -153,7 +153,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
         disc_unfurl: [Spring::at(0.0); 3],
-        watchlist: plx_data::catalog::Membership::Unknown, watchlist_flip: Spring::at(0.0), watchlist_hex: None,
+        watchlist: plx_data::catalog::Membership::Unknown, watchlist_flip: Spring::at(0.0), watchlist_pressed: false, watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
@@ -4842,6 +4842,27 @@ fn the_first_membership_answer_snaps_and_a_later_change_animates() {
         (0.0..1.0).contains(&screen.watchlist_flip.pos) && screen.watchlist_flip.pos > 0.0,
         "a flip from a known face animates"
     );
+}
+
+/// The Add pressed while the membership is still `Unknown` (the list unread) is the user's own
+/// change: it unfurls instead of snapping. With no press, the same change is the first answer and snaps.
+#[test]
+fn an_add_pressed_from_an_unknown_membership_unfurls() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    tick_page(&mut screen, None, 16);
+    step(&mut screen, &ScreenEvent::Activate(hero::ELEM_WATCHLIST), Some(hero::ELEM_WATCHLIST));
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    let mut trace = Vec::new();
+    for n in 0..8 {
+        tick_page(&mut screen, None, 16 * n);
+        trace.push(screen.watchlist_flip.pos);
+    }
+    assert!(trace.iter().filter(|p| **p > 0.0 && **p < 1.0).count() >= 5, "the add unfurls over frames: {trace:?}");
+
+    let mut unpressed = bare(&_guard, ServerId::UNSET, "movie");
+    unpressed.set_watchlist(plx_data::catalog::Membership::On);
+    assert_eq!(unpressed.watchlist_flip.pos, 1.0, "an unpressed first answer snaps");
 }
 
 /// A flip Off -> On, ticked until idle, rests EXACTLY on the filled face (not 0.999 drawing a clip).

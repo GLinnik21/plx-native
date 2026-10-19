@@ -190,6 +190,45 @@ fn a_membership_change_of_the_shown_title_flips() {
     assert_eq!((s.disc.flip.pos, s.disc.flip.vel), (1.0, 0.0));
 }
 
+/// The Add pressed on a list that has not landed (the membership is still `Unknown`) is the user's
+/// own change: the app answers it `On` at once, and the flip UNFURLS over several frames instead of
+/// snapping to the filled face. A Remove back out of it drains the same way, and an `Unknown` to
+/// `On` with no press (the list landing under an already-listed title) still snaps.
+#[test]
+fn an_add_pressed_from_an_unread_list_unfurls_like_a_remove() {
+    let _guard = plx_base::testlock::serial();
+    let snapshot = seeded(true);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    tick(&mut s, view, 1);
+    s.set_watchlist(HEX_A, Membership::Unknown);
+    tick(&mut s, view, 30);
+    step(&mut s, view, None, &ScreenEvent::Activate(HERO_WATCHLIST_ELEM));
+    s.set_watchlist(HEX_A, Membership::On);
+    let mut add = Vec::new();
+    for _ in 0..8 {
+        tick(&mut s, view, 1);
+        add.push(s.disc.flip.pos);
+    }
+    assert!(add.iter().filter(|p| **p > 0.0 && **p < 1.0).count() >= 5, "the add unfurls over frames: {add:?}");
+    tick(&mut s, view, 120);
+    step(&mut s, view, None, &ScreenEvent::Activate(HERO_WATCHLIST_ELEM));
+    s.set_watchlist(HEX_A, Membership::Unknown);
+    let mut remove = Vec::new();
+    for _ in 0..8 {
+        tick(&mut s, view, 1);
+        remove.push(s.disc.flip.pos);
+    }
+    assert!(remove.iter().filter(|p| **p > 0.0 && **p < 1.0).count() >= 5, "the remove drains over frames: {remove:?}");
+    // No press: the list landing on a listed title is the first answer and snaps.
+    let mut fresh = screen(view);
+    tick(&mut fresh, view, 1);
+    fresh.set_watchlist(HEX_A, Membership::Unknown);
+    tick(&mut fresh, view, 30);
+    fresh.set_watchlist(HEX_A, Membership::On);
+    assert_eq!(fresh.disc.flip.pos, 1.0, "an unpressed first answer snaps");
+}
+
 /// A focus resting on the disc when the hero rotates to a title without one returns to Play.
 #[test]
 fn a_vanished_disc_returns_focus_to_play() {

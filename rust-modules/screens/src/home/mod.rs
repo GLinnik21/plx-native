@@ -3196,15 +3196,20 @@ struct HeroDisc {
     prev: Option<([u8; 12], bool)>,
     /// The title the hero shows now, cached each tick for the application's feed.
     shown: Option<[u8; 12]>,
+    /// A press on the disc whose membership change has not arrived yet. That change is the
+    /// user's own, so it plays the flip even from `Unknown` (the list unread or unreachable);
+    /// without a press an `Unknown` to known change is the first answer and snaps.
+    pressed: bool,
 }
 
 impl HeroDisc {
     /// What a press on the disc of `item` asks for, `None` when it names no title.
-    fn press(&self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
+    fn press(&mut self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
         use crate::registry::ItemMenuAction as Action;
         let (kind, hex, _) = item.watchlist_subject()?;
         let hex = hex?;
         let on = matches!(self.of, Some((h, plx_data::catalog::Membership::On)) if h == hex);
+        self.pressed = true;
         Some(if on {
             Action::WatchlistRemove(plx_data::watchlist::guid_of(kind, &hex))
         } else {
@@ -3214,19 +3219,23 @@ impl HeroDisc {
 
     /// The membership of `hex`. A change on the title already shown flips the disc; a different
     /// title (the hero rotated) or the first answer for this one (`Unknown` before) snaps the face,
-    /// so the flip plays only on a real membership change of the shown title.
+    /// so the flip plays only on a real membership change of the shown title. A change that answers
+    /// the user's own press ([`Self::pressed`]) is real even out of `Unknown`: the Add from an
+    /// unread list is the common case on a server whose plex.tv list has not landed.
     fn set(&mut self, hex: [u8; 12], m: plx_data::catalog::Membership) {
         use plx_data::catalog::Membership;
         match self.of {
             Some((h, now)) if h == hex => {
                 if now != m {
-                    if now == Membership::Unknown {
+                    if now == Membership::Unknown && !self.pressed {
                         self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
                     }
+                    self.pressed = false;
                     self.of = Some((hex, m));
                 }
             }
             _ => {
+                self.pressed = false;
                 self.prev = self.of.map(|(h, m)| (h, plx_appkit::watchlist_disc::target(m) >= 1.0));
                 self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
                 self.of = Some((hex, m));

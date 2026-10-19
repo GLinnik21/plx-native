@@ -301,6 +301,8 @@ pub struct DetailScreen {
     /// 0 = the outline face at rest, 1 = the filled one; the flip between them is
     /// [`plx_appkit::watchlist_disc::flip_frame`]. Stepped toward `watchlist` inside `idle::decorative`.
     watchlist_flip: Spring,
+    /// A disc press whose membership change has not arrived: it plays the flip even from `Unknown`.
+    watchlist_pressed: bool,
     /// The loaded item's catalog id (movie or show guid, decoded once), mirrored for the app's feed.
     watchlist_hex: Option<[u8; 12]>,
     season_metrics: season::Metrics,
@@ -511,9 +513,11 @@ impl DetailScreen {
         if self.watchlist != membership {
             // The first answer (the list landing, or the page opening on an on-list title) is the
             // disc's REST face, not a flip: snap. Only a change from a known face animates.
-            if self.watchlist == plx_data::catalog::Membership::Unknown {
+            // A change answering the user's own press is real even out of Unknown (the list unread).
+            if self.watchlist == plx_data::catalog::Membership::Unknown && !self.watchlist_pressed {
                 self.watchlist_flip = Spring::at(f32::from(hero::face(membership) == hero::Face::Filled));
             }
+            self.watchlist_pressed = false;
             self.watchlist = membership;
             plx_machine::idle::invalidate();
         }
@@ -580,6 +584,7 @@ impl DetailScreen {
             disc_unfurl: [Spring::at(0.0); 3],
             watchlist: plx_data::catalog::Membership::Unknown,
             watchlist_flip: Spring::at(0.0),
+            watchlist_pressed: false,
             watchlist_hex: None,
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
@@ -4323,6 +4328,7 @@ impl DetailScreen {
             hero::HeroCtl::Watchlist => {
                 if let Some(d) = self.detail(meta) {
                     if let Some(act) = hero::press(&d.guid, self.watchlist).filter(|_| self.watchlist_hex.is_some()) {
+                        self.watchlist_pressed = true;
                         fx.push(Fx::App(AppFx::ItemMenu(crate::registry::ItemMenuReq {
                             act, sid: d.sid, item: None, season: None, loaded_episode: false, from_home: false,
                         })));
