@@ -39,7 +39,7 @@ fn a_new_sort_key_lands_on_its_natural_direction_and_the_active_key_flips() {
     assert!(OptionsRow::Sort(SortKey::Rating).apply(&mut s));
     assert_eq!((s.sort, s.descending), (SortKey::Rating, true), "Rating is highest first");
     assert!(OptionsRow::Sort(SortKey::DateAdded).apply(&mut s));
-    assert_eq!(s, default_state(), "back on Date Added the value is the default again");
+    assert_eq!(s, default_state(), "back on Date added the value is the default again");
 }
 
 #[test]

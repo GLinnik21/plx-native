@@ -52,3 +52,38 @@ fn the_under_posters_setting_changes_the_caption_under_the_library_grids_posters
     w.frames(30);
     assert_eq!(caption_under_first_poster(&w)[0], None, "switching the title off takes the name from under the poster");
 }
+
+/// **S23: a name the tile's face cuts rides the focused caption, whatever the setting.** On the
+/// Collections page the face sets the collection's name (a baked fan's live name, the neutral
+/// tile's), and a long one ends in an ellipsis there. With the Title switch off and the details
+/// line off, the caption used to be nothing at all; now the cut name is the caption, while a name
+/// the face sets whole stays out of it (the setting is still the reader's for those).
+#[test]
+fn a_name_the_face_cuts_is_in_the_caption_under_every_setting() {
+    const FAN: &str = "/library/collections/9/composite/1700000000";
+    let long = "The Complete Extended Director's Cut Anniversary Edition Saga Collection Box Set";
+    let mut w = World::collections("s23-caption", false);
+    let _cell = Cell::default();
+    let longer = [long; 3].join(" ");
+    w.bridge.stores.browse.borrow_mut().seed_named_collections_for_test(&[
+        (long, FAN),
+        ("Marvel", FAN),
+        (long, "/library/metadata/5/thumb/1"),
+        (&longer, ""),
+    ]);
+    w.frames(30);
+    let caption = |w: &World, i: usize| {
+        let snapshot = w.bridge.stores.browse.borrow_mut().listing_snapshot();
+        w.library().probe_caption(snapshot.view(), i)
+    };
+    for (title, details) in [(false, UnderPostersDetails::YearLength), (false, UnderPostersDetails::None),
+        (true, UnderPostersDetails::YearLength), (true, UnderPostersDetails::None)] {
+        plx_media::route::restore_under_posters(UnderPosters { title, details });
+        w.frames(10);
+        let setting = format!("title {title}, details {details:?}");
+        assert_eq!(caption(&w, 0)[0].as_deref(), Some(long), "the cut name is the caption's title line ({setting})");
+        assert_eq!(caption(&w, 1)[0].is_some(), title, "a name the face sets whole follows the Title switch ({setting})");
+        assert_eq!(caption(&w, 2)[0].is_some(), title, "a custom poster carries no name to cut ({setting})");
+        assert_eq!(caption(&w, 3)[0].as_deref(), Some(longer.as_str()), "the neutral tile's cut name too ({setting})");
+    }
+}

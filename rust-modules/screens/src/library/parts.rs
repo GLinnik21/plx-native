@@ -276,6 +276,12 @@ impl GridPart {
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
 
+    /// The policy the grid's focused band is sized by, when it is not the stored setting as is (the
+    /// Collections page: `collections_page::band_policy`). After [`set_geometry`](Self::set_geometry).
+    pub(super) fn set_band_policy(&mut self, policy: CaptionPolicy) {
+        self.grid.set_caption_policy(policy);
+    }
+
     pub(super) fn restore_keys(&mut self, keys: &KeyRegistry) {
         self.grid.reset_bands();
         self.known = keys.keys().iter().filter(|key| matches!(key.identity,
@@ -548,11 +554,22 @@ impl GridSrc<'_, '_> {
 pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
     let facts = super::collections_page::TileFacts {
         title: &item.title, subtype: item.subtype.as_deref(), child_count: item.child_count,
+        name_cut: face_cuts_name(item),
     };
     let stored = crate::registry::caption_policy_of(plx_media::route::under_posters());
     let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
     if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
     ui_cards::TileLabel::from_lines(lines)
+}
+
+/// Does this collection's face cut its name? The face is the grid's resting card: a baked fan names
+/// itself live, a collection with no artwork wears the neutral tile's name, and a custom poster is
+/// artwork with no name on it to cut.
+fn face_cuts_name(item: &plx_data::pms::PmsMovie) -> bool {
+    use plx_ui::collection_tile::{name_is_cut, Face};
+    let facts = crate::registry::tile_facts::of(item);
+    let face = if facts.thumb.is_empty() { Face::Neutral } else if facts.composite_thumb { Face::Fan } else { return false };
+    name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
 }
 
 impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {

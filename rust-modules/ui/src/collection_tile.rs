@@ -315,6 +315,29 @@ pub fn fit_name(name: &str, style: &NameStyle, rest_w: f32, band: f32,
     FittedName { lines, sz: step, pitch: pitch(step), column }
 }
 
+/// Which name a collection's face sets: the live name over a baked fan, or the neutral tile's (a
+/// collection with no artwork). A custom poster is artwork and sets none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    Fan,
+    Neutral,
+}
+
+/// **Does the face cut this collection's name?** True when [`fit_name`], on a `rest` tile of the
+/// face's style, could not set the whole name: its last line ends in an ellipsis (or a lone
+/// over-wide word is elided). The tile's focused caption then carries the full name, whatever the
+/// Under posters setting, because the face is the only other place the name is told.
+pub fn name_is_cut(face: Face, name: &str, rest: Rect) -> bool {
+    let (style, band) = match face {
+        Face::Fan => (&FAN_NAME, fan_band(rest).1),
+        Face::Neutral => (&NEUTRAL_NAME, neutral_band(rest)),
+    };
+    let fit = fitted(name, style, rest, band);
+    let set = fit.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join(" ");
+    let whole = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    set != if style.upper { whole.to_uppercase() } else { whole }
+}
+
 /// The band a fan's name is centred in on a `rest` tile, as (top, height) from the tile's top:
 /// from the deck's lowest point — the rotated back members' corners included — and its drop
 /// shadow (and never above the scrim) down to the mock's bottom inset. The fan's geometry scales
@@ -539,6 +562,22 @@ mod tests {
     }
     /// The band's top as the owner defines it: the lowest corner plus the shadow.
     fn deck_line(w: f32) -> f32 { corners(w).2 + FAN_SHADOW_REACH * w / MOCK_W }
+
+    /// **S23, the rule's trigger.** A face "cuts" a name when it could not set it whole: a short
+    /// name never, a name too long for the band's lines always, on both faces.
+    #[test]
+    fn a_name_is_cut_when_the_face_cannot_set_it_whole() {
+        let rest = Rect::new(0.0, 0.0, 250.0, 375.0);
+        let long = "The Complete Extended Director's Cut Anniversary Edition Saga Collection Box Set";
+        // The neutral tile's band is the taller (no deck above the name), so it takes a longer name.
+        let longer = [long; 3].join(" ");
+        for face in [Face::Fan, Face::Neutral] {
+            assert!(!name_is_cut(face, "Marvel", rest), "{face:?}: a short name is set whole");
+            assert!(!name_is_cut(face, "", rest), "{face:?}: no name is no cut");
+            assert!(name_is_cut(face, &longer, rest), "{face:?}: a name past the band's lines is cut");
+        }
+        assert!(name_is_cut(Face::Fan, long, rest), "the fan's band is the shorter");
+    }
 
     #[test]
     fn the_mark_and_name_are_one_block_centred_on_the_tile() {

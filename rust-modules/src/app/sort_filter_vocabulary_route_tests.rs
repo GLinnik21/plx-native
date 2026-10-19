@@ -24,12 +24,12 @@ fn mixed_list(name: &str) -> World {
 }
 
 /// **S15: the pill's value is the current SORT, on every page, and a filter never shows in it.**
-/// The Watchlist used to read "Default" while its panel ticked Date Added, and joined the filters
+/// The Watchlist used to read "Default" while its panel ticked Date added, and joined the filters
 /// it had changed into the same text ("Movies, Title"); a filter shows only as the "N of M" read-out.
 #[test]
 fn the_pill_names_the_sort_on_both_pages_and_a_filter_shows_only_as_n_of_m() {
     let mut w = mixed_list("h2a-pill-watchlist");
-    assert_eq!(watchlist(&w).probe_pill_value(), "Date Added", "at rest the pill names the sort the panel ticks");
+    assert_eq!(watchlist(&w).probe_pill_value(), "Date added", "at rest the pill names the sort the panel ticks");
 
     // Type > TV Shows (the menu's third row): twenty of forty, and the pill still names the sort.
     w.press(Key::Up);
@@ -38,7 +38,7 @@ fn the_pill_names_the_sort_on_both_pages_and_a_filter_shows_only_as_n_of_m() {
     for _ in 0..2 { w.press(Key::Down); }
     w.press(Key::Ok);
     assert_eq!(watchlist(&w).count().and_then(|c| c.readout()).as_deref(), Some("20 of 40"), "premise: the filter narrowed the list");
-    assert_eq!(watchlist(&w).probe_pill_value(), "Date Added", "a filter never shows in the pill");
+    assert_eq!(watchlist(&w).probe_pill_value(), "Date added", "a filter never shows in the pill");
 
     // Sort > Title (row 4): the pill follows the sort and only the sort.
     for _ in 0..2 { w.press(Key::Down); }

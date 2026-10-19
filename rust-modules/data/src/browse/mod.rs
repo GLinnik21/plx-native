@@ -3645,6 +3645,23 @@ pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
     });
 }
 
+/// [`seed_collections_for_owner_test`] with each collection's `(title, thumb)` stated, for a test
+/// that needs a name a tile's face cuts (a long title over a server composite).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_named_collections_for_owner_test(state: &mut BrowseState, rows: &[(&str, &str)]) {
+    plx_base::testlock::assert_held("browse's section table (seed_named_collections_for_test)");
+    seed_listing_for_owner_test(state, rows.len(), |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("5000{i}"),
+        title: rows[i].0.to_owned(),
+        thumb: rows[i].1.to_owned(),
+        kind: crate::pms::KIND_COLLECTION,
+        subtype: Some("movie".to_owned()),
+        child_count: i as i64 + 2,
+        ..Default::default()
+    });
+}
+
 /// A seeded listing is "the server answered this query", so a page still out for it is superseded
 /// the way a query edit supersedes it ([`BrowseState::refetch_gen`]): the store retries a failed
 /// first page on a frame-counted cooldown, and a worker released a frame before the seed lands its

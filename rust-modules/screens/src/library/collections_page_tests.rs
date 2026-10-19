@@ -18,7 +18,7 @@ fn part(layout: &HeaderLayout, slot: Slot) -> Option<ItemRect> {
 }
 
 fn films(n: i64) -> TileFacts<'static> {
-    TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n }
+    TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n, name_cut: false }
 }
 
 fn lines(tag: &str, stored: CaptionPolicy, f: &TileFacts<'_>) -> [Option<String>; 2] {
@@ -107,7 +107,23 @@ fn a_film_describing_details_choice_falls_back_to_the_count_and_none_stays_none(
     }
     let none = CaptionPolicy { title: true, details: DetailsKind::None };
     assert_eq!(lines(en, none, &films(4)), [Some("Starfall Saga".into()), None]);
-    assert_eq!(policy(CaptionPolicy { title: false, details: DetailsKind::None }).max_lines(), 0);
+    assert_eq!(policy(CaptionPolicy { title: false, details: DetailsKind::None }, false).max_lines(), 0);
+}
+
+/// **S23.** A name the tile's face cuts rides the focused caption whatever the Under posters
+/// setting; a name the face sets whole stays the reader's to show or hide. The band is reserved for
+/// the title line either way (one height for every tile, whichever is focused).
+#[test]
+fn a_name_the_face_cuts_is_in_the_caption_whatever_the_setting() {
+    let en = "en";
+    let cut = TileFacts { name_cut: true, ..films(4) };
+    let silent = CaptionPolicy { title: false, details: DetailsKind::None };
+    assert_eq!(lines(en, silent, &cut), [Some("Starfall Saga".into()), None], "title off, details off");
+    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &cut), [Some("Starfall Saga".into()), Some("4 films".into())]);
+    assert_eq!(lines(en, silent, &films(4)), [None, None], "a name set whole follows the switch");
+    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(4)), [None, Some("4 films".into())]);
+    assert_eq!(band_policy(CaptionPolicy::DEFAULT).max_lines(), 2, "the band always reserves the title line");
+    assert_eq!(band_policy(silent).max_lines(), 1, "and with nothing else, only that line");
 }
 
 #[test]
