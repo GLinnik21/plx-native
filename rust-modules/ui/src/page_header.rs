@@ -26,8 +26,19 @@ pub const OVERHANG: f32 = 20.0;
 /// Top of the header row, and its height.
 pub const TOP: f32 = 148.0;
 pub const HEIGHT: f32 = 56.0;
-/// Gap between two items' plates' text runs (plates may touch their neighbours' overhang).
+/// The least gap between two items' text runs: the plates' overhangs and a little air. See
+/// [`gap_between`] for the real one.
 pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;
+/// The text-edge gap between two adjacent items whose text runs are `a` and `b` wide. [`GAP`] is
+/// its floor: the two plates' overhangs plus [`theme::space::XS`] of air. On top of that comes how
+/// far the focus pill of the WIDER of the two grows past its plate on each side
+/// (`(CTRL_FOCUS_SCALE - 1) / 2` of the plate's width), so a focused, scaled pill never reaches its
+/// neighbour's plate whatever the names are. Symmetric, and the one gap every placement and every
+/// packing uses.
+pub fn gap_between(a: f32, b: f32) -> f32 {
+    let widest_plate = a.max(b) + 2.0 * OVERHANG;
+    GAP + (super::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 * widest_plate
+}
 /// Text edge to text edge between a read-out and the control after it.
 pub const READOUT_GAP: f32 = 64.0;
 /// Clear space kept between the left group and the right cluster.
@@ -117,28 +128,28 @@ const FOLD_SIZE: f32 = 22.0;
 /// "+N". The caller (which knows the selected library and the 8-visible cap) may pick a window
 /// instead; this is the plain left-to-right case.
 pub fn fit_left(widths: &[f32], budget: f32, more_w: f32) -> usize {
-    let total: f32 = widths.iter().sum::<f32>() + GAP * widths.len().saturating_sub(1) as f32;
-    if total <= budget { return widths.len(); }
-    let room = budget - more_w;
-    let mut used = 0.0;
+    let span = |n: usize| widths[..n].iter().sum::<f32>()
+        + widths[..n].windows(2).map(|w| gap_between(w[0], w[1])).sum::<f32>();
+    if span(widths.len()) <= budget { return widths.len(); }
+    // "+N" follows the last name that stays, one gap after it.
     let mut n = 0;
-    for &w in widths {
-        let step = w + if n == 0 { 0.0 } else { GAP };
-        if used + step > room { break; }
-        used += step;
+    while n < widths.len() {
+        if span(n + 1) + gap_between(widths[n], more_w) + more_w > budget { break; }
         n += 1;
     }
     n
 }
 
-/// The space after `item` before the next one.
-fn gap_after(item: &HeaderItem) -> f32 { if item.readout { READOUT_GAP } else { GAP } }
+/// The space after `item` before `next`.
+fn gap_after(item: &HeaderItem, next: &HeaderItem, measure: &dyn Measure) -> f32 {
+    if item.readout { READOUT_GAP } else { gap_between(run_w(item, measure), run_w(next, measure)) }
+}
 
-/// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
+/// Width of a cluster of items laid out with [`gap_between`] between them ([`READOUT_GAP`] after a
 /// read-out).
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     let runs: f32 = items.iter().map(|i| run_w(i, measure)).sum();
-    let gaps: f32 = items.iter().rev().skip(1).map(gap_after).sum();
+    let gaps: f32 = items.windows(2).map(|w| gap_after(&w[0], &w[1], measure)).sum();
     runs + gaps
 }
 
@@ -164,15 +175,16 @@ impl PageHeader {
             let plate = Rect::new(x - OVERHANG, TOP, w + 2.0 * OVERHANG, HEIGHT);
             items.push(ItemRect { slot, text, plate, focusable });
         };
-        let mut x = TEXT_X0;
-        for (i, it) in self.spec.left.iter().enumerate() {
-            let w = run_w(it, measure);
-            place(Slot::Left(i), x, w, it.focusable);
-            x += w + GAP;
-        }
+        let mut left: Vec<(Slot, f32, bool)> = self.spec.left.iter().enumerate()
+            .map(|(i, it)| (Slot::Left(i), run_w(it, measure), it.focusable)).collect();
         if self.spec.overflow > 0 {
-            let w = run_w(&HeaderItem { label: format!("+{}", self.spec.overflow), ..Default::default() }, measure);
-            place(Slot::Overflow, x, w, true);
+            let more = HeaderItem { label: format!("+{}", self.spec.overflow), ..Default::default() };
+            left.push((Slot::Overflow, run_w(&more, measure), true));
+        }
+        let mut x = TEXT_X0;
+        for (n, &(slot, w, focusable)) in left.iter().enumerate() {
+            place(slot, x, w, focusable);
+            if let Some(next) = left.get(n + 1) { x += w + gap_between(w, next.1); }
         }
         // The right cluster keeps its measured width; its items sit flush to the right edge.
         let live = cluster_width(&self.spec.right, measure);
@@ -180,7 +192,7 @@ impl PageHeader {
         for (i, it) in self.spec.right.iter().enumerate() {
             let w = run_w(it, measure);
             place(Slot::Right(i), rx, w, it.focusable);
-            rx += w + gap_after(it);
+            if let Some(next) = self.spec.right.get(i + 1) { rx += w + gap_after(it, next, measure); }
         }
         HeaderLayout {
             items,

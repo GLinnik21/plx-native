@@ -38,17 +38,17 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     let n = widths.len();
     if n == 0 || cap == 0 { return Vec::new(); }
     let selected = selected.min(n - 1);
-    let gap = page_header::GAP;
     let span = |picks: &[usize]| picks.iter().map(|&i| widths[i]).sum::<f32>()
-        + gap * picks.len().saturating_sub(1) as f32;
+        + picks.windows(2).map(|w| page_header::gap_between(widths[w[0]], widths[w[1]])).sum::<f32>();
     let all: Vec<usize> = (0..n).collect();
     if n <= cap && span(&all) <= budget { return all; }
-    // "+N" takes the end of the row: names get what is left of the budget after it and one gap.
-    let room = budget - more_w - gap;
+    // "+N" takes the end of the row, one gap after the last name.
+    let with_more = |picks: &[usize]| span(picks) + picks.last()
+        .map_or(0.0, |&last| page_header::gap_between(widths[last], more_w)) + more_w;
     for k in (1..n.min(cap)).rev() {
         let mut picks: Vec<usize> = (0..k).collect();
         if selected >= k { picks[k - 1] = selected; }
-        if span(&picks) <= room { return picks; }
+        if with_more(&picks) <= budget { return picks; }
     }
     vec![selected]
 }

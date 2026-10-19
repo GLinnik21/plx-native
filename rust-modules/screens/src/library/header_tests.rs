@@ -71,7 +71,8 @@ fn one_library_draws_no_names_and_two_draw_both() {
 fn the_picked_library_takes_the_last_visible_slot() {
     let widths = [200.0, 180.0, 220.0, 160.0, 240.0];
     assert_eq!(pack_names(&widths, 0, 4000.0, 90.0, 8), [0, 1, 2, 3, 4], "everything fits: all names, in order");
-    let tight = 200.0 + 180.0 + 220.0 + 2.0 * plx_ui::page_header::GAP + 90.0 + plx_ui::page_header::GAP + 1.0;
+    let gap = plx_ui::page_header::gap_between;
+    let tight = 200.0 + 180.0 + 220.0 + gap(200.0, 180.0) + gap(180.0, 220.0) + 90.0 + gap(220.0, 90.0) + 1.0;
     let cut = pack_names(&widths, 1, tight, 90.0, 8);
     assert_eq!(cut, [0, 1, 2], "a pick inside the cut keeps its place");
     let cut = pack_names(&widths, 4, tight, 90.0, 8);
