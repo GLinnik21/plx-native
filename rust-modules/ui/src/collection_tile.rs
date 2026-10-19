@@ -552,12 +552,14 @@ mod tests {
         assert!(name.y > glyph.y + glyph.h, "the name sits under the mark");
     }
 
+    /// Resting widths within 8% of a 250 tile (the grids differ by that much) share at most two
+    /// cached masks; a focus pop is not among them, it grows the mask by the card's zoom.
     #[test]
-    fn a_pop_reuses_quantized_mark_sizes() {
+    fn nearby_resting_widths_share_quantized_mark_sizes() {
         let sizes: std::collections::BTreeSet<i32> = (0..=20)
             .map(|step| glyph_px(250.0 * (1.0 + step as f32 * 0.004)) as i32)
             .collect();
-        assert!(sizes.len() <= 2, "a 1.08 pop spans at most two cached masks: {sizes:?}");
+        assert!(sizes.len() <= 2, "resting widths within 8% span at most two cached masks: {sizes:?}");
         assert!(sizes.iter().all(|px| px % 4 == 0));
     }
 
