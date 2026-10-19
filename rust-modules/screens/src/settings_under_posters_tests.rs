@@ -5,7 +5,6 @@ use super::super::test_support::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-use plx_machine::machine::Measure;
 use plx_machine::present::Present;
 
 /// Every value the page can show: both title states over every details line.
@@ -267,15 +266,15 @@ fn the_preview_is_captioned_by_the_same_policy() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let none = UnderPostersDetails::None;
-    assert_eq!(preview_lines(UnderPosters { title: false, details: none }), [None, None]);
-    let default = preview_lines(UnderPosters::DEFAULT);
+    assert_eq!(preview_lines(UnderPosters { title: false, details: none }, None), [None, None]);
+    let default = preview_lines(UnderPosters::DEFAULT, None);
     assert_eq!(default[0], None, "the default shows no title");
     assert_eq!(default[1].as_deref(), Some("2019 \u{b7} 2h 14m"));
-    let both = preview_lines(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    let both = preview_lines(UnderPosters { title: true, details: UnderPostersDetails::Genre }, None);
     assert_eq!(both[0].as_deref(), Some("Movie"));
     assert_eq!(both[1].as_deref(), Some("Drama"));
-    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::Video })[1].as_deref(), Some("4K \u{b7} HDR"));
-    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore })[1].as_deref(),
+    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::Video }, None)[1].as_deref(), Some("4K \u{b7} HDR"));
+    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore }, None)[1].as_deref(),
         Some("PG-13 \u{b7} 7.8"));
 }
 
@@ -337,42 +336,78 @@ fn every_under_posters_string_fits_in_every_language() {
                 out.push(format!("{tag}: the copy under {title:?} ends at {:.0}, under the preview at {:.0}", frame.y + copy_h, preview_frame().y));
             }
         }
-        // the sample title fits inside its placeholder on one line
-        let w = ShippedMeasure.width_str(plx_platform::i18n::msg::under_posters_sample_title(), theme::size::LABEL, true);
-        if w > PREVIEW_W - 2.0 * theme::space::SM {
-            out.push(format!("{tag}: the sample title is {w:.0}px, wider than its placeholder"));
-        }
     }
     plx_ui::table::assert_no_fit_failures(&out);
 }
 
+fn poster(title: &str, year: i32, genre: &str) -> PmsMovie {
+    PmsMovie { title: title.into(), year, genre: Some(genre.into()), ..Default::default() }
+}
+
 #[test]
-fn the_preview_is_one_lifted_poster_in_a_frame_inside_the_narrative_column() {
+fn the_preview_is_a_row_of_three_tiles_inside_the_frame_with_the_caption_band_clear_under_it() {
     let narrative = RouteLayout::screen().narrative;
     let frame = preview_frame();
     assert!(frame.x >= narrative.x && frame.x + frame.w <= narrative.x + narrative.w);
     assert!((frame.y + frame.h - (narrative.y + narrative.h)).abs() < 0.01, "it rests on the column's floor");
-    let poster = preview_poster();
-    assert!(poster.y >= frame.y && poster.x >= frame.x && poster.x + poster.w <= frame.x + frame.w);
-    assert!(poster.y + poster.h + PREVIEW_UNDER <= frame.y + frame.h, "the tallest caption stays inside the frame");
+    let row = preview_row();
+    for i in 0..PREVIEW_TILES {
+        let lifted = SampleRow::lifted(&PREVIEW_STYLE, PREVIEW_TILES, i, row);
+        assert!(lifted.x >= frame.x && lifted.x + lifted.w <= frame.x + frame.w, "tile {i} stays in the frame: {lifted:?}");
+        assert!(lifted.y >= frame.y, "tile {i} clears the frame's top edge");
+    }
+    assert!(row.y + row.h + PREVIEW_UNDER <= frame.y + frame.h, "the tallest caption stays inside the frame");
     // the Library's proportions, not a private set
-    assert!((poster.w / poster.h - plx_ui::consts::CARD_W / plx_ui::consts::CARD_H).abs() < 1e-3);
+    assert!((PREVIEW_TILE_W / PREVIEW_TILE_H - plx_ui::consts::CARD_W / plx_ui::consts::CARD_H).abs() < 1e-3);
 }
 
 #[test]
-fn the_preview_draws_the_frame_one_poster_and_its_caption() {
+fn the_preview_captions_only_the_lifted_tile_from_its_own_poster() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let (a, b, c) = (poster("Alpha", 1999, "Noir"), poster("Bravo", 2004, "Western"), poster("Charlie", 2011, "Comedy"));
+    let runs = plx_ui::draw_census::capture_runs(|| {
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre },
+            &[&a, &b, &c], &ShippedMeasure);
+    });
+    let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
+    assert_eq!(words, vec!["Bravo", "Western"], "only the middle tile is captioned, with its own facts");
+    let lifted = SampleRow::lifted(&PREVIEW_STYLE, PREVIEW_TILES, lifted_tile(3), preview_row());
+    let caption = runs.iter().rfind(|r| r.text == "Western").unwrap();
+    assert!(caption.at.y > lifted.y + lifted.h - 1.0, "the caption stands under the tile: {:?}", caption.at);
+    // fewer posters than tiles: the lifted tile is the last real one, the rest are blank faces
+    let two = plx_ui::draw_census::capture_runs(|| {
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::None }, &[&a], &ShippedMeasure);
+    });
+    assert_eq!(two.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["Alpha"]);
+    assert_eq!(lifted_tile(0), PREVIEW_LIFTED, "no posters: the middle tile");
+    assert_eq!(lifted_tile(1), 0, "one poster: the lifted tile is that poster");
+}
+
+#[test]
+fn the_pages_preview_reads_the_first_cached_posters_of_the_current_library() {
+    let _guard = plx_base::testlock::serial();
+    let items: Vec<PmsMovie> = ["Alpha", "Bravo", "Charlie", "Delta"].into_iter().map(|t| poster(t, 2000, "Noir")).collect();
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(items);
+    let c = cx_with(None, snapshot.view());
+    let titles: Vec<&str> = preview_posters(&c).iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, vec!["Alpha", "Bravo", "Charlie"], "the first three, no more");
+    assert!(preview_posters(&cx(None)).is_empty(), "no library cached: blank faces");
+}
+
+#[test]
+fn a_blank_face_carries_no_word() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let runs = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre }, &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre }, &[], &ShippedMeasure);
     });
     let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
-    assert_eq!(words.iter().filter(|w| **w == "Movie").count(), 2, "the title sits in the placeholder and again as the caption: {words:?}");
-    assert!(words.contains(&"Drama"));
-    let caption = runs.iter().rfind(|r| r.text == "Drama").unwrap();
-    let poster = preview_poster();
-    assert!(caption.at.y > poster.y + poster.h, "the caption stands under the poster");
-    assert!(caption.at.x >= poster.x && caption.at.x + caption.at.w <= poster.x + poster.w, "within the poster's width: {:?}", caption.at);
+    assert_eq!(words.iter().filter(|w| **w == "Movie").count(), 1, "the title is the caption alone, never also a word on a blank face: {words:?}");
+    let off = plx_ui::draw_census::capture_runs(|| {
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None }, &[], &ShippedMeasure);
+    });
+    assert!(off.iter().all(|r| r.ink[3] <= 0.5), "with no caption chosen the preview is faces only: {:?}", off.iter().map(|r| &r.text).collect::<Vec<_>>());
 }
 
 #[test]

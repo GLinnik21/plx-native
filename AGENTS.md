@@ -173,7 +173,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
   PER PROFILE (a profile that never chose reads the install's older value), so never assume which
   one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
-  Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
+  Play/Resume row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.

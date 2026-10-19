@@ -7821,7 +7821,7 @@ impl Button {
     ///
     /// ONE formula for every pill in the product, because they all relabel from state and a fixed
     /// frame that fits the short word crams the long one against its own capsule ends: both hero
-    /// rows ("Play"/"Continue", "Play"/"Resume") pass `icon: true`, and Home's status-screen Retry
+    /// rows ("Play"/"Resume") pass `icon: true`, and Home's status-screen Retry
     /// control passes `false`. That flag is the whole reason this takes one — an icon-less pill
     /// measured with an icon box gets a slug of air it never fills, which is why the earlier
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
