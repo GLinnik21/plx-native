@@ -622,11 +622,12 @@ impl LibraryScreen {
             content: &content,
             rail: Some(self.pair.groups_config().master),
             back_walks_header: self.listing != Listing::Collections,
-            arrival: Arrival::Header,
+            arrival: Arrival::Content,
         })
     }
 
-    /// The group the page seats on its first arrival: the header row.
+    /// The group the page seats on its first arrival: its first poster once the grid has one, the
+    /// header row while it has none (`PageRegions::first_seat`).
     fn first_group(&self) -> GroupId {
         self.with_regions(|regions| regions.first_seat()).unwrap_or(STRIP)
     }
@@ -730,6 +731,14 @@ impl LibraryScreen {
     #[cfg(feature = "devtriggers")]
     pub fn grid_extent(&self) -> Option<(usize, usize)> {
         (self.layout.rows > 0).then(|| (self.layout.rows, self.layout.rows_per_screen()))
+    }
+
+    /// `(page alpha, focused grid tile's drawn scale)` — what a viewer sees of a focus arrival: the
+    /// scale is 1.0 (rest) while the focus is not on a tile, or the page is still dissolving in.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_arrival(&self, focus: Option<FocusKey<u32>>) -> (f32, f32) {
+        let key = focus.filter(|key| key.entry == self.entry);
+        (self.page_fade.alpha(), self.pair.detail.pop_probe(key.and_then(|key| self.pair.detail.index_of(key.elem))))
     }
 
     pub fn probe_viewport(&self, focus: Option<FocusKey<u32>>) -> (&'static str, i32, i32, f32, f32) {
@@ -996,7 +1005,7 @@ impl LibraryScreen {
                 if self.sweep_down && self.grid_position(current).is_some_and(|(row, _)|
                     row + 1 >= self.pair.detail.total().div_ceil(self.layout.cols())) {
                     self.sweep_down = false;
-                } else if !self.sweep_down && group == Some(self.first_group()) {
+                } else if !self.sweep_down && group == Some(LIBRARY_GROUP) {
                     self.sweep_down = true;
                 }
                 fx.push(Fx::Deliver(MachineId::Instance(self.instance), Delivery::Screen(
@@ -1255,9 +1264,11 @@ impl LibraryScreen {
                     self.ground_seeded |= colours.is_some();
                     self.ground.key(colours, plx_ui::widgets::PageGround::CARD_W, dt);
                     self.step_header(cx, dt);
-                    // A page still dissolving in shows its seat unpopped: the pop starts when the
-                    // page is opaque, where it can be seen, instead of playing out under the fade.
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
+                    // A page still dissolving in shows its seat unpopped: the lift starts on the
+                    // dissolve's last frame, where it can be seen, instead of playing out under the
+                    // fade or the held image of a route dip (the page arrives in its first poster).
+                    self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
                     // tile where it was on screen; the scroll and its target both take it, so the
@@ -1297,11 +1308,13 @@ impl LibraryScreen {
                         // A landing moved the head out from under the page's own seat. Follow it, as a
                         // first paint would.
                         let head = self.first_group();
-                        let at = focused.filter(|key| key.entry == self.entry)
-                            .and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
+                        let mine = focused.filter(|key| key.entry == self.entry);
+                        let at = mine.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                         // Focus anywhere but the seat is somebody's move, reported or not yet (the
                         // engine moves before the page hears `FocusMoved`): not the page's to take.
-                        if at != Some(seated) { self.provisional = None; }
+                        // A key of this page that nothing places any more is the seat itself gone
+                        // (the status read-out clears as the grid lands), still the page's own.
+                        if mine.is_none() || at.is_some_and(|group| group != seated) { self.provisional = None; }
                         else if head != seated { self.provisional = Some(head); self.seat_on(head, cx, fx); }
                     }
                 }
@@ -1425,8 +1438,9 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             let elems = self.row_elems(Some(group));
             if let Some(elem) = elems.get(index.min(elems.len().saturating_sub(1))) { return self.key(*elem); }
         }
-        let group = self.first_group();
-        self.row_elems(Some(group)).first().copied().map(|elem| self.key(elem))
+        // A key nothing places any more lands on the header row, which always has its stops (the
+        // grid's keys are projected on demand, so the first seat's group may hold none to name).
+        self.row_elems(Some(LIBRARY_GROUP)).first().copied().map(|elem| self.key(elem))
             .unwrap_or_else(|| self.key(plx_ui::dispatch::STRIP_BASE))
     }
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {

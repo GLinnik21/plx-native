@@ -173,6 +173,10 @@ pub struct Grid {
     /// What the focused caption band shows (the Library's Under posters setting); `None` keeps the
     /// legacy 92 px band every grid without the setting opens to.
     caption_policy: Option<crate::caption_policy::CaptionPolicy>,
+    /// The page is still dissolving in ([`dormant`](Grid::dormant)): no card is lifted yet.
+    dormant: bool,
+    /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
+    slept: bool,
 }
 
 impl Grid {
@@ -204,7 +208,19 @@ impl Grid {
                 l
             },
             caption_policy: None,
+            dormant: false,
+            slept: false,
         }
+    }
+
+    /// Hold every card at rest while the owner's page is still dissolving in (the twin of
+    /// [`Shelf::dormant`](super::Shelf::dormant)): a lifted tile under a fade plays its selection
+    /// where nobody can see it. The grid keeps no pop meanwhile; the first awake tick starts the
+    /// focused card's pop from rest, as a deliberate move does (a restore or reconcile announced
+    /// since the last dormant tick is still adopted whole). Landings are adopted whole while
+    /// dormant. Set it before each [`on`](Self::on).
+    pub fn dormant(&mut self, held: bool) {
+        self.dormant = held;
     }
 
     /// Size and caption the focused band by `policy` (the Library's Under posters setting). A grid
@@ -274,6 +290,20 @@ impl Grid {
         self.landed = None;
         self.shift = 0.0;
         let sy0 = self.scroll.pos;
+        let awake = !self.dormant;
+        if self.dormant {
+            // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
+            self.slept = true;
+            self.seen = Seen::Nothing;
+            self.pop = GridPop::new();
+        } else if std::mem::take(&mut self.slept) {
+            // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
+            // own rule; only a focus no event told the grid about wakes growing from rest
+            if let (Some(i), Seen::Nothing) = (focus, self.seen) {
+                self.pop.arm(i);
+                self.seen = Seen::Deliberate(i);
+            }
+        }
         // what the focused card was drawn at before this tick lets it go: if the landing removes
         // it, its ghost starts there
         let lifted = self.pop.cell().map(|p| (p, self.pop.pop_scale(p, &self.spec.style)));
@@ -307,7 +337,7 @@ impl Grid {
                 self.seen = Seen::Deliberate(i);
             }
         }
-        if let Some(i) = focus {
+        if let Some(i) = focus.filter(|_| awake) {
             match (self.seen, prev) {
                 (Seen::Deliberate(a), _) if a == i => {}
                 // no FocusMoved, another index: the same element, moved by a content landing
@@ -318,7 +348,11 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
-        self.play_landing(src, sy0, lifted, dt);
+        if awake {
+            self.play_landing(src, sy0, lifted, dt);
+        } else {
+            self.landing.snap(src);
+        }
         if focus.is_none() && !self.landing.has_takeover() {
             self.focus_band(None, false);
         }
@@ -348,7 +382,7 @@ impl Grid {
         self.bands.tick(self.spec.style.k_scroll, dt);
         // the takeover's rise starts with the landing's springs, not under the menu that chose it
         if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
-            self.pop.tick(focus, &self.spec.style, dt);
+            self.pop.tick(focus.filter(|_| awake), &self.spec.style, dt);
         }
         self.shrink.note(&self.pop, src);
         if self.spec.scroll == ScrollMode::External {
@@ -630,6 +664,8 @@ impl Grid {
     /// The pop of card `i` given the engine's focus (`GridPop::scale`'s rule: a focused card the
     /// grid was not told about is FULL, the one that lost focus lets go, the rest are at rest).
     fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
+        // a page still dissolving in lifts nothing
+        let focus = focus.filter(|_| !self.dormant);
         // the element-keyed pool: a source change no tick has seen yet is resolved by element
         match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
             Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
@@ -894,6 +930,13 @@ impl Grid {
     /// it (the springs step from the next). An owner pairs its own change with the landing's first step.
     pub fn landing_waiting(&self) -> bool {
         self.landing.waiting() || self.landing.unstepped()
+    }
+
+    /// The scale card `focus` is drawn at now (`None`, or a grid asleep: rest): what a viewer sees
+    /// of the lift, with the let-go of the card focus left out.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
+        focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
     }
 
     /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.

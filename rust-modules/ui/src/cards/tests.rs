@@ -1676,6 +1676,66 @@ fn a_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still_grow
     assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
 }
 
+/// The grid's twin of the shelf's dormant rule (the Library and the Collections page arrive in
+/// their first poster under a dissolve): nothing is lifted meanwhile, whatever focus does, and the
+/// first awake tick starts the focused card's pop FROM REST on the standard spring, even for an
+/// arrival that would otherwise be adopted whole.
+#[test]
+fn a_dormant_grid_keeps_its_cards_at_rest_and_wakes_growing_from_rest() {
+    let mut r = settled::<Grid>(8);
+    let full = RowStyle::HOME.focus_scale;
+    r.sect.dormant(true);
+    r.land_focus(102, By::Restore);
+    for _ in 0..30 {
+        r.run(1);
+        assert_eq!(r.scale(102), Some(1.0), "no lift under the fade");
+        assert_eq!(lifted(&r), 0);
+    }
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the pop starts from rest, not whole: {first}");
+    r.run(200);
+    assert!((r.scale(102).unwrap() - full).abs() < 0.002);
+    assert_eq!(lifted(&r), 1);
+}
+
+/// The restore rule survives idle dormant ticks on a grid too: a restore announced AFTER the grid
+/// slept, on the tick the page wakes, is adopted whole, while a deliberate arrival still grows.
+#[test]
+fn a_grid_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still_grows() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut restored = settled::<Grid>(8);
+    restored.sect.dormant(true);
+    restored.run(3);
+    restored.sect.dormant(false);
+    restored.land_focus(102, By::Restore);
+    restored.run(1);
+    assert_eq!(restored.scale(102), Some(full), "a restore arrives already popped");
+
+    let mut dived = settled::<Grid>(8);
+    dived.sect.dormant(true);
+    dived.run(3);
+    dived.sect.dormant(false);
+    dived.land_focus(102, By::Dir);
+    dived.run(1);
+    let first = dived.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
+}
+
+/// A lifted grid card that goes dormant lets go and the grid keeps no lift while it sleeps.
+#[test]
+fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {
+    let mut r = settled::<Grid>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    assert!(r.scale(101).unwrap() > 1.05);
+    r.sect.dormant(true);
+    r.run(2);
+    assert_eq!(r.scale(101), Some(1.0));
+    assert_eq!(lifted(&r), 0);
+}
+
 /// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
 #[test]
 fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {

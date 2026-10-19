@@ -41,8 +41,7 @@ fn collection_screen(name: &str) -> World {
     let mut w = World::collections(name, false);
     w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);
-    // Whatever the Collections page arrives on, the first collection's tile is one Down from the header.
-    if region(&w) != "content" { w.press(Key::Down); }
+    // The Collections page arrives on its first collection's tile.
     w.press(Key::Ok);
     w.frames(40);
     assert!(matches!(w.d.top_arg(), Some(AppArg::Content(ContentArg::Collection(_)))), "premise: OK on a collection opened its screen");

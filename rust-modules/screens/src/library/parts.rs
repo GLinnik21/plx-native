@@ -253,6 +253,14 @@ impl GridPart {
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
 
+    /// Hold the grid's cards at rest while the page is still dissolving in ([`Grid::dormant`]); the
+    /// lift begins on the first frame after. Set before each [`on`](Self::on).
+    pub(super) fn dormant(&mut self, held: bool) { self.grid.dormant(held); }
+
+    /// The scale the focused card is drawn at now (see [`Grid::pop_probe`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn pop_probe(&self, index: Option<usize>) -> f32 { self.grid.pop_probe(index) }
+
     /// The document shift the grid's next tick will report for the cards as they stand now (see
     /// [`Grid::pending_shift`]): a scroll target set against a document that already landed is held
     /// in the coordinates the scroll is still in, so that tick's rebase does not apply it twice.

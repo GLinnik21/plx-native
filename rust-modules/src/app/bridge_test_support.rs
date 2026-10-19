@@ -491,8 +491,13 @@ impl World {
     }
 
     /// Walk along the Library header (Right, or Left when the stop lies behind focus) to the stop
-    /// `elem` (an element id) and stop there.
+    /// `elem` (an element id) and stop there. The page arrives in its first poster, so a walk that
+    /// starts below the header climbs into it with Up first.
     pub(super) fn walk_header_to(&mut self, elem: u32) {
+        for _ in 0..3 {
+            if self.on_header() { break; }
+            self.press(Key::Up);
+        }
         let stops = self.library().probe_header_stops();
         let place = |stop: Option<u32>| stops.iter().position(|(_, e)| Some(*e) == stop);
         for _ in 0..stops.len() + 1 {

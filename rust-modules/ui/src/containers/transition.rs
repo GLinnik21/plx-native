@@ -423,7 +423,7 @@ pub(crate) fn set_page_image_held(held: bool) {
 }
 
 /// Was the page a held image on the last frame the dispatcher painted ([`set_page_image_held`])?
-pub(crate) fn page_image_held() -> bool {
+pub fn page_image_held() -> bool {
     PAGE_IMAGE_HELD.with(|h| h.get())
 }
 
