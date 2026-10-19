@@ -911,13 +911,14 @@ impl WatchlistScreen {
 
     /// **The Sort & Filter control, lit above its menu's scrim** (the opener lift, design review
     /// S12): painted as the focused control at the row's drawn place, with the head's own tuck
-    /// alpha, since the page's pass leaves it out while the menu is up. A control scrolled out of
-    /// the head (`head_alpha` 0) draws nothing, as the row would not.
+    /// alpha (the handoff's `chrome`, which the page's pass wears too), since the page's pass leaves
+    /// it out while the menu is up. A control the top chrome has left (`chrome` 0) draws nothing, as
+    /// the row would not.
     fn redraw_opener<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let Some(placed) = Focusable::<H>::place(self, &PILL_ELEM, f.cx, plx_ui::screen::At::Drawn) else { return };
         let row = self.page.header_row(f.measure);
         let dy = placed.rect.y - row.plate().y;
-        let p = f.painter.alpha(f.page_alpha).alpha(head_alpha(-dy));
+        let p = f.painter.alpha(f.page_alpha).alpha(self.page.handoff.chrome());
         row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press.scale));
     }
 
