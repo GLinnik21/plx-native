@@ -125,8 +125,8 @@ pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::Un
     draw_shadowed(p, r, radius, field, 1.0)
 }
 
-/// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph lays its glass at
-/// full strength over the lit opener, and its shadow arrives with the fill.
+/// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
+/// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
 #[must_use]
 pub fn draw_shadowed(
     p: Painter,
