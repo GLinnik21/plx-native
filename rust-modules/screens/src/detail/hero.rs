@@ -324,7 +324,7 @@ pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)
 
 use plx_data::catalog::Membership;
 
-pub use plx_appkit::watchlist_disc::{face, face_icon, Face};
+pub use plx_appkit::watchlist_disc::{face_icon, Face};
 
 /// The 12 hex bytes of a PMS item's `plex://movie|show/<hex>` guid, `None` for any other shape.
 pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {

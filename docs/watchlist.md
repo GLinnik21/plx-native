@@ -165,7 +165,7 @@ The **Home hero** carries the same disc, second after Play/Continue and before I
 semantics) with a known id. The application feeds it the membership of the title the hero shows
 (`HomeScreen::watchlist_hex` / `set_watchlist`, `app::watchlist::catalog_feed`); it flips only on a real
 membership change of that title, never on open or when the hero rotates to another title. A press is the
-same `AppFx::ItemMenu` write as Detail's. Face, glyphs and flip are `plx_appkit::watchlist_disc`, shared.
+same `AppFx::ItemMenu` write as Detail's. Face, glyphs, flip and the `Disc` state that decides when the flip plays are `plx_appkit::watchlist_disc`, shared.
 The item menu offers `Add to Watchlist` / `Remove from Watchlist` for a movie and `Add Show to
 Watchlist` / `Remove Show...` for an episode or season, with the identity captured when the menu
 opened. A catalog page's primary pill reads `Add to Watchlist` / `On Watchlist`. An add from a menu

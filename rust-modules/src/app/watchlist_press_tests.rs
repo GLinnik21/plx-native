@@ -311,7 +311,7 @@ fn a_press_flips_then_reverts_when_the_write_is_refused() {
 
 /// The membership the hero discs are fed across an Add and a Remove on a list that never landed:
 /// `Unknown` -> `On` at the press (the shape the discs' flip must treat as the user's own change,
-/// `HeroDisc::set`), and `On` -> `Unknown` at the Remove.
+/// `watchlist_disc::Disc::set`), and `On` -> `Unknown` at the Remove.
 #[test]
 fn an_add_on_an_unread_list_feeds_unknown_then_on() {
     let _serial = plx_base::testlock::serial();

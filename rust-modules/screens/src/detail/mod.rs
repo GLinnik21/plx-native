@@ -294,15 +294,11 @@ pub struct DetailScreen {
     season_pop: CtlPop<1>,
     ctl_pop: CtlPop<5>,
     disc_unfurl: [Spring; 3],
-    /// The bookmark disc's face: what the app last said of the title's membership. Render and
-    /// input state only (never hashed): the Watchlist store owns the truth, this page keeps no copy
-    /// of the list.
-    watchlist: plx_data::catalog::Membership,
-    /// 0 = the outline face at rest, 1 = the filled one; the flip between them is
-    /// [`plx_appkit::watchlist_disc::flip_frame`]. Stepped toward `watchlist` inside `idle::decorative`.
-    watchlist_flip: Spring,
-    /// A disc press whose membership change has not arrived: it plays the flip even from `Unknown`.
-    watchlist_pressed: bool,
+    /// The bookmark disc: what the app last said of the title's membership, the flip toward its
+    /// face ([`plx_appkit::watchlist_disc::flip_frame`]) and a pending press, all the shared
+    /// [`plx_appkit::watchlist_disc::Disc`]'s. Render and input state only (never hashed): the
+    /// Watchlist store owns the truth, this page keeps no copy of the list.
+    watchlist: plx_appkit::watchlist_disc::Disc,
     /// The loaded item's catalog id (movie or show guid, decoded once), mirrored for the app's feed.
     watchlist_hex: Option<[u8; 12]>,
     season_metrics: season::Metrics,
@@ -510,22 +506,15 @@ impl DetailScreen {
     /// The membership the bookmark disc wears: On draws the filled face, Off and Unknown the outline
     /// (the PUT is idempotent, so an unknown membership offers Add). A change flips the disc.
     pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) {
-        if self.watchlist != membership {
-            // The first answer (the list landing, or the page opening on an on-list title) is the
-            // disc's REST face, not a flip: snap. Only a change from a known face animates.
-            // A change answering the user's own press is real even out of Unknown (the list unread).
-            if self.watchlist == plx_data::catalog::Membership::Unknown && !self.watchlist_pressed {
-                self.watchlist_flip = Spring::at(f32::from(hero::face(membership) == hero::Face::Filled));
-            }
-            self.watchlist_pressed = false;
-            self.watchlist = membership;
+        // When the disc snaps and when it animates is its own rule (`watchlist_disc::Disc::set`).
+        if self.watchlist.set(membership) {
             plx_machine::idle::invalidate();
         }
     }
 
     /// The membership the disc currently wears.
     pub fn watchlist(&self) -> plx_data::catalog::Membership {
-        self.watchlist
+        self.watchlist.membership()
     }
 
     pub fn new(entry: EntryId, sid: ServerId, rk: String, hubs: plx_data::pms::HubsView<'_>) -> Self {
@@ -582,9 +571,7 @@ impl DetailScreen {
             season_pop: CtlPop::new(),
             ctl_pop: CtlPop::new(),
             disc_unfurl: [Spring::at(0.0); 3],
-            watchlist: plx_data::catalog::Membership::Unknown,
-            watchlist_flip: Spring::at(0.0),
-            watchlist_pressed: false,
+            watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown),
             watchlist_hex: None,
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
@@ -2998,7 +2985,7 @@ impl DetailScreen {
                         hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         // At either rest the plain face; only a flip in flight layers the fill.
-                        hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).0,
+                        hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist.pos()).0,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -3012,7 +2999,7 @@ impl DetailScreen {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
                     if ctl == hero::HeroCtl::Watchlist {
-                        if let Some(frame) = plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).1 {
+                        if let Some(frame) = plx_appkit::watchlist_disc::paint(self.watchlist.pos()).1 {
                             button = button.icon_fill(hero::face_icon(hero::Face::Filled), frame.fill, frame.ribbon_dy);
                         }
                     }
@@ -3672,15 +3659,7 @@ impl DetailScreen {
         // The bookmark disc's flip, and the identity the app's feed reads. Decorative: it moves
         // no layout, so it never holds a page image.
         self.watchlist_hex = self.detail(meta).and_then(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid));
-        let flip_target = plx_appkit::watchlist_disc::target(self.watchlist);
-        plx_machine::idle::decorative(|| {
-            self.watchlist_flip.step(flip_target, plx_ui::widgets::K_DISC_UNFURL, dt);
-        });
-        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
-        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
-        if plx_machine::idle::settled(self.watchlist_flip.pos, flip_target, self.watchlist_flip.vel) {
-            self.watchlist_flip.jump(flip_target);
-        }
+        let watchlist_moving = self.watchlist.step(dt);
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
             spring.step(
                 f32::from(disc == Some(i)),
@@ -3789,7 +3768,7 @@ impl DetailScreen {
             || self.episode_scroll.vel.abs() > 0.01
             || self.tab_scroll.vel.abs() > 0.01
             || self.disc_unfurl.iter().any(|s| s.vel.abs() > 0.01)
-            || self.watchlist_flip.vel.abs() > 0.01;
+            || watchlist_moving;
         if !meta.detail_loading()
             && !meta.season_loading()
             && focused.is_some_and(|located| self.return_pending && !self.return_waiting(meta) || self.restore_target_matches(located, meta))
@@ -4327,8 +4306,8 @@ impl DetailScreen {
             // refuses. An item with no `plex://movie|show` guid (an episode) presses nothing.
             hero::HeroCtl::Watchlist => {
                 if let Some(d) = self.detail(meta) {
-                    if let Some(act) = hero::press(&d.guid, self.watchlist).filter(|_| self.watchlist_hex.is_some()) {
-                        self.watchlist_pressed = true;
+                    if let Some(act) = hero::press(&d.guid, self.watchlist.membership()).filter(|_| self.watchlist_hex.is_some()) {
+                        self.watchlist.press();
                         fx.push(Fx::App(AppFx::ItemMenu(crate::registry::ItemMenuReq {
                             act, sid: d.sid, item: None, season: None, loaded_episode: false, from_home: false,
                         })));
