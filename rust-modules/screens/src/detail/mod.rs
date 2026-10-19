@@ -3003,6 +3003,12 @@ impl DetailScreen {
                         }
                     }
                     button.draw(&Env::inert(), p);
+                    // The bookmark disc carries no verb to unfurl, so it names itself with the
+                    // shared caption (the other discs unfurl theirs): `hero_layout::draw_name`.
+                    if ctl == hero::HeroCtl::Watchlist {
+                        let name = plx_appkit::watchlist_disc::name(self.watchlist.membership());
+                        plx_appkit::hero_layout::draw_name(p, rect, name, fill, cx.measure);
+                    }
                 }
             }
         }

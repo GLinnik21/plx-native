@@ -16,8 +16,9 @@ use std::ffi::CStr;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::Measure;
+use plx_ui::text_view::TextView;
 use plx_ui::widgets::CircleButton;
-use plx_ui::{theme, Rect};
+use plx_ui::{theme, Painter, Rect};
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
@@ -78,6 +79,37 @@ pub fn play_text(resumes: bool) -> &'static str {
         plx_platform::i18n::msg::browse_detail_resume()
     } else {
         plx_platform::i18n::msg::browse_detail_play()
+    }
+}
+
+/// The gap between a hero control's lower edge and the name it wears while focused.
+const NAME_GAP: f32 = theme::space::XS;
+
+/// **The name an icon-only hero control wears while it holds focus**, one rule for the Home hero
+/// and the Detail hero (design review S25). A disc that carries a verb of its own (Detail's Play
+/// from Start, Trailer and Mark as watched) UNFURLS it; the controls that carry none (the bookmark
+/// disc on both pages and Home's Info) are named by this caption instead, so no focused control in
+/// the row is ever a bare glyph. It is drawn under the control, centred on it and kept inside the
+/// page margin, at the control's own focus spring (`t`, 0..1) so it arrives with the fill.
+pub fn draw_name(p: Painter, ctl: Rect, name: &str, t: f32, measure: &dyn Measure) {
+    if t <= 0.01 || name.is_empty() {
+        return;
+    }
+    let w = measure.width_str(name, theme::size::CAPTION, false).ceil() + 2.0;
+    let x = (ctl.x + ctl.w * 0.5 - w * 0.5).max(plx_ui::consts::MARGIN_X);
+    TextView::new(name, theme::size::CAPTION, theme::TEXT_PRIMARY)
+        .max_lines(1)
+        .draw(p.alpha(t), Rect::new(x, ctl.y + ctl.h + NAME_GAP, w, 0.0));
+}
+
+/// The Info control's name: the page it opens, said in the card menu's own "Go to ..." words (a
+/// show's page, a season's, an episode's, else the movie's).
+pub fn info_name(kind: i32) -> &'static str {
+    match kind {
+        1 => plx_platform::i18n::msg::browse_menu_go_show(),
+        2 => plx_platform::i18n::msg::browse_menu_go_season(),
+        3 => plx_platform::i18n::msg::browse_menu_go_episode(),
+        _ => plx_platform::i18n::msg::browse_menu_go_movie(),
     }
 }
 

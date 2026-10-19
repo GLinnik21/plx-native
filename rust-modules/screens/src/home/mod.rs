@@ -2009,6 +2009,14 @@ impl HomeScreen {
             .palette(palette)
             .scale(pop(1))
             .draw(env, p);
+        // The two icon-only controls name themselves while focused (the shared rule, `hero_layout::draw_name`).
+        if live {
+            if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
+                let name = plx_appkit::watchlist_disc::name(self.disc.membership(hex));
+                plx_appkit::hero_layout::draw_name(p, rect, name, fill(2), measure);
+            }
+            plx_appkit::hero_layout::draw_name(p, info, plx_appkit::hero_layout::info_name(hero.kind), fill(1), measure);
+        }
         plx_ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
     }
 
@@ -3242,6 +3250,16 @@ impl HeroDisc {
             (Some(h), _) if h == hex => self.flip.pos(),
             (_, Some((h, filled))) if h == hex => f32::from(filled),
             _ => 0.0,
+        }
+    }
+
+    /// The membership the disc of the title `hex` stands for: the flip's own for the title it is
+    /// fed, `Unknown` (the Add face) for any other.
+    fn membership(&self, hex: [u8; 12]) -> plx_data::catalog::Membership {
+        if self.of == Some(hex) {
+            self.flip.membership()
+        } else {
+            plx_data::catalog::Membership::Unknown
         }
     }
 
