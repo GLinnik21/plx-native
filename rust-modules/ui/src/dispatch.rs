@@ -1648,8 +1648,7 @@ where
             if Z::DIM < ceiling {
                 let _dim_layer = backdrop::layer(Z::DIM, false);
                 let _scope = rig.surface_scope();
-                let read = scrim_lift_read(rig, glass.as_deref());
-                backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
+                backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha));
             }
         }
         // One prewarm budget per frame, shared by the page (here) and a held surface (below).
@@ -1730,6 +1729,18 @@ where
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
                 if !plx_gfx::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
+        }
+        // **The surfaces' lifts, after the last surface** (`Scrim::lift`, `ModalStack::draw_lifts`):
+        // the element a surface was opened from, lit above the dim AND the panels, so a morphing
+        // panel grows out from under it. The dim above is the page pass's; this is the opener
+        // layer's, where a page's own header opener is lifted too (`Bridge::redraw_opener`).
+        if Z::OPENER < ceiling {
+            let _lift_layer = backdrop::layer(Z::OPENER, false);
+            let _scope = rig.surface_scope();
+            let read = scrim_lift_read(rig, glass.as_deref());
+            backdrop::draw_span("lifts", || modals.draw_lifts(Some(read)));
+        } else {
+            modals.draw_lifts(None);
         }
         if drain_surface_text && !capture_surface && !source_pass && warm_budget_us > 0 {
             plx_base::diag::spans::span("warmdrain", || plx_gfx::text::drain_prewarm(warm_budget_us, || rig.now_us()));

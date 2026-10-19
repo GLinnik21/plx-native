@@ -2850,8 +2850,9 @@ fn profile_chip_on(
     }
 }
 
-/// [`profile_chip_with`], re-drawn over the account menu's scrim — the `Scrim::lift` contract
-/// (`ui::screen::Scrim`, drawn by `ModalStack::draw_scrims`), for the one surface in the app that
+/// [`profile_chip_with`], re-drawn above the account menu's scrim AND panel — the `Scrim::lift`
+/// contract (`ui::screen::Scrim`, drawn by `ModalStack::draw_lifts` after every surface, so the
+/// panel's glass grows out from under the chip), for the one surface in the app that
 /// hangs off a piece of shared CHROME rather than off a card.
 ///
 /// It lives HERE, beside the chip itself, for the reason the chip does: the control is drawn

@@ -444,8 +444,9 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     }
     /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel grows out of
     /// ([`plx_ui::widgets::CHIP_PILL`], the morph's origin) and the only thing on screen the panel
-    /// is about, so dimming it under its own menu is the same bug the focused card had. Only the
-    /// DRAW half of the legacy `Opener` is used: the panel's settled placement is its own (it
+    /// is about, so dimming it under its own menu is the same bug the focused card had. It is lit
+    /// above the panel too (`ModalStack::draw_lifts`), so the glass grows out from under it. Only
+    /// the DRAW half of the legacy `Opener` is used: the panel's settled placement is its own (it
     /// hangs under the top bar); the chip's rect is where the morph starts and ends.
     fn scrim(&self) -> Scrim {
         // The COMPACT role, as every menu hung off a chip: how dark the page goes behind this menu,

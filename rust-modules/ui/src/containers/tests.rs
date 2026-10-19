@@ -100,6 +100,44 @@ fn the_page_pass_is_the_only_place_a_scrim_is_asked_for() {
     assert_eq!(modal_of(&d, id).scrim_at.get(), once, "a surfaces-only pass draws no dim");
 }
 
+/// **A surface's lift is NOT drawn with its dim** (`ModalStack::draw_lifts`): the element a
+/// morphing panel grows out of (the profile chip) is lit above the dim AND the panel, after every
+/// surface has drawn, so the glass grows out from under it and shrinks back into it. Red while the
+/// lift was called from `draw_scrims_on`, right after the dim and before any surface: the glass
+/// covered the chip it came from. The lift is asked for in the page pass that paints the dim and
+/// SPENT by the draw that follows it, so a surfaces-only pass repaints none and no frame draws one
+/// twice. (The order against the panel is the dispatcher's; a host test has no GL context to
+/// draw a dim through, so the dispatcher's call sits where `draw_lifts` is documented to.)
+#[test]
+fn a_surfaces_lift_waits_for_its_own_draw_and_is_spent_by_it() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static LIFTS: AtomicUsize = AtomicUsize::new(0);
+    fn lift(_: crate::screen::ScrimLiftRead<'_>) {
+        LIFTS.fetch_add(1, Ordering::Relaxed);
+    }
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    let modal = modal_mut(&mut d, id);
+    modal.scrim_alpha = 0.5;
+    modal.scrim_lift = Some(lift);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    LIFTS.store(0, Ordering::Relaxed);
+    let mut fb = FakeFb::new(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(LIFTS.load(Ordering::Relaxed), 0, "the dim pass draws no lift: the surfaces are still to draw");
+    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
+    d.nav.modals.draw_lifts(Some(read));
+    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "the lift is drawn after the surfaces, once");
+    d.nav.modals.draw_lifts(Some(read));
+    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "…and spent: a surfaces-only pass owes none");
+    // a walk whose ceiling is below the opener layer asks for nothing and still spends them
+    dims_frame(&mut d, &rig, &mut fb);
+    d.nav.modals.draw_lifts(None);
+    d.nav.modals.draw_lifts(Some(read));
+    assert_eq!(LIFTS.load(Ordering::Relaxed), 1, "a skipped walk does not leave a lift for the next");
+}
+
 /// An `Opaque` surface is the mechanism's one documented boundary: it REPLACES its host once the
 /// ground is drawn, so there is no page pass to draw into and no snapshot for a dim to belong to
 /// — its dim is composed with its own ground, in its own `draw`.
@@ -289,8 +327,8 @@ fn key_level(d: &Dispatcher<FixtureHost>) -> f32 {
 
 /// Draw one frame's dims through `fb`.
 fn dims_frame(d: &mut Dispatcher<FixtureHost>, rig: &FixtureRig, fb: &mut FakeFb) {
-    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, fb);
+    let _ = rig;
+    d.nav.modals.draw_scrims_on(1.0, fb);
 }
 
 /// **The field is latched from the page BEFORE any dim is on it — and so it can never inherit its
