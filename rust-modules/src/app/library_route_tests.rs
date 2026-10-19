@@ -386,7 +386,7 @@ fn the_menu_lifts_its_opener(stop: &'static str) -> impl Fn(&mut World) -> Vec<S
         w.frames(30);
         let want = w.library().probe_header_stops().into_iter().find(|(name, _)| *name == stop).map(|(_, elem)| elem);
         let page = w.d.nav.top_page().map(|e| e.id);
-        let lifted = super::bridge::opener_lift(&w.d);
+        let lifted = crate::app::bridge::opener_lift(&w.d);
         match (lifted, page, want) {
             (Some((host, Some(key))), Some(page), Some(elem)) if host == page && key.entry == page && key.elem == elem => Vec::new(),
             other => vec![format!("the {stop} opener is not the lifted element: {other:?}")],
