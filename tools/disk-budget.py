@@ -56,8 +56,6 @@ PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list 
 build-gc.sh already uses: the ladder always prints, this shows which of its rungs a reclaim would take on a
 machine that has room).
 """
-from __future__ import annotations
-
 import argparse
 import ctypes
 import fcntl
@@ -794,6 +792,18 @@ def ancestor_pids() -> List[int]:
     return pids
 
 
+def interpret_lsof(returncode: int, stdout: str, ignore_pids: Sequence[int] = ()) -> LiveSnapshot:
+    """What an `lsof -u <me> -F pcfn` run says is live, or `unknown` when it cannot be trusted.
+
+    macOS `lsof` exits 1 when some file it listed was unreadable but still prints the rest, so 0 and 1 both
+    count. A run that printed no process record at all is NOT "nothing is running": this very process has
+    a working directory, so a working `lsof` always lists at least one. Empty output means it did not work
+    (a sandbox, a missing permission, a stub), and ignorance must read as live, not as idle."""
+    if returncode not in (0, 1) or not re.search(r"^p\d+$", stdout, re.M):
+        return LiveSnapshot([], [], unknown=True)
+    return parse_lsof(stdout, ignore_pids)
+
+
 class Probes:
     """Everything the inventory asks of the running machine. A test passes its own."""
 
@@ -812,9 +822,7 @@ class Probes:
                                  capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             return LiveSnapshot([], [], unknown=True)
-        if out.returncode not in (0, 1):
-            return LiveSnapshot([], [], unknown=True)
-        return parse_lsof(out.stdout, ancestor_pids())
+        return interpret_lsof(out.returncode, out.stdout, ancestor_pids())
 
     def cargo_locked(self, tree: str) -> bool:
         """A cargo build lock under `tree` is held: cargo-seed's own probe, shared locks taken and dropped."""

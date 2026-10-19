@@ -698,6 +698,7 @@ class Inventory(Repo):
         write(os.path.join(top, "debug", "nested", "CACHEDIR.TAG"), 4)
         self.assertEqual(db.discover_tmp_trees([self.tmpr], []), [top])
 
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for the squash check")
     def test_collect_classifies_every_kind_and_writes_nothing(self):
         merged = self.lane("merged-lane", {"m.txt": "m"})
         self.squash_into_origin(merged)
@@ -792,6 +793,14 @@ class Inventory(Repo):
         self.assertEqual({a.rung for a in actions}, {6})
         self.assertEqual({os.path.basename(a.tree) for a in actions}, {"target-fast"})
 
+    def test_an_lsof_that_printed_nothing_is_unknown_not_idle(self):
+        good = "p100\ncmake\nfcwd\nn/work/a\n"
+        self.assertFalse(db.interpret_lsof(0, good).unknown)
+        self.assertFalse(db.interpret_lsof(1, good).unknown, "macOS lsof exits 1 and still lists the rest")
+        self.assertEqual(db.interpret_lsof(1, good).builders, [("make", "/work/a")])
+        for rc, text in ((1, ""), (0, ""), (1, "\n"), (2, good), (127, good)):
+            self.assertTrue(db.interpret_lsof(rc, text).unknown, (rc, text))
+
     def test_lsof_missing_makes_everything_live(self):
         lane = self.lane("other")
         cargo_tree(os.path.join(lane, "rust-modules", "target"), hours=9)
@@ -823,13 +832,14 @@ class Inventory(Repo):
 
 
 class Report(Repo):
-    def run_report(self, free_kib, extra=(), **env):
+    def run_report(self, free_kib, extra=(), lsof_body="#!/bin/sh\nprintf 'p1\\ncsh\\nfcwd\\nn/\\n'\nexit 1\n", **env):
         bin_dir = tempfile.TemporaryDirectory(prefix="disk-budget-bin-")
         self.addCleanup(bin_dir.cleanup)
         fake = bin_dir.name
         lsof = os.path.join(fake, "lsof")
         with open(lsof, "w") as fh:
-            fh.write("#!/bin/sh\nexit 1\n")
+            # one minimal valid record (every working lsof lists the caller's own cwd), and macOS's exit 1
+            fh.write(lsof_body)
         os.chmod(lsof, 0o755)
         e = clean_env()
         e.update(self.env)
@@ -853,6 +863,13 @@ class Report(Repo):
                        "reclaim ladder", "PRIVATE", "not ours", "ours", "origin/main"):
             self.assertIn(needle, text)
         self.assertIn("*", text)
+
+    def test_a_silent_lsof_makes_every_tree_live_in_the_report(self):
+        cargo_tree(os.path.join(self.tmpr, "ours"), hours=30)
+        out = self.run_report(8 * 1024 * 1024, lsof_body="#!/bin/sh\nexit 1\n")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("liveness unknown", out.stdout)
+        self.assertNotIn("would reclaim", out.stdout)
 
     def test_report_says_ok_with_plenty_of_room_and_would_refuse_with_none(self):
         self.assertIn("verdict       ok", self.run_report(50 * 1024 * 1024).stdout)
