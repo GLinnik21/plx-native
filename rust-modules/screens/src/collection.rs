@@ -549,7 +549,7 @@ impl Page {
                 fan_name, theme::CARD_RING_RAD, false, 1.0, 0.0);
         }
         if collection.status == CollectionStatus::Ready {
-            ui_cards::draw_heading(p, plx_platform::i18n::msg::browse_collection_items(), order_note(collection),
+            ui_cards::draw_heading(p, plx_ui::fmt::collection_noun(collection.subtype.as_deref()), order_note(collection),
                 MARGIN_X, ITEMS_HEADING_Y + dy, SCR_W - 2.0 * MARGIN_X, measure);
         }
         let title = measure.fit_line(name, TEXT_W, theme::size::DISPLAY, true);
@@ -1800,9 +1800,11 @@ mod tests {
             let verdict = msg::browse_collection_unavailable();
             let w = m.width_str(verdict, theme::size::TITLE, true);
             if w > (SCR_W - 2.0 * MARGIN_X) * HEADROOM { out.push(format!("{}: {verdict:?} is {w:.0}px", language.tag())); }
-            let heading = format!("{} · {}", msg::browse_collection_items(), msg::browse_collection_order_release());
-            let w = m.width_str(&heading, theme::size::HEADLINE, true);
-            if w > (SCR_W - 2.0 * MARGIN_X) * HEADROOM { out.push(format!("{}: {heading:?} is {w:.0}px", language.tag())); }
+            for subtype in [None, Some("movie"), Some("show")] {
+                let heading = format!("{} · {}", plx_ui::fmt::collection_noun(subtype), msg::browse_collection_order_release());
+                let w = m.width_str(&heading, theme::size::HEADLINE, true);
+                if w > (SCR_W - 2.0 * MARGIN_X) * HEADROOM { out.push(format!("{}: {heading:?} is {w:.0}px", language.tag())); }
+            }
         }
         assert!(out.is_empty(), "collection text the television would clip:\n  {}", out.join("\n  "));
     }

@@ -1006,11 +1006,14 @@
       "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 6,
-      "comment": "The Movies library's Recommended page (the header's Recommended control): `libtype: recommended` presses that control, which pushes the page over the grid, then `libosc` sweeps it. The page mounts RecommendedScreen (the library's hub shelves stacked down the page), so this scene sweeps those shelves. Floors are the library-collections ones, NOT yet measured on the television for this scene.",
+      "comment": "The Movies library's Recommended page (the header's Recommended control): `libtype: recommended` presses that control, which pushes the page over the grid, then `libosc` sweeps it. The page mounts RecommendedScreen (the library's hub shelves stacked down the page), so this scene sweeps those shelves. Floors are the library-collections ones, NOT yet measured on the television for this scene. Under --mock the mock is started with `--section-hubs 3` (the default mock serves one shelf, so the sweep had nothing to move through and stalled).",
       "triggers": {
         "plxnative-library": true,
         "plxnative-libtype": "recommended",
         "plxnative-libosc": true
+      },
+      "mock": {
+        "section_hubs": 3
       },
       "fps_floor": 30
     },

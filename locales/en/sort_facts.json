@@ -12,12 +12,20 @@
     "description": "Sort fact: the title's release date. Titles without one sort last in either direction."
   },
   "sort_facts.rating": {
-    "value": "Rating",
-    "description": "Sort fact: the title's rating (the critics' score). The one name for it on every page."
+    "value": "Score",
+    "description": "Sort fact: the title's score (the critics' number). The one word for it on every page, the same as the Under posters picker's Score."
   },
   "sort_facts.audience_rating": {
-    "value": "Audience rating",
-    "description": "Sort fact: the audience's rating of the title, as the Library offers it beside the critics' rating."
+    "value": "Audience score",
+    "description": "Sort fact: the audience's score for the title, as the Library offers it beside the critics' score."
+  },
+  "sort_facts.last_viewed": {
+    "value": "Date viewed",
+    "description": "Sort fact: the date the viewer last played the title (the server's lastViewedAt). One name on every Sort & Filter panel; sentence case."
+  },
+  "sort_facts.random": {
+    "value": "Random",
+    "description": "Sort fact: a shuffled order with no ends (the server's random key). One short word; sentence case."
   },
   "sort_facts.a_to_z": {
     "value": "A–Z",

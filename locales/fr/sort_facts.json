@@ -4,6 +4,8 @@
   "sort_facts.release_date": "Date de sortie",
   "sort_facts.rating": "Note",
   "sort_facts.audience_rating": "Note du public",
+  "sort_facts.last_viewed": "Date de visionnage",
+  "sort_facts.random": "Aléatoire",
   "sort_facts.a_to_z": "A–Z",
   "sort_facts.z_to_a": "Z–A",
   "sort_facts.oldest_first": "Les plus anciens d’abord",

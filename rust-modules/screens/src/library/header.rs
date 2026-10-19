@@ -118,10 +118,13 @@ impl LibraryScreen {
             right.push(item);
         }
         if self.collections != CollectionsControl::Hidden {
-            let value = match self.collections { CollectionsControl::Count(n) => Some(locale.number(i64::from(n))), _ => None };
-            // A count of up to four digits fits the slot; the label stands at the slot's leading edge
-            // whatever the count is, or whether it is known yet.
-            let slot = Some(locale.number(9_999));
+            let count = match self.collections { CollectionsControl::Count(n) => Some(n), _ => None };
+            let value = count.map(|n| locale.number(i64::from(n)));
+            // The slot reserves THREE digits (a fourth left 108-125 px of air before "Recommended"
+            // against the row's 62 px rhythm); a library whose count needs more widens only its own
+            // slot, here and in the widest case, so the row is measured once per switch and the label
+            // stands at the slot's leading edge whatever the count is, or whether it is known yet.
+            let slot = Some(locale.number(i64::from(count.unwrap_or(0).max(999))));
             right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections, value_slot: slot.clone(),
                 ..item(msg::library_header_collections()) });
             widest.push(HeaderItem { value: slot.clone(), value_slot: slot, ..item(msg::library_header_collections()) });

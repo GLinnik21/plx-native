@@ -2202,7 +2202,15 @@
   },
   "browse.collection.items": {
     "value": "Items",
-    "description": "Heading over the collection page's member grid"
+    "description": "Heading over the collection page's member grid when its members are neither films nor shows: the noun its count uses (browse.search.items)."
+  },
+  "browse.collection.films": {
+    "value": "Films",
+    "description": "Heading over the collection page's member grid when the collection holds films: the noun its count uses (browse.person.films), so '6 films' sits under 'Films'."
+  },
+  "browse.collection.shows": {
+    "value": "Shows",
+    "description": "Heading over the collection page's member grid when the collection holds shows: the noun its count uses (browse.person.shows)."
   },
   "browse.collection.order.release": {
     "value": "Release order",

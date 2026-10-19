@@ -8,7 +8,7 @@
     "description": "Label of the single pill on the Watchlist header that opens the sort and filter popover."
   },
   "watchlist.filter.type_all": {
-    "value": "Movies & Shows",
+    "value": "Movies & TV Shows",
     "description": "Type filter choice: both movies and TV shows in the Watchlist."
   },
   "watchlist.filter.type_movies": {

@@ -63,7 +63,7 @@ pub struct CaptionFacts {
     pub title: Option<String>,
     pub year: Option<i32>,
     pub duration_min: Option<u32>,
-    /// A partly-watched item's position, for "N min left".
+    /// A partly-watched item's position, for "Nm left".
     pub view_offset_min: Option<u32>,
     pub genre: Option<String>,
     pub video_resolution: Option<String>,

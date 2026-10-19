@@ -183,6 +183,29 @@ fn the_header_cluster_leaves_the_names_room_in_every_shipped_language() {
     assert!(out.is_empty(), "{}", out.join("\n"));
 }
 
+/// **The Collections count reserves THREE digits** (design review, judgment 2): a four-digit slot
+/// left 108-125 px of air before "Recommended" against the row's 62 px rhythm. A count that needs
+/// more digits widens ONLY its own library's slot, in the widest case too, so nothing on the row
+/// moves while the count is read.
+#[test]
+fn the_collections_count_slot_reserves_three_digits_and_a_longer_count_widens_only_its_own() {
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(Preference::En);
+    let (fixture, mut page, engine) = grid_page(1);
+    let slots = |page: &LibraryScreen| {
+        let (right, widest) = page.header_right(&fixture.cx(&engine));
+        let of = |items: &[plx_ui::page_header::HeaderItem]| items.iter().find_map(|i| i.value_slot.clone());
+        (of(&right), of(&widest))
+    };
+    for count in [CollectionsControl::Unknown, CollectionsControl::Count(7), CollectionsControl::Count(999)] {
+        page.collections = count;
+        assert_eq!(slots(&page), (Some("999".into()), Some("999".into())), "{count:?} fits three digits");
+    }
+    page.collections = CollectionsControl::Count(1_284);
+    assert_eq!(slots(&page), (Some("1,284".into()), Some("1,284".into())), "four digits widen this library's slot");
+}
+
 /// The "+N" stays on the row wherever focus sits: only the right cluster is fixed-width, and the
 /// fold the left group makes must not depend on which header stop holds focus.
 #[test]
@@ -626,15 +649,33 @@ fn switch_and_watch(from: u32, to: Result<u32, crate::registry::Forbidden>, numb
     frames
 }
 
-/// **A count of another width lands in the same place**: the control is placed for a four-digit
-/// count, so a switch from "4" to "1,234" moves nothing, and the two cross-fade like any other.
+/// **A count of another width lands in the same place**: the control is placed for a three-digit
+/// count, so a switch from "4" to "123" moves nothing, and the two cross-fade like any other.
 #[test]
 fn a_count_of_another_width_lands_without_moving_the_label() {
     let _guard = plx_base::testlock::serial();
-    let frames = switch_and_watch(4, Ok(1234), &["4", "1,234"]);
+    let frames = switch_and_watch(4, Ok(123), &["4", "123"]);
     let x = frames[0].0;
     for (n, (label_x, _, counts)) in frames.iter().enumerate() {
         assert!((label_x - x).abs() < 0.01, "frame {}: the label moved ({x} -> {label_x}), counts {counts:?}", n + 1);
+    }
+    assert_eq!(frames.last().unwrap().2, [("123".to_string(), 1.0)]);
+}
+
+/// **A fourth digit widens that library's slot, once**: the three-digit reserve (design review,
+/// judgment 2) is the price of a short row, so the one library whose count needs more settles into
+/// a wider slot the moment its answer lands, in a single step, and holds there; it is not re-measured
+/// frame by frame, and the count still cross-fades in place.
+#[test]
+fn a_four_digit_count_widens_its_slot_once_and_holds() {
+    let _guard = plx_base::testlock::serial();
+    let frames = switch_and_watch(4, Ok(1234), &["4", "1,234"]);
+    let (first, last) = (frames[0].0, frames.last().unwrap().0);
+    assert!(last < first - 1.0, "premise: the wider slot moves the label to the left ({first} -> {last})");
+    let landed = frames.iter().position(|(x, ..)| (x - first).abs() > 0.01).expect("the label settles in the wider slot");
+    for (n, (label_x, _, counts)) in frames.iter().enumerate() {
+        let want = if n < landed { first } else { last };
+        assert!((label_x - want).abs() < 0.01, "frame {}: the label is at {label_x}, not {want}: {counts:?}", n + 1);
     }
     assert_eq!(frames.last().unwrap().2, [("1,234".to_string(), 1.0)]);
 }

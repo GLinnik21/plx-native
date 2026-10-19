@@ -4,6 +4,8 @@
   "sort_facts.release_date": "Megjelenés dátuma",
   "sort_facts.rating": "Értékelés",
   "sort_facts.audience_rating": "Közönségértékelés",
+  "sort_facts.last_viewed": "Megtekintés dátuma",
+  "sort_facts.random": "Véletlenszerű",
   "sort_facts.a_to_z": "A–Z",
   "sort_facts.z_to_a": "Z–A",
   "sort_facts.oldest_first": "A legrégebbiek elöl",

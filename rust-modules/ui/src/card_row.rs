@@ -1024,7 +1024,7 @@ pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi:
 }
 
 /// The focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
-/// "<show> · 8 min left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
+/// "<show> · 8m left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
 ///
 /// "In progress" is `PmsMovie::resume_frac` — THE resume rule, which the caller applies when it
@@ -1032,7 +1032,7 @@ pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi:
 /// asks for this caption. A hand-written
 /// `resume_ms > 0 && dur_ns > 0` here dropped that rule's end-guard, so a finished item whose
 /// server never cleared `viewOffset` drew NO bar (`resume_frac`'s answer) under a caption still
-/// promising "1 min left" — `fmt::time_left` floors at a minute, so it could not even read zero.
+/// promising "1m left" — `fmt::time_left` floors at a minute, so it could not even read zero.
 /// One item, described two ways in one draw. Whether that tile also wore the watched TICK is a
 /// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
@@ -1134,7 +1134,7 @@ pub fn under_band_for(band_h: f32, e: f32) -> f32 {
 /// The block is drawn at a FIXED offset under its card the instant its shelf takes focus, while the
 /// room for it opens over the band's whole travel. So for the first part of every focus move the
 /// caption sits on top of the NEXT shelf's heading — which is exactly what the first simulator pass
-/// showed, "Recently Added Movies" printed through "WeCrashed · 35 min left".
+/// showed, "Recently Added Movies" printed through "WeCrashed · 35m left".
 ///
 /// The two distances, both measured down from this shelf's card bottom: the next heading's cap top
 /// is at `UNDER_LABEL_AIR + under_band(e)`, and the block's own caption ends at [`UNDER_LABEL_H`].

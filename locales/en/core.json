@@ -24,19 +24,19 @@
     "description": "The one duration under an hour, in minutes. See core.duration_hours."
   },
   "core.time_left_hours": {
-    "value": "{hours} hr {minutes} min left",
+    "value": "{hours}h {minutes}m left",
     "args": {
       "hours": "i64",
       "minutes": "i64"
     },
-    "description": "Shared display formatter: time_left_hours"
+    "description": "Time remaining on a started title, in the one duration form (core.duration_hours) plus 'left': 1h 2m left. Continue Watching captions."
   },
   "core.time_left_minutes": {
-    "value": "{minutes} min left",
+    "value": "{minutes}m left",
     "args": {
       "minutes": "i64"
     },
-    "description": "Shared display formatter: time_left_minutes"
+    "description": "Time remaining under an hour, in the one duration form (core.duration_minutes) plus 'left': 8m left. Continue Watching captions."
   },
   "core.seconds": {
     "value": "{seconds} s",
