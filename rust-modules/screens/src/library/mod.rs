@@ -1576,6 +1576,9 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         self.with_regions(|regions| regions.links(out));
         self.pair.links(out);
     }
+    fn holds_arrival(&self, dir: plx_ui::screen::Dir) -> bool {
+        self.with_regions(|regions| regions.holds(dir))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
 }
 

@@ -32,11 +32,14 @@
 //! focus mark, OK does nothing, BACK is [`PageRegions::back`] with `at: None`. The header's first
 //! control may be one whose OK leaves the page (the Collections page's Back crumb, the Library's
 //! "Collections" push), so it is never the arrival seat of a page that has no tile to seat yet.
-//! A directional key (any of the four, pinned on the Library, Collections, Recommended and Watchlist
-//! by `arrival_seat_tests`) seats the BAR, on the page's own pill: the engine's no-focus fallback
-//! is the first group it can offer, and the empty pending group is skipped, so it is group 0, not
-//! the header (one Down from there). That move is the page's own "the reader has moved", so the
-//! cells that land afterwards do not pull focus.
+//! **Up seats the BAR; Down, Left and Right HOLD** ([`PageRegions::holds`], pinned on the Library,
+//! Collections, Recommended and Watchlist by `arrival_seat_tests`). Up is the engine's no-focus
+//! fallback, the first group it can offer, and the empty pending group is skipped, so it is group 0
+//! (the bar, on the page's own pill), not the header (one Down from there); that move is the
+//! reader's own, so the cells that land afterwards do not pull focus. The other three keys have
+//! nowhere to go yet: the dispatcher consumes them before the page sees them (`Screen::holds_arrival`),
+//! nothing is drawn until the cells land, and then the first poster is seated once, as on a page the
+//! reader never touched.
 //! [`PageRegions::links`] is where that column is
 //! written, so a page that declares a `Link` involving `STRIP`, its header group or the head of its
 //! content by hand has a second declaration of the column.
@@ -214,6 +217,18 @@ impl PageRegions<'_> {
             edge: [EdgeRule::Geometric; 4], extent, len: 0, elem: ElemKind::Card });
     }
 
+    /// **Does the page hold `dir` rather than let it move focus?** True for Down, Left and Right
+    /// while the page's first seat is still on its way ([`first_seat`](Self::first_seat) is `None`:
+    /// the content is [pending](Self::pending)) and nothing of the page holds focus (the caller's
+    /// half: [`Screen::holds_arrival`](crate::screen::Screen::holds_arrival) is asked only then).
+    /// **Up is the one key that seats**: the bar, on the page's own pill, by the engine's no-focus
+    /// fallback. A held key leaves the arrival whole, so the first poster lights ONCE when the cells
+    /// land, never the bar and then a move, and no key the reader pressed while it loaded is replayed
+    /// onto it.
+    pub fn holds(&self, dir: Dir) -> bool {
+        dir != Dir::Up && self.first_seat().is_none()
+    }
+
     /// **What BACK does** with focus in `at` (`None`: nothing of this page holds focus) and the
     /// content `scrolled` away from its top.
     ///
@@ -331,6 +346,17 @@ mod tests {
         // declares empty, so the engine clears the scope instead of falling back to the header.
         assert_eq!(loading(&[], Arrival::Content).unseat::<u32>().map(|target| matches!(target, FocusTarget::FirstInGroup(GRID))), Some(true));
         assert!(regions(&[], false, Arrival::Content).unseat::<u32>().is_none());
+    }
+
+    #[test]
+    fn up_seats_and_the_other_arrows_hold_while_the_first_seat_is_on_its_way() {
+        let loading = |content: &'static [GroupId]| PageRegions { pending: Some(GRID), ..regions(content, false, Arrival::Content) };
+        for dir in [Dir::Down, Dir::Left, Dir::Right] {
+            assert!(loading(&[]).holds(dir), "{dir:?} is held while the content is pending");
+            assert!(!loading(&[GRID]).holds(dir), "{dir:?} is an ordinary move once the cells landed");
+            assert!(!regions(&[], false, Arrival::Content).holds(dir), "{dir:?}: a page that loaded empty has its header to seat");
+        }
+        assert!(!loading(&[]).holds(Dir::Up), "Up is the one key that seats the bar");
     }
 
     #[test]

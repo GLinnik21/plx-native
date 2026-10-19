@@ -1595,6 +1595,9 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     fn links(&self, out: &mut Vec<Link>) {
         self.with_regions(|regions| regions.links(out));
     }
+    fn holds_arrival(&self, dir: plx_ui::screen::Dir) -> bool {
+        self.with_regions(|regions| regions.holds(dir))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

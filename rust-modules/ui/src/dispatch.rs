@@ -2109,6 +2109,21 @@ where
                     addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
                     addressed.focus = self.input.engine.read(entry_owner);
                 }
+                // **A page whose first seat is still on its way HOLDS an arrow other than Up** (design
+                // review CONFIRM judgment 6, `PageRegions::holds`): with nothing focused there is no
+                // seat to move from, and the engine's no-focus fallback would put the reader on the
+                // bar and keep them there. The key is consumed before the page or the engine see it,
+                // so the page's arrival is still its own to make when its cells land. Judged here,
+                // when the delivery runs, not at ingest: an earlier key of the same batch may have
+                // seated something.
+                if let ScreenEvent::Input(InputEvent { kind: InputKind::Key { key, edge, .. }, .. }) = &ev {
+                    let owns_engine = self.owner_entry() == self.nav.entry_of_instance(id) && self.engine_page() && !self.input.keyboard;
+                    let held = *edge != Edge::Up && owns_engine && addressed.focus.current.is_none()
+                        && Dir::of_key(*key).is_some_and(|dir| self.nav.instance(id).is_some_and(|inst| inst.screen.holds_arrival(dir)));
+                    if held {
+                        return;
+                    }
+                }
                 let Dispatcher { nav, present, .. } = self;
                 // a surface's springs report under their own scope (§4.4 MotionScope)
                 let is_surface = nav
@@ -2238,14 +2253,7 @@ where
                 kind: InputKind::Key { key, edge, at_edge, .. },
                 ..
             }) if handled == Handled::No && engine && *edge != Edge::Up => {
-                let dir = match key {
-                    Key::Up => Some(Dir::Up),
-                    Key::Down => Some(Dir::Down),
-                    Key::Left => Some(Dir::Left),
-                    Key::Right => Some(Dir::Right),
-                    _ => None,
-                };
-                if let Some(dir) = dir {
+                if let Some(dir) = Dir::of_key(*key) {
                     if *at_edge {
                         return; // re-delivered under EdgeRule::Screen and still unhandled: dropped
                     }

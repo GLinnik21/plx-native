@@ -172,9 +172,10 @@ fn a_listing_that_lands_after_the_dissolve_lifts_its_first_poster_from_rest() {
 
 /// **While a page's listing is still loading the page seats nothing** (the arrival seat is never a
 /// control whose OK leaves the page, and with no tile yet there is none to take): no focus mark, OK
-/// does nothing, BACK leaves as it does from a page with nothing focused, a directional key seats the
-/// engine's no-focus fallback (the reader's own move, which the cells that land afterwards do not
-/// undo), and with no key the cells that land seat the first poster.
+/// does nothing, BACK leaves as it does from a page with nothing focused, Up seats the engine's
+/// no-focus fallback (the reader's own move, which the cells that land afterwards do not undo), Down,
+/// Left and Right are held (nothing seated until the cells land, then the first poster once), and with
+/// no key the cells that land seat the first poster.
 struct Loading {
     name: &'static str,
     mount: fn() -> World,
@@ -229,29 +230,72 @@ fn back_from_a_page_that_seats_nothing_leaves_it() {
     assert!(fails.is_empty(), "{} pages do not leave on BACK:\n{}", fails.len(), fails.join("\n"));
 }
 
-/// **A directional key seats the engine's no-focus fallback, and the cells that land afterwards leave
-/// it there**: the press is the reader's own move, so the landing does not pull focus to the first
-/// poster. The fallback is the first group the page can offer, which on every page that wears the bar
-/// is the bar, on the page's own pill (OK on it is the tab it is already on); the header is one Down.
+/// **Up seats the bar, and the cells that land afterwards leave it there**: Up is the reader's own
+/// move to the bar, so the landing does not pull focus to the first poster. The seat is the engine's
+/// no-focus fallback, the first group the page can offer, which on every page that wears the bar is
+/// the bar, on the page's own pill (OK on it is the tab it is already on); the header is one Down.
 #[test]
-fn a_directional_key_seats_the_bar_and_the_landing_cells_do_not_take_it_back() {
+fn up_seats_the_bar_and_the_landing_cells_do_not_take_it_back() {
     let mut fails = Vec::new();
     for row in &LOADING {
-        for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
-            let mut w = (row.mount)();
-            let performed = w.press(key);
-            if region(&w) != "nav" { fails.push(format!("{}: {key:?} seated the {} ({:?}), not the bar", row.name, region(&w), w.elem())); continue; }
-            if !performed.is_empty() { fails.push(format!("{}: {key:?} raised {performed:?}", row.name)); }
-            let seat = w.elem();
-            (row.land)(&mut w);
-            w.frames(90);
-            if w.elem() != seat { fails.push(format!("{}: after {key:?} the landing cells moved focus from {seat:?} to {:?} ({})", row.name, w.elem(), region(&w))); }
-            // And the header is one Down from there, as on any page.
-            w.press(Key::Down);
-            if region(&w) != "header" { fails.push(format!("{}: Down from the bar reached the {}, not the header", row.name, region(&w))); }
-        }
+        let mut w = (row.mount)();
+        let performed = w.press(Key::Up);
+        if region(&w) != "nav" { fails.push(format!("{}: Up seated the {} ({:?}), not the bar", row.name, region(&w), w.elem())); continue; }
+        if !performed.is_empty() { fails.push(format!("{}: Up raised {performed:?}", row.name)); }
+        let seat = w.elem();
+        (row.land)(&mut w);
+        w.frames(90);
+        if w.elem() != seat { fails.push(format!("{}: after Up the landing cells moved focus from {seat:?} to {:?} ({})", row.name, w.elem(), region(&w))); }
+        // And the header is one Down from there, as on any page.
+        w.press(Key::Down);
+        if region(&w) != "header" { fails.push(format!("{}: Down from the bar reached the {}, not the header", row.name, region(&w))); }
     }
     assert!(fails.is_empty(), "{} pages take the seat back:\n{}", fails.len(), fails.join("\n"));
+}
+
+/// **Down, Left and Right HOLD the pending arrival** (design review CONFIRM judgment 6): a page whose
+/// listing is still loading has nothing to move to, and the bar is not where the reader was going. The
+/// key seats nothing and raises nothing, nothing is drawn until the cells land, and then the first
+/// poster is seated ONCE, the same one a page the reader never touched seats: never the bar, never the
+/// poster and then a move off it, and no later landing re-seats it. A key pressed after the seat is an
+/// ordinary move.
+#[test]
+fn down_left_and_right_hold_the_pending_arrival_and_the_first_poster_lights_once() {
+    let mut fails = Vec::new();
+    for row in &LOADING {
+        // The reference: the same page, the reader pressing nothing.
+        // (A `World` holds the suite's serial lock, so it is dropped before the next is mounted.)
+        let arrival = {
+            let mut reference = (row.mount)();
+            (row.land)(&mut reference);
+            reference.frames(90);
+            (reference.elem(), region(&reference))
+        };
+        for key in [Key::Down, Key::Left, Key::Right] {
+            let mut w = (row.mount)();
+            let performed = w.press(key);
+            if w.focus().is_some() { fails.push(format!("{}: {key:?} seated {:?} ({}) while loading", row.name, w.elem(), region(&w))); continue; }
+            if !performed.is_empty() { fails.push(format!("{}: {key:?} raised {performed:?}", row.name)); }
+            // Held across more frames and a second press: still nothing drawn.
+            w.frames(20);
+            w.press(key);
+            if w.focus().is_some() { fails.push(format!("{}: a second {key:?} seated {:?} ({}) while loading", row.name, w.elem(), region(&w))); continue; }
+            (row.land)(&mut w);
+            // Frame by frame: the focus is nothing and then the first poster, never anything between.
+            let mut seen = Vec::new();
+            for _ in 0..90 {
+                w.frames(1);
+                let at = w.focus().map(|_| (w.elem(), region(&w)));
+                if seen.last() != Some(&at) { seen.push(at); }
+            }
+            let want = [None, Some(arrival)];
+            let want_seated = [Some(arrival)];
+            if seen != want && seen != want_seated {
+                fails.push(format!("{}: after {key:?} the focus went {seen:?}, not once to the first poster {arrival:?}", row.name));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} pages do not hold the arrival:\n{}", fails.len(), fails.join("\n"));
 }
 
 /// With no key, the cells that land seat the first poster (the arrival, which lifts from rest:
