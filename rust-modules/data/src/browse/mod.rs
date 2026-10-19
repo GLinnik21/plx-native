@@ -3610,8 +3610,13 @@ pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
     });
 }
 
+/// A seeded listing is "the server answered this query", so a page still out for it is superseded
+/// the way a query edit supersedes it ([`BrowseState::refetch_gen`]): the store retries a failed
+/// first page on a frame-counted cooldown, and a worker released a frame before the seed lands its
+/// failure AFTER it, at the current generation, flipping the seeded listing to `Failed`.
 #[cfg(any(test, feature = "test-support"))]
 fn seed_listing_for_owner_test(state: &mut BrowseState, n: usize, make: impl Fn(ServerId, usize) -> crate::pms::PmsMovie) {
+    state.refetch_gen();
     let c = state.cur();
     let sid = state.section_sid(c).unwrap_or_default();
     if let Some(st) = state.state_mut(c) {
