@@ -352,6 +352,9 @@ impl Grid {
             (row, at)
         });
         self.reveal = wanted;
+        if let Some(i) = focus {
+            self.bands.note_card(i / self.spec.cols, i);
+        }
         self.bands.tick(self.spec.style.k_scroll, dt);
         // the takeover's rise starts with the landing's springs, not under the menu that chose it
         if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
@@ -816,8 +819,24 @@ impl Grid {
         if super::lifted_out(f, self.entry, src, i) {
             return None;
         }
+        // The caption a card carries: the focused card's, at its band's progress; or, on a card the
+        // focus has left, the caption its row's band is still closing on, at that band's progress.
+        // Either way the alpha is the band's own, so the caption goes with the gap.
+        let label = if focused {
+            let row = i / self.spec.cols;
+            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
+            // The focused card left as a ghost that is still waiting for the landing to step: the
+            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
+            // focus reconciled to takes it up with the landing's first step.
+            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+            Some(label.revealed(card_row::band_fade(open)))
+        } else {
+            self.bands.closing()
+                .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
+                .map(|(_, _, open)| src.label(i).revealed(card_row::band_fade(open)))
+        };
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
-        if !card_row::paint_visible(p, rect, s, focused) {
+        if !card_row::paint_visible(p, rect, s, label.is_some()) {
             return None;
         }
         // an arriving card fades in
@@ -825,15 +844,6 @@ impl Grid {
             a if a < 1.0 => p.alpha(a),
             _ => p,
         };
-        let label = focused.then(|| {
-            let row = i / self.spec.cols;
-            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            // The focused card left as a ghost that is still waiting for the landing to step: the
-            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
-            // focus reconciled to takes it up with the landing's first step.
-            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            label.revealed(card_row::band_reveal_for(self.band_h(), open))
-        });
         Some(CardPaint { rect, p, label })
     }
 
@@ -1022,7 +1032,7 @@ impl Grid {
             // the new focus card's, which moves with the focus.
             if g.focused && self.landing_waiting() {
                 let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
-                let label = ghosts.label(j).revealed(card_row::band_reveal_for(self.band_h(), open));
+                let label = ghosts.label(j).revealed(card_row::band_fade(open));
                 if label.reveal > 0.0 {
                     card_row::draw_label(pr.alpha(label.reveal), rect, s, &self.spec.style, &label, f.measure);
                 }

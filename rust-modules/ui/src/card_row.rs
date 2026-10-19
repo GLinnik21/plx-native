@@ -1141,6 +1141,21 @@ pub fn band_reveal_for(band_h: f32, e: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// **A grid row's caption alpha at its band's expansion `e`** (0 collapsed → 1 open): the band's
+/// own progress, eased, and nothing else — so a caption fades in while its gap opens and out while
+/// its gap closes, on the very spring the layout reads the gap from (no second clock).
+///
+/// This is deliberately NOT [`band_reveal_for`]. That curve is solved against the heading of the
+/// NEXT shelf, which a shelf's block must never be drawn over, and so it stays 0 until the room is
+/// nearly open (`e` > 0.69 for a 112 px band): measured on a grid that is no caption on screen at
+/// all for the middle of every move, the departing one already gone and the arriving one not yet
+/// there. A grid's neighbour is the next row's posters, which the opening band carries down and
+/// which draw over a departing caption; an arriving one overhangs them only while it is faint.
+pub fn band_fade(e: f32) -> f32 {
+    let t = e.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// The fixed half of a poster shelf's pitch — everything `consts::ROW_PITCH` is made of EXCEPT the
 /// label band. Add [`under_band`] to it.
 pub const ROW_PITCH_FIXED: f32 = crate::consts::ROW_PITCH - UNDER_LABEL_H;

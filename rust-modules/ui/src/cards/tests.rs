@@ -4074,7 +4074,7 @@ fn a_down_fades_the_departing_caption_out_and_the_arriving_one_in_with_their_ban
     // the band the move leaves was open and showing its whole caption; it ends closed and bare
     assert!(trace[0][0].open > 0.99 && trace[0][0].alpha > 0.99, "the move starts from an open band: {:?}", trace[0][0]);
     assert!(trace[1].last().unwrap().alpha > 0.99, "the arriving caption settles whole: {:?}", trace[1].last());
-    assert_eq!(trace[0].last().unwrap().alpha, 0.0, "the departing caption is gone once its band is closed");
+    assert!(trace[0].last().unwrap().alpha < 0.01, "the departing caption is gone once its band is closed");
     assert_captions_follow_their_bands(&trace);
 }
 
