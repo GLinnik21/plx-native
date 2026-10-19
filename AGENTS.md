@@ -27,6 +27,15 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 
 ## Working rules
 
+- **Never write an ad-hoc mechanism when a shared one exists.** Before building any behaviour, find
+  the mechanism the codebase already has for it and use it: focus travel and key routing, motion
+  and springs, glass and materials, scrolling and chrome, captions, menus and popovers, data
+  fetching. If the shared one almost fits, extend it in place for every caller. If it truly cannot
+  do the job, stop and say why before writing a new one, and the new one lands in the shared layer,
+  never in a screen. PR #843's library redesign routed the Up key by hand, so Up from the
+  Recommended page's breadcrumb could not reach the top navigation, and its new header pills had
+  no transitions, while the shared `FocusEngine` and the nav pill's animated `TabStrip` already
+  existed. `rust-modules/ui/src/CLAUDE.md` (rule 4) names the ready-made ones for UI work.
 - **Trunk-based development, and `main` takes SQUASH merges only.** Work happens on short-lived
   branches or worktrees cut from `main`. Commit as often as is useful on a branch — there is no
   limit on how many commits a branch carries and no need to tidy them. When the work is verified it

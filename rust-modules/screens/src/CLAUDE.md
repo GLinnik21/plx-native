@@ -47,6 +47,11 @@ If your change is reaching further than that list, the design says stop and ask 
 the screen id, the `mount` arm and the recorded shape (`SCREEN_SHAPES`) all live in `registry.rs`
 precisely so they do not spread.
 
+A screen composes the shared mechanisms and never invents one: it does not hand-route direction
+keys between regions (the `FocusEngine` does, from the groups and edges the screen declares) and
+does not hand-roll a transition or a menu. The ready-made ones, and what to do when none fits, are
+rule 4 of [`../../ui/src/CLAUDE.md`](../../ui/src/CLAUDE.md).
+
 A screen mounted as a modal surface is the same trait with a different `Style`; the Settings family
 instantiates the same screens a second time for its own inner stack, which is how one
 `OnboardScreen` mounts twice (§6.2).

@@ -61,10 +61,27 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
    sub-pixel difference shipped code keeps), and no screen adopts it yet.
 
-4. **Improve a component before forking one.** If a shared widget almost does what you need, add a
-   builder method / style variant to it (e.g. `Button::style(ControlStyle)`), don't copy it. A new
-   bespoke widget is only justified when nothing here is close — and then it lands *here*, as a
-   reusable `View`, so the next screen gets it for free.
+4. **Improve a component before forking one, and never write an ad-hoc mechanism.** If a shared
+   widget almost does what you need, add a builder method / style variant to it (e.g.
+   `Button::style(ControlStyle)`), don't copy it. A new bespoke widget is only justified when
+   nothing here is close — and then it lands *here*, as a reusable `View`, so the next screen gets
+   it for free.
+
+   A mechanism is forked the same way and more quietly, because it looks like three lines of glue.
+   Find the ready-made one first; if it almost fits, extend it in place for every caller; if it
+   truly cannot do the job, say why before writing a new one, which then lands here. PR #843
+   hand-routed the Up key in a screen and gave its header pills no motion while all of these existed:
+
+   - **Focus travel between regions** (nav, header, content, rail): `FocusEngine` (`focus.rs`) over
+     the owner's `Focusable` contract (`screen.rs`: `neighbour`, `Link`, `EdgeRule`, `Seat`). A
+     screen declares its groups and edges; it never matches a direction key to move focus between
+     regions.
+   - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
+     `SelMark` (`widgets.rs`), the nav bar's own motion.
+   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
+     tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
+   - **Springs**: `Spring` (`lib.rs`) stepped at the shared stiffness (`consts::K_SCALE`,
+     `K_SCROLL`, `K_SNAP`; `popover::K_APPEAR`), not a new constant or a hand-made easing.
 
 ## Card shelves and grids: `cards::Shelf` / `cards::Grid`
 
