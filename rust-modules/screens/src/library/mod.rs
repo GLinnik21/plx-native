@@ -164,6 +164,11 @@ pub struct LibraryScreen {
     /// them over: the capsule travels from the old stop to the new.
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
+    /// The row's content swap: the Collections count cross-fading in place when a rebuilt row
+    /// changes it, the control fading out when the new library has none. Held beside the capsules
+    /// for the same reason, and NOT canon, like them it is paint: `collections` itself is no part
+    /// of the screen's shape (a recording never probes), so the swap has nothing to be a function of.
+    header_swap: plx_ui::page_header::HeaderSwap,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
@@ -260,7 +265,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,

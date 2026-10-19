@@ -116,9 +116,12 @@ impl LibraryScreen {
         }
         if self.collections != CollectionsControl::Hidden {
             let value = match self.collections { CollectionsControl::Count(n) => Some(locale.number(i64::from(n))), _ => None };
-            right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections,
+            // A count of up to four digits fits the slot; the label stands at the slot's leading edge
+            // whatever the count is, or whether it is known yet.
+            let slot = Some(locale.number(9_999));
+            right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections, value_slot: slot.clone(),
                 ..item(msg::library_header_collections()) });
-            widest.push(HeaderItem { value: Some(locale.number(9_999)), ..item(msg::library_header_collections()) });
+            widest.push(HeaderItem { value: slot.clone(), value_slot: slot, ..item(msg::library_header_collections()) });
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
             ..item(msg::library_header_recommended()) });
@@ -165,17 +168,28 @@ impl LibraryScreen {
 
     /// Rebuild everything the header row is made of: the Collections control's state, the names
     /// that fit (`self.libraries`), and the cached geometry.
+    ///
+    /// **A switch in flight keeps the control as it was.** Choosing a library moves the row to it
+    /// at once, but the probe answers only for the directory's CURRENT library, so for a few frames
+    /// the new one has no answer, and an unknown answer would read as "Collections" with no number:
+    /// the label would jump by the number's width and jump back when it landed. While the grid is
+    /// still dissolving to the new library ([`Xfade::is_swapping`]) an unknown answer therefore
+    /// changes nothing, and the row's [`HeaderSwap`] cross-fades the count when the real one lands.
+    /// A probe slower than the grid's arrival ends the hold: the control then reads as it does
+    /// before its first answer (a refused or failed probe must not pin the library left behind).
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
-        self.collections = self.view_section(cx)
+        let answer = self.view_section(cx)
             .and_then(|index| H::directory(cx).sections().get(index).map(|section| section.key))
             .and_then(|key| u32::try_from(key).ok())
             .map_or(CollectionsControl::Unknown, |key| CollectionsControl::of(H::collections_count(cx, key)));
+        if answer != CollectionsControl::Unknown || !self.grid_fade.is_swapping() { self.collections = answer; }
         self.note_unfiltered(cx);
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);
         if self.header.is_current(key) { return; }
         let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
+        if let Some(old) = self.header.row() { self.header_swap.begin(old, &row); }
         self.header.install(key, row);
     }
 
@@ -284,6 +298,7 @@ impl LibraryScreen {
     /// One frame of the row's motion: the focus capsule travels to the focused control, the
     /// selection plate lands under it. Focus off the row (or a menu holding it) closes the pop.
     pub(super) fn step_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, dt: f32) {
+        self.header_swap.step(dt);
         let Some(row) = self.header.row() else { return };
         row.step(self.entry, cx.focus.current, &mut self.header_capsules, &mut self.header_pop, dt);
     }
@@ -301,6 +316,6 @@ impl LibraryScreen {
         // moved off the opener), so a lift is always the control's whole menu-open stretch, during
         // which the engine's focus is on the menu's rows and the row's motion HOLDS.
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| (key.elem, page_header::Lift::Plain));
-        row.draw(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
+        row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
     }
 }

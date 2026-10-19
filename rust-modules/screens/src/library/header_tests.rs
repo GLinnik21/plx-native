@@ -523,3 +523,89 @@ fn a_library_switch_keeps_the_collections_label_still_and_cross_fades_its_count(
     assert_eq!(shown.last().unwrap(), &[("2".to_string(), 1.0)], "and it settles on the new count");
     COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
 }
+
+/// Switch the page from the library that has `from` collections to the other one, whose probe
+/// answers `to` twelve frames in, and return the Collections control as it looks on each of 60
+/// frames: `(label x, label alpha, [(number, alpha)])`.
+fn switch_and_watch(from: u32, to: Result<u32, crate::registry::Forbidden>, numbers: &[&str]) -> Vec<(f32, f32, Vec<(String, f32)>)> {
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    land_collections(1, Ok(from));
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    let current = page.view_section(&fixture.cx(&engine));
+    let other = page.libraries.iter().find(|(_, index)| Some(*index) != current).unwrap().0;
+    let mut ms = 0;
+    for _ in 0..10 { ms += 16; header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms); }
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(other));
+    let mut frames = Vec::new();
+    for frame in 1..=60 {
+        ms += 16;
+        if frame == 6 { fixture.publish(1, 36); }
+        if frame == 12 { land_collections(2, to); }
+        let runs = header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms);
+        let label = runs.iter().find(|run| run.text == "Collections").map(|run| (run.at.x, run.ink[3]));
+        let counts = collections_face(&runs, numbers).map(|(_, counts)| counts).unwrap_or_default();
+        frames.push((label.map_or(f32::NAN, |label| label.0), label.map_or(0.0, |label| label.1), counts));
+    }
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    frames
+}
+
+/// **A count of another width lands in the same place**: the control is placed for a four-digit
+/// count, so a switch from "4" to "1,234" moves nothing, and the two cross-fade like any other.
+#[test]
+fn a_count_of_another_width_lands_without_moving_the_label() {
+    let _guard = plx_base::testlock::serial();
+    let frames = switch_and_watch(4, Ok(1234), &["4", "1,234"]);
+    let x = frames[0].0;
+    for (n, (label_x, _, counts)) in frames.iter().enumerate() {
+        assert!((label_x - x).abs() < 0.01, "frame {}: the label moved ({x} -> {label_x}), counts {counts:?}", n + 1);
+    }
+    assert_eq!(frames.last().unwrap().2, [("1,234".to_string(), 1.0)]);
+}
+
+/// **A library with no collections fades the control out where it stood** (never "· 0", never a
+/// cut): the old count stays until the answer lands, then label and count dissolve together on the
+/// swap clock, over several frames, the label at the x it always had.
+#[test]
+fn a_library_without_collections_fades_the_control_out_in_place() {
+    let _guard = plx_base::testlock::serial();
+    let frames = switch_and_watch(4, Ok(0), &["4", "0"]);
+    let (x, rest) = (frames[0].0, frames[0].1);
+    assert!(rest > 0.5, "premise: the label is drawn at its resting ink ({rest})");
+    assert_eq!(frames[0].2, [("4".to_string(), 1.0)], "the old count stays until the answer lands");
+    let mut faded = Vec::new();
+    for (n, (label_x, alpha, counts)) in frames.iter().enumerate() {
+        assert!(counts.iter().all(|(text, _)| text != "0"), "frame {}: never '· 0'", n + 1);
+        if *alpha > 0.0 { assert!((label_x - x).abs() < 0.01, "frame {}: the label moved ({x} -> {label_x})", n + 1); }
+        if *alpha > 0.0 && *alpha < rest - 0.01 { faded.push(*alpha); }
+    }
+    assert!(faded.len() >= 5, "the control dissolves over several frames, it is not cut: {faded:?}");
+    assert!(faded.windows(2).all(|pair| pair[1] <= pair[0]), "and only ever fainter: {faded:?}");
+    let last = frames.last().unwrap();
+    assert!(last.1 == 0.0 && last.2.is_empty(), "and it is gone once the clock has run: {last:?}");
+}
+
+/// **The first count lands without moving the label** too: a page that has not heard from the
+/// probe reads "Collections" bare, and the number fades in beside a label that stays put.
+#[test]
+fn the_first_count_fades_in_beside_a_label_that_stays_put() {
+    let _guard = plx_base::testlock::serial();
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+    let (fixture, mut page, mut engine) = grid_page(2);
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..10 { ms += 16; rest = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["7"]); }
+    let (x, counts) = rest.expect("premise: the control is drawn");
+    assert!(counts.is_empty(), "premise: bare until the probe answers");
+    land_collections(1, Ok(7));
+    let mut seen = Vec::new();
+    for frame in 1..=30 {
+        ms += 16;
+        let (label_x, counts) = collections_face(&header_runs_after_a_frame(&fixture, &mut page, &mut engine, ms), &["7"]).unwrap();
+        assert!((label_x - x).abs() < 0.01, "frame {frame}: the label moved ({x} -> {label_x})");
+        seen.push(counts.first().map_or(0.0, |(_, alpha)| *alpha));
+    }
+    assert!(seen.iter().any(|alpha| *alpha > 0.0 && *alpha < 1.0), "the number fades, it does not blink on: {seen:?}");
+    assert_eq!(*seen.last().unwrap(), 1.0);
+    COLLECTION_ANSWERS.with(|answers| answers.borrow_mut().clear());
+}

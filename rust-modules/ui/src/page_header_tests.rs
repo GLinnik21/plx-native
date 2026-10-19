@@ -450,3 +450,122 @@ fn a_shared_row_hands_one_row_to_every_reader_until_the_key_changes() {
     let next = row.get(2, || "two".to_owned());
     assert_eq!((next.as_str(), first.as_str(), row.builds()), ("two", "one", 2), "a reader that holds the old row keeps it");
 }
+
+/// The right cluster with a slotted Collections control holding `value`, and its widest case.
+fn slotted(value: Option<&str>, readout: bool) -> (PageHeaderSpec, Vec<HeaderItem>) {
+    let collections = |value: Option<&str>| HeaderItem { value_slot: Some("9,999".into()), ..item("Collections", value) };
+    let mut right = vec![HeaderItem { value: value.map(Into::into), ..collections(None) }, item("Recommended", None)];
+    let mut widest = vec![collections(Some("9,999")), item("Recommended", None)];
+    if readout {
+        right.insert(0, HeaderItem { readout: true, focusable: false, ..item("24 of 27", None) });
+        widest.insert(0, right[0].clone());
+    }
+    (PageHeaderSpec { right, ..Default::default() }, widest)
+}
+
+fn row_with(value: Option<&str>) -> HeaderRow {
+    let (spec, widest) = slotted(value, false);
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[(1, 0), (2, 1)])
+}
+
+/// **A slotted control never moves its label** (a count that is unknown, one digit, two, or the
+/// widest the slot holds): the label stands at the slot's leading edge, the plate hugs what is
+/// drawn, and nothing after the control moves either.
+#[test]
+fn a_slotted_control_keeps_its_label_still_whatever_it_holds() {
+    let rows: Vec<HeaderRow> = [None, Some("4"), Some("12"), Some("9,999")].into_iter().map(row_with).collect();
+    let first = rows[0].layout.items[0];
+    for row in &rows {
+        let (collections, recommended) = (row.layout.items[0], row.layout.items[1]);
+        assert_eq!(collections.text.x, first.text.x, "the label is where it was");
+        assert_eq!(recommended.text, rows[0].layout.items[1].text, "and so is everything after it");
+        assert_eq!(collections.plate.w, collections.text.w + 2.0 * OVERHANG, "the plate hugs the text drawn");
+    }
+    assert!(rows[1].layout.items[0].text.w < rows[3].layout.items[0].text.w, "a short count draws a short run");
+    assert!(rows[0].layout.items[0].text.w < rows[1].layout.items[0].text.w, "and none draws the bare label");
+}
+
+/// **The read-out stands at the cluster's measured left edge**, not wherever the control after it
+/// puts it: it does not move when the Collections control comes, goes or is unknown.
+#[test]
+fn the_readout_stands_at_the_clusters_measured_left_edge() {
+    let (with, widest) = slotted(Some("4"), true);
+    let held = PageHeader::new(with, &widest, &Fixed).layout(1920.0, &Fixed);
+    let edge = TEXT_X1 - held.cluster_w;
+    assert_eq!(held.items[0].text.x, edge, "the read-out leads the cluster at its left edge");
+    let (mut without, _) = slotted(None, true);
+    without.right.remove(1);
+    let gone = PageHeader::new(without, &widest, &Fixed).layout(1920.0, &Fixed);
+    assert_eq!(gone.items[0].text.x, edge, "and stays there when the control is gone");
+    let (unknown, _) = slotted(None, true);
+    let bare = PageHeader::new(unknown, &widest, &Fixed).layout(1920.0, &Fixed);
+    assert_eq!(bare.items[0].text.x, edge, "or its count is not known yet");
+}
+
+/// Every text run of `row` drawn at swap `swap`, as `(text, x, alpha)`.
+fn swap_runs(row: &HeaderRow, swap: &HeaderSwap) -> Vec<(String, f32, f32)> {
+    crate::draw_census::capture_runs(|| row.draw_with(Painter::recording(), 0.0, &TabStrip::new(), 1.0, None, swap))
+        .into_iter().map(|run| (run.text, run.at.x, run.ink[3])).collect()
+}
+
+/// **A changed count cross-fades in place**: the old number leaves and the new one arrives at the
+/// same x, their opacities sum to one on every frame, the label is drawn once at one x, and the
+/// swap ends by itself on the new row alone.
+#[test]
+fn a_changed_count_cross_fades_in_place_on_the_content_swap_clock() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (row_with(Some("4")), row_with(Some("12")));
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_active());
+    let label_x = swap_runs(&new, &swap).iter().find(|(text, ..)| text == "Collections").unwrap().1;
+    let mut crossed = false;
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        let at = |text: &str| runs.iter().find(|(t, ..)| t == text).map(|(_, x, alpha)| (*x, *alpha));
+        let labels: Vec<_> = runs.iter().filter(|(text, ..)| text == "Collections").collect();
+        assert_eq!(labels.len(), 1, "one label, never two: {runs:?}");
+        assert_eq!(labels[0].1, label_x, "and it does not move");
+        if let (Some(from), Some(to)) = (at("4"), at("12")) {
+            assert_eq!(from.0, to.0, "the numbers share an x");
+            assert!((from.1 + to.1 - 1.0).abs() < 1e-4, "and their opacities sum to one: {from:?} {to:?}");
+            crossed = true;
+        }
+        swap.step(1.0 / 60.0);
+    }
+    assert!(crossed, "the two numbers shared frames");
+    assert!(!swap.is_active(), "the clock ran out");
+    let runs = swap_runs(&new, &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "4") && runs.iter().any(|(text, _, alpha)| text == "12" && *alpha == 1.0));
+}
+
+/// **A control the next row does not have fades out where it stood** (a library with no
+/// collections): its face is painted at the old x with a falling opacity, never cut, and the swap
+/// leaves the row exactly as the new row draws it.
+#[test]
+fn a_control_the_next_row_lacks_fades_out_in_place() {
+    let _g = plx_base::testlock::serial();
+    let old = row_with(Some("4"));
+    let (spec, widest) = slotted(None, false);
+    let page = PageHeader::new(PageHeaderSpec { right: spec.right[1..].to_vec(), ..spec }, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    let new = row_of(page, layout, &[(2, 0)]);
+    let old_x = old.layout.items[0].text.x;
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    let mut alphas = Vec::new();
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        if let Some((_, x, alpha)) = runs.iter().find(|(text, ..)| text == "Collections") {
+            assert_eq!(*x, old_x, "it fades where it stood");
+            alphas.push(*alpha);
+        }
+        swap.step(1.0 / 60.0);
+    }
+    assert!(alphas.len() >= 6, "several frames of fade, not a cut: {alphas:?}");
+    assert!(alphas.windows(2).all(|pair| pair[1] <= pair[0]), "falling: {alphas:?}");
+    assert!((alphas[0] - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "from fully there: {alphas:?}");
+    assert!(swap_runs(&new, &swap).iter().all(|(text, ..)| text != "Collections"), "and gone once the clock ran out");
+}

@@ -30,6 +30,7 @@ use super::breadcrumb::{self, Crumb};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::widgets::{CtlPop, SelMark, TabGround, TabStrip};
+use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect};
 
 /// Left text edge of the first library name.
@@ -84,6 +85,13 @@ pub struct HeaderItem {
     /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and [`READOUT_GAP`] before the next
     /// item.
     pub readout: bool,
+    /// A control whose value is a count that comes and goes ("Collections · 4"): the widest value it
+    /// ever wears, measured once. The control is PLACED for that width whatever it holds now, with
+    /// the label at the slot's leading edge, so the label never moves when the count lands, changes
+    /// or is not known yet; the plate hugs the text actually drawn. Its value, and its being on the
+    /// row at all, ride the row's [`HeaderSwap`]: a changed count cross-fades in place, a control the
+    /// next row does not have fades out where it stood, instead of being cut.
+    pub value_slot: Option<String>,
 }
 
 /// What the header is built from.
@@ -151,13 +159,29 @@ pub struct PageHeader {
     cluster_w: f32,
 }
 
+fn text_w(s: &str, measure: &dyn Measure) -> f32 {
+    CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
+}
+
+/// The room an item takes in the row: its drawn run, or for a control with a [`HeaderItem::value_slot`]
+/// the label and the separator and the slot (the count it holds may be wider than the slot, never
+/// narrower, so the room never changes while the count is a few digits).
 fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
-    let w = |s: &str, bold: bool| {
-        CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, bold))
+    let w = |s: &str| text_w(s, measure);
+    let value = match (&item.value_slot, &item.value) {
+        (Some(slot), value) => w(" \u{b7} ") + w(slot).max(value.as_deref().map_or(0.0, w)),
+        (None, Some(value)) => w(" \u{b7} ") + w(value),
+        (None, None) => 0.0,
     };
-    w(&item.label, false)
-        + item.value.as_deref().map_or(0.0, |v| w(" \u{b7} ", false) + w(v, false))
-        + if item.fold_glyph { FOLD_GAP + FOLD_SIZE } else { 0.0 }
+    w(&item.label) + value + if item.fold_glyph { FOLD_GAP + FOLD_SIZE } else { 0.0 }
+}
+
+/// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
+/// and its plate are this wide.
+fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
+    if item.value_slot.is_none() { return run_w(item, measure); }
+    let w = |s: &str| text_w(s, measure);
+    w(&item.label) + item.value.as_deref().map_or(0.0, |value| w(" \u{b7} ") + w(value))
 }
 
 const FOLD_GAP: f32 = 10.0;
@@ -234,12 +258,16 @@ impl PageHeader {
             place(slot, x, w, focusable);
             if let Some(next) = left.get(n + 1) { x += w + gap_between(w, next.1); }
         }
-        // The right cluster keeps its measured width; its items sit flush to the right edge.
+        // The right cluster keeps its measured width; its items sit flush to the right edge, each
+        // placed for the room it takes (`run_w`) and drawn as wide as its text (`ink_w`). The
+        // read-out leads the cluster at its measured left edge, so a control after it that comes
+        // or goes (or changes its count) moves nothing of it.
         let live = cluster_width(&self.spec.right, measure);
         let mut rx = x1 - live;
         for (i, it) in self.spec.right.iter().enumerate() {
             let w = run_w(it, measure);
-            place(Slot::Right(i), rx, w, it.focusable);
+            let at = if it.readout && i == 0 { cluster_x0.min(rx) } else { rx };
+            place(Slot::Right(i), at, ink_w(it, measure), it.focusable);
             if let Some(next) = self.spec.right.get(i + 1) { rx += w + gap_after(it, next, measure); }
         }
         HeaderLayout {
@@ -258,14 +286,9 @@ impl PageHeader {
     /// What `slot` says about its item: the label (a crumb's parts and the "+N" are the row's own,
     /// not spec items) and the flags the paint reads.
     fn face(&self, slot: Slot) -> Face<'_> {
-        fn of(item: &HeaderItem) -> Face<'_> {
-            Face {
-                label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate,
-                fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout,
-            }
-        }
+        let of = Self::face_of;
         fn plain<'a>(label: String, selected: bool) -> Face<'a> {
-            Face { label, value: None, selected, fold: false, dimmed: false, readout: false }
+            Face { label, value: None, selected, fold: false, dimmed: false, readout: false, fade: None }
         }
         match slot {
             Slot::Left(i) => self.spec.left.get(i).map_or_else(|| plain(String::new(), false), of),
@@ -273,6 +296,14 @@ impl PageHeader {
             Slot::Overflow => plain(format!("+{}", self.spec.overflow), false),
             Slot::CrumbRoot => plain(self.spec.crumb.as_ref().map(|c| c.root.clone()).unwrap_or_default(), false),
             Slot::CrumbPage => plain(self.spec.crumb.as_ref().map(|c| c.page.clone()).unwrap_or_default(), true),
+        }
+    }
+
+    /// What an item says about itself: the flags the paint reads.
+    fn face_of(item: &HeaderItem) -> Face<'_> {
+        Face {
+            label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate,
+            fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, fade: None,
         }
     }
 
@@ -316,15 +347,27 @@ impl PageHeader {
     /// control a menu has taken out of the page (`DrawFrame::lifted`): the focus capsule is gone
     /// from the row, and the control's label stays as plain text or goes ([`Lift`]).
     pub fn draw(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>) {
+        self.draw_with(p, layout, capsules, pop, lifted, &HeaderSwap::new());
+    }
+
+    /// [`Self::draw`] on a row that is changing under the reader: the controls `swap` carries are
+    /// painted as it says (a value cross-fading in place, a control leaving or arriving), every
+    /// other face as `draw` paints it.
+    pub fn draw_with(&self, p: Painter, layout: &HeaderLayout, capsules: &TabStrip, pop: f32, lifted: Option<Lifted>, swap: &HeaderSwap) {
         capsules.draw(p, layout.top(), HEIGHT, TabGround::Bare { pop, focus: lifted.is_none() });
         if let Some(glyph) = layout.glyph {
             icons::draw(p, Icon::Chevron, glyph, breadcrumb::GLYPH_INK);
         }
         for (index, r) in layout.items.iter().enumerate() {
             if lifted == Some(Lifted { item: index, lift: Lift::Away }) { continue; }
-            let face = self.face(r.slot);
+            let mut face = self.face(r.slot);
+            if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i); }
             let mix = self.mixes(capsules, r, &face, lifted.is_some());
-            self.draw_face_at(p, r, &face, (0.0, 0.0), mix);
+            self.draw_face_at(p, r.text, &face, (0.0, 0.0), mix);
+        }
+        for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right) {
+            let face = Face { fade: Some(FaceFade { face: opacity, from_value: None, value_in: 1.0 }), ..Self::face_of(item) };
+            self.draw_face_at(p, Rect::new(text_x, layout.top(), text_w, HEIGHT), &face, (0.0, 0.0), (0.0, 0.0));
         }
     }
 
@@ -334,15 +377,19 @@ impl PageHeader {
     /// [`Self::draw`]'s, so a menu's opener face cannot drift from the row's.
     pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
         let Some(r) = layout.items.get(index) else { return };
-        self.draw_face_at(p, r, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
+        self.draw_face_at(p, r.text, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
     }
 
-    /// One item's label, value segment and fold glyph, shifted by `(dx, dy)`, inked at the mixes
-    /// `(focus, selected)`: `rest` toward `strong` as the selection arrives, then all the way to
-    /// the accent ink as the focus capsule covers it (focus outranks selection). `cross`, not
-    /// `mix`: the resting ink is a translucent white and the accent ink is opaque, and a blend
-    /// that kept the source's alpha would land the dark ink at 65%.
-    fn draw_face_at(&self, p: Painter, r: &ItemRect, face: &Face<'_>, (dx, dy): (f32, f32), (focus, selected): (f32, f32)) {
+    /// One item's label, value segment and fold glyph at the text box `text`, shifted by `(dx, dy)`,
+    /// inked at the mixes `(focus, selected)`: `rest` toward `strong` as the selection arrives, then
+    /// all the way to the accent ink as the focus capsule covers it (focus outranks selection).
+    /// `cross`, not `mix`: the resting ink is a translucent white and the accent ink is opaque, and
+    /// a blend that kept the source's alpha would land the dark ink at 65%.
+    ///
+    /// A face riding a [`HeaderSwap`] wears `fade.face` as its opacity and paints the value it
+    /// replaces beside its own, at the same x, under the swap's two opacities: the label is drawn
+    /// once and never moves with the numbers.
+    fn draw_face_at(&self, p: Painter, text: Rect, face: &Face<'_>, (dx, dy): (f32, f32), (focus, selected): (f32, f32)) {
         let (rest, strong) = if face.readout {
             (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)
         } else if face.dimmed {
@@ -351,23 +398,46 @@ impl PageHeader {
             (theme::CONTROL_TEXT_REST, theme::CONTROL_IDLE_INK)
         };
         let to_accent = |ink: [f32; 4]| theme::cross(ink, super::ACCENT_INK, focus.clamp(0.0, 1.0));
-        let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, r.text.y + dy + r.text.h * 0.5);
-        let mut x = r.text.x + dx;
+        let fade = face.fade;
+        let p = fade.map_or(p, |fade| p.alpha(fade.face));
+        let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, text.y + dy + text.h * 0.5);
+        let mut x = text.x + dx;
         // The label answers to both plates; what follows it (the separator, the value, the glyph)
         // only to the focus one: a value is full white whatever is selected.
         let label_ink = to_accent(theme::cross(rest, strong, selected.clamp(0.0, 1.0)));
         if let Ok(c) = CString::new(face.label.as_str()) {
             x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
         }
-        if let Some(v) = face.value {
-            if let (Ok(sep), Ok(v)) = (CString::new(" \u{b7} "), CString::new(v)) {
-                x += p.text(sep.as_ptr(), x, y, theme::size::BODY, to_accent(rest), 0, 0);
-                x += p.text(v.as_ptr(), x, y, theme::size::BODY, to_accent(strong), 0, 0);
+        // The separator stands for whichever value is there, so it fades only when the control
+        // gains its first value or loses its last.
+        let leaving = fade.and_then(|fade| fade.from_value);
+        let arriving = fade.map_or(1.0, |fade| fade.value_in);
+        let sep_alpha = match (face.value.is_some(), leaving) {
+            (true, Some(_)) => 1.0,
+            (true, None) => arriving,
+            (false, Some((_, out))) => out,
+            (false, None) => 0.0,
+        };
+        let mut value_end = x;
+        if sep_alpha > 0.0 {
+            if let Ok(sep) = CString::new(" \u{b7} ") {
+                let advance = p.alpha(sep_alpha).text(sep.as_ptr(), x, y, theme::size::BODY, to_accent(rest), 0, 0);
+                x += advance;
+                value_end = x;
             }
         }
+        for (value, opacity) in leaving.into_iter().chain(face.value.map(|value| (value, arriving))) {
+            if opacity <= 0.0 { continue; }
+            if let Ok(v) = CString::new(value) {
+                let advance = p.alpha(opacity).text(v.as_ptr(), x, y, theme::size::BODY, to_accent(strong), 0, 0);
+                // The fold glyph follows the value the face wears, not the one leaving.
+                if face.value == Some(value) { value_end = x + advance; }
+            }
+        }
+        x = value_end;
         if face.fold {
             icons::draw(p, Icon::ChevronDown,
-                Rect::new(x + FOLD_GAP, r.text.y + dy + (r.text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
+                Rect::new(x + FOLD_GAP, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
         }
     }
 }
@@ -398,6 +468,19 @@ struct Face<'a> {
     fold: bool,
     dimmed: bool,
     readout: bool,
+    /// Set while the item rides a [`HeaderSwap`].
+    fade: Option<FaceFade<'a>>,
+}
+
+/// How a [`HeaderSwap`] has an item painted this frame.
+#[derive(Clone, Copy)]
+struct FaceFade<'a> {
+    /// The whole face's opacity: 1 for a control that stays, rising for one that is new and
+    /// falling for one that is leaving.
+    face: f32,
+    /// The value this one replaces, and its opacity (falling); `value`'s own is `value_in`.
+    from_value: Option<(&'a str, f32)>,
+    value_in: f32,
 }
 
 /// **A built header row**: the widget, its geometry (document space: y is the row's own top before
@@ -467,6 +550,11 @@ impl HeaderRow {
     /// Paint the row `scroll` px up from its document position (it scrolls away with its page).
     /// `lifted` is the element a menu has taken out of the row, and how ([`Lift`]).
     pub fn draw(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<(u32, Lift)>) {
+        self.draw_with(p, scroll, capsules, pop, lifted, &HeaderSwap::new());
+    }
+
+    /// [`Self::draw`] while the screen's `swap` carries the row's controls from the row before it.
+    pub fn draw_with(&self, p: Painter, scroll: f32, capsules: &TabStrip, pop: f32, lifted: Option<(u32, Lift)>, swap: &HeaderSwap) {
         let mut layout = self.layout.clone();
         for item in &mut layout.items {
             item.text.y -= scroll;
@@ -475,7 +563,104 @@ impl HeaderRow {
         if let Some(glyph) = &mut layout.glyph { glyph.y -= scroll; }
         let lifted = lifted.and_then(|(elem, lift)| self.stops.iter().find(|(stop, _)| *stop == elem)
             .map(|(_, item)| Lifted { item: *item, lift }));
-        self.page.draw(p, &layout, capsules, pop, lifted);
+        self.page.draw_with(p, &layout, capsules, pop, lifted, swap);
+    }
+}
+
+/// One control of the row a [`HeaderSwap`] carries over from the row before: what it said and where
+/// its text stood (x and width; the row is one line, so y is the new row's own).
+struct Carried {
+    item: HeaderItem,
+    x: f32,
+    w: f32,
+}
+
+/// **The header row's content swap**: when a rebuilt row changes a control that has a
+/// [`HeaderItem::value_slot`], the reader sees the change as a dissolve and not a cut. The label
+/// stays where it is drawn and the value beside it cross-fades in place, old number to new; a
+/// control the new row does not have fades out where it stood; one it did not have fades in. All on
+/// [`Xfade`], the one content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`]
+/// smoothstepped), so no page keeps a timer of its own. Nothing glides: the slot already keeps the
+/// label still.
+///
+/// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
+/// replaced whole on every rebuild, and the swap must outlive the row it began on. It is
+/// decoration (the clock invalidates the present gate while it runs), never part of a page's
+/// canonical state: a recording and its replay rebuild the same rows, and what is shown between
+/// two of them is paint.
+pub struct HeaderSwap {
+    clock: Xfade,
+    /// The slotted controls of the row before the swap; empty at rest.
+    from: Vec<Carried>,
+}
+
+impl Default for HeaderSwap {
+    fn default() -> Self { Self::new() }
+}
+
+impl HeaderSwap {
+    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new() } }
+
+    /// Is a swap on screen?
+    pub fn is_active(&self) -> bool { !self.from.is_empty() && self.clock.is_swapping() }
+
+    /// The row `old` is being replaced by `new`: start a swap when a slotted control changed (its
+    /// value, or its being there at all). A row that changes nothing a swap carries starts nothing
+    /// and leaves one already running to finish; a breadcrumb row on either side is a different
+    /// page, not the same row changing, and cancels it.
+    pub fn begin(&mut self, old: &HeaderRow, new: &HeaderRow) {
+        if old.page.spec().crumb.is_some() || new.page.spec().crumb.is_some() { return self.end(); }
+        let carry = |row: &HeaderRow| -> Vec<Carried> {
+            row.page.spec().right.iter().enumerate().filter(|(_, item)| item.value_slot.is_some()).filter_map(|(i, item)| {
+                let at = row.layout.items.iter().find(|r| r.slot == Slot::Right(i))?;
+                Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w })
+            }).collect()
+        };
+        let before = carry(old);
+        let after = carry(new);
+        let same = before.len() == after.len()
+            && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value));
+        if same { return; }
+        self.from = before;
+        self.clock.arrive();
+    }
+
+    /// Stop at once, the row as it is.
+    pub fn end(&mut self) {
+        self.from.clear();
+        self.clock = Xfade::new();
+    }
+
+    /// One frame of the swap's clock: **decoration, not layout** ([`plx_machine::idle::decorative`]).
+    pub fn step(&mut self, dt: f32) {
+        if self.from.is_empty() { return; }
+        plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
+        if !self.clock.is_swapping() { self.end(); }
+    }
+
+    /// How far the swap has run, 0 (the old row) to 1 (the new one), eased.
+    fn progress(&self) -> f32 { self.clock.alpha() }
+
+    /// How the item `right[index]` is painted now; `None` when the swap has nothing to say about it.
+    fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize) -> Option<FaceFade<'a>> {
+        if !self.is_active() { return None; }
+        let item = right.get(index).filter(|item| item.value_slot.is_some())?;
+        let a = self.progress();
+        let Some(before) = self.from.iter().find(|c| c.item.label == item.label) else {
+            return Some(FaceFade { face: a, from_value: None, value_in: 1.0 });
+        };
+        if before.item.value == item.value { return None; }
+        let from_value = before.item.value.as_deref().map(|value| (value, 1.0 - a));
+        Some(FaceFade { face: 1.0, from_value, value_in: if item.value.is_some() { a } else { 0.0 } })
+    }
+
+    /// The slotted controls the new row (`right`) does not have: each with where its text stood and
+    /// its opacity now, falling.
+    fn leaving<'a>(&'a self, right: &'a [HeaderItem]) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
+        let active = self.is_active();
+        let opacity = 1.0 - self.progress();
+        self.from.iter().filter(move |c| active && !right.iter().any(|item| item.label == c.item.label))
+            .map(move |c| (&c.item, c.x, c.w, opacity))
     }
 }
 
