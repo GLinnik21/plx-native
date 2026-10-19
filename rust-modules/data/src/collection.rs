@@ -61,6 +61,8 @@ pub struct Collection {
     pub summary: String,
     pub thumb: String,
     pub child_count: usize,
+    /// The PMS `subtype` the header stated (`movie`, `show`, …), which names what the members are.
+    pub subtype: Option<String>,
     /// The member order the header stated, if it stated one.
     pub order: Option<CollectionOrder>,
     /// The rows by absolute index. A hole (a page not read, or evicted) reads as `None`.
@@ -88,7 +90,7 @@ impl Collection {
     /// until the header replaces it.
     fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
         Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
-            child_count: 0, order: None, pages: PageCache::default(), read: 0, total: 0,
+            child_count: 0, subtype: None, order: None, pages: PageCache::default(), read: 0, total: 0,
             status: CollectionStatus::Loading, more: true, wanted: 0..want, focus: None, restore: None,
             budget: FRONTIER_ASK, header_ready: false, client_key }
     }
@@ -391,6 +393,7 @@ impl CollectionState {
                 c.thumb = head.thumb;
                 c.summary = head.summary;
                 c.child_count = head.child_count;
+                c.subtype = head.subtype;
                 c.order = head.order;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
@@ -488,13 +491,16 @@ struct Header {
     summary: String,
     child_count: usize,
     #[serde(default)]
+    subtype: Option<String>,
+    #[serde(default)]
     order: Option<CollectionOrder>,
 }
 
 impl Header {
     fn of(row: &plx_plex::plex::Metadata) -> Self {
         Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
-            child_count: row.child_count.max(0) as usize, order: CollectionOrder::of(row.collection_sort) }
+            child_count: row.child_count.max(0) as usize, subtype: Some(row.subtype.clone()).filter(|s| !s.is_empty()),
+            order: CollectionOrder::of(row.collection_sort) }
     }
 }
 
@@ -569,7 +575,7 @@ fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> 
 
 #[cfg(any(test, feature = "test-support"))]
 fn header(title: &str, child_count: usize) -> Header {
-    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, order: None }
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, subtype: None, order: None }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

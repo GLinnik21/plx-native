@@ -122,7 +122,7 @@ pub fn disc_caps_with(
 /// own date, and a show's seasons/episodes extent or a title's runtime.
 pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<String>) {
     if let Some(ep) = episode {
-        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(ep.dur_ms));
+        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(ep.dur_ms));
         return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
     }
     let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
@@ -145,7 +145,7 @@ pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<Stri
     }
     (
         date,
-        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(d.dur_ms)),
+        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(d.dur_ms)),
     )
 }
 

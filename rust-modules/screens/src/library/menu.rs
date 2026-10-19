@@ -248,19 +248,16 @@ fn sort_section(title: &str, sorts: &[SortEntry], sort_index: usize, sort_desc: 
         } else {
             sort.default_desc
         };
-        let mut row = Row::new(&sort.title).checked(active);
-        // The server advertises every sort's title; the client-side Plays entry is the app's own.
-        if sort.key != plx_data::browse::PLAYS_SORT_KEY { row = row.server_label(); }
+        // The name is the shared table's for a fact it knows (`plx_data::sortfacts`), the server's
+        // otherwise; the checked row says which end comes first in a WORD, never a chevron.
+        let mut row = Row::new(sort.label()).checked(active);
+        if !sort.label_is_ours() { row = row.server_label(); }
         if active {
-            row = row.ticon(if sort_desc {
-                plx_ui::icons::Icon::ChevronDown
-            } else {
-                plx_ui::icons::Icon::ChevronUp
-            });
+            if let Some(word) = sort.direction_word(sort_desc) { row = row.value(word); }
         }
         stamp.tag(8);
         stamp.str(&sort.key);
-        stamp.str(&sort.title);
+        stamp.str(sort.label());
         stamp.bool(sort.default_desc);
         stamp.bool(desc);
         section = choice(
@@ -463,6 +460,14 @@ impl LibraryMenu {
             width,
             height,
         )
+    }
+    /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
+    /// test that compares the Library's words with the Watchlist's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_panel(&self) -> Vec<(String, Vec<(String, Option<String>)>)> {
+        self.form.table.sections.iter()
+            .map(|section| (section.header.clone(), section.rows.iter().map(|row| (row.label.clone(), row.value.clone())).collect()))
+            .collect()
     }
     /// The identity of the row focus is on (`"unwatched"`, `"sort:titleSort"`, a library's row), as
     /// a route test names what a key landed on; `None` off the menu.
@@ -942,7 +947,8 @@ mod tests {
     }
 
     #[test]
-    fn sort_refresh_updates_icon_and_the_next_action_direction() {
+    fn sort_refresh_updates_the_direction_word_and_the_next_action_direction() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         let sorts = vec![SortEntry {
             desc_key: String::new(),
             key: "titleSort".into(),
@@ -950,20 +956,15 @@ mod tests {
             default_desc: false,
         }];
         let up = lay(sort_draft(&sorts, 0, false));
-        assert_eq!(
-            up.sections[0].rows[0].ticon,
-            Some(plx_ui::icons::Icon::ChevronUp)
-        );
+        assert_eq!(up.sections[0].rows[0].value.as_deref(), Some("A\u{2013}Z"));
+        assert_eq!(up.sections[0].rows[0].ticon, None, "a word says the direction, not a chevron");
         assert!(matches!(
             up.rows[0].1,
             Action::Edit(QueryEdit::Sort { desc: true, .. })
         ));
 
         let down = lay(sort_draft(&sorts, 0, true));
-        assert_eq!(
-            down.sections[0].rows[0].ticon,
-            Some(plx_ui::icons::Icon::ChevronDown)
-        );
+        assert_eq!(down.sections[0].rows[0].value.as_deref(), Some("Z\u{2013}A"));
         assert!(matches!(
             down.rows[0].1,
             Action::Edit(QueryEdit::Sort { desc: false, .. })

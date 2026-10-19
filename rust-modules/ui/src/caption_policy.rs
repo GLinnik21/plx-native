@@ -126,12 +126,7 @@ fn resolution_mark(raw: &str) -> Option<String> {
 fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
-        let n = i64::from(f.child_count?);
-        return Some(match sub {
-            "movie" => msg::browse_person_films_in(cx, n),
-            "show" => msg::browse_person_shows_in(cx, n),
-            _ => msg::browse_search_items_in(cx, n),
-        });
+        return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
     }
     let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {
@@ -146,15 +141,10 @@ fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     let dur = f.duration_min.filter(|m| *m > 0);
     if let (Some(d), Some(off)) = (dur, f.view_offset_min.filter(|m| *m > 0)) {
         if off < d {
-            let left = i64::from(d - off);
-            let (h, m) = (left / 60, left % 60);
-            return Some(if h > 0 { msg::core_time_left_hours_in(cx, h, m) } else { msg::core_time_left_minutes_in(cx, m) });
+            return Some(crate::fmt::time_left_minutes_in(cx, i64::from(d - off)));
         }
     }
-    let length = dur.map(|d| {
-        let (h, m) = (i64::from(d) / 60, i64::from(d) % 60);
-        if h > 0 { msg::core_duration_short_hours_in(cx, h, m) } else { msg::core_duration_short_minutes_in(cx, m) }
-    });
+    let length = dur.map(|d| crate::fmt::duration_minutes_in(cx, i64::from(d)));
     join(year.into_iter().chain(length).collect())
 }
 

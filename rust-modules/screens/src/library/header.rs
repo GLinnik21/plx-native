@@ -58,7 +58,7 @@ impl LibraryScreen {
             Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
             _ => listing.sorts().get(listing.sort_index()),
         };
-        sort.map_or(plx_platform::i18n::msg::browse_library_title(), |sort| sort.title.as_str()).to_owned()
+        sort.map_or(plx_platform::i18n::msg::browse_library_title(), |sort| sort.label()).to_owned()
     }
 
     /// Is a genre or Unwatched filter in force (a queued edit included)? Only then does the row
@@ -92,14 +92,17 @@ impl LibraryScreen {
         }
     }
 
-    /// "312 of 1,284", once a filter is on and the unfiltered total is known.
+    /// "312 of 1,284 films", once a filter is on and the unfiltered total is known. The noun is the
+    /// listing's own (`LibraryType::count_label`, the words the Sources list's counts wear), so the
+    /// read-out cannot be taken for a count of the Collections beside it.
     fn filtered_readout<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<String> {
         if !self.filter_active(cx) { return None; }
         let listing = H::listing(cx);
         let (_, total) = self.unfiltered.as_ref()?;
         if listing.total() < 0 || listing.fetch() != SecFetch::Ready { return None; }
         let locale = plx_platform::i18n::current();
-        Some(plx_platform::i18n::msg::library_header_filtered_of(&locale.number(listing.total()), &locale.number(*total)))
+        let of_total = listing.library_type().count_label(self.kind, *total);
+        Some(plx_platform::i18n::msg::library_header_filtered_of(&locale.number(listing.total()), &of_total))
     }
 
     /// The right cluster as it is now, and in its widest case (every value at its longest), which
@@ -124,7 +127,7 @@ impl LibraryScreen {
             ..item(msg::library_header_recommended()) });
         widest.push(item(msg::library_header_recommended()));
         let sort = self.sort_value(cx);
-        let longest = H::listing(cx).sorts().iter().map(|sort| sort.title.as_str()).chain([sort.as_str()])
+        let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort.as_str()])
             .max_by(|a, b| page_header::cluster_width(&[item(*a)], cx.measure)
                 .total_cmp(&page_header::cluster_width(&[item(*b)], cx.measure)))
             .unwrap_or_default().to_owned();

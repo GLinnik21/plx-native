@@ -200,23 +200,12 @@ pub fn press_out(m: Membership, hex: [u8; 12]) -> CatalogOut {
     }
 }
 
-/// `YYYY-MM-DD` as `(month, day)`; `None` for anything else (including a date the calendar lacks).
-fn month_day(release: &str) -> Option<(u8, u8)> {
-    let mut parts = release.split('-');
-    let _year: i32 = parts.next()?.parse().ok()?;
-    let month: u8 = parts.next()?.parse().ok()?;
-    let day: u8 = parts.next()?.parse().ok()?;
-    parts.next().is_none().then_some((month, day))
-}
-
 /// The *Coming 12 March* line: only an unreleased title with a usable date has one.
 pub fn coming_line(status: Status, release: Option<&str>) -> Option<String> {
     if status != Status::ComingSoon {
         return None;
     }
-    let (month, day) = release.and_then(month_day)?;
-    let date = plx_platform::i18n::current().month_day(month, day, plx_platform::i18n::MonthWidth::Long)?;
-    Some(plx_platform::i18n::msg::watchlist_state_coming_on(&date))
+    plx_ui::fmt::coming_on(release?, plx_platform::i18n::MonthWidth::Long)
 }
 
 /// The status line's icon. A dated coming-soon title says it in the larger *Coming ...* line

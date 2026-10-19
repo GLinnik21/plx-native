@@ -296,8 +296,56 @@ fn text_fit_inputs() -> RootInputs {
     RootInputs {
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: false,
-        language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
+        language: plx_platform::i18n::Preference::System,
+        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
+}
+
+/// The Under posters row of the Settings root as a viewer reads it: `(value, sub-line)`.
+fn root_row_text(inputs: &RootInputs) -> (Option<String>, String) {
+    let mut form = FormTable::<RootId, Action, SettingsPage>::new(crate::registry::BAND);
+    form.table.compact = false;
+    form.set(root_form(inputs), None);
+    let i = form.index_of_key(RootId::UnderPosters.key()).expect("the row is on a signed-in root");
+    let row = form.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists");
+    (row.value.clone(), row.detail.clone())
+}
+
+/// **S18: the Under posters row reads its setting like its siblings do, and its sub-line says what
+/// it governs.** Favorite libraries reads a count and Language its name; this row used to read
+/// nothing, and "What shows under a poster." named no poster. One rule, `summary`, words the value
+/// from the stored setting: the details line the page's Details row reads, and "Title" when the
+/// title is all there is (never "Nothing" beside a poster that wears its name).
+#[test]
+fn the_root_row_reads_the_setting_and_names_the_poster_it_governs() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let read = |title, details| root_row_text(&RootInputs { under_posters: UnderPosters { title, details }, ..text_fit_inputs() });
+    let (value, sub) = read(false, UnderPostersDetails::YearLength);
+    assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its details line");
+    assert_eq!(sub, "What shows under the poster you are on.");
+    assert_eq!(read(true, UnderPostersDetails::YearLength).0.as_deref(), Some("Year \u{b7} Length"), "the title is the page's own row");
+    assert_eq!(read(true, UnderPostersDetails::Genre).0.as_deref(), Some("Genre"));
+    assert_eq!(read(false, UnderPostersDetails::Video).0.as_deref(), Some("Video"));
+    assert_eq!(read(true, UnderPostersDetails::None).0.as_deref(), Some("Title"));
+    assert_eq!(read(false, UnderPostersDetails::None).0.as_deref(), Some("Nothing"));
+    // every value the setting can hold reads something
+    for value in every_value() {
+        let text = root_row_text(&RootInputs { under_posters: value, ..text_fit_inputs() }).0;
+        assert!(text.as_deref().is_some_and(|t| !t.is_empty()), "{value:?} reads nothing");
+    }
+}
+
+/// The value is read from the STORED setting when the root is built, so a return from the page (or
+/// from the picker) shows the pick: the root page reads the live cell, not a copy of the default.
+#[test]
+fn the_root_page_reads_the_stored_setting_into_its_row() {
+    let _guard = plx_base::testlock::serial();
+    let _sess = seated_scratch_session("root-reads-under-posters");
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    let page = RootPage::new(EntryId(0), test_support::cx(None).views);
+    assert_eq!(page.state.under_posters, UnderPosters { title: true, details: UnderPostersDetails::Genre });
 }
 
 /// **Every string fits, in every shipped language**: both pages' rows, the root row beside every
@@ -321,6 +369,10 @@ fn every_under_posters_string_fits_in_every_language() {
             picker.table.compact = false;
             picker.set(details_form(value.details), None);
             out.extend(picker.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} details picker {value:?}")));
+            let mut root = FormTable::<RootId, Action, SettingsPage>::new(crate::registry::BAND);
+            root.table.compact = false;
+            root.set(root_form(&RootInputs { under_posters: value, ..text_fit_inputs() }), None);
+            out.extend(root.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} settings root {value:?}")));
         }
         // each page's narrative copy ends above the preview frame
         for (title, copy) in [

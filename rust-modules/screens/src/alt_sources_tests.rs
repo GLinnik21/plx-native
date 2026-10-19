@@ -52,7 +52,7 @@ fn copy(s: u16, library: &str, owner: &str, rk: &str, res: &str) -> AltCopy {
         library: library.into(),
         owner: (!owner.is_empty()).then(|| owner.to_string()),
         rk: rk.into(),
-        dur_ms: 7_020_000, // 1 hr 57 min, the design's own runtime
+        dur_ms: 7_020_000, // 1h 57m, the design's own runtime
         res: res.into(),
         width: 0,
         height: 0,
@@ -152,8 +152,8 @@ fn the_copy_that_plays_comes_first_and_the_rest_rank_by_preference() {
     // lines up down the panel instead of sitting mid-string at a different x on every row
     assert_eq!(rs[0].detail, "This account");
     assert_eq!(rs[1].detail, "friend");
-    assert_eq!(rs[0].value.as_deref(), Some("1 hr 57 min"));
-    assert_eq!(rs[1].value.as_deref(), Some("1 hr 57 min"));
+    assert_eq!(rs[0].value.as_deref(), Some("1h 57m"));
+    assert_eq!(rs[1].value.as_deref(), Some("1h 57m"));
     assert_eq!(rs[0].badge.as_deref(), Some("1080p"));
     assert_eq!(
         rs[1].badge.as_deref(),
@@ -287,7 +287,7 @@ fn exactly_one_row_is_ever_ticked() {
 }
 
 /// A copy the server sent no runtime for leaves the read-out slot EMPTY and still says whose it
-/// is — never "0 min", the dangling-clause rule the hero's facts row follows.
+/// is — never "0m", the dangling-clause rule the hero's facts row follows.
 #[test]
 fn a_copy_with_no_runtime_states_only_its_owner() {
     let mut c = copy(1, "Film Club", "friend", "318", "4k");

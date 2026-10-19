@@ -12,7 +12,7 @@
 //! * which of the library page's behaviours do not run here ([`syncs_section`], read by
 //!   `LibraryScreen::sync`);
 //! * the tile: no count badge, and a caption of "N films" / "N shows" under the focused tile (the
-//!   collection's name above it when Under posters > Title is on) ([`caption`], [`TileFacts`],
+//!   collection's name above it when Under posters > Title is on, or when the face cuts the name) ([`caption`], [`TileFacts`],
 //!   read by the grid's card source, which also draws the smart mark);
 //! * the empty page's sentence ([`empty_text`], read by the status read-out).
 //!
@@ -93,16 +93,28 @@ pub struct TileFacts<'a> {
     /// The member count; 0 = unknown (an empty collection and an unread one look alike on the
     /// wire, so neither gets a count line).
     pub child_count: i64,
+    /// The tile's face cuts the name (`collection_tile::name_is_cut`): the caption then carries it.
+    pub name_cut: bool,
 }
 
 /// The policy a collection's caption follows: the stored Title switch is honoured; the details
 /// line is always the member count unless the reader chose None (nothing opens). Genre, Video and
 /// Age rating describe a film, not a collection, so they fall back to the count.
-pub fn policy(stored: CaptionPolicy) -> CaptionPolicy {
+///
+/// A name the face cuts is the exception to the Title switch: the focused caption carries the full
+/// name whatever the setting (`name_cut`), as the face is the only other place it is told.
+pub fn policy(stored: CaptionPolicy, name_cut: bool) -> CaptionPolicy {
     CaptionPolicy {
-        title: stored.title,
+        title: stored.title || name_cut,
         details: if stored.details == DetailsKind::None { DetailsKind::None } else { DetailsKind::YearLength },
     }
+}
+
+/// The policy the grid reserves its caption band for on this page: the title line is always part of
+/// it. The band is one height for every tile of the page, and any tile's face may cut its name
+/// (and then needs the line), so it cannot depend on which tile happens to be focused.
+pub fn band_policy(stored: CaptionPolicy) -> CaptionPolicy {
+    CaptionPolicy { title: true, ..policy(stored, false) }
 }
 
 /// The focused tile's caption lines `[name, "N films"]` under `stored`. No count badge exists on
@@ -115,7 +127,7 @@ pub fn caption(stored: CaptionPolicy, facts: &TileFacts<'_>, locale: &LocaleCont
         child_count: u32::try_from(facts.child_count).ok().filter(|n| *n > 0),
         ..Default::default()
     };
-    caption_lines(&policy(stored), &f, locale)
+    caption_lines(&policy(stored, facts.name_cut), &f, locale)
 }
 
 /// The empty page's sentence, "No collections in {library}".

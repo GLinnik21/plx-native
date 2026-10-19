@@ -338,6 +338,12 @@ impl LibraryScreen {
         self.header.row().and_then(|row| row.readout()).map(str::to_owned)
     }
 
+    /// The Sort & Filter pill's value on the header row (the text after the dot), if the row has one.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_sort_value(&self) -> Option<String> {
+        self.header.row()?.page.spec().right.iter().find(|item| item.fold_glyph).and_then(|item| item.value.clone())
+    }
+
     /// The scroll the page is travelling to: 0 at its top.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
@@ -427,6 +433,13 @@ impl LibraryScreen {
         if !H::listing(cx).membership_stale() { return; }
         let Some(target) = self.address(cx) else { return };
         self.store(target, LibraryWork::Requery, fx);
+    }
+
+    /// The caption policy the grid reserves its band for: the Under posters setting, except on the
+    /// Collections page, whose band always holds the title line (`collections_page::band_policy`).
+    fn grid_policy(&self) -> plx_ui::caption_policy::CaptionPolicy {
+        let stored = parts::caption_policy();
+        if self.listed == plx_data::browse::LibraryType::Collections { collections_page::band_policy(stored) } else { stored }
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -585,7 +598,7 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let band_h = plx_ui::caption_policy::band_h(&parts::caption_policy());
+        let band_h = plx_ui::caption_policy::band_h(&self.grid_policy());
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
         } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
@@ -599,6 +612,7 @@ impl LibraryScreen {
         self.layout.status = self.readout == Readout::Failed;
         self.target_layout.status = self.layout.status;
         self.pair.detail.set_geometry(self.layout, self.scroll.pos, self.target_layout, self.scroll_target);
+        self.pair.detail.set_band_policy(self.grid_policy());
     }
 
     /// Seat the page's own focus in `group`; the library row seats the library on view.

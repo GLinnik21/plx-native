@@ -989,7 +989,7 @@ pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi:
     }
     let s = if m.kind == TileKind::Collection {
         // A collection is its size, never a year: the members span several, and PMS sends none.
-        crate::fmt::item_count(m.child_count)
+        crate::fmt::collection_count(m.subtype, m.child_count)
     } else if m.kind == TileKind::Episode && m.ep_index > 0 {
         if m.season_index > 0 {
             plx_platform::i18n::msg::widgets_card_season_episode(m.ep_index as i64, m.season_index as i64)

@@ -114,11 +114,15 @@ fn summary_view<'a>(summary: &'a str, measure: &'a dyn plx_machine::machine::Mea
 /// The header's member count, and whether the line is the kind alone: with no members counted —
 /// before the header lands, on a failed load, and for an empty collection (C4a's meta line reads
 /// "Collection") — the line is the kind alone rather than "0 items".
-fn meta_key(collection: &Collection) -> (i64, bool) {
+fn meta_key(collection: &Collection) -> MetaKey {
     let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
     let count = count as i64;
-    (count, count == 0)
+    (count, count == 0, collection.subtype.clone())
 }
+
+/// What the meta line is built from, which a cached line is keyed on: the count, whether the line is
+/// the kind alone, and the subtype that names the members.
+type MetaKey = (i64, bool, Option<String>);
 
 /// The grid heading's annotation: the member order the collection's owner chose, when the
 /// server stated one.
@@ -138,11 +142,12 @@ fn head_alpha(scroll: f32) -> f32 {
     (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
 }
 
-/// The header's meta line — "Collection · N items", or the kind alone ([`meta_key`]).
+/// The header's meta line — "N films · Collection" (the noun is the collection's own, the one its
+/// tile's caption uses: `fmt::collection_count`), or the kind alone ([`meta_key`]).
 fn meta_line(collection: &Collection) -> CString {
     match meta_key(collection) {
-        (_, true) => plx_platform::i18n::msg::browse_collection_kind_c().to_owned(),
-        (count, false) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&plx_ui::fmt::item_count(count)))
+        (_, true, _) => plx_platform::i18n::msg::browse_collection_kind_c().to_owned(),
+        (count, false, _) => CString::new(plx_platform::i18n::msg::browse_collection_meta(&plx_ui::fmt::collection_count(collection.subtype.as_deref(), count)))
             .unwrap_or_default(),
     }
 }
@@ -304,7 +309,7 @@ struct Page {
     pin_index: Vec<(u32, usize)>,
     /// The header's meta line and the `(count, kind-only)` it was built for ([`meta_line`]).
     /// Derived, not logical state.
-    meta: ((i64, bool), CString),
+    meta: (MetaKey, CString),
     return_pending: bool,
     /// The focused member's element, and the remembered one a Back is waiting for: neither key is
     /// ever pruned.
@@ -665,7 +670,7 @@ impl CollectionScreen {
     pub fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self {
             page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
-                proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true), CString::default()),
+                proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true, None), CString::default()),
                 return_pending: false, focus_elem: None, restore_elem: None,
                 focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new()),
                 sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
@@ -1349,6 +1354,22 @@ mod tests {
             "an empty collection is a quiet answer, not a failure");
     }
 
+    /// **S20: the Collection screen counts its members in the noun its tile does.** The header says
+    /// "6 films", not "6 items", for a movie collection; before the subtype lands it is items.
+    #[test]
+    fn the_meta_line_counts_in_the_noun_of_the_subtype() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let (mut store, _) = seeded();
+        store.edit_for_test(|c| { c.child_count = 6; c.subtype = None; });
+        assert_eq!(meta_line(store.view().current().unwrap()).to_str().unwrap(), "6 items \u{b7} Collection");
+        store.edit_for_test(|c| c.subtype = Some("movie".into()));
+        let c = store.view().current().unwrap();
+        assert_eq!(meta_line(c).to_str().unwrap(), "6 films \u{b7} Collection");
+        assert_ne!(meta_key(c), (6, false, None), "a landed subtype re-keys the cached line");
+        store.edit_for_test(|c| c.subtype = Some("show".into()));
+        assert_eq!(meta_line(store.view().current().unwrap()).to_str().unwrap(), "6 shows \u{b7} Collection");
+    }
+
     /// C4a: an empty collection keeps its header — the kind alone on the meta line, not
     /// "0 items" — and says so in the grid's region, centred where the mock centres it.
     #[test]
@@ -1356,7 +1377,7 @@ mod tests {
         let (mut store, _) = seeded();
         store.edit_for_test(|c| { c.replace_items_for_test(vec![]); c.child_count = 0; c.total = 0; c.status = CollectionStatus::Empty; });
         let c = store.view().current().unwrap();
-        assert_eq!(meta_key(c), (0, true), "the meta line is the kind alone");
+        assert_eq!(meta_key(c), (0, true, None), "the meta line is the kind alone");
         assert!(CollectionScreen::shows_head(c));
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
         let f = overlay.frame;
@@ -1660,8 +1681,9 @@ mod tests {
             let mark = member_label(&season);
             let w = m.width_str(&mark, theme::size::LABEL, true);
             if w > mark_budget { out.push(format!("{}: {mark:?} is {w:.0}px in {mark_budget:.0}px", language.tag())); }
-            for meta in [msg::browse_collection_kind().to_owned(),
-                msg::browse_collection_meta(&plx_ui::fmt::item_count(99_999))] {
+            for meta in [msg::browse_collection_kind().to_owned()].into_iter()
+                .chain([None, Some("movie"), Some("show")]
+                    .map(|sub| msg::browse_collection_meta(&plx_ui::fmt::collection_count(sub, 99_999)))) {
                 let w = m.width_str(&meta, theme::size::LABEL, false);
                 if w > TEXT_W * HEADROOM { out.push(format!("{}: {meta:?} is {w:.0}px in {TEXT_W:.0}px", language.tag())); }
             }

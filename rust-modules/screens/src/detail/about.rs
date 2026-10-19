@@ -119,7 +119,7 @@ impl Rows {
             d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
         };
         if dur > 0 {
-            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), plx_ui::fmt::dur_long(dur)));
+            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), plx_ui::fmt::duration(dur)));
         }
         self.info.push((
             plx_platform::i18n::msg::browse_detail_rated(),
@@ -556,7 +556,7 @@ mod tests {
         assert!(rows
             .info
             .iter()
-            .any(|(label, value)| *label == "Run Time" && value == "2 min"));
+            .any(|(label, value)| *label == "Run Time" && value == "2m"));
     }
 
     fn movie_with_audio() -> Detail {

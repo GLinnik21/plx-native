@@ -17,8 +17,8 @@
 //!
 //! | mark | label | sub-line | read-out | badge |
 //! |---|---|---|---|---|
-//! | ✓ | `Movies`    | `This account` | `1 hr 57 min` | `1080p` |
-//! |   | `Film Club` | `friend`       | `1 hr 57 min` | `4K`    |
+//! | ✓ | `Movies`    | `This account` | `1h 57m` | `1080p` |
+//! |   | `Film Club` | `friend`       | `1h 57m` | `4K`    |
 //!
 //! # The four calls this module implements, and why each is not the obvious thing
 //!
@@ -211,7 +211,7 @@ pub struct AltRow {
     /// user text) — which of the two the sub-line's text-fit check may hold to account.
     pub own_detail: bool,
     /// the runtime, for the row's trailing read-out — `None` for a copy the server sent no
-    /// duration for, which then says nothing rather than "0 min"
+    /// duration for, which then says nothing rather than "0m"
     pub value: Option<String>,
     /// the resolution class, or `None` for a copy the server described no video for
     pub badge: Option<String>,
@@ -271,9 +271,9 @@ pub fn rows(list: &[AltCopy], here_sid: ServerId, here_rk: &str) -> Vec<AltRow> 
                 detail: who.to_string(),
                 own_detail: c.owner.is_none(),
                 // a copy the server sent no duration for leaves the read-out slot EMPTY rather
-                // than claiming "0 min" — the same rule the sub-line's dangling separator followed
+                // than claiming "0m" — the same rule the sub-line's dangling separator followed
                 // while the runtime was part of it
-                value: (c.dur_ms > 0).then(|| plx_ui::fmt::dur_long(c.dur_ms)),
+                value: (c.dur_ms > 0).then(|| plx_ui::fmt::duration(c.dur_ms)),
                 badge: plx_ui::fmt::resolution(&c.res, c.width, c.height),
                 checked: here == Some(i),
                 sid: c.sid,

@@ -15,6 +15,19 @@ pub enum SortKey {
     Rating,
 }
 
+impl SortKey {
+    /// The fact this key orders by, named once for every page ([`crate::sortfacts`]).
+    pub fn fact(self) -> crate::sortfacts::SortFact {
+        use crate::sortfacts::SortFact;
+        match self {
+            SortKey::Title => SortFact::Title,
+            SortKey::DateAdded => SortFact::DateAdded,
+            SortKey::Release => SortFact::ReleaseDate,
+            SortKey::Rating => SortFact::Rating,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SortSpec {
     pub key: SortKey,

@@ -349,6 +349,21 @@ impl LibraryType {
         self.title_in(kind, plx_platform::i18n::current())
     }
 
+    /// `n` of what this listing holds, in the same words every other count of it wears: "185
+    /// films", "40 shows", "6 seasons", "12 episodes", "9 items" (a collection listing). The ONE
+    /// source of the noun beside a number, shared by the Sources list's "185 films" line and the
+    /// Library header's "37 of 120 films" read-out, so a count never changes its noun by screen.
+    pub fn count_label(self, kind: SecKind, n: i64) -> String {
+        use plx_platform::i18n::msg;
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => msg::browse_person_films(n),
+            (Self::Primary, SecKind::Show) => msg::browse_person_shows(n),
+            (Self::Seasons, _) => msg::browse_detail_seasons(n),
+            (Self::Episodes, _) => msg::browse_detail_episodes(n),
+            (Self::Collections, _) => msg::browse_search_items(n),
+        }
+    }
+
     fn title_in(self, kind: SecKind, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
@@ -437,6 +452,29 @@ pub struct SortEntry {
 }
 
 impl SortEntry {
+    /// The name every panel and pill shows for this sort: the shared table's word for a fact it
+    /// knows ([`crate::sortfacts`]), else the server's title.
+    pub fn label(&self) -> &str {
+        match crate::sortfacts::SortFact::of_pms_key(&self.key) {
+            Some(fact) => fact.label(),
+            None => &self.title,
+        }
+    }
+
+    /// Whether [`label`](Self::label) is the app's own text (the table's word, or the client-side
+    /// Plays entry) rather than something the server wrote.
+    pub fn label_is_ours(&self) -> bool {
+        self.key == PLAYS_SORT_KEY || crate::sortfacts::SortFact::of_pms_key(&self.key).is_some()
+    }
+
+    /// The word for the order this entry is in when `desc`: "A–Z", "Newest first". `None` for a
+    /// key whose axis is unknown (a random order has no ends).
+    pub fn direction_word(&self, desc: bool) -> Option<&'static str> {
+        let axis = if self.key == PLAYS_SORT_KEY { Some(crate::sortfacts::Axis::Magnitude) }
+            else { crate::sortfacts::Axis::of_pms_key(&self.key) };
+        axis.map(|axis| axis.direction_word(desc))
+    }
+
     fn query(&self, desc: bool) -> String {
         if !desc {
             if self.key.contains(',') { self.key.clone() } else { format!("{}:asc", self.key) }
@@ -3405,10 +3443,7 @@ pub struct SrcRow {
 
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        match kind {
-            SecKind::Movie => plx_platform::i18n::msg::browse_person_films(count),
-            SecKind::Show => plx_platform::i18n::msg::browse_person_shows(count),
-        }
+        LibraryType::Primary.count_label(kind, count)
     } else {
         kind.plural().to_string()
     }
@@ -3612,6 +3647,23 @@ pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
         title: format!("Collection {i}"),
         thumb: format!("/t/c{i}"),
         kind: crate::pms::KIND_COLLECTION,
+        child_count: i as i64 + 2,
+        ..Default::default()
+    });
+}
+
+/// [`seed_collections_for_owner_test`] with each collection's `(title, thumb)` stated, for a test
+/// that needs a name a tile's face cuts (a long title over a server composite).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_named_collections_for_owner_test(state: &mut BrowseState, rows: &[(&str, &str)]) {
+    plx_base::testlock::assert_held("browse's section table (seed_named_collections_for_test)");
+    seed_listing_for_owner_test(state, rows.len(), |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("5000{i}"),
+        title: rows[i].0.to_owned(),
+        thumb: rows[i].1.to_owned(),
+        kind: crate::pms::KIND_COLLECTION,
+        subtype: Some("movie".to_owned()),
         child_count: i as i64 + 2,
         ..Default::default()
     });

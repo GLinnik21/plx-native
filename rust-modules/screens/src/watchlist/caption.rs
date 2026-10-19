@@ -11,30 +11,19 @@
 //! a SENTENCE, because the tile itself says nothing in words (TileStates: "No text on the tile; the
 //! focused caption carries the words"): the release date for an upcoming title, "Not on your servers", or
 //! "Server offline". The sentences are catalog strings (`watchlist.state.*`) and the date comes from
-//! the locale's own month-and-day tables (`LocaleContext::month_day`, W3), medium width as the
-//! board's "Releasing 12 Mar".
+//! the locale's own month-and-day tables (`LocaleContext::month_day`, W3), medium width, in the one
+//! phrase every page uses for it ("Coming 12 Mar", `fmt::coming_on`).
 use plx_data::watchlist::model::{Kind, TileState, WatchRow};
 use plx_platform::i18n::{self, msg, MonthWidth};
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
+use plx_ui::fmt;
 
-/// `YYYY-MM-DD` (what `originallyAvailableAt` carries) as `(month, day)`; `None` for anything else,
-/// including a month or day the calendar does not have.
-pub fn month_day(release: &str) -> Option<(u8, u8)> {
-    let mut parts = release.split('-');
-    let _year: i32 = parts.next()?.parse().ok()?;
-    let month: u8 = parts.next()?.parse().ok()?;
-    let day: u8 = parts.next()?.parse().ok()?;
-    parts.next().is_none().then_some((month, day))
-}
-
-/// The release phrase of an upcoming title ("Releasing 12 Mar"), or "Coming soon" when the service
-/// sent no usable date.
+/// The release phrase of an upcoming title ("Coming 12 Mar", the one phrase [`fmt::coming_on`]
+/// tells on every page), or "Coming soon" when the service sent no usable date.
 fn upcoming(release: Option<&str>) -> String {
     release
-        .and_then(month_day)
-        .and_then(|(month, day)| i18n::current().month_day(month, day, MonthWidth::Medium))
-        .map(|date| msg::watchlist_state_releasing_on(&date))
+        .and_then(|date| fmt::coming_on(date, MonthWidth::Medium))
         .unwrap_or_else(|| msg::watchlist_state_coming_soon().to_string())
 }
 

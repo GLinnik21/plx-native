@@ -4,7 +4,7 @@
     "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
   },
   "under_posters.detail": {
-    "value": "What shows under a poster.",
+    "value": "What shows under the poster you are on.",
     "description": "Detail line under the Under posters row on the Settings root. One short sentence."
   },
   "under_posters.copy": {

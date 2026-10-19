@@ -302,7 +302,7 @@ pub(crate) fn movie_ctx(m: &plx_data::pms::PmsMovie) -> String {
         "{} \u{b7} {} \u{b7} {}",
         m.year,
         rating,
-        plx_ui::fmt::dur_short(m.dur_ns / 1_000_000)
+        plx_ui::fmt::duration(m.dur_ns / 1_000_000)
     )
 }
 

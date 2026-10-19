@@ -1,0 +1,13 @@
+{
+  "sort_facts.title": "Titolo",
+  "sort_facts.date_added": "Data di aggiunta",
+  "sort_facts.release_date": "Data di uscita",
+  "sort_facts.rating": "Valutazione",
+  "sort_facts.audience_rating": "Valutazione del pubblico",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Dal più vecchio",
+  "sort_facts.newest_first": "Dal più recente",
+  "sort_facts.lowest_first": "Dal più basso",
+  "sort_facts.highest_first": "Dal più alto"
+}

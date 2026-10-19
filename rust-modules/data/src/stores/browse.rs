@@ -286,6 +286,13 @@ impl BrowseStore {
         crate::browse::hold_listing_for_owner_test(&self.adapter);
     }
 
+    /// [`seed_collections_for_test`](Self::seed_collections_for_test) with each collection's
+    /// `(title, thumb)` stated.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_named_collections_for_test(&mut self, rows: &[(&str, &str)]) {
+        crate::browse::seed_named_collections_for_owner_test(&mut self.state, rows);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_sources_for_test(&mut self, count: usize, reachable: bool) {
         crate::browse::seed_sources_for_owner_test(&mut self.state, count, reachable);
