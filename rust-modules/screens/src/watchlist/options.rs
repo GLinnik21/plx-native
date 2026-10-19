@@ -209,7 +209,7 @@ pub fn sections(state: &WatchlistOptionsState) -> Vec<Section> {
     for id in OptionsRow::ALL {
         let mut row = Row::new(id.label()).checked(id.is_chosen(state));
         if let OptionsRow::Sort(key) = id {
-            if id.is_chosen(state) { row = row.value(key.fact().axis().direction_word(state.descending)); }
+            if let Some(axis) = key.fact().axis().filter(|_| id.is_chosen(state)) { row = row.value(axis.direction_word(state.descending)); }
         }
         match id {
             OptionsRow::Type(_) => type_ = type_.row(row),

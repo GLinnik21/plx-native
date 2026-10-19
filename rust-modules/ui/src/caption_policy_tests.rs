@@ -39,7 +39,7 @@ fn the_default_details_line_by_kind() {
     let movie = CaptionFacts { year: Some(2024), duration_min: Some(112), ..Default::default() };
     assert_eq!(line(&movie).as_deref(), Some("2024 \u{b7} 1h 52m"));
     let started = CaptionFacts { view_offset_min: Some(74), ..movie.clone() };
-    assert_eq!(line(&started).as_deref(), Some("38 min left"));
+    assert_eq!(line(&started).as_deref(), Some("38m left"));
     let finished = CaptionFacts { view_offset_min: Some(112), ..movie };
     assert_eq!(line(&finished).as_deref(), Some("2024 \u{b7} 1h 52m"), "a past-end offset is not 'started'");
     assert_eq!(line(&show(0)).as_deref(), Some("2019 \u{b7} 3 seasons"));

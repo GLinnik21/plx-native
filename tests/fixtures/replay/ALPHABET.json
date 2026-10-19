@@ -30,7 +30,7 @@
     "s[0-9a-f]{8}( s[0-9a-f]{8}){23}",
     "s[0-9a-f]{8}( s[0-9a-f]{8}){1,23}(…)?",
     "s[0-9a-f]{8}, s[0-9a-f]{8}(, s[0-9a-f]{8})*,?",
-    "s[0-9a-f]{8} · [0-9]+ min left",
+    "s[0-9a-f]{8} · [0-9]+m left",
     "Character [0-9]+ · s[0-9a-f]{8}",
     "(Actor|Appeared|Director|Producer|Composer|Cinematographer|Writer|Other) · [0-9]+",
     "/library/metadata/[0-9]+/(thumb|art)/1",

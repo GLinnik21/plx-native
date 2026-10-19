@@ -35,7 +35,7 @@ pub enum TileKind {
 pub struct Resume {
     /// Played fraction, 0..1 — the resume bar's width.
     pub frac: f32,
-    /// Milliseconds left to play — the Continue Watching caption's "8 min left".
+    /// Milliseconds left to play — the Continue Watching caption's "8m left".
     pub left_ms: i64,
 }
 

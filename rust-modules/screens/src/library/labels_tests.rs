@@ -194,7 +194,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         ..Default::default() }, false), "2007");
     assert_eq!(caption(PmsMovie { kind: 0, title: "Stardust".into(), year: 2007,
         dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
-        ..Default::default() }, true), "25 min left", "a Continue Watching tile reports time left");
+        ..Default::default() }, true), "25m left", "a Continue Watching tile reports time left");
     assert_eq!(caption(PmsMovie { kind: 1, title: "Untitled".into(),
         ..Default::default() }, false), "", "missing source data does not invent a caption");
 }
@@ -281,7 +281,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             ..dated(ep(3, 4, "Violet", "The Bear"))
         }]);
         deck.is_continue = true;
-        assert_eq!(caption(&shelf_label(&deck, 0)), "24 min left");
+        assert_eq!(caption(&shelf_label(&deck, 0)), "24m left");
         // …and a deck tile never started has no time to report, so it falls back to the date
         // rather than to an empty rung.
         let mut next_up = shelf(vec![dated(ep(3, 5, "Ice Chips", "The Bear"))]);

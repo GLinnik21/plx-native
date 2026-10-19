@@ -1026,7 +1026,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
     );
     assert_eq!(
         ui_cards::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
-        "Laura \u{00b7} 25 min left"
+        "Laura \u{00b7} 25m left"
     );
 }
 

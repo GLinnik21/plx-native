@@ -72,7 +72,7 @@ fn section<'a>(panel: &'a Panel, heading: &str) -> &'a [(String, Option<String>)
 }
 
 /// **S17 + N1: the two Sort & Filter panels speak one vocabulary.** Section words (Show / Sort /
-/// Filter), one sentence-case name per fact ("Rating", not "Critic Rating" on one page and
+/// Filter), one sentence-case name per fact ("Score", not "Critic Rating" on one page and
 /// "Rating" on the other), and the checked sort row's value is a WORD for the direction, the same
 /// word for the same order on either page ("A–Z" for a title, "Newest first" for a date).
 #[test]
@@ -84,7 +84,7 @@ fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
     let wl = watchlist_panel(&w);
     assert_eq!(wl.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(), ["Show", "Sort", "Filter"]);
     let sort = section(&wl, "Sort");
-    assert_eq!(sort.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Date added", "Title", "Release date", "Rating"]);
+    assert_eq!(sort.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Date added", "Title", "Release date", "Score"]);
     assert_eq!(sort[0].1.as_deref(), Some("Newest first"), "the direction is the checked row's value word");
     assert!(sort[1..].iter().all(|(_, v)| v.is_none()), "only the checked row carries one");
     // Sort > Title: ascending is its natural order.
@@ -114,7 +114,7 @@ fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
     assert_eq!(headings, ["Sort", "Filter"], "a Movies library offers one type, so no Show section");
     let sort = section(&lib, "Sort");
     let labels: Vec<_> = sort.iter().map(|(l, _)| l.as_str()).collect();
-    for (ours, theirs) in [("Title", "Title"), ("Date added", "Date Added"), ("Release date", "Release Date"), ("Rating", "Critic Rating")] {
+    for (ours, theirs) in [("Title", "Title"), ("Date added", "Date Added"), ("Release date", "Release Date"), ("Score", "Critic Rating")] {
         assert!(labels.contains(&ours), "the Library names the fact {ours:?}: {labels:?}");
         assert!(ours == theirs || !labels.contains(&theirs), "and not by the server's {theirs:?}: {labels:?}");
     }

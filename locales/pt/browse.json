@@ -268,6 +268,8 @@
   "browse.home.hub.recently_added_photos": "Fotografias adicionadas recentemente",
   "browse.library.hub.recently_added": "Adicionados recentemente",
   "browse.collection.items": "Itens",
+  "browse.collection.films": "Filmes",
+  "browse.collection.shows": "Séries",
   "browse.collection.order.release": "Por data de estreia",
   "browse.collection.order.title": "Alfabética",
   "browse.collection.order.custom": "Ordem personalizada",

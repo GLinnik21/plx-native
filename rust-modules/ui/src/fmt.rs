@@ -66,10 +66,24 @@ mod one_shape_tests {
         }
         let cx = plx_platform::i18n::current();
         assert_eq!(duration_minutes_in(cx, 134), duration_in(cx, 134 * MINUTE), "minutes and milliseconds are one rule");
-        assert_eq!(time_left(8 * MINUTE), "8 min left");
-        assert_eq!(time_left(62 * MINUTE), "1 hr 2 min left");
-        assert_eq!(time_left(1), "1 min left", "time left never reads zero");
-        assert_eq!(time_left_minutes_in(cx, 0), "1 min left");
+        assert_eq!(time_left(8 * MINUTE), "8m left");
+        assert_eq!(time_left(62 * MINUTE), "1h 2m left");
+        assert_eq!(time_left(1), "1m left", "time left never reads zero");
+        assert_eq!(time_left_minutes_in(cx, 0), "1m left");
+    }
+
+    /// **Time left is a duration with a "left" word** (design review N-d): "8m left", "1h 2m left",
+    /// the unit marks every other length on screen wears ("6m", "2h 14m"), in every shipped language.
+    #[test]
+    fn time_left_wears_the_unit_marks_of_a_duration_in_every_language() {
+        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
+            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+            let cx = plx_platform::i18n::current();
+            for minutes in [8, 62] {
+                let (left, length) = (time_left_minutes_in(cx, minutes), duration_minutes_in(cx, minutes));
+                assert!(left.contains(&length), "{tag}: {left:?} does not carry the duration {length:?}");
+            }
+        }
     }
 
     #[test]
@@ -111,14 +125,14 @@ fn seconds_scale_durations_keep_the_distinctions_that_matter() {
     assert_eq!(secs_short(-1), "0.0 s");
 }
 
-/// Time-remaining for a Continue-Watching item — "8 min left" / "1 hr 2 min left" (rounded up to
+/// Time-remaining for a Continue-Watching item — "8m left" / "1h 2m left" (rounded up to
 /// the next whole minute, floored at 1). `remaining_ms` is duration − viewOffset.
 pub fn time_left(remaining_ms: i64) -> String {
     time_left_minutes_in(plx_platform::i18n::current(), (remaining_ms + 59_999) / 60_000)
 }
 
 /// [`time_left`] from whole minutes, in a given context; at least a minute (the line promises
-/// time, and "0 min left" is none).
+/// time, and "0m left" is none).
 pub fn time_left_minutes_in(cx: &LocaleContext, mins: i64) -> String {
     let (h, m) = split_hours(mins.max(1));
     if h > 0 { msg::core_time_left_hours_in(cx, h, m) } else { msg::core_time_left_minutes_in(cx, m) }
@@ -198,6 +212,17 @@ pub fn collection_count_in(cx: &LocaleContext, subtype: Option<&str>, n: i64) ->
         Some("movie") => msg::browse_person_films_in(cx, n),
         Some("show") => msg::browse_person_shows_in(cx, n),
         _ => msg::browse_search_items_in(cx, n),
+    }
+}
+
+/// **The noun the collection page's grid heading wears** — the one [`collection_count`] counts in
+/// (design review N-g): "6 films" sat under an "Items" heading, two nouns for one set. The subtype
+/// is read the same way, so the heading and the count cannot disagree.
+pub fn collection_noun(subtype: Option<&str>) -> &'static str {
+    match subtype {
+        Some("movie") => msg::browse_collection_films(),
+        Some("show") => msg::browse_collection_shows(),
+        _ => msg::browse_collection_items(),
     }
 }
 
@@ -284,7 +309,24 @@ pub fn resolution(res: &str, width: i64, height: i64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collection_count, collection_count_in, resolution};
+    use super::{collection_count, collection_count_in, collection_noun, resolution};
+
+    /// **The collection page's heading uses the noun its count uses** (design review N-g), in every
+    /// shipped language: "Films" over "6 films", "Shows" over "3 shows", "Items" over "12 items".
+    #[test]
+    fn the_collection_heading_names_the_noun_the_count_uses() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        for language in SHIPPED {
+            let _g = language_on_this_thread_for_test(language);
+            for subtype in [Some("movie"), Some("show"), Some("episode"), None] {
+                let count = collection_count(subtype, 2);
+                let noun = count.split_once(' ').map(|(_, noun)| noun.to_lowercase()).unwrap();
+                let heading = collection_noun(subtype);
+                assert!(heading.to_lowercase().starts_with(&noun), "{} {subtype:?}: {heading:?} over {count:?}", language.tag());
+                assert!(heading.chars().next().is_some_and(char::is_uppercase), "{heading:?} is a heading");
+            }
+        }
+    }
 
     /// **One noun for a collection, from its subtype** (design review S20): the Collections page's
     /// caption, the Collection screen's meta line, a shelf tile and a search hit all count through

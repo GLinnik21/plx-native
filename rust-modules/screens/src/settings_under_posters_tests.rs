@@ -159,6 +159,43 @@ fn the_picker_lists_nothing_first_each_line_with_its_sample_and_checks_the_curre
     assert_eq!(checked(&page), vec![UnderPostersDetails::YearLength]);
 }
 
+/// **Every sample on the picker comes from ONE source: the preview's middle poster** (design review
+/// C1). The rows said "2019 · 2h 14m" and "PG-13 · 7.8" (invented) beside a preview that read
+/// "2022 · 6m" from the library's own poster; a line the poster has no fact for has no sample.
+#[test]
+fn the_pickers_samples_are_worded_from_the_previews_middle_poster() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let mut middle = poster("Bravo", 2022, "Western");
+    middle.rating = "PG".into();
+    middle.dur_ns = 6 * 60_000_000_000;
+    let items = vec![poster("Alpha", 1999, "Noir"), middle, poster("Charlie", 2011, "Comedy")];
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(items);
+    let c = cx_with(None, snapshot.view());
+    let mut page = DetailsPage::new(EntryId(0));
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ScreenEvent::Mount, &c, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    let rows: Vec<(String, Option<String>)> = page.form.table.sections.iter().flat_map(|s| s.rows.iter())
+        .map(|r| (r.label.to_string(), r.value.clone())).collect();
+    let dot = '\u{b7}';
+    assert_eq!(rows, vec![
+        ("Nothing".to_string(), None),
+        (format!("Year {dot} Length"), Some(format!("2022 {dot} 6m"))),
+        ("Genre".to_string(), Some("Western".to_string())),
+        ("Video".to_string(), None),
+        (format!("Age rating {dot} Score"), Some("PG".to_string())),
+    ], "the middle poster's own facts, and nothing invented for a fact it lacks");
+    // …and each sample is what the preview captions that poster with under the same choice
+    let posters = preview_posters(&c);
+    for d in picker_order() {
+        let value = page.form.table.sections.iter().flat_map(|s| s.rows.iter())
+            .find(|r| r.label == details_label(d)).and_then(|r| r.value.clone());
+        assert_eq!(value, preview_lines(UnderPosters { title: false, details: d }, lifted_poster(&posters))[1], "{d:?}");
+    }
+}
+
 #[test]
 fn a_pick_keeps_the_title_writes_once_and_pops_when_the_receipt_is_durable() {
     let _guard = plx_base::testlock::serial();
@@ -366,7 +403,7 @@ fn every_under_posters_string_fits_in_every_language() {
             out.extend(page.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} under posters {value:?}")));
             let mut picker = FormTable::<DetailsId, UnderPostersDetails, SettingsPage>::new(crate::registry::BAND);
             picker.table.compact = false;
-            picker.set(details_form(value.details), None);
+            picker.set(details_form(value.details, &sample_facts()), None);
             out.extend(picker.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} details picker {value:?}")));
             let mut root = FormTable::<RootId, Action, SettingsPage>::new(crate::registry::BAND);
             root.table.compact = false;

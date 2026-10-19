@@ -267,10 +267,24 @@ fn lifted_tile(posters: usize) -> usize {
     if posters == 0 { PREVIEW_LIFTED } else { PREVIEW_LIFTED.min(posters - 1) }
 }
 
+/// The poster the preview lifts and captions: the middle one, or the last real one when the library
+/// has fewer ([`lifted_tile`]); `None` when it holds none.
+fn lifted_poster<'a>(posters: &[&'a PmsMovie]) -> Option<&'a PmsMovie> {
+    posters.get(lifted_tile(posters.len())).copied()
+}
+
 /// The facts the lifted tile is captioned from: its poster's own, or the sample when the library
 /// has none to show.
 fn caption_facts_of(poster: Option<&PmsMovie>) -> CaptionFacts {
     poster.map_or_else(sample_facts, tile_facts::caption_facts)
+}
+
+/// **The ONE source of every sample on the Under posters pages** (design review C1): the preview's
+/// lifted poster's facts. The preview words them under the poster, and the picker's rows read their
+/// samples off the same facts, so a row never promises "2019 · 2h 14m" over a preview that says
+/// "2022 · 6m".
+fn lifted_facts(posters: &[&PmsMovie]) -> CaptionFacts {
+    caption_facts_of(lifted_poster(posters))
 }
 
 /// The sample facts a preview with no poster behind it is captioned from.
@@ -292,7 +306,12 @@ fn sample_facts() -> CaptionFacts {
 /// The preview's caption lines for a stored value — what the lifted tile wears. Pure, so a test
 /// states the exact words. `None` is the sample.
 fn preview_lines(v: UnderPosters, poster: Option<&PmsMovie>) -> [Option<String>; 2] {
-    caption_lines(&caption_policy_of(v), &caption_facts_of(poster), plx_platform::i18n::current())
+    lines_of(v, &caption_facts_of(poster))
+}
+
+/// [`preview_lines`] from facts already in hand.
+fn lines_of(v: UnderPosters, facts: &CaptionFacts) -> [Option<String>; 2] {
+    caption_lines(&caption_policy_of(v), facts, plx_platform::i18n::current())
 }
 
 /// The preview: a frame holding the row of posters, the lifted one wearing the caption the policy
@@ -303,7 +322,7 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], measure: &dy
     p.rect(frame, theme::CARD_RING_RAD, theme::scrim_black(0.30), theme::scrim_black(0.30), 0.0);
     let lifted = lifted_tile(posters.len());
     let label = if band_h(&caption_policy_of(v)) > 0.0 {
-        TileLabel::from_lines(preview_lines(v, posters.get(lifted).copied()))
+        TileLabel::from_lines(preview_lines(v, lifted_poster(posters)))
     } else {
         TileLabel::default()
     };
@@ -392,10 +411,10 @@ impl FormId for DetailsId {
     }
 }
 
-/// What a choice shows under a poster, as the preview words it: the row's sample on the right.
-/// `None` for Nothing, whose row has no value.
-fn details_sample(d: UnderPostersDetails) -> Option<String> {
-    preview_lines(UnderPosters { title: false, details: d }, None)[1].clone()
+/// What a choice shows under a poster, as the preview words it from `facts` ([`lifted_facts`]): the
+/// row's sample on the right. `None` for Nothing, and for a line the poster has no fact for.
+fn details_sample(d: UnderPostersDetails, facts: &CaptionFacts) -> Option<String> {
+    lines_of(UnderPosters { title: false, details: d }, facts)[1].clone()
 }
 
 /// The picker's order: Nothing first, then the lines in the ladder's order (the board's list).
@@ -405,12 +424,12 @@ fn picker_order() -> impl Iterator<Item = UnderPostersDetails> {
 }
 
 /// The picker's rows: one checked choice per details line, the ladder's order, a sample of each
-/// on the right.
-fn details_form(current: UnderPostersDetails) -> Form<DetailsId, UnderPostersDetails, SettingsPage> {
+/// on the right, all from the preview's lifted poster.
+fn details_form(current: UnderPostersDetails, facts: &CaptionFacts) -> Form<DetailsId, UnderPostersDetails, SettingsPage> {
     let mut section = FormSection::new("");
     for d in picker_order() {
         let mut row = Row::new(details_label(d));
-        if let Some(sample) = details_sample(d) {
+        if let Some(sample) = details_sample(d, facts) {
             row = row.value(sample);
         }
         section = section.choice(DetailsId(d), d, row, |id| id.0 == current);
@@ -422,6 +441,9 @@ pub(super) struct DetailsPage {
     entry: EntryId,
     form: FormTable<DetailsId, UnderPostersDetails, SettingsPage>,
     state: DetailsState,
+    /// What the rows' samples are worded from: the preview's lifted poster ([`lifted_facts`]),
+    /// refreshed whenever the library's cached posters change.
+    facts: CaptionFacts,
     /// A pick not yet answered, and the receipt of its write: the page pops when it is durable.
     pending: Option<(UnderPosters, std::sync::mpsc::Receiver<bool>)>,
 }
@@ -459,16 +481,28 @@ impl DetailsPage {
             entry,
             form: FormTable::new(super::super::registry::BAND),
             state: DetailsState { value, sel: DetailsId(value.details).key(), busy: false },
+            facts: sample_facts(),
             pending: None,
         };
         page.rebuild();
         page
     }
 
+    /// Word the rows' samples from the preview's lifted poster as it is now; `true` when they changed.
+    fn adopt(&mut self, cx: &Cx<'_, InnerHost>) -> bool {
+        let facts = lifted_facts(&preview_posters(cx));
+        if facts == self.facts {
+            return false;
+        }
+        self.facts = facts;
+        self.rebuild();
+        true
+    }
+
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(DetailsId(self.state.value.details));
         self.form.table.compact = false;
-        self.form.set(details_form(self.state.value.details), Some(&keep));
+        self.form.set(details_form(self.state.value.details, &self.facts), Some(&keep));
         self.form.table.list_focused = true;
     }
 
@@ -529,6 +563,7 @@ impl Machine<InnerHost> for DetailsPage {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
             ScreenEvent::Mount => {
+                self.adopt(cx);
                 fx.push(Fx::Deliver(
                     MachineId::Instance(InstanceId(0)),
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
@@ -538,7 +573,8 @@ impl Machine<InnerHost> for DetailsPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.poll(fx) {
+                let (settled, moved) = (self.poll(fx), self.adopt(cx));
+                if settled || moved {
                     fx.invalidate(Provenance::Input);
                 }
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);

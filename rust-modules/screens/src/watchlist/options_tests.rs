@@ -16,6 +16,20 @@ fn default_state() -> WatchlistOptionsState {
     WatchlistOptionsState::default()
 }
 
+/// **The Type section's first row is the other two rows' words joined** (design review N-e): "Movies &
+/// Shows" sat above a "TV Shows" row. In every shipped language it names both by the word their own
+/// row wears.
+#[test]
+fn the_all_row_of_the_type_section_uses_the_words_of_the_other_two_rows() {
+    for language in LANGUAGES {
+        let _g = language_on_this_thread_for_test(language);
+        let all = msg::watchlist_filter_type_all().to_lowercase();
+        for row in [msg::watchlist_filter_type_movies(), msg::watchlist_filter_type_shows()] {
+            assert!(all.contains(&row.to_lowercase()), "{}: {all:?} does not name the {row:?} row", language.tag());
+        }
+    }
+}
+
 // ---- state transitions ----
 
 #[test]
