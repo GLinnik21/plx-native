@@ -38,7 +38,7 @@ use plx_plex::plex::ServerId;
 use plx_ui::{Painter, Rect};
 
 use super::caption;
-use super::header::{self, draw_header, Count, HeaderFace};
+use super::header::{self, Count};
 use super::options::{ShowFilter, TypeFilter, WatchlistOptionsState};
 use super::readout::{draw_readout, unreachable_overlay, Readout};
 use super::tiles;
@@ -132,11 +132,25 @@ pub enum WatchlistIn {
 
 // ── Geometry: `Watchlist.dc.html`, a 1920 x 1080 stage.
 
-/// The grid's first row of posters (`top: 282px`).
-pub const GRID_TOP: f32 = 282.0;
-/// The content edge a scrolled row snaps to, and where the header is gone: the same 96 on every
-/// side as every other card page.
-const CONTENT_TOP: f32 = MARGIN_X;
+/// The grid's first row of posters: 96 under the header row's top, as the Library's (244).
+pub const GRID_TOP: f32 = header::HEADER_TOP + header::BLOCK_H;
+/// The line a scrolled row snaps to: clear of the scroll capsule (the Library's settle rule).
+const CONTENT_TOP: f32 = crate::scroll_chrome::SETTLE_MIN_Y;
+/// Six columns of 250 posters from the row's text edge, 285 apart: the gap that puts the last
+/// column's right edge on the row's right text edge.
+const COLS: usize = 6;
+const GRID_GAP: f32 = (header::GRID_RIGHT - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
+
+/// The grid's cards: the shared home poster, at the Library's gap.
+fn grid_style() -> plx_ui::cards::RowStyle {
+    plx_ui::cards::RowStyle { gap: GRID_GAP, ..plx_ui::cards::RowStyle::HOME }
+}
+
+/// The grid's spec: top, snap edge, columns.
+fn grid_spec() -> GridSpec {
+    GridSpec::new(GRID_TOP, CONTENT_TOP).columns(COLS, grid_style(), MARGIN_X)
+}
+
 /// The pill's focus element, below the card keys.
 pub const PILL_ELEM: u32 = 1;
 /// The unreachable read-out's Try again, below the card keys.
@@ -174,26 +188,6 @@ enum Sec {
     Items,
     /// The full-screen read-outs (not focusable).
     Status,
-}
-
-/// How much of the header is left at `scroll`: all of it at the top, none once the first row has
-/// risen to the content edge, so a scrolled page leaves no remnant of the head above its rows.
-fn head_alpha(scroll: f32) -> f32 {
-    (1.0 - scroll / (GRID_TOP - CONTENT_TOP)).clamp(0.0, 1.0)
-}
-
-/// The grid's right edge: the pill's right edge is the grid's (plan §1.2), not a board literal.
-fn grid_right() -> f32 {
-    let spec = GridSpec::new(GRID_TOP, CONTENT_TOP);
-    spec.left + spec.cols as f32 * spec.style.w + (spec.cols - 1) as f32 * spec.style.gap
-}
-
-/// The header band `y` px from the document origin (the section's top, on screen or in the page):
-/// the ONE frame the title, the pill's paint, its focus ring, its hit target and the menu's morph
-/// anchor are all cut from.
-fn head_frame(y: f32) -> Rect {
-    let f = header::header_frame(grid_right());
-    Rect::new(f.x, f.y + y, f.w, f.h)
 }
 
 /// One title's derived drawing facts, rebuilt when the snapshot or the facts move.
@@ -329,6 +323,11 @@ impl Page {
         }
         self.tiles = rows;
         self.rebuild();
+    }
+
+    /// The header row for the options and count as they are now.
+    fn header_row(&self, measure: &dyn plx_machine::machine::Measure) -> header::Row {
+        header::Row::new(measure, &self.options.summary(), self.count())
     }
 
     fn readout(&self) -> Option<Readout> {
@@ -571,7 +570,7 @@ impl<H: ContentLike> StackPage<H> for Page {
         // DS4: a removal plays (survivors spring to their cells) instead of cutting.
         out.push(SectionSpec::new(
             Sec::Items,
-            Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP).animate_landings(true) },
+            Kind::Grid { spec: grid_spec().animate_landings(true) },
             GRID_GROUP,
         ));
         // The unreachable read-out's Try again is the one focusable thing in the status section.
@@ -613,7 +612,11 @@ impl<H: ContentLike> StackPage<H> for Page {
     fn focus_rect(&self, cx: &Cx<'_, H>, k: Sec, section: Rect) -> Rect {
         match k {
             // The drawn pill's own rect: the header's, from the same frame `custom_draw` paints.
-            Sec::Head => header::pill_rect(head_frame(section.y), cx.measure, &self.options.summary()),
+            // The drawn control's own plate: the row's, shifted to where the section stands.
+            Sec::Head => {
+                let plate = self.header_row(cx.measure).plate();
+                Rect::new(plate.x, plate.y + section.y, plate.w, plate.h)
+            }
             Sec::Items | Sec::Status => section,
         }
     }
@@ -648,31 +651,19 @@ impl<H: ContentLike> StackPage<H> for Page {
         }
     }
 
-    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, scroll: f32) {
+    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, _scroll: f32) {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
-                let p = p.alpha(head_alpha(scroll));
-                let summary = self.options.summary();
                 let on = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
-                let face = HeaderFace {
-                    title: plx_platform::i18n::msg::watchlist_page_title(),
-                    count: self.count(),
-                    summary: &summary,
-                    pill_focused: on,
-                };
-                // The header rides the page: its frame is the section's own top, scroll included.
-                // While the Sort & Filter menu is up the pill is the menu's (its `opener`, lifted
-                // out of this pass): the menu draws the only copy, dissolving into its panel.
+                // The row rides the page: its frame is the section's own top, scroll included.
+                // While the Sort & Filter menu is up the control is the menu's (its `opener`,
+                // lifted out of this pass): the menu draws the only copy, dissolving into its panel.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
-                if lifted {
-                    header::draw_title(p, head_frame(r.y), f.measure, &face);
-                } else {
-                    draw_header(p, head_frame(r.y), f.measure, &face);
-                }
+                self.header_row(f.measure).draw(p, r.y, on, lifted);
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
-                    header::draw_dev_blocked(p, head_frame(r.y));
+                    header::draw_dev_blocked(p, r.y);
                 }
             }
             Sec::Status => match self.readout() {
@@ -701,6 +692,9 @@ pub struct WatchlistScreen {
     /// The page's layout, one scroll, groups, reconcile and the grid (`ui::cards::Stack`).
     stack: Stack<Sec>,
     ground: PageGround,
+    /// The glass the scroll capsule stands on, latched once per scrolled stay from the page ground's
+    /// corners (frozen ground, never a live blur).
+    capsule_field: plx_ui::underlay::UnderlayField,
     ground_seeded: bool,
     /// The target last handed to the wash: what a Remove's landing holds it at.
     ground_applied: [[f32; 4]; 4],
@@ -771,6 +765,7 @@ impl WatchlistScreen {
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
             stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
             ground: PageGround::new(),
+            capsule_field: plx_ui::underlay::UnderlayField::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
             ground_catching_up: false,
@@ -842,9 +837,10 @@ impl WatchlistScreen {
         self.page.index.get(&elem).copied()
     }
 
-    /// The Sort & Filter pill's rect in the page's document space.
+    /// The Sort & Filter control as the focused pill draws it, in the page's document space: the
+    /// rect the menu's morph grows out of.
     pub fn pill_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        header::pill_rect(head_frame(0.0), measure, &self.page.options.summary())
+        self.page.header_row(measure).pill()
     }
 
     /// Take an input. `Rows` and `Options` replace the state; `Removed` drops the tile, leaving
@@ -1111,6 +1107,43 @@ impl WatchlistScreen {
         self.stack.view(&self.page)
     }
 
+    /// How far the page has tucked the top chrome: the Library's ramp over the first row's pitch.
+    fn tuck(&self) -> f32 {
+        crate::scroll_chrome::tuck(self.stack.scroll(), grid_style().h + plx_ui::cards::LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR)
+    }
+
+    /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground and the
+    /// capsule ("Watchlist 12"), as the Library draws them.
+    fn draw_chrome<H: ContentLike>(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        let tuck = self.tuck();
+        if tuck <= 0.0 {
+            // back at the top: the next scrolled stay latches the ground as it is THEN
+            self.capsule_field.reset();
+            return;
+        }
+        let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
+        if !self.capsule_field.is_latched() {
+            let at = |x, y| self.ground.sample(Rect::FULL, x, y);
+            let corners = [at(0.0, 0.0), at(SCR_W, 0.0), at(SCR_W, SCR_H), at(0.0, SCR_H)];
+            self.capsule_field.latch_from_corners(corners, plx_ui::underlay::Grade::Dim);
+        }
+        let p = f.painter.alpha(f.page_alpha);
+        plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
+        let total = match self.page.list {
+            ListState::Ready { total } => total.max(self.page.tiles.len()),
+            _ => self.page.tiles.len(),
+        };
+        let (name, count) = crate::scroll_chrome::capsule_parts(
+            plx_platform::i18n::msg::watchlist_page_title(),
+            total as i64,
+            plx_ui::scroll_capsule::label_budget(),
+            |s| f.measure.width_str(s, theme::size::BODY, true),
+            |s| f.measure.width_str(s, theme::size::CAPTION, false),
+        );
+        let field = self.capsule_field.is_latched().then_some(&self.capsule_field);
+        plx_ui::scroll_capsule::draw(p, &name, &count, ground, field, tuck, f.measure);
+    }
+
     /// Test support: register the stops the grid draws (`Grid::record_stops`).
     #[cfg(test)]
     pub(crate) fn record_stops<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
@@ -1133,6 +1166,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn scroll(&self) -> f32 {
         self.stack.scroll()
+    }
+
+    /// Test support: put the page at scroll `y` at once.
+    #[cfg(test)]
+    pub(crate) fn jump_scroll(&mut self, y: f32) {
+        self.stack.jump_to(y);
     }
 
     /// Test support: the ground colours the focused title keys (before the wash eases to them).
@@ -1395,6 +1434,10 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     fn name(&self) -> &'static str {
         Self::WORD
     }
+    /// The top chrome tucks away as the first row scrolls off (the Library's rule).
+    fn chrome_tuck(&self) -> f32 {
+        self.tuck()
+    }
     fn state(&self) -> &dyn LogicalState {
         self
     }
@@ -1409,6 +1452,7 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
         let p = f.painter.alpha(f.page_alpha);
         self.ground.draw(p, Rect::FULL);
         self.stack.view(&self.page).paint(f);
+        self.draw_chrome(f);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page

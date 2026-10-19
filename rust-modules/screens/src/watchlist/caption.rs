@@ -7,7 +7,7 @@
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
 //! one: with Details set to Nothing the band is not opened, and no sentence is shown.
 //!
-//! A playable title reads its year, as every poster does. An unplayable title carries its state as
+//! A playable title reads its year under the default Details, as every poster does. An unplayable title carries its state as
 //! a SENTENCE, because the tile itself says nothing in words (TileStates: "No text on the tile; the
 //! focused caption carries the words"): the release date for an upcoming title, "Not on your servers", or
 //! "Server offline". The sentences are catalog strings (`watchlist.state.*`) and the date comes from
