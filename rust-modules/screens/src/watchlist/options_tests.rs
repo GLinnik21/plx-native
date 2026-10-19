@@ -225,7 +225,7 @@ fn the_pill_face_still_records_its_label() {
 fn the_row_is_the_librarys_geometry() {
     let row = header::Row::new(&FixtureMeasure, "Default", None);
     let title = row.title_box();
-    assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's plate: text at x 96, overhang 20");
+    assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's box: text at x 96, the room a plate would take overhangs 20");
     let plate = row.plate();
     assert_eq!((plate.y, plate.h), (148.0, 56.0));
     assert_eq!(plate.x + plate.w, 1771.0 + 20.0, "the control's text ends on x 1771; its plate overhangs");
