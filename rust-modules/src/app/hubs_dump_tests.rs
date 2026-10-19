@@ -1,14 +1,15 @@
 //! Dump mode at the Bridge's own landing sites (S5a-3): Home's hubs and the controlled-Home
-//! discovery take wait for the answer their request owes, so a request issued in iteration k lands
+//! discovery take hand over the answer their request owes, so a request issued in iteration k lands
 //! on iteration k+1 whatever the worker's timing, and nothing in the frame took through the
-//! unconverted plain take for them.
+//! unconverted plain take for them. The frame-driven tests run the PACED dump, the form the frame
+//! dump arms, because a frame never sleeps on a worker: a take whose answer is out names its store
+//! and the frame is repeated, as the driver holds an iteration, until it is in. The two
+//! discovery tests are not frames, so they keep the blocking form.
 
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame, tick};
-
-const DUMP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// A Bridge with `n` registered servers, so Home's first tick spawns one hub request per server.
 fn hubs_rig(n: i32) -> Bridge {
@@ -30,20 +31,34 @@ fn spawn_frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, claims: u32) -> u3
     panic!("Home never spawned {claims} hub request(s); {} owed", rig.stores.hubs.owed_for_test());
 }
 
+/// Repeat the frame at `at` the way the frame dump holds an iteration (the same instant, no time
+/// passing) until no landing take in it is starved, and return the repeats it took. Bounded by a
+/// count, never a clock.
+fn hold_frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, at: Tick) -> u32 {
+    frame(d, rig, AppArg::Home, at, vec![]);
+    for repeats in 0..5_000_000u32 {
+        if rig.stores.landgate.take_starved().is_empty() { return repeats; }
+        std::thread::yield_now(); // the late worker needs the CPU to post
+        frame(d, rig, AppArg::Home, Tick { dt_us: 0, ..at }, vec![]);
+    }
+    panic!("a hub take stayed starved for five million repeats; {} owed", rig.stores.hubs.owed_for_test());
+}
+
 /// Home's hub request is spawned by frame 0's tick and its landing is due on frame 1, for every
 /// worker timing. The worker posts only after a take has found the mailbox empty, so a take that
-/// does not wait cannot see it; `extra` varies where in the poll loop of one that does it lands.
+/// does not wait cannot see it in the same iteration; the paced dump holds the frame (repeats it)
+/// instead of sleeping, and `extra` varies where in the worker's own loop its post lands.
 #[test]
 fn home_hubs_land_on_the_next_frame_whatever_the_worker_timing() {
     let _guard = plx_base::testlock::serial();
     for extra in [0u32, 1, 7, 400, 20_000] {
         let mut rig = hubs_rig(1);
-        rig.stores.landgate.arm_dump(DUMP_TIMEOUT);
+        rig.stores.landgate.arm_dump_paced(0);
         let mut d = Dispatcher::<AppHost>::new();
         plx_data::pms::with_late_fetches_for_test(extra, 3, || {
             let spawned = spawn_frame(&mut d, &mut rig, 1);
             assert_eq!(rig.stores.hubs.hub_len_for_test(0), 0, "extra={extra}: nothing has landed yet");
-            frame(&mut d, &mut rig, AppArg::Home, tick(spawned + 1), vec![]);
+            hold_frame(&mut d, &mut rig, tick(spawned + 1));
         });
         assert_eq!(rig.stores.hubs.hub_len_for_test(0), 3,
             "extra={extra}: the hub request issued in one frame must have landed in the next");
@@ -62,15 +77,53 @@ fn home_hubs_land_on_the_next_frame_whatever_the_worker_timing() {
 fn every_hub_request_spawned_in_one_frame_lands_in_the_next() {
     let _guard = plx_base::testlock::serial();
     let mut rig = hubs_rig(2);
-    rig.stores.landgate.arm_dump(DUMP_TIMEOUT);
+    rig.stores.landgate.arm_dump_paced(0);
     let mut d = Dispatcher::<AppHost>::new();
     plx_data::pms::with_late_fetches_for_test(5_000, 2, || {
         let spawned = spawn_frame(&mut d, &mut rig, 2);
-        frame(&mut d, &mut rig, AppArg::Home, tick(spawned + 1), vec![]);
+        hold_frame(&mut d, &mut rig, tick(spawned + 1));
     });
     assert_eq!(rig.stores.hubs.owed_for_test(), 0, "both landings were taken in the next frame");
     assert!(rig.stores.hubs.take_results().is_empty(), "and none is left for frame 2");
     rig.stores.landgate.disarm();
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// With a landing lag the frame a hub request lands on is the dump's choice: its claim is first
+/// seen open on the frame after the one that spawned it, and the answer is held back until `LAG`
+/// virtual frames after that, however the worker behaves. The frames in between are drawn and not
+/// debt (the store is LAGGED, not starved), which is what lets a dump film a slow page's loading
+/// frames. The late worker posts only once a take has really polled the mailbox, which a lagged
+/// take does not, so the landing frame is also the first at which the take starves and holds.
+#[test]
+fn a_paced_hub_landing_is_due_a_lag_after_its_request_and_not_when_the_worker_answers() {
+    const LAG: u64 = 3;
+    let _guard = plx_base::testlock::serial();
+    for extra in [0u32, 20_000] {
+        let mut rig = hubs_rig(1);
+        rig.stores.landgate.arm_dump_paced(LAG);
+        let mut d = Dispatcher::<AppHost>::new();
+        plx_data::pms::with_late_fetches_for_test(extra, 3, || {
+            let spawned = spawn_frame(&mut d, &mut rig, 1);
+            let first = spawned as u64 + 1;
+            for v in first..first + LAG {
+                rig.stores.landgate.dump_frame(v);
+                for pass in 0..2 { // a held repeat must not move a landing
+                    frame(&mut d, &mut rig, AppArg::Home, Tick { dt_us: if pass == 0 { 16_000 } else { 0 }, ..tick(v as u32) }, vec![]);
+                }
+                assert_eq!(rig.stores.hubs.hub_len_for_test(0), 0, "extra={extra}: frame {v} is inside the lag");
+                assert!(rig.stores.landgate.take_starved().is_empty(), "extra={extra}: a lagged frame is nobody's debt");
+                assert!(rig.stores.landgate.take_lagged().iter().any(|n| n == StoreId::Hubs.name()),
+                    "extra={extra}: frame {v}: the hubs answer is held back, and named so");
+            }
+            rig.stores.landgate.dump_frame(first + LAG);
+            hold_frame(&mut d, &mut rig, tick((first + LAG) as u32));
+            assert_eq!(rig.stores.hubs.hub_len_for_test(0), 3, "extra={extra}: it lands on the frame the lag chose");
+            assert!(!rig.stores.landgate.take_lagged().iter().any(|n| n == StoreId::Hubs.name()),
+                "extra={extra}: and the hubs lag is over");
+        });
+        rig.stores.landgate.disarm();
+    }
     plx_plex::plex::reset_servers_for_test();
 }
 

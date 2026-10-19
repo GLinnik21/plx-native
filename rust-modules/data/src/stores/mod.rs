@@ -650,13 +650,15 @@ pub fn take_landing<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
 /// ends on the first mail `f` RETURNS, and `take_current` returns only the answer to the claimed
 /// generation, so a superseded request's stale answer neither ends the wait nor releases the new
 /// request's claim.
+#[track_caller]
 pub fn take_landing_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     owed: impl Fn() -> bool, f: impl FnMut() -> Option<T>) -> Option<T> {
     gate.take_owed(id.ord(), id.name(), owed, f)
 }
 
 /// [`take_landings`] for a queue site; see [`take_landing_owed`].
-pub fn take_landings_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
+#[track_caller]
+pub fn take_landings_owed<T: Send + 'static>(gate: &plx_machine::landgate::Gate, id: StoreId,
     owed: impl Fn(&[T]) -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
     gate.take_all_owed(id.ord(), id.name(), owed, f)
 }
