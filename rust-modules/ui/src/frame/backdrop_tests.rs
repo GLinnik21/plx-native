@@ -828,6 +828,66 @@ fn the_settle_frame_refreshes_once() {
     assert_eq!(frames, vec![0, 6], "activation, then the first still frame: {owed:?}");
 }
 
+/// **A real ease re-takes the source once, at the wash's own rest, however its tail holds a code.**
+/// `AmbientWash` is twelve critically damped springs, and the codes it draws are those springs
+/// rounded to 8 bits: in the tail one channel moves less than a code a frame, so whole frames draw
+/// the previous frame's codes while the ease is still running (the simulator's library switch drew
+/// 7-8 such frames per ease). A held code is not rest; the wash's own springs are. This steps a
+/// REAL wash through two eases (the first from the flat app ground) with the page's update/draw
+/// order and holds the owed frames to: the activation frame, then ONE frame per ease, the first on
+/// which the wash has stopped moving. It proves its own premise by counting the held codes.
+#[test]
+fn a_real_ease_re_takes_the_source_once_at_the_washes_own_rest() {
+    use crate::widgets::AmbientWash;
+    let _g = plx_base::testlock::serial();
+    let sources = Rc::new(RefCell::new(Sources::default()));
+    let wash = RefCell::new(AmbientWash::flat(crate::theme::SURFACE_APP));
+    let drawn = RefCell::new(Vec::<[[f32; 3]; 4]>::new());
+    let moving = RefCell::new(Vec::<bool>::new());
+    let eases = [
+        AmbientWash::keyed([[0.9, 0.4, 0.2], [0.2, 0.5, 0.9], [0.3, 0.8, 0.3], [0.7, 0.2, 0.6]], [AmbientWash::GROUND_W; 4]),
+        AmbientWash::keyed([[0.1, 0.7, 0.5], [0.8, 0.2, 0.3], [0.5, 0.5, 0.9], [0.9, 0.9, 0.2]], [AmbientWash::GROUND_W; 4]),
+    ];
+    let frame = |target: Option<[[f32; 4]; 4]>| {
+        wash_frame(
+            &sources,
+            |p| {
+                let mut w = wash.borrow_mut();
+                if let Some(t) = target {
+                    w.step(t, AmbientWash::K, 1.0 / 60.0);
+                }
+                moving.borrow_mut().push(plx_machine::idle::present_moving());
+                drawn.borrow_mut().push(w.drawn_corners());
+                w.draw(p, Rect::FULL);
+            },
+            300.0,
+            false,
+        )
+    };
+    let mut owed = vec![frame(None)];
+    let mut ease_at = Vec::new();
+    for target in eases {
+        ease_at.push(owed.len());
+        for _ in 0..120 {
+            owed.push(frame(Some(target)));
+        }
+    }
+    let (moving, drawn) = (moving.into_inner(), drawn.into_inner());
+    let mut expected = vec![0];
+    let mut held = 0;
+    for (n, &start) in ease_at.iter().enumerate() {
+        let end = ease_at.get(n + 1).copied().unwrap_or(owed.len());
+        let rest = (start..end).find(|&i| !moving[i]).expect("the ease comes to rest");
+        assert!(rest > start + 10, "ease {n} ran for a while before it rested: {rest}");
+        assert!((rest..end).all(|i| !moving[i]), "and stayed at rest");
+        held += (start + 1..rest).filter(|&i| drawn[i] == drawn[i - 1]).count();
+        expected.push(rest);
+    }
+    assert!(held >= 2, "the premise: the tails hold a drawn code while still moving ({held} frames)");
+    let frames: Vec<usize> = owed.iter().enumerate().filter(|(_, &o)| o).map(|(i, _)| i).collect();
+    assert_eq!(frames, expected, "activation, then one re-take per ease at its rest: {owed:?}");
+}
+
 /// **The composite's wash term makes the wash the source holds the wash that is being drawn**, at
 /// every point the glass can sample: the source keeps frame 0's wash and the term owed on frame `n`
 /// is `drawn(n) - drawn(0)` there. The points are the whole chrome band and the margin the lens can
