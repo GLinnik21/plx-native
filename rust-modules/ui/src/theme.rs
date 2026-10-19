@@ -718,14 +718,14 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
 /// [`TINT`] `= 0`.
 pub mod underlay {
     /// A compact menu beside the thing it is about (the card menu, the Library's Sort/Filter
-    /// menu): most of the page stays readable, so the dim only separates the panel from it. 0.30 is
+    /// and "+N" menus, the Watchlist's options, the profile menu): most of the page stays readable, so the dim only separates the panel from it. 0.30 is
     /// the glass menus' 30% scrim (boards `WatchlistOptions` / `HoldMenu`), down from 0.34.
     pub const DIM_COMPACT: f32 = 0.30;
     /// A read-only or picker panel in the middle of the frame (*Also available*, *About*,
     /// *Track information*, Settings' own ground dim). Was `alert::SCRIM_A` — the design's
     /// `scrimStill`.
     pub const DIM_PANEL: f32 = 0.46;
-    /// A sheet that takes over a side of the screen (the profile menu, the player's `…` menu).
+    /// A sheet that takes over a side of the screen (the player's `…` menu).
     pub const DIM_SHEET: f32 = 0.50;
     /// A decision alert: the page is not what is being asked about, so it recedes further than
     /// behind a read-only panel.
