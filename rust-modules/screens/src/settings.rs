@@ -376,6 +376,18 @@ impl RouteSurface {
         }
         let popping = matches!(op, NavOp::Pop);
         self.inner.request(op, ReturnState::default());
+        // **A PUSH SEATS THE DESTINATION'S FIRST ROW BEFORE THE DESTINATION'S MOUNT RUNS.** The
+        // engine takes the Enters in the order they are queued and the last one wins, and a page
+        // that wants another seat (the Details picker on its checked line, the Language page on
+        // the chosen language) asks for it from its `Mount`, which `run_inner` below delivers. Queued
+        // after that, this default put every such page back on its first row. A pop's seat names
+        // the page that is on top once the pop has run, so it stays after `run_inner`.
+        if !popping {
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(GroupId(0)) })),
+            ));
+        }
         self.run_inner(cx, fx);
         // An entry the container no longer knows about (a completed Pop's own page, retired and
         // pruned inside `run_inner` above) can never be revisited under this `EntryId` — a fresh
@@ -407,24 +419,26 @@ impl RouteSurface {
         // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
         // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
         // it is used on every arm below EXCEPT the one that found a saved elem to restore.
-        let focus = match (popping, self.inner.top().map(|e| e.id)) {
-            (true, Some(eid)) => self
-                .remembered
-                .iter()
-                .find(|(e, _)| *e == eid)
-                .map(|(_, elem)| {
-                    FocusTarget::Elem(FocusKey {
-                        entry: self.entry,
-                        elem: *elem,
+        if popping {
+            let focus = match self.inner.top().map(|e| e.id) {
+                Some(eid) => self
+                    .remembered
+                    .iter()
+                    .find(|(e, _)| *e == eid)
+                    .map(|(_, elem)| {
+                        FocusTarget::Elem(FocusKey {
+                            entry: self.entry,
+                            elem: *elem,
+                        })
                     })
-                })
-                .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
-            _ => FocusTarget::FirstInGroup(GroupId(0)),
-        };
-        fx.push(Fx::Deliver(
-            MachineId::Instance(self.id),
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
-        ));
+                    .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
+                None => FocusTarget::FirstInGroup(GroupId(0)),
+            };
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
+            ));
+        }
         fx.invalidate(Provenance::Nav);
     }
 

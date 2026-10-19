@@ -180,10 +180,23 @@ impl UnderPostersPage {
         self.send(next, fx);
     }
 
+    /// With no write of its own in flight, the rows read the stored value: the Details picker
+    /// above this page writes it too, and a page that kept what it last wrote would show the old
+    /// pick on return and send it back with the next Title toggle.
+    fn follow_stored(&mut self) -> bool {
+        let stored = plx_media::route::under_posters();
+        if stored == self.state.value {
+            return false;
+        }
+        self.state.value = stored;
+        self.rebuild();
+        true
+    }
+
     /// Settle an answered write: the row reads the stored value again, which holds the pick only
     /// if the write was durable.
     fn poll(&mut self) -> bool {
-        let Some((_, receipt)) = &self.pending else { return false };
+        let Some((_, receipt)) = &self.pending else { return self.follow_stored() };
         match receipt.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
@@ -533,6 +546,26 @@ impl Screen<InnerHost> for DetailsPage {
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
     fn hit_source(&self) -> HitSource { HitSource::Engine }
+}
+
+/// The `(focus key, destination)` of every `Nav` row the page lists: the structural navigation
+/// test's expectation, built by the page's own form builder.
+#[cfg(test)]
+pub(super) fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
+    let mut form: FormTable<UpId, UpAction, SettingsPage> = FormTable::new(super::super::registry::BAND);
+    form.set(under_posters_form(UnderPosters::DEFAULT), None);
+    (0..form.table.n_rows() as usize)
+        .filter_map(|i| match form.binding_at(i)?.kind.clone() {
+            RowKind::Nav(dest) => Some((form.key_at(i)?.0, dest)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The focus key of a details line's row in the picker.
+#[cfg(test)]
+pub(super) fn details_elem_for_test(d: UnderPostersDetails) -> u32 {
+    DetailsId(d).key().0
 }
 
 #[cfg(test)]
