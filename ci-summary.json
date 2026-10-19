@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T18:49:54Z",
+ "generated": "2026-10-19T18:56:23Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.2,
-   "change7_pct": 31.6,
+   "change30_pct": -37.5,
+   "change7_pct": 30.8,
    "d30": 670.0,
-   "delta30": -249.0,
-   "delta7": 101.0,
+   "delta30": -251.5,
+   "delta7": 98.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 112,
-   "now": 421,
+   "now": 418.5,
    "prev7": 320.0,
    "shown": true,
    "state": "worse",
@@ -332,15 +332,15 @@
    "change30_pct": 115.3,
    "change7_pct": 6.2,
    "d30": 111,
-   "delta30": 128,
-   "delta7": 14,
+   "delta30": 128.0,
+   "delta7": 14.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 103,
-   "now": 239,
+   "now": 239.0,
    "prev7": 225,
    "shown": true,
    "state": "flat",
@@ -353,15 +353,15 @@
    "change30_pct": 161.1,
    "change7_pct": -39.9,
    "d30": 72,
-   "delta30": 116,
-   "delta7": -125,
+   "delta30": 116.0,
+   "delta7": -125.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 103,
-   "now": 188,
+   "now": 188.0,
    "prev7": 313,
    "shown": true,
    "state": "better",
@@ -417,14 +417,14 @@
    "change7_pct": 7.7,
    "d30": null,
    "delta30": null,
-   "delta7": 11,
+   "delta7": 11.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 103,
-   "now": 153,
+   "now": 153.0,
    "prev7": 142,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 1,
+   "delta30": 2.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 103,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 219.1,
    "commits": [
     {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
      "pr": 838,
      "sha": "3ac9e03fd",
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
@@ -657,6 +652,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 56.2,
@@ -670,11 +670,6 @@
    "change_pct": 82.9,
    "commits": [
     {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
      "pr": 838,
      "sha": "3ac9e03fd",
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
@@ -718,6 +713,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 210.0,
@@ -731,11 +731,6 @@
    "change_pct": 48.6,
    "commits": [
     {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
      "pr": 838,
      "sha": "3ac9e03fd",
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
@@ -779,6 +774,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 268.5,
@@ -792,11 +792,6 @@
    "change_pct": 40.5,
    "commits": [
     {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
      "pr": 838,
      "sha": "3ac9e03fd",
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
@@ -840,6 +835,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 346.0,
@@ -853,11 +853,6 @@
    "change_pct": 32.6,
    "commits": [
     {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
-    {
      "pr": 838,
      "sha": "3ac9e03fd",
      "title": "Dolby Vision: declare Profile 10 on AV1, not only on HEVC"
@@ -901,6 +896,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 99.7,
@@ -911,13 +911,8 @@
    "to": 132.2
   },
   {
-   "change_pct": 31.6,
+   "change_pct": 30.8,
    "commits": [
-    {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
     {
      "pr": 838,
      "sha": "3ac9e03fd",
@@ -962,6 +957,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 320.0,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-19",
    "threshold_pct": 15.0,
-   "to": 421
+   "to": 418.5
   },
   {
    "change_pct": 20.8,
    "commits": [
-    {
-     "pr": 825,
-     "sha": "17eb48b95",
-     "title": "Dolby Vision: direct-play Profile 7, converted to 8.1 in-app"
-    },
     {
      "pr": 838,
      "sha": "3ac9e03fd",
@@ -1023,6 +1018,11 @@
      "pr": 849,
      "sha": "cc0ecc51e",
      "title": "Disk budget 3/6: the preflight makes room at every build entry"
+    },
+    {
+     "pr": 843,
+     "sha": "a397e151a",
+     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
     }
    ],
    "from": 130.0,
