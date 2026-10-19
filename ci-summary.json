@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T06:31:12Z",
+ "generated": "2026-10-19T06:32:42Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,10 +86,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -44.0,
+   "change30_pct": -43.3,
    "change7_pct": 34.2,
-   "d30": 768.0,
-   "delta30": -338.0,
+   "d30": 758,
+   "delta30": -328.0,
    "delta7": 109.5,
    "group": "ci",
    "id": "push_wait",
@@ -330,10 +330,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 125.6,
+   "change30_pct": 122.4,
    "change7_pct": 4.8,
-   "d30": 105.5,
-   "delta30": 132.5,
+   "d30": 107,
+   "delta30": 131,
    "delta7": 11.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -353,8 +353,8 @@
   {
    "change30_pct": 156.8,
    "change7_pct": -39.9,
-   "d30": 74.0,
-   "delta30": 116.0,
+   "d30": 74,
+   "delta30": 116,
    "delta7": -126.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -501,8 +501,8 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16.0,
-   "delta30": 2.0,
+   "d30": 16,
+   "delta30": 2,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
