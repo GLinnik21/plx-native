@@ -323,7 +323,7 @@ impl LibraryScreen {
     /// The filter read-out on the header row ("312 of 1,284"), if it carries one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_readout(&self) -> Option<String> {
-        self.header.as_ref().and_then(|row| row.readout()).map(str::to_owned)
+        self.header.row().and_then(|row| row.readout()).map(str::to_owned)
     }
 
     /// The scroll the page is travelling to: 0 at its top.
