@@ -379,14 +379,14 @@ fn the_plus_n_list_picks_a_library_into_the_last_slot_and_back_picks_nothing() {
 
 /// **Every header opener stays the lifted, focused control while its menu is up** (design review
 /// S12): the dispatcher names the page's element as the surface's lifted opener, the one decision
-/// `Bridge::redraw_opener` paints from, for the `+N` list as for Sort & Filter. The `+N` list named
+/// the dispatcher's lift pass paints from, for the `+N` list as for Sort & Filter. The `+N` list named
 /// none, so its page capsule sat dimmed under the scrim.
 fn the_menu_lifts_its_opener(stop: &'static str) -> impl Fn(&mut World) -> Vec<String> {
     move |w: &mut World| {
         w.frames(30);
         let want = w.library().probe_header_stops().into_iter().find(|(name, _)| *name == stop).map(|(_, elem)| elem);
         let page = w.d.nav.top_page().map(|e| e.id);
-        let lifted = crate::app::bridge::opener_lift(&w.d);
+        let lifted = w.d.lifted_opener();
         match (lifted, page, want) {
             (Some((host, Some(key))), Some(page), Some(elem)) if host == page && key.entry == page && key.elem == elem => Vec::new(),
             other => vec![format!("the {stop} opener is not the lifted element: {other:?}")],
@@ -423,6 +423,40 @@ fn the_plus_n_list_and_sort_filter_both_lift_their_opener() {
             end: sort,
         },
     ]);
+}
+
+/// **The opener pill is painted AFTER the panel, in the real dispatcher draw** (design review S12,
+/// code review R1/R3): with Library Sort & Filter open, every text run the frame draws is
+/// censused (`record_walk` makes the root painters record: no GL), and the pill's run must come
+/// later than the panel's rows, the order that lets the glass grow out from under a pill that does
+/// not change. The page pass leaves the pill out (`DrawFrame::lifted`), so the lift pass is its
+/// ONLY copy. Red while the lift lived in the application's page closure: the dispatcher's own
+/// draw (this test, and a surfaces-only plan) painted the panel and never the pill.
+#[test]
+fn the_sort_filter_pill_is_painted_after_the_panel_in_the_dispatchers_own_draw() {
+    use plx_ui::frame::backdrop::Z;
+    let mut w = World::movies_library("route-sort-lift-order", false);
+    w.climb_into_header();
+    for (key, at) in [(Key::Right, "header:recommended"), (Key::Right, "header:sort"), (Key::Ok, "menu:unwatched")] {
+        w.press(key);
+        w.frames(30);
+        assert_eq!(here(&w), at, "premise: {key:?} lands on {at}");
+    }
+    assert!(w.d.lifted_opener().is_some(), "premise: the menu names the pill as its lifted opener");
+    let mut glass = plx_ui::frame::glass::GlassPlan::new();
+    let sources = glass.sources.clone();
+    sources.borrow_mut().begin(w.d.backdrop_layers(1.0));
+    let words = plx_ui::draw_census::capture_text(|| {
+        let _declarations = plx_ui::frame::backdrop::discover(sources.clone());
+        w.d.draw_with_glass_below(&mut w.bridge, &mut glass, true, Z::ALL);
+    });
+    let words: Vec<&str> = words.iter().map(|(s, _)| s.as_str()).collect();
+    let at = |word: &str| words.iter().position(|w| *w == word);
+    let pills: Vec<usize> = (0..words.len()).filter(|i| words[*i] == "Sort & Filter").collect();
+    let (panel_first, panel_last) = (at("SORT").expect("the panel drew its Sort section"), at("Genre").expect("…and its last Filter row"));
+    assert_eq!(pills.len(), 1, "the pill is drawn once, by the lift (the page pass left it out): {words:?}");
+    assert!(pills[0] > panel_last && panel_first < panel_last,
+        "the pill's run ({}) comes after the panel's rows ({panel_first}..={panel_last}): {words:?}", pills[0]);
 }
 
 // ---- R6: Sort & Filter and the "N of M" read-out ---------------------------------------------------

@@ -401,13 +401,15 @@ presentation in a design pass.
    Library's `+N` list and the Watchlist's Sort & Filter all open this way, and their opener is
    never part of the morph. A morphing surface names its opener (`Screen::opener`), the page
    leaves it out of its pass (`DrawFrame::lifted`: a pill left on the page sits under the menu's
-   glass, and the rim's lens refracts its label into the panel's edge), and the host's opener lift
-   (`Screen::redraw_focused` -> `PageHeader::draw_opener`, the ONE paint of a header opener) draws
-   it focused above the scrim AND the panel, after the surfaces, so the glass grows out from under
-   a pill that does not change and a close shrinks back into it. The shared painters are
+   glass, and the rim's lens refracts its label into the panel's edge), and the dispatcher's lift
+   pass (`Dispatcher::draw_with`, `Z::OPENER`: ONE place, after the last surface, on every page
+   plan, with the account chip's `Scrim::lift` drawn in the same pass) calls `Screen::redraw_focused`
+   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which draws it focused above the
+   scrim AND the panel, so the glass grows out from under a pill that does not change and a close
+   shrinks back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
    `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
    about the panel anchor by the row spring). The morph draws no opener face: every header
-   opener, the profile chip included (`widgets::CHIP_PILL`), is the host's lift. The morph is not
+   opener, the profile chip included (`widgets::CHIP_PILL`), is the lift pass's. The morph is not
    faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
    `popover_morph.rs`.

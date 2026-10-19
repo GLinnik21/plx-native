@@ -690,6 +690,78 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
 }
 
 
+/// **The top page's opener lift is the dispatcher's, drawn in the ONE lift pass after the last
+/// surface, on BOTH plans** (`Dispatcher::draw_with`, review R1/R3). The element a menu was opened
+/// from (a header pill, a card) is lit above the dim AND the panel so a panel grows out from under
+/// it; it was drawn by the application's page closure instead, so its place against the surfaces
+/// depended on the plan: after them on `Owned` (`draw(.., true)`), BEFORE them on
+/// `LegacyThenSurfaces` (the closure ran, then `draw(.., false)` drew the panel on top of it). Red
+/// while the dispatcher never called `Screen::redraw_focused`.
+///
+/// `draw(.., false)` is the surfaces-only second call: it draws no dim and so owes no
+/// `Scrim::lift` (`a_surfaces_lift_waits_for_its_own_draw_and_is_spent_by_it`), but the page opener
+/// is not a dim's lift and is owed on every plan the host is not REPLACED on. The stand-down rule
+/// (the lift stops once focus left the opener while the menu fades) is `lifted_opener`'s, so it
+/// holds for both.
+#[test]
+fn the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans() {
+    use crate::fixture::{FixtureModal, FixtureScreen};
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    let page = |d: &Dispatcher<FixtureHost>| {
+        let p = d.nav.entry(home).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap().downcast_ref::<FixtureScreen>().unwrap();
+        (p.redrawn_at.get(), p.redraws.get())
+    };
+    let panel = |d: &Dispatcher<FixtureHost>| d.nav.modals.top().unwrap().entry.inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<FixtureModal>().unwrap().draw_at;
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    for _ in 0..200 {
+        step(&mut d, &mut rig, vec![]);
+        if d.nav.modals.top().is_some_and(|s| s.phase == Phase::Open) { break; }
+    }
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Open, "the menu is up");
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))), "premise: the page's opener is lifted");
+
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        let (lift_at, after) = page(&d);
+        assert_eq!(after, before + 1, "pages={pages}: the opener is lifted once per draw");
+        assert!(lift_at > panel(&d), "pages={pages}: the opener is drawn AFTER the panel, not under it (lift {lift_at}, panel {})", panel(&d));
+    }
+
+    // Back: the menu fades and input is the page's again, its focus still on the opener: still lifted
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        assert_eq!(page(&d).1, before + 1, "pages={pages}: closing with focus on the opener: still lifted");
+    }
+    // focus left the opener while the menu fades: the lift stands down on either plan
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    assert_eq!(d.lifted_opener(), None);
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        assert_eq!(page(&d).1, before, "pages={pages}: focus moved off the opener: the page draws it, the lift stands down");
+    }
+}
+
 /// **An opener that LEFT the page keeps its lift while the menu fades** (Remove from Watchlist): the
 /// focus reconciles to the next card, but the opener element is not a card focus moved off — it is
 /// the removed card, still drawn as its landing's ghost. Standing the lift down there dropped the

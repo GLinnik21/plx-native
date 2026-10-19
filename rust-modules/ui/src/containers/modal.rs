@@ -13,7 +13,8 @@
 //!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
 //!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
 //!   A surface's LIFT (`Scrim::lift`, the profile chip) is asked for there too but drawn by
-//!   `draw_lifts`, after every surface, so a panel never covers the element it grows out of.
+//!   `draw_lifts`, after every surface, so a panel never covers the element it grows out of. The
+//!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
@@ -827,7 +828,8 @@ impl<H: Host> ModalStack<H> {
     /// **Every surface's lift, bottom to top, AFTER every surface has drawn** (`Scrim::lift`): the
     /// element a surface was opened from (the profile chip) is re-drawn lit above the dim AND the
     /// panel, so a morphing panel grows out from under it and shrinks back into it, the same
-    /// stacking the page's own header openers get from `Bridge::redraw_opener`.
+    /// stacking the page's own opener gets from the dispatcher's lift pass (`Screen::opener`,
+    /// drawn by `Screen::redraw_focused` in the same pass, just before these).
     ///
     /// `read` is the shared top bar's render values this frame
     /// (`crate::dispatch::Rig::scrim_chrome_read`) — every lift called here receives the SAME

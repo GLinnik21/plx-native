@@ -255,7 +255,7 @@ fn a_card_held_with_repeat_beats_still_delivers_one_hold_and_no_tap() {
 /// app may open it or decline. Either way the card goes from its dip (~0.92, the unpopped size)
 /// back to its pop on the underdamped release spring the OK press gets: a decline leaves no menu
 /// over the card, and a menu that opens is what the card springs UNDER (the press is the one owner
-/// of that motion and the opener lift reads it, `bridge::opener_press`). A one-frame snap from the
+/// of that motion and the opener lift reads it, `Dispatcher::opener_press`). A one-frame snap from the
 /// dip to 1.0 is a card jumping under the user's thumb, and for a taken hold it is the pop
 /// animation the owner reported lost (0.8.0-rc.3). A hold that is NOT answered (page 700) keeps
 /// the dip until the release, by design.

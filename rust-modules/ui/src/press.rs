@@ -290,7 +290,8 @@ impl Press {
     /// So the card is not in the snapshot at all while a menu lifts it: the card sections skip the
     /// lifted element (`DrawFrame::lifted`) and say so through
     /// [`popover::set_lift_owns`](crate::popover::set_lift_owns), and the opener lift
-    /// (`redraw_opener`) draws the ONE copy live above the snapshot at the press's own scale.
+    /// (the dispatcher's lift pass, `Screen::redraw_focused`) draws the ONE copy live above the
+    /// snapshot at the press's own scale.
     /// While that holds, the press reports nothing as page damage, not even the landing on rest
     /// (its spring is the panel's business, not the page's); the present gate still sees the motion.
     ///

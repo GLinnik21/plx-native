@@ -1295,7 +1295,7 @@ mod tests {
 
     /// A hold menu: the page keeps ticking (or is frozen) while the menu owns input, and what the
     /// opener redraw (`Screen::redraw_focused` -> `Grid::redraw_focused`) paints is the card drawn
-    /// as the focused one with the OPENER as the context's focus: `opener_parts` hands the lift a
+    /// as the focused one with the OPENER as the context's focus: `Dispatcher::opener_parts` hands the lift a
     /// `Cx` whose `focus.current` is the opener key, not the engine's (the menu's own rows). The
     /// member whose menu is open stays at full pop in both worlds: the page frozen on its own
     /// focus, and the page ticking while the engine's focus sits on the menu.
@@ -1322,7 +1322,7 @@ mod tests {
     }
 
     /// The menu is dismissed and focus moves off the opener: the page's own springs take over the
-    /// tiles at once (the host's `opener_lift` stands down), so the old opener lets go over frames
+    /// tiles at once (the dispatcher's lift stands down, `Dispatcher::lifted_opener`), so the old opener lets go over frames
     /// and the new one grows from rest; nothing stays at full pop for a stale lift to be taken
     /// from.
     #[test]
