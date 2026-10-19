@@ -49,7 +49,8 @@
 //! ## Who drives it
 //!
 //! [`kick`] is the only thing that issues a request. The owned Library emits `PublishShelves`;
-//! the application combines its visibility flags with live press state and delivers addressed
+//! the application combines its visibility flags with live press state (a press holds only
+//! committed shelves; a page's first publication is never held by one) and delivers addressed
 //! `LibraryWork::Hubs` to `stores::browse`, which calls `kick` and gates staged publication.
 //! It was dormant for one landing — deliberately, since a fetch is
 //! production network, task and retry behaviour and "fetched but not drawn" would not have been
