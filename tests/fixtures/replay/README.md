@@ -431,18 +431,17 @@ difference counter at zero.
 The chrome handoff (`plx_ui::scroll_chrome::Handoff`, the decided tucked state and the two drawn
 alphas the Library and the Watchlist page now own; the screen pin moves to `0xcbaf_3fdb_0c28_ad38`)
 moved the state shape from 16328958095966704900 to 4058586095815036115, read from the old and the new
-recorder headers by `tools/plxnative-rec rerecord`. All three anchors were refused on load
-(`StateShape` in the fixture preflight), then freshly recorded against the synthetic server with
-`tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
-retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
-difference counter at zero.
-
-One duration and one release phrase (`plx_ui::fmt::duration`, `fmt::coming_on`) changed the text the
-Detail page draws without moving the state shape: its Run Time and hero facts read "2h 24m" where
-they read "2 hr 24 min". `12-filmography-detail-return` was observed being refused on the first
-measurement it had never taken (`replay: REFUSED — replay measurement table miss`, both modes),
-while `1-boot-home-chip-grid` and `6-settings-family` stayed SAME. The anchor was recorded afresh
-on the unchanged shape (`tests/focusfp.sh --rec --only 12`, `tools/plxnative-rec import` over the
-removed directory, `anchor: true` restored by hand) and replayed SAME in Targets and Resolve
-(`tests/replay_fixtures.py`) with every difference counter zero. The closed alphabet's runtime
-literal is now `2h 24m`.
+recorder headers by `tools/plxnative-rec rerecord`. Two changes after it moved what the pages draw
+without moving the shape: one duration and one release phrase (`plx_ui::fmt::duration`,
+`fmt::coming_on`), so Detail's Run Time and hero facts read "2h 24m" where they read "2 hr 24 min"
+(`12-filmography-detail-return`); and one label for the Play control
+(`plx_appkit::hero_layout::play_label`, shared by Home, Detail and the card menu), so Home's hero
+measures "Resume" where it measured "Continue" (all three). The committed recordings of all three anchors are one re-record of
+the merged tree: the closed alphabet's `Continue` literal became `Resume` and its runtime literal
+`2h 24m` (`plxnative-rec check` refused the committed `12-filmography-detail-return` for the old
+duration, and refused each fresh recording for `Resume` until the alphabet followed), each anchor
+was recorded afresh against the synthetic server with `tests/focusfp.sh --rec --only 1,6,12`, and
+only its `rec-0000.jsonl` was replaced: `rerecord` refuses a shape that did not move, and the
+manifests (anchor flag included) already equal the new recorder's header, so they stand byte for
+byte. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets and Resolve and
+every difference counter at zero.
