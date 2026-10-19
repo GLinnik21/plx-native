@@ -25,15 +25,27 @@ luna://com.webos.applicationManager/launch
   picker and onboarding, and is dropped when no account is signed in.
 - The debug flavour's id is `com.beb.plxnative.debug`; the contract is the same.
 
-## Close the app first
+## A launch while the app runs
 
-Only a cold launch carries the link. SAM hands a cold start's parameters to the process as
-`argv[1]`, but launched again while it runs, SAM sends them as a `relaunch` event to the
-`registerApp` subscription, which LG's SDL holds and which raises the window and drops them. The
-app cannot hold that subscription itself (measured on webOS 9.2.2, LG C2: SAM answers an anonymous
-client `cannot find caller id`, the app-id service name is already taken in the process, and
-`LSCallFromApplication` is refused as unprivileged). So a caller that may find PlxNative running
-closes it first, then launches:
+SAM hands a cold start's parameters to the process as `argv[1]`. Launched again while it runs, SAM
+sends them as a `relaunch` event to the `registerApp` subscription, which LG's SDL holds; SDL raises
+the window and never reads the parameters. The app cannot hold that subscription itself (measured
+on webOS 9.2.2, LG C2: SAM answers an anonymous client `cannot find caller id`, the app-id service
+name is already taken in the process, and `LSCallFromApplication` is refused as unprivileged).
+
+Instead, `app::boot::tap_relaunch_payloads` wraps the pointer slot LG's SDL reads each reply's
+payload through (`HELPER_HLunaServiceMessage`, exported by its `libSDL2` and filled in `SDL_Init`).
+A relaunch payload is passed to the link code and returned unchanged, so SDL still raises the
+window. The link then replaces wherever the app was, with Home underneath. A relaunch without a
+`plex` object leaves the app where it is. Measured on webOS 9.2.2 (LG C2): links opened from Home
+and from another detail page, on the same process.
+
+## Where the slot is missing
+
+The firmware inventories (`tools/fwcompat.py`) have the slot in LG's SDL from webOS 7.4 on, and not
+on webOS 4.x to 6.x. Where it is missing, the event log says `relaunch tap: no
+HELPER_HLunaServiceMessage in this SDL` at boot and only a cold launch carries the link. A caller
+that must work there closes the app first, then launches:
 
 ```text
 luna://com.webos.applicationManager/closeByAppId {"id":"com.beb.plxnative"}

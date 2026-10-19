@@ -12,11 +12,13 @@
 //! - `action` (optional): `open` (the default) lands on the item's detail page; `play` starts it
 //!   where Resume would. Anything else is `open`.
 //! - Unknown keys are ignored. No `plex` object at all is an ordinary launch.
-//! - Only a cold launch carries the link: launched again while it runs, the app just comes forward
-//!   (`plx_platform::tv::launch` says why). A caller that may find it running closes it first
+//! - A launch while the app runs carries the link too, where LG's SDL lets the app read relaunch
+//!   payloads (`app::boot::tap_relaunch_payloads`, webOS 7.4 on); the page then replaces wherever
+//!   the app was. Elsewhere (webOS 4.x to 6.x) only a cold launch does, and a caller closes the app first
 //!   (`com.webos.applicationManager/closeByAppId`), then launches.
 //!
-//! The payload arrives raw through `plx_platform::tv::launch` (`argv[1]`). This module waits until
+//! The payload arrives raw through `plx_platform::tv::launch` (`argv[1]`, or a relaunch event). This
+//! module waits until
 //! there is a signed-in profile with Home at the root, makes sure Home is alone on the stack, asks
 //! for the item's metadata and hands the landing to the shared menu-play wait
 //! (`input::MenuPlayAwait::for_link`), which opens or plays it; a key the server does not know
@@ -72,7 +74,8 @@ pub(crate) fn parse(raw: &str) -> Parsed {
 /// are discovered after Home mounts. The metadata wait after it is `MenuPlayAwait`'s own ceiling.
 const SERVER_WAIT_MS: u32 = 15_000;
 
-/// The link not yet handed to the menu-play wait. Owned by `App`, driven by [`tick`] every frame.
+/// The link not yet handed to the menu-play wait. Owned by `App`, driven by [`tick`] every frame,
+/// which also takes each payload that arrives.
 #[derive(Default)]
 pub(crate) enum DeepLink {
     #[default]
@@ -83,7 +86,7 @@ pub(crate) enum DeepLink {
 }
 
 impl DeepLink {
-    /// The link a cold launch carried in `raw`, if any.
+    /// The link a launch carried in `raw`, if any.
     pub(crate) fn from_launch(raw: Option<String>) -> DeepLink {
         match raw.as_deref().map(parse) {
             None | Some(Parsed::None) => DeepLink::Idle,
@@ -137,8 +140,9 @@ fn not_found(why: &str) {
     plx_base::eventlog::log(&format!("deeplink: not opened ({why})"));
 }
 
-/// One frame of a waiting link: once Home is the root, alone, and the link's server is known, ask
-/// for the item and arm the menu-play wait that lands it. Runs just before `menu_play_tick`.
+/// One frame of the link: take a newly arrived payload, then, once Home is the root, alone, and
+/// the link's server is known, ask for the item and arm the menu-play wait that lands it. Runs
+/// just before `menu_play_tick`.
 pub(crate) fn tick(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -146,6 +150,13 @@ pub(crate) fn tick(
     menu_play_await: &mut Option<super::input::MenuPlayAwait>,
     now: u32,
 ) {
+    if let Some(raw) = plx_platform::tv::launch::take() {
+        // A launch without a link (the launcher's own icon) leaves one still waiting alone.
+        let next = DeepLink::from_launch(Some(raw));
+        if matches!(next, DeepLink::Waiting { .. }) {
+            *state = next;
+        }
+    }
     let DeepLink::Waiting { link, server_deadline } = state else { return };
     match gate(pages.nav.tabs.stack.entries.first().map(|e| &e.arg)) {
         Gate::Wait => {

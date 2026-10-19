@@ -5,25 +5,34 @@
 //! 2026-10-19): `{"event":"launch","reason":…,"appId":…,"parameters":{…},"interfaceVersion":2,…}`.
 //! `main.c` hands it to [`offer`].
 //!
-//! Only a COLD launch carries parameters the app can read. Launched again while it runs, SAM sends
-//! the new parameters as a `relaunch` event to the app's `registerApp` subscription, which LG's SDL
-//! holds; SDL raises the window and drops them. The app cannot hold that subscription itself: SAM
-//! answers an anonymous client `cannot find caller id`, the app-id service name is already taken in
-//! this process, and `LSCallFromApplication` is refused as unprivileged (all three measured on the
-//! same set). A caller that needs its parameters honoured closes the app first.
+//! A WARM launch (the app already running) sends its parameters as a `relaunch` event to the
+//! `registerApp` subscription, which LG's SDL holds. The app cannot subscribe itself: SAM answers
+//! an anonymous client `cannot find caller id`, the app-id service name is already taken in this
+//! process, and `LSCallFromApplication` is refused as unprivileged (all three measured on the same
+//! set). Instead `app::boot` wraps the slot SDL reads each reply's payload through and hands a
+//! relaunch's payload here too. Where that slot is absent (webOS 4.x to 6.x) only a cold launch
+//! carries parameters, and a caller closes the app first.
 //!
 //! The payload is kept raw here: what it MEANS (a Plex title to open) is the app's business.
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 static PENDING: Mutex<Option<String>> = Mutex::new(None);
+/// Set with `PENDING`, so the per-frame [`take`] skips the lock while nothing has arrived.
+static WAITING: AtomicBool = AtomicBool::new(false);
 
-/// The launch argument of a cold start, as `argv[1]` carried it; the app decides what it means.
+/// A launch payload: a cold start's `argv[1]`, or a relaunch event from any thread. The app decides
+/// what it means; a newer payload replaces one not yet taken.
 pub fn offer(raw: &str) {
     *PENDING.lock().unwrap_or_else(|p| p.into_inner()) = Some(raw.to_owned());
+    WAITING.store(true, Ordering::Release);
 }
 
-/// The launch payload not yet acted on, once.
+/// The launch payload not yet acted on, once. Cheap enough for every frame.
 pub fn take() -> Option<String> {
+    if !WAITING.swap(false, Ordering::Acquire) {
+        return None;
+    }
     PENDING.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
 

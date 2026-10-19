@@ -41,6 +41,7 @@ impl Rig {
         assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let pms = Pms::serve(one_movie);
+        let _ = plx_platform::tv::launch::take();
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("deeplink", "127.0.0.1", pms.port, "t", "c-deeplink");
         plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
@@ -108,7 +109,8 @@ fn a_link_lands_on_its_detail_page_with_home_alone_behind_it() {
         tick(rig.i), vec![]);
     assert_eq!(rig.stack().len(), 2);
 
-    rig.link = DeepLink::from_launch(Some(payload(KNOWN)));
+    // Arrives the way a relaunch does, mid-session, and is taken by the tick.
+    plx_platform::tv::launch::offer(&payload(KNOWN));
     rig.run();
     assert!(rig.stack() == vec![
         AppArg::Home,
