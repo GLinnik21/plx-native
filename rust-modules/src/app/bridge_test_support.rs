@@ -453,6 +453,28 @@ impl World {
         self.tap(key, 28)
     }
 
+    /// **What the top page DREW this frame**, read off a recording painter (a host has no GL): every
+    /// text run as `(words, rect)`. The draw is the product's own, `Dispatcher::draw_with_glass_below`
+    /// inside a discovery walk, so the words a test reads are the ones a person reads. It draws the
+    /// frame the last [`Self::step`] updated and advances nothing. (A lifted header opener is painted
+    /// by the run loop's page closure, `Bridge::redraw_opener`, which this draw does not run: read
+    /// that decision from `bridge::opener_lift`.)
+    pub(super) fn drawn(&mut self) -> Drawn {
+        use plx_ui::frame::backdrop;
+        let mut glass = plx_ui::frame::glass::GlassPlan::new();
+        let sources = glass.sources.clone();
+        sources.borrow_mut().begin(self.d.backdrop_layers(1.0));
+        let words = {
+            let _declarations = backdrop::discover(sources.clone());
+            plx_ui::draw_census::capture_text(|| {
+                self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
+            })
+        };
+        sources.borrow_mut().resolve();
+        backdrop::commit(&sources);
+        Drawn { words }
+    }
+
     /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
     /// event after it resolves against. A real page cannot be DRAWN on a host (no GL context, no font), so
     /// the page's own stops are not in this map; the bar's are, and they are the ones `Dispatcher::draw`
@@ -568,6 +590,16 @@ impl World {
         }
         assert_eq!(self.elem(), Some(elem), "premise: the arrows along the header reached the stop");
     }
+}
+
+/// One frame's draw, as [`World::drawn`] reads it: the text, since a host paints no pixels.
+pub(super) struct Drawn {
+    pub(super) words: Vec<(String, plx_ui::Rect)>,
+}
+
+impl Drawn {
+    /// Was `text` drawn, exactly as one run?
+    pub(super) fn says(&self, text: &str) -> bool { self.words.iter().any(|(words, _)| words == text) }
 }
 
 pub(super) use super::super::words::every_route;

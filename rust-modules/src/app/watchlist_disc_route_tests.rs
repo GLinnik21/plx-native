@@ -111,7 +111,7 @@ fn a_movie_details_disc_adds_then_removes_the_title_by_keys() {
 }
 
 /// **The Watchlist page's header row, by keys.** The row has ONE stop (the Sort & Filter pill: the
-/// title is a plate, not a control), so "walking it" is: Up from the first tile reaches the pill,
+/// title is plain text with no plate and no stop, design review S10), so "walking it" is: Up from the first tile reaches the pill,
 /// Left and Right keep focus on the pill (they neither leave sideways to the strip nor fall into the
 /// grid), and Down returns to the tile Up left from (`PageRegions::CONTENT_HEAD_SEAT`, design review
 /// S2: the pill is right-aligned over the sixth column, ~1400 px from the tile the eye left, and
@@ -191,5 +191,60 @@ fn the_sort_and_filter_menu_reorders_narrows_and_resets_the_grid_by_keys() {
 
     w.press(Key::Back);
     assert!(!menu_up(&w), "BACK closes the menu");
+    assert_eq!(w.elem(), Some(PILL_ELEM), "with focus back on the pill");
+}
+
+/// **An icon-only hero control names itself while it holds focus** (design review S25), on the Home
+/// hero and on a movie's Detail hero: Right from Play reaches the bookmark disc and the page DRAWS
+/// the disc's name ("Add to Watchlist"), OK flips the face and the name with it ("On Watchlist"), and
+/// Left back to Play takes the name away. Read off the frame the product draws, so a caption that is
+/// built but not drawn, or drawn for the wrong face, is red here.
+#[test]
+fn the_focused_bookmark_disc_names_itself_on_the_home_hero_and_the_detail_hero() {
+    use plx_platform::i18n::msg::{watchlist_action_add, watchlist_action_on_list};
+    // One world at a time (the serial lock is not re-entrant): each is built when its turn comes.
+    let pages: [(&str, fn() -> World); 2] = [
+        ("home", || World::home_with_disc("r14-caption-home", HEX)),
+        ("detail", || World::detail_with_disc("r14-caption-detail", HEX)),
+    ];
+    for (page, mount) in pages {
+        let mut w = mount();
+        w.frames(40);
+        assert!(!w.drawn().says(watchlist_action_add()), "{page}: premise: the focused Play control draws no disc name");
+        w.press(Key::Right);
+        let (add, on_list) = (watchlist_action_add(), watchlist_action_on_list());
+        let drawn = w.drawn();
+        assert!(drawn.says(add) && !drawn.says(on_list), "{page}: the focused disc names the action its outline offers; drew {:?}", drawn.words.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>());
+        w.press(Key::Ok);
+        let drawn = w.drawn();
+        assert!(drawn.says(on_list) && !drawn.says(add), "{page}: the filled face names the state it reports");
+        w.press(Key::Left);
+        let drawn = w.drawn();
+        assert!(!drawn.says(add) && !drawn.says(on_list), "{page}: focus off the disc takes its name away");
+    }
+}
+
+/// **Sort & Filter lifts its opener** (design review S12), on the Watchlist as on the Library: OK on
+/// the pill presents the menu over the page and the dispatcher names the pill as the surface's lifted
+/// opener (the one decision `Bridge::redraw_opener` paints the lit pill from), and BACK stands the
+/// lift down with focus on the pill. `library_route_tests` holds the Library's rows.
+#[test]
+fn the_watchlists_sort_and_filter_lifts_its_pill_while_the_menu_is_up() {
+    let mut w = World::watchlist("r14-opener-lift");
+    let page = w.d.nav.top_page().map(|e| e.id).expect("the Watchlist is on top");
+    w.press(Key::Up);
+    assert_eq!(w.elem(), Some(PILL_ELEM), "premise: focus is on the pill");
+    assert_eq!(crate::app::bridge::opener_lift(&w.d), None, "premise: nothing is lifted while the pill is only focused");
+
+    w.press(Key::Ok);
+    assert!(menu_up(&w), "OK on the pill opens the menu");
+    let lifted = crate::app::bridge::opener_lift(&w.d);
+    assert_eq!(lifted.map(|(host, key)| (host, key.map(|key| (key.entry, key.elem)))), Some((page, Some((page, PILL_ELEM)))),
+        "the pill is the lifted opener while its menu is up");
+
+    w.press(Key::Back);
+    w.settle(40);
+    assert!(!menu_up(&w), "BACK closes the menu");
+    assert_eq!(crate::app::bridge::opener_lift(&w.d), None, "and the lift stands down");
     assert_eq!(w.elem(), Some(PILL_ELEM), "with focus back on the pill");
 }
