@@ -2724,7 +2724,7 @@ impl HomeScreen {
     }
 
     /// The application's answer: `hex`'s membership on the Watchlist (`Unknown` while the list is
-    /// unread, which wears the Add face). See [`HeroDisc::set`] for when this flips and when it snaps.
+    /// unread, which wears the Add face). See [`plx_appkit::watchlist_disc::Disc::set`] for when this flips and when it snaps.
     pub fn set_watchlist(&mut self, hex: [u8; 12], membership: plx_data::catalog::Membership) {
         self.disc.set(hex, membership);
     }
@@ -3184,14 +3184,16 @@ fn disc_hex(item: &PmsMovie) -> Option<[u8; 12]> {
     item.watchlist_subject().and_then(|(_, hex, _)| hex)
 }
 
-/// The bookmark disc's state: which title the membership belongs to, the flip toward it, and the
-/// title that was shown before it (the page sliding out keeps its face). Fed by the application.
+/// The bookmark disc's Home half: which title the shared [`plx_appkit::watchlist_disc::Disc`] is
+/// for, and the title that was shown before it (the page sliding out keeps its face). The hero
+/// rotates through many titles on the one disc; everything about the flip itself is the `Disc`'s.
+/// Fed by the application.
 #[derive(Default)]
 struct HeroDisc {
     /// The title the application last fed a membership for.
-    of: Option<([u8; 12], plx_data::catalog::Membership)>,
-    /// 0 = the outline at rest, 1 = filled; stepped toward `of`'s face.
-    flip: Spring,
+    of: Option<[u8; 12]>,
+    /// That title's membership and flip, stepped toward its face.
+    flip: plx_appkit::watchlist_disc::Disc,
     /// The previous title and whether it wore the filled face, for the page sliding out.
     prev: Option<([u8; 12], bool)>,
     /// The title the hero shows now, cached each tick for the application's feed.
@@ -3200,11 +3202,12 @@ struct HeroDisc {
 
 impl HeroDisc {
     /// What a press on the disc of `item` asks for, `None` when it names no title.
-    fn press(&self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
+    fn press(&mut self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
         use crate::registry::ItemMenuAction as Action;
         let (kind, hex, _) = item.watchlist_subject()?;
         let hex = hex?;
-        let on = matches!(self.of, Some((h, plx_data::catalog::Membership::On)) if h == hex);
+        let on = self.of == Some(hex) && self.flip.membership() == plx_data::catalog::Membership::On;
+        self.flip.press();
         Some(if on {
             Action::WatchlistRemove(plx_data::watchlist::guid_of(kind, &hex))
         } else {
@@ -3212,32 +3215,24 @@ impl HeroDisc {
         })
     }
 
-    /// The membership of `hex`. A change on the title already shown flips the disc; a different
-    /// title (the hero rotated) or the first answer for this one (`Unknown` before) snaps the face,
-    /// so the flip plays only on a real membership change of the shown title.
+    /// The membership of `hex`. A different title (the hero rotated) rests the disc on its face and
+    /// keeps the title that left as `prev`; the same title is the `Disc`'s own rule
+    /// ([`plx_appkit::watchlist_disc::Disc::set`]), so the flip plays only on a real membership
+    /// change of the shown title.
     fn set(&mut self, hex: [u8; 12], m: plx_data::catalog::Membership) {
-        use plx_data::catalog::Membership;
-        match self.of {
-            Some((h, now)) if h == hex => {
-                if now != m {
-                    if now == Membership::Unknown {
-                        self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
-                    }
-                    self.of = Some((hex, m));
-                }
-            }
-            _ => {
-                self.prev = self.of.map(|(h, m)| (h, plx_appkit::watchlist_disc::target(m) >= 1.0));
-                self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
-                self.of = Some((hex, m));
-            }
+        if self.of == Some(hex) {
+            self.flip.set(m);
+        } else {
+            self.prev = self.of.map(|h| (h, plx_appkit::watchlist_disc::target(self.flip.membership()) >= 1.0));
+            self.flip.reset(m);
+            self.of = Some(hex);
         }
     }
 
     /// The flip progress the page of the title `hex` draws its disc at.
     fn progress(&self, hex: [u8; 12]) -> f32 {
         match (self.of, self.prev) {
-            (Some((h, _)), _) if h == hex => self.flip.pos,
+            (Some(h), _) if h == hex => self.flip.pos(),
             (_, Some((h, filled))) if h == hex => f32::from(filled),
             _ => 0.0,
         }
@@ -3245,13 +3240,8 @@ impl HeroDisc {
 
     /// Step the flip toward the face of the title it belongs to.
     fn step(&mut self, dt: f32) {
-        let Some((_, m)) = self.of else { return };
-        let target = plx_appkit::watchlist_disc::target(m);
-        plx_machine::idle::decorative(|| self.flip.step(target, plx_ui::widgets::K_DISC_UNFURL, dt));
-        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
-        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
-        if plx_machine::idle::settled(self.flip.pos, target, self.flip.vel) {
-            self.flip.jump(target);
+        if self.of.is_some() {
+            self.flip.step(dt);
         }
     }
 }

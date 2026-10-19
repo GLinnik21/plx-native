@@ -140,7 +140,7 @@ fn an_already_listed_title_does_not_flip_on_open() {
     s.set_watchlist(HEX_A, Membership::On);
     assert_eq!(s.disc.progress(HEX_A), 1.0);
     tick(&mut s, view, 30);
-    assert_eq!((s.disc.flip.pos, s.disc.flip.vel), (1.0, 0.0));
+    assert_eq!((s.disc.flip.pos(), s.disc.flip.animating()), (1.0, false));
     // The list landing after the page drew (Unknown, then On) snaps too.
     let mut late = screen(view);
     late.set_watchlist(HEX_A, Membership::Unknown);
@@ -164,10 +164,10 @@ fn rotating_the_hero_does_not_flip() {
     assert_eq!(s.disc.progress(HEX_B), 0.0);
     assert_eq!(s.disc.progress(HEX_A), 1.0, "the page sliding out still wears its filled face");
     tick(&mut s, view, 30);
-    assert_eq!((s.disc.flip.pos, s.disc.flip.vel), (0.0, 0.0));
+    assert_eq!((s.disc.flip.pos(), s.disc.flip.animating()), (0.0, false));
     // And back onto a listed title: snapped, not flipped.
     s.set_watchlist(HEX_A, Membership::On);
-    assert_eq!((s.disc.flip.pos, s.disc.flip.vel), (1.0, 0.0));
+    assert_eq!((s.disc.flip.pos(), s.disc.flip.animating()), (1.0, false));
 }
 
 /// A real change on the shown title plays the flip, and settles exactly on the new face.
@@ -181,13 +181,52 @@ fn a_membership_change_of_the_shown_title_flips() {
     s.set_watchlist(HEX_A, Membership::Off);
     tick(&mut s, view, 30);
     s.set_watchlist(HEX_A, Membership::On);
-    assert_eq!(s.disc.flip.pos, 0.0, "the flip starts at the old face");
+    assert_eq!(s.disc.flip.pos(), 0.0, "the flip starts at the old face");
     tick(&mut s, view, 4);
-    assert!(s.disc.flip.pos > 0.0 && s.disc.flip.pos < 1.0, "mid-flip after a few frames: {}", s.disc.flip.pos);
+    assert!(s.disc.flip.pos() > 0.0 && s.disc.flip.pos() < 1.0, "mid-flip after a few frames: {}", s.disc.flip.pos());
     let (_, mid) = plx_appkit::watchlist_disc::paint(s.disc.progress(HEX_A));
     assert!(mid.is_some(), "a flip in flight layers the fill");
     tick(&mut s, view, 120);
-    assert_eq!((s.disc.flip.pos, s.disc.flip.vel), (1.0, 0.0));
+    assert_eq!((s.disc.flip.pos(), s.disc.flip.animating()), (1.0, false));
+}
+
+/// The Add pressed on a list that has not landed (the membership is still `Unknown`) is the user's
+/// own change: the app answers it `On` at once, and the flip UNFURLS over several frames instead of
+/// snapping to the filled face. A Remove back out of it drains the same way, and an `Unknown` to
+/// `On` with no press (the list landing under an already-listed title) still snaps.
+#[test]
+fn an_add_pressed_from_an_unread_list_unfurls_like_a_remove() {
+    let _guard = plx_base::testlock::serial();
+    let snapshot = seeded(true);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    tick(&mut s, view, 1);
+    s.set_watchlist(HEX_A, Membership::Unknown);
+    tick(&mut s, view, 30);
+    step(&mut s, view, None, &ScreenEvent::Activate(HERO_WATCHLIST_ELEM));
+    s.set_watchlist(HEX_A, Membership::On);
+    let mut add = Vec::new();
+    for _ in 0..8 {
+        tick(&mut s, view, 1);
+        add.push(s.disc.flip.pos());
+    }
+    assert!(add.iter().filter(|p| **p > 0.0 && **p < 1.0).count() >= 5, "the add unfurls over frames: {add:?}");
+    tick(&mut s, view, 120);
+    step(&mut s, view, None, &ScreenEvent::Activate(HERO_WATCHLIST_ELEM));
+    s.set_watchlist(HEX_A, Membership::Unknown);
+    let mut remove = Vec::new();
+    for _ in 0..8 {
+        tick(&mut s, view, 1);
+        remove.push(s.disc.flip.pos());
+    }
+    assert!(remove.iter().filter(|p| **p > 0.0 && **p < 1.0).count() >= 5, "the remove drains over frames: {remove:?}");
+    // No press: the list landing on a listed title is the first answer and snaps.
+    let mut fresh = screen(view);
+    tick(&mut fresh, view, 1);
+    fresh.set_watchlist(HEX_A, Membership::Unknown);
+    tick(&mut fresh, view, 30);
+    fresh.set_watchlist(HEX_A, Membership::On);
+    assert_eq!(fresh.disc.flip.pos(), 1.0, "an unpressed first answer snaps");
 }
 
 /// A focus resting on the disc when the hero rotates to a title without one returns to Play.
