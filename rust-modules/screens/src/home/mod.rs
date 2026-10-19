@@ -2641,6 +2641,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
 pub struct HomeProbe {
     pub cw_elems: Vec<u32>,
     pub animating: bool,
+    /// The hero's bookmark disc: the title it was last fed a membership for, and the membership it
+    /// wears (`Unknown` and `Off` draw the outline, `On` the filled face).
+    pub disc: Option<([u8; 12], plx_data::catalog::Membership)>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2650,6 +2653,7 @@ impl HomeScreen {
         HomeProbe {
             cw_elems: row.map(|row| self.rows[row].elems.clone()).unwrap_or_default(),
             animating: row.is_some_and(|row| self.grid.shelves[row].landing_pending() || self.grid.shelves[row].has_ghosts()),
+            disc: self.disc.of.map(|hex| (hex, self.disc.flip.membership())),
         }
     }
 }

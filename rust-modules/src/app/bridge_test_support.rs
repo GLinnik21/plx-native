@@ -86,6 +86,9 @@ pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> 
 /// OK-armed flag. [`Pump::run`] is [`pump_navigation`] plus the requests that need them, performed
 /// by the loop's own `content::library_page_request` and the Collection/Detail pushes by
 /// `bridge::nav_push_with_return`: a test that presses OK on a poster sees the page the TV opens.
+/// It also drains the item menu's committed rows (`content::drain_item_menu_requests`, the Watchlist
+/// disc's Add/Remove among them) and performs the Watchlist page's own requests
+/// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses).
 pub(super) struct Pump {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
@@ -109,8 +112,9 @@ impl Pump {
 }
 
 fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option<(&mut Pump, u32)>) -> Vec<String> {
-    use crate::app::content::{content_back, library_navigation, library_page_request, library_publish_shelves, watchlist_navigation};
+    use crate::app::content::{content_back, library_navigation, library_page_request, library_publish_shelves, watchlist_navigation, watchlist_request};
     use plx_screens::registry::ContentReq;
+    use plx_screens::watchlist::page::WatchlistOut;
     // The entry that asked, while it is still the one holding input.
     fn asker(d: &Dispatcher<AppHost>, source: MachineId) -> Option<EntryId> {
         let MachineId::Instance(instance) = source else { return None };
@@ -118,6 +122,12 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
         (d.nav.input_owner() == Some(InputOwner::Entry(entry))).then_some(entry)
     }
     let mut seen = Vec::new();
+    // The item menu's committed row, and the hero disc's Add/Remove, are requests the loop drains
+    // right after the dispatcher and before the page requests (`content::drain_item_menu_requests`).
+    if let Some((pump, now)) = item.as_mut() {
+        crate::app::content::drain_item_menu_requests(&mut pump.ps, &mut pump.pa, d, rig,
+            &mut crate::app::playback::LivePlaybackResources, &mut pump.menu_play_await, *now);
+    }
     for (source, request, ret) in rig.take_library_reqs() {
         let (Some(entry), MachineId::Instance(instance)) = (asker(d, source), source) else { continue };
         if !d.top_arg().is_some_and(|arg| arg.is_library_family()) { continue; }
@@ -153,12 +163,23 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
         }
     }
     for (source, request, ret) in rig.take_watchlist_reqs() {
-        let Some(_) = asker(d, source) else { continue };
-        if d.top_arg() != Some(&AppArg::Watchlist) { continue; }
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = d.nav.entry_of_instance(instance) else { continue };
+        // The Sort & Filter value comes from the surface over the page: the loop gates it on
+        // nothing but a Watchlist page being on the stack, so the page need not hold input.
+        if !matches!(request, WatchlistOut::SetOptions(_))
+            && (asker(d, source).is_none() || d.top_arg() != Some(&AppArg::Watchlist))
+        {
+            continue;
+        }
         let label = format!("{request:?}");
-        seen.push(match watchlist_navigation(d, rig, &request, ret) {
-            None => format!("watchlist:{label}"),
-            Some(_) => format!("unperformed watchlist:{label}"),
+        seen.push(match (watchlist_navigation(d, rig, &request, ret), item.as_mut()) {
+            (None, _) => format!("watchlist:{label}"),
+            (Some(ret), Some((pump, _))) => {
+                watchlist_request(d, rig, entry, request, ret, &mut pump.ok_armed);
+                format!("watchlist:{label}")
+            }
+            (Some(_), None) => format!("unperformed watchlist:{label}"),
         });
     }
     seen
@@ -195,8 +216,8 @@ pub(super) struct World {
     feed: Option<fn(&mut Dispatcher<AppHost>, &mut Bridge)>,
     /// The registered server the library's first section belongs to (`UNSET` in the Watchlist's world).
     pub(super) own: plx_plex::plex::ServerId,
-    /// Keeps the scripted plex.tv alive for the Watchlist.
-    _script: Option<std::sync::Arc<super::watchlist_press_tests::Script>>,
+    /// The scripted plex.tv a Watchlist world runs over (the writes it was sent are the tests' to read).
+    script: Option<std::sync::Arc<super::watchlist_press_tests::Script>>,
     _session: plx_plex::plex::session::TempSession,
     _serial: plx_base::testlock::Serial,
 }
@@ -239,7 +260,7 @@ impl World {
             browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
             browse.seed_landscape_for_test(0, "Synthetic show");
         }
-        World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, _script: None,
+        World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, script: None,
             _session: session, _serial: serial }
     }
 
@@ -271,11 +292,15 @@ impl World {
 
     /// The Watchlist over a scripted plex.tv holding forty titles, opened by its strip pill.
     pub(super) fn watchlist(name: &str) -> World {
+        Self::watchlist_over(name, super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>()))
+    }
+
+    /// The Watchlist over `script`, opened by its strip pill.
+    pub(super) fn watchlist_over(name: &str, script: std::sync::Arc<super::watchlist_press_tests::Script>) -> World {
         let (serial, session) = Self::lock(name);
-        let script = super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>());
         let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
-            _script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
+            script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
                 bridge.watchlist_for_test().pump();
                 bridge.watchlist_feed(d);
             }) };
@@ -283,6 +308,57 @@ impl World {
         w.frames(120);
         assert!(w.on(&AppArg::Watchlist), "premise: the Watchlist is on top");
         w
+    }
+
+    /// Home over a scripted plex.tv (forty titles, none of them `hero`), its one hero standing for
+    /// the movie `hero` (a catalog id no list holds, so the disc reads "Add" once the list has landed),
+    /// settled. The Home and Detail discs are fed as the loop feeds them (`catalog_feed`).
+    pub(super) fn home_with_disc(name: &str, hero: [u8; 12]) -> World {
+        let mut w = Self::scripted(name);
+        w.bridge.stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
+        plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "1", &|m| { m.kind = 0; m.guid = Some(hero); });
+        super::show_page(&mut w.d, AppArg::Home);
+        w.frames(60);
+        assert!(w.on(&AppArg::Home), "premise: Home is on top");
+        w
+    }
+
+    /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
+    /// over the same scripted plex.tv, settled.
+    pub(super) fn detail_with_disc(name: &str, hex: [u8; 12]) -> World {
+        let mut w = Self::scripted(name);
+        super::show_page(&mut w.d, AppArg::Home);
+        w.frames(20);
+        // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
+        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+            sid: plx_plex::plex::ServerId::UNSET,
+            rk: "movie".into(),
+            kind: "movie".into(),
+            guid: format!("plex://movie/{}", plx_data::watchlist::encode_hex(&hex)),
+            ..Default::default()
+        }));
+        super::nav_push_with_return(&mut w.d, detail_arg("movie"), Default::default());
+        w.frames(60);
+        assert!(w.on(&detail_arg("movie")), "premise: the Detail page is on top");
+        w
+    }
+
+    /// Home over a scripted plex.tv of forty titles, the disc feeds included.
+    fn scripted(name: &str) -> World {
+        let (serial, session) = Self::lock(name);
+        let script = super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>());
+        let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
+        World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
+            script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
+                bridge.watchlist_for_test().pump();
+                bridge.watchlist_feed(d);
+                bridge.catalog_feed(d);
+            }) }
+    }
+
+    /// The writes the scripted plex.tv was sent, in order (`(catalog id, Add | Remove)`).
+    pub(super) fn writes(&self) -> Vec<([u8; 12], plx_data::watchlist::ledger::Intent)> {
+        self.script.as_ref().expect("a world over a scripted plex.tv").writes()
     }
 
     /// One frame with `inputs`, then the requests it raised, performed. What the pump did is kept
