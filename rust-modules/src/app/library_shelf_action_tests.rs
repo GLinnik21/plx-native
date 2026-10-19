@@ -9,27 +9,6 @@ use super::test_support::{frame};
 /// The page the Library header's Recommended control pushes; the hubs are its rows.
 const RECOMMENDED: AppArg = AppArg::LibraryRecommended { section: 0 };
 
-/// `Bridge::library_selection` for the Recommended page (that one answers only the full grid).
-fn recommended_selection(
-    rig: &Bridge,
-    d: &Dispatcher<AppHost>,
-    entry: EntryId,
-    focus: Option<FocusKey<u32>>,
-) -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-    let e = d.nav.entry(entry).filter(|e| e.arg == RECOMMENDED)?;
-    let screen = &e.inst.as_ref()?.screen;
-    let parts = CxParts {
-        tick: Tick::default(),
-        press: Default::default(),
-        focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() },
-        owner: InputOwner::Entry(entry),
-    };
-    let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
-    let card = screen.focused_card(&cx, focus, Some(At::Drawn))?;
-    let item = card.item.downcast_ref::<plx_data::pms::PmsMovie>()?.clone();
-    Some((item, plx_ui::popover::Opener { rect: Some(card.rest_rect?), ..plx_ui::popover::Opener::NONE }))
-}
-
 #[test]
 fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
     let _guard = plx_base::testlock::serial();
@@ -110,7 +89,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             ("shelf", row, 1)
         );
         let key = d.focus().unwrap();
-        let (item, _) = recommended_selection(&rig, &d, key.entry, Some(key)).unwrap();
+        let (item, _) = rig.library_selection(&d, key.entry, Some(key)).unwrap();
         assert_eq!(item.kind, 3);
         assert!(item.rk.ends_with("-1"), "not the first card: {}", item.rk);
         let key_input = |edge, n| {
@@ -170,7 +149,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 &rig.measure,
             );
             let placed = page.place(&key.elem, &cx, At::Drawn).unwrap();
-            let (selected, opener) = recommended_selection(&rig, &d, key.entry, Some(key)).unwrap();
+            let (selected, opener) = rig.library_selection(&d, key.entry, Some(key)).unwrap();
             assert_eq!(
                 (selected.sid, selected.rk.as_str()),
                 (item.sid, item.rk.as_str())
@@ -211,7 +190,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         );
         assert_eq!(requests[0].2.focus, Some(key));
         let (selected, opener) =
-            recommended_selection(&rig, &d, key.entry, requests[0].2.focus).unwrap();
+            rig.library_selection(&d, key.entry, requests[0].2.focus).unwrap();
         assert_eq!((selected.sid, selected.rk), (item.sid, item.rk));
         assert!(opener.rect.is_some());
         frame(
