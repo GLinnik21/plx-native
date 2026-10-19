@@ -155,9 +155,12 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
     fn name(&self) -> &'static str;
     /// **How far the page has tucked the app's top chrome away** (the nav tab bar and the profile
-    /// chip), 0 (fully shown, the default) to 1 (gone). The application's `draw_chrome` multiplies
-    /// the nav's chrome alpha by `1 - tuck` ([`NavPresentation::tucked`]); the band fades in place and
-    /// does not travel (at tuck 1 it is gone, so a lift would add nothing to see). A page
+    /// chip), 0 (fully shown, the default) to 1 (gone). The dispatcher hands the chrome pass
+    /// [`NavPresentation::tucked`]: the nav's chrome alpha multiplied by `1 - tuck`, and the band
+    /// lifted by [`chrome_lift`] (up to its own height, [`widgets::TOP_BAR_BOTTOM`]), so it fades
+    /// WHILE it travels up off the top edge; the application's `draw_chrome` applies both. At tuck 1
+    /// the band is gone and the dispatcher does not draw it at all (a band at `chrome_alpha` 0
+    /// declares no glass and samples no ground, whatever the lift). A page
     /// answers from state it already animates (the Library derives it from its scroll spring), so
     /// it needs no motion of its own and a resting page keeps the frame loop asleep.
     fn chrome_tuck(&self) -> f32 {

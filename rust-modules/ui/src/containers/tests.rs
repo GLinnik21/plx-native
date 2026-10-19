@@ -1846,6 +1846,44 @@ fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
     assert_eq!(rig.chrome_draws, chrome + 1, "chrome is outside the captured page");
 }
 
+/// **A fully tucked chrome band declares nothing by RULE, not by geometry.** The Library lifts a
+/// tucked bar off canvas ([`crate::screen::chrome_lift`]) and `surface_with` clips what is off
+/// canvas away, so it declared no glass at tuck 1 only because of where the lift put it; the track
+/// still ran its draw (a `sample_ground` framebuffer copy and a glass declaration) at alpha 0.
+/// Were the lift removed (it once was, as "unused") the invisible bar would go on sourcing every
+/// scrolled frame. The dispatcher therefore draws no chrome at `chrome_alpha` 0, whatever the lift.
+///
+/// This is a FIXTURE frame, not a Library frame: `Bridge::draw_chrome` cannot run on a host (it
+/// measures real text with no font loaded), so `FixtureRig::chrome_glass` stands the bar's track
+/// in at its REST rect and ignores `chrome_lift`: the lift forced to 0.
+#[test]
+fn a_fully_tucked_chrome_band_is_not_drawn_at_all() {
+    use crate::frame::backdrop::{self, Z};
+    use crate::frame::glass::GlassPlan;
+    let _guard = plx_base::testlock::serial();
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (mut d, mut rig, _) = booted();
+    rig.chrome_glass = true;
+    let frame = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tuck: f32| -> (usize, Vec<Z>) {
+        let entry = d.nav.tabs.stack.top_mut().expect("the booted page");
+        let page = entry.inst.as_mut().expect("mounted").screen.as_any_mut().expect("fixture page");
+        page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = tuck;
+        let before = rig.chrome_draws;
+        let mut glass = GlassPlan::new();
+        glass.sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = backdrop::discover(glass.sources.clone());
+            d.draw_with_glass_below(rig, &mut glass, true, Z::ALL);
+        }
+        glass.sources.borrow_mut().resolve();
+        let bands = glass.sources.borrow().entries.keys().copied().collect();
+        (rig.chrome_draws - before, bands)
+    };
+    assert_eq!(frame(&mut d, &mut rig, 0.0), (1, vec![Z::CHROME]), "an untucked bar draws and declares its glass");
+    assert_eq!(frame(&mut d, &mut rig, 0.5), (1, vec![Z::CHROME]), "a half-tucked bar is still on screen");
+    assert_eq!(frame(&mut d, &mut rig, 1.0), (0, vec![]), "a fully tucked bar is not drawn: no glass, no entry");
+}
+
 #[test]
 fn frozen_dispatch_in_reuses_the_floor_capture() {
     let _guard = plx_base::testlock::serial();
