@@ -96,3 +96,42 @@ fn every_page_arrives_in_its_content() {
     }
     assert!(fails.is_empty(), "{} pages do not arrive in their content:\n{}", fails.len(), fails.join("\n"));
 }
+
+/// **Up then Down is a round trip** (design review S2, routes.md R3): from a cell off the first
+/// column, Up reaches the header, Left and Right walk along it, and Down returns to the cell Up
+/// left from, not to the one projected under the stop the walk ended on. The pages are the four
+/// that wear the tab bar; the seat is declared once for them in `PageRegions`.
+const ROUND_TRIP: [&str; 4] = ["library, one library", "collections", "recommended", "watchlist"];
+
+#[test]
+fn up_then_down_is_a_round_trip_on_every_page() {
+    let mut fails = Vec::new();
+    let mut seen = 0;
+    for row in ROWS.iter().filter(|row| ROUND_TRIP.contains(&row.name)) {
+        let mut w = (row.mount)();
+        seen += 1;
+        // A cell off the first column, and one row down where the page has rows.
+        for key in [Key::Right, Key::Right, Key::Right, Key::Down] { w.press(key); }
+        if region(&w) != "content" { fails.push(format!("{}: premise: the walk left the content", row.name)); continue; }
+        // Up until the header, remembering the last content cell on the way.
+        let mut last = w.elem();
+        for _ in 0..8 {
+            if region(&w) == "header" { break; }
+            last = w.elem();
+            w.press(Key::Up);
+        }
+        if region(&w) != "header" { fails.push(format!("{}: premise: Up never reached the header", row.name)); continue; }
+        // Walk along the header: to its far end and back one stop, so the stop is not the entry's.
+        let entry = w.elem();
+        for _ in 0..8 { w.press(Key::Right); }
+        w.press(Key::Left);
+        if w.elem() == entry && region(&w) == "header" { w.press(Key::Left); }
+        if region(&w) != "header" { fails.push(format!("{}: premise: the walk left the header", row.name)); continue; }
+        w.press(Key::Down);
+        if w.elem() != last {
+            fails.push(format!("{}: Down from the header landed on {:?}, not on the cell Up left from ({last:?})", row.name, w.elem()));
+        }
+    }
+    assert_eq!(seen, ROUND_TRIP.len());
+    assert!(fails.is_empty(), "{} pages do not return to the remembered cell:\n{}", fails.len(), fails.join("\n"));
+}
