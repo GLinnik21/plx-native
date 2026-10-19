@@ -60,6 +60,27 @@ pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing
     isz + gap + measure.width(label, sz, true) + tgap + tsz + plx_ui::widgets::BTN_PILL_AIR
 }
 
+/// **The one verb for the Play control: "Resume" when the title has a resume point, else "Play".**
+/// The Home hero's pill, the Detail hero's pill and the card menu's first row all say it through
+/// this function (and [`play_text`]), so one resume point can never be called "Continue" on one
+/// page and "Resume" on the next.
+pub fn play_label(resumes: bool) -> &'static CStr {
+    if resumes {
+        plx_platform::i18n::msg::browse_detail_resume_c()
+    } else {
+        plx_platform::i18n::msg::browse_detail_play_c()
+    }
+}
+
+/// [`play_label`] as text, for the rows that take a `&str`.
+pub fn play_text(resumes: bool) -> &'static str {
+    if resumes {
+        plx_platform::i18n::msg::browse_detail_resume()
+    } else {
+        plx_platform::i18n::msg::browse_detail_play()
+    }
+}
+
 /// Every measured width the Detail row's accumulation needs, as one value.
 #[derive(Clone, Copy, Debug)]
 pub struct HeroWidths {

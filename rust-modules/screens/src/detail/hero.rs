@@ -357,11 +357,7 @@ pub fn trailer_play(d: &Detail) -> Option<(&Extra, &str)> {
 
 /// The Play pill's label — the word the press will actually perform.
 pub fn hero_pill_label(has_restart: bool) -> &'static CStr {
-    if has_restart {
-        plx_platform::i18n::msg::browse_detail_resume_c()
-    } else {
-        plx_platform::i18n::msg::browse_detail_play_c()
-    }
+    plx_appkit::hero_layout::play_label(has_restart)
 }
 
 pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {

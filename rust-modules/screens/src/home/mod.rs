@@ -1954,7 +1954,7 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
         let mark_d = HERO_PAGER_D.round();
         let mark = Rect::new(
@@ -2750,7 +2750,7 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let rects = hero_rects(measure, hero, label);
         match index {
             0 => Some(rects.play),
