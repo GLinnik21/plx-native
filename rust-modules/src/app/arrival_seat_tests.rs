@@ -135,3 +135,37 @@ fn up_then_down_is_a_round_trip_on_every_page() {
     assert_eq!(seen, ROUND_TRIP.len());
     assert!(fails.is_empty(), "{} pages do not return to the remembered cell:\n{}", fails.len(), fails.join("\n"));
 }
+
+/// The Collections page opened with OK on the Library header's control, its listing NOT answered:
+/// the frames after the press run with the page dissolved in and nothing to show yet.
+fn collections_awaiting_its_listing(name: &str) -> World {
+    let mut w = World::movies_library(name, false);
+    w.walk_header_to(8);
+    w.tap(Key::Ok, 0);
+    w.frames(90);
+    assert!(w.on(&AppArg::LibraryCollections { section: 0 }), "premise: the Collections page is on top");
+    w
+}
+
+/// **A listing that lands after the page has dissolved in lifts its first poster, it does not pop
+/// it** (the late seat is the standard focus-lift spring from rest, as the dissolve's last frame
+/// starts it): frame by frame from the frame the poster is seated, the drawn lift is below its full
+/// scale and rises monotonically to it. It used to adopt the lift whole, the focus mark appearing in
+/// one frame.
+#[test]
+fn a_listing_that_lands_after_the_dissolve_lifts_its_first_poster_from_rest() {
+    let mut w = collections_awaiting_its_listing("late-lift");
+    w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
+    let mut lift = Vec::new();
+    for _ in 0..90 {
+        w.frames(1);
+        let seated = w.library().probe_viewport(w.focus()).0 == "grid";
+        let scale = w.library().probe_arrival(w.focus()).1;
+        if seated || !lift.is_empty() { lift.push(scale); }
+    }
+    assert!(!lift.is_empty(), "premise: the first poster was seated once the listing landed");
+    let full = *lift.last().unwrap();
+    assert!(full > 1.02, "premise: the seated poster ends lifted: {full}");
+    assert!(lift[0] < 1.0 + (full - 1.0) * 0.5, "the lift is adopted whole on the frame the listing lands: {} of {full}: {lift:?}", lift[0]);
+    assert!(lift.windows(2).all(|pair| pair[1] >= pair[0] - 1e-4), "the lift is not a monotone rise: {lift:?}");
+}
