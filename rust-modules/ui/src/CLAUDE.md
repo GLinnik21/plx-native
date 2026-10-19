@@ -110,7 +110,7 @@ The `Grid` asks for its FOCUSED card's art first even though that card paints la
 neighbours): the source serves the newest frame's requests in the order they were made, so a seated
 first poster used to arrive after every sibling (`card_row::lead_focused` resolves it once, before
 the others, and `draw_focused_led` draws with that answer; one `card_motion` occurrence per card per
-frame, never a second `resolve_card_art`). A `Shelf` still asks in paint order.
+walk, never a second `resolve_card_art`). A `Shelf` still asks in paint order.
 
 A `Shelf` built with `animate_landings(true)` (Home's Continue Watching row) PLAYS a landing that no
 move announced instead of cutting it (`cards/landing.rs`): a removed card fades out as a ghost, named by its
@@ -738,6 +738,12 @@ texture arrives after it drew a skeleton (`card_motion::Scope::arrival`, the car
 (exempt: the picture is here) on the page fade's own duration and curve (`xfade::arrived`); art that
 was resident at the card's first draw shows whole. The count must not include that sheet, or a frame
 dump (which holds on any counted placeholder at a frozen clock) would never write the dissolve's frame.
+**The history advances once per card per frame, whatever the number of walks**: the frame's first walk
+that draws a card (discovery) works its verdict and art phase out, and every later walk (a glass source
+replay, the visible walk) reuses that answer, so the picture a glass filters is the picture the panel
+shows (`card_motion` module docs; `backdrop::walk_serial` names the walk). Keyed by the draw's place in
+the whole frame, a replay that started with the landing moved the visible draw to an occurrence with no
+history, and the art showed whole in one frame (DEBUG-5).
 
 **The count is zero or non-zero, never "how many"**: the page closure runs once per walk (discovery,
 each blur source job, the visible pass) and each walk ticks. **A page shown as a held image** (a

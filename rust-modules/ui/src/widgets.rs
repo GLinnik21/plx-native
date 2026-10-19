@@ -709,11 +709,12 @@ impl ArtImage {
 /// host admission tests. The same final rect then goes to the card composite below.
 /// Text-only prewarming neither observes placement nor starts image work.
 ///
-/// **One call per card per frame.** It opens the card's motion scope (`card_motion::Scope::card`),
-/// which counts a second call for the same art as a second occurrence of the card with a history
-/// of its own. A caller that must ask earlier than it paints (the grid's focused card, painted
-/// last but asked first, [`lead_card_art`]) resolves here once and hands the result to
-/// [`card_named_led`], never calls this twice.
+/// **One call per card per walk.** It opens the card's motion scope (`card_motion::Scope::card`),
+/// which counts a second call for the same art in the same walk as a second occurrence of the card
+/// with a history of its own (the page's other walks of the frame reuse the first walk's answer).
+/// A caller that must ask earlier than it paints (the grid's focused card, painted last but asked
+/// first, [`lead_card_art`]) resolves here once and hands the result to [`card_named_led`], never
+/// calls this twice.
 pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> ArtImage {
     if p.is_recording() { return ArtImage::NONE; }
     let admission = art.motion_identity()

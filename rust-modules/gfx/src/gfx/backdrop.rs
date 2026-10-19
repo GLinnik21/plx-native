@@ -15,6 +15,11 @@
 //! glass keeps the wash it was captured under in its source and takes `wash now - wash captured`
 //! at composite ([`deferred_ground`]), so an easing wash re-blurs nothing until it settles.
 //!
+//! One frame draws the page in several WALKS (the discovery walk, one replay per stale source, the
+//! visible walk), and [`walk_serial`] names the one that is drawing: new for every [`enter`] /
+//! [`discover`], and restored with the walk when a nested walk's [`Scope`] drops. Render history
+//! that is advanced once per frame and read by every walk (`ui::card_motion`) keys on it.
+//!
 //! This file lived at `ui/frame/backdrop.rs` and moved under `gfx` (module-layers step L5): `gfx`
 //! reads and writes this walk state from its clip, clear, glass and capture paths, and the `gfx`
 //! layer may not name `ui`. `ui::frame` re-exports it as `ui::frame::backdrop`, so the frame, the
@@ -1182,6 +1187,9 @@ impl Sources {
 
 #[derive(Clone)]
 struct Walk {
+    /// Which walk this is, from [`walk_serial`]'s counter; a [`Scope`] that restores the walk
+    /// restores this too.
+    id: u64,
     sources: Rc<RefCell<Sources>>,
     ceiling: Z,
     layer: Z,
@@ -1195,6 +1203,17 @@ struct Walk {
     snapshots: Rc<RefCell<std::collections::BTreeSet<Z>>>,
 }
 thread_local! { static WALK: RefCell<Option<Walk>> = const { RefCell::new(None) }; }
+thread_local! { static WALKS_ENTERED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+/// **Which walk of the page is drawing**: a number that is new for every [`enter`] (and so every
+/// [`discover`]) and comes back with the walk when a nested [`Scope`] drops, so it names the walk
+/// and not "the latest one entered". The application draws the page several times a frame (the
+/// discovery walk, a replay per stale glass source, the visible walk, and the visible walk is
+/// entered FIRST and resumed after the others); a consumer that keeps per-frame history by draw
+/// order (`ui::card_motion`) reads this to tell "this walk drew the card again" from "another walk
+/// drew the same card". `0` while no walk is active.
+pub fn walk_serial() -> u64 {
+    WALK.with(|w| w.borrow().as_ref().map_or(0, |w| w.id))
+}
 /// RAII also covers a screen's caught panic: no source ceiling leaks into a visible pass.
 pub struct Scope(Option<Walk>);
 impl Drop for Scope {
@@ -1203,8 +1222,13 @@ impl Drop for Scope {
     }
 }
 pub fn enter(sources: Rc<RefCell<Sources>>, ceiling: Z) -> Scope {
+    let id = WALKS_ENTERED.with(|n| {
+        n.set(n.get().wrapping_add(1).max(1));
+        n.get()
+    });
     Scope(WALK.with(|w| {
         w.replace(Some(Walk {
+            id,
             sources,
             ceiling,
             layer: Z::PAGE,
@@ -1728,6 +1752,38 @@ mod tests {
             begin_inline_capture(first.z),
             "retry on the next frame's clean prefix"
         );
+    }
+
+    #[test]
+    fn a_walk_keeps_its_serial_through_nested_walks_and_layers_and_every_walk_has_its_own() {
+        let _guard = plx_base::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        assert_eq!(walk_serial(), 0, "no walk, no serial");
+        let visible = enter(sources.clone(), Z::ALL);
+        let visible_serial = walk_serial();
+        assert_ne!(visible_serial, 0);
+        {
+            let _layer = layer(Z::surface(0), false);
+            assert_eq!(walk_serial(), visible_serial, "a layer is part of its walk");
+        }
+        let discovery_serial = {
+            let _discovery = discover(sources.clone());
+            walk_serial()
+        };
+        assert_eq!(walk_serial(), visible_serial, "the walk that was entered first is back");
+        let replay_serial = {
+            let _replay = enter(sources.clone(), Z::CHROME);
+            walk_serial()
+        };
+        assert_eq!(walk_serial(), visible_serial, "and again after a source replay");
+        assert!(
+            visible_serial != discovery_serial
+                && visible_serial != replay_serial
+                && discovery_serial != replay_serial,
+            "each walk is its own: {visible_serial} {discovery_serial} {replay_serial}"
+        );
+        drop(visible);
+        assert_eq!(walk_serial(), 0);
     }
 
     #[test]
