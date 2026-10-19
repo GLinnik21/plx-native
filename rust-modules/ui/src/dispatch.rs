@@ -1575,7 +1575,15 @@ where
                         drop(page_cx);
                         let _chrome_layer = backdrop::layer(Z::CHROME, true);
                         let navigation = navigation.tucked(inst.screen.chrome_tuck());
-                        backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                        // **A band that is fully faded is not drawn: by rule, not by where the lift
+                        // put it.** The tuck lifts the bar off canvas, which clips its glass away,
+                        // but its draw still queued `sample_ground` framebuffer copies and a glass
+                        // declaration at alpha 0; with the lift gone it would source every scrolled
+                        // frame, invisibly. The stops below stay published: they are the strip's
+                        // geometry, not its paint.
+                        if navigation.chrome_alpha > 0.0 {
+                            backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                        }
                     }
                 }
             }

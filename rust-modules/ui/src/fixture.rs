@@ -333,6 +333,9 @@ pub struct FixtureScreen {
     /// The element this page says is departing (`Screen::opener_departing`): a removed card it
     /// still draws as it goes.
     pub departing: Option<u32>,
+    /// How far this page answers that it has tucked the top chrome away (`Screen::chrome_tuck`);
+    /// 0 for every page until a test sets it.
+    pub tuck: f32,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -484,6 +487,9 @@ impl Screen<FixtureHost> for FixtureScreen {
     }
     fn strip_reachable(&self) -> bool {
         self.arg != FixtureArg::Snapped
+    }
+    fn chrome_tuck(&self) -> f32 {
+        self.tuck
     }
     fn focus_source(&self) -> super::screen::FocusSource {
         if self.arg == FixtureArg::Legacy {
@@ -652,7 +658,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None, tuck: 0.0,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -940,7 +946,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None, tuck: 0.0,
         })
     }
 }
@@ -1011,6 +1017,10 @@ pub struct FixtureRig {
     pub page_alpha: f32,
     pub chrome_alpha: f32,
     pub chrome_draws: usize,
+    /// Make [`Rig::draw_chrome`] declare ONE live glass at the bar's REST rect, at the nav's
+    /// `chrome_alpha` and whatever its `chrome_lift` says: the shared bar's track, as a tucked
+    /// page with the lift forced to 0 would leave it.
+    pub chrome_glass: bool,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
     pub navigation_reads: std::cell::Cell<usize>,
@@ -1038,6 +1048,7 @@ impl FixtureRig {
             page_alpha: 1.0,
             chrome_alpha: 1.0,
             chrome_draws: 0,
+            chrome_glass: false,
             view_tab: None,
             blur_amount: 0.0,
             navigation_reads: std::cell::Cell::new(0),
@@ -1079,8 +1090,26 @@ impl Rig<FixtureHost> for FixtureRig {
         }
     }
     fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,
-        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
+        nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
         self.chrome_draws += 1;
+        if self.chrome_glass {
+            let track = super::Rect::new(
+                600.0,
+                super::widgets::TOP_BAR_Y - super::widgets::TAB_TRACK_PAD,
+                720.0,
+                super::widgets::TAB_PILL_H + 2.0 * super::widgets::TAB_TRACK_PAD,
+            );
+            let _declared = super::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
+                super::Painter::root().alpha(nav.chrome_alpha),
+                track,
+                0.0,
+                track.h * 0.5,
+                [1.0; 4],
+                plx_gfx::gfx::GlassRim::Standing,
+                plx_gfx::gfx::GlassFace::NONE,
+                super::theme::Material::UltraThin,
+            );
+        }
     }
     fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
         self.scrim_chrome.then(|| super::widgets::ChromeRead {
