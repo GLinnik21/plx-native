@@ -152,8 +152,8 @@ subprocess and `open` made to raise), so `ci/test_disk_budget.py` feeds it synth
 behind it (then every squash-merged lane reads "unmerged"); with no `origin/main` the local `main` is
 used, and the report's `lanes judged` line says which. A lane is merged if its HEAD is an ancestor, or if
 a three-way `git merge-tree --write-tree` of the two leaves `origin/main`'s own tree. That command
-writes the merged tree, so the report points it at a throwaway object directory with the real one as
-an alternate: no object is added to the repository (git may refresh the mtime of an object that
+writes the merged tree, so the report and `build-gc.sh --worktrees` (which `--auto` runs hourly) point it at a
+throwaway object directory with the real one as an alternate: no object is added to the repository (git may refresh the mtime of an object that
 already exists, which is what "already landed" looks like). Rung 0 additionally requires the lane to
 be clean, not `git worktree lock`ed and idle. A lane with no commits yet also reads merged; that
 costs it a rebuild at worst, and only its derived tree is ever planned, never the worktree.

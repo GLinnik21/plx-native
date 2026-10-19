@@ -750,7 +750,7 @@ def measure(tree: str, incr_roots: Sequence[str]) -> Tuple[int, int, int]:
 def discover_tmp_trees(roots: Sequence[str], skip: Sequence[str]) -> List[str]:
     """Directories carrying a CACHEDIR.TAG at most TMP_DEPTH below a root, as
     `find -maxdepth 4 -name CACHEDIR.TAG` finds them. Registered checkouts are not entered: their trees
-    are enumerated through git."""
+    are enumerated through git. A tagged directory that holds one (or the fleet dir) is not listed."""
     found: List[str] = []
     seen = set()
     skipped = [real(x) for x in skip]
@@ -771,7 +771,11 @@ def discover_tmp_trees(roots: Sequence[str], skip: Sequence[str]) -> List[str]:
             except OSError:
                 continue
             if any(e.name == "CACHEDIR.TAG" for e in entries):
-                found.append(directory)
+                # a tagged tree that HOLDS a registered checkout (or the fleet dir) is not a build tree to
+                # delete: the checkout's source would go with it, and the tracked-file probe cannot see a
+                # repository nested below the tree it is asked about
+                if not any(x.startswith(directory + os.sep) for x in skipped):
+                    found.append(directory)
                 continue
             if depth >= TMP_DEPTH:
                 continue

@@ -392,6 +392,33 @@ class BuildGcTests(unittest.TestCase):
         self.assertEqual(before, (index.read_bytes(), index.stat().st_mtime_ns),
                          "build-gc refreshed a lane's index")
 
+    @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for merge-tree --write-tree")
+    def test_worktrees_squash_check_adds_no_object_to_the_repository(self):
+        # `git merge-tree --write-tree` WRITES the merged tree (and any merged blob) into the object store.
+        # `--worktrees` runs it for every lane that is not an ancestor of origin/main, and `--auto` runs
+        # `--worktrees` hourly: against the real store that is a loose object per unmerged lane per change
+        # of either side, until a `git gc`. The check therefore runs against a throwaway object directory
+        # with the real one as an alternate, as `disk-budget.py` does. The control proves the count moves.
+        fixture = self.fixture(0, 0)
+        repo = fixture[0]
+        lane = self._squash_landed_lane(fixture, "open", landed=False)
+        (repo / "other.txt").write_text("trunk moved on\n")
+        self.git(fixture, repo, "add", "other.txt")
+        self.git(fixture, repo, "commit", "-q", "-m", "trunk moves")
+        self.git(fixture, repo, "push", "-q", "origin", "main")        # the merge now yields a NEW tree
+
+        def loose():
+            out = self.git(fixture, repo, "count-objects", "-v").stdout
+            return int(next(l.split()[1] for l in out.splitlines() if l.startswith("count:")))
+        before = loose()
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertRegex(diagnostic, r"unmerged\s+%s" % lane)         # the squash check did run, and said no
+        self.assertEqual(before, loose(), "build-gc wrote an object into the repository: " + diagnostic)
+        self.git(fixture, lane, "merge-tree", "--write-tree", "origin/main", "open")
+        self.assertGreater(loose(), before, "the control merge-tree wrote nothing: this test cannot fail")
+
     # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
     # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a
     # machine running several sessions at once that condition is essentially always true, so the
@@ -1039,6 +1066,25 @@ class BuildGcTests(unittest.TestCase):
         out = later.stdout + later.stderr
         self.assertEqual(later.returncode, 0, out)
         self.assertFalse(tmp_tree.exists(), out)
+
+    def test_evict_never_takes_a_tmp_tree_that_holds_a_registered_checkout(self):
+        # A cargo tree under /tmp someone made a worktree inside. It is old, ours and unlocked, and git cannot
+        # say it tracks a file (the repository is nested below it): only the checkout list keeps its source.
+        fixture, (lane0, _) = self.evict_fixture()
+        env = fixture[1]
+        holder = self.make_tree(Path(env["PLX_GC_TMP_ROOTS"]) / "cargo-target-holder")
+        (holder / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+        (holder / "debug/deps").mkdir(parents=True)
+        (holder / "debug/deps/plxnative_modules-0123456789abcdef.d").write_text("ours\n")
+        nested = holder / "nested-lane"
+        self.git(fixture, fixture[0], "worktree", "add", "-q", "-b", "nested-lane", str(nested))
+        plan = self.write_plan(fixture, [("evict", 0, "tree", 8, "-", 1440, "normal", holder)])
+        result = self.run_evict(fixture, plan, extra_env={"PLX_GC_TEST_NOW": str(time.time() + 3 * 86400)})
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("REFUSED", out)
+        self.assertTrue((nested / "README").exists(), "deleted a registered checkout's source: " + out)
+        self.assertTrue((holder / "CACHEDIR.TAG").exists(), out)
 
     def test_evict_stops_once_free_space_is_back_over_the_plans_goal(self):
         fixture, (lane0, lane1) = self.evict_fixture()

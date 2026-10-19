@@ -724,6 +724,17 @@ class Inventory(Repo):
         write(os.path.join(top, "debug", "nested", "CACHEDIR.TAG"), 4)
         self.assertEqual(db.discover_tmp_trees([self.tmpr], []), [top])
 
+    def test_a_tagged_tree_that_holds_a_checkout_is_not_a_tmp_tree(self):
+        # Discovery never ENTERS a registered checkout, but a CACHEDIR.TAG directory ABOVE one (a target dir
+        # someone made a worktree inside) would be listed, and deleting it would delete the checkout: the git
+        # tracked-file probe cannot see a repository nested below the tree it is asked about.
+        holder = os.path.join(self.tmpr, "holder")
+        cargo_tree(holder)
+        checkout = os.path.join(holder, "lane")
+        os.makedirs(checkout)
+        self.assertEqual(db.discover_tmp_trees([self.tmpr], []), [holder])
+        self.assertEqual(db.discover_tmp_trees([self.tmpr], [checkout]), [])
+
     @unittest.skipUnless(git_has_merge_tree(), "needs git >= 2.38 for the squash check")
     def test_collect_classifies_every_kind_and_writes_nothing(self):
         merged = self.lane("merged-lane", {"m.txt": "m"})

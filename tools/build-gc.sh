@@ -31,11 +31,13 @@
 # otherwise); it never takes the main checkout's `target` itself.
 set -eu
 
-# NO GIT CALL HERE MAY WRITE. `git status` refreshes (rewrites) a worktree's index when a tracked
-# file's stat data went stale, unless it is told the lock is optional: this script runs `status`
-# in every lane it considers (`--worktrees`, and the inventory `--evict`'s plans come from), and a "report" that rewrites a
-# lane's index races that lane's own `git add`. Exported so every git child, including the ones
-# `tools/disk-budget.py` starts, inherits it.
+# NO GIT CALL HERE MAY WRITE A LANE'S INDEX OR THE REPOSITORY'S OBJECT STORE. `git status` refreshes
+# (rewrites) a worktree's index when a tracked file's stat data went stale, unless it is told the lock
+# is optional: this script runs `status` in every lane it considers (`--worktrees`, and the inventory
+# `--evict`'s plans come from), and a "report" that rewrites a lane's index races that lane's own
+# `git add`. Exported so every git child, including the ones `tools/disk-budget.py` starts, inherits
+# it. (`merge-tree --write-tree` writes objects, not the index: `worktree_reason` points it at a
+# throwaway object directory.)
 GIT_OPTIONAL_LOCKS=0
 export GIT_OPTIONAL_LOCKS
 
@@ -1156,7 +1158,17 @@ worktree_reason() {
   # detached or not — goes through the squash check: three-way merge the base with `$_sha` and
   # compare the resulting tree to the base's own. No conflicts and no difference means every byte
   # the lane ever added is already on trunk, whether that arrived by squash-merge or by hand.
-  _mt=$(git -C "$_w" merge-tree --write-tree "$BASE_REF" "$_sha" 2>/dev/null) || { echo unmerged; return; }
+  # `merge-tree --write-tree` WRITES the merged tree (and any merged blob) into the object store, and
+  # this runs for every lane that is not an ancestor, on every `--worktrees` and so every hourly
+  # `--auto`: against the real store that is a loose object per unmerged lane per change on either
+  # side, kept until a `git gc`. So it runs against a throwaway object directory with the real one as
+  # an alternate to read from (`tools/disk-budget.py`'s `is_merged` does the same). The tree id it
+  # prints is all that is kept.
+  _objs=$(git -C "$_w" rev-parse --path-format=absolute --git-path objects 2>/dev/null) || { echo unmerged; return; }
+  _scratch=$(mktemp -d "${TMPDIR:-/tmp}/plx-build-gc-merge.XXXXXX" 2>/dev/null) || { echo unmerged; return; }
+  _mt=$(GIT_OBJECT_DIRECTORY=$_scratch GIT_ALTERNATE_OBJECT_DIRECTORIES=$_objs \
+        git -C "$_w" merge-tree --write-tree "$BASE_REF" "$_sha" 2>/dev/null) || { rm -rf "$_scratch"; echo unmerged; return; }
+  rm -rf "$_scratch"
   _mt=$(printf '%s\n' "$_mt" | head -1)
   _maintree=$(git -C "$MAIN" rev-parse "$BASE_REF^{tree}" 2>/dev/null)
   if [ -n "$_mt" ] && [ "$_mt" = "$_maintree" ]; then echo ""; else echo unmerged; fi
@@ -1496,7 +1508,8 @@ run_evict_mode() {
       *) ev_refuse "$_k_path" "unknown plan line '$_kind'" ;;
     esac
   done 3< "$PLAN_FILE"
-  echo "evict: $EV_DONE removed (~$(fmt_kb "$EV_FREED_KIB") by estimate), $EV_SKIPPED skipped, $EV_REFUSED refused"
+  if [ -n "$DRY" ]; then _verb="would be removed"; else _verb=removed; fi
+  echo "evict: $EV_DONE $_verb (~$(fmt_kb "$EV_FREED_KIB") by estimate), $EV_SKIPPED skipped, $EV_REFUSED refused"
   if [ "$EV_REFUSED" -gt 0 ]; then EV_EXIT=1; fi
   if [ -z "$DRY" ]; then
     _after=$(free_kib); _after=${_after:-0}
