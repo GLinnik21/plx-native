@@ -1742,6 +1742,50 @@ fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {
     assert_eq!(lifted(&r), 0);
 }
 
+/// **A dormant seat's caption opens with the lift, not under the dissolve.** A caption is its
+/// band's content (alpha = the band's expansion, `card_row::band_fade`), and a dormant grid keeps
+/// the focused tile at rest: with the band settled open, the details line stood at full strength
+/// under a tile that had not begun to lift (Library arrival, frames 19-25 of 46 measured in the
+/// simulator). The band of a seat nobody has lifted yet is shut; it opens on the same frames the
+/// lift runs, a Down's way.
+#[test]
+fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
+    let cols = poster_grid::COLS;
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = Rig::<Grid>::new(4 * cols);
+    r.src.captioned = true;
+    r.sect.set_caption_policy(crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: crate::caption_policy::DetailsKind::YearLength,
+    });
+    r.run(2);
+    // the caption of card 0 on the frame the grid last drew
+    let caption = |r: &Rig<Grid>| -> f32 {
+        let cx = r.cx();
+        let f = DrawFrame::new(&cx, Painter::root());
+        r.sect.caption_probe(&f, f.painter, &r.src).iter().filter(|(i, _)| *i == 0).map(|(_, a)| *a).sum()
+    };
+    r.sect.dormant(true);
+    r.land_focus(100, By::Restore);
+    for frame in 0..30 {
+        r.run(1);
+        assert_eq!(r.scale(100), Some(1.0), "no lift under the fade, frame {frame}");
+        assert_eq!(caption(&r), 0.0, "a caption under a tile that has not lifted, frame {frame}");
+    }
+    r.sect.dormant(false);
+    // (caption alpha, lift progress 0..1) on each awake frame
+    let trace: Vec<(f32, f32)> = (0..80).map(|_| {
+        r.run(1);
+        (caption(&r), (r.scale(100).unwrap() - 1.0) / (full - 1.0))
+    }).collect();
+    let early: Vec<_> = trace.iter().enumerate().filter(|(_, (alpha, lift))| *alpha > 0.0 && *lift <= 0.0).collect();
+    assert!(early.is_empty(), "a caption on a frame the tile is still at rest: {early:?}");
+    let (first, lift) = trace[0];
+    assert!(first > 0.0 && first < 0.5 && lift > 0.0 && lift < 0.5, "the caption and the lift start together, from nothing: caption {first}, lift {lift}");
+    assert!(trace.windows(2).all(|w| w[1].0 >= w[0].0 - 1e-4), "the caption does not open monotonically: {trace:?}");
+    assert!((trace[79].0 - 1.0).abs() < 0.01 && (trace[79].1 - 1.0).abs() < 0.01, "caption and lift both end full: {:?}", trace[79]);
+}
+
 /// A lifted card that goes dormant lets go over frames and ends parked exactly at rest.
 #[test]
 fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
