@@ -135,7 +135,7 @@ fn parse_type(v: &str) -> Option<LibTypeArm> {
 
 /// The Library family of routes: the full grid and the two pages its header pushes over it.
 fn on_library_page(app: &App) -> bool {
-    matches!(app.route(), AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. })
+    app.route().is_library_family()
 }
 
 /// `/tmp/plxnative-libtype=<movies|shows|seasons|episodes|collections|recommended>` — on the

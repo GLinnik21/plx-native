@@ -1772,6 +1772,15 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
+impl AppArg {
+    /// Is this one of the library screen's three routes: the full grid and the two pages its header
+    /// pushes over it (Collections, Recommended)? They are all the one `LibraryScreen` family, so a
+    /// request or a command addressed to "the library" is answered on any of them.
+    pub fn is_library_family(&self) -> bool {
+        matches!(self, AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. })
+    }
+}
+
 pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\

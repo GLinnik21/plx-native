@@ -725,8 +725,7 @@ impl Bridge {
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library screen: a card pressed on any of them is read from the same place.
-        let e = d.nav.entry(entry).filter(|e| matches!(e.arg,
-            AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. }))?;
+        let e = d.nav.entry(entry).filter(|e| e.arg.is_library_family())?;
         let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
@@ -749,7 +748,7 @@ impl Bridge {
             }
         }
         let Some(entry) = d.nav.top_page() else { return };
-        if entry.arg != AppArg::Library { return; }
+        if !entry.arg.is_library_family() { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));

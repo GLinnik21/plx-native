@@ -889,8 +889,7 @@ fn library_requests(app: &mut App, now: u32) {
         }
         // The full grid and the two pages its header pushes (Collections, Recommended) are all the
         // library screen, so they answer the same requests.
-        let library_page = matches!(app.route(),
-            AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. });
+        let library_page = app.route().is_library_family();
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !library_page { continue; }
         match request {
             LibraryReq::PublishShelves { .. } => unreachable!(),
