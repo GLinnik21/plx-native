@@ -1,5 +1,5 @@
 //! Sort & Filter state, summary, the glass menu's morph wiring, the header and the read-outs.
-use super::super::header::{self, Count, HeaderFace};
+use super::super::header::{self, Count};
 use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
@@ -86,21 +86,20 @@ fn the_summary_is_default_until_something_changes_then_lists_the_changes_in_sect
 }
 
 #[test]
-fn the_pill_text_is_the_catalogs_sentence_split_at_the_label() {
+fn the_control_reads_label_dot_value_with_both_regular() {
     let _g = language_on_this_thread_for_test(Preference::En);
-    let frame = header::header_frame(1771.0);
-    let r = header::pill_rect(frame, &FixtureMeasure, "Default");
-    // "Sort & Filter" + " · Default" measured as the chip measures them.
-    let w = plx_ui::value_chip::ValueChip::width(&FixtureMeasure, c"Sort & Filter", c" · Default", None);
-    assert_eq!(r.w, w);
+    let row = header::Row::new(&FixtureMeasure, "Default", None);
+    let log = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, false, false));
+    // title, then the control's label, separator and value: every run at the regular weight.
+    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 4);
+    assert_eq!(plx_platform::i18n::msg::watchlist_page_sort_filter(), "Sort & Filter");
 }
 
 // ---- the menu: glass ground, morph, geometry ----
 
 fn open_menu() -> (OptionsMenu, Rect, WatchlistOptionsState) {
     let state = default_state();
-    let frame = header::header_frame(1771.0);
-    let pill = header::pill_rect(frame, &ShippedMeasure, &state.summary());
+    let pill = header::Row::new(&ShippedMeasure, &state.summary(), None).pill();
     let mut m = OptionsMenu::new();
     m.open(pill, &state);
     (m, pill, state)
@@ -112,7 +111,8 @@ fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_pan
     assert_eq!(m.popover().open_style(), plx_ui::popover::OpenStyle::Morph);
     let panel = m.panel_rect(&ShippedMeasure);
     let f0 = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
-    assert!(f0.rect.w <= panel.w && f0.rect.h < panel.h, "frame 0 is the pill, not the panel");
+    assert_eq!(f0.rect, pill, "frame 0 is the focused pill (wider than the panel now: the 1.07 plate), not the panel");
+    assert!(f0.rect.h < panel.h);
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
     }
@@ -175,26 +175,25 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
 /// glass never passes through the accent.
 #[test]
 fn a_close_lands_in_the_pill_as_it_will_rest() {
-    use plx_ui::value_chip::ValueChip;
     let (mut m, _, _) = open_menu();
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
     }
-    assert_eq!(m.plate_fill(), ValueChip::fill(true), "open from the focused pill");
+    assert_eq!(m.plate_fill(), header::pill_fill(true), "open from the focused pill");
     m.dismiss();
     for _ in 0..60 {
         m.update(1.0 / 60.0, &ShippedMeasure);
-        assert_eq!(m.plate_fill(), ValueChip::fill(true), "focus returns to the pill: accent throughout");
+        assert_eq!(m.plate_fill(), header::pill_fill(true), "focus returns to the pill: accent throughout");
     }
     let (mut m, _, _) = open_menu();
     for _ in 0..120 {
         m.update(1.0 / 60.0, &ShippedMeasure);
     }
     m.dismiss_resting(false);
-    assert_ne!(ValueChip::fill(false), ValueChip::fill(true), "premise: the two fills differ");
+    assert_ne!(header::pill_fill(false), header::pill_fill(true), "premise: the two fills differ");
     for _ in 0..60 {
         m.update(1.0 / 60.0, &ShippedMeasure);
-        assert_eq!(m.plate_fill(), ValueChip::fill(false), "focus went elsewhere: idle fill, never the accent");
+        assert_eq!(m.plate_fill(), header::pill_fill(false), "focus went elsewhere: a resting control is plain text, never the accent");
     }
 }
 
@@ -209,61 +208,65 @@ fn the_pill_face_still_records_its_label() {
 
 // ---- header ----
 
+/// **The row is the Library's**: container left 76 / right 129, top 148, 56 tall, text edges x 96
+/// and x 1771; the control is right-aligned on the text edge, the title stands on the left edge.
 #[test]
-fn the_pill_is_right_aligned_and_centred_on_the_title_line() {
-    let frame = header::header_frame(1771.0);
-    let r = header::pill_rect(frame, &FixtureMeasure, "Default");
-    assert_eq!(r.x + r.w, frame.x + frame.w);
-    assert_eq!(r.y + r.h * 0.5, header::HEADER_CY);
-    assert_eq!(frame.x, plx_ui::consts::MARGIN_X);
-    assert_eq!(frame.y, 172.0, "board: title top 172");
-    assert_eq!(header::HEADER_CY, 196.0);
+fn the_row_is_the_librarys_geometry() {
+    let row = header::Row::new(&FixtureMeasure, "Default", None);
+    let title = row.title_plate();
+    assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's plate: text at x 96, overhang 20");
+    let plate = row.plate();
+    assert_eq!((plate.y, plate.h), (148.0, 56.0));
+    assert_eq!(plate.x + plate.w, 1771.0 + 20.0, "the control's text ends on x 1771; its plate overhangs");
+    let pill = row.pill();
+    assert_eq!(pill.cy(), plate.cy());
+    assert!((pill.w / plate.w - plx_ui::widgets::CTRL_FOCUS_SCALE).abs() < 1.0e-4, "the focused pill is the plate at 1.07");
+    assert_eq!(header::GRID_RIGHT, 1771.0);
+    assert_eq!(header::HEADER_TOP + header::BLOCK_H, 244.0);
 }
 
-/// **The count sits just left of the pill**: 24 px clear of it, right-aligned there, centred on the
-/// pill's line, LABEL regular; the pill does not move for it.
+/// **A count is a filter read-out and nothing else** (the Library's rule): "6 of 14" while a filter
+/// narrows the list, ahead of the control by the read-out gap, and no "14 titles" at rest.
 #[test]
-fn the_count_hangs_24px_left_of_the_pill_on_its_line() {
-    let frame = header::header_frame(1771.0);
-    let pill = header::pill_rect(frame, &FixtureMeasure, "Default");
-    let c = header::count_rect(frame, &FixtureMeasure, "Default", &Count::All(14).text());
-    assert_eq!(c.x + c.w, pill.x - theme::space::MD);
-    assert_eq!(c.cy(), pill.cy());
-    let face = HeaderFace { title: "Watchlist", count: Some(Count::All(14)), summary: "Default", pill_focused: false };
-    let log = plx_ui::draw_census::capture(|| header::draw_header(plx_ui::Painter::recording(), frame, &FixtureMeasure, &face));
-    let runs = log.iter().filter(|(t, _)| *t == 100).count();
-    assert_eq!(runs, 4, "title, count, and the pill's label and value");
-    let bare = HeaderFace { count: None, ..face };
-    let log = plx_ui::draw_census::capture(|| header::draw_header(plx_ui::Painter::recording(), frame, &FixtureMeasure, &bare));
-    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 3);
-    assert_eq!(header::pill_rect(frame, &FixtureMeasure, "Default"), pill, "the pill is where it was");
+fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
+    let plain = header::Row::new(&FixtureMeasure, "Default", Some(Count::All(14)));
+    assert_eq!(plain.items().len(), 2, "the title and the control: nothing else at rest");
+    let narrowed = header::Row::new(&FixtureMeasure, "Default", Some(Count::Of { shown: 6, total: 14 }));
+    assert_eq!(narrowed.items().len(), 3);
+    let readout = narrowed.items()[1];
+    let control = narrowed.items()[2];
+    assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::READOUT_GAP);
+    assert!(!readout.focusable && control.focusable);
+    assert_eq!(narrowed.plate(), plain.plate(), "the control does not move for the read-out");
+    let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, false, false));
+    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 5);
 }
 
-/// **Copy**: "{n} titles" at Default with real plural forms, "{shown} of {total}" when narrowed.
+/// A lifted control (the Sort & Filter menu is its owner now) is left out of the page's pass, and
+/// the row's scroll offset moves everything with the page.
 #[test]
-fn the_count_reads_in_every_language_with_its_plural_forms() {
-    let want = [
-        ("en", [(1, "1 title"), (2, "2 titles"), (21, "21 titles")], "6 of 14"),
-        ("es", [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
-        ("fr", [(1, "1 titre"), (2, "2 titres"), (21, "21 titres")], "6 sur 14"),
-        ("be", [(1, "1 назва"), (2, "2 назвы"), (21, "21 назва")], "6 з 14"),
-        ("it", [(1, "1 titolo"), (2, "2 titoli"), (21, "21 titoli")], "6 di 14"),
-        ("pt", [(1, "1 título"), (2, "2 títulos"), (21, "21 títulos")], "6 de 14"),
-        ("de", [(1, "1 Titel"), (2, "2 Titel"), (21, "21 Titel")], "6 von 14"),
-        ("hu", [(1, "1 cím"), (2, "2 cím"), (21, "21 cím")], "6 / 14"),
-    ];
-    for lang in SHIPPED {
-        let (_, all, of) = want.iter().find(|row| row.0 == lang.tag()).unwrap_or_else(|| panic!("{lang:?}: no reviewed count row"));
-        let _g = language_on_this_thread_for_test(lang);
-        for (n, text) in all {
-            assert_eq!(Count::All(*n).text(), *text, "{lang:?} {n}");
-        }
-        assert_eq!(Count::Of { shown: 6, total: 14 }.text(), *of);
+fn a_lifted_control_is_left_out_and_the_row_rides_the_scroll() {
+    let row = header::Row::new(&FixtureMeasure, "Default", None);
+    let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, false, lifted));
+    assert_eq!(at(0.0, true).iter().filter(|(t, _)| *t == 100).count(), 1, "the title alone");
+    let (rest, scrolled) = (at(0.0, false), at(-100.0, false));
+    for (a, b) in rest.iter().zip(&scrolled) {
+        assert!((a.1.y - 100.0 - b.1.y).abs() < 1.0e-3);
     }
-    let _g = language_on_this_thread_for_test(Preference::Be);
-    assert_eq!(Count::All(3).text(), "3 назвы");
-    assert_eq!(Count::All(5).text(), "5 назваў");
-    assert_eq!(Count::All(11).text(), "11 назваў");
+}
+
+/// **Copy**: "{shown} of {total}" is the Library's sentence, in every language, grouped as it groups.
+#[test]
+fn the_readout_is_the_librarys_sentence_in_every_language() {
+    for lang in SHIPPED {
+        let _g = language_on_this_thread_for_test(lang);
+        let locale = plx_platform::i18n::current();
+        let want = msg::library_header_filtered_of(&locale.number(1284), &locale.number(2500));
+        assert_eq!(Count::Of { shown: 1284, total: 2500 }.readout(), Some(want), "{lang:?}");
+        assert_eq!(Count::All(14).readout(), None);
+    }
+    let _g = language_on_this_thread_for_test(Preference::En);
+    assert_eq!(Count::Of { shown: 6, total: 14 }.readout().as_deref(), Some("6 of 14"));
 }
 
 // ---- read-outs ----
@@ -323,27 +326,14 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
         long.sort = SortKey::Release;
         long.descending = false;
         long.show = ShowFilter::OnYourServers;
-        let frame = header::header_frame(1771.0);
-        let pill = header::pill_rect(frame, &ShippedMeasure, &long.summary());
-        // The title (tracked), then the longest count (five digits, or "99999 of 99999") and its
-        // 24 px gap to the pill, then the air the title keeps.
-        let title = CString::new(msg::watchlist_page_title()).unwrap();
-        let title_w = plx_machine::machine::Measure::width(&ShippedMeasure, &title, theme::size::DISPLAY, true)
-            + theme::TRACKING_TITLE_TIGHT * title.as_bytes().len() as f32;
-        let title_end = plx_ui::consts::MARGIN_X + title_w + theme::space::LG;
-        let longest = [Count::All(88888), Count::All(11111), Count::All(22222), Count::Of { shown: 88888, total: 88888 }];
-        for count in longest {
-            let c = header::count_rect(frame, &ShippedMeasure, &long.summary(), &count.text());
-            if c.x < title_end {
-                bad.push(format!("{tag} count {:?} ({:.0}px) at x {:.0} runs into the title (needs >= {title_end:.0})", count.text(), c.w, c.x));
+        // The title's plate must end a cluster gap before the right cluster's first text edge, for
+        // the longest summary with the longest read-out in front of it.
+        for count in [Count::All(88888), Count::Of { shown: 88888, total: 88888 }] {
+            let row = header::Row::new(&ShippedMeasure, &long.summary(), Some(count));
+            let (title_end, cluster) = (row.title_plate().x + row.title_plate().w, row.cluster_left());
+            if cluster < title_end + plx_ui::page_header::CLUSTER_GAP {
+                bad.push(format!("{tag} {count:?}: the cluster starts at x {cluster:.0}, the title's plate ends {title_end:.0}"));
             }
-            let def = header::count_rect(frame, &ShippedMeasure, &default_state().summary(), &count.text());
-            if def.x < title_end {
-                bad.push(format!("{tag} count {:?} at the Default pill is at x {:.0}, title ends {title_end:.0}", count.text(), def.x));
-            }
-        }
-        if pill.x < title_end {
-            bad.push(format!("{tag} pill {:.0}px wide runs into the title (needs x >= {title_end:.0}, is {:.0})", pill.w, pill.x));
         }
         // Verdicts: one line inside the page margins; bodies in the reason's two-line slot.
         for r in [Readout::Empty, Readout::Filtered, Readout::NoToken, Readout::Unreachable] {

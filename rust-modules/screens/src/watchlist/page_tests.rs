@@ -26,6 +26,12 @@ const UNPLAYABLE: [TileState; 5] = [
     TileState::Unknown,
 ];
 
+/// The details line the default Under posters policy words for `row` (empty: no line).
+fn default_caption(row: &plx_data::watchlist::model::WatchRow, state: TileState) -> String {
+    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT)
+        .caption.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn screen(n: usize) -> WatchlistScreen {
     WatchlistScreen::new(tiles(n), WatchlistOptionsState::default())
 }
@@ -65,8 +71,7 @@ fn the_verdicts_title_and_pill_fit_in_every_language() {
         // TITLE), not in a stand-in.
         let (verdict_sz, verdict_bold, _) = plx_ui::widgets::StatusOverlay::verdict_face(plx_ui::widgets::StatusKind::Failed);
         let mut lines: Vec<(&str, String, i32, bool)> = vec![
-            ("title", msg::watchlist_page_title().into(), theme::size::DISPLAY, false),
-            ("pill", msg::watchlist_page_sort_filter_summary("Movies & Shows, Release Date"), theme::size::LABEL, false),
+            ("title", msg::watchlist_page_title().into(), theme::size::BODY, false),
         ];
         for r in [Readout::Empty, Readout::Filtered, Readout::NoToken, Readout::Unreachable] {
             lines.push(("verdict", r.verdict().into(), verdict_sz, verdict_bold));
@@ -87,19 +92,19 @@ fn captions_carry_the_state_sentence_with_the_month_date() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     let mut row = super::cards_harness::row(1);
     row.release = Some("2027-03-12".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
     // Q6: coming soon AND matched keeps the clock, so it keeps the date.
-    assert_eq!(caption::caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
-    assert_eq!(caption::caption(&row, TileState::NotOnAnyServer), "Not on your servers");
-    assert_eq!(caption::caption(&row, TileState::ServerOffline), "Server offline");
-    assert_eq!(caption::caption(&row, TileState::Available), "2001");
-    assert_eq!(caption::caption(&row, TileState::Unknown), "2001");
+    assert_eq!(default_caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::NotOnAnyServer), "Not on your servers");
+    assert_eq!(default_caption(&row, TileState::ServerOffline), "Server offline");
+    assert_eq!(default_caption(&row, TileState::Available), "2001");
+    assert_eq!(default_caption(&row, TileState::Unknown), "2001");
     row.release = None;
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.release = Some("soon".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.year = None;
-    assert_eq!(caption::caption(&row, TileState::Available), "");
+    assert_eq!(default_caption(&row, TileState::Available), "");
 }
 
 /// **One mark per tile, and the no-server wash is quieter under focus** (TileStates board).
@@ -292,24 +297,22 @@ fn removing_the_focused_title_leaves_focus_on_a_neighbour() {
     assert!(h.screen.index_of(now).is_some());
 }
 
-/// **The pill's focus ring, hit target and menu anchor are the pill the header draws, and it ends
-/// on the grid's right edge** (not on the screen edge, not 150 px left of it).
+/// **The control's focus ring and hit target are the plate the header draws, and the menu's anchor is
+/// the focused pill over it**; the text ends on the Library's right text edge (x 1771).
 #[test]
-fn the_pill_is_one_rect_for_paint_focus_and_anchor() {
+fn the_control_is_one_rect_for_paint_focus_and_anchor() {
     use super::header;
     use plx_ui::screen::{At, Focusable};
     let h = Harness::new(tiles(3));
     let cx = h.cx();
     let focus = Focusable::<super::cards_harness::WatchHost>::place(&h.screen, &PILL_ELEM, &cx, At::Drawn)
-        .expect("the pill is a focus stop")
+        .expect("the control is a focus stop")
         .rect;
-    let style = plx_ui::cards::GRID_STYLE;
-    let grid_right = plx_ui::consts::MARGIN_X + 6.0 * style.w + 5.0 * style.gap;
-    let drawn = header::pill_rect(header::header_frame(grid_right), &plx_ui::fixture::FixtureMeasure, &h.screen.options().summary());
-    assert_eq!(focus, drawn, "the focus rect is the drawn pill");
-    assert_eq!(h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure), drawn, "so is the menu's anchor");
-    assert_eq!(focus.x + focus.w, grid_right, "right-aligned to the grid, not the screen");
-    assert!(focus.x + focus.w < plx_ui::consts::SCR_W);
+    let row = header::Row::new(&plx_ui::fixture::FixtureMeasure, &h.screen.options().summary(), None);
+    assert_eq!(focus, row.plate(), "the focus rect is the drawn plate");
+    assert_eq!(h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure), row.pill(), "the menu grows out of the focused pill");
+    assert_eq!(focus.x + focus.w, 1771.0 + plx_ui::page_header::OVERHANG, "text on the right text edge, the plate overhangs");
+    assert_eq!((focus.y, focus.h), (148.0, 56.0));
 }
 
 /// **While Sort & Filter is up the pill is the menu's, not the page's** (DS7: "the pill's glass
@@ -987,4 +990,59 @@ fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
         assert_eq!(h.screen.ground_goal(), before, "frame {frame}: it stays on the focused title's key");
         assert_eq!(h.screen.ground_codes(), resting, "frame {frame}: the drawn wash does not move");
     }
+}
+
+// ---- the Library's grid and scroll chrome ----
+
+/// **The grid is the Library's**: six 250 x 375 posters from x 96, 285 apart (the last column ends on
+/// the header row's right text edge, x 1771), the first row at y 244 (the header row's foot), and
+/// the next row a poster and the collapsed caption band (40 px of air) lower.
+#[test]
+fn the_grid_is_the_librarys_six_columns_at_pitch_285_from_y_244() {
+    use plx_ui::cards::conformance::CardHarness;
+    let h = Harness::new(tiles(8));
+    let cards = h.cards();
+    let rect = |i: usize| h.drawn_rect(cards[i], 1.0).expect("a drawn stop");
+    for c in 0..6 {
+        let r = rect(c);
+        assert_eq!((r.w, r.h), (250.0, 375.0), "column {c}");
+        assert!((r.x - (96.0 + 285.0 * c as f32)).abs() < 0.01, "column {c} at {}", r.x);
+        assert_eq!(r.y, 244.0, "the first row stands at the header row's foot");
+    }
+    assert!((rect(5).x + rect(5).w - 1771.0).abs() < 0.01, "the last column ends on the row's right text edge");
+    let second = rect(6);
+    assert_eq!((second.x, second.y), (96.0, 244.0 + 375.0 + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR));
+}
+
+/// **A scrolled page tucks the top chrome and shows the capsule "Watchlist N"**, as the Library does:
+/// untucked at rest, fully tucked once the header has scrolled off, and the page's total is the number.
+#[test]
+fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(24));
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 0.0, "at rest nothing is tucked");
+    h.screen.jump_scroll(super::page::GRID_TOP - 120.0);
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the header is gone");
+    let texts = h.draw_texts();
+    assert!(texts.iter().any(|(t, _)| t == msg::watchlist_page_title()), "the capsule names the page: {texts:?}");
+    assert!(texts.iter().any(|(t, _)| t == "24"), "and counts its titles: {texts:?}");
+}
+
+/// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
+/// page on its first snap (the first row at the content edge, y 120): the header row has risen
+/// into the tab strip's band there, so it has faded out and the strip has tucked behind the
+/// capsule (red when the tuck ramp ran over the Library's first-row pitch: the page rested at
+/// tuck 0 with the row's labels drawn over the strip).
+#[test]
+fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(24));
+    h.focus_index(6);
+    h.run(240);
+    let rest = h.screen.scroll();
+    assert!((rest - (super::page::GRID_TOP - 120.0)).abs() < 0.5, "premise: the second row rests on the first snap, at {rest}");
+    assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first snap");
+    assert!(super::page::head_alpha(rest) < 0.01, "and the header is gone");
+    assert_eq!(super::page::head_alpha(0.0), 1.0);
+    assert!(super::page::head_alpha(rest * 0.5) > 0.0 && super::page::head_alpha(rest * 0.5) < 1.0, "it fades with the scroll");
 }

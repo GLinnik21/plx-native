@@ -80,6 +80,7 @@ pub mod page_header; // the library/collections page header row (CONTRACT FREEZE
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
+pub mod scroll_chrome; // the tuck ramp, capsule text and settle edge a scrolled card page shares with the Library (pure)
 pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (frozen ground, never live blur)
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
@@ -1608,7 +1609,7 @@ impl Painter {
         plx_gfx::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
     /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
-    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the Watchlist header's). At `0.0` this IS
+    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the DS8 title tracking, unused since the Watchlist took the Library's header row). At `0.0` this IS
     /// `text`. The discovery pass sees the string's untracked declaration (the tracked draw only moves
     /// glyph gaps inside it); the recording pass prewarms the per-cluster strings the live draw uses.
     #[allow(clippy::too_many_arguments)]

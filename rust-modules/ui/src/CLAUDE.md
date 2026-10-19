@@ -57,7 +57,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
    Tracking (DS8): a string that needs letter-spacing goes through `Painter::text_tracked` with a
-   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the Watchlist header's); at `0.0` it is
+   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title tracking the Watchlist header wore before it took the Library's header row); at `0.0` it is
    exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
    sub-pixel difference shipped code keeps), and no screen adopts it yet.
 

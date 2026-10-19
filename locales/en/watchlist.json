@@ -7,31 +7,6 @@
     "value": "Sort & Filter",
     "description": "Label of the single pill on the Watchlist header that opens the sort and filter popover."
   },
-  "watchlist.page.sort_filter_summary": {
-    "value": "Sort & Filter · {summary}",
-    "description": "Sort and filter pill text with the current choices summarised after the middle dot. The summary is a short phrase from the filter labels, such as Default or Movies, Title. No placeholder other than summary.",
-    "args": {
-      "summary": "str"
-    }
-  },
-  "watchlist.page.count_all": {
-    "value": {
-      "one": "{count} title",
-      "other": "{count} titles"
-    },
-    "description": "Count of the titles on the Watchlist, shown just left of the Sort & Filter pill while no Type or Show filter narrows the list. Plural by count.",
-    "args": {
-      "count": "i64"
-    }
-  },
-  "watchlist.page.count_of": {
-    "value": "{shown} of {total}",
-    "description": "Count shown just left of the Sort & Filter pill when a Type or Show filter narrows the list: titles shown of the whole list.",
-    "args": {
-      "shown": "i64",
-      "total": "i64"
-    }
-  },
   "watchlist.filter.sort_default": {
     "value": "Default",
     "description": "Summary shown in the Sort & Filter pill when the list is in the server's own order and no filter is set."

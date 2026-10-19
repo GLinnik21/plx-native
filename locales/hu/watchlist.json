@@ -1,12 +1,6 @@
 {
   "watchlist.page.title": "Figyelőlista",
   "watchlist.page.sort_filter": "Rendezés és szűrés",
-  "watchlist.page.sort_filter_summary": "Rendezés és szűrés · {summary}",
-  "watchlist.page.count_all": {
-    "one": "{count} cím",
-    "other": "{count} cím"
-  },
-  "watchlist.page.count_of": "{shown} / {total}",
   "watchlist.filter.sort_default": "Alapértelmezett",
   "watchlist.filter.type_heading": "Típus",
   "watchlist.filter.type_all": "Filmek és sorozatok",

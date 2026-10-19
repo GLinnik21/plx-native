@@ -386,11 +386,10 @@ impl OptionsMenu {
     /// the page's own focused pill.
     pub fn draw_face(&self, base: Painter, measure: &dyn plx_machine::machine::Measure, state: &WatchlistOptionsState) {
         let p = self.popover.content_painter_on(base, 0.0);
-        let summary = state.summary();
-        let face = super::header::HeaderFace { title: "", count: None, summary: &summary, pill_focused: self.rest_focused };
-        let pill = self.pill;
+        let row = super::header::Row::new(measure, &state.summary(), None);
+        let (pill, focused) = (self.pill, self.rest_focused);
         self.popover.morph_face(p, self.panel_rect(measure), PANEL_RAD, self.plate_fill(), |p| {
-            super::header::draw_pill_label(p, pill, &face)
+            row.draw_face(p, pill, focused)
         });
     }
 }

@@ -5,7 +5,9 @@
 //! * [`page`]: [`page::WatchlistScreen`] (the page's state), its input/output alphabets
 //!   [`page::WatchlistIn`] / [`page::WatchlistOut`] and the row snapshot [`page::WatchTile`].
 //! * [`options`]: [`options::WatchlistOptionsState`], the Sort & Filter value.
-//! * [`header`]: the title + pill header ([`header::draw_header`]).
+//! * [`header`]: the Library's one header row ([`header::Row`]): the title, a filter read-out and the
+//!   Sort & Filter control.
+//! * [`caption`]: the labels under the posters, by the Under posters setting.
 //! * [`readout`]: the empty / filtered / no-token read-outs anchored at `FULL_ANCHOR_TOP`.
 //!
 //! No sibling screen is named here: a Detail or catalog target leaves as an output the app routes.
@@ -23,3 +25,9 @@ pub(crate) mod cards_harness;
 mod page_tests;
 #[cfg(test)]
 mod reflow_tests;
+
+#[cfg(test)]
+mod opening_tests;
+
+#[cfg(test)]
+mod caption_tests;
