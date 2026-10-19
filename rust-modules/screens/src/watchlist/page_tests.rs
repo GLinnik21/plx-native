@@ -1093,6 +1093,51 @@ fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
     assert!(leaving.len() >= 4 && leaving.windows(2).all(|w| w[1] < w[0]), "it fades out over several frames, never cut: {leaving:?}");
 }
 
+/// **The chrome comes back over a header that is still on its way down, never onto it.** From the
+/// second row's rest (chrome tucked, the header row far above the top) an Up to the first row sends
+/// the page home on its scroll spring while the chrome returns on the handoff's clock, decided on the
+/// key frame and not waiting for the scroll. So for a dozen frames the chrome is whole and the header
+/// row, riding the page, is still passing through the band the chip and the strip stand in: the
+/// profile chip painted over the page title ("D ist"; design review F3, the Watchlist's up-move).
+/// On every frame the title is drawn at all (`head_alpha`, the alpha the row's draw wears, above 2%)
+/// its text box must not meet the profile chip as the chrome pass draws it that frame (the resting
+/// [`plx_ui::widgets::CHIP_FRAME`] lifted by the tuck, as `NavPresentation::chrome_rect` does) while
+/// the chip is drawn; and the title arrives over more than a pop and is whole once the page is home.
+/// (The text census gives the title's place; the alpha is read from the page because the host
+/// harness's recording painter keeps no alpha: `draw_runs` without a discovery pass segfaults.)
+#[test]
+fn the_returning_chrome_never_draws_over_the_header_row_still_arriving() {
+    use plx_ui::screen::{chrome_lift, Screen};
+    let _g = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(24));
+    h.focus_index(6);
+    h.run(240);
+    let tuck = |h: &Harness| Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen);
+    assert!(tuck(&h) > 0.99, "premise: tucked at the second row's rest");
+    h.focus_index(0);
+    let title = msg::watchlist_page_title();
+    let (mut collided, mut arriving, mut chip_drawn) = (Vec::new(), 0, 0);
+    for n in 0..120 {
+        h.run(1);
+        let tuck = tuck(&h);
+        let chip = plx_ui::widgets::CHIP_FRAME;
+        let chip = plx_ui::Rect { y: chip.y - chrome_lift(tuck), ..chip };
+        if tuck < 0.98 { chip_drawn += 1; }
+        let alpha = h.screen.head_alpha();
+        if alpha > 0.02 && alpha < 0.98 { arriving += 1; }
+        let Some((_, glyphs)) = h.draw_texts().into_iter().find(|(t, _)| t == title) else { continue };
+        let meets = glyphs.x < chip.x + chip.w && glyphs.x + glyphs.w > chip.x && glyphs.y < chip.y + chip.h && glyphs.y + glyphs.h > chip.y;
+        if tuck < 0.98 && alpha > 0.02 && meets {
+            collided.push(format!("frame {n}: tuck {tuck:.2}, chip y {:.0}..{:.0}, title alpha {alpha:.2} at y {:.0}..{:.0}", chip.y, chip.y + chip.h, glyphs.y, glyphs.y + glyphs.h));
+        }
+    }
+    assert!(chip_drawn >= 8, "premise: the chip returned, over several frames ({chip_drawn})");
+    assert!(collided.is_empty(), "the chip is painted over the title: {collided:#?}");
+    assert!(arriving >= 3, "and the title arrives over more than a pop ({arriving} partial frames)");
+    assert!(h.screen.scroll().abs() < 0.5, "premise: the page is home");
+    assert_eq!(h.screen.head_alpha(), 1.0, "and the header row is whole once it is there");
+}
+
 /// **The header row is built once per key, not once per question.** The page asks for the row in its
 /// focus questions, its placement, its motion and its paint, many times a frame; it is built when
 /// the options, the narrowed count or the locale change and held otherwise, by the one rule the
