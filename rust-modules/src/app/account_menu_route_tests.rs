@@ -65,3 +65,99 @@ fn the_chips_drawn_rect_follows_the_bars_unfurl_and_tuck() {
     assert_eq!(moved, plx_ui::Rect { y: rest.y - plx_ui::screen::chrome_lift(0.5), ..rest }, "the tuck moves the rect the bar draws");
     assert_eq!(w.bridge.bar_member_rect(plx_ui::widgets::TAB_KEY_HOME, NavPresentation::default()), None, "only the chip is a lifted bar member");
 }
+
+/// The overlay's two readings this frame: the modal dim's alpha (`ModalStack::scrims`, the appear
+/// spring the stack steps) and the account panel's morph progress (the popover's springs the screen
+/// steps on its Tick).
+fn dim_and_morph(w: &World) -> (f32, f32) {
+    // as a share of the dim's peak, so it reads on the morph's 0..1
+    let dim = w.d.nav.modals.scrims(1.0).first().map_or(0.0, |(_, alpha)| *alpha / plx_ui::theme::underlay::DIM_COMPACT);
+    let morph = crate::app::bridge::account_menu(&w.d).and_then(|menu| menu.popover().morph_progress()).unwrap_or(0.0);
+    (dim, morph)
+}
+
+/// **One clock: the dim and the glass morph begin on the same frame and reverse on the same frame**
+/// (N-b). They are two springs of different stiffness (the dim ~16 frames, the morph ~5) that must
+/// never be two clocks: the dim is visible exactly while the morph is, from the frame the menu is
+/// first seen (a held surface ticks both with no time), and on a close both turn round on the frame
+/// the surface goes `Closing`, not one frame apart.
+#[test]
+fn the_dim_and_the_glass_morph_open_and_close_on_one_clock() {
+    let mut w = World::movies_library("route-account-one-clock", false);
+    w.climb_into_header();
+    w.press(Key::Up);
+    for _ in 0..8 {
+        if w.elem() == Some(TAB_KEY_CHIP) { break; }
+        w.press(Key::Left);
+    }
+    assert_eq!(w.elem(), Some(TAB_KEY_CHIP), "premise: the chip holds focus");
+    w.settle(30);
+
+    // OPEN: frame by frame from the press
+    w.tap(Key::Ok, 0);
+    let mut open = vec![dim_and_morph(&w)];
+    for _ in 0..60 {
+        w.step(vec![]);
+        open.push(dim_and_morph(&w));
+    }
+    assert!(crate::app::bridge::account_menu_up(&w.d), "premise: the menu is up");
+    let first_dim = open.iter().position(|(dim, _)| *dim > 0.0).expect("the dim ramps");
+    let first_morph = open.iter().position(|(_, morph)| *morph > 0.0).expect("the glass morphs");
+    assert_eq!(first_dim, first_morph, "the dim and the morph begin on the same frame: {open:?}");
+    for (n, (dim, morph)) in open.iter().enumerate() {
+        assert_eq!(*dim > 0.0, *morph > 0.0, "open frame {n}: the dim is visible iff the morph is ({dim}, {morph})");
+    }
+    assert!(open.last().is_some_and(|(dim, morph)| *dim > 0.99 && *morph > 0.99), "both landed: {:?}", open.last());
+
+    // CLOSE: both turn round on the frame the surface goes Closing
+    w.tap(Key::Back, 0);
+    let mut close = vec![dim_and_morph(&w)];
+    for _ in 0..60 {
+        w.step(vec![]);
+        close.push(dim_and_morph(&w));
+    }
+    let turned = |pick: fn(&(f32, f32)) -> f32| close.iter().position(|reading| pick(reading) < 0.999).expect("it falls");
+    assert_eq!(turned(|reading| reading.0), turned(|reading| reading.1), "the dim and the morph turn round on the same frame: {close:?}");
+    let gone = |pick: fn(&(f32, f32)) -> f32| close.iter().position(|reading| pick(reading) <= 0.0);
+    assert!(gone(|reading| reading.1).is_some(), "the glass is back on the chip: {close:?}");
+}
+
+/// **The morph begins and ends on the chip AS THE BAR DRAWS IT, on every frame the menu is up**
+/// (N-b, judgment 8): opened over the Watchlist, the popover's opener is the rect the lit chip is
+/// drawn at (`bar_member_rect` through the host page's tuck; the tuck itself is graded by
+/// `the_chips_drawn_rect_follows_the_bars_unfurl_and_tuck`), frame by frame through the open and the
+/// close, and the morph at its first and last frame is that rect with a circle's corner (the chip at
+/// rest is a round surround, radius = half its height).
+#[test]
+fn the_morph_begins_and_ends_on_the_chip_as_the_bar_draws_it() {
+    use plx_ui::dispatch::Rig;
+    let mut w = World::watchlist("route-account-morph-rect");
+    w.land_watchlist();
+    w.settle(30);
+    let drawn = |w: &World| {
+        let presented = w.bridge.navigation_presentation().tucked(w.d.top_screen().expect("a page").chrome_tuck());
+        w.bridge.bar_member_rect(TAB_KEY_CHIP, presented).expect("the chip is a bar member")
+    };
+    crate::app::bridge::open_account_menu(&mut w.d);
+    let mut seen = [0, 0];
+    let watch = |w: &mut World, seen: &mut [u32; 2]| {
+        w.drawn(); // the dispatcher hands the surface the rect in its draw
+        let Some(menu) = crate::app::bridge::account_menu(&w.d) else { return };
+        let Some(from) = menu.popover().opener() else { return };
+        let rect = drawn(w);
+        assert_eq!(from, rect, "frame {}: the morph's opener is the chip as drawn", w.frame);
+        let f = menu.popover().morph_frame(Some(from), plx_ui::Rect::new(from.x, from.y + from.h + 14.0, 316.0, 400.0), 26.0).unwrap();
+        if f.progress == 0.0 {
+            seen[1] += 1;
+            assert_eq!(f.rect, rect, "frame {}: at progress 0 the glass IS the chip's rect", w.frame);
+            assert_eq!(f.radius, rect.h * 0.5, "frame {}: and its corner the chip's round surround", w.frame);
+        }
+        seen[0] += 1;
+    };
+    for _ in 0..80 { w.step(vec![]); watch(&mut w, &mut seen); }
+    assert!(crate::app::bridge::account_menu_up(&w.d), "premise: the menu is up");
+    w.tap(Key::Back, 0);
+    for _ in 0..80 { w.step(vec![]); watch(&mut w, &mut seen); }
+    assert!(!crate::app::bridge::account_menu_up(&w.d), "premise: it closed");
+    assert!(seen[0] > 20 && seen[1] > 0, "the opener was read on {} frames, {} of them at progress 0", seen[0], seen[1]);
+}

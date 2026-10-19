@@ -317,6 +317,11 @@ impl AccountMenuScreen {
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
     }
 
+    /// The menu's popover: its morph, read by the tests that hold it to the scrim's clock.
+    pub fn popover(&self) -> &Popover {
+        &self.popover
+    }
+
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
     pub fn sel(&self) -> i32 {
         self.form.table.sel

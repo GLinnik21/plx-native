@@ -201,6 +201,7 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         ("Collections +N", crate::Rect::new(1180.0, 146.0, 118.0, 60.0)),
         ("the libraries menu", crate::Rect::new(94.0, 146.0, 230.0, 60.0)),
         ("the account chip", crate::widgets::chip_cap(1.0, 60.0)),
+        ("the account chip at rest, a circle", crate::widgets::chip_cap(0.0, 0.0)),
     ];
     for (name, pill) in openers {
         let panel = crate::Rect::new(pill.x, pill.y + pill.h + 14.0, 316.0, 400.0);
@@ -216,6 +217,10 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         };
         let mut pop = crate::popover::Popover::new().morphing();
         pop.open_from(Some(pill));
+        // the morph begins ON the opener, in its own corner: the lit opener's rect and its round
+        // surround (half its height), so the glass first stands exactly under the control
+        let begin = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+        assert_eq!((begin.rect, begin.radius), (pill, pill.h * 0.5), "{name}: the first frame is the opener's rect and corner");
         let mut opening = Vec::new();
         for n in 0..240 {
             pop.update(1.0 / 60.0);
@@ -233,6 +238,8 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
             check(&pop, "close", n, &mut closing);
         }
         assert!(closing.last().is_some_and(|a| *a < 1.0), "{name}: the last glass frame is not opaque: {closing:?}");
+        let end = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+        assert_eq!((end.rect, end.radius), (pill, pill.h * 0.5), "{name}: the close lands on the opener's rect and corner");
         assert!(closing.windows(2).all(|w| w[1] <= w[0] + 1e-4), "{name}: the glass only weakens while closing");
         pop.close();
     }

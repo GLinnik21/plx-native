@@ -403,6 +403,18 @@ impl Popover {
     ) -> Option<crate::popover_morph::Frame> {
         (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel, rad))
     }
+    /// The opener's rect the morph grows from and lands back on: the one handed to
+    /// [`open_from`](Self::open_from) / [`track_opener`](Self::track_opener), `None` before either.
+    pub fn opener(&self) -> Option<Rect> {
+        self.from
+    }
+    /// **Where the morph is on its one 0..1 progress** (0 = the opener's rect, 1 = the panel), `None`
+    /// for a popover that is not [`morphing`](Self::morphing). The reading the overlay's scrim is
+    /// compared with: the scrim and the morph begin and reverse on the same frame
+    /// (`ModalStack`'s held tick, `ScreenEvent::Closing`).
+    pub fn morph_progress(&self) -> Option<f32> {
+        (self.style == OpenStyle::Morph).then(|| self.morph.frame(None, Rect::FULL, 0.0).progress)
+    }
     /// [`open`](Self::open) for a [`morphing`](Self::morphing) popover whose opener has a measured
     /// rect: the panel grows out of `from` (the pill). Pass [`Opener::rect`]; `None` is the
     /// fade+scale fallback, which is what a plain `open` gives.
