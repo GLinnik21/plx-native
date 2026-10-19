@@ -80,7 +80,7 @@ const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
 pub const SHAPE: [&str; 10] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,enter_remembered:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
     "LibraryHeader{switched:bool}",
@@ -181,6 +181,12 @@ pub struct LibraryScreen {
     /// A library was just chosen with OK: the page seats the name the reader pressed and shows the
     /// top of the page, where the header is, instead of restoring the new library's scroll.
     switched: bool,
+    /// A library was chosen with OK and the reader has not entered its grid since: the grid group
+    /// is published with [`Seat::RememberedFirst`], so the DOWN that enters it lands on the tile the
+    /// reader left in that library (the engine's remembered element, seeded from the store's
+    /// snapshot when the engine has none), else on its first row. Every other DOWN from the header
+    /// keeps [`Seat::Remembered`]'s rule: the tile under the control it leaves.
+    enter_remembered: bool,
     section: Option<LibrarySectionIdentity>,
     epoch: Option<u32>,
     query: Option<u32>,
@@ -253,7 +259,7 @@ impl LibraryScreen {
             ),
             libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
-            switched: false, section: None, epoch: None, query: None, grid_reset_pending: false,
+            switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
@@ -741,6 +747,7 @@ impl LibraryScreen {
         self.save_cursor(cx, fx);
         self.pending.request_section(target);
         self.switched = true;
+        self.enter_remembered = true;
         self.grid_fade.reload();
         self.refresh_header(cx);
         fx.invalidate(Provenance::Input);
@@ -847,6 +854,7 @@ impl LibraryScreen {
                 self.page_fade.cancel();
                 self.grid_fade.cancel();
                 self.switched = false;
+                self.enter_remembered = false;
                 self.refresh_header(cx);
                 return Handled::Yes;
             }
@@ -933,6 +941,7 @@ impl LibraryScreen {
                 self.save_cursor(cx, fx);
                 self.flush(fx);
                 self.wanted_kind = Some(kind);
+                self.enter_remembered = false;
                 self.initial = true;
                 self.page_fade.mount();
                 self.sync(cx);
@@ -1055,6 +1064,7 @@ impl LibraryScreen {
         if cancelled {
             self.pending.cancel();
             self.switched = false;
+            self.enter_remembered = false;
             self.refresh_header(cx);
             return Handled::Yes;
         }
@@ -1179,6 +1189,7 @@ impl LibraryScreen {
                 if to_group != self.provisional { self.provisional = None; }
                 // What the engine now remembers for this group is the page's own seat only if this
                 // move IS that seat; any other move into the group was somebody's choice.
+                if to_group == Some(self.pair.groups_config().detail) { self.enter_remembered = false; }
                 if let Some(group) = to_group {
                     self.placed.retain(|(placed, _)| *placed != group);
                     if self.provisional == Some(group) { self.placed.push((group, to.elem)); }
@@ -1361,10 +1372,17 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
                     ..row_group(STATUS_GROUP, 1, rect, ElemKind::Control) });
             }
         }
+        let content = out.len();
         if self.pair.detail.total() > 0 && self.pair.master.eligible(cx) {
             self.pair.groups(cx, out);
         } else {
             self.pair.detail.groups(cx, out);
+        }
+        // After a library was chosen, the DOWN into its grid is the reader's way back to where they
+        // were: the engine's remembered tile, across the vertical door that otherwise projects.
+        if self.enter_remembered {
+            let grid = self.pair.groups_config().detail;
+            for spec in out[content..].iter_mut().filter(|spec| spec.id == grid) { spec.seat = Seat::RememberedFirst; }
         }
     }
     fn group_of(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -1493,7 +1511,7 @@ impl LogicalState for LibraryScreen {
         self.pending.write(c);
         c.bool(self.ground_seeded);
         self.ground.write_motion(c);
-        c.bool(self.switched);
+        c.bool(self.switched).bool(self.enter_remembered);
         self.header_capsules.write_motion(c);
         self.header_pop.write_motion(c);
         PageMemory::Library(self.page_memory()).write(c);

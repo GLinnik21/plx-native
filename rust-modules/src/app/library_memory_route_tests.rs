@@ -6,13 +6,17 @@
 //! the top page again, and a switch to another library finds the query back on films, so the
 //! Collections page of the library switched to asks again for ITS collections.
 //!
-//! **Not covered here, and a known open problem** (`library_bookmark_tests`, last block, "the P4
-//! open problems"): A, scrolled deep, switched to B and back to A does NOT land the grid on the tile
-//! it left. The page stays at the top with focus on the library's name (by design: a library chosen
-//! with OK keeps the header on screen) and the DOWN that enters the grid lands on its first row
-//! instead of the remembered tile, whose cursor `LibraryScreen::seed_cursor` is meant to remember.
-//! Driven with `FocusGrid` (a key-only walk cannot build a deep tile) and two `LibrarySelect`s: scroll
-//! 3320 -> 0, tile (8, 4) -> (0, 0).
+//! **A library switched back to** (`a_library_switched_back_to_lands_down_on_the_tile_it_was_left_at...`):
+//! A, scrolled deep (tile (8, 4)), switched to B and back to A shows A's header at the top of the page
+//! with focus on the library's name (a library chosen with OK keeps the header on screen), and the
+//! DOWN that enters the grid lands on the tile A was left at, scrolling to it. The cursor is the
+//! focus engine's own remembered element (seeded by `LibraryScreen::seed_cursor` from the store's
+//! snapshot when the engine has none); the page only publishes the grid with `Seat::RememberedFirst`
+//! until the grid is entered (`enter_remembered`). A library not visited before opens on its first
+//! row, and any other DOWN from the header keeps the engine's square-closing rule (the tile under
+//! the control), which `outside_a_switch_down_from_the_header_still_lands_under_the_control` pins.
+//! Driven with `FocusGrid` (a key-only walk cannot leave a deep tile remembered while focus is on
+//! the header) and two `LibrarySelect`s, then keys.
 
 use super::*;
 use super::test_support::{World, FILM_CLUB};
@@ -111,4 +115,31 @@ fn a_library_switched_back_to_lands_down_on_the_tile_it_was_left_at_and_scrolls_
     w.press(Key::Down);
     assert_eq!(w.grid_cell(), Some((8, 4)), "Down lands on the tile the library was left at");
     assert!(w.scroll_target() > 1000.0, "and the page scrolls to it ({})", w.scroll_target());
+
+    // The exception is for that one entry: once in the grid, the ordinary rule is back.
+    for _ in 0..8 { w.press(Key::Up); }
+    assert_eq!(w.grid_cell(), Some((0, 4)), "premise: Up walked back to the first row");
+    w.press(Key::Up);
+    assert!(w.on_header(), "premise: Up from the first row reaches the header");
+    w.press(Key::Down);
+    assert_eq!(w.grid_cell(), Some((0, 0)), "a later Down lands under the control again");
+}
+
+#[test]
+fn outside_a_switch_down_from_the_header_still_lands_under_the_control() {
+    // The engine's square-closing rule (`Seat::Remembered`, `focus::projects_across`): a DOWN into a
+    // card grid lands on the card under the control it leaves, not on a remembered cell rows away.
+    // Only the DOWN that follows a library switch is the reader's way back to the tile they left.
+    let mut w = World::movies_library("r15-square", true);
+    w.frames(30);
+    assert!(w.on_header(), "premise: the page opens with focus on the header");
+    w.press(Key::Down);
+    for key in [Key::Right, Key::Right, Key::Down, Key::Down, Key::Down] { w.press(key); }
+    assert_eq!(w.grid_cell(), Some((3, 2)), "premise: the walk reached a tile off the first column");
+    for _ in 0..3 { w.press(Key::Up); }
+    assert_eq!(w.grid_cell(), Some((0, 2)), "premise: Up walked back to the first row");
+    w.press(Key::Up);
+    assert!(w.on_header(), "premise: Up from the first row reaches the header");
+    w.press(Key::Down);
+    assert_eq!(w.grid_cell(), Some((0, 0)), "Down from the library's name lands on the tile under it");
 }
