@@ -5359,9 +5359,8 @@ impl View for TabPill {
         // caller's number instead would pin the note while the label's right edge slid under it,
         // i.e. it would trade a constant label→note gap for a variable one. The gap is the
         // relationship the eye reads here; the few px of slack left inside the pill's own padding
-        // on an unbolded tab is the same slack the label alone already had. The one exception is the
-        // crossfade below, which has two painted widths and so no single answer — it falls back to
-        // the caller's own bold advance rather than letting the tick slide as the weights swap.
+        // on an unbolded tab is the same slack the label alone already had. The tick does move with
+        // the weight's one step (a pixel or two, on that frame), which is the same step the label makes.
         let nw = Self::note_w(self.note);
         let frame = Rect::new(r.x, r.y, r.w - nw, r.h);
         let run = |p: Painter, bold: bool| {
@@ -5371,32 +5370,18 @@ impl View for TabPill {
             }
             lab.draw(p, frame)
         };
-        // WEIGHT crossfades; it does not tween. A bold run and a regular run are two rasterizations
-        // — the same reason `theme.rs`'s size ladder says a SIZE is crossfaded rather than animated,
-        // and the way `detail.rs` spells its hero → compact title. (`person.rs`'s band condense was
-        // the other worked example until that band stopped condensing.) Two draws happen only while a capsule is
-        // genuinely mid-travel over THIS pill: at most two pills, for ~200 ms. Both boolean states
-        // land squarely in the single-draw branches, so nothing that exists today pays for this.
-        let lw = if bold_mix > 0.98 {
-            run(p, true)
-        } else if bold_mix < 0.02 {
-            run(p, false)
-        } else {
-            run(p.alpha(1.0 - bold_mix), false);
-            run(p.alpha(bold_mix), true);
-            // `TabPill` draws through the generic retui `View::draw(&self, env: &Env, p: Painter)`
-            // — no `Measure` parameter, and that trait is the whole retained-leaf contract, not
-            // something this lane's scope covers reshaping. `TtfMeasure` wraps the identical
-            // `text_width` this line called directly.
-            {
-                use plx_machine::machine::Measure as _;
-                LegacyMeasure.width(
-                    unsafe { std::ffi::CStr::from_ptr(self.label) },
-                    self.sz,
-                    true,
-                )
-            }
-        };
+        // **The weight STEPS. It is not tweened and it is not crossfaded.** A bold run and a regular
+        // run are two rasterizations whose strokes and advances differ by a pixel or two, so two of them
+        // laid down at partial alpha (`1 - w` and `w`) put `1 - w(1 - w)` of the ink where both faces
+        // cover a pixel and `w` or `1 - w` alone where only one does: 111 glyph-body pixels fell under
+        // 3:1 across three hops of the top bar, the worst at 2.02:1 (design review judgment 4, "never
+        // an ink lerp"). A label is therefore drawn ONCE per frame, at the FULL ink its region names,
+        // in the face the weight is nearer to. The weight itself still eases with the capsule over the
+        // pill ([`PillInk::weight`], the same value in every region of the pill, so the clips tile one
+        // glyph set); only the face it picks changes, on a single frame, at one half. Nothing wraps
+        // the label in `p.alpha(..)`: the header row, whose weight never changes, paints it the same
+        // way. The standalone and boolean models land on 0 or 1 and so are unchanged.
+        let lw = run(p, bold_mix >= 0.5);
         let nx = r.x + (r.w - nw) * 0.5 + lw * 0.5 + NOTE_GAP;
         let note_ink = theme::with_a(ink, NOTE_INK_A);
         match self.note {
@@ -6081,7 +6066,9 @@ impl PillInk {
     /// **The weight the pill's label is drawn at, 0 regular .. 1 bold, the same in every region.**
     /// The whole label's coverage by the capsules ([`TabStrip::mixes`], coverage x alpha, a focus
     /// capsule a control does not draw left out), so it eases with the capsule on the clock the
-    /// fills run on. It is a property of the PILL, never of a region: see [`TabPill::inked`].
+    /// fills run on. The label is drawn in the bold face from one half up, ONE raster at full ink
+    /// (`TabPill::draw`): the weight steps, it is never a blend of two faces. It is a property of
+    /// the PILL, never of a region: see [`TabPill::inked`].
     pub fn weight(&self) -> f32 {
         self.weight
     }
