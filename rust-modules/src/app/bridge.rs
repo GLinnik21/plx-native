@@ -3839,7 +3839,11 @@ mod restore_characterisation_tests;
 
 #[cfg(test)]
 #[path = "bridge_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "deeplink_route_tests.rs"]
+mod deeplink_route_tests;
 
 #[cfg(test)]
 #[path = "session_plaintext_repair_tests.rs"]

@@ -127,6 +127,11 @@ pub(crate) struct MenuPlayAwait {
     /// "this never got where it was going".
     deadline: u32,
     phase: MenuPlayPhase,
+    /// A landing opens the page instead of playing (a launch link's `open`).
+    open: bool,
+    /// A miss logs and leaves the stack as it is instead of opening the page: a launch link's key
+    /// came from outside the app, so a page for it may not exist (`app::deeplink`).
+    stay_on_miss: bool,
 }
 
 /// Which asynchronous load a [`MenuPlayAwait`] is waiting on. Both phases are polled by the one
@@ -147,7 +152,15 @@ impl MenuPlayAwait {
     /// The wait armed by a press at frame `now`: it starts on the detail request `activate_card`
     /// has just issued, and carries the same 12s ceiling for its whole life.
     fn new(sid: plx_plex::plex::ServerId, expect: String, season_index: Option<i64>, hud_ms: u32, now: u32) -> Self {
-        Self { sid, expect, season_index, hud_ms, deadline: now.wrapping_add(12_000), phase: MenuPlayPhase::Detail }
+        Self {
+            sid, expect, season_index, hud_ms, deadline: now.wrapping_add(12_000), phase: MenuPlayPhase::Detail,
+            open: false, stay_on_miss: false,
+        }
+    }
+
+    /// The wait for a launch link's item (`app::deeplink`), its detail request just issued.
+    pub(crate) fn for_link(sid: plx_plex::plex::ServerId, rk: String, open: bool, now: u32) -> Self {
+        Self { open, stay_on_miss: true, ..Self::new(sid, rk, None, plx_screens::player::input::HUD_LINGER_MS, now) }
     }
 }
 
@@ -294,7 +307,7 @@ pub(crate) unsafe fn menu_play_tick(
     let Some(wait) = menu_play_await.clone() else {
         return;
     };
-    let MenuPlayAwait { sid, ref expect, season_index, hud_ms, deadline, phase } = wait;
+    let MenuPlayAwait { sid, ref expect, season_index, hud_ms, deadline, phase, open, stay_on_miss } = wait;
     // Something else already moved the app onto the player this frame (a different press, an
     // auto-advance) — the wait is moot and must not fire a second Play on top of it.
     if super::bridge::player(pages).is_some() {
@@ -345,9 +358,19 @@ pub(crate) unsafe fn menu_play_tick(
             return; // still waiting — try again next frame
         }
         *menu_play_await = None;
+        if stay_on_miss {
+            plx_base::eventlog::log(&format!(
+                "deeplink: not opened, rk={expect} ({})", if settled { "not returned" } else { "timed out" }));
+            return;
+        }
         // nothing playable / load failed — land on the page, through the transition. `season:
         // None`: the container's own reuse rule is what keeps a re-open from stacking a second
         // copy of a page the user is already standing on (`bridge::open_detail`).
+        super::bridge::open_detail(pages, bridge, sid, expect, None, None);
+        return;
+    }
+    if open {
+        *menu_play_await = None;
         super::bridge::open_detail(pages, bridge, sid, expect, None, None);
         return;
     }

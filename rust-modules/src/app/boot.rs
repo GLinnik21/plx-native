@@ -2041,6 +2041,7 @@ pub(crate) unsafe fn construct(
         last_route_reported,
         ptr,
         menu_play_await: None,
+        deeplink: crate::app::deeplink::DeepLink::from_launch(plx_platform::tv::launch::take()),
         prev,
         refresh_hubs,
         return_hold: Default::default(),

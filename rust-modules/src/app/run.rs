@@ -2497,7 +2497,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // `App::menu_play_await`/`input::menu_play_tick`'s own doc. Right beside the pump above
         // for the same route-unconditional reason: the press that armed the wait may have come
         // from Home while a different page is up by the time the landing (or its settled
-        // failure, or the ceiling) says the wait is over.
+        // failure, or the ceiling) says the wait is over. A title the launch asked for
+        // (`deeplink`) arms the same wait once Home is up.
+        super::deeplink::tick(&mut app.pages, &mut app.bridge, &mut app.deeplink,
+            &mut app.menu_play_await, fr.now);
         if app.menu_play_await.is_some() {
             menu_play_tick(&mut app.player.session, &mut app.adapters.player,
                 &mut app.pages, &mut app.bridge, &mut app.menu_play_await, fr.now);
@@ -3407,6 +3410,7 @@ mod lifecycle_regression_tests {
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
             menu_play_await: Default::default(),
+            deeplink: Default::default(),
             prev: Default::default(),
             refresh_hubs: Default::default(),
             return_hold: Default::default(),
