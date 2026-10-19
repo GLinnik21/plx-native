@@ -275,3 +275,47 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     assert!(kinds.iter().any(|(k, r)| k == "glass" && r[1] == plx_ui::scroll_capsule::Y), "two libraries: the capsule, as live glass");
     assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
 }
+
+/// One frame of the page: its `Tick`, then the header drawn at that moment. The focus pill (the
+/// one rounded rect taller than the 56 px plates, since it grows by `CTRL_FOCUS_SCALE`) is
+/// returned as its centre x; `None` when no pill is drawn.
+fn pill_centre_after_a_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: u32) -> Option<f32> {
+    fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    let cx = fixture.cx(engine);
+    let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+    let pills: Vec<f32> = plx_ui::draw_census::capture(|| page.draw_header(&frame)).iter()
+        .filter(|(tag, rect)| *tag == 2 && rect.h > plx_ui::page_header::HEIGHT + 1.0 && rect.h < plx_ui::page_header::HEIGHT * 1.2)
+        .map(|(_, rect)| rect.cx()).collect();
+    assert!(pills.len() <= 1, "one focused control wears one pill: {pills:?}");
+    pills.first().copied()
+}
+
+/// **The header's focus pill travels** (owner: "pills have no transitions, look raw"). Right from
+/// one library name to the next slides the pill across the gap on the top bar's spring, one step
+/// per frame and never backwards, and it comes to rest on the new name; before, it was redrawn on
+/// the new plate in a single frame.
+#[test]
+fn the_header_focus_pill_travels_to_the_next_name_instead_of_jumping() {
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, mut engine) = grid_page(3);
+    let (first, second) = (page.libraries[0].0, page.libraries[1].0);
+    let key = page.key(first);
+    engine.set(OWNER, key, Some(LIBRARY_GROUP), By::Dir);
+    fixture.step(&mut page, &mut engine, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir });
+    let mut ms = 0;
+    let mut rest = None;
+    for _ in 0..120 { ms += 16; rest = pill_centre_after_a_frame(&fixture, &mut page, &mut engine, ms); }
+    let plates = page.header.as_ref().unwrap();
+    let (from, to) = (plates.plate(first).unwrap().cx(), plates.plate(second).unwrap().cx());
+    assert!(to > from + 40.0, "two names with room between them");
+    assert!((rest.expect("a focused name wears the pill") - from).abs() < 1.0, "settled on the first name");
+
+    fixture.direction(&mut page, &mut engine, Dir::Right);
+    assert_eq!(at(&engine), second);
+    let mut path = Vec::new();
+    for _ in 0..90 { ms += 16; path.push(pill_centre_after_a_frame(&fixture, &mut page, &mut engine, ms).expect("the pill stays drawn")); }
+    assert!(path.windows(2).all(|w| w[1] >= w[0] - 0.01), "the pill never goes backwards: {path:?}");
+    assert!(path.iter().any(|x| *x > from + 4.0 && *x < to - 4.0),
+        "some frame draws the pill between the two names (it jumped): {path:?}");
+    assert!((path.last().unwrap() - to).abs() < 1.0, "it comes to rest on the new name: {path:?}");
+}
