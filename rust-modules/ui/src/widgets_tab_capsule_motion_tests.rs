@@ -675,8 +675,9 @@ fn ink_cases() -> Vec<(TabGround, fn(f32, f32) -> [f32; 4])> {
 /// By COLUMN only: a capsule is taken as a rectangle spanning its x-extent, so these contracts
 /// grade the ink along the capsule's centre row and are blind to its rounded ends. Where a
 /// capsule's end is an arc, a glyph row above or below the centre is up to ~4 px short of the
-/// extreme `ink_spans` cuts at, and those pixels wear the capsule's ink over the slate (see the
-/// "not done" note in the FIX-B report); a 2-D contract is what the bands of a rounded cut need.
+/// extreme `ink_spans` cuts at, and those pixels wear the capsule's ink over the slate. Cutting
+/// along the arc (horizontal bands, each with its own chord) needs a 2-D contract like this one
+/// sampled at a row away from the centre.
 fn backing_at(strip: &TabStrip, ground: TabGround, x: f32) -> [f32; 4] {
     let (pop, plate) = match ground {
         TabGround::Tracked { .. } => (1.0, theme::OVERLAY_FOCUS_PILL),
