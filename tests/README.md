@@ -607,6 +607,11 @@ marks pacing invalid if a render-profiler trigger is armed.
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
     settled gap and read 0 with a perfectly healthy animation (measured: `home-detail-nav` min=0,
     median=15). A frozen animator reads ~1/s — the keepalive alone — so the two are far apart.
+    A scene whose graded windows hold a long idle stretch (`library-switch`: a 14-step cycle with
+    idle steps, plus its spent-cycle tail, so the middle window flips between idle and active with
+    the boot's timing: median 7-11 for one animation) opts into the **mean** with
+    `"fps_floor_stat": "mean"` — the frames drawn over the graded windows, which no phase moves
+    (`fps_floor_verdict` in `run.py`; its `_fps_floor_note` carries the measurements).
   - `fps_ceiling` grades `fps=` on the **2nd-highest** — "does this screen actually STOP".
     This is the only guard on over-reporting, which silently gives back the whole ~38-points-of-a-
     core saving while every floor in the suite still passes.

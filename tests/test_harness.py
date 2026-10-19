@@ -7510,6 +7510,24 @@ class FpsMock(unittest.TestCase):
         ok, detail = self._run_switch(slow)
         self.assertFalse(ok, f"{slow}: {detail}")
 
+    def test_fps_floor_stat_defaults_to_the_median_and_names_a_known_statistic(self):
+        # every scene that grades fps_floor on something else says so with a statistic the grader knows
+        for name, scene in self.scenes.items():
+            stat = scene.get("fps_floor_stat")
+            if stat is not None:
+                self.assertIn(stat, run.FPS_FLOOR_STATS, name)
+                self.assertIsNotNone(scene.get("fps_floor"), f"{name}: a statistic without a floor")
+        # the opt-in is the library-switch scene and nothing else: every other scene keeps the median
+        self.assertEqual({n for n, sc in self.scenes.items() if sc.get("fps_floor_stat")}, {"library-switch"})
+        ok, detail = run.fps_floor_verdict([5, 5, 5, 5, 5, 40, 40], 10)
+        self.assertFalse(ok)
+        self.assertIn("median=5 fps (min=5, max=40, n=7) vs fps_floor 10", detail)
+        ok, detail = run.fps_floor_verdict([5, 5, 5, 5, 5, 40, 40], 10, "mean")
+        self.assertTrue(ok)
+        self.assertIn("mean=15.0 fps (total=105, median=5", detail)
+        with self.assertRaises(ValueError):
+            run.fps_floor_verdict([1, 2, 3, 4, 5], 1, "p95")
+
     def _walk_log(self, server=None, fps=40, keys=6):
         out = [server or self.SYN, "hubs: landed — 90 items, 3 shelves"] + [self._beat(fps=1)] * 3
         for _ in range(keys):
