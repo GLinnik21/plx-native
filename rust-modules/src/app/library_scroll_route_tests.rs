@@ -121,26 +121,26 @@ fn the_watchlist_tucks_and_draws_no_capsule() {
 /// The frames a route to the account menu is watched on: the chrome is tucked away while the menu
 /// is up, and the strip holds focus with the page not resting at its top.
 #[derive(Default)]
-struct Route { menu_frames: u32, menu_at_tuck: Vec<String>, strip_off_top: Vec<String> }
+struct Watched { menu_frames: u32, menu_at_tuck: Vec<String>, strip_off_top: Vec<String> }
 
-fn watch(r: &Rig, route: &mut Route) {
+fn watch(r: &Rig, seen: &mut Watched) {
     if super::account_menu_up(&r.d) {
-        route.menu_frames += 1;
-        if r.tuck() > 0.99 { route.menu_at_tuck.push(format!("frame {}: the account menu is up and the chrome fully tucked", r.frame)); }
+        seen.menu_frames += 1;
+        if r.tuck() > 0.99 { seen.menu_at_tuck.push(format!("frame {}: the account menu is up and the chrome fully tucked", r.frame)); }
     }
     // The structural reason: a stop of the strip is only reached from the header row, which rests
     // the page at its top, so the tuck is already on its way back to 0.
     if r.on_nav() && r.scroll_target() > 0.5 {
-        route.strip_off_top.push(format!("frame {}: focus on the strip with the page travelling to {}", r.frame, r.scroll_target()));
+        seen.strip_off_top.push(format!("frame {}: focus on the strip with the page travelling to {}", r.frame, r.scroll_target()));
     }
 }
 
 /// `keys`, one every `gap + 1` frames, watched on every frame.
-fn drive(r: &mut Rig, keys: &[Key], gap: u32, route: &mut Route) {
+fn drive(r: &mut Rig, keys: &[Key], gap: u32, seen: &mut Watched) {
     for key in keys {
         r.step(script_key(*key, tick(r.frame + 1)));
-        watch(r, route);
-        for _ in 0..gap { r.step(vec![]); watch(r, route); }
+        watch(r, seen);
+        for _ in 0..gap { r.step(vec![]); watch(r, seen); }
     }
 }
 
@@ -161,14 +161,14 @@ fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> Ri
             let mut r = mount();
             deep(&mut r);
             assert!(r.tuck() > 0.99, "{name}: premise: tucked before the route starts");
-            let mut route = Route::default();
-            drive(&mut r, leave, gap, &mut route);
-            drive(&mut r, &[Key::Left; 5], gap, &mut route);
-            drive(&mut r, &[Key::Ok], gap, &mut route);
-            for _ in 0..40 { r.step(vec![]); watch(&r, &mut route); }
-            assert!(route.menu_frames > 0, "{name} (gap {gap}): premise: the route opened the account menu from the chip");
-            assert!(route.menu_at_tuck.is_empty(), "{name} (gap {gap}): {:?}", route.menu_at_tuck);
-            assert!(route.strip_off_top.is_empty(), "{name} (gap {gap}): {:?}", route.strip_off_top);
+            let mut seen = Watched::default();
+            drive(&mut r, leave, gap, &mut seen);
+            drive(&mut r, &[Key::Left; 5], gap, &mut seen);
+            drive(&mut r, &[Key::Ok], gap, &mut seen);
+            for _ in 0..40 { r.step(vec![]); watch(&r, &mut seen); }
+            assert!(seen.menu_frames > 0, "{name} (gap {gap}): premise: the route opened the account menu from the chip");
+            assert!(seen.menu_at_tuck.is_empty(), "{name} (gap {gap}): {:?}", seen.menu_at_tuck);
+            assert!(seen.strip_off_top.is_empty(), "{name} (gap {gap}): {:?}", seen.strip_off_top);
         }
     }
 }
