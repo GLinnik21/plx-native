@@ -43,6 +43,7 @@ use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
+use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::Rect;
 
@@ -243,6 +244,11 @@ pub struct AccountMenuScreen {
     /// ([`plx_session::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
     built: bool,
+    /// The open/close motion: the panel MORPHS out of the profile chip and back into it
+    /// (`Popover::morphing` + `open_from`, the path every header menu takes: one opener rule,
+    /// design review S11). It owns the glass's arrival; the chip itself is the host's opener lift
+    /// ([`Screen::scrim`]'s `lifting`), so this draws no chip of its own.
+    popover: Popover,
 }
 
 impl AccountMenuScreen {
@@ -254,6 +260,7 @@ impl AccountMenuScreen {
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
+            popover: Popover::new().morphing(),
         }
     }
 
@@ -321,8 +328,15 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let switch_refused = H::auth(cx).0.switch_refused;
         match ev {
-            ScreenEvent::Mount => self.build(switch_refused),
+            ScreenEvent::Mount => {
+                self.popover.open_from(Some(plx_ui::widgets::CHIP_PILL));
+                self.build(switch_refused)
+            }
+            // However the surface was dismissed (BACK, a pick, the host's own press), the panel
+            // runs the morph back into the chip.
+            ScreenEvent::Closing => self.popover.dismiss(),
             ScreenEvent::Tick(tick) => {
+                self.popover.update(tick.dt());
                 if self.session_watch.changed() || switch_refused != self.switch_refused {
                     self.built = false;
                 }
@@ -432,11 +446,12 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel unfurls from
-    /// and the only thing on screen the panel is about, so dimming it under its own menu is the
-    /// same bug the focused card had. Only the DRAW half of the legacy `Opener` is used: this
-    /// panel's placement is its own (it hangs under the top bar), not a function of the chip's
-    /// rect.
+    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel grows out of
+    /// ([`plx_ui::widgets::CHIP_PILL`], the morph's origin) and the only thing on screen the panel
+    /// is about, so dimming it under its own menu is the same bug the focused card had. It is lit
+    /// above the panel too (`ModalStack::draw_lifts`), so the glass grows out from under it. Only
+    /// the DRAW half of the legacy `Opener` is used: the panel's settled placement is its own (it
+    /// hangs under the top bar); the chip's rect is where the morph starts and ends.
     fn scrim(&self) -> Scrim {
         // The COMPACT role, as every menu hung off a chip: how dark the page goes behind this menu,
         // the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
@@ -447,9 +462,12 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;
         let r = self.frame(measure);
-        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
+        // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
+        // container's appear: the panel begins and ends as the chip it grows from.
+        let m = self.popover.content_painter_on(f.painter, 0.0);
+        self.popover.panel(m, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
-            self.form.table.draw(p, r, measure);
+            self.popover.morph_rows(m, r, PANEL_RAD, |m| self.form.table.draw(m, r, measure));
         });
         for elem in (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)) {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
@@ -558,17 +576,91 @@ mod tests {
     }
 
     fn tick(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot) {
-        use plx_machine::machine::{InputOwner, MachineId, Tick};
-        let cx = Cx::<MenuHost> {
+        step(menu, read, ScreenEvent::Tick(plx_machine::machine::Tick::default()));
+    }
+
+    fn cx_of(read: &plx_session::auth::owner::SessionSnapshot) -> Cx<'_, MenuHost> {
+        use plx_machine::machine::{InputOwner, Tick};
+        Cx::<MenuHost> {
             views: read.read(),
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)),
-        };
+        }
+    }
+
+    fn step(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot, ev: ScreenEvent<MenuHost>) {
+        use plx_machine::machine::MachineId;
+        let cx = cx_of(read);
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-        menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
+        menu.step(&ev, &cx, &mut fx);
+    }
+
+    /// The glass this frame: the panel ground (a `rect_rimmed`, tag 8, on a host with no frozen
+    /// field) the surface drew, `Rect::default()` when it drew none.
+    fn glass(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot) -> Rect {
+        let cx = cx_of(read);
+        plx_ui::draw_census::capture(|| {
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
+            Screen::<MenuHost>::draw(menu, &mut f);
+        })
+        .into_iter()
+        .find_map(|(tag, r)| (tag == 8).then_some(r))
+        .unwrap_or_default()
+    }
+
+    /// **The profile menu GROWS out of the chip it opened from** (design review S11), as every other
+    /// header menu does (`Popover::morphing` + `open_from`, the Library's and the Watchlist's one
+    /// morph path): the chip is what the host lifts above the dim, and the glass begins as its
+    /// surround and ends as the panel. Red while the panel was laid at its final rect on its first
+    /// frame and only faded in: three frames in, the glass is still the chip's size or a little
+    /// over, and the settled panel is exactly `frame()`. A BACK runs the same morph in reverse and
+    /// lands on the chip.
+    #[test]
+    fn the_panel_grows_out_of_the_chip_and_settles_on_its_frame() {
+        use plx_machine::machine::Tick;
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-grows");
+        plx_plex::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
+            account_token: "synthetic-token".into(), ..Default::default() }));
+        let read = published(false);
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        step(&mut menu, &read, ScreenEvent::Mount);
+        let settled = menu.frame(&plx_ui::fixture::FixtureMeasure);
+        assert!(settled.w > 120.0 && settled.h > 120.0, "rig: the menu built its rows ({settled:?})");
+        let mut ms = 0;
+        for _ in 0..3 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let early = glass(&mut menu, &read);
+        assert!(
+            early.w < settled.w - 20.0 && early.h < settled.h - 20.0,
+            "three frames into the open the panel is still growing out of the chip ({early:?}), \
+             not laid at its final {settled:?}"
+        );
+        for _ in 0..90 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let end = glass(&mut menu, &read);
+        assert!(
+            (end.x - settled.x).abs() < 0.5 && (end.y - settled.y).abs() < 0.5
+                && (end.w - settled.w).abs() < 0.5 && (end.h - settled.h).abs() < 0.5,
+            "the settled panel is the frame {settled:?}, drew {end:?}"
+        );
+        // BACK (or any dismissal) runs the morph home: a few frames into the close the glass is
+        // already most of the way back to the chip.
+        step(&mut menu, &read, ScreenEvent::Closing);
+        for _ in 0..3 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let closing = glass(&mut menu, &read);
+        assert!(closing.w < settled.w - 20.0 && closing.h < settled.h - 20.0,
+            "three frames into the close the panel is shrinking into the chip ({closing:?})");
     }
 
     /// #132's dead end, not led into: once the Session KNOWS switching is unavailable for the

@@ -2528,6 +2528,13 @@ const fn chip_cap(e: f32, name_w: f32) -> Rect {
     )
 }
 
+/// **The chip's resting surround** — the capsule at no unfurl (`chip_cap(0, _)`: the avatar plus
+/// [`TAB_TRACK_PAD`] all round, a circle). It is the one extent of the chip that holds in every
+/// state, and so the pill the profile menu's panel grows out of and shrinks back into
+/// (`Popover::open_from`): the focused chip the host lifts above the dim (`redraw_profile_chip`)
+/// is this capsule or this capsule widened rightward, never anything else.
+pub const CHIP_PILL: Rect = chip_cap(0.0, 0.0);
+
 /// The chip unfurl's stiffness — brisk, a touch stiffer than the hero slide.
 const K_CHIP: f32 = 300.0;
 
@@ -2851,8 +2858,9 @@ fn profile_chip_on(
     }
 }
 
-/// [`profile_chip_with`], re-drawn over the account menu's scrim — the `Scrim::lift` contract
-/// (`ui::screen::Scrim`, drawn by `ModalStack::draw_scrims`), for the one surface in the app that
+/// [`profile_chip_with`], re-drawn above the account menu's scrim AND panel — the `Scrim::lift`
+/// contract (`ui::screen::Scrim`, drawn by `ModalStack::draw_lifts` after every surface, so the
+/// panel's glass grows out from under the chip), for the one surface in the app that
 /// hangs off a piece of shared CHROME rather than off a card.
 ///
 /// It lives HERE, beside the chip itself, for the reason the chip does: the control is drawn

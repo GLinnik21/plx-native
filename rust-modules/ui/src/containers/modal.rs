@@ -12,6 +12,8 @@
 //!   Every dim is painted through the stack's ONE inherited field ([`ModalUnderlay`]), latched
 //!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
 //!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
+//!   A surface's LIFT (`Scrim::lift`, the profile chip) is asked for there too but drawn by
+//!   `draw_lifts`, after every surface, so a panel never covers the element it grows out of.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
@@ -310,6 +312,10 @@ pub struct ModalStack<H: Host> {
     pub retired: Vec<Entry<H>>,
     /// The ONE field every surface's dim inherits through — see [`ModalUnderlay`].
     pub underlay: ModalUnderlay,
+    /// The lifts this frame's page pass asked its surfaces for (`draw_scrims*`), owed after the
+    /// surfaces draw ([`draw_lifts`](Self::draw_lifts)). Asked ONCE, in the page pass — a surface
+    /// is never asked for its scrim after its own draw — and spent by the pass that draws them.
+    lifts: Vec<crate::screen::ScrimLift>,
 }
 
 /// **What the stack's underlay field was last latched from.** The latch is re-taken exactly when
@@ -562,6 +568,7 @@ impl<H: Host> ModalStack<H> {
             surfaces: Vec::new(),
             retired: Vec::new(),
             underlay: ModalUnderlay::new(),
+            lifts: Vec::new(),
         }
     }
 
@@ -797,12 +804,9 @@ impl<H: Host> ModalStack<H> {
     /// The caller owns the freeze: this paints, so it must run inside a
     /// `popover::host::live()` scope or a frozen page will refuse every fill.
     ///
-    /// `chip_read` is the shared top bar's render values this frame
-    /// (`crate::dispatch::Rig::scrim_chip_read`) — every lift called here receives the SAME
-    /// pair, since there is one bar and at most one lift reads it (spec phase 12, PX-WIDGETS): a
-    /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
-    /// call's own argument instead of through a static.
-    pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::screen::ScrimLiftRead<'_>) {
+    /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
+    /// surface, by [`draw_lifts`](Self::draw_lifts), so the panel's glass grows out from under it.
+    pub fn draw_scrims(&mut self, nav_page_alpha: f32) {
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.
         if self.surfaces.is_empty() {
             return;
@@ -810,29 +814,50 @@ impl<H: Host> ModalStack<H> {
         if plx_gfx::gfx::blur_source_pass() {
             // Declaration/source traversals consume the published field. Only the visible
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
-            for (_, alpha, lift) in self.scrims(nav_page_alpha) {
-                GlDims.dim(self.underlay.field(), alpha);
-                (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
+            let dims = self.scrims(nav_page_alpha);
+            for (_, alpha, _) in &dims {
+                GlDims.dim(self.underlay.field(), *alpha);
             }
+            self.lifts = dims.into_iter().map(|(_, _, lift)| lift).collect();
             return;
         }
-        self.draw_scrims_on(nav_page_alpha, read, &mut GlDims);
+        self.draw_scrims_on(nav_page_alpha, &mut GlDims);
+    }
+
+    /// **Every surface's lift, bottom to top, AFTER every surface has drawn** (`Scrim::lift`): the
+    /// element a surface was opened from (the profile chip) is re-drawn lit above the dim AND the
+    /// panel, so a morphing panel grows out from under it and shrinks back into it, the same
+    /// stacking the page's own header openers get from `Bridge::redraw_opener`.
+    ///
+    /// `read` is the shared top bar's render values this frame
+    /// (`crate::dispatch::Rig::scrim_chrome_read`) — every lift called here receives the SAME
+    /// pair, since there is one bar and at most one lift reads it (spec phase 12, PX-WIDGETS): a
+    /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
+    /// call's own argument instead of through a static. The caller owns the freeze, as for the
+    /// dims. A lift is owed for as long as its surface's dim is, and was asked for in the page pass
+    /// that painted the dim: a surfaces-only pass owes none. `None` (a walk whose ceiling is below
+    /// the opener layer) draws nothing and still spends them.
+    pub fn draw_lifts(&mut self, read: Option<crate::screen::ScrimLiftRead<'_>>) {
+        let lifts = std::mem::take(&mut self.lifts);
+        let Some(read) = read else { return };
+        for lift in lifts {
+            (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
+        }
     }
 
     /// [`draw_scrims`](Self::draw_scrims) against any [`DimSink`] — the order is the contract:
     /// the field is brought up to date FIRST, from a framebuffer no dim of this frame has touched,
-    /// and only then is each surface's dim painted through it, bottom to top, each followed by its
-    /// lift.
+    /// and only then is each surface's dim painted through it, bottom to top.
     pub fn draw_scrims_on(
         &mut self,
         nav_page_alpha: f32,
-        read: crate::screen::ScrimLiftRead<'_>,
         sink: &mut dyn DimSink,
     ) {
         if self.surfaces.is_empty() {
             return;
         }
         let dims = self.scrims(nav_page_alpha);
+        self.lifts = dims.iter().map(|(_, _, lift)| *lift).collect();
         let source = self.underlay_source();
         // The page is read on the frame that CAPTURED it, or else the first frame a dim is seen.
         // The capture frame renders the whole host into its snapshot and is the heaviest GPU frame
@@ -844,12 +869,11 @@ impl<H: Host> ModalStack<H> {
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
-        for (id, a, lift) in dims {
+        for (id, a, _) in dims {
             let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
             plx_base::diag::spans::span("udim", || {
                 crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
             });
-            (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
         }
     }
 

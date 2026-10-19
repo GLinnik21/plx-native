@@ -39,7 +39,7 @@ pub enum RenderStrategy {
 pub struct ScrimLiftRead<'a> {
     pub chrome: Option<crate::widgets::ChromeRead<'a>>,
     pub bar_material: Option<plx_gfx::gfx::GlassFace>,
-    /// The stack's latched underlay field, set by `ModalStack::draw_scrims*` (the dispatcher cannot
+    /// The stack's latched underlay field, set by `ModalStack::draw_lifts` (the dispatcher cannot
     /// know it): the frozen ground a lifted element's glass stands on instead of the live page.
     /// `None` outside a stack, and before the field has latched.
     pub field: Option<&'a crate::underlay::UnderlayField>,
@@ -77,20 +77,20 @@ pub struct Scrim {
     /// spring and by `nav::page_alpha`, so the dim ramps with the panel and dips with a route
     /// change exactly as `Popover::scrim` did.
     pub alpha: f32,
-    /// Re-draw the element this surface was opened FROM, ABOVE the dim — the profile chip, a
-    /// focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
+    /// Re-draw the element this surface was opened FROM, ABOVE the dim AND the panel (drawn after
+    /// every surface, [`ModalStack::draw_lifts`]) — the profile chip, a focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
     /// the visual argument), and a bare `fn` — rather than a closure — because only the element's
     /// own screen knows where it landed and how to paint it, and this is minted as a `const` on
     /// that screen's own `Screen::scrim`.
     ///
     /// Its [`ScrimLiftRead`] argument carries the shared top bar's borrowed render values for this
     /// frame: captured profile/labels and focus unfurl from the rig's chrome owner, plus the face
-    /// published by the application-owned `GlassPlan`. [`ModalStack::draw_scrims`] passes that one
+    /// published by the application-owned `GlassPlan`. [`ModalStack::draw_lifts`] passes that one
     /// typed context to every lift it calls (spec phase 12, PX-WIDGETS). Thus a bare `fn` needs no
     /// `Bridge` borrow and performs no global/session read while drawing; a surface with nothing to
     /// lift ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores it (`no_lift`).
     ///
-    /// [`ModalStack::draw_scrims`]: crate::containers::modal::ModalStack::draw_scrims
+    /// [`ModalStack::draw_lifts`]: crate::containers::modal::ModalStack::draw_lifts
     pub lift: ScrimLift,
     /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
     /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
