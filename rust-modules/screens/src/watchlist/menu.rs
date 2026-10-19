@@ -51,6 +51,13 @@ fn opening_row(options: &WatchlistOptionsState) -> usize {
 }
 
 impl WatchlistMenuScreen {
+
+    /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
+    /// test that compares the Watchlist's words with the Library's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_panel(&self) -> Vec<(String, Vec<(String, Option<String>)>)> {
+        self.menu.probe_panel()
+    }
     pub fn new(entry: EntryId, arg: WatchlistMenuArg) -> Self {
         Self {
             entry,

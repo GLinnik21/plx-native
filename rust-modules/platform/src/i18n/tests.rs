@@ -398,7 +398,7 @@ fn every_watchlist_key_exists_in_every_shipped_catalog() {
         serde_json::from_str(text).expect("valid watchlist catalog")
     };
     let english = parse(&catalogs[0].1);
-    assert!(english.len() >= 30, "the Watchlist catalog shrank to {}", english.len());
+    assert!(english.len() >= 20, "the Watchlist catalog shrank to {}", english.len());
     for (key, source) in &english {
         assert!(key.starts_with("watchlist."), "{key} is outside the Watchlist scope");
         assert!(

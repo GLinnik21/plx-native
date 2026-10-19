@@ -452,6 +452,29 @@ pub struct SortEntry {
 }
 
 impl SortEntry {
+    /// The name every panel and pill shows for this sort: the shared table's word for a fact it
+    /// knows ([`crate::sortfacts`]), else the server's title.
+    pub fn label(&self) -> &str {
+        match crate::sortfacts::SortFact::of_pms_key(&self.key) {
+            Some(fact) => fact.label(),
+            None => &self.title,
+        }
+    }
+
+    /// Whether [`label`](Self::label) is the app's own text (the table's word, or the client-side
+    /// Plays entry) rather than something the server wrote.
+    pub fn label_is_ours(&self) -> bool {
+        self.key == PLAYS_SORT_KEY || crate::sortfacts::SortFact::of_pms_key(&self.key).is_some()
+    }
+
+    /// The word for the order this entry is in when `desc`: "A–Z", "Newest first". `None` for a
+    /// key whose axis is unknown (a random order has no ends).
+    pub fn direction_word(&self, desc: bool) -> Option<&'static str> {
+        let axis = if self.key == PLAYS_SORT_KEY { Some(crate::sortfacts::Axis::Magnitude) }
+            else { crate::sortfacts::Axis::of_pms_key(&self.key) };
+        axis.map(|axis| axis.direction_word(desc))
+    }
+
     fn query(&self, desc: bool) -> String {
         if !desc {
             if self.key.contains(',') { self.key.clone() } else { format!("{}:asc", self.key) }

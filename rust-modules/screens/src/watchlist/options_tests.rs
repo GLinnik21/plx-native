@@ -53,16 +53,21 @@ fn every_row_is_in_all_once_and_exactly_one_per_section_is_chosen() {
 }
 
 #[test]
-fn sections_are_type_sort_show_with_the_direction_chevron_on_the_active_key() {
-    use plx_ui::icons::Icon;
+fn sections_are_named_as_the_librarys_and_the_checked_sort_says_its_direction_in_a_word() {
+    let _g = language_on_this_thread_for_test(Preference::En);
     let mut s = default_state();
     let secs = sections(&s);
     assert_eq!(secs.len(), 3);
     assert_eq!(secs.iter().map(|x| x.rows.len()).collect::<Vec<_>>(), [3, 4, 3]);
-    assert_eq!(secs[1].rows[0].ticon, Some(Icon::ChevronDown), "Date Added descending");
-    assert!(secs[1].rows.iter().skip(1).all(|r| r.ticon.is_none()));
+    assert_eq!(secs.iter().map(|x| x.header.as_str()).collect::<Vec<_>>(), ["Show", "Sort", "Filter"],
+        "the Library's section words, not Type / Sort by / Show");
+    assert_eq!(secs[1].rows[0].value.as_deref(), Some("Newest first"), "Date added descending");
+    assert!(secs[1].rows.iter().all(|r| r.ticon.is_none()), "no chevron inside a row: it reads as opens");
+    assert!(secs[1].rows.iter().skip(1).all(|r| r.value.is_none()));
     s.descending = false;
-    assert_eq!(sections(&s)[1].rows[0].ticon, Some(Icon::ChevronUp));
+    assert_eq!(sections(&s)[1].rows[0].value.as_deref(), Some("Oldest first"));
+    OptionsRow::Sort(SortKey::Title).apply(&mut s);
+    assert_eq!(sections(&s)[1].rows[1].value.as_deref(), Some("A\u{2013}Z"));
     assert!(sections(&s).iter().all(|x| x.rows.iter().filter(|r| r.checked).count() == 1));
 }
 
@@ -72,10 +77,10 @@ fn sections_are_type_sort_show_with_the_direction_chevron_on_the_active_key() {
 fn the_summary_is_the_sort_and_only_the_sort() {
     let _g = language_on_this_thread_for_test(Preference::En);
     let mut s = default_state();
-    assert_eq!(s.summary(), "Date Added", "at rest the pill names the sort the panel ticks, never \"Default\"");
+    assert_eq!(s.summary(), "Date added", "at rest the pill names the sort the panel ticks, never \"Default\"");
     OptionsRow::Type(TypeFilter::Movies).apply(&mut s);
     OptionsRow::Show(ShowFilter::Released).apply(&mut s);
-    assert_eq!(s.summary(), "Date Added", "a filter shows as the N of M read-out, never in the pill");
+    assert_eq!(s.summary(), "Date added", "a filter shows as the N of M read-out, never in the pill");
     OptionsRow::Sort(SortKey::Title).apply(&mut s);
     OptionsRow::Sort(SortKey::Title).apply(&mut s);
     assert_eq!(s.summary(), "Title", "the direction is the panel's checked-row value, not the pill's");
@@ -84,7 +89,7 @@ fn the_summary_is_the_sort_and_only_the_sort() {
 #[test]
 fn the_control_reads_label_dot_value_with_both_regular() {
     let _g = language_on_this_thread_for_test(Preference::En);
-    let row = header::Row::new(&FixtureMeasure, "Date Added", None);
+    let row = header::Row::new(&FixtureMeasure, "Date added", None);
     let log = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
     // title, then the control's label, separator and value: every run at the regular weight.
     assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 4);
@@ -219,7 +224,7 @@ fn the_pill_face_still_records_its_label() {
 /// and x 1771; the control is right-aligned on the text edge, the title stands on the left edge.
 #[test]
 fn the_row_is_the_librarys_geometry() {
-    let row = header::Row::new(&FixtureMeasure, "Date Added", None);
+    let row = header::Row::new(&FixtureMeasure, "Date added", None);
     let title = row.title_plate();
     assert_eq!((title.x, title.y, title.h), (76.0, 148.0, 56.0), "the title's plate: text at x 96, overhang 20");
     let plate = row.plate();
@@ -253,7 +258,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
 /// the row's scroll offset moves everything with the page.
 #[test]
 fn a_lifted_control_is_left_out_and_the_row_rides_the_scroll() {
-    let row = header::Row::new(&FixtureMeasure, "Date Added", None);
+    let row = header::Row::new(&FixtureMeasure, "Date added", None);
     let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, &plx_ui::widgets::TabStrip::new(), 1.0, lifted));
     assert_eq!(at(0.0, true).iter().filter(|(t, _)| *t == 100).count(), 1, "the title alone");
     let (rest, scrolled) = (at(0.0, false), at(-100.0, false));
@@ -319,13 +324,17 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
         let _g = language_on_this_thread_for_test(language);
         let tag = language.tag();
         // The widest menu state: every section's longest label, the active key's chevron.
-        let mut state = default_state();
-        state.sort = SortKey::Release;
-        let mut table = plx_ui::table::TableView::new();
-        table.compact = true;
-        table.open_sections(sections(&state));
-        if let Some(f) = table.menu_cap_failure(&ShippedMeasure, &format!("{tag} sort & filter menu")) {
-            bad.push(f);
+        for (sort, descending) in [SortKey::DateAdded, SortKey::Title, SortKey::Release, SortKey::Rating]
+            .into_iter().flat_map(|sort| [(sort, false), (sort, true)])
+        {
+            let mut state = default_state();
+            (state.sort, state.descending) = (sort, descending);
+            let mut table = plx_ui::table::TableView::new();
+            table.compact = true;
+            table.open_sections(sections(&state));
+            if let Some(f) = table.menu_cap_failure(&ShippedMeasure, &format!("{tag} sort & filter menu, {sort:?} desc {descending}")) {
+                bad.push(f);
+            }
         }
         // The pill with the longest summary the menu can compose: the longest sort label.
         // The title's plate must end a cluster gap before the right cluster's first text edge, for

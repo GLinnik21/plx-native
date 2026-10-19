@@ -109,7 +109,7 @@ impl WatchlistOptionsState {
         }
     }
 
-    /// The pill's `<summary>` half: the current SORT, by its menu label ("Date Added", "Title"),
+    /// The pill's `<summary>` half: the current SORT, by its menu label ("Date added", "Title"),
     /// the same fact the Library's pill names. A filter (Type, Show) never shows here; it shows
     /// as the header's "N of M" read-out. The direction is not spelled: the open menu shows it as
     /// the checked sort row's value word, and the pill has to share the header line with the
@@ -129,7 +129,7 @@ impl WatchlistOptionsState {
 }
 
 /// A sort key's own first direction, the one choosing it from another key lands on: Title reads
-/// A to Z, the others newest, highest and most recent first. Date Added descending is the
+/// A to Z, the others newest, highest and most recent first. Date added descending is the
 /// service's own order and the page's default.
 pub fn natural_desc(key: SortKey) -> bool {
     !matches!(key, SortKey::Title)
@@ -163,10 +163,8 @@ impl OptionsRow {
             OptionsRow::Type(TypeFilter::All) => msg::watchlist_filter_type_all(),
             OptionsRow::Type(TypeFilter::Movies) => msg::watchlist_filter_type_movies(),
             OptionsRow::Type(TypeFilter::Shows) => msg::watchlist_filter_type_shows(),
-            OptionsRow::Sort(SortKey::DateAdded) => msg::watchlist_filter_sort_date_added(),
-            OptionsRow::Sort(SortKey::Title) => msg::watchlist_filter_sort_title(),
-            OptionsRow::Sort(SortKey::Release) => msg::watchlist_filter_sort_release(),
-            OptionsRow::Sort(SortKey::Rating) => msg::watchlist_filter_sort_rating(),
+            // The shared table's name for the fact, the one the Library's Sort section wears.
+            OptionsRow::Sort(key) => key.fact().label(),
             OptionsRow::Show(ShowFilter::All) => msg::watchlist_filter_show_all(),
             OptionsRow::Show(ShowFilter::Released) => msg::watchlist_filter_show_released(),
             OptionsRow::Show(ShowFilter::OnYourServers) => msg::watchlist_filter_show_on_servers(),
@@ -200,17 +198,18 @@ impl OptionsRow {
     }
 }
 
-/// The menu's three sections for `state`: Type, Sort by (the active key carries the direction
-/// chevron), Show. Pure, so the text-fit suite drives the real builder.
+/// The menu's three sections for `state`, named as the Library's Sort & Filter panel names its own:
+/// Show (the kind of title), Sort (the checked key carries the direction as a value word, "Newest
+/// first", from the same table), Filter (availability). Pure, so the text-fit suite drives the
+/// real builder.
 pub fn sections(state: &WatchlistOptionsState) -> Vec<Section> {
-    use plx_ui::icons::Icon;
-    let mut type_ = Section::new(msg::watchlist_filter_type_heading());
-    let mut sort = Section::new(msg::watchlist_filter_sort_heading());
-    let mut show = Section::new(msg::watchlist_filter_show_heading());
+    let mut type_ = Section::new(msg::library_header_show());
+    let mut sort = Section::new(msg::browse_library_sort());
+    let mut show = Section::new(msg::browse_library_filter());
     for id in OptionsRow::ALL {
         let mut row = Row::new(id.label()).checked(id.is_chosen(state));
-        if matches!(id, OptionsRow::Sort(_)) && id.is_chosen(state) {
-            row = row.ticon(if state.descending { Icon::ChevronDown } else { Icon::ChevronUp });
+        if let OptionsRow::Sort(key) = id {
+            if id.is_chosen(state) { row = row.value(key.fact().axis().direction_word(state.descending)); }
         }
         match id {
             OptionsRow::Type(_) => type_ = type_.row(row),
@@ -258,6 +257,14 @@ impl OptionsMenu {
         // A menu of one-word choices: BODY regular labels (the Library's sort menu does the same).
         table.compact = true;
         Self { popover: Popover::new().morphing(), table, pill: Rect::default(), rest_focused: true }
+    }
+
+    /// The open table as it reads: each section's heading and its rows' `(label, value)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_panel(&self) -> Vec<(String, Vec<(String, Option<String>)>)> {
+        self.table.sections.iter()
+            .map(|section| (section.header.clone(), section.rows.iter().map(|row| (row.label.clone(), row.value.clone())).collect()))
+            .collect()
     }
 
     /// Open on `state`, growing out of `pill` (the header pill's rect).

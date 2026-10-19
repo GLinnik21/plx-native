@@ -8,6 +8,8 @@
 use super::*;
 use super::test_support::World;
 use plx_plex::plex::watchlist::WatchKind;
+use plx_screens::library::menu::LibraryMenu;
+use plx_screens::watchlist::menu::WatchlistMenuScreen;
 use plx_screens::watchlist::page::{WatchlistScreen, PILL_ELEM};
 
 fn watchlist(w: &World) -> &WatchlistScreen {
@@ -49,4 +51,70 @@ fn the_pill_names_the_sort_on_both_pages_and_a_filter_shows_only_as_n_of_m() {
     drop(w);
     let library = World::movies_library("h2a-pill-library", false);
     assert_eq!(library.library().probe_sort_value().as_deref(), Some("Title"), "the Library's pill names its sort");
+}
+
+/// A panel as it reads, from the menu screen on top: `(heading, [(label, value)])` per section.
+type Panel = Vec<(String, Vec<(String, Option<String>)>)>;
+
+fn watchlist_panel(w: &World) -> Panel {
+    w.focused_screen().and_then(|s| s.as_any()).and_then(|a| a.downcast_ref::<WatchlistMenuScreen>())
+        .expect("the Watchlist's Sort & Filter panel is open").probe_panel()
+}
+
+fn library_panel(w: &World) -> Panel {
+    w.focused_screen().and_then(|s| s.as_any()).and_then(|a| a.downcast_ref::<LibraryMenu>())
+        .expect("the Library's Sort & Filter panel is open").probe_panel()
+}
+
+fn section<'a>(panel: &'a Panel, heading: &str) -> &'a [(String, Option<String>)] {
+    &panel.iter().find(|(h, _)| h == heading).unwrap_or_else(|| panic!("no {heading:?} section in {:?}",
+        panel.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>())).1
+}
+
+/// **S17 + N1: the two Sort & Filter panels speak one vocabulary.** Section words (Show / Sort /
+/// Filter), one sentence-case name per fact ("Rating", not "Critic Rating" on one page and
+/// "Rating" on the other), and the checked sort row's value is a WORD for the direction, the same
+/// word for the same order on either page ("A–Z" for a title, "Newest first" for a date).
+#[test]
+fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
+    // The Watchlist: Date added, newest first, is what a fresh list ticks.
+    let mut w = mixed_list("h2a-vocab-watchlist");
+    w.press(Key::Up);
+    w.press(Key::Ok);
+    let wl = watchlist_panel(&w);
+    assert_eq!(wl.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(), ["Show", "Sort", "Filter"]);
+    let sort = section(&wl, "Sort");
+    assert_eq!(sort.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["Date added", "Title", "Release date", "Rating"]);
+    assert_eq!(sort[0].1.as_deref(), Some("Newest first"), "the direction is the checked row's value word");
+    assert!(sort[1..].iter().all(|(_, v)| v.is_none()), "only the checked row carries one");
+    // Sort > Title: ascending is its natural order.
+    for _ in 0..4 { w.press(Key::Down); }
+    w.press(Key::Ok);
+    assert_eq!(section(&watchlist_panel(&w), "Sort")[1].1.as_deref(), Some("A–Z"));
+    drop(w);
+
+    // The Library: the same facts, the same words, from the server's own list.
+    let mut w = World::movies_library("h2a-vocab-library", false);
+    let entry = |key: &str, title: &str, default_desc: bool| plx_data::browse::SortEntry {
+        key: key.into(), desc_key: String::new(), title: title.into(), default_desc };
+    // What a PMS declares for a movie library (tests/mock_pms.py), titles as the server writes them.
+    w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(vec![
+        entry("titleSort", "Title", false), entry("addedAt", "Date Added", true),
+        entry("originallyAvailableAt", "Release Date", true), entry("rating", "Critic Rating", true),
+        entry("lastViewedAt", "Date Viewed", true)], Vec::new());
+    w.frames(30);
+    w.press(Key::Right);
+    w.press(Key::Right);
+    w.press(Key::Ok);
+    let lib = library_panel(&w);
+    let headings: Vec<_> = lib.iter().map(|(h, _)| h.as_str()).collect();
+    assert_eq!(headings, ["Sort", "Filter"], "a Movies library offers one type, so no Show section");
+    let sort = section(&lib, "Sort");
+    let labels: Vec<_> = sort.iter().map(|(l, _)| l.as_str()).collect();
+    for (ours, theirs) in [("Title", "Title"), ("Date added", "Date Added"), ("Release date", "Release Date"), ("Rating", "Critic Rating")] {
+        assert!(labels.contains(&ours), "the Library names the fact {ours:?}: {labels:?}");
+        assert!(ours == theirs || !labels.contains(&theirs), "and not by the server's {theirs:?}: {labels:?}");
+    }
+    assert_eq!(sort.iter().find(|(l, _)| l == "Title").and_then(|(_, v)| v.as_deref()), Some("A–Z"),
+        "the Library's checked Title row says the same word the Watchlist's does");
 }
