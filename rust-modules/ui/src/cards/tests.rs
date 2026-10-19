@@ -65,11 +65,13 @@ struct Cards {
     first: usize,
     /// The dive's sweep ([`CardSource::sweep`]).
     sweep: f32,
+    /// Every card carries a two-line caption (the Under posters setting's title over its details).
+    captioned: bool,
 }
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false }
     }
 }
 
@@ -89,8 +91,12 @@ impl CardSource<FixtureHost> for Cards {
     fn art(&self, _i: usize) -> Art<'_> {
         Art::Poster(None)
     }
-    fn label(&self, _i: usize) -> TileLabel {
-        TileLabel::default()
+    fn label(&self, i: usize) -> TileLabel {
+        if self.captioned {
+            TileLabel::from_lines([Some(format!("Title {}", self.elems[i])), Some("2005 \u{b7} 1h 40m".into())])
+        } else {
+            TileLabel::default()
+        }
     }
     fn sweep(&self) -> f32 {
         self.sweep
@@ -4033,5 +4039,133 @@ fn the_conformance_cases_and_the_removal_contract_pass_with_landings_animated() 
     let _guard = plx_base::testlock::serial();
     for (screen, mount) in table {
         assert_eq!(conformance::removal_focuses_next(mount), Outcome::Pass, "{screen}");
+    }
+}
+
+// ---- the caption band --------------------------------------------------------------------
+
+/// What one grid row's caption and caption band did on one frame.
+#[derive(Clone, Copy, Debug)]
+struct RowFrame {
+    /// The caption's painted alpha (0 when no caption of the row is on screen).
+    alpha: f32,
+    /// How open the row's band is, 0..1: the spring the layout reads for the row's gap.
+    open: f32,
+}
+
+/// A six-column grid under the two-line Under posters policy (a 112 px band) with focus seated on
+/// card 0, its band open. Frame by frame, `downs` are the frames a Down lands on (`FocusMoved` by
+/// `Dir`, then the tick), over `frames` frames; the result is, per row, what its caption and its
+/// band did on each frame: sample 0 is the settled frame before the first move, sample `n + 1` the
+/// frame `n` drew.
+fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFrame>> {
+    let cols = poster_grid::COLS;
+    let mut r = Rig::<Grid>::new(rows * cols);
+    r.src.captioned = true;
+    r.sect.set_caption_policy(crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: crate::caption_policy::DetailsKind::YearLength,
+    });
+    r.land_focus(100, By::Restore);
+    r.run(40);
+    let mut trace = vec![Vec::new(); rows];
+    let mut sample = |r: &Rig<Grid>| {
+        let cx = r.cx();
+        let f = DrawFrame::new(&cx, Painter::root());
+        let painted = r.sect.caption_probe(&f, f.painter, &r.src);
+        let bands = r.sect.band_geometry();
+        for (row, series) in trace.iter_mut().enumerate() {
+            series.push(RowFrame {
+                alpha: painted.iter().filter(|(i, _)| i / cols == row).map(|(_, a)| a).sum(),
+                open: bands.iter().find(|b| b.row == row).map_or(0.0, |b| b.expansion),
+            });
+        }
+    };
+    // the settled frame the first move starts from: sample 0
+    sample(&r);
+    let mut at = 0;
+    for frame in 0..frames {
+        if downs.contains(&frame) {
+            at += 1;
+            r.land_focus(100 + (at * cols) as u32, By::Dir);
+        }
+        r.run(1);
+        sample(&r);
+    }
+    trace
+}
+
+/// **A caption is the band's content: it fades with the band it sits in.** A Down closes the
+/// departing row's band and opens the arriving row's over the same few frames, and the caption of
+/// each follows ITS band's progress, never a cut and never a late arrival:
+///
+/// * the departing caption was cut in one frame (full on the frame before, gone on the next) while
+///   its gap was still closing, because only the FOCUSED card drew one;
+/// * the arriving caption stayed off until the gap was nearly open (a curve solved against the
+///   next shelf's heading, which a grid has no use for), so for the middle of the move no caption
+///   was on screen at all.
+///
+/// Read through `caption_probe`, the same decision `draw` paints, so the culling a row meets as it
+/// scrolls off the top is part of what is asserted.
+fn assert_captions_follow_their_bands(trace: &[Vec<RowFrame>]) {
+    for (row, series) in trace.iter().enumerate() {
+        for (t, w) in series.windows(2).enumerate() {
+            let jump = (w[1].alpha - w[0].alpha).abs();
+            assert!(jump <= 0.35, "row {row}: the caption jumped {jump:.2} between frames {t} and {} \
+                (alpha {:.2} -> {:.2}, band open {:.2} -> {:.2})", t + 1, w[0].alpha, w[1].alpha, w[0].open, w[1].open);
+        }
+        for (t, w) in series.iter().enumerate() {
+            assert!(w.open < 0.5 || w.alpha > 0.0,
+                "row {row} frame {t}: its band is {:.2} open and its caption is not on screen", w.open);
+            assert!(w.open > 0.0 || w.alpha == 0.0, "row {row} frame {t}: a caption under a closed band");
+        }
+    }
+    // never a frame mid-move with no caption anywhere while any gap is more than half open
+    for t in 0..trace[0].len() {
+        let open = trace.iter().map(|s| s[t].open).fold(0.0, f32::max);
+        let shown = trace.iter().map(|s| s[t].alpha).fold(0.0, f32::max);
+        assert!(open <= 0.5 || shown > 0.0, "frame {t}: a gap is {open:.2} open and no row shows a caption");
+    }
+}
+
+#[test]
+fn a_down_fades_the_departing_caption_out_and_the_arriving_one_in_with_their_bands() {
+    let trace = caption_trace(4, &[0], 60);
+    // the band the move leaves was open and showing its whole caption; it ends closed and bare
+    assert!(trace[0][0].open > 0.99 && trace[0][0].alpha > 0.99, "the move starts from an open band: {:?}", trace[0][0]);
+    assert!(trace[1].last().unwrap().alpha > 0.99, "the arriving caption settles whole: {:?}", trace[1].last());
+    assert!(trace[0].last().unwrap().alpha < 0.01, "the departing caption is gone once its band is closed");
+    assert_captions_follow_their_bands(&trace);
+}
+
+#[test]
+fn a_fast_repeat_of_downs_never_cuts_a_caption() {
+    // six Downs seven frames apart, a row each: bands are opened and closed before any settles
+    let trace = caption_trace(8, &[0, 7, 14, 21, 28, 35], 90);
+    assert_captions_follow_their_bands(&trace);
+}
+
+/// **One hand-over, on the one progress, from the key frame.** The departing and the arriving
+/// caption are `out = 1 - in` of the band spring that moves their gaps (the rule the Grid landing's
+/// leaving copy and arriving card are drawn by, `Landing::leaving`): each caption's alpha IS its
+/// own band's expansion, with no easing laid over the spring's own. Eased again, the hand-over
+/// is invisible on the key frame (the caption moved 0.1 % while its gap had opened 2 %) and the
+/// arriving caption is still 5 % in when its gap is 14 % open: it starts late, not in the scroll's
+/// first half.
+#[test]
+fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
+    let trace = caption_trace(4, &[0], 30);
+    // sample 1 is the frame the key lands on: both captions are already moving
+    assert!(trace[0][1].alpha < 0.99 && trace[1][1].alpha > 0.01,
+        "the hand-over does not start on the key frame: out {:?}, in {:?}", trace[0][1], trace[1][1]);
+    // through the move, each caption is its band's progress and the pair is complementary
+    for t in 0..=14 {
+        let (out, inn) = (trace[0][t], trace[1][t]);
+        assert!((out.alpha - out.open).abs() < 0.01,
+            "frame {t}: the departing caption {:.3} is not its band's progress {:.3}", out.alpha, out.open);
+        assert!((inn.alpha - inn.open).abs() < 0.01,
+            "frame {t}: the arriving caption {:.3} is not its band's progress {:.3}", inn.alpha, inn.open);
+        assert!((out.alpha + inn.alpha - 1.0).abs() < 0.01,
+            "frame {t}: out {:.3} + in {:.3} is not one hand-over", out.alpha, inn.alpha);
     }
 }
