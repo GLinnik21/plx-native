@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-19T22:01:40Z",
+ "generated": "2026-10-19T22:17:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -28.3,
-   "change7_pct": 40.5,
+   "change30_pct": -28.4,
+   "change7_pct": 40.3,
    "d30": 678.0,
-   "delta30": -192.0,
-   "delta7": 140.0,
+   "delta30": -192.5,
+   "delta7": 139.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 271,
+   "n_now": 272,
    "n_prev": 210,
-   "now": 486,
+   "now": 485.5,
    "prev7": 346.0,
    "shown": true,
    "state": "worse",
@@ -107,10 +107,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.4,
+   "change30_pct": -38.3,
    "change7_pct": 29.1,
-   "d30": 670.0,
-   "delta30": -257.0,
+   "d30": 669,
+   "delta30": -256,
    "delta7": 93,
    "group": "ci",
    "id": "push_wait",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.3,
+   "change30_pct": 94.7,
    "change7_pct": 13.6,
-   "d30": 1114,
-   "delta30": 1051.0,
+   "d30": 1112.0,
+   "delta30": 1053.0,
    "delta7": 260.0,
    "group": "ci",
    "id": "minutes",
@@ -289,7 +289,7 @@
   {
    "change30_pct": 37.7,
    "change7_pct": 5.3,
-   "d30": 231.0,
+   "d30": 231,
    "delta30": 87.0,
    "delta7": 16.0,
    "group": "ci",
@@ -329,10 +329,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 105.6,
+   "change30_pct": 104.7,
    "change7_pct": 6.0,
-   "d30": 116,
-   "delta30": 122.5,
+   "d30": 116.5,
+   "delta30": 122.0,
    "delta7": 13.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -350,10 +350,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 168.6,
+   "change30_pct": 164.8,
    "change7_pct": -39.9,
-   "d30": 70,
-   "delta30": 118.0,
+   "d30": 71.0,
+   "delta30": 117.0,
    "delta7": -125.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -501,7 +501,7 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
+   "d30": 16.0,
    "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 676.0,
-   "delta30": -673.0,
+   "d30": 675,
+   "delta30": -672.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -789,7 +789,7 @@
    "to": 393.5
   },
   {
-   "change_pct": 40.5,
+   "change_pct": 40.3,
    "commits": [
     {
      "pr": 846,
@@ -847,7 +847,7 @@
    "label": "PR CI wait",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 486
+   "to": 485.5
   },
   {
    "change_pct": 32.6,
