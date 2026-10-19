@@ -1,4 +1,4 @@
-{"updated":"2026-10-19T00:48:32Z",
+{"updated":"2026-10-19T01:02:14Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3036,7 +3036,8 @@
 {"id":39177874431,"at":"2026-10-18T23:46:00Z","sha":"046f3058d","title":"Dolby Vision: keep the declaration when the server copies the video","pr":839,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":137,"macOS simulator build + launch":220,"Windows launcher syntax":19,"Linux simulator build + launch":250}},
 {"id":39177957017,"at":"2026-10-18T23:47:14Z","sha":"7e9853903","title":"shot: a screenshot through the command API on the television","pr":841,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":265,"macOS simulator build + launch":203,"macOS tests against bundled FFmpeg and ASS":136,"Windows launcher syntax":16}},
 {"id":39177958417,"at":"2026-10-18T23:47:15Z","sha":"7adba8750","title":"api: GET /llm \u2014 the operator guide any LLM can curl","pr":842,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS simulator build + launch":184,"Linux simulator build + launch":238,"macOS tests against bundled FFmpeg and ASS":179}},
-{"id":39181999810,"at":"2026-10-19T00:42:46Z","sha":"3a2dcbc92","title":"Revert the first-poster arrival: a pill arrival seats the header row on purpose","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":189,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":132,"Linux simulator build + launch":290}}
+{"id":39181999810,"at":"2026-10-19T00:42:46Z","sha":"3a2dcbc92","title":"Revert the first-poster arrival: a pill arrival seats the header row on purpose","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":189,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":132,"Linux simulator build + launch":290}},
+{"id":39183186431,"at":"2026-10-19T00:58:40Z","sha":"213a3c598","title":"api: GET /llm \u2014 the operator guide any LLM can curl","pr":842,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":98,"macOS simulator build + launch":197,"Windows launcher syntax":18,"Linux simulator build + launch":197}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
