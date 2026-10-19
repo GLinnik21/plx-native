@@ -4414,8 +4414,10 @@ fn a_slid_row_names_its_cards_by_listing_position() {
 //
 // The chrome glass reuses its blur snapshot only while the draw arguments beneath it are unchanged,
 // and the wash is the bottom of every one of them: a wash re-keyed to each card a held key crosses
-// changes them every frame. These tests drive the real screen over a row whose cards each have a
-// colour of their own and read the four corner colours the wash RECORDS (`AmbientWash::drawn_corners`).
+// changes them every frame wherever it is not the plain ground under the band (a plain wash is
+// taken at composite, `backdrop::Ground`; hero art or a ramp knee under the band is not). These
+// tests drive the real screen over a row whose cards each have a colour of their own and read the
+// four corner colours the wash RECORDS (`AmbientWash::drawn_corners`).
 
 /// Twelve cards, card `i` keyed to a colour that is its own: a red ramp up, a blue ramp down.
 fn washed_snapshot() -> (plx_data::pms::PmsState, plx_data::pms::HubsSnapshot) {
