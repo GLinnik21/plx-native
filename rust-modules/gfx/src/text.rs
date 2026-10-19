@@ -213,9 +213,9 @@ static mut TLF_FADE: c_int = 0;
 static mut TLF_LEAD: c_int = 0;
 /// **Vertical edge-fade bands, in logical screen y** (the same absolute space `u_trect`'s `y`
 /// lives in) — the counterpart of [`TLF_FADE`]'s horizontal one. `(0.0, 0.0)` (the default, since
-/// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
-/// on a sentinel width like the horizontal band's, because a vertical band has no natural "past
-/// the string" edge to sentinel against. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
+/// `y1 > y0` is then false) means "off": the shader's gate skips the multiply. It is the same
+/// `to > from` gate the horizontal bands use ([`hband_uv`]), so neither axis needs a sentinel
+/// width to switch a band off. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
 /// replacement note in `screens::person_bio` for why this exists — a scrolling viewport's edge used to
 /// be an OPAQUE panel-coloured gradient painted over the glass, which read as a grey band rather
 /// than the text dissolving.

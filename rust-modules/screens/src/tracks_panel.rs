@@ -35,9 +35,11 @@
 //! **1. The feather is per-RUN, not per-pixel.** The design masks the scrolling body with an 88px
 //! `linear-gradient` at whichever edge has more content behind it. This renderer has no vertical
 //! mask: `fs_text_fade.frag` fades on `v_tuv.x` (a string's own width — `TextView::fade_last`'s
-//! right-edge dissolve) and there is no y-axis twin. So the ramp is applied as a CASCADE ALPHA per
-//! text run, evaluated at that run's cap-band centre ([`feather_alpha`]), inside a hard
-//! `Painter::clip` that bounds the band exactly. The body is 100% text, so nothing escapes it.
+//! right-edge dissolve) or, through its `u_vfadeT`/`u_vfadeB` bands (`Painter::text_fade_v`), on a
+//! glyph's absolute screen y, but this panel uses neither, and neither is a mask over its pixels.
+//! So the ramp is applied as a CASCADE ALPHA per text run, evaluated at that run's cap-band centre
+//! ([`feather_alpha`]), inside a hard `Painter::clip` that bounds the band exactly. The body is
+//! 100% text, so nothing escapes it.
 //!
 //! `table.rs` carries a warning that reads like a contradiction and is not: it replaced the track
 //! menu's old fade masks with a hard scissor because *"a tall two-line edge row is cut uniformly

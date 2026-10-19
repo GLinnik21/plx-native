@@ -188,15 +188,21 @@ fn the_skeleton_under_a_dissolving_poster_is_not_counted() {
 /// The frame structure is `app::run::draw`'s non-player path: the DISCOVERY walk
 /// (`backdrop::discover`), then one REPLAY of the page per stale glass source
 /// (`backdrop::enter(sources, ceiling)`, `blur_snapshot_direct`), then the VISIBLE walk
-/// (`glass.walk(Z::ALL)`, "main.ui"). Each walk draws the card, so each is an occurrence in
-/// `card_motion`'s history. A replay runs only on a frame whose glass source went stale, and the
-/// dissolve that starts when late art lands is exactly what makes the header glass's source stale:
-/// measured in the simulator (`frames/debug5/a1-coll-t3`), the seated tile had 2 draws a frame
-/// until its fan landed, then 3 for the ten frames of its dissolve. The visible walk's draw moved
-/// from occurrence 1 to occurrence 2, which had no sample the frame before, so it read as art
-/// "there from the first draw" and showed whole while the discovery and replay draws dissolved.
-/// A card whose art lands while a replay already ran the frame before (the Library's seated card,
-/// a1-lib) keeps its occurrence and dissolves, which is why only some seated cards popped.
+/// (`glass.walk(Z::ALL)`, "main.ui"). Every walk draws the card. Before the fix each walk's draw was
+/// its own occurrence in `card_motion`'s history, keyed by the draw's place in the whole frame. A
+/// replay runs only on a frame whose glass source went stale, and the dissolve that starts when late
+/// art lands is exactly what makes the header glass's source stale: measured in the simulator
+/// (`frames/debug5/a1-coll-t3`), the seated tile had 2 draws a frame until its fan landed, then 3
+/// for the ten frames of its dissolve. The visible walk's draw moved from occurrence 1 to occurrence
+/// 2, which had no sample the frame before, so it read as art "there from the first draw" and showed
+/// whole while the discovery and replay draws dissolved. A card whose art landed while a replay
+/// already ran the frame before (the Library's seated card, a1-lib) kept its occurrence and
+/// dissolved, which is why only some seated cards popped.
+///
+/// Now the history advances once per card per frame: occurrences count only within the current walk
+/// and the frame's later walks reuse the first walk's sample (`card_motion`'s module doc), so a
+/// replay that starts on the landing frame no longer moves the visible draw to an occurrence with no
+/// record.
 ///
 /// What the VISIBLE walk draws is what the panel shows; it must dissolve whatever replays ran.
 #[test]

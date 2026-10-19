@@ -127,6 +127,11 @@ impl History {
     /// One draw of `id` by walk `walk`. The draw's occurrence is its place among this walk's draws
     /// of the id. If this frame already has a sample for that occurrence (an earlier walk drew the
     /// card) the draw reuses it; otherwise it advances the history from the previous frame's sample.
+    /// The reuse stamps `sample.walk` with the reusing walk, so it holds only while no walk draws a
+    /// card both before AND after a nested walk (`enter`/`discover`) that also draws it: the outer
+    /// walk's earlier draw would no longer count as its own and its later draw would take the same
+    /// occurrence again. In production (`app/run.rs`) the visible walk draws nothing before the
+    /// discovery walk and the replays, which are leaf scopes.
     fn observe_in(&mut self, walk: u64, id: Identity, rect: Rect, ms: u32, limit: f32) -> Observed {
         if self.drawn_frame != self.frame {
             std::mem::swap(&mut self.previous, &mut self.current);
