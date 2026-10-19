@@ -258,5 +258,34 @@ fn the_first_shelf_starts_at_the_grid_top_under_the_title_row() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
     let page = fixture.screen();
-    assert_eq!(shelf_y(&page.run, 0, 0.0), 244.0, "the same grid top as the library page");
+    assert_eq!(shelf_y(&page.run, 0, 0.0) - TITLE_DY, 244.0, "the first heading starts on the library page's grid top");
+}
+
+/// **The first shelf's heading never reaches into the title row.** The breadcrumb row is the header
+/// row (148..204); the heading's drawn text must start clear of it (the grid convention: content at
+/// y 244), on the Recommended page at rest.
+#[test]
+fn the_first_shelf_heading_starts_clear_of_the_title_row() {
+    use plx_ui::screen::Screen;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 6);
+    let mut page = fixture.screen();
+    let engine = FocusEngine::new();
+    let cx = fixture.cx(engine.current(OWNER));
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        page.draw(&mut frame);
+    }
+    let paints: Vec<(String, [f32; 4])> = sources.borrow().paints.iter().map(|p| (p.kind().to_owned(), p.placed())).collect();
+    let title_row_bottom = plx_ui::page_header::TOP + plx_ui::page_header::HEIGHT;
+    let heading = paints.iter().filter(|(k, r)| k == "text" && r[1] > title_row_bottom - 20.0)
+        .map(|(_, r)| r[1]).fold(f32::INFINITY, f32::min);
+    // Clear of the row (204) AND its focus pill grown by the control scale, with air to spare.
+    let pill_bottom = plx_ui::page_header::TOP + plx_ui::page_header::HEIGHT * (1.0 + plx_ui::widgets::CTRL_FOCUS_SCALE) * 0.5
+        + (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 * plx_ui::page_header::HEIGHT;
+    assert!(heading >= title_row_bottom + 24.0 && heading >= pill_bottom + 24.0, "the first heading's text starts at {heading}");
+    assert_eq!(heading, 244.0, "…on the grid's content line");
 }
