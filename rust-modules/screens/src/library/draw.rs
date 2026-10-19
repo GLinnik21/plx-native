@@ -115,41 +115,17 @@ impl LibraryScreen {
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
             let p = f.painter.alpha(f.page_alpha);
-            self.latch_capsule_field(tuck);
             plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
-            if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
-                let (name, count) = super::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total(),
-                    plx_ui::scroll_capsule::label_budget(),
-                    |s| f.measure.width_str(s, theme::size::BODY, true),
-                    |s| f.measure.width_str(s, theme::size::CAPTION, false));
-                plx_ui::scroll_capsule::draw(p, &name, &count, ground, self.capsule_glass_field(), tuck, f.measure);
+            if super::scroll_chrome::capsule_shown(self.libraries.len()) {
+                if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
+                    let (name, count) = super::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total());
+                    plx_ui::scroll_capsule::draw(p, &name, &count, tuck, f.measure);
+                }
             }
-        }
-        if tuck <= 0.0 {
-            // Back at the top: the next scrolled stay latches the ground as it is THEN.
-            self.capsule_field.reset();
         }
         // A standing note, never a target: over the page, records no stop and no hit rect.
         self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);
         self.plaintext_alert.draw(f, self.entry);
-    }
-
-    /// The field the capsule stands on: its own latched ground, or `None` (the flat form) before
-    /// the latch lands. The one thing `draw` hands `scroll_capsule::draw`.
-    pub(super) fn capsule_glass_field(&self) -> Option<&plx_ui::underlay::UnderlayField> {
-        self.capsule_field.is_latched().then_some(&self.capsule_field)
-    }
-
-    /// **Latch the capsule's frozen ground** from the page ground's four corners (top-left,
-    /// top-right, bottom-right, bottom-left; the ground is already graded, so `Grade::Dim` is the
-    /// identity), once per scrolled stay. No framebuffer read and no backdrop entry.
-    pub(super) fn latch_capsule_field(&mut self, tuck: f32) {
-        if tuck <= 0.0 || self.capsule_field.is_latched() {
-            return;
-        }
-        let at = |x, y| self.ground.sample(Rect::FULL, x, y);
-        let corners = [at(0.0, 0.0), at(SCR_W, 0.0), at(SCR_W, SCR_H), at(0.0, SCR_H)];
-        self.capsule_field.latch_from_corners(corners, plx_ui::underlay::Grade::Dim);
     }
 
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {

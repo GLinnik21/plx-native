@@ -492,7 +492,7 @@ impl HoldHint {
 
 /// What the capsule wears over its backdrop: the track's rim and lit top edge, at the hint's own
 /// fixed scrim weight (`theme::HINT_GLASS_TOP`/`BOT`).
-fn glass_face() -> plx_gfx::gfx::GlassFace {
+pub(crate) fn glass_face() -> plx_gfx::gfx::GlassFace {
     plx_gfx::gfx::GlassFace {
         scrim_top: theme::HINT_GLASS_TOP,
         scrim_bot: theme::HINT_GLASS_BOT,

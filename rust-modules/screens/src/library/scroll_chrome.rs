@@ -5,7 +5,7 @@
 //! Everything here is a pure function of the scroll position and the layout's row pitch, so it
 //! adds no state to the screen (the tuck follows the `K_SCROLL` scroll spring the page already
 //! owns, and a resting page asks for no further frames). The pixels are `plx_ui::scroll_capsule`
-//! (frozen-ground glass, never live blur); this file owns WHEN and WHAT.
+//! (the nav pill's live glass); this file owns WHEN and WHAT.
 use std::ffi::CString;
 
 /// A row's top edge never rests above this y: it stays clear of the capsule (y 54 + 64 = 118).
@@ -27,22 +27,18 @@ pub(super) fn settle_scroll(scroll: f32, row_top_y: f32) -> f32 {
     (scroll - (SETTLE_MIN_Y - row_top_y).max(0.0)).max(0.0)
 }
 
-/// The capsule's two runs: the library's name, shortened (with an ellipsis) until the name, the gap
-/// and the count fit `budget`, and the count (never cut). `name_w` measures a name at its own size
-/// and weight, `count_w` the count at its.
-pub(super) fn capsule_parts(name: &str, total: i64, budget: f32, name_w: impl Fn(&str) -> f32,
-    count_w: impl Fn(&str) -> f32) -> (CString, CString)
-{
+/// The capsule's two runs: the library's whole name (never shortened: the capsule grows to hold
+/// it) and the count.
+pub(super) fn capsule_parts(name: &str, total: i64) -> (CString, CString) {
     let count = plx_platform::i18n::current().number(total);
-    let room = budget - plx_ui::scroll_capsule::NAME_COUNT_GAP - count_w(&count);
-    let mut chars: Vec<char> = name.chars().collect();
-    let mut text = name.to_owned();
-    while !chars.is_empty() && name_w(&text) > room {
-        chars.pop();
-        let cut: String = chars.iter().collect();
-        text = format!("{}\u{2026}", cut.trim_end());
-    }
-    (CString::new(text).unwrap_or_default(), CString::new(count).unwrap_or_default())
+    (CString::new(name).unwrap_or_default(), CString::new(count).unwrap_or_default())
+}
+
+/// Does the page show the capsule? It restates the library the header row names, so only a row
+/// that shows library names (2+ libraries) has anything to restate; a one-library page draws no
+/// capsule, though its chrome still tucks and its top fade stays.
+pub(super) fn capsule_shown(names_in_header: usize) -> bool {
+    names_in_header > 0
 }
 
 /// Focus on the grid's last column, one Right press from the rail: the rail shows itself ahead of
