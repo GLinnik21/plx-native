@@ -564,7 +564,7 @@ pub(super) fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
         }
         Item::Media(media) if media.year > 0 => parts.push(media.year.to_string()),
         // a collection is its size, in the one formatter every collection surface shares
-        Item::Collection(hit) => parts.push(plx_ui::fmt::item_count(hit.item.child_count)),
+        Item::Collection(hit) => parts.push(plx_ui::fmt::collection_count(hit.item.subtype.as_deref(), hit.item.child_count)),
         _ => {}
     }
     if !handle.is_empty() {

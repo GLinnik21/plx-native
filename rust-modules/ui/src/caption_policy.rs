@@ -126,12 +126,7 @@ fn resolution_mark(raw: &str) -> Option<String> {
 fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
-        let n = i64::from(f.child_count?);
-        return Some(match sub {
-            "movie" => msg::browse_person_films_in(cx, n),
-            "show" => msg::browse_person_shows_in(cx, n),
-            _ => msg::browse_search_items_in(cx, n),
-        });
+        return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
     }
     let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {

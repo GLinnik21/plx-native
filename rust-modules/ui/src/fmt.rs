@@ -107,10 +107,29 @@ pub fn episode_address(season: i64, index: i64) -> String {
     parts.join(" \u{b7} ")
 }
 
-/// A collection's size — `"1 item"`, `"12 items"`. ONE formatter for the collection page's meta
-/// line and every collection tile's caption, so the two cannot count one collection two ways.
+/// A collection's size in the noun of what it holds — `"6 films"`, `"3 shows"`, else `"12 items"` —
+/// from the collection's PMS `subtype` (a movie collection holds films, a show collection shows;
+/// anything else, or none known yet, is items). ONE formatter for the Collection page's meta line,
+/// every collection tile's caption (shelf, Collections page) and the search hit, so a collection is
+/// never "6 items" on one screen and "6 films" on the next.
+pub fn collection_count(subtype: Option<&str>, n: i64) -> String {
+    collection_count_in(plx_platform::i18n::current(), subtype, n)
+}
+
+/// [`collection_count`] in `cx`'s language, for the formatters that carry a locale.
+pub fn collection_count_in(cx: &plx_platform::i18n::LocaleContext, subtype: Option<&str>, n: i64) -> String {
+    use plx_platform::i18n::msg;
+    match subtype {
+        Some("movie") => msg::browse_person_films_in(cx, n),
+        Some("show") => msg::browse_person_shows_in(cx, n),
+        _ => msg::browse_search_items_in(cx, n),
+    }
+}
+
+/// A count of members with no kind known — `"1 item"`, `"12 items"`: [`collection_count`] before the
+/// subtype is.
 pub fn item_count(n: i64) -> String {
-    plx_platform::i18n::msg::browse_search_items(n)
+    collection_count(None, n)
 }
 
 pub fn episode_ordinal(season: i64, index: i64) -> String {
@@ -190,7 +209,23 @@ pub fn resolution(res: &str, width: i64, height: i64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolution;
+    use super::{collection_count, collection_count_in, resolution};
+
+    /// **One noun for a collection, from its subtype** (design review S20): the Collections page's
+    /// caption, the Collection screen's meta line, a shelf tile and a search hit all count through
+    /// this, so "6 items" and "6 films" cannot name one collection.
+    #[test]
+    fn a_collection_is_counted_in_the_noun_of_its_subtype() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        assert_eq!(collection_count(Some("movie"), 6), "6 films");
+        assert_eq!(collection_count(Some("movie"), 1), "1 film");
+        assert_eq!(collection_count(Some("show"), 3), "3 shows");
+        assert_eq!(collection_count(Some("episode"), 12), "12 items", "a subtype with no noun of its own is items");
+        assert_eq!(collection_count(None, 12), "12 items", "before the subtype is known");
+        assert_eq!(super::item_count(1), "1 item");
+        let de = plx_platform::i18n::LocaleContext::resolve(plx_platform::i18n::Preference::De, None, None, None, None);
+        assert_eq!(collection_count_in(&de, Some("movie"), 6), plx_platform::i18n::msg::browse_person_films_in(&de, 6));
+    }
 
     /// The mapping is fed PMS's own values, and PMS string-encodes them — including the ones that
     /// look like integers ("1080"), which is the case that must come out as "1080p" and not as a
