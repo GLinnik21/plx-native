@@ -37,7 +37,7 @@ fn region(w: &World) -> &'static str {
 }
 
 /// The Collection screen of the first collection the Collections page lists, its members landed.
-fn collection_screen(name: &str) -> World {
+pub(super) fn collection_screen(name: &str) -> World {
     let mut w = World::collections(name, false);
     w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);

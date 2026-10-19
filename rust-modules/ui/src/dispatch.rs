@@ -29,7 +29,7 @@ use super::input::{InputMachine, PressEvent};
 use plx_machine::machine::{
     Addr, Cx, Delivery, Edge, Effects, EntryId, FocusKey, FocusRead, Fx, GroupId, Handled, Host,
     InputEvent, InputKind, InputOwner, InstanceId, Key, MachineId, Measure, NavOp, PressArm,
-    PressFrom, PresentHandle, PressRead, RequestId, Stamped, StoreOrd, SystemInput, Tick, TimerId,
+    PressFrom, PresentHandle, PressRead, RequestId, ScreenId, Stamped, StoreOrd, SystemInput, Tick, TimerId,
 };
 use plx_machine::present::Present;
 use super::screen::{
@@ -316,6 +316,17 @@ impl<K: Copy> CxParts<K> {
             focus: self.focus.clone(),
             owner: self.owner,
         }
+    }
+
+    /// **A page's own context**: owned by `entry` (so `focus` is the engine's read for it) and with
+    /// the kind of page beneath it folded into the views ([`Host::views_over`]). The one spelling
+    /// of "the context this page prepares and draws with", so no page reads another's parent.
+    pub fn page_cx<'a, H: Host<Elem = K>>(&self, views: H::Views<'a>, measure: &'a dyn Measure,
+        entry: EntryId, focus: FocusRead<K>, beneath: Option<ScreenId>) -> Cx<'a, H> {
+        let mut cx = self.cx::<H>(H::views_over(views, beneath), measure);
+        cx.owner = InputOwner::Entry(entry);
+        cx.focus = focus;
+        cx
     }
 }
 
@@ -760,6 +771,14 @@ where
 
     fn ret(&self) -> ReturnState<H::Elem, H::Memory> {
         self.return_state()
+    }
+
+    /// The context `entry` prepares and draws with this frame, built the way the page pass builds
+    /// it ([`CxParts::page_cx`]): what a caller outside the frame reads a page's declarations
+    /// through (`Screen::crumb`), so it sees what the frame draws.
+    pub fn page_cx<'a>(&self, tick: Tick, entry: EntryId, views: H::Views<'a>, measure: &'a dyn Measure) -> Cx<'a, H> {
+        self.parts(tick).page_cx::<H>(views, measure, entry,
+            self.input.engine.read(InputOwner::Entry(entry)), self.nav.tabs.stack.beneath_id(entry))
     }
 
     pub fn parts(&self, tick: Tick) -> CxParts<H::Elem> {
@@ -1283,10 +1302,10 @@ where
             let Dispatcher { nav, input, budget, .. } = self;
             let Split { views, measure, .. } = rig.split();
             if host_render == HostRender::Live {
+                let beneath = nav.tabs.stack.top().and_then(|e| nav.tabs.stack.beneath_id(e.id));
                 if let Some(e) = nav.tabs.stack.top_mut() {
-                    let mut page_cx = parts.cx::<H>(views, measure);
-                    page_cx.owner = InputOwner::Entry(e.id);
-                    page_cx.focus = input.engine.read(page_cx.owner);
+                    let page_cx = parts.page_cx::<H>(views, measure, e.id,
+                        input.engine.read(InputOwner::Entry(e.id)), beneath);
                     if let Some(inst) = e.inst.as_mut() {
                         inst.screen.prepare(budget, &page_cx);
                     }
@@ -1511,6 +1530,10 @@ where
         );
         if let Some(target) = warm {
             plx_gfx::text::clear_prewarm();
+            let beneath = match target {
+                PrewarmTarget::Pending => nav.tabs.stack.top().map(|top| top.arg.id()),
+                PrewarmTarget::HeldTop => nav.tabs.stack.top().and_then(|top| nav.tabs.stack.beneath_id(top.id)),
+            };
             let entry = match target {
                 PrewarmTarget::Pending => nav.tabs.stack.pending_target_mut(),
                 PrewarmTarget::HeldTop => nav.tabs.stack.top_mut(),
@@ -1518,9 +1541,8 @@ where
             if let Some(entry) = entry {
                 if let Some(inst) = entry.inst.as_mut() {
                     let Split { views, measure, .. } = rig.split();
-                    let mut warm_cx = parts.cx::<H>(views, measure);
-                    warm_cx.owner = InputOwner::Entry(entry.id);
-                    warm_cx.focus = input.engine.read(warm_cx.owner);
+                    let warm_cx = parts.page_cx::<H>(views, measure, entry.id,
+                        input.engine.read(InputOwner::Entry(entry.id)), beneath);
                     let mut f = DrawFrame::with_navigation(
                         &warm_cx,
                         Painter::recording(),
@@ -1547,15 +1569,18 @@ where
             let n = nav.tabs.stack.entries.len();
             let top_entry = nav.tabs.stack.top().map(|entry| entry.id);
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
+            // The page beneath each drawn page, read before the entries are borrowed mutably: at
+            // most two are drawn (the top and, under a push or pop, the level below it).
+            let beneath = [from.checked_sub(1).map(|i| nav.tabs.stack.entries[i].arg.id()),
+                (from + 1 < n).then(|| nav.tabs.stack.entries[from].arg.id())];
             for (index, e) in nav.tabs.stack.entries[from..].iter_mut().enumerate() {
                 let page_z = Z::page(index);
                 if page_z >= ceiling { break; }
                 let _page_layer = backdrop::layer(page_z, false);
                 if let Some(inst) = e.inst.as_mut() {
                     let Split { views, measure, .. } = rig.split();
-                    let mut page_cx = parts.cx::<H>(views, measure);
-                    page_cx.owner = InputOwner::Entry(e.id);
-                    page_cx.focus = input.engine.read(page_cx.owner);
+                    let page_cx = parts.page_cx::<H>(views, measure, e.id,
+                        input.engine.read(InputOwner::Entry(e.id)), beneath[index.min(1)]);
                     use super::containers::transition::PagePaint;
                     let capture_guard = if paint.captures_page() && !source_pass {
                         super::containers::transition::PageCapture::begin(page_snapshot.as_mut())

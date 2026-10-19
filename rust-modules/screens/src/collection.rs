@@ -512,22 +512,20 @@ impl Page {
         Rect::new(COL_X, HEADER_TOP - CRUMB_RISE - scroll, TEXT_W, CRUMB_BAND)
     }
 
-    /// The place BACK returns to, named by the parent page's own title string (the Library's
-    /// Collections page heads itself with the same catalog entry).
-    fn back_to() -> &'static str { plx_platform::i18n::msg::browse_kind_collections() }
-
     /// The collection's art, scrolled with the document.
     fn art_rect(scroll: f32) -> Rect {
         Rect::new(MARGIN_X, HEADER_TOP - scroll, ART_W, ART_H)
     }
 
-    fn draw_header(&self, p: Painter, collection: &Collection, focused: bool,
+    fn draw_header(&self, p: Painter, collection: &Collection, focused: bool, back_to: Option<&str>,
         measure: &dyn plx_machine::machine::Measure, scroll: f32) {
         let dy = -scroll;
         let alpha = head_alpha(scroll);
         if alpha <= 0.0 { return; }
         let p = p.alpha(alpha);
-        route_screen::draw_back_crumb(p, Self::crumb_band(scroll), Self::back_to(), measure);
+        if let Some(back_to) = back_to {
+            route_screen::draw_back_crumb(p, Self::crumb_band(scroll), back_to, measure);
+        }
         let art = Self::art_rect(scroll);
         let name = if collection.title.is_empty() { &collection.id.name } else { &collection.title };
         if collection.header_ready() && collection.thumb.is_empty() {
@@ -663,7 +661,7 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         let on = |elem: u32| f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == elem);
         match k {
             Sec::Head => if let Some(collection) = collection.filter(|c| CollectionScreen::shows_head(c)) {
-                self.draw_header(p, collection, on(HEADER_ELEM), f.measure, scroll);
+                self.draw_header(p, collection, on(HEADER_ELEM), H::back_to(f.cx).as_deref(), f.measure, scroll);
             },
             Sec::Status => if collection.is_none_or(|c| c.status != CollectionStatus::Ready) {
                 let overlay = CollectionScreen::status_overlay(collection, f.cx.tick.ms, f.measure).focused(on(RETRY_ELEM));
@@ -1047,7 +1045,9 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
-    fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { Some(std::borrow::Cow::Borrowed(Page::back_to())) }
+    fn crumb(&self, cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
+        H::back_to(cx).map(|name| std::borrow::Cow::Owned(name.into_owned()))
+    }
     fn prepare(&mut self, _budget: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
