@@ -1044,6 +1044,9 @@ struct RootState {
     auto_sign_in: bool,
     trailer_autoplay: bool,
     language: plx_platform::i18n::Preference,
+    /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
+    /// when it is not the default, so every default root's digest is unchanged.
+    under_posters: plx_plex::plex::session::UnderPosters,
     /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
     /// one, so every other root's digest is unchanged.
     plaintext: Vec<bool>,
@@ -1052,6 +1055,9 @@ struct RootState {
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
         w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
+        if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
+            w.u8(self.under_posters.pack());
+        }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1102,6 +1108,9 @@ struct RootInputs {
     /// builder stays pure and a test can state either answer.
     resolution_offered: bool,
     language: plx_platform::i18n::Preference,
+    /// What shows under a poster (the stored setting, read at the build), which the Under posters
+    /// row summarises the way Language shows its name.
+    under_posters: plx_plex::plex::session::UnderPosters,
     /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
     /// an answered/offered plaintext question.
     plaintext: Vec<PlaintextRowInput>,
@@ -1135,6 +1144,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Action::Door,
             Row::new(plx_platform::i18n::msg::under_posters_title())
                 .detail(plx_platform::i18n::msg::under_posters_detail())
+                .value(under_posters::summary(inputs.under_posters))
                 .chevron(true),
         );
     let playback = FormSection::new(plx_platform::i18n::msg::settings_playback_section())
@@ -1266,6 +1276,7 @@ impl RootPage {
                 auto_sign_in: false,
                 trailer_autoplay: true,
                 language: plx_platform::i18n::Preference::System,
+                under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
             },
         };
@@ -1293,10 +1304,12 @@ impl RootPage {
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
         self.state.language = plx_platform::i18n::saved_preference();
+        self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language, plaintext,
+            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
+            under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
         self.form.table.compact = false;

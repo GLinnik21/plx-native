@@ -45,6 +45,20 @@ fn details_label(d: UnderPostersDetails) -> &'static str {
     }
 }
 
+/// **The Settings root's value for the Under posters row**: the details line the page's Details row
+/// reads ("Year · Length", "Genre"), the way Language reads its language. The Title switch adds a
+/// bold line above it and is the page's own row; it shows here only when it is all there is ("Title"),
+/// so the value is never "Nothing" beside a poster that wears its name. Kept to the details label's
+/// width because the row's sub-line shares the label column with the value, and a longer value
+/// (title and details together) put an ellipsis on the sub-line in several languages.
+pub(super) fn summary(v: UnderPosters) -> String {
+    use plx_platform::i18n::msg;
+    match (v.details, v.title) {
+        (UnderPostersDetails::None, true) => msg::under_posters_title_row().to_string(),
+        (details, _) => details_label(details).to_string(),
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum UpId {
     Title,
