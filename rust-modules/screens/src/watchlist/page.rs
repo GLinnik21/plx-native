@@ -1205,8 +1205,8 @@ impl WatchlistScreen {
         self.page.handoff.tuck()
     }
 
-    /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground, as the
-    /// Library draws it. No capsule: the header names no library, so there is nothing to restate
+    /// The page's own top edge once the chrome has tucked away: the eased 72 px fade of the ground, as
+    /// the Library draws it. No capsule: the header names no library, so there is nothing to restate
     /// (`plx_ui::scroll_chrome::capsule_shown(0)` is false; the Library asks it of its own header).
     fn draw_chrome<H: ContentLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let tuck = self.tuck();
@@ -1214,7 +1214,7 @@ impl WatchlistScreen {
             return;
         }
         let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
-        plx_ui::scroll_capsule::draw_top_fade(f.painter.alpha(f.page_alpha), SCR_W, ground, tuck);
+        plx_ui::scroll_capsule::draw_top_fade(f.painter.alpha(f.page_alpha), SCR_W, ground, tuck, None);
     }
 
     /// Test support: register the stops the grid draws (`Grid::record_stops`).

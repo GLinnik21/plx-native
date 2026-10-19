@@ -1,7 +1,18 @@
 //! **The scroll capsule and the top fade** — what a long page leaves on screen when its header and
 //! the app's top chrome have tucked away: a small capsule that keeps your place ("Films 1,284"),
-//! and a 72 px fade of the page's own ground colour at the top edge so rows leave under it instead
-//! of being cut off.
+//! and a fade of the page's own ground colour at the top edge so rows leave under it instead of
+//! being cut off.
+//!
+//! **The fade is eased, and reaches through the capsule.** Its alpha falls along a smoothstep, not a
+//! straight line: a linear ramp breaks slope where it ends, and over saturated poster art that
+//! break reads as a bright band at y 72. It is [`FADE_H`] deep on its own; while the capsule shows
+//! it reaches [`FADE_BELOW_CAPSULE`] past the capsule's own measured bottom edge, so the capsule's
+//! lower half does not sit on full-strength art (the capsule's rect is the one source of that
+//! extent, there is no second literal). The deeper profile arrives with the capsule's alpha, so the
+//! strips stand still and only their alpha moves. The UI has no gradient primitive with an eased
+//! ramp; [`Painter::rect`] is the two-stop gradient, so the ease is laid the way the hero scrim and
+//! the skeleton do it: abutting [`FADE_STEP`] px strips whose stops are the curve at their edges
+//! ([`fade_strips`]); the chord error is at most about half a percent of alpha.
 //!
 //! **Live liquid glass, the material the top navigation pill wears.** The capsule is a
 //! `Glass::DYNAMIC_BACKDROP` surface: the same standing container (`GlassRim::Standing`,
@@ -38,6 +49,11 @@ pub const PAD_R: f32 = 28.0;
 pub const NAME_COUNT_GAP: f32 = 10.0;
 /// Height of the fade at the page's top edge, painted in the ambient ground colour, never black.
 pub const FADE_H: f32 = 72.0;
+/// How far the fade reaches below the capsule's bottom edge while the capsule shows: the capsule's
+/// bottom (118) plus this is the fade's depth, about 130.
+pub const FADE_BELOW_CAPSULE: f32 = 12.0;
+/// Height of one strip of the fade: the knots the smoothstep is sampled at. 72 is twelve of them.
+pub const FADE_STEP: f32 = 6.0;
 
 fn run_w(s: &CStr, size: i32, bold: bool, measure: &dyn Measure) -> f32 {
     measure.width(s, size, bold)
@@ -50,19 +66,50 @@ pub fn width(name: &CStr, count: &CStr, measure: &dyn Measure) -> f32 {
         + run_w(count, theme::size::CAPTION, false, measure) + PAD_R
 }
 
-/// The fade's two stops, top to bottom: the ground colour opaque at the very edge, clear at
-/// [`FADE_H`] down. Shared by [`draw_top_fade`] and its test.
-pub fn fade_stops(ground: [f32; 3]) -> ([f32; 4], [f32; 4]) {
-    ([ground[0], ground[1], ground[2], 1.0], [ground[0], ground[1], ground[2], 0.0])
+/// The ground's alpha `y` px down the page's top edge: `1 - smoothstep(y / depth)`, opaque at the
+/// very edge and clear at `depth`, with no slope at either end. `wide` (0..=1, the capsule's alpha)
+/// moves the depth from [`FADE_H`] to `reach` by crossfading the two curves, so the strips stay put.
+pub fn fade_alpha(y: f32, reach: f32, wide: f32) -> f32 {
+    let edge = |depth: f32| {
+        let t = (y / depth).clamp(0.0, 1.0);
+        1.0 - t * t * (3.0 - 2.0 * t)
+    };
+    let near = edge(FADE_H);
+    near + (edge(reach.max(FADE_H)) - near) * wide.clamp(0.0, 1.0)
 }
 
-/// The top-edge fade over a `width` wide page, at `alpha` (the tuck: 0 draws nothing).
-pub fn draw_top_fade(p: Painter, width: f32, ground: [f32; 3], alpha: f32) {
+/// The fade's depth while a capsule at `capsule` shows: [`FADE_BELOW_CAPSULE`] below its bottom edge,
+/// never less than [`FADE_H`].
+pub fn fade_reach(capsule: Rect) -> f32 {
+    (capsule.y + capsule.h + FADE_BELOW_CAPSULE).max(FADE_H)
+}
+
+/// The fade as abutting strips, top to bottom: `(y, h, top stop, bottom stop)`, every stop the
+/// ground colour at [`fade_alpha`] of the strip's edge. `capsule` is the capsule's measured rect and
+/// its alpha while it shows (`None`: [`FADE_H`] deep). Strips that are clear at both edges are not
+/// produced.
+pub fn fade_strips(ground: [f32; 3], capsule: Option<(Rect, f32)>) -> impl Iterator<Item = (f32, f32, [f32; 4], [f32; 4])> {
+    let (reach, wide) = capsule.map_or((FADE_H, 0.0), |(r, a)| (fade_reach(r), a));
+    let depth = if wide > 0.0 { reach } else { FADE_H };
+    let n = (depth / FADE_STEP).ceil() as usize;
+    let colour = move |y: f32| [ground[0], ground[1], ground[2], fade_alpha(y, reach, wide)];
+    (0..n).filter_map(move |k| {
+        let (y0, y1) = (k as f32 * FADE_STEP, ((k + 1) as f32 * FADE_STEP).min(depth));
+        let (top, bottom) = (colour(y0), colour(y1));
+        (top[3] > 0.0 || bottom[3] > 0.0).then_some((y0, y1 - y0, top, bottom))
+    })
+}
+
+/// The top-edge fade over a `width` wide page, at `alpha` (the tuck: 0 draws nothing). `capsule` is
+/// the capsule's measured rect and its alpha while it is drawn, `None` for a page that wears none.
+pub fn draw_top_fade(p: Painter, width: f32, ground: [f32; 3], alpha: f32, capsule: Option<(Rect, f32)>) {
     if alpha <= 0.0 {
         return;
     }
-    let (top, bottom) = fade_stops(ground);
-    p.alpha(alpha).rect(Rect::new(0.0, 0.0, width, FADE_H), 0.0, top, bottom, 0.0);
+    let p = p.alpha(alpha);
+    for (y, h, top, bottom) in fade_strips(ground, capsule) {
+        p.rect(Rect::new(0.0, y, width, h), 0.0, top, bottom, 0.0);
+    }
 }
 
 /// The capsule's rectangle for `name` and `count`.

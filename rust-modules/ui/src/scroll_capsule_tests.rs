@@ -56,12 +56,99 @@ fn the_count_is_caption_size_regular_and_secondary_while_the_name_stays_body_bol
     assert_eq!(count.at.x, name.at.x + name.at.w + NAME_COUNT_GAP);
 }
 
+const GROUND: [f32; 3] = [0.2, 0.3, 0.4];
+
+fn capsule_rect() -> Rect {
+    let (n, c) = (std::ffi::CString::new("Films").unwrap(), std::ffi::CString::new("1,284").unwrap());
+    rect(&n, &c, &Fixed)
+}
+
+/// The fade's alpha at each strip edge, top to bottom, with the strips checked to abut as it goes.
+fn edge_alphas(capsule: Option<(Rect, f32)>) -> Vec<(f32, f32)> {
+    let mut edges: Vec<(f32, f32)> = Vec::new();
+    for (y, h, top, bottom) in fade_strips(GROUND, capsule) {
+        assert_eq!(&top[..3], &GROUND, "the ground colour at the top edge of the strip at {y}");
+        assert_eq!(&bottom[..3], &GROUND, "and at its bottom edge: no grey band through black");
+        match edges.last() {
+            Some(&(prev_y, prev_a)) => assert_eq!((prev_y, prev_a), (y, top[3]), "strips abut and share their stop"),
+            None => edges.push((y, top[3])),
+        }
+        edges.push((y + h, bottom[3]));
+    }
+    edges
+}
+
 #[test]
 fn the_fade_runs_from_opaque_ground_to_clear_in_the_ground_colour() {
-    let (top, bottom) = fade_stops([0.2, 0.3, 0.4]);
-    assert_eq!(&top[..3], &bottom[..3], "same hue at both stops: no grey band through black");
-    assert_eq!((top[3], bottom[3]), (1.0, 0.0));
+    let edges = edge_alphas(None);
+    assert_eq!(edges.first(), Some(&(0.0, 1.0)), "opaque at the very edge");
+    assert_eq!(edges.last(), Some(&(FADE_H, 0.0)), "clear at FADE_H down, and nothing drawn past it");
     assert_eq!(FADE_H, 72.0);
+    assert!(edges.windows(2).all(|w| w[1].1 <= w[0].1), "it only ever falls");
+}
+
+/// **The ramp is eased, not linear**: a straight line from opaque to clear breaks slope at its end,
+/// and over saturated art that break reads as a bright band. The first and last strips fall by less
+/// than half a linear step, the middle ones by more.
+#[test]
+fn the_fade_eases_in_and_out_instead_of_ending_in_a_slope_break() {
+    let edges = edge_alphas(None);
+    let linear = FADE_STEP / FADE_H;
+    let drops: Vec<f32> = edges.windows(2).map(|w| w[0].1 - w[1].1).collect();
+    assert_eq!(drops.len(), 12);
+    assert!(drops[0] < linear * 0.5 && drops[11] < linear * 0.5, "ends are flat: {drops:?}");
+    assert!(drops[5] > linear * 1.3 && drops[6] > linear * 1.3, "the middle is steeper than a line: {drops:?}");
+    for (y, a) in &edges {
+        let t = y / FADE_H;
+        let exact = 1.0 - t * t * (3.0 - 2.0 * t);
+        assert!((a - exact).abs() < 1e-6, "the stop at {y} is the smoothstep exactly");
+    }
+}
+
+/// **The fade reaches through the capsule, and the capsule's rect is where it learns how far.**
+/// 12 px below the capsule's bottom edge, not a second literal: a capsule that stood lower would
+/// pull the fade down with it.
+#[test]
+fn the_fade_reaches_through_the_capsule_band_to_its_measured_bottom_plus_a_pad() {
+    let r = capsule_rect();
+    assert_eq!(fade_reach(r), r.y + r.h + FADE_BELOW_CAPSULE);
+    assert_eq!(fade_reach(r), 130.0);
+    assert_eq!(fade_reach(Rect::new(r.x, r.y + 20.0, r.w, r.h)), 150.0, "taken from the rect");
+    assert_eq!(fade_reach(Rect::new(0.0, 0.0, 10.0, 10.0)), FADE_H, "never shallower than the plain fade");
+    let edges = edge_alphas(Some((r, 1.0)));
+    assert_eq!(edges.first(), Some(&(0.0, 1.0)));
+    assert_eq!(edges.last(), Some(&(130.0, 0.0)), "clear at the reach");
+    assert!(edges.windows(2).all(|w| w[1].1 <= w[0].1), "still only falling");
+    let at = |y: f32| edges.iter().find(|e| e.0 >= y).unwrap().1;
+    assert!(at(FADE_H + FADE_STEP) > 0.1, "the veil is still there just past the plain fade's end");
+    assert!(at(r.y + r.h) > 0.0, "the capsule's lower edge is not on bare art");
+}
+
+/// **The deeper fade arrives with the capsule's alpha and the strips stand still**: only their alpha
+/// moves, so a capsule fading in does not slide a gradient edge down the page.
+#[test]
+fn the_capsule_alpha_moves_the_alpha_of_the_strips_not_their_geometry() {
+    let r = capsule_rect();
+    let ys = |a: f32| fade_strips(GROUND, Some((r, a))).map(|(y, h, ..)| (y, h)).collect::<Vec<_>>();
+    assert_eq!(ys(0.25), ys(1.0));
+    assert_eq!(edge_alphas(Some((r, 0.0))), edge_alphas(None), "a capsule at alpha 0 is the plain fade");
+    let (plain, half, full) = (edge_alphas(None), edge_alphas(Some((r, 0.5))), edge_alphas(Some((r, 1.0))));
+    let deep = |e: &[(f32, f32)]| e.iter().find(|e| e.0 >= 100.0).map_or(0.0, |e| e.1);
+    assert!(deep(&plain) == 0.0 && deep(&half) > 0.0 && deep(&full) > deep(&half), "alpha grows with the capsule's");
+}
+
+#[test]
+fn the_fade_paints_abutting_gradient_strips_across_the_page() {
+    use crate::popover_glass::tests::declared_all;
+    let _g = plx_base::testlock::serial();
+    let all = declared_all(|| draw_top_fade(Painter::root(), 1920.0, GROUND, 1.0, None));
+    let rects: Vec<[f32; 4]> = all.iter().filter(|p| p.kind() == "rect").map(|p| p.placed()).collect();
+    assert_eq!(rects.len(), 12, "twelve strips of {FADE_STEP}");
+    assert!(rects.iter().all(|r| r[0] == 0.0 && r[2] == 1920.0), "each the page's width");
+    assert_eq!(rects[0][1], 0.0);
+    assert!(rects.windows(2).all(|w| w[1][1] == w[0][1] + w[0][3]), "abutting, no seam");
+    let last = rects[11];
+    assert_eq!(last[1] + last[3], FADE_H);
 }
 
 /// **The capsule is the nav pill's LIVE glass**: one `backdrop` surface of the standing-container
@@ -100,7 +187,7 @@ fn a_zero_tuck_draws_nothing() {
     let (name, count) = (std::ffi::CString::new("Films").unwrap(), std::ffi::CString::new("1,284").unwrap());
     let all = declared_all(|| {
         draw(Painter::root(), &name, &count, 0.0, &Fixed);
-        draw_top_fade(Painter::root(), 1920.0, [0.2; 3], 0.0);
+        draw_top_fade(Painter::root(), 1920.0, [0.2; 3], 0.0, None);
     });
     assert!(all.is_empty());
 }

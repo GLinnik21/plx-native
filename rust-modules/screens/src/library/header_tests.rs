@@ -283,11 +283,20 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     let _guard = plx_base::testlock::serial();
     let (fixture, mut one, engine) = grid_page(1);
     let kinds = tucked_draw_kinds(&fixture, &mut one, &engine);
-    assert!(kinds.iter().any(|(k, r)| k == "rect" && r[3] == plx_ui::scroll_capsule::FADE_H), "the top fade stays");
+    assert!(kinds.iter().any(|(k, r)| k == "rect" && r[0] == 0.0 && r[1] == 0.0 && r[3] == plx_ui::scroll_capsule::FADE_STEP), "the top fade stays");
     assert!(kinds.iter().all(|(k, _)| k != "glass"), "one library: no names in the header, no capsule");
+    assert_eq!(kinds.iter().filter(|(k, r)| k == "rect" && r[0] == 0.0 && r[3] == plx_ui::scroll_capsule::FADE_STEP && r[1] < 200.0)
+        .map(|(_, r)| r[1] + r[3]).fold(0.0f32, f32::max), plx_ui::scroll_capsule::FADE_H, "and the fade stays the plain 72 deep");
     let (fixture, mut two, engine) = grid_page(2);
     let kinds = tucked_draw_kinds(&fixture, &mut two, &engine);
     assert!(kinds.iter().any(|(k, r)| k == "glass" && r[1] == plx_ui::scroll_capsule::Y), "two libraries: the capsule, as live glass");
+    // the ground fade reaches through the capsule's band while the capsule shows, 12 px past the
+    // capsule's own measured bottom, and only 72 deep on the one-library page that wears none
+    let depth = |kinds: &[(String, [f32; 4])]| {
+        kinds.iter().filter(|(k, r)| k == "rect" && r[0] == 0.0 && r[2] == SCR_W && r[3] <= plx_ui::scroll_capsule::FADE_STEP && r[1] < 200.0)
+            .map(|(_, r)| r[1] + r[3]).fold(0.0f32, f32::max)
+    };
+    assert_eq!(depth(&kinds), plx_ui::scroll_capsule::Y + plx_ui::scroll_capsule::H + plx_ui::scroll_capsule::FADE_BELOW_CAPSULE);
     assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
 }
 

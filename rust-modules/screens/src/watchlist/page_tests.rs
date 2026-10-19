@@ -1078,9 +1078,11 @@ fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
     h.screen.jump_scroll(row_pitch());
     let paints = h.draw_paints();
     let fade = |p: &std::rc::Rc<plx_gfx::gfx::backdrop::Paint>| {
-        p.kind() == "rect" && p.placed() == [0.0, 0.0, plx_ui::consts::SCR_W, scroll_capsule::FADE_H]
+        let r = p.placed();
+        p.kind() == "rect" && r[0] == 0.0 && r[2] == plx_ui::consts::SCR_W && r[3] == scroll_capsule::FADE_STEP && r[1] < scroll_capsule::FADE_H
     };
-    assert_eq!(paints.iter().filter(|p| fade(p)).count(), 1, "the tucked page's top fade stays: {} paints", paints.len());
+    assert_eq!(paints.iter().filter(|p| fade(p)).count(), (scroll_capsule::FADE_H / scroll_capsule::FADE_STEP) as usize,
+        "the tucked page's top fade stays (its strips down to FADE_H, no deeper: no capsule): {} paints", paints.len());
     let capsule = paints.iter().filter(|p| p.kind() == "glass" && p.placed()[0] == scroll_capsule::X && p.placed()[1] == scroll_capsule::Y).count();
     assert_eq!(capsule, 0, "no capsule glass at the board's x 96, y 54");
     let in_capsule_band = |r: &plx_ui::Rect| r.y >= scroll_capsule::Y - 1.0 && r.y + r.h <= scroll_capsule::Y + scroll_capsule::H + 1.0;
