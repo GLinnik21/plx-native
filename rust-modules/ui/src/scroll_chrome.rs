@@ -1,58 +1,185 @@
-//! **What a scrolled card page does with the chrome around it** — ONE set of rules for the pages
-//! that scroll a long grid under the tucking top chrome (the Library, its Collections page, the
-//! Watchlist): the chrome tucks away once the first row has gone, a 72 px fade of the page's ground
-//! takes the top edge, and a capsule restating the library's name and size appears only where the
-//! page's header names libraries ([`capsule_shown`]).
+//! **What a scrolled card page does with the chrome around it** — ONE rule for the pages that
+//! scroll a long grid under the tucking top chrome (the Library, its Collections page, the
+//! Watchlist): the chrome tucks away once the first row has gone, a fade of the page's ground takes
+//! the top edge, and a capsule restating the library's name and size appears only where the page's
+//! header names libraries ([`capsule_shown`]).
+//!
+//! **A clock, not the scroll's position.** [`Handoff`] is a small state a page owns and steps once
+//! a frame. It used to be two pure functions of the scroll position, which made the handoff exactly
+//! as fast as the exponential scroll spring happens to be: the capsule took 40 frames to arrive
+//! going down and 3 to leave coming up, the bar 5 to leave and 2 to return, 2 each under key
+//! repeat, and one frame of the way back had no header at all. Now:
+//!
+//! - **The state is decided on the key frame, from the scroll TARGET** ([`Handoff::step`]): tucked
+//!   once the target reaches [`TUCK_AT`] short of the first row's pitch, shown again once it falls
+//!   to [`UNTUCK_AT`] short of it. The gap between the two is the hysteresis, so a target hovering
+//!   at the threshold cannot flap the chrome. The scroll spring is no longer in the loop: it moves
+//!   the page, the clock moves the chrome.
+//! - **The two glasses run in sequence on one fixed clock, the same in both directions**: the
+//!   departing glass fades out over [`OUT_MS`](crate::xfade) and, in the very frame its DRAWN alpha
+//!   is exactly 0, the arriving one starts to fade in over [`IN_MS`](crate::xfade) — the swap clock
+//!   every content cross-fade in this UI already runs on, leave fast and arrive gently. Down is the
+//!   chrome out, then the capsule in; Up is the capsule out, then the chrome in. At 60 Hz that is 5
+//!   frames out and 9 in, 13 in all, either way.
+//! - **A reversal reverses from where the alphas are**: they are values, not phases, so a flip
+//!   mid-handoff takes the glass that is partway out back in (or the one partway in back out)
+//!   without restarting a ramp, and the gate below holds across it.
+//! - **A jump, a restore or a first arrival does not play it.** When the decision changes on a
+//!   frame the scroll is already AT its target (`scroll.jump`: a saved viewport, a page arriving
+//!   deep), the alphas snap to their destination. Only a glide plays the clock.
 //!
 //! **The chrome and the capsule hand the place over in sequence, never together.** The chrome band
 //! and the capsule are two live glasses whose blur footprints meet, and two such glasses never share
 //! a frame: the upper one cannot run its direct source job (a lower live glass lies inside its
 //! footprint), so it captures INLINE in the visible pass, a mid-frame framebuffer copy and the
 //! six-pass chain, about 1.4M GPU cycles per frame more than its direct job (measured on the
-//! television: 25.6% of the ramp's frames late). So the tuck window ([`TUCK_RAMP`], ending when the
-//! first row has gone) splits in two halves that share an edge: the chrome leaves in the first
-//! ([`tuck`]), and only when it has gone does the capsule arrive in the second ([`capsule_alpha`]).
-//! A page without a capsule keeps the same window, so a library's chrome does not tuck at two speeds
-//! depending on how many libraries the server has.
+//! television: 25.6% of the old ramp's frames late, 1.6% once the two were sequential). The gate is
+//! on DRAWN alphas, never on scroll: the arriving glass advances only once the departing one is
+//! exactly 0, so the chrome band is never on screen (the dispatcher skips a chrome at alpha 0) in a
+//! frame the capsule is. A page without a capsule keeps the chrome's own times; there is simply
+//! nothing to wait for on the way back.
 //!
-//! Everything here is a pure function of the scroll position and the page's row pitch, so it adds
-//! no state to a screen (the tuck follows the scroll spring the page already owns, and a resting
-//! page asks for no further frames). The pixels are [`crate::scroll_capsule`] (the nav pill's live
-//! glass); this file owns WHEN and WHAT.
+//! **Why the shared swap clock's constants and not [`crate::xfade::Xfade`] itself.** That fader
+//! commits a content swap, so it parks one frame at the floor (`Hold`) and hands out a
+//! smoothstepped alpha. Run as the handoff it leaves FOUR frames with neither glass at 10% (the
+//! last of the out ramp at 0.007, the commit frame, the hold frame, the first of the in ramp at
+//! 0.04) where the header must not be bare for more than the one frame the sequence itself needs.
+//! So the handoff shares the two durations and the millisecond ramp, and the alphas stay linear:
+//! steepest at the floor, with no hold.
+//!
+//! A resting page asks for no further frames ([`Handoff::step`] reports motion only while an alpha
+//! is on its way). The pixels are [`crate::scroll_capsule`] (the nav pill's live glass); this file
+//! owns WHEN and WHAT.
 //!
 //! The module lives here, not in `plx_screens`, because a screen family may not name a sibling
 //! module of the crate (`ci/check-deps.sh`, "sibling").
 use std::ffi::CString;
 
-/// The scroll distance over which the top chrome and the capsule hand the place over, ending when
-/// the first row has gone: the chrome leaves in its first half, the capsule arrives in its second.
-pub const TUCK_RAMP: f32 = 120.0;
+use plx_machine::machine::{Canon, LogicalState};
 
-/// The chrome's half of [`TUCK_RAMP`]; the capsule has the other.
-const CHROME_SHARE: f32 = TUCK_RAMP * 0.5;
+use crate::xfade::{IN_MS, OUT_MS};
 
-/// How far the top chrome is tucked at `scroll` (0 shown .. 1 gone). `gone_at` is the scroll at
-/// which whatever stands under the chrome at rest has scrolled off: the first row's pitch, since a
-/// scrolled grid rests a whole row down at the first rest. The window [`TUCK_RAMP`] ends there;
-/// the chrome tucks over its FIRST half (`gone_at - 120 ..= gone_at - 60`), so scroll 0 is always 0
-/// and everything from `gone_at - 60` on is 1, which is when [`capsule_alpha`] may begin.
-pub fn tuck(scroll: f32, gone_at: f32) -> f32 {
-    let end = gone_at.max(TUCK_RAMP);
-    ((scroll - (end - TUCK_RAMP)) / CHROME_SHARE).clamp(0.0, 1.0)
+/// How far short of the first row's pitch (`gone_at`) the scroll TARGET must have reached for the
+/// page to tuck: past this the first row is on its way off the top, and the chrome starts to leave.
+pub const TUCK_AT: f32 = 60.0;
+/// How far short of the first row's pitch the target must have fallen to untuck. Further from the
+/// pitch than [`TUCK_AT`], so the 60 px between them is the hysteresis.
+pub const UNTUCK_AT: f32 = 120.0;
+
+/// The page's chrome and capsule, as drawn, and the state that decides them.
+///
+/// `tucked` is the DECIDED state (what the chrome and the capsule are heading for); `chrome` and
+/// `capsule` are what is drawn, each 0..1 and linear in time. At rest exactly one of the pairs
+/// `(chrome 1, capsule 0)` or `(chrome 0, capsule 1 | 0)` holds, and a chrome above 0 means a
+/// capsule of exactly 0: the invariant the cost model rests on, kept by construction in
+/// [`step`](Handoff::step) and not by two ranges happening to abut.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Handoff {
+    tucked: bool,
+    chrome: f32,
+    capsule: f32,
 }
 
-/// How far the capsule has arrived at `scroll` (0 absent .. 1 shown), for a page that wears one:
-/// the SECOND half of the window (`gone_at - 60 ..= gone_at`), after the chrome has gone.
-///
-/// It is 0 unless [`tuck`] is exactly 1.0, by construction and not by the two ranges happening to
-/// abut in floating point: no scroll has a chrome still on screen (a live glass) and a capsule (the
-/// other), so the chrome band never meets a lower live glass and never captures inline.
-pub fn capsule_alpha(scroll: f32, gone_at: f32) -> f32 {
-    if tuck(scroll, gone_at) < 1.0 {
-        return 0.0;
+impl Default for Handoff {
+    fn default() -> Self {
+        Self::new()
     }
-    let end = gone_at.max(TUCK_RAMP);
-    ((scroll - (end - CHROME_SHARE)) / CHROME_SHARE).clamp(0.0, 1.0)
+}
+
+impl Handoff {
+    /// A page at rest at its top: the chrome shown, no capsule.
+    pub const fn new() -> Self {
+        Handoff { tucked: false, chrome: 1.0, capsule: 0.0 }
+    }
+
+    /// One frame, after the page has stepped its scroll spring. `dt` is the frame's, `pos` and
+    /// `target` the scroll's position and where it is heading, `gone_at` the scroll at which
+    /// whatever stands under the chrome at rest has scrolled off (the first row's pitch, since a
+    /// scrolled grid rests a whole row down at the first rest), and `capsule_worn` whether the page
+    /// wears a capsule ([`capsule_shown`]).
+    pub fn step(&mut self, dt: f32, pos: f32, target: f32, gone_at: f32, capsule_worn: bool) {
+        let before = *self;
+        let want = if self.tucked { target > untuck_below(gone_at) } else { target >= tuck_from(gone_at) };
+        if want != self.tucked {
+            self.tucked = want;
+            // The scroll is already where it is going: a jump, a restore, a page arriving deep.
+            // Nothing is gliding, so there is nothing to hand over.
+            if (pos - target).abs() < 0.5 {
+                self.chrome = if want { 0.0 } else { 1.0 };
+                self.capsule = if want && capsule_worn { 1.0 } else { 0.0 };
+                if *self != before {
+                    plx_machine::idle::invalidate();
+                }
+                return;
+            }
+        }
+        let out = dt * 1000.0 / OUT_MS;
+        let into = dt * 1000.0 / IN_MS;
+        if self.tucked {
+            self.chrome = (self.chrome - out).max(0.0);
+            if !capsule_worn {
+                self.capsule = (self.capsule - out).max(0.0);
+            } else if self.chrome == 0.0 {
+                self.capsule = (self.capsule + into).min(1.0);
+            }
+        } else {
+            self.capsule = (self.capsule - out).max(0.0);
+            if self.capsule == 0.0 {
+                self.chrome = (self.chrome + into).min(1.0);
+            }
+        }
+        // A ms ramp is invisible to the spring instrumentation (`xfade`'s reasoning): say so while
+        // an alpha is on its way, the frame it arrives included, and never once it has finished.
+        if *self != before || !self.at_rest(capsule_worn) {
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    fn at_rest(&self, capsule_worn: bool) -> bool {
+        if self.tucked {
+            self.chrome == 0.0 && self.capsule == if capsule_worn { 1.0 } else { 0.0 }
+        } else {
+            self.capsule == 0.0 && self.chrome == 1.0
+        }
+    }
+
+    /// How much of the top chrome is shown (0 gone .. 1 shown).
+    pub fn chrome(&self) -> f32 {
+        self.chrome
+    }
+
+    /// How far the top chrome is tucked (0 shown .. 1 gone): what the dispatcher reads
+    /// (`Screen::chrome_tuck`) and the top fade follows.
+    pub fn tuck(&self) -> f32 {
+        1.0 - self.chrome
+    }
+
+    /// How far the capsule has arrived (0 absent .. 1 shown). It is above 0 only while
+    /// [`chrome`](Self::chrome) is exactly 0.
+    pub fn capsule(&self) -> f32 {
+        self.capsule
+    }
+}
+
+/// The scroll target from which the chrome tucks. `gone_at` is floored at the hysteresis span so a
+/// page whose layout has not measured a pitch yet still rests untucked at scroll 0.
+fn tuck_from(gone_at: f32) -> f32 {
+    gone_at.max(UNTUCK_AT) - TUCK_AT
+}
+
+/// The scroll target at or below which a tucked chrome returns.
+fn untuck_below(gone_at: f32) -> f32 {
+    gone_at.max(UNTUCK_AT) - UNTUCK_AT
+}
+
+impl LogicalState for Handoff {
+    fn write(&self, w: &mut Canon) {
+        w.bool(self.tucked).f32(self.chrome).f32(self.capsule);
+    }
+
+    fn probe(&self, out: &mut String) {
+        out.push_str(&format!("handoff tucked={} chrome={} capsule={}", self.tucked, self.chrome, self.capsule));
+    }
 }
 
 /// Does the page show the capsule? It restates the library the header row names, so only a header
@@ -76,73 +203,282 @@ mod tests {
 
     const PITCH: f32 = 480.0;
 
+    /// 60 Hz, the frame the pages tick at.
+    const DT: f32 = 1.0 / 60.0;
+
+    /// One leg of a trip: `(leaving, arriving)` drawn alphas per frame, the glass on its way out
+    /// first. The key frame is frame 0.
+    type Leg = Vec<(f32, f32)>;
+
+    /// The drawn alphas on each frame of a Down past the threshold and an Up back, with the REAL
+    /// scroll spring a page owns (`consts::K_SCROLL`) stepped toward the target once a frame, then
+    /// `model(pos, target)` asked for `(chrome alpha, capsule alpha)`.
+    fn trip(mut model: impl FnMut(f32, f32) -> (f32, f32)) -> (Leg, Leg) {
+        let mut spring = crate::Spring::at(0.0);
+        let mut leg = |target: f32| -> Vec<(f32, f32)> {
+            (0..150).map(|_| { spring.step(target, crate::consts::K_SCROLL, DT); model(spring.pos, target) }).collect()
+        };
+        let down = leg(PITCH);
+        let up = leg(0.0).into_iter().map(|(chrome, capsule)| (capsule, chrome)).collect::<Vec<_>>();
+        (down, up)
+    }
+
+    /// Frames on which a glass is partly transparent (0 < alpha < 1): its half of the handoff.
+    fn frames_between(leg: &[(f32, f32)], pick: fn(&(f32, f32)) -> f32) -> Vec<f32> {
+        leg.iter().map(pick).filter(|a| *a > 0.0 && *a < 1.0).collect()
+    }
+
+    /// Frames from the key frame until neither alpha is still moving.
+    fn frames_to_rest(leg: &[(f32, f32)]) -> usize {
+        let last = *leg.last().unwrap();
+        leg.iter().rposition(|(a, b)| (a - last.0).abs() > 1e-3 || (b - last.1).abs() > 1e-3).map_or(1, |i| i + 2)
+    }
+
+    /// What is wrong with one leg of a trip, as sentences (empty when it is right): the handoff
+    /// runs on a fixed clock in sequence, the same in both directions.
+    fn faults(name: &str, leg: &[(f32, f32)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, (leaving, arriving)) in leg.iter().enumerate() {
+            if *leaving > 0.0 && *arriving > 0.0 {
+                out.push(format!("{name} frame {i}: both glasses on screen (leaving {leaving:.3}, arriving {arriving:.3})"));
+            }
+        }
+        // Neither glass past 10% for more than the single frame the sequence itself needs is a bare header.
+        let bare = leg.iter().filter(|(a, b)| *a < 0.1 && *b < 0.1).count();
+        if bare > 1 {
+            out.push(format!("{name}: {bare} frames with neither glass at 10%"));
+        }
+        for (which, half) in [("leaving", frames_between(leg, |f| f.0)), ("arriving", frames_between(leg, |f| f.1))] {
+            if half.len() < 4 {
+                out.push(format!("{name}: the {which} glass is partly transparent on only {} frames", half.len()));
+            }
+            let monotone = if which == "leaving" { half.windows(2).all(|w| w[1] <= w[0]) } else { half.windows(2).all(|w| w[1] >= w[0]) };
+            if !monotone {
+                out.push(format!("{name}: the {which} glass's alpha is not monotone"));
+            }
+        }
+        out
+    }
+
+    /// **The handoff is a clock, not the scroll's position**: a Down past the threshold and an Up
+    /// back, with the real scroll spring, take the same number of frames each way, each glass's
+    /// half runs at least four frames with a monotone alpha, the two glasses are never on screen
+    /// together (two live glasses sharing a frame cost +1.4M GPU cycles on the television), and the
+    /// header is never bare for more than the one frame between the halves. Driven by the page's
+    /// own tick order: the spring steps, then the chrome follows it.
     #[test]
-    fn the_tuck_is_zero_at_rest_and_one_once_the_chrome_half_of_the_window_has_run() {
-        assert_eq!(tuck(0.0, PITCH), 0.0);
-        assert_eq!(tuck(PITCH - TUCK_RAMP, PITCH), 0.0, "the window starts exactly one ramp before");
-        assert_eq!(tuck(PITCH, PITCH), 1.0);
-        assert_eq!(tuck(PITCH * 5.0, PITCH), 1.0);
-        let quarter = tuck(PITCH - TUCK_RAMP * 0.75, PITCH);
-        assert!(quarter > 0.0 && quarter < 1.0, "the chrome is mid-tuck a quarter into the window: {quarter}");
-        assert_eq!(tuck(PITCH - TUCK_RAMP * 0.5, PITCH), 1.0, "the chrome has gone by the window's middle (the capsule's half is left)");
-        let mut last = 0.0;
-        for s in 0..=PITCH as i32 {
-            let t = tuck(s as f32, PITCH);
-            assert!(t >= last, "monotonic in scroll");
-            last = t;
+    fn the_handoff_runs_on_one_fixed_clock_the_same_each_way() {
+        let _g = plx_base::testlock::serial();
+        let mut handoff = Handoff::new();
+        let (down, up) = trip(|pos, target| {
+            handoff.step(DT, pos, target, PITCH, true);
+            (handoff.chrome(), handoff.capsule())
+        });
+        let mut faults = faults("Down", &down);
+        faults.extend(self::faults("Up", &up));
+        let (frames_down, frames_up) = (frames_to_rest(&down), frames_to_rest(&up));
+        if frames_down.abs_diff(frames_up) > 1 {
+            faults.push(format!("Down takes {frames_down} frames and Up {frames_up}"));
+        }
+        assert!(faults.is_empty(), "{}", faults.join("; "));
+    }
+
+    /// Did driving the handoff ask the frame gate for a repaint? Consumes the flag, so each call
+    /// answers for the frames since the last one (`xfade`'s tests, same reason).
+    fn asked_to_repaint() -> bool {
+        plx_machine::idle::frame_begin(DT);
+        plx_machine::idle::note_present(0);
+        plx_machine::idle::should_present(0)
+    }
+
+    /// Run `frames` frames of a page whose scroll is `pos` and heads for `target`.
+    fn run(h: &mut Handoff, frames: usize, pos: f32, target: f32, worn: bool) {
+        for _ in 0..frames {
+            h.step(DT, pos, target, PITCH, worn);
         }
     }
 
+    /// The frame-by-frame table at 60 Hz, pinned: the chrome leaves in four partial frames and is
+    /// exactly 0 on the fifth, and on THAT frame the capsule's first step is already drawn (so the
+    /// sequence leaves the one frame it needs and no more); the capsule then arrives over nine.
     #[test]
-    fn the_capsule_arrives_in_the_windows_second_half() {
-        assert_eq!(capsule_alpha(0.0, PITCH), 0.0);
-        assert_eq!(capsule_alpha(PITCH - TUCK_RAMP, PITCH), 0.0, "absent while the chrome starts to leave");
-        assert_eq!(capsule_alpha(PITCH - TUCK_RAMP * 0.5, PITCH), 0.0, "absent at the edge the chrome is gone on");
-        assert_eq!(capsule_alpha(PITCH, PITCH), 1.0);
-        assert_eq!(capsule_alpha(PITCH * 5.0, PITCH), 1.0);
-        let mid = capsule_alpha(PITCH - TUCK_RAMP * 0.25, PITCH);
-        assert!(mid > 0.0 && mid < 1.0, "half-arrived a quarter before the end: {mid}");
-        let mut last = 0.0;
-        for s in 0..=PITCH as i32 * 2 {
-            let a = capsule_alpha(s as f32, PITCH);
-            assert!(a >= last, "monotonic in scroll");
-            last = a;
+    fn the_sixty_hertz_table_is_five_frames_out_then_nine_in_with_no_hold() {
+        let _g = plx_base::testlock::serial();
+        let mut h = Handoff::new();
+        let mut table = Vec::new();
+        for _ in 0..14 {
+            h.step(DT, 100.0, PITCH, PITCH, true);
+            table.push((h.chrome(), h.capsule()));
+        }
+        let chrome_zero = table.iter().position(|(c, _)| *c == 0.0).unwrap();
+        assert_eq!(chrome_zero, 4, "the chrome is exactly 0 on the fifth frame: {table:?}");
+        assert!(table[..4].iter().all(|(c, k)| *c > 0.0 && *k == 0.0), "no capsule while any chrome is drawn: {table:?}");
+        assert!(table[4].1 > 0.1, "the capsule's first step is drawn on the frame the chrome reaches 0: {table:?}");
+        assert_eq!(table[12], (0.0, 1.0), "and it has arrived by the thirteenth: {table:?}");
+        assert!(table[11].1 < 1.0, "not before: {table:?}");
+    }
+
+    /// **The invariant the cost rests on, at every frame rate and through every reversal**: a
+    /// chrome above 0 means a capsule of exactly 0, so the chrome band is never on screen in a
+    /// frame the capsule is. The target is flipped at every frame offset of a handoff in both
+    /// directions (a reversal mid-ramp), at several frame times, and no alpha moves by more than
+    /// one step of its own ramp in a frame (the clock reverses from where the alphas are; it never
+    /// restarts or jumps).
+    #[test]
+    fn the_two_glasses_are_never_on_screen_together_through_any_reversal_at_any_frame_rate() {
+        let _g = plx_base::testlock::serial();
+        for dt in [1.0 / 30.0, 1.0 / 50.0, DT, 1.0 / 120.0, 0.05, 0.003] {
+            let step_cap = dt * 1000.0 / OUT_MS + 1e-5;
+            for flip_at in 0..40 {
+                for start_tucked in [false, true] {
+                    let mut h = Handoff::new();
+                    let (mut pos, mut target) = (0.0, 0.0);
+                    if start_tucked {
+                        pos = PITCH;
+                        target = PITCH;
+                        h.step(dt, pos, target, PITCH, true); // a jump: lands tucked
+                    }
+                    let mut last = (h.chrome(), h.capsule());
+                    for frame in 0..160 {
+                        if frame == 0 {
+                            target = if start_tucked { 0.0 } else { PITCH };
+                            pos = PITCH * 0.5; // gliding: the scroll is not at its target
+                        } else if frame == flip_at {
+                            target = if target > 0.0 { 0.0 } else { PITCH };
+                        }
+                        h.step(dt, pos, target, PITCH, true);
+                        let now = (h.chrome(), h.capsule());
+                        assert!(now.0 == 0.0 || now.1 == 0.0, "dt {dt}, flip {flip_at}, frame {frame}: chrome {} with capsule {}", now.0, now.1);
+                        assert!((0.0..=1.0).contains(&now.0) && (0.0..=1.0).contains(&now.1));
+                        assert!((now.0 - last.0).abs() <= step_cap && (now.1 - last.1).abs() <= step_cap, "dt {dt}, flip {flip_at}, frame {frame}: {last:?} -> {now:?}");
+                        last = now;
+                    }
+                    let rest = if target > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
+                    assert_eq!(last, rest, "dt {dt}, flip {flip_at}: settles at the decided state");
+                }
+            }
         }
     }
 
-    /// **The invariant the cost rests on**: for every scroll the capsule is absent unless the chrome
-    /// has gone, so a frame never has both live glasses. Swept over the whole range, at fractional
-    /// scrolls and at fractional pitches (the grid's pitch is a layout product, not an integer),
-    /// and at every edge where float rounding could let the two ranges overlap.
+    /// **A target hovering at the threshold cannot flap the chrome**: it tucks at `gone_at - 60`
+    /// and returns only at `gone_at - 120`, so a target wobbling inside the 60 px between never
+    /// reverses the handoff.
     #[test]
-    fn the_capsule_is_absent_unless_the_chrome_has_gone_at_every_scroll() {
-        for pitch in [PITCH, 415.0, 415.37, 337.123_46, 200.5, 121.0, 120.0, 90.0, 0.0] {
-            let end = pitch.max(TUCK_RAMP);
-            let mut scrolls: Vec<f32> = (0..=(3.0 * pitch.max(1.0)) as i32 * 4).map(|s| s as f32 * 0.25).collect();
-            for edge in [end - TUCK_RAMP, end - TUCK_RAMP * 0.5, end] {
-                let mut s = edge;
-                for _ in 0..4 { s = f32::from_bits(s.to_bits().saturating_sub(1)); }
-                for _ in 0..9 { scrolls.push(s); s = f32::from_bits(s.to_bits() + 1); }
-            }
-            for scroll in scrolls {
-                let (t, a) = (tuck(scroll, pitch), capsule_alpha(scroll, pitch));
-                assert!(a == 0.0 || t == 1.0, "pitch {pitch}, scroll {scroll}: capsule {a} with the chrome at tuck {t}");
-                assert!((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&a));
-            }
+    fn a_target_hovering_at_the_threshold_cannot_flap_the_chrome() {
+        let _g = plx_base::testlock::serial();
+        let (tuck_from, untuck_below) = (PITCH - TUCK_AT, PITCH - UNTUCK_AT);
+        let mut h = Handoff::new();
+        run(&mut h, 40, 1.0, tuck_from - 1.0, true);
+        assert_eq!((h.chrome(), h.capsule()), (1.0, 0.0), "just short of the threshold: shown");
+        run(&mut h, 40, 1.0, tuck_from, true);
+        assert_eq!((h.chrome(), h.capsule()), (0.0, 1.0), "at the threshold: tucked");
+        for wobble in [tuck_from - 1.0, tuck_from - 30.0, untuck_below + 1.0, tuck_from, tuck_from + 5.0, untuck_below + 0.5] {
+            run(&mut h, 3, 1.0, wobble, true);
+            assert_eq!((h.chrome(), h.capsule()), (0.0, 1.0), "target {wobble} is inside the hysteresis: still tucked");
         }
+        run(&mut h, 40, 1.0, untuck_below, true);
+        assert_eq!((h.chrome(), h.capsule()), (1.0, 0.0), "at the lower threshold: shown again");
+        run(&mut h, 3, 1.0, tuck_from - 1.0, true);
+        assert_eq!((h.chrome(), h.capsule()), (1.0, 0.0), "and the same wobble from below does not tuck");
+    }
+
+    /// A jump, a restore or a page that arrives deep (the scroll is already AT its target) lands
+    /// on the decided state with no handoff played; a glide plays it.
+    #[test]
+    fn a_jump_lands_on_the_decided_state_and_only_a_glide_plays_the_handoff() {
+        let _g = plx_base::testlock::serial();
+        let mut jumped = Handoff::new();
+        jumped.step(DT, PITCH * 3.0, PITCH * 3.0, PITCH, true);
+        assert_eq!((jumped.chrome(), jumped.capsule()), (0.0, 1.0), "arrived deep: tucked on the first frame");
+        jumped.step(DT, 0.0, 0.0, PITCH, true);
+        assert_eq!((jumped.chrome(), jumped.capsule()), (1.0, 0.0), "jumped home: shown on the first frame");
+        let mut glided = Handoff::new();
+        glided.step(DT, 1.0, PITCH, PITCH, true);
+        assert!(glided.chrome() > 0.0 && glided.capsule() == 0.0, "a glide starts the chrome out, not at its destination");
+        let mut bare = Handoff::new();
+        bare.step(DT, PITCH, PITCH, PITCH, false);
+        assert_eq!((bare.chrome(), bare.capsule()), (0.0, 0.0), "a jump to a page with no capsule lands on no capsule");
+    }
+
+    /// A page without a capsule (the Watchlist, a one-library page) tucks the chrome at the
+    /// chrome's own pace and never draws a capsule; coming back there is nothing to wait for, so
+    /// the chrome starts to return on the key frame.
+    #[test]
+    fn a_page_without_a_capsule_hands_nothing_over_and_waits_for_nothing() {
+        let _g = plx_base::testlock::serial();
+        let mut h = Handoff::new();
+        for _ in 0..30 {
+            h.step(DT, 1.0, PITCH, PITCH, false);
+            assert_eq!(h.capsule(), 0.0, "no capsule is ever drawn");
+        }
+        assert_eq!(h.chrome(), 0.0);
+        h.step(DT, PITCH, 0.0, PITCH, false);
+        assert!(h.chrome() > 0.0, "the chrome returns on the key frame: {}", h.chrome());
+    }
+
+    /// A page that LOSES its capsule while tucked lets it go at the out pace rather than cutting it.
+    #[test]
+    fn a_capsule_the_page_stops_wearing_fades_out_where_it_stands() {
+        let _g = plx_base::testlock::serial();
+        let mut h = Handoff::new();
+        run(&mut h, 40, 1.0, PITCH, true);
+        assert_eq!((h.chrome(), h.capsule()), (0.0, 1.0));
+        h.step(DT, PITCH, PITCH, PITCH, false);
+        assert!(h.capsule() > 0.0 && h.capsule() < 1.0 && h.chrome() == 0.0, "{} {}", h.chrome(), h.capsule());
+        run(&mut h, 10, PITCH, PITCH, false);
+        assert_eq!((h.chrome(), h.capsule()), (0.0, 0.0));
+    }
+
+    /// A running handoff asks for every frame of itself, in both directions; a page at rest asks
+    /// for none (the clock integrates milliseconds, which the spring instrumentation cannot see).
+    #[test]
+    fn a_running_handoff_asks_for_every_frame_and_a_resting_page_asks_for_none() {
+        let _g = plx_base::testlock::serial();
+        asked_to_repaint(); // drain whatever the previous test left on the shared flag
+        let mut h = Handoff::new();
+        for f in 0..13 {
+            h.step(DT, 1.0, PITCH, PITCH, true);
+            assert!(asked_to_repaint(), "frame {f} of the Down handoff must repaint");
+        }
+        for f in 0..13 {
+            h.step(DT, PITCH, 0.0, PITCH, true);
+            assert!(asked_to_repaint(), "frame {f} of the Up handoff must repaint");
+        }
+        assert_eq!((h.chrome(), h.capsule()), (1.0, 0.0));
+        for _ in 0..8 {
+            h.step(DT, 0.0, 0.0, PITCH, true);
+        }
+        assert!(!asked_to_repaint(), "a resting page must not hold the panel awake");
+        let mut tucked = Handoff::new();
+        run(&mut tucked, 40, 1.0, PITCH, true);
+        asked_to_repaint();
+        run(&mut tucked, 8, PITCH, PITCH, true);
+        assert!(!asked_to_repaint(), "nor a resting tucked page");
+    }
+
+    /// The same value is not the same state: the canonical encoding (hashed into the replay
+    /// fixtures) sees the decided state, not just the two alphas.
+    #[test]
+    fn the_decided_state_is_part_of_the_canonical_encoding() {
+        let mut shown = Handoff::new();
+        let mut a = Canon::new();
+        shown.write(&mut a);
+        shown.tucked = true;
+        let mut b = Canon::new();
+        shown.write(&mut b);
+        assert_ne!(a.finish(), b.finish());
     }
 
     #[test]
     fn a_short_pitch_still_leaves_scroll_zero_untucked() {
-        assert_eq!(tuck(0.0, 40.0), 0.0);
-        assert_eq!(tuck(0.0, 0.0), 0.0);
-    }
-
-    #[test]
-    fn a_resting_page_has_a_constant_tuck_so_it_asks_for_no_frames() {
-        let (a, moving) = plx_machine::idle::scoped_motion(|| tuck(PITCH * 3.0, PITCH));
-        assert_eq!(a, 1.0);
-        assert!(!moving, "the tuck is derived from the scroll spring; it animates nothing itself");
+        let _g = plx_base::testlock::serial();
+        for pitch in [40.0, 0.0, 119.0] {
+            let mut h = Handoff::new();
+            for _ in 0..30 {
+                h.step(DT, 0.0, 0.0, pitch, true);
+            }
+            assert_eq!((h.chrome(), h.capsule()), (1.0, 0.0), "pitch {pitch}");
+        }
     }
 
     #[test]

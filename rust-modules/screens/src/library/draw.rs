@@ -93,7 +93,6 @@ impl LibraryScreen {
             self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         });
         let layout = self.pair.layout();
-        let layout_pitch = self.layout.grid_pitch();
         let alpha = self.page_fade.alpha() * self.grid_fade.alpha();
         layers(|layer| match layer {
             Layer::Grid => plx_ui::profile::phase("lb.grid", || {
@@ -111,19 +110,26 @@ impl LibraryScreen {
             }),
         });
         // The page's own top edge once the chrome has tucked away, and then the capsule. They follow
-        // the chrome's half and the capsule's half of ONE window (`scroll_chrome`): the capsule is
-        // absent until the chrome has gone, so the two live glasses never share a frame.
-        let tuck = plx_ui::scroll_chrome::tuck(self.scroll.pos, layout_pitch);
-        let capsule = plx_ui::scroll_chrome::capsule_alpha(self.scroll.pos, layout_pitch);
+        // the page's one handoff (`scroll_chrome::Handoff`): the capsule is absent until the chrome
+        // has gone, so the two live glasses never share a frame. The capsule's rect is measured
+        // first because the fade reaches through it (`scroll_capsule::fade_reach`).
+        let tuck = self.handoff.tuck();
+        let capsule = self.handoff.capsule();
+        let worn = (capsule > 0.0 && self.capsule_wanted())
+            .then(|| self.view_section(f.cx).map(|index| self.library_label(index, f.cx)))
+            .flatten()
+            .map(|name| plx_ui::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total()))
+            .map(|(name, count)| {
+                let rect = plx_ui::scroll_capsule::rect(&name, &count, f.measure);
+                (name, count, rect)
+            });
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
-            plx_ui::scroll_capsule::draw_top_fade(f.painter.alpha(f.page_alpha), SCR_W, ground, tuck);
+            let reach = worn.as_ref().map(|(_, _, rect)| (*rect, capsule));
+            plx_ui::scroll_capsule::draw_top_fade(f.painter.alpha(f.page_alpha), SCR_W, ground, tuck, reach);
         }
-        if capsule > 0.0 && self.capsule_wanted() {
-            if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
-                let (name, count) = plx_ui::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total());
-                plx_ui::scroll_capsule::draw(f.painter.alpha(f.page_alpha), &name, &count, capsule, f.measure);
-            }
+        if let Some((name, count, _)) = &worn {
+            plx_ui::scroll_capsule::draw(f.painter.alpha(f.page_alpha), name, count, capsule, f.measure);
         }
         // A standing note, never a target: over the page, records no stop and no hit rect.
         self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);

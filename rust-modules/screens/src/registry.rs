@@ -2466,7 +2466,12 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // one-spring `CtlPop`, in its canon (`write_motion`) and its shape string; `LibraryScreen::SHAPE`
 // gains two entries, appended (`SCREEN_SHAPES` lists both). One bump; the three replay fixtures were
 // re-recorded against it; the previous pin was 0x2560_8275_1136_934c.
-const SCREEN_SHAPES_PIN: u64 = 0xbd4f_cd3e_ff97_a15f;
+// Chrome handoff (FIX-A): the top chrome / capsule handoff is one state type the page owns
+// (`plx_ui::scroll_chrome::Handoff`: the decided state and the two drawn alphas), in the canon and
+// the shape string of `LibraryScreen` and of the Watchlist page (which drops its private head ramp
+// for it). One bump; the three replay fixtures were re-recorded against it; the previous pin was
+// 0xbd4f_cd3e_ff97_a15f.
+const SCREEN_SHAPES_PIN: u64 = 0xcbaf_3fdb_0c28_ad38;
 
 #[cfg(test)]
 mod arg_tests {

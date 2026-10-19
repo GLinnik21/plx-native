@@ -54,8 +54,10 @@ fn a_tucked_page_draws_the_72px_top_fade_over_the_grid_and_under_the_capsule_and
     let _g = plx_base::testlock::serial();
     let fixture = super::tests::Fixture::new();
     let mut page = fixture.screen();
+    // the fade is abutting full-width strips (the eased ramp, `scroll_capsule::fade_strips`)
     let is_fade = |p: &std::rc::Rc<plx_ui::frame::backdrop::Paint>| {
-        p.kind() == "rect" && p.placed() == [0.0, 0.0, super::SCR_W, scroll_capsule::FADE_H]
+        let r = p.placed();
+        p.kind() == "rect" && r[0] == 0.0 && r[2] == super::SCR_W && r[3] == scroll_capsule::FADE_STEP && r[1] < scroll_capsule::FADE_H
     };
 
     let at_rest = declared_by_a_draw(&fixture, &mut page);
@@ -64,9 +66,14 @@ fn a_tucked_page_draws_the_72px_top_fade_over_the_grid_and_under_the_capsule_and
     let pitch = page.layout.grid_pitch();
     page.scroll.jump(pitch);
     page.scroll_target = pitch;
+    page.handoff.step(0.0, pitch, pitch, pitch, page.capsule_wanted()); // a jump lands on the decided state
     let tucked = declared_by_a_draw(&fixture, &mut page);
     let at = tucked.iter().position(is_fade).expect("a tucked page draws the top fade");
-    assert_eq!(tucked.iter().filter(|p| is_fade(p)).count(), 1, "exactly one fade");
+    let strips: Vec<[f32; 4]> = tucked.iter().filter(|p| is_fade(p)).map(|p| p.placed()).collect();
+    assert_eq!(strips.len(), (scroll_capsule::FADE_H / scroll_capsule::FADE_STEP) as usize, "exactly one fade: its strips down to FADE_H");
+    assert_eq!(strips[0][1], 0.0, "from the very top edge");
+    assert!(strips.windows(2).all(|w| w[1][1] == w[0][1] + w[0][3]), "abutting");
+    assert_eq!(strips.last().map(|r| r[1] + r[3]), Some(scroll_capsule::FADE_H));
     assert!(tucked.iter().all(|p| p.kind() != "glass"), "a one-library page has no header names, so no capsule: only the fade stays");
     assert!(tucked[..at].iter().any(|p| p.placed()[1] > 0.0 && p.placed()[3] > 0.0),
         "and over the grid: the page's own paints come before it");

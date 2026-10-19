@@ -506,9 +506,10 @@ tried first. None of it is reconstructable from the code without repeating the m
   and a direct job plus an inline capture on one frame is the FRAG_NUM_TILES class above 6300 that
   the 4096 / ~5000 / ~6050 bins never named. The engine keeps composite capture as the correct
   fallback (the pixels are right, and the composite tests stay); it is the page's job not to need
-  it. The Library's chrome band and its scroll capsule are the case: `scroll_chrome` splits the one
-  tuck window in two, the chrome leaves in its first half (`tuck`) and the capsule arrives in the
-  second (`capsule_alpha`, 0 unless `tuck` is exactly 1), so no frame has both. The chip and the
+  it. The Library's chrome band and its scroll capsule are the case: the page owns one
+  `scroll_chrome::Handoff`, decided on the key frame from the scroll target and run on the `xfade`
+  clock, in sequence in both directions (the departing glass fades to exactly 0 and only then does
+  the arriving one start), so no frame has both. The chip and the
   tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
   apart the same way. Any new live glass that can stand within a band's blur reach of another
   (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.

@@ -101,7 +101,7 @@ impl GridSpec {
     }
 
     /// The distance between two COLLAPSED rows' tops: what a page whose chrome tucks once the first
-    /// row has scrolled off (`scroll_chrome::tuck`) is told that distance is.
+    /// row has scrolled off (`scroll_chrome::Handoff::step`'s `gone_at`) is told that distance is.
     pub fn pitch(&self) -> f32 {
         self.geom().pitch()
     }
