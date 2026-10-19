@@ -153,3 +153,40 @@ fn the_details_line_under_a_poster_is_white_at_82_percent() {
     assert_eq!(d.ink, [1.0, 1.0, 1.0, 0.82]);
     assert_eq!(d.ink, crate::theme::CAPTION_DETAIL_INK);
 }
+
+/// **A line the setting turns on is never drawn empty**, for every kind of tile and every picker:
+/// the picked kind's facts when the tile has them, else its identity line.
+#[test]
+fn a_details_line_the_tile_has_no_facts_for_says_its_identity() {
+    let cx = i18n::english();
+    let at = |details, f: &CaptionFacts| caption_lines(&CaptionPolicy { title: false, details }, f, cx)[1].clone();
+    let pickers = [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore];
+    // a season: no length, here no year, genre or rating either
+    let season = |own: &str, number| CaptionFacts {
+        title: Some("The Office".into()), season: Some((number, own.into())), ..Default::default()
+    };
+    for details in pickers {
+        assert_eq!(at(details, &season("Season 6", 6)).as_deref(), Some("Season 6"), "{details:?}");
+        assert_eq!(at(details, &season("Specials", 0)).as_deref(), Some("Specials"), "its own title when it is not the numbered form");
+        assert_eq!(at(details, &season("", 3)).as_deref(), Some("Season 3"), "the catalog's words when the server named it nothing");
+    }
+    assert_eq!(at(DetailsKind::YearLength, &season("", 0)), None, "a season with no title and no number has no identity");
+    assert_eq!(at(DetailsKind::None, &season("Season 6", 6)), None, "Nothing shows no line, fallback or not");
+    // the kind's own facts win over the identity
+    let rich = CaptionFacts { year: Some(2009), genre: Some("Comedy".into()), content_rating: Some("TV-14".into()), ..season("Season 6", 6) };
+    assert_eq!(at(DetailsKind::YearLength, &rich).as_deref(), Some("2009"));
+    assert_eq!(at(DetailsKind::Genre, &rich).as_deref(), Some("Comedy"));
+    assert_eq!(at(DetailsKind::AgeRatingScore, &rich).as_deref(), Some("TV-14"));
+    assert_eq!(at(DetailsKind::Video, &rich).as_deref(), Some("Season 6"), "no stream facts: the season's identity, not its year");
+    // an episode: its address; a show and a movie: their year; a collection: its size
+    let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
+    let show = CaptionFacts { is_show: true, year: Some(2022), ..Default::default() };
+    let movie = CaptionFacts { year: Some(1995), ..Default::default() };
+    let films = CaptionFacts { subtype: Some("movie".into()), child_count: Some(7), ..Default::default() };
+    for details in pickers {
+        assert_eq!(at(details, &episode).as_deref(), Some("S1 \u{2022} E8"), "{details:?}");
+        assert_eq!(at(details, &show).as_deref(), Some("2022"), "{details:?}");
+        assert_eq!(at(details, &movie).as_deref(), Some("1995"), "{details:?}");
+        assert_eq!(at(details, &films).as_deref(), Some("7 films"), "{details:?}");
+    }
+}

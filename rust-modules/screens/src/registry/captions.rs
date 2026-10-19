@@ -7,7 +7,11 @@
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
 //!   [`TEST_UNDER_POSTERS`] instead of writing the process-wide cell.
 //! - [`label`] words the focused block from `(policy, facts)`: the Title switch decides whether the
-//!   title line shows, the Details picker what the second line says. A tile that carries a STATE
+//!   title line shows, the Details picker what the second line says. **A line the setting turns on
+//!   is never drawn empty, for any kind of tile** (`plx_ui::caption_policy::caption_lines`): the title
+//!   line is the name a reader knows the tile by (`tile_facts::caption_facts` puts a season's SHOW
+//!   there, an episode keeps its own title), and a details kind the tile has no facts for says its
+//!   identity instead (a season "Season 6", an episode "S1 • E8", a show or movie its year). A tile that carries a STATE
 //!   keeps it: its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
 //!   its amber play mark leads the title line whenever a press plays and the title is shown. With
@@ -87,5 +91,22 @@ mod tests {
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
         assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{2022} E8".into())]);
+    }
+
+    /// A SEASON on a shelf (Recently Added TV) is named by its show and, with no fact the picked
+    /// details kind can say, by its own title: every setting that turns a line on draws it.
+    #[test]
+    fn a_season_tile_is_its_show_over_its_own_title_under_every_setting() {
+        let season = plx_data::pms::PmsMovie {
+            kind: 2, title: "Season 6".into(), show_title: "The Office".into(), season_index: 6, ..Default::default()
+        };
+        for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
+            let at = |title| lines(&shelf_label(&CaptionPolicy { title, details }, &season, false));
+            assert_eq!(at(true), [Some("The Office".into()), Some("Season 6".into())], "{details:?}");
+            assert_eq!(at(false), [None, Some("Season 6".into())], "{details:?}");
+        }
+        let at = |title| lines(&shelf_label(&CaptionPolicy { title, details: DetailsKind::None }, &season, false));
+        assert_eq!(at(true), [Some("The Office".into()), None]);
+        assert_eq!(at(false), [None, None]);
     }
 }

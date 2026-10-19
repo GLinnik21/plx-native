@@ -39,8 +39,9 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid poster card's label under `policy`: the focused caption band shows exactly what the
-/// Under posters setting chose. An episode and a season keep their own wording (an episode names
-/// its address and release date, a season the show it belongs to) and ride the same band.
+/// Under posters setting chose, for every kind but the episode, which keeps its own wording (its
+/// address and release date) and rides the same band. A season is named for its show by the one
+/// builder, like a season on Home.
 pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
     if item.kind == 3 {
         let name = if item.title.is_empty() || item.title == item.show_title {
@@ -51,9 +52,6 @@ pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy)
         return if item.aired.is_empty() && item.year <= 0 { ui_cards::TileLabel::title(&name) }
         else { ui_cards::TileLabel::titled(&name,
             &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
-    }
-    if item.kind == 2 && !item.show_title.is_empty() {
-        return ui_cards::poster_label(&tile_facts::of(item));
     }
     crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
 }

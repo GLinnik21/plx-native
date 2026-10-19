@@ -25,11 +25,19 @@ use plx_data::pms::{PmsMovie, KIND_COLLECTION};
 use plx_ui::caption_policy::CaptionFacts;
 use plx_ui::tile::{Resume, TileFacts, TileKind};
 
-/// The facts of a catalog row a caption policy words its lines from: the Library grid's captions and
-/// the Under posters preview's tiles read one conversion, so a row is worded the same in both.
+/// The facts of a catalog row a caption policy words its lines from: every poster shelf's captions
+/// (Home, Recommended, the Library grid, the Watchlist) and the Under posters preview's tiles read
+/// one conversion, so a row is worded the same everywhere.
+///
+/// `title` is the name a reader knows the tile by, which is not always the row's own: a SEASON is
+/// known by its SHOW (Plex's own clients caption a season tile with the show's name), and the
+/// season's own title ("Season 6") becomes `season`, the line the details fall back to. A season
+/// the server sent no show for keeps its own title.
 pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
+    let season = item.kind == 2;
     CaptionFacts {
-        title: Some(item.title.clone()),
+        title: Some(if season && !item.show_title.is_empty() { item.show_title.clone() } else { item.title.clone() }),
+        season: season.then(|| (u32::try_from(item.season_index).unwrap_or(0), item.title.clone())),
         year: Some(item.year),
         duration_min: u32::try_from(item.dur_ns / 60_000_000_000).ok(),
         genre: item.genre.clone(),
@@ -135,6 +143,21 @@ mod tests {
         assert_eq!(kind(3), TileKind::Episode);
         assert_eq!(kind(KIND_COLLECTION), TileKind::Collection);
         assert_eq!(kind(9), TileKind::Other);
+    }
+
+    /// A season is known by its SHOW, and its own title is the identity the details fall back to;
+    /// every other kind is known by its own title.
+    #[test]
+    fn a_season_is_captioned_by_its_show_and_keeps_its_own_title_as_its_identity() {
+        let season = PmsMovie { kind: 2, title: "Season 6".into(), show_title: "The Office".into(), season_index: 6, ..Default::default() };
+        let f = caption_facts(&season);
+        assert_eq!(f.title.as_deref(), Some("The Office"));
+        assert_eq!(f.season, Some((6, "Season 6".to_owned())));
+        let orphan = PmsMovie { show_title: String::new(), ..season.clone() };
+        assert_eq!(caption_facts(&orphan).title.as_deref(), Some("Season 6"), "no show to name: its own title");
+        let episode = PmsMovie { kind: 3, title: "Pilot".into(), show_title: "Severance".into(), ..Default::default() };
+        let f = caption_facts(&episode);
+        assert_eq!((f.title.as_deref(), f.season), (Some("Pilot"), None), "an episode is known by its own title");
     }
 
     #[test]

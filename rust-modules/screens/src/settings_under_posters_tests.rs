@@ -161,7 +161,8 @@ fn the_picker_lists_nothing_first_each_line_with_its_sample_and_checks_the_curre
 
 /// **Every sample on the picker comes from ONE source: the preview's middle poster** (design review
 /// C1). The rows said "2019 · 2h 14m" and "PG-13 · 7.8" (invented) beside a preview that read
-/// "2022 · 6m" from the library's own poster; a line the poster has no fact for has no sample.
+/// "2022 · 6m" from the library's own poster; a kind the poster has no fact for samples what the
+/// tile says instead (its identity line), the same words the preview draws.
 #[test]
 fn the_pickers_samples_are_worded_from_the_previews_middle_poster() {
     let _guard = plx_base::testlock::serial();
@@ -184,9 +185,9 @@ fn the_pickers_samples_are_worded_from_the_previews_middle_poster() {
         ("Nothing".to_string(), None),
         (format!("Year {dot} Length"), Some(format!("2022 {dot} 6m"))),
         ("Genre".to_string(), Some("Western".to_string())),
-        ("Video".to_string(), None),
+        ("Video".to_string(), Some("2022".to_string())),
         (format!("Age rating {dot} Score"), Some("PG".to_string())),
-    ], "the middle poster's own facts, and nothing invented for a fact it lacks");
+    ], "the middle poster's own facts, and for a kind it has none for the identity line the tile says instead (its year), never an invented fact");
     // …and each sample is what the preview captions that poster with under the same choice
     let posters = preview_posters(&c);
     for d in picker_order() {

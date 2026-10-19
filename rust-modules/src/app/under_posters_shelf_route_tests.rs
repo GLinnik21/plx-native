@@ -146,3 +146,104 @@ fn a_continue_watching_tile_on_recommended_keeps_its_time_left_line() {
         assert_eq!(drawn_left, details != Details::None, "time left is its details line unless the setting shows none ({setting})");
     }
 }
+
+// ── One rule for every item kind: a line the setting turns on is never drawn empty ──────────────
+
+/// A Home hub tile of one kind, carrying only the facts a server sends for it.
+struct Tile {
+    name: &'static str,
+    edit: fn(&mut plx_data::pms::PmsMovie),
+    /// The title line (the name a reader knows the tile by).
+    title: &'static str,
+    /// The details line per picker, `[YearLength, Genre, Video, AgeRatingScore]`: the picked fact
+    /// when the tile has it, else the tile's identity line.
+    details: [&'static str; 4],
+}
+
+const PICKERS: [Details; 4] = [Details::YearLength, Details::Genre, Details::Video, Details::AgeRatingScore];
+
+/// Season six of The Office as a Recently Added hub holds it: a season has no length, and this
+/// server sent it no year, genre, rating or stream facts.
+fn bare_season(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 2; m.title = "Season 6".into(); m.show_title = "The Office".into(); m.season_index = 6;
+}
+fn rich_season(m: &mut plx_data::pms::PmsMovie) {
+    bare_season(m);
+    m.year = 2009; m.genre = Some("Comedy".into()); m.rating = "TV-14".into(); m.audience_rating = Some(8.5);
+    m.video_resolution = Some("1080".into()); m.hdr = true;
+}
+/// A season the server titled itself, numbered 0.
+fn specials(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 2; m.title = "Specials".into(); m.show_title = "The Office".into(); m.season_index = 0;
+}
+fn bare_show(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 1; m.title = "Severance".into(); m.year = 2022;
+}
+fn bare_episode(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 3; m.title = "Pilot".into(); m.show_title = "Severance".into(); m.season_index = 1; m.ep_index = 8;
+}
+fn bare_movie(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 0; m.title = "Heat".into(); m.year = 1995;
+}
+
+const TILES: [Tile; 6] = [
+    Tile { name: "a season with no facts", edit: bare_season, title: "The Office", details: ["Season 6"; 4] },
+    Tile { name: "a season with every fact but a length", edit: rich_season, title: "The Office",
+           details: ["2009", "Comedy", "1080p \u{b7} HDR", "TV-14 \u{b7} 8.5"] },
+    Tile { name: "a season the server titled itself", edit: specials, title: "The Office", details: ["Specials"; 4] },
+    Tile { name: "a show with a year only", edit: bare_show, title: "Severance", details: ["2022"; 4] },
+    Tile { name: "an episode with no facts", edit: bare_episode, title: "Pilot", details: ["S1 \u{2022} E8"; 4] },
+    Tile { name: "a movie with a year only", edit: bare_movie, title: "Heat", details: ["1995"; 4] },
+];
+
+/// Every string a tile above can put on a line, so a run is read whichever line it is on.
+const WORDS: [&str; 17] = [
+    "The Office", "Season 6", "Specials", "Severance", "Pilot", "Heat", "2009", "2022", "1995", "Comedy",
+    "1080p \u{b7} HDR", "TV-14 \u{b7} 8.5", "S1 \u{2022} E8", "Season 0", "Show", "Drama", "PG-13",
+];
+
+/// The caption lines the focused poster drew, top to bottom. Each line is drawn twice, the second
+/// run its 1 px shadow (`CAPTION_SHADOW_DY`), which reads as the same line.
+fn caption(w: &mut World) -> Vec<String> {
+    let mut runs: Vec<_> = w.drawn().words.into_iter().filter(|(words, _)| WORDS.contains(&words.as_str())).collect();
+    runs.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+    runs.dedup_by(|b, a| a.0 == b.0 && (b.1.y - a.1.y).abs() <= plx_ui::caption_policy::CAPTION_SHADOW_DY + 0.5);
+    runs.into_iter().map(|(words, _)| words).collect()
+}
+
+/// Home with the Continue Watching deck as row 0 and a Recently Added shelf as row 1, focused on the
+/// shelf's first poster (`r1`), which `edit` has made the kind of tile the test wants: a poster that
+/// carries no state, as the deck's episodes do.
+fn home_tile(name: &str, edit: fn(&mut plx_data::pms::PmsMovie)) -> World {
+    let mut w = World::home_with_disc(name, [7; 12]);
+    w.bridge.stores.hubs.seed_deck_home_for_test(1);
+    w.frames(30);
+    plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "r1", &edit);
+    w.frames(30);
+    w.press(Key::Down);
+    w.press(Key::Down);
+    w.frames(60);
+    w
+}
+
+/// Home's focused tile, whatever its kind, says what the setting turns on: Title names the tile by
+/// the name a reader knows it by (a season by its SHOW), and the picked details line is the picked
+/// facts, or the tile's identity when it has none of them, never an open band over nothing.
+#[test]
+fn a_poster_shelf_tile_of_any_kind_never_leaves_a_turned_on_line_empty() {
+    for tile in &TILES {
+        let mut w = home_tile(&format!("cap-kinds-{}", tile.name.replace(' ', "-")), tile.edit);
+        let _cell = Cell::default();
+        for (picker, details) in PICKERS.into_iter().zip(tile.details) {
+            for title in [true, false] {
+                set(&mut w, title, picker);
+                let want: Vec<&str> = title.then_some(tile.title).into_iter().chain([details]).collect();
+                assert_eq!(caption(&mut w), want, "{}: title {title}, details {picker:?}", tile.name);
+            }
+        }
+        set(&mut w, true, Details::None);
+        assert_eq!(caption(&mut w), [tile.title], "{}: Title On with Nothing shows the name alone", tile.name);
+        set(&mut w, false, Details::None);
+        assert_eq!(caption(&mut w), Vec::<String>::new(), "{}: Title Off with Nothing shows nothing", tile.name);
+    }
+}

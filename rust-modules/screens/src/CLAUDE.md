@@ -206,6 +206,11 @@ Home's shelves and Recommended's poster shelves (Search, the person page and Det
 policy). A shelf is handed the policy (`Shelf::set_caption_policy`) and reserves,
 opens and reveals its band from `caption_policy::band_h`; a tile that carries a state keeps it (the Continue Watching deck's
 time left is its details line, the amber play mark leads its title while OK plays, a Watchlist title's release date or
-"Server offline"), and with Title Off and Details set to Nothing no band opens (a state line is dropped with the details line). Recommended's landscape rows (episode stills) and the Collection
+"Server offline"), and with Title Off and Details set to Nothing no band opens (a state line is dropped with the details line).
+**One rule for every kind of tile: a line the setting turns on is never drawn empty** (`caption_policy::caption_lines`): the title line is the name a reader
+knows the tile by (`tile_facts::caption_facts`: a season by its SHOW, an episode by its own title, a show or movie by its title), and a
+details kind the tile has no facts for (a season has no length, often no genre or rating) says the tile's identity instead: a season "Season 6" (its own title,
+else "Season N"), an episode "S1 • E8", a show or movie its year, a collection its size. Home's season tiles ("Recently Added TV") and the Library grid's seasons read it the same way; the
+Library grid's episodes keep their own wording (address and release date). Recommended's landscape rows (episode stills) and the Collection
 screen's members are not on the policy yet. The Library page is the full grid under one
 header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.

@@ -4,6 +4,13 @@
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing.
 //!
+//! **A line the setting turns on is never drawn empty**, whatever the tile is. The title line is the
+//! name a reader knows the tile by (a season by its SHOW, an episode by its own title). The details
+//! line is the picked kind's facts, and a tile that has none of them (a season has no length and
+//! often no genre or rating) says its identity line instead (a season "Season 6", an episode its
+//! "S1 • E8" address, a show or movie its year, a collection its size), so a band the policy
+//! opens is never open over nothing. Under Nothing with Title Off no band opens at all.
+//!
 //! The Library grid, the Collections page, the Watchlist, Home's shelves and the Library's Recommended shelves (the screens build the focused
 //! block through `registry::captions`, and hand a [`crate::cards::Shelf`] / grid the policy so the
 //! room it reserves is [`band_h`] of the same value); Search, the person page and Detail's Related and
@@ -45,7 +52,8 @@ pub struct CaptionPolicy {
 impl CaptionPolicy {
     pub const DEFAULT: CaptionPolicy = CaptionPolicy { title: false, details: DetailsKind::YearLength };
 
-    /// How many lines this policy can show at most (a missing fact may leave fewer).
+    /// How many lines this policy can show at most (a tile with no name, or no fact and no identity,
+    /// may leave fewer).
     pub fn max_lines(&self) -> usize {
         usize::from(self.title) + usize::from(self.details != DetailsKind::None)
     }
@@ -84,18 +92,29 @@ pub struct CaptionFacts {
     /// An episode's `(season, episode)` numbers (`0` for one the server did not number), which its
     /// default details line says in place of a year and length.
     pub episode: Option<(u32, u32)>,
+    /// A SEASON tile's `(number, its own title)`: `0` for a season the server did not number, and the
+    /// title the server gave it ("Season 6", "Specials"). `title` then holds the name of its SHOW, the
+    /// name a reader knows the tile by, and this is the season's identity line.
+    pub season: Option<(u32, String)>,
 }
 
 /// The caption's lines for `facts` under `policy`: `[title, details]` with absent lines `None`.
-/// A line with nothing to say is `None`, so a missing fact never leaves an empty string behind.
+///
+/// **One rule for every kind of tile: a line the setting turns on is never drawn empty.** The title
+/// line is `facts.title`, the name a reader knows the tile by (the caller puts a season's SHOW there).
+/// The details line is the picked kind's facts, and a tile that has none of them (a season has no
+/// length and often no genre or rating, a movie may have no genre) says its identity line instead
+/// ([`identity_line`]), so a band the policy opens is never open over nothing. Under
+/// [`DetailsKind::None`] there is no details line and no fallback; a line is `None` only when the
+/// setting turns it off (or the tile has no name or identity at all), never for want of one picked fact.
 ///
 /// Every word on a line comes from the catalog in `locale` (the shared `core.*` / `browse.*`
 /// duration, count and plural keys plus `captions.new_episodes`); the only literals are the
 /// technical marks `HDR`, `4K`, `1080p` and the middle dot.
 pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &LocaleContext) -> [Option<String>; 2] {
     let title = policy.title.then(|| facts.title.clone()).flatten().filter(|t| !t.is_empty());
-    let details = match policy.details {
-        DetailsKind::None => None,
+    let picked = match policy.details {
+        DetailsKind::None => return [title, None],
         DetailsKind::YearLength => year_length(facts, locale),
         DetailsKind::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
         DetailsKind::Video => join(
@@ -108,7 +127,7 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
                     .map(|s| locale.decimal((s * 10.0).round() as i64, 1))).collect(),
         ),
     };
-    [title, details]
+    [title, picked.or_else(|| identity_line(facts, locale))]
 }
 
 fn join(parts: Vec<String>) -> Option<String> {
@@ -127,19 +146,27 @@ fn resolution_mark(raw: &str) -> Option<String> {
     }
 }
 
+/// An episode's address, "S1 • E8" (or "E8" for one the server did not give a season).
+fn episode_address(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
+    use plx_platform::i18n::msg;
+    let (season, ep) = f.episode.filter(|(_, ep)| *ep > 0)?;
+    Some(if season > 0 {
+        msg::widgets_card_season_episode_in(cx, i64::from(ep), i64::from(season))
+    } else {
+        msg::widgets_card_episode_in(cx, i64::from(ep))
+    })
+}
+
 /// The default details line, by kind: a collection is its size, an episode its address, a show its
-/// season count (or its unwatched new episodes), a started item the time it has left, anything else year and length.
+/// season count (or its unwatched new episodes), a started item the time it has left, anything else year and length
+/// (a season has no length: its year, or nothing, which [`identity_line`] then answers).
 fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
         return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
     }
-    if let Some((season, ep)) = f.episode.filter(|(_, ep)| *ep > 0) {
-        return Some(if season > 0 {
-            msg::widgets_card_season_episode_in(cx, i64::from(ep), i64::from(season))
-        } else {
-            msg::widgets_card_episode_in(cx, i64::from(ep))
-        });
+    if let Some(address) = episode_address(f, cx) {
+        return Some(address);
     }
     let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {
@@ -159,6 +186,28 @@ fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     }
     let length = dur.map(|d| crate::fmt::duration_minutes_in(cx, i64::from(d)));
     join(year.into_iter().chain(length).collect())
+}
+
+/// What a tile IS, in one short line, for a tile the picked details kind has nothing to say about:
+/// a collection its size, an episode its address ("S1 • E8"), a season its own title ("Season 6",
+/// "Specials", or "Season N" from the catalog when the server named it nothing), anything else its
+/// year. `None` for a tile with none of these.
+fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
+    use plx_platform::i18n::msg;
+    if let Some(sub) = f.subtype.as_deref() {
+        return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
+    }
+    if let Some(address) = episode_address(f, cx) {
+        return Some(address);
+    }
+    if let Some((number, own)) = &f.season {
+        return if !own.is_empty() {
+            Some(own.clone())
+        } else {
+            (*number > 0).then(|| msg::browse_detail_season_number_in(cx, i64::from(*number)))
+        };
+    }
+    f.year.filter(|y| *y > 0).map(|y| y.to_string())
 }
 
 /// The caption's text shadow (`0 1px 8px` black 35%): the glyph path has no blur, so it is set as
@@ -193,14 +242,19 @@ mod tests {
     }
 
     #[test]
-    fn lines_follow_the_policy_and_skip_missing_facts() {
+    fn lines_follow_the_policy_and_fall_back_to_identity_for_missing_facts() {
         let facts = CaptionFacts { title: Some("Heat".into()), year: Some(1995), genre: Some("Crime".into()), ..Default::default() };
         let l = plx_platform::i18n::current();
         let p = CaptionPolicy { title: true, details: DetailsKind::Genre };
         assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), Some("Crime".into())]);
+        // no stream facts: the line is the item's identity (its year), never an open band over nothing
         let p = CaptionPolicy { title: false, details: DetailsKind::Video };
-        assert_eq!(caption_lines(&p, &facts, l), [None, None]);
+        assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
         let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
         assert_eq!(caption_lines(&p, &facts, l), [None, Some("1995".into())]);
+        let p = CaptionPolicy { title: true, details: DetailsKind::None };
+        assert_eq!(caption_lines(&p, &facts, l), [Some("Heat".into()), None], "Nothing has no fallback");
+        assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &CaptionFacts::default(), l), [None, None],
+            "an item with no name and no facts has nothing to say");
     }
 }

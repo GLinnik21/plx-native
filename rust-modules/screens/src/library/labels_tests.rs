@@ -25,11 +25,12 @@ fn grid_labels_identify_episodes_and_seasons() {
     assert_eq!(super::parts::grid_label(&episode, &POLICY).title.unwrap().to_str().unwrap(), "S3 · E4",
         "an episode without its own title must identify the episode, not repeat the show");
     let season = PmsMovie { kind: 2, title: "Season 3".into(), show_title: "The Bear".into(),
-        season_index: 3, year: 2024, ..Default::default() };
+        season_index: 3, ..Default::default() };
     let label = super::parts::grid_label(&season, &POLICY);
-    assert_eq!(label.title.unwrap().to_str().unwrap(), "Season 3");
-    assert_eq!(label.caption.unwrap().to_str().unwrap(), "The Bear",
+    assert_eq!(label.title.unwrap().to_str().unwrap(), "The Bear",
         "a mixed library of seasons must name the show each season belongs to");
+    assert_eq!(label.caption.unwrap().to_str().unwrap(), "Season 3",
+        "the season is the details line when the setting's facts have nothing to say about it");
 }
 
 #[test]

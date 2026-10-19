@@ -1003,8 +1003,8 @@ pub fn draw_label(
     draw_label_block(p, rect, sty, label, ty, measure);
 }
 /// **The one trailing FACT under a focused tile** — the caption rung of a Continue Watching deck's
-/// state line (`registry::captions::shelf_label`) and of `poster_label`'s Library seasons and
-/// episodes. A plain poster's details line is worded by `caption_policy::caption_lines`.
+/// state line (`registry::captions::shelf_label`) and of `poster_label`'s Collection-screen
+/// members. A plain poster's details line is worded by `caption_policy::caption_lines`.
 ///
 /// It was `home.rs`'s, private, in two halves (`focused_caption` and `cw_caption`), and the Library
 /// simply had neither: its shelves passed a bare title, so every focused poster there reserved a
@@ -1025,9 +1025,10 @@ pub fn draw_label(
 /// one screen, one object, one answer.
 ///
 /// `None` is still possible and still means one rung: an item the server dated to nothing at all.
-/// A grid poster card's label, for every kind but the episode each grid words its own way: a
-/// season names its show, and anything else is its title over its [`focused_caption`]. The
-/// Library grid and the Collection page share it, so one item reads the same on both.
+/// A grid poster card's label on a grid that is not (yet) on the Under posters policy, for every
+/// kind but the episode: a season names its show, and anything else is its title over its
+/// [`focused_caption`]. The Collection screen reads it; the Library grid, Home, Recommended and
+/// the Watchlist follow the policy through `registry::captions` instead.
 pub fn poster_label(item: &TileFacts<'_>) -> TileLabel {
     if item.kind == TileKind::Season && !item.show_title.is_empty() {
         return TileLabel::titled(item.title, item.show_title);

@@ -7,7 +7,9 @@
 //! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
 //! by the SAME policy the Library, Collections, the Watchlist, Home and
 //! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); only that tile
-//! wears a caption, and a face with no artwork carries no word. The preview is built from the value
+//! wears a caption, and a face with no artwork carries no word. A line the setting turns on is
+//! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
+//! length, often no genre) says the tile's identity instead ("Season 6", "S1 • E8", its year). The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
 //! the focused choice.
 //!
@@ -413,7 +415,8 @@ impl FormId for DetailsId {
 }
 
 /// What a choice shows under a poster, as the preview words it from `facts` ([`lifted_facts`]): the
-/// row's sample on the right. `None` for Nothing, and for a line the poster has no fact for.
+/// row's sample on the right. `None` for Nothing; a kind the poster has no fact for samples the identity
+/// line the tile says instead (its year), as the preview draws it.
 fn details_sample(d: UnderPostersDetails, facts: &CaptionFacts) -> Option<String> {
     lines_of(UnderPosters { title: false, details: d }, facts)[1].clone()
 }
