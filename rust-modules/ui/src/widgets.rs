@@ -2442,7 +2442,9 @@ const CHIP_NAME_MAX: f32 = 320.0;
 /// A CONSTANT rather than a rect recorded at draw the way [`tab_pill_at`]'s are, and the asymmetry
 /// is the geometry rather than an oversight: the pills SCROLL inside their track, so where one was
 /// drawn is a fact only that draw knows, while the chip sits at the margin on the top-bar line and
-/// never moves. `Rect::new(MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D)` used to be written out in
+/// never moves within the bar. It is the chip's RESTING frame: a page that tucks the bar draws it
+/// lifted ([`crate::screen::NavPresentation::chrome_rect`]), and the chip's pointer stop is
+/// registered at the lifted rect (or not at all once the bar is not drawn), never at this one. `Rect::new(MARGIN_X, TOP_BAR_Y, CHIP_D, CHIP_D)` used to be written out in
 /// `home.rs`, `library.rs` and `search/mod.rs` — and only the first of the three also recorded it
 /// for a hit test, which is exactly how a control drawn on three screens came to be clickable on
 /// one.
@@ -2507,17 +2509,6 @@ impl TopFocus {
             _ => -1,
         }
     }
-}
-
-/// Is the pointer on the profile chip? The chip's half of [`tab_pill_at`] — the shared bar's two
-/// kinds of stop, hit-tested in the one module that draws them.
-///
-/// The target is the AVATAR, never the unfurled name capsule beside it: the capsule is a focus
-/// read-out that only exists while the remote is already on the chip, so a pointer that could
-/// activate it would be clicking a shape that is not there for the user who reached the chip with
-/// a mouse. That was Home's rule when Home owned this test, and it is unchanged.
-pub fn profile_chip_at(mx: f32, my: f32) -> bool {
-    CHIP_FRAME.contains(mx, my)
 }
 
 // ---- the navigation bar's scrim: RETIRED 2026-09-05 -------------------------------------------
@@ -2633,9 +2624,9 @@ fn chip_capsule(
 /// It used to take the rect and the focus amount from its caller, which is how the three screens
 /// came to disagree about it: each wrote out the same rect, Home alone recorded one for a hit test,
 /// and the other two hard-coded `0.0` for the expand because the chip could not be focused there.
-/// A control drawn on three screens and activatable on one is a bug, not a design — the frame, the
-/// hit test ([`profile_chip_at`]) and the spring all live here now, and a screen's only remaining
-/// say is where its own focus is, through [`TopFocus`].
+/// A control drawn on three screens and activatable on one is a bug, not a design — the frame, its
+/// stop in the shared hit map (the dispatcher registers it with the strip's) and the spring all live
+/// here now, and a screen's only remaining say is where its own focus is, through [`TopFocus`].
 ///
 /// The unfurl is deliberately a scalar and not a bool: at 1 the chip grows the **tab bar's own
 /// track capsule** around itself and unfurls the profile name to its right. A lifted shadow alone
@@ -6154,6 +6145,15 @@ impl TabBand {
         }
     }
 
+    /// **Back to the flat capsule.** The bar's material is something its DRAW publishes, so a frame that
+    /// does not draw the bar (an early return in [`StripRender::draw`], or the dispatcher skipping the
+    /// chrome pass at tuck 1 / alpha 0) must say so, or the chip and the account menu's chip lift
+    /// ([`Self::face`], through `scrim_lift_read`) read the last DRAWN frame's stops for a bar that is
+    /// not on screen. See [`BarMaterial`].
+    pub fn reset_material(&mut self) {
+        self.material = BarMaterial::Flat;
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_density(&mut self, value: f32) {
         self.density = TrackDensity { drawn: crate::Spring::at(value), want: value, seeded: true };
@@ -6976,7 +6976,7 @@ impl StripRender {
                    // The band's material resets first: every early
                    // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
-    band.material = BarMaterial::Flat;
+    band.reset_material();
     let pulse = self.pulse_read();
     with_tab_metrics_for(data, |faces, words, widths| {
         let n = faces.len();

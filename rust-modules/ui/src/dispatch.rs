@@ -267,6 +267,19 @@ pub trait Rig<H: Host> {
     fn back_at_root(&mut self) {}
 }
 
+/// **The shared top bar as the page on top presents it this frame, or `None` when it is not drawn.**
+/// The nav's presentation tucked by what the page answers ([`Screen::chrome_tuck`]), kept only while
+/// [`NavPresentation::chrome_drawn`] says the bar is on screen. The chrome pass and the strip's pointer
+/// stops both ask THIS, so what is clickable is what is drawn, by one rule: the pass is skipped on
+/// `None` and the stops are withdrawn on `None`, and on `Some` the pass draws the bar `chrome_lift`
+/// higher and the stops are lifted by the same amount ([`NavPresentation::chrome_rect`]).
+fn chrome_presented<H: Host>(navigation: super::screen::NavPresentation, screen: &dyn Screen<H>)
+    -> Option<super::screen::NavPresentation>
+{
+    let presented = navigation.tucked(screen.chrome_tuck());
+    presented.chrome_drawn().then_some(presented)
+}
+
 pub fn scrim_lift_read<'a, H: Host>(
     rig: &'a dyn Rig<H>,
     glass: Option<&crate::frame::glass::GlassPlan>,
@@ -1370,6 +1383,38 @@ where
         report
     }
 
+    /// **The shared bar's pointer stops, AS DRAWN.** The strip's members are published at their RESTING
+    /// rects every frame; the bar the page tucks is drawn lifted (or not at all), so each stop is the
+    /// member's rect through [`NavPresentation::chrome_rect`] of the same [`chrome_presented`] the chrome
+    /// pass asked, and a bar that is not drawn has none: it can neither be clicked nor hovered into
+    /// focus. A folded page disables hover seating, but its visible controls retain direct clicks (the
+    /// legacy Home bar allowed clicks from the grid too).
+    fn bar_stops(nav: &Navigation<H>, owner: Option<EntryId>, navigation: super::screen::NavPresentation)
+        -> Vec<Stop<H::Elem>>
+    {
+        let Some(entry) = nav.tabs.stack.top().filter(|entry| owner == Some(entry.id)) else { return Vec::new() };
+        let Some(inst) = entry.inst.as_ref().filter(|i| i.screen.hit_source() == HitSource::Engine) else { return Vec::new() };
+        let Some(bar) = chrome_presented::<H>(navigation, &*inst.screen) else { return Vec::new() };
+        let hover = if inst.screen.strip_reachable() { super::screen::Hover::Focus } else { super::screen::Hover::Ignore };
+        nav.tabs.strip.iter().map(|member| Stop {
+            key: FocusKey { entry: entry.id, elem: member.elem },
+            rect: bar.chrome_rect(member.drawn), rest_rect: bar.chrome_rect(member.target),
+            clip: bar.chrome_rect(member.clip),
+            hover, activate: Activate::Direct,
+        }).collect()
+    }
+
+    /// Test support: present a hit map holding ONLY the shared bar's stops, which is what [`Self::draw`]
+    /// registers for the bar. A real page's draw needs a GL context and a font, so a host test of the
+    /// application's tree cannot run it; the bar's stops are the part that does not paint, and they are
+    /// the same [`Self::bar_stops`] `draw` calls.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn present_bar_stops(&mut self, rig: &dyn Rig<H>) {
+        let stops = Self::bar_stops(&self.nav, self.owner_entry(), rig.navigation_presentation());
+        self.input.hit.fill(stops);
+        self.input.hit.swap();
+    }
+
     fn draw_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport) {
         self.draw_with(rig, tick, report, true, None, super::frame::backdrop::Z::ALL);
     }
@@ -1574,35 +1619,24 @@ where
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
                         let _chrome_layer = backdrop::layer(Z::CHROME, true);
-                        let navigation = navigation.tucked(inst.screen.chrome_tuck());
                         // **A band that is fully faded is not drawn: by rule, not by where the lift
                         // put it.** The tuck lifts the bar off canvas, which clips its glass away,
                         // but its draw still queued `sample_ground` framebuffer copies and a glass
                         // declaration at alpha 0; with the lift gone it would source every scrolled
-                        // frame, invisibly. The stops below stay published: they are the strip's
-                        // geometry, not its paint.
-                        if navigation.chrome_alpha > 0.0 {
+                        // frame, invisibly. The same rule withdraws the strip's pointer stops below
+                        // (`chrome_presented`), and a skipped frame publishes no material, so the
+                        // band's goes back to Flat rather than staying on the last drawn frame's face.
+                        if let Some(navigation) = chrome_presented::<H>(navigation, &*inst.screen) {
                             backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                        } else if let Some(glass) = glass.as_deref_mut() {
+                            glass.tab_band_mut().reset_material();
                         }
                     }
                 }
             }
-            // The strip is the container's control, not a page-local pointer ladder. Publish
-            // its stops above the page and below surfaces, from the same keyed geometry the
-            // engine queries. A folded page disables hover seating, but its visible controls
-            // retain direct clicks (the legacy Home bar allowed clicks from the grid too).
-            if let Some(entry) = nav.tabs.stack.top() {
-                if strip_owner == Some(entry.id) && entry.inst.as_ref().is_some_and(|i| i.screen.hit_source() == HitSource::Engine) {
-                    let hover = if entry.inst.as_ref().is_some_and(|i| i.screen.strip_reachable()) {
-                        super::screen::Hover::Focus
-                    } else { super::screen::Hover::Ignore };
-                    stops.extend(nav.tabs.strip.iter().map(|member| Stop {
-                        key: FocusKey { entry: entry.id, elem: member.elem },
-                        rect: member.drawn, rest_rect: member.target, clip: member.clip,
-                        hover, activate: Activate::Direct,
-                    }));
-                }
-            }
+            // The strip is the container's control, not a page-local pointer ladder: its stops go
+            // above the page and below surfaces, from the same keyed geometry the engine queries.
+            stops.extend(Self::bar_stops(nav, strip_owner, navigation));
             // **The surfaces' modal dim, last thing in the page pass** (§6.2, §8.3). It is here
             // and not with each panel because the dim has to be on the framebuffer BEFORE any
             // surface's glass grabs its backdrop — see `ModalStack::draw_scrims`, which owns the

@@ -160,7 +160,9 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// lifted by [`chrome_lift`] (up to its own height, [`widgets::TOP_BAR_BOTTOM`]), so it fades
     /// WHILE it travels up off the top edge; the application's `draw_chrome` applies both. At tuck 1
     /// the band is gone and the dispatcher does not draw it at all (a band at `chrome_alpha` 0
-    /// declares no glass and samples no ground, whatever the lift). A page
+    /// declares no glass and samples no ground, whatever the lift), and the bar's pointer stops are
+    /// withdrawn with it; part way up they sit where the bar is DRAWN ([`NavPresentation::chrome_drawn`],
+    /// [`NavPresentation::chrome_rect`]). A page
     /// answers from state it already animates (the Library derives it from its scroll spring), so
     /// it needs no motion of its own and a resting page keeps the frame loop asleep.
     fn chrome_tuck(&self) -> f32 {
@@ -785,6 +787,8 @@ pub enum Activate {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NavPresentation {
     pub page_alpha: f32,
+    /// The top chrome's opacity. At 0 the chrome is not drawn ([`Self::chrome_drawn`]) and has no
+    /// pointer stops.
     pub chrome_alpha: f32,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
@@ -811,6 +815,23 @@ impl NavPresentation {
     /// this value for the page that answers a tuck; every other page answers 0 and is unchanged.
     pub fn tucked(self, tuck: f32) -> Self {
         Self { chrome_alpha: self.chrome_alpha * (1.0 - tuck.clamp(0.0, 1.0)), chrome_lift: self.chrome_lift + chrome_lift(tuck), ..self }
+    }
+
+    /// **Is the shared top bar drawn under this presentation?** The ONE answer, asked of a presentation
+    /// that already carries the page's tuck ([`Self::tucked`]): the chrome pass is skipped when it is
+    /// `false` (a band at alpha 0 declares no glass and samples no ground, whatever the lift) AND the
+    /// bar's pointer stops are withdrawn when it is `false`, because a control that is not on screen
+    /// must not be pressable or hoverable. Both ask this and nothing else; the dispatcher's
+    /// `chrome_presented` is the pairing of the two.
+    pub fn chrome_drawn(&self) -> bool {
+        self.chrome_alpha > 0.0
+    }
+
+    /// Where the bar draws `rest`, a rect of its RESTING geometry: lifted by [`Self::chrome_lift`], as the
+    /// application's `draw_chrome` translates its painter. The bar's pointer stops go through this, so a
+    /// click lands where the bar is drawn and not where it would rest.
+    pub fn chrome_rect(&self, rest: Rect) -> Rect {
+        Rect { y: rest.y - self.chrome_lift, ..rest }
     }
 }
 

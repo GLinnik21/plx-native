@@ -131,27 +131,15 @@ fn continuous_document_rail_tracks_both_ends_and_disappears_when_content_fits() 
     assert_eq!(continuous_rail_geom(0.0, 300.0, 300.0), None);
 }
 
-/// **The chip's frame and its hit test are one rect, and it really does sit LEFT of the pills.**
+/// **The chip really does sit LEFT of the pills, on their line.**
 ///
-/// Both halves matter and neither is visible in a diff. The hit test is what makes the chip
-/// clickable on all three screens that draw it (it was Home's alone, recorded at Home's draw),
-/// so it must address exactly the rect the draw uses. And the D-pad rule every one of those
-/// screens now adopts — ◀ off the FIRST pill reaches the chip, ▶ walks back — is only sane
-/// while the chip is genuinely the bar's leftmost thing: [`TAB_SIDE_CLEAR`] is the margin that
-/// keeps the CENTRED strip off it, and a strip that grew far enough left to overlap would make
-/// the walk cross two controls occupying one place.
+/// The D-pad rule every screen that wears the bar adopts — ◀ off the FIRST pill reaches the chip, ▶ walks
+/// back — is only sane while the chip is genuinely the bar's leftmost thing: [`TAB_SIDE_CLEAR`] is the
+/// margin that keeps the CENTRED strip off it, and a strip that grew far enough left to overlap would
+/// make the walk cross two controls occupying one place.
 #[test]
-fn the_profile_chip_is_hit_where_it_is_drawn_and_sits_left_of_the_pills() {
+fn the_profile_chip_sits_left_of_the_pills() {
     let r = CHIP_FRAME;
-    assert!(
-        profile_chip_at(r.cx(), r.cy()),
-        "the middle of the avatar is the chip"
-    );
-    assert!(
-        !profile_chip_at(r.x - 1.0, r.cy()),
-        "…and a pixel outside it is not"
-    );
-    assert!(!profile_chip_at(r.cx(), r.y + r.h + 1.0), "…on either axis");
     // it shares the bar's line with the pills: one control height, one top edge
     assert_eq!(r.y, TOP_BAR_Y);
     // one control height with the pills, which is also what makes the focused chip's capsule

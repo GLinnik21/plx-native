@@ -165,6 +165,20 @@ impl Rig {
         std::mem::take(&mut self.performed)
     }
 
+    /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
+    /// event after it resolves against. A real page cannot be DRAWN on a host (no GL context, no font), so
+    /// the page's own stops are not in this map; the bar's are, and they are the ones `Dispatcher::draw`
+    /// registers, from the page's real `chrome_tuck` and the application's real strip members.
+    pub(super) fn present_bar(&mut self) {
+        self.d.present_bar_stops(&self.bridge);
+    }
+
+    /// A pointer click at `(x, y)`, then enough frames for the press and what it opens to play out.
+    pub(super) fn click(&mut self, x: f32, y: f32) {
+        self.step(vec![click_input(x, y, tick(self.frame + 1))]);
+        self.frames(40);
+    }
+
     /// Is the page on top `arg`'s kind of page? (A library page's `section` is the store's business.)
     pub(super) fn on(&self, arg: &AppArg) -> bool {
         match (self.d.top_arg(), arg) {

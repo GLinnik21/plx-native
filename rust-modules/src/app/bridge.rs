@@ -3173,11 +3173,11 @@ pub(crate) fn nav_push_with_return(
 /// **Does this route wear the shared tab bar?** The ONE answer: `ScreenArg::chrome()`, which the
 /// registry writes exhaustively, so a new page cannot be added without deciding it. Everything that
 /// depends on the bar asks this and nothing else — drawing it (`draws_chrome_for`), publishing the
-/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), stepping the
-/// strip's springs (`run::update`), and recognising a click on the profile chip
-/// (`input::chip_clicked`) — because four hand-written lists of route names once drifted
+/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), and stepping the
+/// strip's springs (`run::update`) — because hand-written lists of route names once drifted
 /// from it: the Collections and Recommended pages drew the bar, but their strip was never published
-/// or stepped, so Up from the page found no pills to land on.
+/// or stepped, so Up from the page found no pills to land on. (A click on the bar is not asked of the
+/// route at all: the chip and pills are stops of the hit map, registered where the bar is drawn.)
 pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
     use plx_ui::screen::ScreenArg;
     arg.chrome() == plx_machine::machine::Chrome::TabBar

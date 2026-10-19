@@ -869,7 +869,7 @@ gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\
 # hittest: the narrowed raw hit-tester call shape, zero in app/ once the player's HUD registers
 # its stops through DrawFrame::stop (D2) instead of app/run.rs testing raw coordinates against
 # player_hud's geometry by hand. Deliberately NOT a blanket `_at(` — that false-positives on
-# resume_at/memory_at/open_settings_at/write_at/profile_chip_at, which are unrelated lookups.
+# resume_at/memory_at/open_settings_at/write_at, which are unrelated lookups.
 gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
 
 # frame: the three privileged OS-primitive calls, ZERO-TOLERANCE outside `app/run.rs` (D4) — no
