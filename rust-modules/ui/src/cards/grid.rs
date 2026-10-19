@@ -303,12 +303,19 @@ impl Grid {
             self.slept = true;
             self.seen = Seen::Nothing;
             self.pop = GridPop::new();
+            // A caption is its band's content (alpha = the band's expansion), so the band of a seat
+            // nobody has lifted is shut too: it opens with the lift below, not under the fade. Shut
+            // outright and not through `focus_band`, which would keep the open layout for the
+            // landing to measure from, and a landing is not what wakes.
+            self.bands.focus(None, false);
         } else if std::mem::take(&mut self.slept) {
             // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
-            // own rule; only a focus no event told the grid about wakes growing from rest
+            // own rule; only a focus no event told the grid about wakes growing from rest, its
+            // caption band opening on the spring the lift runs on, as a Down's does
             if let (Some(i), Seen::Nothing) = (focus, self.seen) {
                 self.pop.arm(i);
                 self.seen = Seen::Deliberate(i);
+                self.focus_band(Some(i / self.spec.cols), true);
             }
         }
         // what the focused card was drawn at before this tick lets it go: if the landing removes
@@ -328,7 +335,7 @@ impl Grid {
         // No focus is settled AFTER the landing has diffed: while the focused card leaves as a ghost
         // (focus is off it for a frame, until the app reconciles), its row's caption band stays as
         // drawn, or the cards below would jump up under the menu that chose the removal.
-        if focus.is_some() {
+        if focus.is_some() && awake {
             self.focus_band(focus.map(|i| i / self.spec.cols), false);
         }
         if let Some((i, (p, q))) = slid {
@@ -609,9 +616,12 @@ impl Grid {
     /// Open `row`'s caption band at once, settled (and close the rest), for an owner that sizes
     /// its document from the bands before the next tick would (a restored page's first layout).
     /// A no-op when `row` is already the focused row, so it never cuts short a band `on` is
-    /// animating.
+    /// animating, and while the grid is [`dormant`](Self::dormant): a seat nobody has lifted has no
+    /// band open under it, and its caption with it.
     pub fn settle_band(&mut self, row: Option<usize>) {
-        self.bands.focus(row, false);
+        if !self.dormant {
+            self.bands.focus(row, false);
+        }
     }
 
     /// Forget the focus pop's cell and any pending move: a fresh content set whose old indexes mean
