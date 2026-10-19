@@ -710,9 +710,9 @@ impl Popover {
 
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
     /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
-    /// an opener: the morphing rect and radius, the glass at FULL strength once the fill has begun
-    /// to cross (over the lit opener the host keeps), and its shadow on the fill's share. The fallback: the glass fades in on the fill's share.
-    fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
+    /// an opener: the morphing rect and radius, the glass AND its shadow on the fill's
+    /// share (one ramp, over the lit opener the host keeps). The fallback: the glass fades in on the fill's share, its shadow whole.
+    pub(crate) fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
         }
@@ -720,7 +720,10 @@ impl Popover {
         if f.ground_alpha <= 0.0 {
             return None;
         }
-        let (alpha, shadow) = if self.from.is_some() { (1.0, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
+        // ONE ramp for the glass and its shadow, the fill's share of the morph's progress: a rect
+        // that has left the opener is never at full strength, so the first and last glass frame
+        // are a soft edge under the lit opener rather than an opaque slab hanging below it.
+        let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
         Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow })
     }
 
