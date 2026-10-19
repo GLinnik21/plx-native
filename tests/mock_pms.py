@@ -2128,6 +2128,9 @@ class MockPms:
             self.discover.bind(lib)
         # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
         self.home_hubs = 0
+        # `--home-seasons`: `/hubs` also carries a "Recently Added Seasons" shelf of SEASON items
+        # (a real server's Recently Added TV holds seasons, each named for its show by `parentTitle`).
+        self.home_seasons = False
         # `--section-hubs N` (#412): `/hubs/sections/<id>` answers exactly N hubs; 0 keeps the
         # library's own. `--section-hubs-linked M` makes M of the padding hubs promoted collections.
         self.section_hubs = 0
@@ -2681,6 +2684,10 @@ class MockPms:
                 hubs[0]["title"] = "Continue Watching"
             if q.get("excludeContinueWatching") != "1":
                 hubs[0]["Metadata"] = lib.continue_watching()[:12]
+            if self.home_seasons:
+                hubs.insert(1, {"title": "Recently Added Seasons", "type": "season",
+                                "hubIdentifier": "mock.seasons", "key": "/hubs/mock/seasons",
+                                "more": False, "Metadata": lib.recent("season")})
             if self.home_hubs:
                 # #395: pad Home with synthetic shelves up to exactly `--home-hubs` hubs.
                 rows = lib.recent("movie", int(q.get("count", 12)))
@@ -2693,6 +2700,9 @@ class MockPms:
             # A window on `/hubs` pages the hub list itself, one hub per row.
             page, extra = paged(hubs)
             return j(self.container(Hub=page, **extra))
+        if segs == ["hubs", "mock", "seasons"] and self.home_seasons:
+            page, extra = paged(lib.recent("season", 1000))
+            return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:3] == ["hubs", "mock", "shelf"] and self.home_hubs:
             page, extra = paged(lib.recent("movie", 1000))
             return j(self.container(Metadata=page, **extra))
@@ -3246,7 +3256,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           cut_part_after=None, part_range_answers_200=False,
-          home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
+          home_hubs=0, home_seasons=False, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False, smart_collections=False):
@@ -3305,6 +3315,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms.link.set_faults([link_conditioner.parse_fault(f) for f in link_faults])
     pms.plex_pass = plex_pass
     pms.home_hubs = home_hubs
+    pms.home_seasons = home_seasons
     pms.section_hubs = section_hubs
     pms.section_hubs_linked = section_hubs_linked
     pms.refuse_enhancements = refuse_enhancements
@@ -4087,6 +4098,9 @@ def main():
     ap.add_argument("--home-hubs", type=int, default=0, metavar="N",
                     help="#395: make /hubs answer exactly N hubs (synthetic 'Mock Shelf i' rows pad "
                          "the library's own); 0 (default) leaves them as they are")
+    ap.add_argument("--home-seasons", action="store_true",
+                    help="make /hubs carry a 'Recently Added Seasons' shelf of season items (after Continue "
+                         "Watching), the shelf whose tiles are named for their show; off by default")
     ap.add_argument("--section-hubs", type=int, default=0, metavar="N",
                     help="#412: make /hubs/sections/<id> answer exactly N hubs (synthetic 'Mock Shelf i' "
                          "rows pad the library's own); 0 (default) leaves them as they are")
@@ -4242,6 +4256,7 @@ def main():
                          transcode_fixture=a.transcode_fixture,
                          cut_part_after=a.cut_part_after,
                          part_range_answers_200=a.part_range_answers_200, home_hubs=a.home_hubs,
+                         home_seasons=a.home_seasons,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
                          decision_delay_ms=a.decision_delay_ms, home_users=a.home_users, second_account=a.second_account,

@@ -321,6 +321,43 @@ class HomeHubsFlag(unittest.TestCase):
                          ["home.continue", "home.movies.recent", "home.television.recent"])
 
 
+class HomeSeasonsFlag(unittest.TestCase):
+    """`--home-seasons` adds a Recently Added shelf of SEASON items to `/hubs`: what Home's captions
+    are graded on for a tile that is not a movie, a show or an episode."""
+    PATH = "/hubs?count=12&excludeContinueWatching=1"
+
+    def test_the_shelf_holds_seasons_that_name_their_show_and_pages_through_its_key(self):
+        pms = MockPms(Library(shows=3, seasons=2))
+        pms.home_seasons = True
+        hubs = get(pms, self.PATH)["Hub"]
+        self.assertEqual([h["hubIdentifier"] for h in hubs],
+                         ["home.continue", "mock.seasons", "home.movies.recent", "home.television.recent"])
+        shelf = hubs[1]
+        self.assertEqual(len(shelf["Metadata"]), 6)
+        self.assertEqual(shelf["size"], 6)
+        for it in shelf["Metadata"]:
+            self.assertEqual(it["type"], "season")
+            self.assertTrue(it["title"] and it["parentTitle"] and it["thumb"], it)
+            self.assertGreater(it["index"], 0)
+        self.assertEqual(get(pms, shelf["key"])["Metadata"][:12], shelf["Metadata"])
+
+    def test_the_default_leaves_the_response_unchanged(self):
+        pms = MockPms(Library())
+        self.assertFalse(pms.home_seasons)
+        hubs = json.loads(pms.handle("GET", self.PATH)[2])["MediaContainer"]["Hub"]
+        self.assertEqual([h["hubIdentifier"] for h in hubs],
+                         ["home.continue", "home.movies.recent", "home.television.recent"])
+        self.assertFalse(get(pms, "/hubs/mock/seasons").get("Metadata"), "its key answers nothing unless asked for")
+
+    def test_the_flag_reaches_the_server(self):
+        server, pms = serve(0, home_seasons=True)
+        try:
+            self.assertTrue(pms.home_seasons)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 class SectionHubsFlag(unittest.TestCase):
     """#412: `--section-hubs N` makes `/hubs/sections/<id>` answer exactly N hubs and
     `--section-hubs-linked M` makes M of them promoted collections, so the Library's shelf bound
