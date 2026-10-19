@@ -445,6 +445,7 @@ fn mount_page(
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
+        SettingsPage::UnderPostersDetails => Box::new(under_posters::DetailsPage::new(entry)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),

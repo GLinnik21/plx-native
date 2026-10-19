@@ -53,31 +53,63 @@ fn write_request(effects: Vec<Stamped<InnerHost>>) -> Option<(UnderPosters, std:
     found
 }
 
-/// The details lines whose row wears the checkmark, read off the table the page draws.
-fn checked(page: &UnderPostersPage) -> Vec<UnderPostersDetails> {
+/// The details lines whose row wears the checkmark, read off the picker's table.
+fn checked(page: &DetailsPage) -> Vec<UnderPostersDetails> {
     let marks: Vec<bool> = page.form.table.sections.iter().flat_map(|s| s.rows.iter().map(|r| r.checked)).collect();
     UnderPostersDetails::LADDER.into_iter().filter(|d| {
-        let i = page.form.index_of_key(UpId::Details(*d).key()).expect("every details row exists");
+        let i = page.form.index_of_key(DetailsId(*d).key()).expect("every details row exists");
         marks[i]
     }).collect()
 }
 
+fn pick(page: &mut DetailsPage, d: UnderPostersDetails) -> Vec<Stamped<InnerHost>> {
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    page.activate(DetailsId(d).key().0, &mut fx);
+    out
+}
+
+fn polled(page: &mut DetailsPage) -> (bool, Vec<Stamped<InnerHost>>) {
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    let settled = page.poll(&mut fx);
+    (settled, out)
+}
+
+fn pops(effects: &[Stamped<InnerHost>]) -> bool {
+    effects.iter().any(|e| matches!(e.fx, Fx::Nav(plx_machine::machine::NavOp::Pop)))
+}
+
 #[test]
-fn the_form_has_a_title_switch_five_details_and_reset_with_distinct_keys() {
+fn the_page_has_a_title_switch_a_details_row_and_reset_with_distinct_keys() {
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
     let page = UnderPostersPage::new(EntryId(0));
-    let mut keys = vec![UpId::Title.key().0, UpId::Reset.key().0];
-    keys.extend(UnderPostersDetails::LADDER.map(|d| UpId::Details(d).key().0));
-    let mut unique = keys.clone();
+    let keys = [UpId::Title.key().0, UpId::Details.key().0, UpId::Reset.key().0];
+    let mut unique = keys.to_vec();
     unique.sort_unstable();
     unique.dedup();
-    assert_eq!(unique.len(), 7, "title + five details + reset, each its own key");
+    assert_eq!(unique.len(), 3, "title, details and reset, each its own key");
     assert!(keys.iter().all(|k| *k < crate::registry::BAND));
-    for key in keys {
-        assert!(page.form.index_of_key(RowKey(key)).is_some(), "row {key} is in the form");
-    }
-    assert_eq!(checked(&page), vec![UnderPostersDetails::YearLength], "the default is Year · Length");
+    let rows: Vec<usize> = keys.iter().map(|k| page.form.index_of_key(RowKey(*k)).expect("the row is in the form")).collect();
+    assert_eq!(rows, vec![0, 1, 2], "Title, Details, Reset in that order");
+}
+
+#[test]
+fn the_details_row_reads_the_current_line_and_opens_the_picker() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let mut page = UnderPostersPage::new(EntryId(0));
+    let i = page.form.index_of_key(UpId::Details.key()).unwrap();
+    let value = page.form.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).and_then(|r| r.value.clone());
+    assert_eq!(value.as_deref(), Some("Year \u{b7} Length"));
+    assert_eq!(page.form.activate(i), Some(plx_ui::form::Activation::Push(SettingsPage::UnderPostersDetails)));
+    let out = activate(&mut page, UpId::Details);
+    assert!(out.iter().any(|e| matches!(e.fx, Fx::Nav(plx_machine::machine::NavOp::Push(SettingsPage::UnderPostersDetails)))));
+    assert!(write_request(out).is_none(), "opening the picker writes nothing");
 }
 
 #[test]
@@ -99,19 +131,6 @@ fn the_title_switch_asks_the_write_door_and_waits_for_the_receipt() {
 }
 
 #[test]
-fn a_refused_write_puts_the_row_back_on_the_stored_value() {
-    let _guard = plx_base::testlock::serial();
-    let _live = Live::set(UnderPosters::DEFAULT);
-    let mut page = UnderPostersPage::new(EntryId(0));
-    let (_, reply) = write_request(activate(&mut page, UpId::Details(UnderPostersDetails::Genre))).unwrap();
-    assert_eq!(checked(&page), vec![UnderPostersDetails::Genre]);
-    reply.send(false).unwrap();
-    assert!(page.poll());
-    assert_eq!(page.state.value, UnderPosters::DEFAULT);
-    assert_eq!(checked(&page), vec![UnderPostersDetails::YearLength]);
-}
-
-#[test]
 fn a_dropped_receipt_is_a_refusal() {
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
@@ -123,26 +142,80 @@ fn a_dropped_receipt_is_a_refusal() {
 }
 
 #[test]
-fn each_details_row_keeps_the_title_and_sends_only_its_own_change() {
+fn the_picker_lists_nothing_first_each_line_with_its_sample_and_checks_the_current() {
     let _guard = plx_base::testlock::serial();
-    let start = UnderPosters { title: true, details: UnderPostersDetails::Video };
-    let _live = Live::set(start);
-    for details in UnderPostersDetails::LADDER {
-        let mut page = UnderPostersPage::new(EntryId(0));
-        let request = write_request(activate(&mut page, UpId::Details(details)));
-        if details == start.details {
-            assert!(request.is_none(), "choosing the current line writes nothing");
-        } else {
-            assert_eq!(request.unwrap().0, UnderPosters { title: true, details });
-        }
-    }
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let page = DetailsPage::new(EntryId(0));
+    let rows: Vec<(String, Option<String>)> = page.form.table.sections.iter().flat_map(|s| s.rows.iter())
+        .map(|r| (r.label.to_string(), r.value.clone())).collect();
+    let dot = '\u{b7}';
+    assert_eq!(rows, vec![
+        ("Nothing".to_string(), None),
+        (format!("Year {dot} Length"), Some(format!("2019 {dot} 2h 14m"))),
+        ("Genre".to_string(), Some("Drama".to_string())),
+        ("Video".to_string(), Some(format!("4K {dot} HDR"))),
+        (format!("Age rating {dot} Score"), Some(format!("PG-13 {dot} 7.8"))),
+    ]);
+    assert_eq!(checked(&page), vec![UnderPostersDetails::YearLength]);
+}
+
+#[test]
+fn a_pick_keeps_the_title_writes_once_and_pops_when_the_receipt_is_durable() {
+    let _guard = plx_base::testlock::serial();
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Video });
+    let mut page = DetailsPage::new(EntryId(0));
+    let effects = pick(&mut page, UnderPostersDetails::Genre);
+    assert!(!pops(&effects), "the page waits for the receipt");
+    let (asked, reply) = write_request(effects).expect("a write");
+    assert_eq!(asked, UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    assert_eq!(checked(&page), vec![UnderPostersDetails::Genre], "the row shows the pick at once");
+    assert!(!polled(&mut page).0, "waiting never blocks the frame");
+    plx_media::route::restore_under_posters(asked);
+    reply.send(true).unwrap();
+    let (settled, out) = polled(&mut page);
+    assert!(settled && pops(&out), "a durable write pops the picker");
+}
+
+#[test]
+fn a_refused_pick_puts_the_checkmark_back_and_stays() {
+    let _guard = plx_base::testlock::serial();
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let mut page = DetailsPage::new(EntryId(0));
+    let (_, reply) = write_request(pick(&mut page, UnderPostersDetails::Genre)).unwrap();
+    reply.send(false).unwrap();
+    let (settled, out) = polled(&mut page);
+    assert!(settled && !pops(&out));
+    assert_eq!(page.state.value, UnderPosters::DEFAULT);
+    assert_eq!(checked(&page), vec![UnderPostersDetails::YearLength]);
+}
+
+#[test]
+fn choosing_the_checked_line_pops_without_a_write() {
+    let _guard = plx_base::testlock::serial();
+    let _live = Live::set(UnderPosters { title: false, details: UnderPostersDetails::Video });
+    let mut page = DetailsPage::new(EntryId(0));
+    let effects = pick(&mut page, UnderPostersDetails::Video);
+    assert!(pops(&effects));
+    assert!(write_request(effects).is_none());
+}
+
+#[test]
+fn the_pickers_preview_follows_the_focused_choice() {
+    let _guard = plx_base::testlock::serial();
+    let _live = Live::set(UnderPosters::DEFAULT);
+    let mut page = DetailsPage::new(EntryId(0));
+    assert_eq!(page.state.focused(), UnderPostersDetails::YearLength);
+    page.state.sel = DetailsId(UnderPostersDetails::Genre).key();
+    assert_eq!(page.state.focused(), UnderPostersDetails::Genre);
+    assert_eq!(page.state.value.details, UnderPostersDetails::YearLength, "focus is not a pick");
 }
 
 #[test]
 fn reset_restores_the_default_and_is_inert_at_the_default() {
     let _guard = plx_base::testlock::serial();
     {
-        let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::None });
+        let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre });
         let mut page = UnderPostersPage::new(EntryId(0));
         let (asked, _reply) = write_request(activate(&mut page, UpId::Reset)).expect("reset writes");
         assert_eq!(asked, UnderPosters::DEFAULT);
@@ -154,12 +227,12 @@ fn reset_restores_the_default_and_is_inert_at_the_default() {
 }
 
 #[test]
-fn the_page_opens_on_the_stored_value() {
+fn the_picker_opens_on_the_stored_value() {
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore });
-    let page = UnderPostersPage::new(EntryId(0));
-    assert!(page.state.value.title);
+    let page = DetailsPage::new(EntryId(0));
     assert_eq!(checked(&page), vec![UnderPostersDetails::AgeRatingScore]);
+    assert_eq!(page.state.sel, DetailsId(UnderPostersDetails::AgeRatingScore).key(), "the cursor starts on the checked line");
 }
 
 #[test]
@@ -227,8 +300,8 @@ fn text_fit_inputs() -> RootInputs {
     }
 }
 
-/// **Every string fits, in every shipped language**: the page's rows, the root row beside every
-/// value it can read, and the preview's block clear of the copy above it.
+/// **Every string fits, in every shipped language**: both pages' rows, the root row beside every
+/// value it can read, and the preview's frame clear of the copy above it on each page.
 #[test]
 fn every_under_posters_string_fits_in_every_language() {
     use plx_ui::text_view::TextView;
@@ -244,20 +317,28 @@ fn every_under_posters_string_fits_in_every_language() {
             page.table.compact = false;
             page.set(under_posters_form(value), None);
             out.extend(page.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} under posters {value:?}")));
+            let mut picker = FormTable::<DetailsId, UnderPostersDetails, SettingsPage>::new(crate::registry::BAND);
+            picker.table.compact = false;
+            picker.set(details_form(value.details), None);
+            out.extend(picker.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} details picker {value:?}")));
         }
-        // the narrative copy ends above the preview
-        let title = plx_platform::i18n::msg::under_posters_title();
-        let frame = layout.narrative_copy_frame(true, title, layout.action.y, &ShippedMeasure);
-        let copy_h = TextView::new(plx_platform::i18n::msg::under_posters_copy(), theme::size::LABEL, theme::TEXT_READING)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .with_measure(&ShippedMeasure)
-            .measure_h(layout.narrative.w);
-        if frame.y + copy_h + theme::space::MD > preview_top() {
-            out.push(format!("{tag}: the copy ends at {:.0}, under the preview at {:.0}", frame.y + copy_h, preview_top()));
+        // each page's narrative copy ends above the preview frame
+        for (title, copy) in [
+            (plx_platform::i18n::msg::under_posters_title(), plx_platform::i18n::msg::under_posters_copy()),
+            (plx_platform::i18n::msg::under_posters_details_row(), plx_platform::i18n::msg::under_posters_details_copy()),
+        ] {
+            let frame = layout.narrative_copy_frame(true, title, layout.action.y, &ShippedMeasure);
+            let copy_h = TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+                .leading(theme::size::LABEL as f32 + theme::space::XS)
+                .max_lines(12)
+                .with_measure(&ShippedMeasure)
+                .measure_h(layout.narrative.w);
+            if frame.y + copy_h + theme::space::MD > preview_frame().y {
+                out.push(format!("{tag}: the copy under {title:?} ends at {:.0}, under the preview at {:.0}", frame.y + copy_h, preview_frame().y));
+            }
         }
         // the sample title fits inside its placeholder on one line
-        let w = ShippedMeasure.width_str(plx_platform::i18n::msg::under_posters_sample_title(), theme::size::CAPTION, true);
+        let w = ShippedMeasure.width_str(plx_platform::i18n::msg::under_posters_sample_title(), theme::size::LABEL, true);
         if w > PREVIEW_W - 2.0 * theme::space::SM {
             out.push(format!("{tag}: the sample title is {w:.0}px, wider than its placeholder"));
         }
@@ -266,25 +347,43 @@ fn every_under_posters_string_fits_in_every_language() {
 }
 
 #[test]
-fn the_preview_stays_inside_the_narrative_column() {
+fn the_preview_is_one_lifted_poster_in_a_frame_inside_the_narrative_column() {
     let narrative = RouteLayout::screen().narrative;
-    let width = PREVIEW_TILES as f32 * PREVIEW_W + (PREVIEW_TILES - 1) as f32 * PREVIEW_GAP;
-    assert!(width <= narrative.w);
-    assert!(preview_top() + PREVIEW_H + PREVIEW_UNDER <= narrative.y + narrative.h);
+    let frame = preview_frame();
+    assert!(frame.x >= narrative.x && frame.x + frame.w <= narrative.x + narrative.w);
+    assert!((frame.y + frame.h - (narrative.y + narrative.h)).abs() < 0.01, "it rests on the column's floor");
+    let poster = preview_poster();
+    assert!(poster.y >= frame.y && poster.x >= frame.x && poster.x + poster.w <= frame.x + frame.w);
+    assert!(poster.y + poster.h + PREVIEW_UNDER <= frame.y + frame.h, "the tallest caption stays inside the frame");
     // the Library's proportions, not a private set
-    let ratio = |w: f32, gap: f32| gap / w;
-    assert!((ratio(PREVIEW_W, PREVIEW_GAP) - ratio(plx_ui::consts::CARD_W, plx_ui::consts::GAP)).abs() < 1e-4);
+    assert!((poster.w / poster.h - plx_ui::consts::CARD_W / plx_ui::consts::CARD_H).abs() < 1e-3);
 }
 
 #[test]
-fn the_page_draws_for_every_value_without_a_painter() {
+fn the_preview_draws_the_frame_one_poster_and_its_caption() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let runs = plx_ui::draw_census::capture_runs(|| {
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre }, &ShippedMeasure);
+    });
+    let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
+    assert_eq!(words.iter().filter(|w| **w == "Movie").count(), 2, "the title sits in the placeholder and again as the caption: {words:?}");
+    assert!(words.contains(&"Drama"));
+    let caption = runs.iter().rfind(|r| r.text == "Drama").unwrap();
+    let poster = preview_poster();
+    assert!(caption.at.y > poster.y + poster.h, "the caption stands under the poster");
+    assert!(caption.at.x >= poster.x && caption.at.x + caption.at.w <= poster.x + poster.w, "within the poster's width: {:?}", caption.at);
+}
+
+#[test]
+fn both_pages_draw_for_every_value_without_a_painter() {
     let _guard = plx_base::testlock::serial();
     for value in every_value() {
         let _live = Live::set(value);
-        let mut page = UnderPostersPage::new(EntryId(0));
         let c = cx(None);
         let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
-        <UnderPostersPage as Screen<InnerHost>>::draw(&mut page, &mut f);
+        <UnderPostersPage as Screen<InnerHost>>::draw(&mut UnderPostersPage::new(EntryId(0)), &mut f);
+        <DetailsPage as Screen<InnerHost>>::draw(&mut DetailsPage::new(EntryId(0)), &mut f);
     }
 }
 
@@ -300,4 +399,8 @@ fn the_page_has_its_own_screen_name_and_probe() {
     let mut arg = String::new();
     SettingsPage::UnderPosters.probe(&mut arg);
     assert_eq!(arg, "under-posters");
+    let details = DetailsPage::new(EntryId(0));
+    assert_eq!(<DetailsPage as Screen<InnerHost>>::name(&details), "under-posters-details");
+    SettingsPage::UnderPostersDetails.probe(&mut arg);
+    assert!(arg.ends_with("under-posters-details"), "{arg}");
 }
