@@ -35,8 +35,8 @@ What makes this safe, in order of importance:
   replaces it.
 
 The seed lives under `$PLX_BUILD_CACHE/cargo-seed/<kind>/` (default `~/.cache/plxnative`) beside
-the shared FFmpeg cache, and `tools/build-gc.sh --cache` (30 days) and `--seed` (7 days, also run by `--auto` under disk
-pressure) prune it by age. `du` counts a clone's
+the shared FFmpeg cache, and `tools/build-gc.sh --cache` (30 days) and `--seed` (7 days) prune it by age, by hand:
+`--auto` never touches the seed (the lanes cloned from it share its blocks, so deleting it frees almost nothing). `du` counts a clone's
 bytes in full, so a lane that was seeded reads as big as one that was not: `df` is the truth.
 
 Every failure here is non-fatal by design (exit 0 with one warning line); a build never waits on,

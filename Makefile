@@ -224,8 +224,9 @@ print-bench-config:
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
 # the script's header carries the measurement that motivated all three. Nothing here has to be run
-# by hand anymore: `tools/build-gc.sh --auto` runs the same reclaim on its own, staged by free-space
-# pressure, from a `SessionEnd` hook (`.claude/hooks/build-gc-auto.sh`) and from the per-user
+# by hand anymore: `tools/build-gc.sh --auto` reclaims on its own, gated by free space (the order
+# past the cheap modes is the planner's, `tools/disk-budget.py`, which the report's last section
+# prints), from a `SessionEnd` hook (`.claude/hooks/build-gc-auto.sh`) and from the per-user
 # launchd agent `disk-watch` installs below — `make disk` remains the report to read when deciding
 # whether to intervene by hand.
 disk: ; @./tools/build-gc.sh

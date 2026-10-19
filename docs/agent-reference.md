@@ -679,11 +679,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   and this repo already keys a separate `rust-modules/target*` per configuration and multiplies
   that again per worktree.
   (**`make disk` is how you see what that has come to**, across every checkout at once, and
-  `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` is how you get it back —
+  `tools/build-gc.sh --incremental|--lanes|--stale|--worktrees|--all` (or a planner-chosen
+  `--evict PLAN`, below) is how you get it back —
   every mode there except `--worktrees` deletes only rebuildable output; `--worktrees` removes
-  finished lane checkouts. `--stale` is the one mode that also reaches into the MAIN checkout's
-  own `rust-modules/target` (age-gated only there, never the newest hash per crate), because
-  cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
+  finished lane checkouts, and with them their ignored files (`-n` lists the ones that are not
+  build output; `--auto` keeps a lane that holds any). The MAIN checkout is reached only narrowly: `--stale` sweeps the
+  superseded hashes in its `deps/` (age-gated only there, never the newest hash per crate),
+  `--incremental` and `--all` clear its incremental dirs, `--evict` takes those only as rung 6
+  (the planner's last), and none of them removes its `target` dir itself. The `--stale` reach
+  exists because cargo keeps every superseded metadata-hash's binary and `*.rcgu.o` objects forever — 6416
   `plxnative_modules-*` files across 6 dead hashes, 5.5 GB, all last written 2026-09-17. Measured
   2026-09-03,
   twelve lanes in: 45 GB across the family with 3.2 GiB free on the volume — of which the cargo
@@ -702,9 +706,20 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   stripped from the seed, builds stay per-checkout, and `PLX_CARGO_SEED=off` disables it. Because
   a clone shares blocks, **`du` (and so `make disk`'s per-checkout numbers) counts them in full:
   `df` is what is really free.** None of this reclaim has to be run by
-  hand anymore: `tools/build-gc.sh --auto` runs the same modes on its own, staged by free-space
-  pressure, from a `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs —
-  `make disk` remains the report to read before deciding whether to intervene yourself.)
+  hand anymore: `tools/build-gc.sh --auto` reclaims on its own, gated by free-space pressure, from a
+  `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs — `--orphans`, then
+  `--worktrees` for lanes idle past `PLX_GC_IDLE_MIN` and holding no non-build ignored file, then the planner's order — and `make disk`
+  remains the report to read before deciding whether to intervene yourself. Its last
+  section is the disk budget (`tools/disk-budget.py report`, `docs/disk-budget.md`): each tree's
+  PRIVATE bytes, which is what deleting it really frees and not what `du` says, the PlxNative cargo
+  trees under `/tmp` that nothing above can see, and the order a reclaim would take them in. The
+  report is read-only. `tools/disk-budget.py reclaim --to GIB --emit` writes that order as a plan
+  file and `tools/build-gc.sh --evict PLAN` deletes what it names — and only that: every path is
+  re-derived from the machine (a derived PlxNative build tree, a rung the ladder makes from that
+  kind of tree) and re-probed for liveness (builder in the checkout, cargo or `make check` lock,
+  open files, the idle window, a `/tmp` tree's ctime) immediately before it is renamed away. It
+  does not stop for a held FFmpeg cache lock the way the other modes do, it never evicts the cargo
+  seed, and `-n` previews it. Tests may run it only against fixtures.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`
