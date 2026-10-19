@@ -9,13 +9,13 @@
 //! it, and the frames after the switch settles build none.
 
 use super::*;
-use super::route_test_support::{Guard, Rig, FILM_CLUB};
+use super::test_support::{World, FILM_CLUB};
 
 /// Keys that move the focus and scroll the page, none of which changes what the row is made of:
 /// up toward the header and the nav, along the row, and back down.
 const WALK: [Key; 9] = [Key::Up, Key::Up, Key::Right, Key::Right, Key::Left, Key::Left, Key::Down, Key::Down, Key::Down];
 
-fn quiet(name: &str, mut r: Rig) {
+fn quiet(name: &str, mut r: World) {
     let settled = r.header_builds();
     assert!(settled >= 1, "{name}: premise: the page's row is built");
     r.frames(90);
@@ -27,18 +27,16 @@ fn quiet(name: &str, mut r: Rig) {
 
 #[test]
 fn idle_frames_and_a_key_walk_build_no_header_row_on_any_page_that_wears_one() {
-    let _guard = Guard::new("header-cache-quiet");
-    quiet("Library, two libraries", Rig::movies_library(true));
-    quiet("Library, one library", Rig::movies_library(false));
-    quiet("Collections", Rig::collections(true));
-    quiet("Recommended", Rig::recommended());
-    quiet("Watchlist", Rig::watchlist());
+    quiet("Library, two libraries", World::movies_library("header-cache-quiet", true));
+    quiet("Library, one library", World::movies_library("header-cache-quiet", false));
+    quiet("Collections", World::collections("header-cache-quiet", true));
+    quiet("Recommended", World::recommended("header-cache-quiet"));
+    quiet("Watchlist", World::watchlist("header-cache-quiet"));
 }
 
 #[test]
 fn a_library_switch_builds_the_row_and_the_frames_after_it_settle_build_none() {
-    let _guard = Guard::new("header-cache-switch");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("header-cache-switch", true);
     let before = r.header_builds();
     let film_club = r.library().probe_libraries().iter().find(|(_, section)| *section == FILM_CLUB).map(|(elem, _)| *elem)
         .expect("premise: Film Club names a stop");

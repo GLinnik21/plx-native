@@ -2,12 +2,12 @@
 //! Watchlist tuck the top chrome as a long grid scrolls under the keys, where a focused row rests,
 //! and what Up reaches first while the chrome is tucked.
 //!
-//! Key-driven on a real `Dispatcher<AppHost>` (`route_test_support::Rig`): `chrome_tuck` is read from
+//! Key-driven on a real `Dispatcher<AppHost>` (`bridge_test_support::World`): `chrome_tuck` is read from
 //! the screen on top, the way the dispatcher reads it, so a screen that stopped tucking, or tucked
 //! at the wrong scroll, fails here and not on the television.
 
 use super::*;
-use super::route_test_support::{Guard, Rig};
+use super::test_support::World;
 use super::test_support::tick;
 use plx_screens::library::RecommendedScreen;
 
@@ -15,14 +15,14 @@ use plx_screens::library::RecommendedScreen;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum At { Grid(usize), Header, Nav }
 
-fn at(r: &Rig) -> Option<At> {
+fn at(r: &World) -> Option<At> {
     if r.on_nav() { Some(At::Nav) }
     else if r.on_header() { Some(At::Header) }
     else { r.grid_cell().map(|(row, _)| At::Grid(row)) }
 }
 
 /// The scroll target of the Recommended page on top.
-fn recommended_target(r: &Rig) -> f32 {
+fn recommended_target(r: &World) -> f32 {
     r.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref::<RecommendedScreen>())
         .expect("the Recommended page is on top").probe_scroll_target()
 }
@@ -30,7 +30,7 @@ fn recommended_target(r: &Rig) -> f32 {
 fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.5 }
 
 /// Down from the header into the grid, then `rows` more: settled on row `rows`.
-fn down_to_row(r: &mut Rig, rows: usize) {
+fn down_to_row(r: &mut World, rows: usize) {
     r.press(Key::Down);
     assert_eq!(at(r), Some(At::Grid(0)), "premise: Down from the header enters the grid's first row");
     for row in 1..=rows {
@@ -41,8 +41,7 @@ fn down_to_row(r: &mut Rig, rows: usize) {
 
 #[test]
 fn down_tucks_the_chrome_and_each_row_rests_on_the_first_rows_line() {
-    let _guard = Guard::new("route-scroll-down");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("route-scroll-down", true);
     assert!(near(r.tuck(), 0.0), "the chrome is shown on arrival");
     r.press(Key::Down);
     assert_eq!(at(&r), Some(At::Grid(0)));
@@ -62,8 +61,7 @@ fn down_tucks_the_chrome_and_each_row_rests_on_the_first_rows_line() {
 
 #[test]
 fn up_from_a_tucked_row_walks_the_rows_first_then_the_header_then_the_nav() {
-    let _guard = Guard::new("route-scroll-up");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("route-scroll-up", true);
     down_to_row(&mut r, 5);
     assert!(near(r.tuck(), 1.0), "premise: tucked on row 5");
     // What scrolls first: the rows. Each Up moves one row and the page follows it, the chrome
@@ -83,17 +81,15 @@ fn up_from_a_tucked_row_walks_the_rows_first_then_the_header_then_the_nav() {
 
 #[test]
 fn the_capsule_is_wanted_only_where_the_header_names_two_libraries() {
-    let _guard = Guard::new("route-scroll-capsule");
-    let two = Rig::movies_library(true);
-    assert!(two.library().probe_capsule_wanted(), "two libraries on the header: the capsule restates the one on view");
-    let one = Rig::movies_library(false);
-    assert!(!one.library().probe_capsule_wanted(), "one library: nothing to restate");
+    // One world at a time (it holds the serial lock): each is built, asked and dropped in turn.
+    let wanted = |two_libraries| World::movies_library("route-scroll-capsule", two_libraries).library().probe_capsule_wanted();
+    assert!(wanted(true), "two libraries on the header: the capsule restates the one on view");
+    assert!(!wanted(false), "one library: nothing to restate");
 }
 
 #[test]
 fn the_collections_page_tucks_but_wears_no_capsule() {
-    let _guard = Guard::new("route-scroll-collections");
-    let mut r = Rig::collections(true);
+    let mut r = World::collections("route-scroll-collections", true);
     assert!(!r.library().probe_capsule_wanted(), "the Collections header is a crumb: it names no libraries");
     r.press(Key::Down);
     for _ in 0..3 { r.press(Key::Down); }
@@ -103,8 +99,7 @@ fn the_collections_page_tucks_but_wears_no_capsule() {
 
 #[test]
 fn the_recommended_page_scrolls_but_never_tucks_the_chrome() {
-    let _guard = Guard::new("route-scroll-recommended");
-    let mut r = Rig::recommended();
+    let mut r = World::recommended("route-scroll-recommended");
     for _ in 0..8 { r.press(Key::Down); }
     assert!(recommended_target(&r) > 0.5, "premise: eight Downs scrolled the shelves");
     assert!(near(r.tuck(), 0.0), "the Recommended page does not override `chrome_tuck`: the bar stays, tuck {}", r.tuck());
@@ -112,8 +107,7 @@ fn the_recommended_page_scrolls_but_never_tucks_the_chrome() {
 
 #[test]
 fn the_watchlist_tucks_and_draws_no_capsule() {
-    let _guard = Guard::new("route-scroll-watchlist");
-    let mut r = Rig::watchlist();
+    let mut r = World::watchlist("route-scroll-watchlist");
     for _ in 0..8 { r.press(Key::Down); }
     assert!(near(r.tuck(), 1.0), "the Watchlist tucks the chrome once its first row has gone, tuck {}", r.tuck());
 }
@@ -123,7 +117,7 @@ fn the_watchlist_tucks_and_draws_no_capsule() {
 #[derive(Default)]
 struct Watched { menu_frames: u32, menu_at_tuck: Vec<String>, strip_off_top: Vec<String> }
 
-fn watch(r: &Rig, seen: &mut Watched) {
+fn watch(r: &World, seen: &mut Watched) {
     if super::account_menu_up(&r.d) {
         seen.menu_frames += 1;
         if r.tuck() > 0.99 { seen.menu_at_tuck.push(format!("frame {}: the account menu is up and the chrome fully tucked", r.frame)); }
@@ -136,7 +130,7 @@ fn watch(r: &Rig, seen: &mut Watched) {
 }
 
 /// `keys`, one every `gap + 1` frames, watched on every frame.
-fn drive(r: &mut Rig, keys: &[Key], gap: u32, seen: &mut Watched) {
+fn drive(r: &mut World, keys: &[Key], gap: u32, seen: &mut Watched) {
     for key in keys {
         r.step(script_key(*key, tick(r.frame + 1)));
         watch(r, seen);
@@ -155,7 +149,7 @@ fn drive(r: &mut Rig, keys: &[Key], gap: u32, seen: &mut Watched) {
 ///
 /// What this does NOT cover: a pointer click on the (undrawn) chip's place at tuck 1
 /// (`chip_clicked` has no tuck gate); no key reaches that state.
-fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> Rig, deep: fn(&mut Rig), leaves: &[&[Key]], gaps: &[u32]) {
+fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> World, deep: fn(&mut World), leaves: &[&[Key]], gaps: &[u32]) {
     for &gap in gaps {
         for leave in leaves {
             let mut r = mount();
@@ -175,21 +169,18 @@ fn the_account_menu_never_opens_over_a_tucked_page(name: &str, mount: fn() -> Ri
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_library() {
-    let _guard = Guard::new("route-chip-library");
-    the_account_menu_never_opens_over_a_tucked_page("library", || Rig::movies_library(true), |r| down_to_row(r, 8),
+    the_account_menu_never_opens_over_a_tucked_page("library", || World::movies_library("route-chip-library", true), |r| down_to_row(r, 8),
         &[&[Key::Back; 3], &[Key::Up; 10]], &[0, 1, 2]);
 }
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_collections_page() {
-    let _guard = Guard::new("route-chip-collections");
     // BACK on the Collections page leaves it (its first press returns the scroll to the top, its
     // second pops the page), so only Up walks to the strip here.
-    the_account_menu_never_opens_over_a_tucked_page("collections", || Rig::collections(true), |r| down_to_row(r, 8), &[&[Key::Up; 10]], &[0, 1, 2]);
+    the_account_menu_never_opens_over_a_tucked_page("collections", || World::collections("route-chip-collections", true), |r| down_to_row(r, 8), &[&[Key::Up; 10]], &[0, 1, 2]);
 }
 
 #[test]
 fn the_account_menu_never_opens_over_a_tucked_watchlist() {
-    let _guard = Guard::new("route-chip-watchlist");
-    the_account_menu_never_opens_over_a_tucked_page("watchlist", Rig::watchlist, |r| for _ in 0..8 { r.press(Key::Down); }, &[&[Key::Up; 16]], &[1, 2, 3]);
+    the_account_menu_never_opens_over_a_tucked_page("watchlist", || World::watchlist("route-chip-watchlist"), |r| for _ in 0..8 { r.press(Key::Down); }, &[&[Key::Up; 16]], &[1, 2, 3]);
 }

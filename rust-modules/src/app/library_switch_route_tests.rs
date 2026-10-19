@@ -2,12 +2,12 @@
 //! header's selection plate after a library switch settles.
 
 use super::*;
-use super::route_test_support::{Guard, Rig, FILM_CLUB};
+use super::test_support::{World, FILM_CLUB};
 use super::test_support::tick;
 
 /// The section the STORE holds as current: the truth the page's published snapshot follows a frame
 /// later.
-fn store_current(r: &Rig) -> Option<usize> {
+fn store_current(r: &World) -> Option<usize> {
     let mut snapshot = plx_data::stores::browse::DirectorySnapshot::default();
     r.bridge.stores.browse.borrow_mut().capture_directory(&mut snapshot);
     snapshot.view().current()
@@ -24,8 +24,7 @@ fn store_current(r: &Rig) -> Option<usize> {
 /// directory follows: this pins that it does, on EVERY frame, the window included.
 #[test]
 fn the_header_plate_stays_under_the_library_that_was_switched_to_once_the_switch_settles() {
-    let _guard = Guard::new("route-plate-after-switch");
-    let mut r = Rig::movies_library(true);
+    let mut r = World::movies_library("route-plate-after-switch", true);
     let libraries = r.library().probe_libraries();
     let names: Vec<&(u32, usize)> = libraries.iter().filter(|(_, section)| *section != usize::MAX).collect();
     assert!(names.len() >= 2, "premise: the header names two libraries, else there is no plate to move: {libraries:?}");

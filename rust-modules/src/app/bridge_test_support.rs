@@ -1,5 +1,6 @@
 //! Shared driver helpers for bridge.rs's split test modules: frame/tick drivers, route
-//! argument builders, and the directory-policy fixture used by the ViewState/chrome tests.
+//! argument builders, the directory-policy fixture used by the ViewState/chrome tests, and the
+//! key-driven route-test [`World`] (the one harness the route lanes share).
 
 use super::*;
 
@@ -163,22 +164,39 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
     seen
 }
 
-/// **A route-test world**: the Dispatcher and the Bridge over two registered servers, 120 films in
-/// the store and six shelves of three cards, with the loop's request [`Pump`] and a `press` that
-/// plays one key out the way a person's press does (both edges, then the frames a reseat, a press
-/// dip and the navigation it commits to take). It owns the serial lock, the scratch session and the
-/// server registry's reset, so a route test is its rows and nothing else.
+/// The section table's index of "Film Club" (a Movie library of the second source): the library the
+/// world pins beside "Movies" (index 0) when it is asked for two.
+pub(super) const FILM_CLUB: usize = 2;
+
+/// **The route-test world, the ONE key-driven harness of the app tier**: a real `Dispatcher<AppHost>`
+/// and `Bridge` over two registered servers, 120 films in the store and six shelves of three
+/// cards, with the loop's request [`Pump`] and a `press` that plays one key out the way a person's
+/// press does (both edges, then the frames a reseat, a press dip and the navigation it commits to
+/// take). It owns the serial lock, the scratch session and the server registry's reset, so a route
+/// test is its rows and nothing else; a test holds ONE world at a time (the lock is not re-entrant).
 ///
-/// The world has no page on top: a row mounts one the way the app does (`nav_tab` from Home, then a
-/// press on the page's own control), so what it asserts is what a key did on the way there.
+/// [`Self::new`] has no page on top: a row mounts one the way the app does (`nav_tab` from Home,
+/// then a press on the page's own control), so what it asserts is what a key did on the way there.
+/// [`Self::movies_library`], [`Self::collections`], [`Self::recommended`] and [`Self::watchlist`]
+/// are those mounts, settled.
+///
+/// Libraries are pinned the way the Home editor pins them: ONE recorded answer for the profile
+/// (`BrowseCmd::ApplyPins`, then `refresh_browse_directory`). The table-only `set_pinned_for_test` is
+/// overwritten by the next roster sync (it re-resolves every row from the profile's record, on the
+/// discovery pump's wall-clock schedule, 60-90 frames in), which moved the store back to Movies
+/// mid-test and made the header name one library again.
 pub(super) struct World {
     pub(super) d: Dispatcher<AppHost>,
     pub(super) bridge: Bridge,
     pub(super) frame: u32,
     pump: Pump,
     performed: Vec<String>,
-    /// The registered server the library's first section belongs to.
+    /// Landing what a page's store brought (the Watchlist's scripted plex.tv), once per frame.
+    feed: Option<fn(&mut Dispatcher<AppHost>, &mut Bridge)>,
+    /// The registered server the library's first section belongs to (`UNSET` in the Watchlist's world).
     pub(super) own: plx_plex::plex::ServerId,
+    /// Keeps the scripted plex.tv alive for the Watchlist.
+    _script: Option<std::sync::Arc<super::watchlist_press_tests::Script>>,
     _session: plx_plex::plex::session::TempSession,
     _serial: plx_base::testlock::Serial,
 }
@@ -188,11 +206,19 @@ impl Drop for World {
 }
 
 impl World {
-    /// `name` names the scratch session; each test passes its own.
-    pub(super) fn new(name: &str) -> World {
+    fn lock(name: &str) -> (plx_base::testlock::Serial, plx_plex::plex::session::TempSession) {
         let serial = plx_base::testlock::serial();
         let session = plx_plex::plex::session::TempSession::new(name);
         session.watching(&format!("u-{name}"));
+        (serial, session)
+    }
+
+    /// Nothing mounted; `name` names the scratch session, each test passes its own. One Movie
+    /// library per source, so the Movies header names one library.
+    pub(super) fn new(name: &str) -> World { Self::build(name, false) }
+
+    fn build(name: &str, two_libraries: bool) -> World {
+        let (serial, session) = Self::lock(name);
         plx_plex::plex::reset_servers_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = plx_plex::plex::register_for_test("route-shared", "127.0.0.1", 10, "synthetic", "fixture");
@@ -200,6 +226,11 @@ impl World {
         let d = Dispatcher::<AppHost>::new();
         let mut bridge = Bridge::for_test(|| 0);
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
+        // "Film Club" beside "Movies": the header then names two libraries (one library draws no
+        // names, no plate and no scroll capsule).
+        if two_libraries {
+            bridge.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(FILM_CLUB, true)]));
+        }
         bridge.refresh_browse_directory();
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
@@ -208,13 +239,57 @@ impl World {
             browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
             browse.seed_landscape_for_test(0, "Synthetic show");
         }
-        World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), own, _session: session, _serial: serial }
+        World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, _script: None,
+            _session: session, _serial: serial }
+    }
+
+    /// The Movies library, reached by its strip pill from Home, settled. `two_libraries` pins
+    /// "Film Club" beside "Movies".
+    pub(super) fn movies_library(name: &str, two_libraries: bool) -> World {
+        let mut w = Self::build(name, two_libraries);
+        w.open_library();
+        w
+    }
+
+    /// The Collections page, opened with OK on the Library header's Collections control.
+    pub(super) fn collections(name: &str, two_libraries: bool) -> World {
+        let mut w = Self::movies_library(name, two_libraries);
+        w.open_from_header(8, AppArg::LibraryCollections { section: 0 });
+        // The page asked the store for its own listing; its answer is what it shows.
+        w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+        w.frames(60);
+        w
+    }
+
+    /// The Recommended page, opened with OK on the Library header's Recommended control.
+    pub(super) fn recommended(name: &str) -> World {
+        let mut w = Self::movies_library(name, false);
+        w.open_from_header(9, AppArg::LibraryRecommended { section: 0 });
+        w.frames(60);
+        w
+    }
+
+    /// The Watchlist over a scripted plex.tv holding forty titles, opened by its strip pill.
+    pub(super) fn watchlist(name: &str) -> World {
+        let (serial, session) = Self::lock(name);
+        let script = super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>());
+        let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
+        let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
+            _script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
+                bridge.watchlist_for_test().pump();
+                bridge.watchlist_feed(d);
+            }) };
+        super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Watchlist, None, None);
+        w.frames(120);
+        assert!(w.on(&AppArg::Watchlist), "premise: the Watchlist is on top");
+        w
     }
 
     /// One frame with `inputs`, then the requests it raised, performed. What the pump did is kept
     /// for [`Self::press`] to return.
     pub(super) fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
+        if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
         plx_machine::idle::frame_begin(0.016);
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         let now = self.frame * 16;
@@ -233,20 +308,22 @@ impl World {
         std::mem::take(&mut self.performed)
     }
 
-    /// A key's two edges on consecutive frames and nothing after: two of these are a double press.
-    pub(super) fn tap(&mut self, key: Key) {
-        self.step(script_key(key, tick(self.frame + 1)));
-    }
-
-    /// One key, both edges, then 28 frames; returns what the pump performed meanwhile.
-    pub(super) fn press(&mut self, key: Key) -> Vec<String> {
+    /// One key, both edges, then only `after` frames: a held remote's cadence, nothing settled in
+    /// between (two `tap(key, 0)` are a double press). Returns what the pump performed meanwhile.
+    pub(super) fn tap(&mut self, key: Key, after: u32) -> Vec<String> {
         self.performed.clear();
         self.step(script_key(key, tick(self.frame + 1)));
-        self.frames(28);
+        self.frames(after);
         std::mem::take(&mut self.performed)
     }
 
-    /// The page on top is `arg`'s kind of page (a library page's `section` is the store's business).
+    /// One key, both edges, then enough frames for a reseat, a press dip, a scroll spring and the
+    /// navigation it commits to to play out. Returns what the pump performed meanwhile.
+    pub(super) fn press(&mut self, key: Key) -> Vec<String> {
+        self.tap(key, 28)
+    }
+
+    /// Is the page on top `arg`'s kind of page? (A library page's `section` is the store's business.)
     pub(super) fn on(&self, arg: &AppArg) -> bool {
         match (self.d.top_arg(), arg) {
             (Some(AppArg::LibraryCollections { .. }), AppArg::LibraryCollections { .. })
@@ -265,6 +342,8 @@ impl World {
     /// The focused element (`None` while nothing holds focus).
     pub(super) fn focus(&self) -> Option<FocusKey<u32>> { self.d.focus() }
 
+    pub(super) fn elem(&self) -> Option<u32> { self.d.focus().map(|key| key.elem) }
+
     /// The Movies library, reached by its strip pill from Home, settled.
     pub(super) fn open_library(&mut self) {
         super::show_page(&mut self.d, AppArg::Home);
@@ -274,10 +353,61 @@ impl World {
         assert!(self.on(&AppArg::Library), "premise: the library is on top");
     }
 
-    /// The top page, as the Library-family screen it is.
-    pub(super) fn library_page(&self) -> &plx_screens::library::LibraryScreen {
+    /// The top page, as the Library-family screen it is (the grid or the Collections page).
+    pub(super) fn library(&self) -> &plx_screens::library::LibraryScreen {
         self.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref())
             .expect("a Library page (the grid or the Collections page) is on top")
+    }
+
+    /// The scroll the page on top is travelling to (0 at its top).
+    pub(super) fn scroll_target(&self) -> f32 {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::library::LibraryScreen>() { return page.probe_scroll_target(); }
+        if let Some(page) = any.downcast_ref::<plx_screens::watchlist::page::WatchlistScreen>() { return page.probe_scroll_target(); }
+        panic!("the top page is neither a Library page nor the Watchlist");
+    }
+
+    /// Walk Right along the Library header to the stop `elem` and press OK on it; the page it opens
+    /// is on top and settled afterwards.
+    pub(super) fn open_from_header(&mut self, elem: u32, want: AppArg) {
+        self.walk_header_to(elem);
+        self.press(Key::Ok);
+        self.frames(60);
+        assert!(self.on(&want), "premise: OK on the header stop {elem} opened the wanted page");
+    }
+
+    /// Is focus on the top bar's strip (the nav)?
+    pub(super) fn on_nav(&self) -> bool { self.elem().is_some_and(|elem| elem >= plx_ui::dispatch::STRIP_BASE) }
+
+    /// Is focus on one of the Library header's stops?
+    pub(super) fn on_header(&self) -> bool {
+        let stops = self.library().probe_header_stops();
+        self.elem().is_some_and(|elem| stops.iter().any(|(_, stop)| *stop == elem))
+    }
+
+    /// Is focus on a grid card, and which `(row, col)`?
+    pub(super) fn grid_cell(&self) -> Option<(usize, usize)> { self.library().grid_position(self.d.focus()) }
+
+    /// How far the page on top has tucked the top chrome away.
+    pub(super) fn tuck(&self) -> f32 { self.d.top_screen().expect("a page is on top").chrome_tuck() }
+
+    /// How many header rows the page on top has built (any of the four pages that wear one).
+    pub(super) fn header_builds(&self) -> u32 {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::library::LibraryScreen>() { return page.probe_header_builds(); }
+        if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_header_builds(); }
+        if let Some(page) = any.downcast_ref::<plx_screens::watchlist::page::WatchlistScreen>() { return page.probe_header_builds(); }
+        panic!("the top page wears no header row");
+    }
+
+    /// Walk Right along the Library header to the stop `elem` (an element id) and stop there.
+    pub(super) fn walk_header_to(&mut self, elem: u32) {
+        let n = self.library().probe_header_stops().len();
+        for _ in 0..n + 1 {
+            if self.elem() == Some(elem) { return; }
+            self.press(Key::Right);
+        }
+        assert_eq!(self.elem(), Some(elem), "premise: Right along the header reached the stop");
     }
 }
 
