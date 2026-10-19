@@ -118,9 +118,11 @@ impl LibraryScreen {
             self.latch_capsule_field(tuck);
             plx_ui::scroll_capsule::draw_top_fade(p, SCR_W, ground, tuck);
             if let Some(name) = self.view_section(f.cx).map(|index| self.library_label(index, f.cx)) {
-                let text = super::scroll_chrome::capsule_text(&name, H::listing(f.cx).total(),
-                    plx_ui::scroll_capsule::label_budget(), |s| f.measure.width_str(s, theme::size::BODY, true));
-                plx_ui::scroll_capsule::draw(p, &text, ground, self.capsule_glass_field(), tuck);
+                let (name, count) = super::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total(),
+                    plx_ui::scroll_capsule::label_budget(),
+                    |s| f.measure.width_str(s, theme::size::BODY, true),
+                    |s| f.measure.width_str(s, theme::size::CAPTION, false));
+                plx_ui::scroll_capsule::draw(p, &name, &count, ground, self.capsule_glass_field(), tuck, f.measure);
             }
         }
         if tuck <= 0.0 {

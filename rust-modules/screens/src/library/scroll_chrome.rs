@@ -27,20 +27,22 @@ pub(super) fn settle_scroll(scroll: f32, row_top_y: f32) -> f32 {
     (scroll - (SETTLE_MIN_Y - row_top_y).max(0.0)).max(0.0)
 }
 
-/// The capsule's text, "{name} {count}": the library's name shortened (with an ellipsis) until the
-/// whole label measures within `budget` through `width`; the count is never cut.
-pub(super) fn capsule_text(name: &str, total: i64, budget: f32, width: impl Fn(&str) -> f32) -> CString {
+/// The capsule's two runs: the library's name, shortened (with an ellipsis) until the name, the gap
+/// and the count fit `budget`, and the count (never cut). `name_w` measures a name at its own size
+/// and weight, `count_w` the count at its.
+pub(super) fn capsule_parts(name: &str, total: i64, budget: f32, name_w: impl Fn(&str) -> f32,
+    count_w: impl Fn(&str) -> f32) -> (CString, CString)
+{
     let count = plx_platform::i18n::current().number(total);
-    // (the generated accessor takes its arguments in alphabetical key order: count, name)
-    let join = |name: &str| plx_platform::i18n::msg::scroll_chrome_capsule(&count, name);
+    let room = budget - plx_ui::scroll_capsule::NAME_COUNT_GAP - count_w(&count);
     let mut chars: Vec<char> = name.chars().collect();
-    let mut text = join(name);
-    while !chars.is_empty() && width(&text) > budget {
+    let mut text = name.to_owned();
+    while !chars.is_empty() && name_w(&text) > room {
         chars.pop();
         let cut: String = chars.iter().collect();
-        text = join(&format!("{}\u{2026}", cut.trim_end()));
+        text = format!("{}\u{2026}", cut.trim_end());
     }
-    CString::new(text).unwrap_or_default()
+    (CString::new(text).unwrap_or_default(), CString::new(count).unwrap_or_default())
 }
 
 /// Focus on the grid's last column, one Right press from the rail: the rail shows itself ahead of

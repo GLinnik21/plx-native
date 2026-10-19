@@ -42,31 +42,34 @@ fn rows_settle_at_120_or_lower_and_the_clamp_never_pushes_down() {
 }
 
 #[test]
-fn the_capsule_label_is_name_then_count_and_shortens_the_name_not_the_count() {
+fn the_capsule_runs_are_name_then_count_and_shorten_the_name_not_the_count() {
     let w = |s: &str| s.chars().count() as f32 * 10.0;
-    let t = capsule_text("Films", 1284, 320.0, w);
-    let t = t.to_str().unwrap();
-    assert!(t.starts_with("Films ") && t.ends_with("1,284") || t.ends_with("1\u{a0}284") || t.contains("1284"), "{t}");
-    let long = capsule_text("Documentaries and Concerts of the Century", 1284, 200.0, w);
+    let (name, count) = capsule_parts("Films", 1284, 320.0, w, w);
+    assert_eq!(name.to_str().unwrap(), "Films");
+    assert!(count.to_str().unwrap().contains("284"), "{count:?}");
+    let (long, count) = capsule_parts("Documentaries and Concerts of the Century", 1284, 200.0, w, w);
     let long = long.to_str().unwrap();
-    assert!(w(long) <= 200.0, "{long}");
+    assert!(w(long) + scroll_capsule::NAME_COUNT_GAP + w(count.to_str().unwrap()) <= 200.0, "{long}");
     assert!(long.contains('\u{2026}'), "{long}");
-    assert!(long.contains("1"), "the count survives: {long}");
+    assert!(count.to_str().unwrap().contains('1'), "the count survives");
 }
 
 #[test]
-fn the_capsule_label_fits_every_shipped_language_for_a_long_name() {
+fn the_capsule_fits_every_shipped_language_for_a_long_name() {
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_machine::machine::Measure;
     let _guard = plx_base::testlock::serial();
     let m = ShippedMeasure;
-    let w = |s: &str| m.width_str(s, plx_ui::theme::size::BODY, true);
+    let name_w = |s: &str| m.width_str(s, plx_ui::theme::size::BODY, true);
+    let count_w = |s: &str| m.width_str(s, plx_ui::theme::size::CAPTION, false);
     let budget = scroll_capsule::label_budget() / plx_ui::fit::HEADROOM;
     for language in plx_platform::i18n::SHIPPED {
         let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
         for name in ["Films", "Television Documentaries and Concerts", "Нарматыўныя дакументальныя фільмы"] {
-            let t = capsule_text(name, 12_345, budget, w);
-            assert!(w(t.to_str().unwrap()) <= budget, "{language:?} {name}: {t:?}");
+            let (n, c) = capsule_parts(name, 12_345, budget, name_w, count_w);
+            let width = scroll_capsule::width(&n, &c, &m);
+            assert!(width <= budget + scroll_capsule::PAD_L + scroll_capsule::PAD_R,
+                "{language:?} {name}: {width}");
         }
     }
 }

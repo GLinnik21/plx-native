@@ -158,12 +158,6 @@ is "pastor" (skarnik.by: "пастор — церк. пастар"). The correct
 | `collections_page.smart` | Разумная калекцыя |
 | `recommended_page.empty` | Для гэтай бібліятэкі пакуль няма рэкамендацый |
 
-`locales/be/scroll_chrome.json`:
-
-| Key | String |
-| --- | --- |
-| `scroll_chrome.capsule` | {name} {count} |
-
 `locales/be/captions.json`:
 
 | Key | Form | String |
