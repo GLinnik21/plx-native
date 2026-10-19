@@ -1354,8 +1354,6 @@ mod tests {
             "an empty collection is a quiet answer, not a failure");
     }
 
-    /// C4a: an empty collection keeps its header — the kind alone on the meta line, not
-    /// "0 items" — and says so in the grid's region, centred where the mock centres it.
     /// **S20: the Collection screen counts its members in the noun its tile does.** The header says
     /// "6 films", not "6 items", for a movie collection; before the subtype lands it is items.
     #[test]
@@ -1372,6 +1370,8 @@ mod tests {
         assert_eq!(meta_line(store.view().current().unwrap()).to_str().unwrap(), "6 shows \u{b7} Collection");
     }
 
+    /// C4a: an empty collection keeps its header — the kind alone on the meta line, not
+    /// "0 items" — and says so in the grid's region, centred where the mock centres it.
     #[test]
     fn an_empty_collection_reads_out_quietly_in_the_grids_region() {
         let (mut store, _) = seeded();

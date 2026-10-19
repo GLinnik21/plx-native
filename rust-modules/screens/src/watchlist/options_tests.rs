@@ -323,7 +323,7 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
     for language in LANGUAGES {
         let _g = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        // The widest menu state: every section's longest label, the active key's chevron.
+        // The widest menu state: every section's longest label, the active key's direction word.
         for (sort, descending) in [SortKey::DateAdded, SortKey::Title, SortKey::Release, SortKey::Rating]
             .into_iter().flat_map(|sort| [(sort, false), (sort, true)])
         {

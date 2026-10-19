@@ -3,7 +3,7 @@
 //! fact (a title, a date, a rating), and a fact has ONE name and ONE way to say which end comes
 //! first, whichever page asks.
 //!
-//! - [`SortFact::of_pms_key`] / [`SortFact::of_watchlist`] say which fact a key is; [`SortFact::label`]
+//! - [`SortFact::of_pms_key`] (and the Watchlist's `SortKey::fact`) say which fact a key is; [`SortFact::label`]
 //!   is its sentence-case name ("Critic rating" is not a second word for "Rating": the Library's
 //!   `rating` key and the Watchlist's rating are the same fact).
 //! - [`Axis::direction_word`] is the checked row's value ("A–Z", "Newest first"): a word says what

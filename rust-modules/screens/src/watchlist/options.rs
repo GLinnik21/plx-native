@@ -144,7 +144,7 @@ pub enum OptionsRow {
 }
 
 impl OptionsRow {
-    /// Every row in draw order: Type, Sort by, Show (boards WatchlistOptions: 3 + 4 + 3 rows).
+    /// Every row in draw order: Show, Sort, Filter (boards WatchlistOptions: 3 + 4 + 3 rows).
     pub const ALL: [OptionsRow; 10] = [
         OptionsRow::Type(TypeFilter::All),
         OptionsRow::Type(TypeFilter::Movies),
@@ -181,8 +181,8 @@ impl OptionsRow {
     }
 
     /// Press this row. A different sort key lands on its [`natural_desc`]; pressing the key that is
-    /// already chosen flips the direction, the Library sort menu's idiom (chevron on the active
-    /// row). Returns whether `state` changed (a Type or Show press on the chosen row does not).
+    /// already chosen flips the direction, the Library sort menu's idiom (the direction word on the
+    /// active row). Returns whether `state` changed (a Type or Show press on the chosen row does not).
     pub fn apply(self, state: &mut WatchlistOptionsState) -> bool {
         let before = *state;
         match self {

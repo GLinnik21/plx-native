@@ -300,7 +300,7 @@ Sort and Filter open as **popovers over the live grid**, never as full-screen sh
 ![Library sort menu](screenshots/ux-library-sort.jpg)
 
 The options are the ones the **server** reports for that section, not a hardcoded list; the current
-choice carries a check and a direction chevron, and OK on the current choice reverses the direction.
+choice carries a check and its direction as a word ("A–Z", "Newest first"), and OK on the current choice reverses the direction.
 BACK closes the popover and returns focus to the pill.
 
 ### 5.5 Search

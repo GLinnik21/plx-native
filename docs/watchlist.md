@@ -206,7 +206,7 @@ panel is as wide as its longest label or as the control's focused pill, whicheve
 **The grid and its captions follow the Library.** Six columns of 250 x 375 posters from x 96, 285
 apart (the last column ends on the row's right text edge, x 1771), the first row at y 244, a focused
 row below the first resting at y 244 too. The caption under a poster is the global Under posters setting (Settings >
-Appearance; `plx_ui::caption_policy`): the Title switch (default off) and the Details picker, and only
+Libraries; `plx_ui::caption_policy`): the Title switch (default off) and the Details picker, and only
 the focused row opens its band (0 / 80 / 112 px). A Watchlist row carries a title, a year and a kind:
 the default Details (year and length) reads its year, Genre, Video and Age rating have nothing to say
 for it, and an unplayable title's state sentence ("Coming soon", "Not on your servers", "Server

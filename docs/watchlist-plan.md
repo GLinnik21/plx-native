@@ -358,8 +358,8 @@ Discover trailer playable?
   measure icu_datetime name-data size (UNVERIFIED). Host.
 - **W45 strip destination + page (Bump A)** (boards: Main, Watchlist, WatchlistOptions, WatchlistFiltered, WatchlistEmpty, WatchlistRemoved; NOT WatchlistHeaderB): `HomeTab::Watchlist`, `STRIP_BASE+5`,
   `TabFace::Icon(Bookmark)` before Search, route word `"watchlist"`; 6-col 250×375 grid; header
-  (DISPLAY 48 bold; tracking after DS8) + "Sort & Filter · <summary>" pill → popover (morph if
-  DS7 landed): Type / Sort+direction / Show; empty + filtered read-outs at 540; marks/states;
+  (DISPLAY 48 bold; tracking after DS8) + "Sort & Filter · <current sort>" pill → popover (morph if
+  DS7 landed): Show / Sort+direction word / Filter; empty + filtered read-outs at 540; marks/states;
   PageGround wash; focus caption; hold menu with Remove + DS4 landing. Text-fit test for SHIPPED;
   cards_harness + conformance, scenario, manifest. tests/mock_pms.py gains discover paths (list,
   released, userState, metadata, in-memory add/remove); `tools/tv-session.sh up
@@ -480,12 +480,12 @@ New DS icons: bookmark, plain clock, server-with-slash.
 
 **Watchlist page.** One grid (Library-style, 6 columns, 250×375 tiles), not sections/rows.
 Default order = server's `watchlistedAt` order (list items carry no `watchlistedAt`).
-Header: title "Watchlist" (48 px bold, −0.5 px tracking) + ONE pill "Sort & Filter · <summary>"
-(default "Default") opening a glass popover with three sections:
-- Type: Movies & Shows / Movies / TV Shows (type=1/2)
-- Sort by: Date Added / Title / Release Date / Rating (watchlistedAt / titleSort /
-  originallyAvailableAt / rating), with direction
-- Show: All / Released / On your servers ("Released" = API `released` list; "On your servers"
+Header: title "Watchlist" (48 px bold, −0.5 px tracking) + ONE pill "Sort & Filter · <current sort>"
+(default "Date added"; a filter shows only as the header's "N of M") opening a glass popover with three sections:
+- Show: Movies & Shows / Movies / TV Shows (type=1/2)
+- Sort: Date added / Title / Release date / Rating (watchlistedAt / titleSort /
+  originallyAvailableAt / rating); the checked row's value is its direction word ("Newest first")
+- Filter: All / Released / On your servers ("Released" = API `released` list; "On your servers"
   computed client-side from server matching)
 Page ground: AmbientWash keyed to focused title's UltraBlur colours, as Home and Library
 (`screens/src/home/mod.rs:347`; `TileFacts::blur` `ui/src/tile.rs:84`; Library `mod.rs:202`,

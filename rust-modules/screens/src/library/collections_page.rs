@@ -12,7 +12,7 @@
 //! * which of the library page's behaviours do not run here ([`syncs_section`], read by
 //!   `LibraryScreen::sync`);
 //! * the tile: no count badge, and a caption of "N films" / "N shows" under the focused tile (the
-//!   collection's name above it when Under posters > Title is on) ([`caption`], [`TileFacts`],
+//!   collection's name above it when Under posters > Title is on, or when the face cuts the name) ([`caption`], [`TileFacts`],
 //!   read by the grid's card source, which also draws the smart mark);
 //! * the empty page's sentence ([`empty_text`], read by the status read-out).
 //!
