@@ -737,8 +737,14 @@ fn wash_at(step: f32) -> [[f32; 3]; 4] {
 }
 
 /// One discovered frame of a page under the chrome band, in the order `dispatch.rs::draw_with`
-/// walks it: the page's ground, a card, then the tab bar's glass in `Z::CHROME`. `moving` is what
-/// the update phase reported (a spring in flight). Returns whether the band owes a source job.
+/// walks it: **the frame clear** (every page opens with `gfx::frame_clear`, which a discovery walk
+/// records as a full-canvas draw of its own, the Library's `lb.clear`), the page's ground, a card,
+/// then the tab bar's glass in `Z::CHROME`. `moving` is what the update phase reported (a spring in
+/// flight). Returns whether the band owes a source job.
+///
+/// The clear is NOT optional here: this list once began at the wash, which no real page does, and
+/// every wash test was green while the feature never ran on a device or in the simulator (the clear
+/// was the wash's predecessor in the glass's prefix, so "the wash is the first draw" never held).
 fn wash_frame(
     sources: &Rc<RefCell<Sources>>,
     ground: impl Fn(crate::Painter),
@@ -767,6 +773,7 @@ fn wash_frame_with(
     {
         let _walk = discover(sources.clone());
         let p = crate::Painter::root();
+        plx_gfx::gfx::frame_clear(crate::theme::CLEAR_RGB.0, crate::theme::CLEAR_RGB.1, crate::theme::CLEAR_RGB.2);
         ground(p);
         p.rect(Rect::new(card_x, 60.0, 200.0, 100.0), 8.0, [0.5; 4], [0.5; 4], 0.0);
         glass(p);
