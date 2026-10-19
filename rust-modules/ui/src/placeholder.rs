@@ -235,6 +235,18 @@ pub struct Entry {
     pub key: String,
 }
 
+impl Entry {
+    /// Is this draw a page's loading state: its [`Reason`] is ([`Reason::is_loading_state`]), or it is a
+    /// card tile with an EMPTY key (`Art::Poster(None)`, the Collection header's thumb before the
+    /// collection lands). No poster fetch can answer an empty key, so the tile is waiting for the
+    /// store that will supply the key, not for the poster source; when the store has answered and
+    /// the key is still empty, the tile is a card that never resolves and the dump driver fails on it.
+    pub fn is_loading_state(&self) -> bool {
+        self.reason.is_loading_state()
+            || (matches!(self.reason, Reason::CardSkeleton | Reason::CardGround) && self.key.is_empty())
+    }
+}
+
 /// What one frame drew.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct Frame {
@@ -254,12 +266,12 @@ impl Frame {
         self.entries.iter().filter(|e| e.reason == reason).count()
     }
 
-    /// How many of this frame's placeholders are a page's loading state ([`Reason::is_loading_state`]).
+    /// How many of this frame's placeholders are a page's loading state ([`Entry::is_loading_state`]).
     /// Counted from the kept entries, which are a prefix of the draws: a draw past [`ENTRY_CAP`]
     /// has no known reason and is never counted here, so `count - loading_state()` can only
     /// over-state what is left over.
     pub fn loading_state(&self) -> u32 {
-        self.entries.iter().filter(|e| e.reason.is_loading_state()).count() as u32
+        self.entries.iter().filter(|e| e.is_loading_state()).count() as u32
     }
 }
 

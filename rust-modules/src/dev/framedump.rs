@@ -117,8 +117,10 @@
 //! title: `Reason::is_loading_state`), and virtual time advances only when a frame is written, so
 //! holding on that placeholder would never reach the frame the lag waits for and the run would end
 //! on `PLXNATIVE_DUMP_MAX_HOLD_MS` naming `placeholder`. While a store is lagged this iteration
-//! those placeholders, and only those, are excused; a card's art, a logo or a backdrop still hold,
-//! and so does any draw past the entry cap. They are still COUNTED where it matters: the written
+//! those placeholders, and only those, are excused (`Entry::is_loading_state`: the loading reasons, and a
+//! card tile whose key is EMPTY, the Collection header's thumb before the collection lands, which no
+//! poster fetch can answer); a card's art with a key, a logo or a backdrop still hold, and so does any
+//! draw past the entry cap. They are still COUNTED where it matters: the written
 //! frame's `debt` column and `frames_with_debt` record the loading frames the film holds, so
 //! `site_video.py gates` rejects a lagged render as a deliverable, which is right: it is a capture
 //! of a loading state, never the demo. With no lag armed nothing is excused and the "no placeholders
@@ -1081,107 +1083,8 @@ mod tests {
         let ok = Summary::default().to_json();
         assert!(ok.contains("\"failed\":null"));
     }
-
-    // ---- the landing lag against the driver's hold rule ---------------------------------------
-
-    fn frame_of(entries: &[Reason], count: u32) -> Frame {
-        Frame {
-            count,
-            entries: entries.iter().map(|&reason| Entry { reason, key: String::new() }).collect(),
-            absent: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_loading_state_is_debt_unless_the_lag_is_holding_a_store_out() {
-        let page = frame_of(&[Reason::WorkingReadout, Reason::DetailSpinner], 2);
-        assert_eq!(owed_placeholders(&page, &[]), 2, "no lag armed: every placeholder is debt");
-        assert_eq!(owed_placeholders(&page, &["collection".to_string()]), 0, "a lagged store's loading state is the picture");
-        let art = frame_of(&[Reason::WorkingReadout, Reason::CardSkeleton, Reason::HeroLogoText], 3);
-        assert_eq!(owed_placeholders(&art, &["collection".to_string()]), 2,
-            "a card's art and a hero's logo wait on the poster source, lag or not");
-        let capped = frame_of(&[Reason::WorkingReadout], 9);
-        assert_eq!(owed_placeholders(&capped, &["collection".to_string()]), 8,
-            "a draw whose reason was not kept is never excused");
-    }
-
-    /// The driver's iteration over a real paced gate with a lag, a real `Working` read-out drawn
-    /// while the page's answer is out, and the driver's own sample and `decide` (`Sample::with_draw`),
-    /// minus the GL read-back and the app around it. A held iteration repeats at the same virtual
-    /// frame; the loop is bounded by a count, never a clock. Returns, per WRITTEN frame, the placeholder
-    /// count its draw showed.
-    fn film_a_slow_page(lag: u64, frames: usize) -> Vec<u32> {
-        use std::sync::atomic::{AtomicBool, Ordering as O};
-        use std::sync::{Arc, Mutex};
-        let store = plx_data::stores::StoreId::Collection;
-        let gate = plx_machine::landgate::Gate::default();
-        gate.arm_dump_paced(lag);
-        let claim = Arc::new(AtomicBool::new(true)); // the page's request is out from the start
-        let mailbox: Arc<Mutex<Option<u32>>> = Arc::default();
-        // The worker answers after a real delay that is long next to an iteration and short next to a test.
-        let m = Arc::clone(&mailbox);
-        let worker = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(15));
-            *m.lock().unwrap() = Some(7); // the claim is released by the take, never by the worker finishing
-        });
-        placeholder::arm();
-        let (mut v, mut landed, mut written, mut why) = (0u64, false, Vec::new(), Vec::new());
-        for _ in 0..2_000_000u32 {
-            gate.dump_frame(v);
-            let answer = gate.take_owed(store.ord(), store.name(), || claim.load(O::SeqCst),
-                || mailbox.lock().unwrap().take());
-            if answer.is_some() {
-                claim.store(false, O::SeqCst);
-                landed = true;
-            }
-            let lagged = gate.take_lagged();
-            let pre = Sample { starved: gate.take_starved(), ..Sample::default() };
-            placeholder::reset();
-            if !landed {
-                // The host has no GL: `declared` runs the real draw as a discovery walk, in which every
-                // primitive declares itself and the placeholder counter sees what a frame would.
-                placeholder::declared(|| {
-                    plx_ui::widgets::StatusOverlay::new(plx_ui::Rect::FULL, c"Loading", plx_ui::widgets::StatusKind::Working)
-                        .draw_measured(&plx_ui::Env::inert(), plx_ui::Painter::root(), &plx_ui::fixture::FixtureMeasure);
-                });
-            }
-            let frame = placeholder::take();
-            let after = Sample { starved: gate.take_starved(), ..Sample::default() };
-            let post = pre.with_draw(after, &frame, &lagged);
-            match decide(&post) {
-                Action::Write => {
-                    written.push(frame.count);
-                    v += 1;
-                    if written.len() == frames {
-                        placeholder::disarm();
-                        worker.join().unwrap();
-                        return written;
-                    }
-                }
-                Action::Hold => {
-                    why = hold_reasons(&post);
-                    if !post.starved.is_empty() {
-                        std::thread::sleep(Duration::from_micros(PACE_SLEEP_US));
-                    }
-                }
-            }
-        }
-        panic!("the dump never finished: {} frames written, stuck at virtual frame {v} on {why:?}", written.len());
-    }
-
-    #[test]
-    fn a_lagged_loading_page_writes_its_loading_frames_then_its_landed_ones_and_terminates() {
-        let _guard = plx_base::testlock::serial();
-        let written = film_a_slow_page(12, 20);
-        assert_eq!(written.len(), 20);
-        assert!(written[..12].iter().all(|&n| n > 0), "the 12 lagged frames show the loading state: {written:?}");
-        assert!(written[12..].iter().all(|&n| n == 0), "the frames after the landing show the page: {written:?}");
-    }
-
-    #[test]
-    fn without_a_lag_the_page_never_writes_a_loading_frame() {
-        let _guard = plx_base::testlock::serial();
-        let written = film_a_slow_page(0, 8);
-        assert!(written.iter().all(|&n| n == 0), "the loop held for the answer instead: {written:?}");
-    }
 }
+
+#[cfg(test)]
+#[path = "framedump_lag_tests.rs"]
+mod lag_tests;
