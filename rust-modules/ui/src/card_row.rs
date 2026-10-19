@@ -183,15 +183,17 @@ pub struct CardRow {
     /// reserving. See [`label_band`]; the screens turn it into a row pitch.
     band: Spring,
     pub base_y: f32,
-    /// What the focused caption band shows (CONTRACT FREEZE: P3 makes `focused_caption` and the
-    /// band height read it). A pref input, not motion: it is not in the canon.
-    caption_policy: crate::caption_policy::CaptionPolicy,
+    /// What the focused caption band shows, when the shelf follows the Under posters setting; `None`
+    /// keeps the legacy two-line band ([`LEGACY_BAND_H`]), as [`Grid`](crate::cards::Grid) does.
+    /// A pref input, not motion: it is not in the canon.
+    caption_policy: Option<crate::caption_policy::CaptionPolicy>,
 }
 impl CardRow {
-    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
+    /// Follow (`Some`) or stop following (`None`, the legacy band) the Under posters policy.
+    pub fn set_caption_policy(&mut self, policy: Option<crate::caption_policy::CaptionPolicy>) {
         self.caption_policy = policy;
     }
-    pub fn caption_policy(&self) -> crate::caption_policy::CaptionPolicy {
+    pub fn caption_policy(&self) -> Option<crate::caption_policy::CaptionPolicy> {
         self.caption_policy
     }
 
@@ -214,7 +216,7 @@ impl CardRow {
             lift: Spring::at(0.0),
             band: Spring::at(0.0),
             base_y: 0.0,
-            caption_policy: crate::caption_policy::CaptionPolicy::DEFAULT,
+            caption_policy: None,
         }
     }
     /// Whether every spring sits bit-exactly at its target with no velocity and nothing holds
@@ -424,17 +426,18 @@ impl CardRow {
     /// The band this shelf is reserving right now — [`under_band`] of [`CardRow::band_expand`].
     #[inline]
     pub fn under_band(&self) -> f32 {
-        under_band(self.band.pos)
+        under_band_for(self.band_h(), self.band.pos)
     }
-    /// The focused band's height under this row's [`CaptionPolicy`](crate::caption_policy::CaptionPolicy).
-    pub fn policy_band_h(&self) -> f32 {
-        crate::caption_policy::band_h(&self.caption_policy)
+    /// The focused band's whole height under this row's [`CaptionPolicy`](crate::caption_policy::CaptionPolicy)
+    /// ([`crate::caption_policy::band_h`]), or the legacy [`LEGACY_BAND_H`] for a row that follows none.
+    pub fn band_h(&self) -> f32 {
+        self.caption_policy.as_ref().map_or(LEGACY_BAND_H, crate::caption_policy::band_h)
     }
     /// How much of the focused label block this shelf may show right now — [`band_reveal`] of
     /// [`CardRow::band_expand`]. Chain it onto the `TileLabel` with [`TileLabel::revealed`].
     #[inline]
     pub fn band_reveal(&self) -> f32 {
-        band_reveal(self.band.pos)
+        band_reveal_for(self.band_h(), self.band.pos)
     }
 }
 
@@ -1146,6 +1149,22 @@ pub const LEGACY_BAND_H: f32 = UNDER_LABEL_H + crate::consts::UNDER_LABEL_AIR;
 /// The gap a collapsed row keeps under its posters: [`LABEL_BAND_COLLAPSED`] plus the air, the
 /// design system's `space::LG` (40 px).
 const COLLAPSED_GAP: f32 = LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR;
+
+/// How far a focused row's band opens past the collapsed one for a band of `band_h`: what the row
+/// below is carried down by ([`BAND_OPEN`] for the legacy band, 40 / 72 / 0 px for the Under
+/// posters setting's 80 / 112 / 0).
+pub fn band_open_for(band_h: f32) -> f32 {
+    under_band_for(band_h, 1.0) - LABEL_BAND_COLLAPSED
+}
+
+/// Air a revealed caption keeps under its last line, before the screen's bottom margin.
+const REVEAL_AIR: f32 = 4.0;
+
+/// How far below a card's bottom edge a focused caption reaches, with [`REVEAL_AIR`] under it: what
+/// a vertical reveal keeps on screen under the focused card (96 px for the legacy band).
+pub fn caption_reach(band_h: f32) -> f32 {
+    open_gap(band_h) - crate::consts::UNDER_LABEL_AIR + REVEAL_AIR
+}
 
 /// The gap a FOCUSED row opens to for a band of `band_h` ([`crate::caption_policy::band_h`]): the
 /// band itself, never less than the collapsed gap, so a policy showing nothing opens nothing.

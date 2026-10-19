@@ -4252,3 +4252,36 @@ fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
             "frame {t}: out {:.3} + in {:.3} is not one hand-over", out.alpha, inn.alpha);
     }
 }
+
+/// **A shelf follows the Under posters policy for the room it reserves and the caption it
+/// reveals, and a shelf that follows none keeps the legacy two-line band.** The focused shelf's band
+/// settles at `under_band_for(band_h(policy), 1)` (0 / 80 / 112 px of caption: the room below the
+/// cards), the row below it is carried down by `band_open_for`, and the caption block is fully
+/// revealed at the end of the open; a `None` policy is the legacy 114 px band, as Search, Person and
+/// Detail's shelves still read it.
+#[test]
+fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
+    use crate::caption_policy::{band_h, CaptionPolicy, DetailsKind};
+    let settled_under_band = |policy: Option<CaptionPolicy>| {
+        let mut r = Rig::<Shelf>::new(6);
+        r.sect.set_caption_policy(policy);
+        r.land_focus(101, By::Dir);
+        r.run(240);
+        (r.sect.under_band(), r.sect.band_h(), r.sect.band_reveal())
+    };
+    for (title, details, tall) in [(false, DetailsKind::None, 0.0), (false, DetailsKind::Genre, 80.0),
+        (true, DetailsKind::YearLength, 112.0), (true, DetailsKind::None, 80.0)] {
+        let policy = CaptionPolicy { title, details };
+        let (under, h, reveal) = settled_under_band(Some(policy));
+        assert_eq!(h, tall, "title {title}, details {details:?}: the shelf's band is the policy's");
+        assert_eq!(h, band_h(&policy));
+        assert!((under - crate::card_row::under_band_for(h, 1.0)).abs() < 0.01, "title {title}, details {details:?}: reserved {under}");
+        assert!(reveal > 0.999, "the open band shows its whole caption block ({reveal})");
+        assert!((crate::card_row::band_open_for(h) - (under - crate::card_row::LABEL_BAND_COLLAPSED)).abs() < 0.01,
+            "the row below is carried down by what the band opened");
+    }
+    let (under, h, _) = settled_under_band(None);
+    assert_eq!(h, crate::card_row::LEGACY_BAND_H, "a shelf that follows no policy keeps the legacy band");
+    assert!((under - crate::card_row::under_band(1.0)).abs() < 0.01);
+    assert!((crate::card_row::band_open_for(h) - crate::card_row::BAND_OPEN).abs() < 0.01, "the legacy band opens by BAND_OPEN");
+}

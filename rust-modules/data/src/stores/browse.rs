@@ -374,6 +374,14 @@ impl BrowseStore {
         crate::browse::section_hubs::stage_shelves_for_owner_test(&mut self.state, section);
     }
 
+    /// Edit every card of section `section`'s published shelves
+    /// ([`seed_named_shelves_for_test`](Self::seed_named_shelves_for_test)'s cards carry only a key
+    /// and a title).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn edit_shelf_items_for_test(&mut self, section: usize, edit: &dyn Fn(&mut crate::pms::PmsMovie)) {
+        crate::browse::section_hubs::edit_shelf_items_for_owner_test(&mut self.state, section, edit);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_named_shelves_for_test(
         &mut self,

@@ -1328,6 +1328,10 @@ impl HomeScreen {
     }
 
     fn layout_grid(&mut self) {
+        let policy = Some(crate::registry::captions::policy());
+        for shelf in &mut self.grid.shelves {
+            shelf.set_caption_policy(policy);
+        }
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
         for shelf in &mut self.grid.shelves {
@@ -2427,7 +2431,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     MARGIN_X,
                     top + CARD_DY,
                     SCR_W - 2.0 * MARGIN_X,
-                    CARD_H + ui_cards::UNDER_LABEL_H,
+                    CARD_H + band_h(),
                 ),
                 len: projection.elems.len(),
                 elem: ElemKind::Card,
@@ -3309,13 +3313,22 @@ fn col_at(x: f32, scroll: f32, count: usize) -> Option<usize> {
 fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
 }
+/// The focused shelf's caption band under the stored Under posters setting (0 / 80 / 112 px): the
+/// height every shelf here reserves, opens and reveals by (`Shelf::set_caption_policy`).
+fn band_h() -> f32 {
+    plx_ui::caption_policy::band_h(&crate::registry::captions::policy())
+}
+/// How far the focused band carries the rows below it down.
+fn band_open() -> f32 {
+    ui_cards::band_open_for(band_h())
+}
 fn row_reveal_band(top: f32) -> (f32, f32) {
-    let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
+    let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + ui_cards::caption_reach(band_h()) - (SCR_H - MARGIN_Y);
     (lo, top)
 }
 fn grid_max_scroll(rows: usize) -> f32 {
     let n = rows.max(1);
-    let h = ui_cards::settled_top(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED);
+    let h = ui_cards::settled_top_for(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED, band_open());
     (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
 }
 fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
@@ -3324,7 +3337,7 @@ fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
 /// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
 /// holds focus, which opens no row's band.
 fn shelf_top_banded(row: usize, band_row: Option<usize>) -> f32 {
-    ui_cards::settled_top(row, band_row, ui_cards::ROW_PITCH_FIXED)
+    ui_cards::settled_top_for(row, band_row, ui_cards::ROW_PITCH_FIXED, band_open())
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {
@@ -3553,17 +3566,6 @@ mod placeholder_tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 
-/// A focused tile's title line. The deck's carries the amber ▶ only while OK on a Continue
-/// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the
-/// page there is none (`widgets::still_line`'s rule).
-fn deck_label(is_deck: bool, title: &str) -> ui_cards::TileLabel {
-    if is_deck && plx_media::route::deck_press().press_plays() {
-        ui_cards::TileLabel::played(title)
-    } else {
-        ui_cards::TileLabel::title(title)
-    }
-}
-
 /// The cards a landing removed, each under the element it had, in the order the shelf names them
 /// (`Shelf::ghost_keys`); a card the screen did not keep is `None` and is not drawn.
 struct GhostCards<'a> {
@@ -3670,10 +3672,8 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn label(&self, i: usize) -> ui_cards::TileLabel {
         let Some(item) = self.item(i) else { return ui_cards::TileLabel::default() };
-        let continue_watching = self.home.rows[self.row].identity == HomeHubIdentity::ContinueWatching;
-        let mut label = deck_label(continue_watching, &item.title);
-        label.caption = ui_cards::focused_caption(&tile_facts::of(item), continue_watching);
-        label
+        let deck = self.home.rows[self.row].identity == HomeHubIdentity::ContinueWatching;
+        crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, deck)
     }
 
     fn progress(&self, i: usize) -> Option<f32> {

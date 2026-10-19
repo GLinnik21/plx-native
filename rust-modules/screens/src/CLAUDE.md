@@ -199,5 +199,12 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
 
 `SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
 Libraries, which now has two rows (Favorite libraries, Under posters). The page has three rows (Title switch, Details › with the current line on the right, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow`, the middle one lifted and captioned, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
-maps the stored `UnderPosters` to the ui `CaptionPolicy`. The Library page is the full grid under one
+maps the stored `UnderPosters` to the ui `CaptionPolicy`. **Every poster shelf reads that one policy through
+`registry::captions`** (`policy()` with the one `TEST_UNDER_POSTERS` test override, `label()` the one builder of a focused
+poster's `[title, details]`, `shelf_label()` for Home's and Recommended's shelves): the Library grid, the Collections page, the Watchlist,
+Home's shelves and Recommended's poster shelves. A shelf is handed the policy (`Shelf::set_caption_policy`) and reserves,
+opens and reveals its band from `caption_policy::band_h`; a tile that carries a state keeps it (the Continue Watching deck's
+time left is its details line, the amber play mark leads its title while OK plays, a Watchlist title's release date or
+"Server offline"), and with Details set to Nothing no band opens. Recommended's landscape rows (episode stills) and the Collection
+screen's members are not on the policy yet. The Library page is the full grid under one
 header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.

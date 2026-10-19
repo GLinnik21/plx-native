@@ -40,6 +40,9 @@ use plx_ui::screen::{Mounter, ReturnState, Screen};
 /// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
 pub mod tile_facts;
 
+/// The Under posters setting read once, and the one builder of a focused poster's caption.
+pub mod captions;
+
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub enum AppFx {
     Session(plx_session::auth::SessionCmd),

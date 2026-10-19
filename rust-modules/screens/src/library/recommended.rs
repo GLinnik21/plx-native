@@ -205,10 +205,11 @@ impl ShelfRun {
     }
 }
 
-/// The height of a row of `landscape` cards whose caption band is `expanded` (0..1) open.
-pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
+/// The height of a row of `landscape` cards whose caption band, `band_h` tall when it is open, is
+/// `expanded` (0..1) open.
+pub(super) fn shelf_pitch(landscape: bool, band_h: f32, expanded: f32) -> f32 {
     let art = if landscape { RowStyle::EPISODE.h } else { CARD_H };
-    TITLE_DY + CARD_DY + art + ui_cards::under_band(expanded) + UNDER_LABEL_AIR
+    TITLE_DY + CARD_DY + art + ui_cards::under_band_for(band_h, expanded) + UNDER_LABEL_AIR
 }
 
 fn hub_style(landscape: bool) -> &'static RowStyle { if landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }
@@ -405,8 +406,14 @@ impl RecommendedScreen {
     }
 
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
-        self.run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_expand())));
-        self.target_run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape,
+        // The poster rows follow the Under posters setting; a landscape row (an episode still) is
+        // not a poster and keeps its own two-line block and band.
+        let policy = Some(crate::registry::captions::policy());
+        for row in &mut self.shelves {
+            row.cards.set_caption_policy(policy.filter(|_| !row.landscape));
+        }
+        self.run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(), row.cards.band_expand())));
+        self.target_run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(),
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
         self.scroll_target = self.scroll_target.clamp(0.0, max_scroll(&self.target_run));
     }
@@ -815,7 +822,7 @@ impl RecommendedScreen {
                     self.initial = false;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
-                    self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, 0.0))
+                    self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, ui_cards::LEGACY_BAND_H, 0.0))
                         .clamp(0.0, max_scroll(&self.target_run));
                     fx.invalidate(Provenance::Input);
                     return Handled::Yes;
@@ -1230,10 +1237,7 @@ pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: us
         return if fact.is_empty() { ui_cards::TileLabel::title(&name) }
         else { ui_cards::TileLabel::titled(&name, &fact) };
     }
-    let mut label = if shelf.is_continue && plx_media::route::deck_press().press_plays() { ui_cards::TileLabel::played(&item.title) }
-        else { ui_cards::TileLabel::title(&item.title) };
-    label.caption = ui_cards::focused_caption(&tile_facts::of(item), shelf.is_continue);
-    label
+    crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
 }
 
 #[cfg(test)]

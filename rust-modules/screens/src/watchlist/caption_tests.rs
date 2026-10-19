@@ -6,7 +6,8 @@ use plx_data::watchlist::model::TileState;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
 use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
 
-use super::caption::{self, TEST_UNDER_POSTERS};
+use super::caption;
+use crate::registry::captions::TEST_UNDER_POSTERS;
 use super::cards_harness::{row, tile, Harness};
 use super::page::WatchlistScreen;
 

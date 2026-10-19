@@ -4,8 +4,11 @@
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing.
 //!
-//! The types and the two function signatures are what the library, collection and settings
-//! packages compile against. [`band_h`] sizes the band; [`caption_lines`] words the lines in the
+//! Every poster shelf reads this one policy: the Library grid, the Collections page, the
+//! Watchlist, Home's shelves and the Library's Recommended shelves (the screens build the focused
+//! block through `registry::captions`, and hand a [`crate::cards::Shelf`] / grid the policy so the
+//! room it reserves is [`band_h`] of the same value). The types and the two function signatures are
+//! what the library, collection and settings packages compile against. [`band_h`] sizes the band; [`caption_lines`] words the lines in the
 //! given locale, with the catalog's plurals.
 
 use plx_platform::i18n::LocaleContext;
@@ -78,6 +81,9 @@ pub struct CaptionFacts {
     /// A collection's subtype (`movie`, `show`, …).
     pub subtype: Option<String>,
     pub is_show: bool,
+    /// An episode's `(season, episode)` numbers (`0` for one the server did not number), which its
+    /// default details line says in place of a year and length.
+    pub episode: Option<(u32, u32)>,
 }
 
 /// The caption's lines for `facts` under `policy`: `[title, details]` with absent lines `None`.
@@ -121,12 +127,19 @@ fn resolution_mark(raw: &str) -> Option<String> {
     }
 }
 
-/// The default details line, by kind: a collection is its size, a show its season count (or its
-/// unwatched new episodes), a started item the time it has left, anything else year and length.
+/// The default details line, by kind: a collection is its size, an episode its address, a show its
+/// season count (or its unwatched new episodes), a started item the time it has left, anything else year and length.
 fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
         return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
+    }
+    if let Some((season, ep)) = f.episode.filter(|(_, ep)| *ep > 0) {
+        return Some(if season > 0 {
+            msg::widgets_card_season_episode_in(cx, i64::from(ep), i64::from(season))
+        } else {
+            msg::widgets_card_episode_in(cx, i64::from(ep))
+        });
     }
     let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {

@@ -344,7 +344,7 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
     use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
     let _guard = plx_base::testlock::serial();
     let below_focus = |setting: UnderPosters| {
-        super::parts::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
         let fixture = Fixture::new();
         let mut page = fixture.screen();
         page.initial = false;
@@ -359,7 +359,7 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
     let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None });
     let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre });
     let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre });
-    super::parts::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
     assert!((two_lines - 72.0).abs() < 0.01, "two lines open 112 - 40 px: {two_lines}");

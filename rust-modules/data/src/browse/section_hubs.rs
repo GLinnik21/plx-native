@@ -1043,6 +1043,18 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// Edit every card of every published shelf of section `sec` (a seeded card carries only a key and
+/// a title): the facts a caption is worded from, or a resume point. The cards are told apart by
+/// their `rk`, which [`seed_named_shelves_for_owner_test`] makes `{hubIdentifier}-{index}`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_shelf_items_for_owner_test(state: &mut super::BrowseState, sec: usize, edit: &dyn Fn(&mut PmsMovie)) {
+    let Some(st) = state.state_mut(sec) else { return };
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut() {
+        shelf.items.iter_mut().for_each(edit);
+    }
+    st.hubs.revised();
+}
+
 /// The reads a moved hold is owed, landed: every row in the held range that is a descriptor gets
 /// back the cards it showed, keyed as [`seed_named_shelves_for_owner_test`] keys them, and the
 /// result is published (the revision moves). What the worker does for a ring that moved onto rows

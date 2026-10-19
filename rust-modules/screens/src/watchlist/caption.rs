@@ -2,7 +2,8 @@
 //!
 //! **Under posters.** The band is the global Under posters setting's, the one the Library reads
 //! ([`policy`]): the Title switch (default Off) opens the title line, the Details picker the second,
-//! and the band is 0 / 80 / 112 px tall by what it will show (`Stack::caption_policy`). A Watchlist row
+//! and the band is 0 / 80 / 112 px tall by what it will show (`Stack::caption_policy`); the lines are
+//! built by the one builder every poster shelf shares ([`crate::registry::captions::label`]). A Watchlist row
 //! carries a title, a year and a kind, so Genre, Video and Age rating have nothing to say for it.
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
 //! one: with Details set to Nothing the band is not opened, and no sentence is shown.
@@ -14,8 +15,8 @@
 //! the locale's own month-and-day tables (`LocaleContext::month_day`, W3), medium width, in the one
 //! phrase every page uses for it ("Coming 12 Mar", `fmt::coming_on`).
 use plx_data::watchlist::model::{Kind, TileState, WatchRow};
-use plx_platform::i18n::{self, msg, MonthWidth};
-use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
+use plx_platform::i18n::{msg, MonthWidth};
+use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy};
 use plx_ui::cards::TileLabel;
 use plx_ui::fmt;
 
@@ -39,22 +40,9 @@ pub fn state_sentence(state: TileState, release: Option<&str>) -> Option<String>
     }
 }
 
-/// The Under posters setting as the caption policy this page's band follows: the same value the
-/// Library page reads.
-pub fn policy() -> CaptionPolicy {
-    #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return crate::registry::caption_policy_of(setting);
-    }
-    crate::registry::caption_policy_of(plx_media::route::under_posters())
-}
-
-#[cfg(test)]
-thread_local! {
-    /// A per-thread Under posters setting for a test, so it never writes the process-wide cell.
-    pub(crate) static TEST_UNDER_POSTERS: std::cell::Cell<Option<plx_plex::plex::session::UnderPosters>> =
-        const { std::cell::Cell::new(None) };
-}
+/// The Under posters setting as the caption policy this page's band follows: the same value every
+/// poster shelf reads ([`crate::registry::captions::policy`]).
+pub fn policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// The focused tile's label under `policy`: `[title, details]` as the setting words them, the
 /// details line being the state sentence when the title has one.
@@ -65,11 +53,5 @@ pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy) -> TileLa
         is_show: row.kind == Kind::Show,
         ..Default::default()
     };
-    let [title, details] = caption_lines(policy, &facts, i18n::current());
-    let details = if policy.details == DetailsKind::None {
-        None
-    } else {
-        state_sentence(state, row.release.as_deref()).or(details)
-    };
-    TileLabel::from_lines([title, details])
+    crate::registry::captions::label(policy, &facts, state_sentence(state, row.release.as_deref()), false)
 }

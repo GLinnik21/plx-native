@@ -681,7 +681,9 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 ## Card marks — three marks, three meanings, and no card may blur them
 
-Library All uses the shared caption-band policy for movies, shows, seasons and episodes:
+Library All uses the shared caption-band policy for movies, shows, seasons and episodes (so do Home's shelves and Recommended's
+poster shelves: `Shelf::set_caption_policy(Some(policy))` sizes the band a shelf reserves and the caption block it reveals by
+`caption_policy::band_h`; a shelf with no policy, Search's, Person's and Detail's, keeps the legacy 114 px band):
 only the focused row opens its caption; a bounded set of springs closes rows left behind, and
 each row's caption is drawn at its band's own expansion (`card_row::band_fade`), so a move is one
 hand-over (`out = 1 - in`) that starts on the key frame; `GridBands::closing` names the card a

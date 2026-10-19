@@ -1083,6 +1083,9 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 
 #[test]
 fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
+    // The block the Under posters setting can draw: nothing, one line or two.
+    let lines = crate::registry::captions::policy().max_lines();
+    let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
     for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
             for scroll in [
@@ -1090,7 +1093,7 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
                 settled_scroll(rows, focus_row, from_below(rows)),
             ] {
                 let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - scroll;
-                assert!(row_y + CARD_DY + CARD_H + ui_cards::UNDER_LABEL_H <= SCR_H - MARGIN_Y);
+                assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y);
             }
         }
     }
@@ -1919,14 +1922,17 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
 fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     use plx_media::route::DeckPress;
     let _guard = plx_base::testlock::serial();
+    let titled = plx_ui::caption_policy::CaptionPolicy { title: true, ..Default::default() };
+    let item = PmsMovie { title: "Show".into(), ..Default::default() };
+    let deck_label = |is_deck: bool| crate::registry::captions::shelf_label(&titled, &item, is_deck);
     {
         let _press = deck_press_is(DeckPress::Play);
-        assert!(deck_label(true, "Show").glyph);
-        assert!(!deck_label(false, "Show").glyph, "a shelf that navigates never carries it");
+        assert!(deck_label(true).glyph);
+        assert!(!deck_label(false).glyph, "a shelf that navigates never carries it");
     }
     let _press = deck_press_is(DeckPress::Details);
-    assert!(!deck_label(true, "Show").glyph);
-    assert!(!deck_label(false, "Show").glyph);
+    assert!(!deck_label(true).glyph);
+    assert!(!deck_label(false).glyph);
 }
 
 #[test]
@@ -5241,4 +5247,23 @@ fn an_unchanged_refetch_leaves_the_billboard_exactly_as_it_was() {
         "{trace:?}"
     );
     assert_eq!(s.backdrop.tex.0, shown);
+}
+
+/// **Home reserves the focused shelf's band from the Under posters setting, the same band_h the
+/// Library grid reads.** The settled layout (`shelf_top_settled`: the row below the focused one is
+/// carried down by what the band opens) and the end of the document both follow it, for a band of
+/// nothing, one line and two lines.
+#[test]
+fn home_opens_its_focused_shelf_band_by_the_policys_band_h() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use crate::registry::captions::TEST_UNDER_POSTERS;
+    for (title, details, tall) in [(false, UnderPostersDetails::None, 0.0), (false, UnderPostersDetails::Genre, 80.0),
+        (true, UnderPostersDetails::YearLength, 112.0)] {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+        let opened = shelf_top_settled(1, 0) - shelf_top_settled(1, 1);
+        let policy = crate::registry::captions::policy();
+        TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+        assert_eq!(plx_ui::caption_policy::band_h(&policy), tall, "premise: title {title}, details {details:?}");
+        assert_eq!(opened, ui_cards::band_open_for(tall), "title {title}, details {details:?}: the row below is carried down by the band");
+    }
 }

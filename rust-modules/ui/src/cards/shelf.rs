@@ -959,6 +959,25 @@ impl Shelf {
         self.row.under_band()
     }
 
+    /// Follow the Under posters policy (`Some`) or the legacy two-line band (`None`, the default):
+    /// the band this shelf reserves, and how much of the caption block shows, follow its height
+    /// ([`crate::caption_policy::band_h`]). Only the focused shelf opens it.
+    pub fn set_caption_policy(&mut self, policy: Option<crate::caption_policy::CaptionPolicy>) {
+        if self.row.caption_policy() != policy {
+            self.row.set_caption_policy(policy);
+        }
+    }
+
+    /// The focused band's whole height under this shelf's policy ([`CardRow::band_h`]).
+    pub fn band_h(&self) -> f32 {
+        self.row.band_h()
+    }
+
+    /// How much of the focused caption block may show now ([`CardRow::band_reveal`]), 0..1.
+    pub fn band_reveal(&self) -> f32 {
+        self.row.band_reveal()
+    }
+
     /// The live label-band expansion, 0 collapsed to 1 focused: what a screen that lays its column
     /// out from the band's TRAVEL (`card_row::BAND_OPEN` times this) reads.
     pub fn band_expand(&self) -> f32 {

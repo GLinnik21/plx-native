@@ -36,21 +36,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 }
 
 /// The Under posters setting as the caption policy every Library grid card and band follows.
-pub(super) fn caption_policy() -> CaptionPolicy {
-    #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return crate::registry::caption_policy_of(setting);
-    }
-    crate::registry::caption_policy_of(plx_media::route::under_posters())
-}
-
-#[cfg(test)]
-thread_local! {
-    /// A per-thread Under posters setting for a test, so it never writes the process-wide cell the other
-    /// library tests read through [`caption_policy`].
-    pub(super) static TEST_UNDER_POSTERS: std::cell::Cell<Option<plx_plex::plex::session::UnderPosters>> =
-        const { std::cell::Cell::new(None) };
-}
+pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid poster card's label under `policy`: the focused caption band shows exactly what the
 /// Under posters setting chose. An episode and a season keep their own wording (an episode names
@@ -69,8 +55,7 @@ pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy)
     if item.kind == 2 && !item.show_title.is_empty() {
         return ui_cards::poster_label(&tile_facts::of(item));
     }
-    ui_cards::TileLabel::from_lines(plx_ui::caption_policy::caption_lines(policy, &tile_facts::caption_facts(item),
-        plx_platform::i18n::current()))
+    crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
 }
 
 #[derive(Default)]
@@ -547,7 +532,7 @@ pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::Tile
         title: &item.title, subtype: item.subtype.as_deref(), child_count: item.child_count,
         name_cut: face_cuts_name(item),
     };
-    let stored = crate::registry::caption_policy_of(plx_media::route::under_posters());
+    let stored = caption_policy();
     let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
     if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
     // The caption tells the name the face cut: it stays under its own tile (never under the next
