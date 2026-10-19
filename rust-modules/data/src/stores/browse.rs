@@ -361,6 +361,12 @@ impl BrowseStore {
         );
     }
 
+    /// A landing held behind the publication gate, as the worker leaves one: staged, not drawn.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stage_shelves_for_test(&mut self, section: usize) {
+        crate::browse::section_hubs::stage_shelves_for_owner_test(&mut self.state, section);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_named_shelves_for_test(
         &mut self,
