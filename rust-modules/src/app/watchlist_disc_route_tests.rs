@@ -226,7 +226,8 @@ fn the_focused_bookmark_disc_names_itself_on_the_home_hero_and_the_detail_hero()
 
 /// **Sort & Filter lifts its opener** (design review S12), on the Watchlist as on the Library: OK on
 /// the pill presents the menu over the page and the dispatcher names the pill as the surface's lifted
-/// opener (the one decision `Bridge::redraw_opener` paints the lit pill from), and BACK stands the
+/// opener (`Dispatcher::lifted_opener`, the one decision the `Z::OPENER` pass of `Dispatcher::draw_with`
+/// paints the lit pill from), and BACK stands the
 /// lift down with focus on the pill. `library_route_tests` holds the Library's rows.
 #[test]
 fn the_watchlists_sort_and_filter_lifts_its_pill_while_the_menu_is_up() {
@@ -234,17 +235,17 @@ fn the_watchlists_sort_and_filter_lifts_its_pill_while_the_menu_is_up() {
     let page = w.d.nav.top_page().map(|e| e.id).expect("the Watchlist is on top");
     w.press(Key::Up);
     assert_eq!(w.elem(), Some(PILL_ELEM), "premise: focus is on the pill");
-    assert_eq!(crate::app::bridge::opener_lift(&w.d), None, "premise: nothing is lifted while the pill is only focused");
+    assert_eq!(w.d.lifted_opener(), None, "premise: nothing is lifted while the pill is only focused");
 
     w.press(Key::Ok);
     assert!(menu_up(&w), "OK on the pill opens the menu");
-    let lifted = crate::app::bridge::opener_lift(&w.d);
+    let lifted = w.d.lifted_opener();
     assert_eq!(lifted.map(|(host, key)| (host, key.map(|key| (key.entry, key.elem)))), Some((page, Some((page, PILL_ELEM)))),
         "the pill is the lifted opener while its menu is up");
 
     w.press(Key::Back);
     w.settle(40);
     assert!(!menu_up(&w), "BACK closes the menu");
-    assert_eq!(crate::app::bridge::opener_lift(&w.d), None, "and the lift stands down");
+    assert_eq!(w.d.lifted_opener(), None, "and the lift stands down");
     assert_eq!(w.elem(), Some(PILL_ELEM), "with focus back on the pill");
 }

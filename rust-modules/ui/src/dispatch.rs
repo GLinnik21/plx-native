@@ -740,8 +740,9 @@ where
 
     /// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused
     /// element, with the press taken from [`Self::opener_press`] and nothing else standing in for
-    /// it. [`Self::draw_with`] builds the lift's whole `Cx` from this, so the scale the lift draws
-    /// at is observable (`parts.press.scale`) without a renderer.
+    /// it. [`Self::draw_with`] builds the lift's whole `Cx` from this (through [`CxParts::page_cx`],
+    /// as the page pass does), so the scale the lift draws at is observable (`parts.press.scale`)
+    /// without a renderer.
     pub fn opener_parts(&self, entry: EntryId, focus: Option<FocusKey<H::Elem>>) -> CxParts<H::Elem> {
         CxParts {
             tick: Tick { ms: 0, dt_us: 0 },
@@ -1804,7 +1805,10 @@ where
                 if let Some(((entry, focus), lift_parts)) = owed {
                     if let Some(screen) = nav.tabs.stack.top().filter(|e| e.id == entry).and_then(|e| e.inst.as_ref()).map(|i| &*i.screen) {
                         let Split { views, measure, .. } = rig.split();
-                        let lift_cx = lift_parts.cx::<H>(views, measure);
+                        // the page's own context (`CxParts::page_cx`), the page beneath folded in as in the
+                        // page pass, so a redraw reads the same views the page drew with
+                        let lift_cx = lift_parts.page_cx::<H>(
+                            views, measure, entry, lift_parts.focus.clone(), nav.tabs.stack.beneath_id(entry));
                         screen.redraw_focused(&mut DrawFrame::with_navigation(&lift_cx, Painter::root(), navigation), focus);
                     }
                 }

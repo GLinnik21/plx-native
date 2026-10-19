@@ -472,9 +472,9 @@ impl World {
     /// **What the top page DREW this frame**, read off a recording painter (a host has no GL): every
     /// text run as `(words, rect)`. The draw is the product's own, `Dispatcher::draw_with_glass_below`
     /// inside a discovery walk, so the words a test reads are the ones a person reads. It draws the
-    /// frame the last [`Self::step`] updated and advances nothing. (A lifted header opener is painted
-    /// by the run loop's page closure, `Bridge::redraw_opener`, which this draw does not run: read
-    /// that decision from `bridge::opener_lift`.)
+    /// frame the last [`Self::step`] updated and advances nothing. (A lifted header opener is part of
+    /// that same draw: `draw_with`'s `Z::OPENER` pass repaints it. Which element it is, is
+    /// `Dispatcher::lifted_opener`.)
     pub(super) fn drawn(&mut self) -> Drawn {
         use plx_ui::frame::backdrop;
         let mut glass = plx_ui::frame::glass::GlassPlan::new();
