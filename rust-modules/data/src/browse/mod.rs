@@ -2619,6 +2619,10 @@ impl BrowseState {
         let Some((epoch, source, landing)) = taken else { return Default::default() };
         self.apply_discovery(epoch, source, landing, None, adapter)
     }
+    /// `#[track_caller]`: the paced dump keys a landing's claim by CALL SITE, and the genre and
+    /// letters mailboxes both come through here, so the wrapper must hand its caller's site on
+    /// (`plx_machine::landgate::Gate::take_owed`).
+    #[track_caller]
     fn land_directory_owned_with_gate<T>(
         &mut self,
         gate: &plx_machine::landgate::Gate,
@@ -2658,6 +2662,7 @@ impl BrowseState {
         self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
     #[cfg(test)]
+    #[track_caller]
     fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
         self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), flag, mail, apply)
