@@ -591,8 +591,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   menu's profile chip, lifted above the dim and the panel (`widgets::lift_profile_chip`, called by the
   lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
   capsule on the stack's latched field (`ModalStack::lift_field`, no dim, the host snapshot behind its
-  rim) and requests no backdrop entry or `src` pass; before the field latches it is the flat
-  capsule. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  rim) and requests no backdrop entry or `src` pass; before the field latches the lift draws
+  nothing (the bar's own chip is already on screen at that rect). Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
