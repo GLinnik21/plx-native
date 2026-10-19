@@ -1292,8 +1292,8 @@ impl<const N: usize> CtlPop<N> {
         self.scale_with(i, crate::press::scale())
     }
     /// How far control `i` is into its focus, 0 (resting) to 1 (focused), read off the SAME lift
-    /// spring [`scale`](Self::scale) reads: the fill and ink of a control cross-fade on this, so
-    /// the plate arrives at the pace the pop does and never in a frame of its own
+    /// spring [`scale`](Self::scale) reads: the fill of a control cross-fades on this (its ink flips on
+    /// it), so the plate arrives at the pace the pop does and never in a frame of its own
     /// ([`ControlStyle::face_at`]). The press dip is NOT in it: a click dips the size, not the fill.
     pub fn focus(&self, i: usize) -> f32 {
         let pos = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
@@ -3100,6 +3100,19 @@ impl CircleButton {
         room - (Self::cap_open_w(d, 0.0) - d)
     }
 
+    /// **The glyph's drawn side and the raster it is drawn from**, for a disc whose laid-out height is
+    /// `base_h` popped by `scale`. The raster is the REST size (`base_h` x [`DISC_ICON_RATIO`], a
+    /// whole pixel, so a disc at rest draws it 1:1 as it always has) and does not depend on `scale`:
+    /// the pop stretches that one mask over a box that grows with the spring. The side used to be
+    /// rounded off the POPPED height and handed to the rasterizer as its size, so the glyph was drawn
+    /// from a different cached mask each time the spring crossed a whole pixel, and the last of them
+    /// came on the frame it settled: the filled bookmark's edge re-rastered (122-225 px) with nothing
+    /// moving. One mask for the control's life cannot swap on any frame.
+    fn glyph_size(base_h: f32, scale: f32) -> (f32, i32) {
+        let raster = (base_h * DISC_ICON_RATIO).round();
+        (raster * scale, raster as i32)
+    }
+
     /// The label width a capsule of DRAWN width `w` was sized for — the exact inverse of
     /// [`cap_w`](Self::cap_w) at the same `e`, so the widget can recover what its caller measured
     /// without being handed it a second time (two numbers that must agree are two numbers that can
@@ -3168,7 +3181,7 @@ impl View for CircleButton {
             // vector glyph at the shared DISC_ICON_RATIO box, so every round control carries its
             // icon at one ratio — centred on the DISC, sliding to the open capsule's lead inset as
             // the unfurl opens (see `DISC_LABEL_LEAD`).
-            let isz = (d * DISC_ICON_RATIO).round();
+            let (isz, raster) = Self::glyph_size(base.h, self.scale);
             let closed_inset = (d - isz) * 0.5;
             // the capsule's own air rides the pop with it, so a popped capsule is the same shape
             // scaled and not a wider one wearing the original padding
@@ -3180,11 +3193,11 @@ impl View for CircleButton {
             let ix = r.x + closed_inset + (lead - closed_inset) * e;
             let dy = self.fill.map_or(0.0, |(_, _, dy)| dy * self.scale);
             let glyph = Rect::new(ix, r.y + (r.h - isz) * 0.5 + dy, isz, isz);
-            crate::icons::draw(p, icon, glyph, ink);
+            crate::icons::draw_raster(p, icon, glyph, raster, ink);
             if let Some((filled, fill, _)) = self.fill.filter(|&(_, f, _)| f > 0.0) {
                 let h = glyph.h * fill;
                 p.clip(Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h));
-                crate::icons::draw(p, filled, glyph, ink);
+                crate::icons::draw_raster(p, filled, glyph, raster, ink);
                 p.clip_clear();
             }
             if let Some((text, _, label_w)) = unfurl {
@@ -5071,6 +5084,8 @@ pub struct TabPill {
     mix: Option<(f32, f32)>,
     /// see [`TabPill::ink_only`]
     ink_only: bool,
+    /// see [`TabPill::inked`] — `None` = the weight follows `mix`.
+    weight: Option<f32>,
     /// see [`TabPill::ground`] — reaches [`TabStyle::Button`] and nothing else.
     ground: ControlGround,
 }
@@ -5091,6 +5106,7 @@ impl TabPill {
             plated: false,
             mix: None,
             ink_only: false,
+            weight: None,
             ground: ControlGround::Keyed,
         }
     }
@@ -5159,6 +5175,19 @@ impl TabPill {
     pub fn mix(mut self, focus: f32, selected: f32) -> Self {
         self.mix = Some((focus, selected));
         self
+    }
+    /// **This pill's label painted in one region of its [`PillInk`]**: the region's ink at mixes
+    /// `(focus, selected)` (what [`paint_inked`]'s callback is handed), the pill's own weight
+    /// ([`PillInk::weight`]). The regions of a pill are cut along a capsule's drawn edge and each
+    /// paints the WHOLE label clipped to its side, so only the INK may differ between them: a
+    /// weight taken from the region's own mixes drew the outside half of a label regular and the
+    /// inside half bold, two glyph sets whose strokes and advances differ, and a glyph the capsule's
+    /// arc crossed was painted by neither (the "s" of "TV Shows" lost on white). The page header
+    /// row, which never changes weight, is that rule already: one geometry, the colour split by
+    /// the coverage shader.
+    pub fn inked(mut self, ink: &PillInk, focus: f32, selected: f32) -> Self {
+        self.weight = Some(ink.weight());
+        self.mix(focus, selected)
     }
     /// The ink a strip-driven pill wears at mixes `(focus, selected)` — `TEXT_TERTIARY` →
     /// `TEXT_PRIMARY` as the selection capsule arrives, then all the way to `ACCENT_INK` as the focus
@@ -5232,7 +5261,7 @@ impl TabPill {
                 let plate_a = theme::TAB_PLATE_IDLE[3] * (1.0 - fm);
                 let fill = (self.plated && plate_a > 0.002)
                     .then(|| theme::with_a(theme::TAB_PLATE_IDLE, plate_a));
-                (fill, ink, sm.max(fm))
+                (fill, ink, self.weight.map_or(sm.max(fm), |w| w.clamp(0.0, 1.0)))
             }
             None => match self.style {
                 TabStyle::Button if self.focused => {
@@ -5599,11 +5628,12 @@ pub fn draw_strip(
         if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
             p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
         }
-        paint_inked(p, &strip.pill_ink(pill, ground), |fm, sm| {
+        let ink = strip.pill_ink(pill, ground);
+        paint_inked(p, &ink, |fm, sm| {
             TabPill::new(lay.label.as_ptr(), theme::size::BODY, pill)
                 .plated()
                 .ink_only()
-                .mix(fm, sm)
+                .inked(&ink, fm, sm)
                 .draw(&env, p);
         });
     }
@@ -5913,7 +5943,9 @@ impl TabStrip {
         let sel_alpha = self.sel.alpha();
         let flip = |sel_alpha: f32| backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA;
         let (flip_in_plate, flip_off_plate) = (flip(sel_alpha), flip(0.0));
-        let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc };
+        let cover = (pill.x, pill.w);
+        let weight = self.sel.mix(cover).max(if draws_focus { self.foc.mix(cover) } else { 0.0 });
+        let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc, weight };
         // Every (in the plate, in the focus capsule) the pill's glyphs can be in, each with its ink;
         // the ones that wear the same ink are one region.
         let mut groups: [(f32, f32, [Option<bool>; 2], [bool; 2]); 4] = [(0.0, 0.0, [None; 2], [false; 2]); 4];
@@ -6004,6 +6036,7 @@ pub struct PillInk {
     n: usize,
     sel: Option<Rect>,
     foc: Option<Rect>,
+    weight: f32,
 }
 
 impl PillInk {
@@ -6013,7 +6046,15 @@ impl PillInk {
 
     /// One region over the whole pill at its resting ink: what a pill no capsule marks wears.
     pub fn resting() -> Self {
-        Self { regions: [InkRegion::RESTING; 4], n: 1, sel: None, foc: None }
+        Self { regions: [InkRegion::RESTING; 4], n: 1, sel: None, foc: None, weight: 0.0 }
+    }
+
+    /// **The weight the pill's label is drawn at, 0 regular .. 1 bold, the same in every region.**
+    /// The whole label's coverage by the capsules ([`TabStrip::mixes`], coverage x alpha, a focus
+    /// capsule a control does not draw left out), so it eases with the capsule on the clock the
+    /// fills run on. It is a property of the PILL, never of a region: see [`TabPill::inked`].
+    pub fn weight(&self) -> f32 {
+        self.weight
     }
 
     /// The mixes the pixel `(x, y)` wears (see [`TabStrip::ink_at`]).
@@ -6053,11 +6094,28 @@ const INK_GROUND: [f32; 4] = [41.0 / 255.0, 55.0 / 255.0, 77.0 / 255.0, 1.0];
 /// The relative luminance of [`INK_GROUND`] under a selection plate at `sel_alpha` and a focus
 /// capsule at `foc_alpha`, composited in that order.
 fn backing_luma(sel_plate: [f32; 4], sel_alpha: f32, foc_alpha: f32) -> f32 {
-    let over = |dst: [f32; 4], src: [f32; 4], a: f32| {
-        [dst[0] + (src[0] - dst[0]) * a, dst[1] + (src[1] - dst[1]) * a, dst[2] + (src[2] - dst[2]) * a, 1.0]
-    };
     let c = over(INK_GROUND, sel_plate, sel_plate[3] * sel_alpha);
     rel_luma(over(c, crate::ACCENT, crate::ACCENT[3] * foc_alpha))
+}
+
+/// **The ink a plate is read in: the candidate with the best contrast against the plate as it is
+/// composited**, judged on the worse of the plate's two gradient stops (`stops`, laid over
+/// [`INK_GROUND`] by their own alpha, the ground every strip that wears this ink stands on) with
+/// the ink laid over each by ITS alpha. Ties keep the first candidate, so a plate that has not
+/// moved keeps the ink it had. This is the max-contrast choice `INK_FLIP_LUMA` stands in for on the
+/// pills (a luma threshold tuned to their 65% resting ink); for white against the dark ink it falls
+/// at plate luma ~0.18, ~4.6:1 on either side.
+fn best_ink(candidates: [[f32; 4]; 2], stops: [[f32; 4]; 2]) -> [f32; 4] {
+    let read = |ink: [f32; 4]| {
+        stops.iter().map(|s| over(INK_GROUND, *s, s[3])).map(|fill| contrast(over(fill, ink, ink[3]), fill)).fold(f32::MAX, f32::min)
+    };
+    if read(candidates[1]) > read(candidates[0]) { candidates[1] } else { candidates[0] }
+}
+
+/// `src` laid over the opaque `dst` at weight `a` (a straight lerp in display space, as the plain 888
+/// framebuffer blends); the result is opaque. The one composite every ink decision is judged on.
+fn over(dst: [f32; 4], src: [f32; 4], a: f32) -> [f32; 4] {
+    [dst[0] + (src[0] - dst[0]) * a, dst[1] + (src[1] - dst[1]) * a, dst[2] + (src[2] - dst[2]) * a, 1.0]
 }
 
 /// Paint a pill's content once per [`InkRegion`]: `draw(focus, selected)` receives the mixes to ink
@@ -7574,7 +7632,7 @@ impl StripRender {
                     TabFace::Label(_) => {
                         paint_inked(cp, &ink, |fm, sm| {
                             TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
-                                .mix(fm, sm)
+                                .inked(&ink, fm, sm)
                                 .ink_only()
                                 .draw(&env, p);
                         });
@@ -8033,12 +8091,21 @@ impl ControlStyle {
         }
     }
 
-    /// **THE FOCUS-FILL RULE: one cross-fade, out = 1 - in.** The face at focus progress `t`
-    /// (0 = [`face`](Self::face)`(false, ..)`, 1 = `face(true, ..)`): every channel of the plate
-    /// (top, body, spent) and the ink, alpha included ([`theme::cross`]), is the same linear mix, so what the idle fill gives up the
-    /// focused fill takes and the two always sum to one. `t` is a focus spring
-    /// ([`CtlPop::focus`]), which is what keeps the plate from changing in a single frame while
-    /// the lift eases over twenty. Both rests are exactly the two states `face` already drew.
+    /// **THE FOCUS-FILL RULE: the plate cross-fades, out = 1 - in; the ink is CHOSEN.** The face at
+    /// focus progress `t` (0 = [`face`](Self::face)`(false, ..)`, 1 = `face(true, ..)`): every
+    /// channel of the plate (top, body, spent), alpha included ([`theme::cross`]), is the same linear
+    /// mix, so what the idle fill gives up the focused fill takes and the two always sum to one. `t`
+    /// is a focus spring ([`CtlPop::focus`]), which is what keeps the plate from changing in a single
+    /// frame while the lift eases over twenty. Both rests are exactly the two states `face` already
+    /// drew.
+    ///
+    /// **The ink is never a mix.** Its two rest inks sit at opposite ends of the plate's range
+    /// (white on the dark idle plate, dark on the near-white focused one), so any mix of them is a
+    /// grey on the plate's own mid-grey: the hero's Resume read at 1.10:1 half way through its
+    /// ramp. The ink is whichever rest ink reads best against the plate AS COMPOSITED at `t`
+    /// ([`best_ink`]), one flip where the two have equal contrast: the rule the nav strip's pills
+    /// wear (`TabStrip::pill_ink`), written as a contrast comparison here because these two inks are
+    /// full white and full dark rather than the pills' resting 65%.
     fn face_at(self, t: f32, ground: ControlGround, palette: ControlPalette) -> ControlFace {
         let idle = self.face(false, ground, palette);
         let focus = self.face(true, ground, palette);
@@ -8049,10 +8116,12 @@ impl ControlStyle {
         if t >= 1.0 {
             return focus;
         }
+        let top = theme::cross(idle.top, focus.top, t);
+        let body = theme::cross(idle.body, focus.body, t);
         ControlFace {
-            top: theme::cross(idle.top, focus.top, t),
-            body: theme::cross(idle.body, focus.body, t),
-            ink: theme::cross(idle.ink, focus.ink, t),
+            top,
+            body,
+            ink: best_ink([idle.ink, focus.ink], [top, body]),
             spent: theme::cross(idle.spent, focus.spent, t),
         }
     }

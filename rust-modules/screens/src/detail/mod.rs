@@ -3004,10 +3004,12 @@ impl DetailScreen {
                     }
                     button.draw(&Env::inert(), p);
                     // The bookmark disc carries no verb to unfurl, so it names itself with the
-                    // shared caption (the other discs unfurl theirs): `hero_layout::draw_name`.
+                    // shared caption (the other discs unfurl theirs): `hero_layout::draw_names`. Its two
+                    // names trade the slot on the glyph's own flip (`watchlist_disc::names`).
                     if ctl == hero::HeroCtl::Watchlist {
-                        let name = plx_appkit::watchlist_disc::name(self.watchlist.membership());
-                        plx_appkit::hero_layout::draw_name(p, rect, name, fill, cx.measure);
+                        let wants = plx_appkit::watchlist_disc::names(self.watchlist.pos())
+                            .map(|(name, flip)| plx_appkit::hero_layout::NameWant { ctl: rect, name, want: fill * flip });
+                        plx_appkit::hero_layout::draw_names(p, &wants, cx.measure);
                     }
                 }
             }

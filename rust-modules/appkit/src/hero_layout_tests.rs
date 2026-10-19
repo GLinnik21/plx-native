@@ -76,3 +76,42 @@ fn disc_caps_open_when_room_and_close_when_the_trial_row_overruns() {
     let shut = disc_caps_with([0.0; 3], [60.0; 3], |_| 100.0);
     assert_eq!(shut, [CD; 3]);
 }
+
+/// **The swap rule, on its own.** Two strings that trade a slot along a swap `s` (wants `1 - s` and
+/// `s`): the outgoing one fades over the first half (`1 - 2s`), the incoming one over the second
+/// (`2s - 1`), they are never both on screen, and the slot is entirely one or the other at both
+/// ends. Alone, a string shows what it is wanted.
+#[test]
+fn two_strings_in_one_slot_trade_it_out_over_the_first_half_and_in_over_the_second() {
+    for tick in 0..=100 {
+        let s = tick as f32 / 100.0;
+        let (out, inn) = (name_reveal(1.0 - s, s), name_reveal(s, 1.0 - s));
+        assert!((out - (1.0 - 2.0 * s).clamp(0.0, 1.0)).abs() < 1e-5, "s={s}: out {out}");
+        assert!((inn - (2.0 * s - 1.0).clamp(0.0, 1.0)).abs() < 1e-5, "s={s}: in {inn}");
+        assert!(out == 0.0 || inn == 0.0, "s={s}: both strings are on screen ({out}, {inn})");
+    }
+    assert_eq!((name_reveal(1.0, 0.0), name_reveal(0.0, 1.0)), (1.0, 0.0));
+    assert_eq!(name_reveal(0.37, 0.0), 0.37, "alone it arrives with whatever wants it");
+    // Wants that are not mirror images (two springs that settle at their own pace) still never overlap.
+    for a in 0..=20 {
+        for b in 0..=20 {
+            let (wa, wb) = (a as f32 / 20.0, b as f32 / 20.0);
+            assert!(name_reveal(wa, wb) == 0.0 || name_reveal(wb, wa) == 0.0, "({wa}, {wb})");
+        }
+    }
+}
+
+/// `draw_names` hands each string the rule's reveal against the strongest of the OTHERS, under its own control.
+#[test]
+fn draw_names_reveal_each_string_against_its_rivals() {
+    let ctl = |x: f32| Rect::new(x, 0.0, CD, CD);
+    let wants = [
+        NameWant { ctl: ctl(0.0), name: "Old", want: 0.75 },
+        NameWant { ctl: ctl(80.0), name: "New", want: 0.25 },
+        NameWant { ctl: ctl(160.0), name: "Idle", want: 0.0 },
+    ];
+    let runs = plx_ui::draw_census::capture_runs(|| draw_names(Painter::recording(), &wants, &plx_ui::fixture::FixtureMeasure));
+    let alpha = |name: &str| runs.iter().find(|r| r.text == name).map(|r| r.ink[3]);
+    assert!((alpha("Old").unwrap() - 0.5).abs() < 1e-5, "Old reveals 0.75 - 0.25: {runs:?}");
+    assert_eq!((alpha("New"), alpha("Idle")), (None, None), "outbid and unwanted strings draw nothing");
+}
