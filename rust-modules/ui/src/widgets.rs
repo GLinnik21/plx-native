@@ -5059,12 +5059,15 @@ impl TabPill {
     /// capsule covers it. Nested in that order because focus OUTRANKS selection, which is the order
     /// the boolean arms below are written in.
     ///
-    /// Pure and split out of the draw so the states no STILL capture can catch — the mid-travel ones,
-    /// where a partly covered pill is inking its whole label — are an executable contract rather than
-    /// an eyeball. It is linear in coverage on purpose: [`cap_cover`] is the one rule both the fill
-    /// and the ink read, so they cannot disagree about where the capsule is. If a device capture ever
-    /// says the labels "dim when I move", shaping this one call (`focus.powi(2)`, a smoothstep) is the
-    /// whole fix — but do it HERE, not with a second spring, or the ink starts leading the fill.
+    /// Pure and split out of the draw so the states no STILL capture can catch are an executable
+    /// contract rather than an eyeball. The mixes it takes are PER STRETCH of a label, not per pill:
+    /// [`TabStrip::ink_spans`] cuts a pill where a capsule's drawn edge crosses it and hands each
+    /// stretch its own, so a label a capsule is half across wears the capsule's ink on one side of
+    /// the edge and the resting ink on the other, and `focus` is 0 or 1 (the flip happens where the
+    /// capsule has made the ground behind the label bright enough, see `INK_FLIP_LUMA`). A mix in
+    /// between would be the ink of neither side: the "labels dim when I move" report was exactly a
+    /// whole-label mid-grey. The fix lives in that call, one rule for every strip, not in a second
+    /// spring that leads the fill.
     pub fn mixed_ink(focus: f32, selected: f32) -> [f32; 4] {
         // **The idle ink is `TEXT_READING`, one rung brighter than the `TEXT_TERTIARY` this row wore
         // for most of its life, and it is what pays for the whole material.** The scrim is solved so
@@ -5274,10 +5277,11 @@ const K_TAB_CAP_A: f32 = crate::popover::K_APPEAR;
 const CAP_LAND_A: f32 = 0.02;
 
 /// How much of pill `pill` (content-space `(x, w)`) a capsule spanning `cap` covers, 0..1 — a 1-D
-/// [`Rect::intersect`]. This is the ONE rule a pill's ink is derived from, so the ink can never
-/// disagree with the fill sliding under it: a dark label left behind on a pill the capsule has
-/// already left is unreadable, and that is exactly what a separate per-pill ink spring would
-/// produce. A zero-width pill covers nothing (and, more to the point, does not divide by zero).
+/// [`Rect::intersect`]. It is the pill's whole-label coverage ([`TabStrip::mixes`], which a caller
+/// that does not split its label reads); the INK a pill wears is [`TabStrip::ink_spans`]', cut at
+/// the capsule's drawn edge. A dark label left behind on a pill the capsule has already left is
+/// unreadable, and that is exactly what a separate per-pill ink spring would produce. A zero-width
+/// pill covers nothing (and, more to the point, does not divide by zero).
 fn cap_cover(pill: (f32, f32), cap: (f32, f32)) -> f32 {
     if pill.1 <= 0.0 {
         return 0.0;
@@ -5723,13 +5727,6 @@ impl TabStrip {
     ///
     /// One stretch for every pill no capsule edge crosses, which is nearly every pill on every frame.
     pub fn ink_spans(&self, pill: (f32, f32), ground: TabGround) -> InkSpans {
-        let _ = ground;
-        let (focus, selected) = self.mixes(pill);
-        InkSpans { spans: [InkSpan { x0: pill.0, x1: pill.0 + pill.1, focus, selected }; 5], n: 1 }
-    }
-
-    #[allow(dead_code)]
-    fn ink_split(&self, pill: (f32, f32), ground: TabGround) -> InkSpans {
         let (lo, hi) = (pill.0, pill.0 + pill.1);
         let (focus_pop, draws_focus, sel_plate) = match ground {
             TabGround::Bare { pop, focus } => (pop, focus, theme::TAB_PLATE_SELECTED),
@@ -5744,13 +5741,21 @@ impl TabStrip {
         };
         let sel = drawn(&self.sel, 1.0);
         let foc = if draws_focus { drawn(&self.foc, focus_pop) } else { None };
+        // The pill's own ends and every capsule edge strictly inside it, in order (no allocation:
+        // this runs for every pill every frame).
+        let mut edges = [hi; 4];
+        let mut inner = 0;
+        for edge in [sel.map(|e| e.0), sel.map(|e| e.1), foc.map(|e| e.0), foc.map(|e| e.1)].into_iter().flatten() {
+            if edge > lo && edge < hi {
+                edges[inner] = edge;
+                inner += 1;
+            }
+        }
+        edges[..inner].sort_by(f32::total_cmp);
         let mut cuts = [lo; 6];
         let mut n = 1;
-        let mut edges = [sel.map(|e| e.0), sel.map(|e| e.1), foc.map(|e| e.0), foc.map(|e| e.1)]
-            .into_iter().flatten().filter(|e| *e > lo && *e < hi).collect::<Vec<f32>>();
-        edges.sort_by(f32::total_cmp);
-        for e in edges {
-            if e > cuts[n - 1] { cuts[n] = e; n += 1; }
+        for &edge in &edges[..inner] {
+            if edge > cuts[n - 1] { cuts[n] = edge; n += 1; }
         }
         cuts[n] = hi;
         let inside = |span: Option<(f32, f32)>, at: f32| span.is_some_and(|(a, b)| at >= a && at < b);

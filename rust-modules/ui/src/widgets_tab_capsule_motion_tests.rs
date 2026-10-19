@@ -238,10 +238,10 @@ fn the_ink_a_pill_wears_is_exactly_the_capsule_over_it() {
     );
 }
 
-/// Ink CONSERVATION across a travel: the two capsules only ever have one pill's worth of coverage
-/// between them, so no frame can ink two labels toward `ACCENT_INK` at once. This is what bounds
-/// the one transient the design accepts — a partly covered pill inks its WHOLE label — to half
-/// a label on each of two pills for the length of one travel, rather than a whole row dimming.
+/// Coverage CONSERVATION across a travel: the two capsules only ever have one pill's worth of
+/// coverage between them, so no frame can have two pills' labels both mostly under the focus
+/// capsule. (What a label is inked with is `ink_spans`', split at the capsule's edge; this grades
+/// the coverage those stretches are cut from.)
 #[test]
 fn a_travel_never_inks_more_than_one_pills_worth_of_label() {
     let _g = serial_for_motion();
@@ -762,5 +762,44 @@ fn a_focus_capsule_fading_in_over_the_selection_plate_never_loses_the_label() {
             }
             assert!(worst.0 >= 3.0, "{from} -> {to}: worst {:.2}:1 at frame {} x {} (3:1 wanted)", worst.0, worst.1, worst.2);
         }
+    }
+}
+
+/// **The stretches tile the pill and are cut at the DRAWN edge**: the focus capsule's edge is the
+/// popped one (the capsule grows about its centre, `Rect::scaled`), not the span it follows; a
+/// pill no edge crosses is one stretch; a lifted control (`focus: false`) has no focus capsule to
+/// cut at or to ink for.
+#[test]
+fn the_ink_stretches_tile_the_pill_and_are_cut_at_the_capsules_drawn_edge() {
+    let _g = serial_for_motion();
+    let w = widths_for(12);
+    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
+    let ground = TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: true };
+    let mut s = TabStrip::new();
+    for _ in 0..90 { s.update(-1, 4, span, SelMark::Travels, DT); }
+    assert_eq!(s.ink_spans(span_of(&w, 4), ground).as_slice().len(), 1, "a capsule at rest on a pill crosses no edge of it (it is wider than the pill)");
+    assert_eq!(s.ink_spans(span_of(&w, 9), ground).as_slice(), [InkSpan { x0: span_of(&w, 9).0, x1: span_of(&w, 9).0 + w[9], focus: 0.0, selected: 0.0 }]);
+    let mut crossed = false;
+    for _ in 0..40 {
+        s.update(-1, 5, span, SelMark::Travels, DT);
+        let pill = span_of(&w, 4);
+        let spans = s.ink_spans(pill, ground);
+        let spans = spans.as_slice();
+        assert_eq!(spans.first().unwrap().x0, pill.0);
+        assert_eq!(spans.last().unwrap().x1, pill.0 + pill.1);
+        assert!(spans.windows(2).all(|pair| pair[0].x1 == pair[1].x0), "no gap and no overlap: {spans:?}");
+        if spans.len() > 1 {
+            crossed = true;
+            let (cx, cw) = s.foc.span();
+            let drawn = Rect::new(cx, 0.0, cw, INK_H).scaled(CTRL_FOCUS_SCALE);
+            assert_eq!(spans[0].x1, drawn.x, "cut at the left edge of the popped capsule, which is leaving to the right");
+            assert!(spans[0].focus == 0.0 && spans[1].focus > 0.5, "the capsule's side wears its ink: {spans:?}");
+        }
+    }
+    assert!(crossed, "the capsule left pill 4 across an edge of it");
+    let lifted = TabGround::Bare { pop: CTRL_FOCUS_SCALE, focus: false };
+    for pill in [4, 5] {
+        let spans = s.ink_spans(span_of(&w, pill), lifted);
+        assert!(spans.as_slice().iter().all(|span| span.focus == 0.0), "a lifted control wears no focus ink");
     }
 }

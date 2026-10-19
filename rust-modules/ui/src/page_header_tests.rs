@@ -593,10 +593,11 @@ fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
     let runs: Vec<_> = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &capsules, 1.0, None))
         .into_iter().filter(|run| &run.text == label).collect();
     assert_eq!(runs.len(), spans.as_slice().len(), "one paint of the label per stretch");
+    let same = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-4);
     for (run, span) in runs.iter().zip(spans.as_slice()) {
         let want = if span.focus > 0.5 { crate::ACCENT_INK } else { theme::CONTROL_TEXT_REST };
-        assert_eq!(run.ink, want, "the stretch {:?} wears its own ink", (span.x0, span.x1));
+        assert!(same(run.ink, want), "the stretch {:?} wears its own ink: {:?} (wanted {want:?})", (span.x0, span.x1), run.ink);
     }
-    assert!(runs.iter().any(|run| run.ink == crate::ACCENT_INK) && runs.iter().any(|run| run.ink == theme::CONTROL_TEXT_REST),
+    assert!(runs.iter().any(|run| same(run.ink, crate::ACCENT_INK)) && runs.iter().any(|run| same(run.ink, theme::CONTROL_TEXT_REST)),
         "both inks are on the label: the capsule is half across it");
 }

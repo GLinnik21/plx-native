@@ -19,8 +19,9 @@
 //! row (never by the row: a library switch replaces the whole header, and a capsule that lived in
 //! it would land afresh instead of travelling). [`PageHeader::step`] steps them (the focus capsule
 //! travels on the bar's spring; a changed selection lands under it, [`SelMark::Lands`]) and
-//! [`PageHeader::draw`] paints plates first, then each label inked by how much of its plate the
-//! capsules cover.
+//! [`PageHeader::draw`] paints plates first, then each label inked by what is under it: cut at the
+//! capsules' drawn edges, the stretch inside a capsule in that capsule's ink and the rest in the
+//! resting one ([`TabStrip::ink_spans`]).
 
 use std::ffi::CString;
 
@@ -341,8 +342,8 @@ impl PageHeader {
     }
 
     /// Draw the row: the plates first (the selection's, then the focus capsule over it, through
-    /// the top bar's own [`TabStrip`]), then the `›` and every label inked by how much of its plate
-    /// the capsules cover, so a label brightens as the capsule arrives and not before. `pop` is the
+    /// the top bar's own [`TabStrip`]), then the `›` and every label inked by what is under it, edge
+    /// by edge, so a label wears a capsule's ink exactly where the capsule is and not before. `pop` is the
     /// screen's [`CtlPop`] scale for the focused control (press dip included); `lifted` is a
     /// control a menu has taken out of the page (`DrawFrame::lifted`): the focus capsule is gone
     /// from the row, and the control's label stays as plain text or goes ([`Lift`]).
