@@ -1,4 +1,4 @@
-{"updated":"2026-10-19T17:44:32Z",
+{"updated":"2026-10-19T17:49:49Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3090,7 +3090,8 @@
 {"id":39268439362,"at":"2026-10-19T14:22:58Z","sha":"a89d54273","title":"glass: the ambient wash is applied at composite, so an easing wash no longer re-sources live glass","pr":847,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":24,"Linux simulator build + launch":257,"macOS tests against bundled FFmpeg and ASS":141,"macOS simulator build + launch":168}},
 {"id":39269603197,"at":"2026-10-19T14:30:42Z","sha":"feaf213a6","title":"Merge remote-tracking branch 'origin/main' into crx-int","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":27,"macOS tests against bundled FFmpeg and ASS":94,"macOS simulator build + launch":224,"Linux simulator build + launch":277}},
 {"id":39280949161,"at":"2026-10-19T15:50:17Z","sha":"dc98334f7","title":"tests: re-record the three replay anchors once on the batch-3 tree","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":133,"Linux simulator build + launch":281,"Windows launcher syntax":26}},
-{"id":39291505308,"at":"2026-10-19T17:07:57Z","sha":"0d28eacbf","title":"Merge branch 'crx-ink3' into crx-int","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":245,"Linux simulator build + launch":282,"macOS tests against bundled FFmpeg and ASS":131,"Windows launcher syntax":20}}
+{"id":39291505308,"at":"2026-10-19T17:07:57Z","sha":"0d28eacbf","title":"Merge branch 'crx-ink3' into crx-int","pr":843,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":245,"Linux simulator build + launch":282,"macOS tests against bundled FFmpeg and ASS":131,"Windows launcher syntax":20}},
+{"id":39296543562,"at":"2026-10-19T17:43:21Z","sha":"110623983","title":"Rebase webOS ARM32 patch onto sentry-native 0.17.4","pr":850,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":365,"Linux simulator build + launch":351,"macOS simulator build + launch":371,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
