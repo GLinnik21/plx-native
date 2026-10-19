@@ -327,9 +327,17 @@ pub mod draw_census {
         pub align: i32,
         /// Anchor (x, y) and measured width, in screen space.
         pub at: Rect,
+        /// The scissor window ([`Painter::clip`]) the run was drawn inside, in screen space; `None`
+        /// outside one. A recording painter paints no pixels, so this is how a test reads where a
+        /// gliding run is cut.
+        pub clip: Option<Rect>,
+        /// The horizontal dissolve ([`Painter::text_fade`]) as ABSOLUTE screen x, `(from, to)`:
+        /// glyph alpha 1 at `from`, 0 at `to`. `None` for a run drawn plain.
+        pub fade: Option<(f32, f32)>,
     }
     thread_local! {
         static RUNS: RefCell<Option<Vec<Run>>> = const { RefCell::new(None) };
+        static CLIP: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
     }
     pub fn note_run(run: Run) {
         RUNS.with(|l| {
@@ -338,9 +346,18 @@ pub mod draw_census {
             }
         });
     }
+    /// A recording painter was handed a scissor window (`None`: it was released).
+    pub fn note_clip(window: Option<Rect>) {
+        CLIP.with(|c| c.set(window));
+    }
+    /// The scissor window in force now, for [`Run::clip`].
+    pub fn clip() -> Option<Rect> {
+        CLIP.with(|c| c.get())
+    }
     /// Every text run a recording painter is handed while `f` runs, with size, ink, weight and
     /// alignment: the census for a test that asks HOW a word was drawn.
     pub fn capture_runs(f: impl FnOnce()) -> Vec<Run> {
+        CLIP.with(|c| c.set(None));
         RUNS.with(|l| *l.borrow_mut() = Some(Vec::new()));
         f();
         RUNS.with(|l| l.borrow_mut().take()).unwrap_or_default()
@@ -1649,6 +1666,7 @@ impl Painter {
                 draw_census::note_run(draw_census::Run {
                     text: unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
                     size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                    clip: draw_census::clip(), fade: None,
                 });
             }
             return w;
@@ -1723,7 +1741,18 @@ impl Painter {
             plx_gfx::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(any(test, feature = "test-support"))]
-            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            {
+                let at = self.place(Rect::new(x, y, w, 0.0));
+                draw_census::note(100, at);
+                if !s.is_null() {
+                    let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                    draw_census::note_text(text.clone(), at);
+                    draw_census::note_run(draw_census::Run {
+                        text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
+                        clip: draw_census::clip(), fade: Some((at.x + fade_from, at.x + fade_to)),
+                    });
+                }
+            }
             return w;
         }
         let c = self.c(col);
@@ -1809,14 +1838,22 @@ impl Painter {
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
         if frame::backdrop::discovering() { frame::backdrop::clip(Some(self.place(r))); return; }
-        if self.records() { return; }
+        if self.records() {
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note_clip(Some(self.place(r)));
+            return;
+        }
         let m = self.place(r);
         plx_gfx::gfx::clip_set(m.x, m.y, m.w, m.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
         if frame::backdrop::discovering() { frame::backdrop::clip(None); return; }
-        if self.records() { return; }
+        if self.records() {
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note_clip(None);
+            return;
+        }
         plx_gfx::gfx::clip_clear();
     }
 }

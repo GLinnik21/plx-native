@@ -550,7 +550,9 @@ pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::Tile
     let stored = crate::registry::caption_policy_of(plx_media::route::under_posters());
     let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
     if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
-    ui_cards::TileLabel::from_lines(lines)
+    // The caption tells the name the face cut: it stays under its own tile (never under the next
+    // column) and glides there when it is longer than the tile.
+    ui_cards::TileLabel::from_lines(lines).within_tile()
 }
 
 /// Does this collection's face cut its name? The face is the grid's resting card: a baked fan names

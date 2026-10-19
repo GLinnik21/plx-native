@@ -756,25 +756,41 @@ impl Grid {
 
     /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
     /// the leaving copies of the cards a landing moved to another row (over the owner's ghosts,
-    /// which it paints before this), the non-focused cards, the focused one last; only the cards
-    /// the scroll can show are touched.
+    /// which it paints before this), every caption (beneath every tile, so a line still arriving
+    /// never covers the poster tops of the row under it), the non-focused cards, the focused one
+    /// last; only the cards the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
         self.draw_leaving(f, p, src, &bands);
         let plan = self.draw_plan(src.len(), focus, &bands);
+        // What each card is painted with, decided once: the captions and the tiles are two passes
+        // over the same decisions.
+        let paints: Vec<_> = plan.into_iter().map(|(role, i)| {
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let focused = role == DrawRole::Focus;
+            (i, s, focused, self.card_paint(f, p, src, i, s, focused, &bands))
+        }).collect();
         // The focused card paints last, over its neighbours, but it is the card the reader is
         // looking at: it asks the source for its poster FIRST, so it is the first one served
         // (`card_row::lead_focused`). It still resolves once; the draw below reuses the answer.
-        let lead = plan.last().filter(|&&(role, _)| role == DrawRole::Focus).and_then(|&(_, i)| {
-            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
-            let CardPaint { rect, p, .. } = self.card_paint(f, p, src, i, s, true, &bands)?;
-            Some(card_row::lead_focused(p, &src.art(i), rect, s))
+        let lead = paints.last().filter(|&&(.., focused, _)| focused).and_then(|(i, s, _, paint)| {
+            let CardPaint { rect, p, .. } = paint.as_ref()?;
+            Some(card_row::lead_focused(*p, &src.art(*i), *rect, *s))
         });
-        for (role, i) in plan {
-            let led = lead.filter(|_| role == DrawRole::Focus);
-            self.draw_card(f, p, src, i, super::press_scale(self.pop(src, i, focus), i, pressed, f.cx), role == DrawRole::Focus, &bands, led);
+        // Captions BENEATH the tiles: every caption of the frame is painted before any tile, so a
+        // line that is still arriving (the band opening under the focused row) never paints over
+        // the poster tops of the row below it. Draw order only; the band's timing is its own.
+        for (_, s, focused, paint) in &paints {
+            if let Some(paint) = paint {
+                self.draw_caption(f, paint, *s, *focused);
+            }
+        }
+        for (i, s, focused, paint) in paints {
+            if let Some(paint) = paint {
+                self.draw_card(f, src, i, s, focused, paint, lead.filter(|_| focused));
+            }
         }
         self.record_stops(f, p, src);
     }
@@ -865,7 +881,9 @@ impl Grid {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
-        self.draw_card(f, p, src, i, s, true, &self.bands.geometry(), None);
+        let Some(paint) = self.card_paint(f, p, src, i, s, true, &self.bands.geometry()) else { return };
+        self.draw_caption(f, &paint, s, true);
+        self.draw_card(f, src, i, s, true, paint, None);
     }
 
     /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
@@ -918,24 +936,37 @@ impl Grid {
         Some(CardPaint { rect, p, label })
     }
 
+    /// The caption block under card `paint` (a label the card carries: the focused card's, or the
+    /// closing band's of a card the focus left), painted ahead of every tile ([`draw`](Self::draw)).
+    fn draw_caption<H: Host>(&self, f: &DrawFrame<'_, '_, H>, paint: &CardPaint, s: f32, focused: bool) {
+        let Some(label) = &paint.label else { return };
+        #[cfg(feature = "devtriggers")]
+        if focused {
+            crate::card_probe::begin_card();
+        }
+        #[cfg(not(feature = "devtriggers"))]
+        let _ = focused;
+        card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+    }
+
+    /// The tile of card `i`, drawn after the captions: the art, its lift, its resume bar and the
+    /// source's overlay.
     #[allow(clippy::too_many_arguments)]
     fn draw_card<H: Host, S: CardSource<H>>(
         &self,
         f: &DrawFrame<'_, '_, H>,
-        p: Painter,
         src: &S,
         i: usize,
         s: f32,
         focused: bool,
-        bands: &[GridBand],
+        paint: CardPaint,
         led: Option<crate::widgets::ArtImage>,
     ) {
-        let Some(CardPaint { rect, p, label }) = self.card_paint(f, p, src, i, s, focused, bands) else { return };
+        let CardPaint { rect, p, .. } = paint;
         if focused {
-            let label = label.unwrap_or_default();
             #[cfg(feature = "devtriggers")]
-            crate::card_probe::begin_card();
-            card_row::draw_focused_led(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure, led);
+            crate::card_probe::begin_art();
+            card_row::draw_focused_tile_led(p, src.art(i), rect, s, &self.spec.style, src.progress(i), led);
             #[cfg(feature = "devtriggers")]
             if !p.is_recording() {
                 let at = p.to_screen(rect).0;
@@ -944,9 +975,6 @@ impl Grid {
             }
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
-            if let Some(label) = &label {
-                card_row::draw_label(p, rect, s, &self.spec.style, label, f.measure);
-            }
         }
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
     }
