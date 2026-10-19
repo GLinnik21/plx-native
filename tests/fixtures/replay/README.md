@@ -417,3 +417,13 @@ four failures. The two anchors were recorded afresh on the unchanged shape (`tes
 --only 6,12`, old fixtures removed, `tools/plxnative-rec import`, manifests restored byte for byte,
 `anchor: true` kept) and replayed SAME in Targets and Resolve (`tests/replay_fixtures.py`, three
 consecutive runs) with every difference counter zero.
+
+The page header row's motion (the focus capsule that travels and the selection plate that lands,
+held by the Library, the Watchlist and the Recommended page; `LibraryScreen::SHAPE` gains two
+entries and `WatchlistScreen::SHAPE` two fields, pin `0xbd4f_cd3e_ff97_a15f`) moved the state shape
+from 15465575800102215655 to 16328958095966704900, read from the old and the new recorder
+headers by `tools/plxnative-rec rerecord`. All three anchors were refused on load
+(`StateShape` in the fixture preflight), then freshly recorded against the synthetic server with
+`tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
+retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
+difference counter at zero.
