@@ -2437,7 +2437,7 @@ const CHIP_NAME_TAIL: f32 = 24.0;
 /// Name budget — a long profile name elides rather than growing the capsule into the CENTERED tab
 /// track sitting a few hundred px to its right.
 const CHIP_NAME_MAX: f32 = 320.0;
-/// **The chip's frame — one rect, owned here, for all three screens that wear the bar.**
+/// **The chip's frame — one rect, owned here, for every page that wears the bar.**
 ///
 /// A CONSTANT rather than a rect recorded at draw the way [`tab_pill_at`]'s are, and the asymmetry
 /// is the geometry rather than an oversight: the pills SCROLL inside their track, so where one was
@@ -2449,7 +2449,7 @@ const CHIP_NAME_MAX: f32 = 320.0;
 /// **It is the CAPSULE that lands on the margin, not the avatar** — the chip is a control in the
 /// top BAND, and the band's own material (the tab track) is inset the same [`TAB_TRACK_PAD`] from
 /// its pills. Written as `MARGIN_X` flat until 2026-08-23, which put the focused capsule's left edge
-/// at 88, i.e. 8px into the overscan exclusion zone, on the three screens that wear this bar.
+/// at 88, i.e. 8px into the overscan exclusion zone, on every page that wears this bar.
 pub const CHIP_FRAME: Rect = Rect::new(
     crate::consts::MARGIN_X + TAB_TRACK_PAD,
     TOP_BAR_Y,
@@ -5742,7 +5742,7 @@ pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
 /// put the pills 10px and the track behind them ([`TAB_TRACK_PAD`] higher still) 18px inside the top
-/// exclusion zone — on the three screens that wear this bar, i.e. exactly the "main page" LG's
+/// exclusion zone — on every page that wears this bar, i.e. exactly the "main page" LG's
 /// checklist item #2 names. The band is measured from its OUTERMOST ink (the track, not the pills),
 /// so the whole control clears the frame rather than only the part you press.
 pub const TOP_BAR_Y: f32 = crate::consts::MARGIN_Y + TAB_TRACK_PAD;

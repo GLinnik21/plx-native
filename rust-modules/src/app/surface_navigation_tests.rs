@@ -50,7 +50,7 @@ fn a_page_arg_wears_the_chrome_its_own_table_says() {
 /// route. It is graded against `route_word(r)` and not against `route_word(page_of(r))`
 /// because `page_of` is gone with the two routes that made it more than the identity: since
 /// phase 10 the profile and card menus are SURFACES, their words are the overlay alphabet's
-/// (`overlay_word`), and `every_route()` is nine pages with nothing to fold.
+/// (`overlay_word`), and `every_route()` is every page argument with nothing to fold.
 #[test]
 fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
     let _g = plx_base::testlock::serial();

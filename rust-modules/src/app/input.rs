@@ -1456,22 +1456,12 @@ pub(crate) fn chip_activate(
     super::bridge::open_account_menu(pages);
 }
 
-/// The bar-wearing pages, i.e. the ones with a profile chip on them at all — `BarHost::of`'s
-/// successor, and the whole of what that type was still doing once the menu became a surface.
-/// DERIVED from [`plx_ui::screen::ScreenArg::chrome`] rather than listing Home/Library/Search a second time: the
-/// chip is a control ON the shared bar, so "is there a chip to press" is "does this page wear the
-/// bar", and the two cannot drift.
-pub(crate) fn wears_the_chip(route: &AppArg) -> bool {
-    use plx_ui::screen::ScreenArg;
-    route.chrome() == plx_machine::machine::Chrome::TabBar
-}
-
 /// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
 /// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
 /// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
 /// screens that actually draw one.
 pub(crate) fn chip_clicked(route: &AppArg, ev: &[u8]) -> bool {
-    if !wears_the_chip(route) {
+    if !super::bridge::wears_tab_bar(route) {
         return false;
     }
     let (mx, my) = ptr_xy(ev);

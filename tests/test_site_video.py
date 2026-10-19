@@ -1536,7 +1536,7 @@ class StoryboardTests(unittest.TestCase):
         keys = [(int(v), k) for v, k in (part.split(":") for part in plan["keys"].split(","))]
         self.assertEqual([k for _, k in keys], ["right", "right", "left", "left", "down", "right", "right", "ok",
                           "down", "down", "down", "down", "down", "back",
-                          "up", "up", "right", "right", "ok", "down", "down", "down", "down", "down", "down",
+                          "up", "up", "right", "ok", "down", "down", "down", "down", "down", "down",
                           "right", "right", "down", "down", "right", "right", *["up"] * 8, "back", "down"])
         self.assertEqual([v for v, _ in keys], sorted(v for v, _ in keys))
         self.assertLess(keys[-1][0] + sv.KEY_DOWN_FRAMES, plan["preroll"] + plan["frames"])

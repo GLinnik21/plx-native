@@ -11,12 +11,16 @@
 //! state ([`Row`]), the build from a publication, the per-row card sections and their paging,
 //! the hold band sent to the store, the saved horizontal scrolls, and the heading-link press. It
 //! copies, rather than borrows, the few helpers it shares by shape with the library page (the
-//! pitch of a row, the card source, the group spec), so nothing here reaches into code the
-//! library page no longer needs.
+//! pitch of a row, the card source, the content clip), so nothing here reaches into code the
+//! library page no longer needs; the shelf group spec is the one exception, [`row_group`] is the
+//! library page's own, so a change to it moves both pages.
 //!
-//! **Back** is the page's own pop (`ContentReq::Back`), whatever the focus is on: the return state
-//! the Recommended press captured puts focus back on that control (the library page beneath keeps
-//! its own focus engine memory). The page never changes the library.
+//! **Back** goes through the page's [`PageRegions`] like the other bar-wearing pages: a page
+//! scrolled down first returns to its top, on the first shelf in the column focus was in; from the
+//! top, from the crumb header or from the bar it is the page's own pop (`ContentReq::Back`), and
+//! the return state the Recommended press captured puts focus back on the control that opened it
+//! (the library page beneath keeps its own focus engine memory). The page never changes the
+//! library.
 use std::borrow::Cow;
 use std::collections::HashSet;
 

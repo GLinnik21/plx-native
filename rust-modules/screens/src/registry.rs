@@ -2518,14 +2518,22 @@ mod arg_tests {
     /// grades the other half, on a real tree.
     ///
     /// It is asked of `ScreenArg::chrome` DIRECTLY, here, rather than of its one-line consumer
-    /// (`app::input::wears_the_chip`, which is `chrome() == Chrome::TabBar` and nothing else):
+    /// (`app::bridge::wears_tab_bar`, which is `chrome() == Chrome::TabBar` and nothing else, and
+    /// is what `app::input::chip_clicked` asks):
     /// this file is where a page argument joins the alphabet, so the bar-wearing set and the
     /// screen that joins it land in the same commit. A `screens/` module may not name
     /// `crate::app::` at all (`ci/check-deps.sh`'s `layer` gate), which is the same boundary
     /// stated as a rule.
     #[test]
     fn the_profile_chip_is_offered_on_exactly_the_bar_wearing_pages() {
-        for r in [AppArg::Home, AppArg::Library, AppArg::Search, AppArg::Watchlist] {
+        for r in [
+            AppArg::Home,
+            AppArg::Library,
+            AppArg::LibraryCollections { section: 0 },
+            AppArg::LibraryRecommended { section: 0 },
+            AppArg::Search,
+            AppArg::Watchlist,
+        ] {
             assert!((r.chrome() == Chrome::TabBar), "a bar-wearing page carries the chip");
         }
         for r in [

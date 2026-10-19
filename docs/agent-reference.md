@@ -564,12 +564,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/demo_library.py`, "People"), four more `down`s through the rest of the page (the title's
   collection, its linked heading a stop of its own, then More Like This) to the About section at its
   foot, with no `ok` anywhere on the page (each one there opens another page or a reader), `back`
-  (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the profile chip and
-  on to the Movies tab, `ok` for the Movies library. The film's Movies leg predates the Library redesign: the page is now one
+  (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the Home pill (Up lands on the page's own pill; the
+  profile chip is one `left` away, off this route) and `right` on to the Movies tab, `ok` for the Movies library. The film's Movies leg predates the Library redesign: the page is now one
   header row over the full poster grid, with no shelves and no All heading, so the recorded presses
   through shelves to Type and Filter chips no longer match it and `feel.json` needs a re-walk (header
   row, then `down` into the grid and a few moves inside its columns, then back to the top) before the
-  film is re-rendered; the page is left from its top, `back` (Home), then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
+  film is re-rendered (the Library's `back` takes one region a press, grid top, header, tab bar, then
+  Home, so the leg's single `back` returns Home only from the bar); the page is left that way, then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
   page jumps it to its top first; that jump is NOT filmed, because its first Linux render wrote
   different frames under the hold-injection gate (104 of 1734, from the press to the end of the
   return Home), so it is a motion the dump cannot yet vouch for. Keys of one
@@ -591,11 +592,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
   calls `hold_hint::teach_all_for_dev`, which marks the hint learned and shown on every screen
   kind) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
-  and no card rest in the film is capped by it. `up` from the hero always
-  lands on the profile chip, so before the film boots the launcher runs a prep boot of the simulator
+  and no card rest in the film is capped by it. `up` from the hero lands on the Home pill, one `left` short of the profile chip, so the film as walked
+  no longer passes the chip; the launcher still runs, before the film boots, a prep boot of the simulator
   with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served
   with `authorize_after=2`) and stores a "Demo" account, which is what the chip reads when focus
-  passes it (never "Sign in"). Gates specific to the film: `storyboard/rest` (every beat's last 12
+  passes it (never "Sign in"), should a beat press `left` there. Gates specific to the film: `storyboard/rest` (every beat's last 12
   frames differ from the first of them by at most 3/255 in every channel, or by more in at most
   0.01 % of the pixels; the spring tails), `storyboard/opened`, `storyboard/no-playback`,
   `storyboard/loop` (read from `end.match_first_frame` in `feel.json`: the last frame differs from

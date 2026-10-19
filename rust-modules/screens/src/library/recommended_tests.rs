@@ -143,8 +143,8 @@ fn the_first_tick_seats_focus_on_the_first_row_once() {
     assert_eq!(seats(&second), 0, "the seat is made once");
 }
 
-/// BACK pops the page whatever has focus: the return state captured at the Recommended press puts
-/// focus on that control again.
+/// BACK pops an unscrolled page whatever has focus: the return state captured at the Recommended
+/// press puts focus on that control again. (A scrolled page returns to its top first.)
 #[test]
 fn back_pops_the_page() {
     let _guard = plx_base::testlock::serial();

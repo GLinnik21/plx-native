@@ -1387,12 +1387,12 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // piece of state. Phase 12, PX-PLAYER. This chain's head was that block's
         // `matches!(app.route, Route::Player)`, so what follows is now the head itself.)
         if chip_clicked(&app.route(), &app.ev) {
-            // The shared bar's profile chip, on whichever of the three screens is up. `key_ok`
-            // carries no matching `TopFocus::Chip` arm any more — Home, Library and Search are
-            // all owned screens now, so the chip's focus/OK path is the shared engine's, not this
+            // The shared bar's profile chip, on whichever bar-wearing page is up. `key_ok`
+            // carries no matching `TopFocus::Chip` arm any more — every bar-wearing page is an
+            // owned screen now, so the chip's focus/OK path is the shared engine's, not this
             // ladder's — and this arm itself is close to unreachable in practice: the
             // `owns_input()` early return above already claims every click for a mounted owned
-            // page, and Home/Library/Search (the only pages `chip_clicked` recognises) are
+            // page, and the bar-wearing pages (the only ones `chip_clicked` recognises) are
             // always mounted once their frame runs. What is left for this to catch is the
             // one-frame window before a page's body mounts.
             chip_activate(&mut app.pages);

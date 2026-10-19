@@ -3169,8 +3169,9 @@ pub(crate) fn nav_push_with_return(
 /// **Does this route wear the shared tab bar?** The ONE answer: `ScreenArg::chrome()`, which the
 /// registry writes exhaustively, so a new page cannot be added without deciding it. Everything that
 /// depends on the bar asks this and nothing else — drawing it (`draws_chrome_for`), publishing the
-/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), and stepping the
-/// strip's springs (`run::update`) — because four hand-written lists of route names once drifted
+/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), stepping the
+/// strip's springs (`run::update`), and recognising a click on the profile chip
+/// (`input::chip_clicked`) — because four hand-written lists of route names once drifted
 /// from it: the Collections and Recommended pages drew the bar, but their strip was never published
 /// or stepped, so Up from the page found no pills to land on.
 pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
@@ -3203,7 +3204,7 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
 
 /// **A press on the shared top strip** — the door for the Search / Movies / Shows destinations and
 /// for BACK-to-Home (`focus_pill`), so the seed or command each one carries cannot be forgotten at
-/// one of the three screens that wear the bar. A press on the HOME pill goes through
+/// one of the pages that wear the bar. A press on the HOME pill goes through
 /// [`nav_home_pill`] instead, which seats the hero rather than a strip pill.
 ///
 /// It is `app::nav`'s four `Nav` variants, minus the enum: what each arm did BESIDE the flip is a

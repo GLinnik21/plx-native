@@ -343,8 +343,8 @@ fn a_control_that_handles_a_direction_keeps_it_from_the_engine() {
 }
 
 /// §6.2: the strip is the CONTAINER's group, contributed above the page's — UP from the row
-/// lands on the nearest pill — and the page gates it: a page snapped to its grid has no strip
-/// to reach.
+/// lands on the page's own pill (this fixture publishes none, so the nearest) — and the page gates
+/// it: a page snapped to its grid has no strip to reach.
 #[test]
 fn the_strip_is_the_containers_group_and_the_page_gates_it() {
     let (mut d, mut rig, _) = booted();
