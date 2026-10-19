@@ -536,7 +536,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   another surface's dim, or drawn before the field has latched (the first frames of a modal), or
   over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
   panel's rect and graded under `PANEL_LUMA_MAX`. The opener lift is frozen too: the account
-  menu's profile chip, lifted back over the dim (`redraw_profile_chip`), is a `glass_frozen`
+  menu's profile chip, lifted above the dim and the panel (`redraw_profile_chip`, spent by
+  `ModalStack::draw_lifts` after the surfaces), is a `glass_frozen`
   capsule on the stack's latched field (`ScrimLiftRead::field`, no dim, the host snapshot behind its
   rim) and requests no backdrop entry or `src` pass; before the field latches it is the flat
   capsule. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
