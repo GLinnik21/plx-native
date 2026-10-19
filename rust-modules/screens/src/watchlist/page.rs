@@ -140,13 +140,6 @@ pub const GRID_TOP: f32 = plx_ui::page_header::GRID_TOP;
 const COLS: usize = 6;
 const GRID_GAP: f32 = (header::GRID_RIGHT - MARGIN_X - COLS as f32 * CARD_W) / (COLS as f32 - 1.0);
 
-/// How much of the header is left at `scroll`: all of it at the top, none once the page has
-/// scrolled one tuck ramp (the header row has gone up into the tab strip's band by then), so a
-/// scrolled page leaves no remnant of the head above its rows.
-pub(crate) fn head_alpha(scroll: f32) -> f32 {
-    (1.0 - scroll / plx_ui::scroll_chrome::TUCK_RAMP).clamp(0.0, 1.0)
-}
-
 /// The grid's cards: the shared home poster, at the Library's gap.
 fn grid_style() -> plx_ui::cards::RowStyle {
     plx_ui::cards::RowStyle { gap: GRID_GAP, ..plx_ui::cards::RowStyle::HOME }
@@ -284,6 +277,10 @@ struct Page {
     /// by the screen's tick.
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
+    /// The top chrome as drawn (and the header row with it): decided from the stack's scroll target and
+    /// run on the swap clock (`plx_ui::scroll_chrome`), stepped by the screen's tick. This page wears
+    /// no capsule.
+    handoff: plx_ui::scroll_chrome::Handoff,
     /// The row itself, held by the one rule every header row is held by
     /// (`plx_ui::page_header::SharedRow`): built when the options, the count or the locale change,
     /// not per question. Derived from them; not canon.
@@ -682,7 +679,7 @@ impl<H: ContentLike> StackPage<H> for Page {
         }
     }
 
-    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, scroll: f32) {
+    fn custom_draw(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, _scroll: f32) {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
@@ -690,7 +687,10 @@ impl<H: ContentLike> StackPage<H> for Page {
                 // While the Sort & Filter menu is up the control is the menu's (its `opener`,
                 // lifted out of this pass): the menu draws the only copy, dissolving into its panel.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
-                let p = p.alpha(head_alpha(scroll));
+                // The header row leaves with the top chrome and returns with it, on the handoff's
+                // one clock (`scroll_chrome`): no ramp of its own, so a scrolled page leaves no
+                // remnant of the head above its rows.
+                let p = p.alpha(self.handoff.chrome());
                 self.header_row(f.measure).draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted);
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
@@ -772,7 +772,7 @@ impl WatchlistScreen {
     /// The heartbeat word, byte-identical to the route word (`tests/manifest.json` selects on it).
     pub const WORD: &'static str = "watchlist";
 
-    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,descending:bool,show:u32},tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]},header_capsules:TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}},header_pop:{sp:[Spring{pos:f32,vel:f32};1],focused:Option<u32>}}";
+    pub const SHAPE: &'static str = "WatchlistScreen{entry:u32,next_elem:u32,list:{tag:u32,total:u64},options:{type:u32,sort:u32,descending:bool,show:u32},tiles:[{guid:str,state:u32,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop,landing}]},header_capsules:TabStrip{sel:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32},foc:Capsule{x:Spring{pos:f32,vel:f32},w:Spring{pos:f32,vel:f32},a:Spring{pos:f32,vel:f32},at:u32}},header_pop:{sp:[Spring{pos:f32,vel:f32};1],focused:Option<u32>},handoff:Handoff{tucked:bool,chrome:f32,capsule:f32}}";
 
     /// A page over `rows` (a snapshot already ordered and filtered by `options`), landed. The
     /// entry is unset: mount with [`at_entry`](Self::at_entry).
@@ -801,6 +801,7 @@ impl WatchlistScreen {
             rev: 0,
             header_capsules: plx_ui::widgets::TabStrip::new(),
             header_pop: plx_ui::widgets::CtlPop::new(),
+            handoff: plx_ui::scroll_chrome::Handoff::new(),
             header_rows: plx_ui::page_header::SharedRow::new(),
         };
         page.rebuild();
@@ -1055,6 +1056,8 @@ impl WatchlistScreen {
         }
         self.release_count_hold();
         self.page.header_row(cx.measure).step(self.page.entry, cx.focus.current, &mut self.page.header_capsules, &mut self.page.header_pop, t.dt());
+        // The stack stepped the scroll on this tick already (`step` runs it first).
+        self.page.handoff.step(t.dt(), self.stack.scroll(), self.stack.target(), grid_spec().pitch(), false);
         let held = self.ground_seeded && self.landing_in_flight();
         let target = self.ground_target();
         self.ground_applied = target;
@@ -1195,12 +1198,11 @@ impl WatchlistScreen {
         self.stack.view(&self.page)
     }
 
-    /// How far the page has tucked the top chrome: the Library's, over the first half of the window
-    /// that ends once the first row has scrolled off (the first scrolled rest is a whole row, one
-    /// pitch, down; the window's second half is the capsule's, which this page has none of). The header has
-    /// faded out long before ([`head_alpha`] reaches 0 after one ramp).
+    /// How far the page has tucked the top chrome: the Library's handoff, decided from the scroll
+    /// target (the first scrolled rest is a whole row, one pitch, down) and run on the swap clock.
+    /// The header row leaves with it, on the same clock; this page has no capsule to hand over to.
     fn tuck(&self) -> f32 {
-        plx_ui::scroll_chrome::tuck(self.stack.scroll(), grid_spec().pitch())
+        self.page.handoff.tuck()
     }
 
     /// The page's own top edge once the chrome has tucked away: the 72 px fade of the ground, as the
@@ -1243,6 +1245,14 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn jump_scroll(&mut self, y: f32) {
         self.stack.jump_to(y);
+        // A jump lands on the decided state, as the next tick's step would see it.
+        self.page.handoff.step(0.0, y, y, grid_spec().pitch(), false);
+    }
+
+    /// Test support: how much of the header row is left (it leaves with the top chrome).
+    #[cfg(test)]
+    pub(crate) fn head_alpha(&self) -> f32 {
+        self.page.handoff.chrome()
     }
 
     /// Test support: the ground colours the focused title keys (before the wash eases to them).
@@ -1371,6 +1381,7 @@ impl LogicalState for WatchlistScreen {
         self.stack.write(c);
         page.header_capsules.write_motion(c);
         page.header_pop.write_motion(c);
+        page.handoff.write(c);
     }
 
     fn probe(&self, out: &mut String) {

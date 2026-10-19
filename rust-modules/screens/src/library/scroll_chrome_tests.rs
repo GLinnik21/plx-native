@@ -64,6 +64,7 @@ fn a_tucked_page_draws_the_72px_top_fade_over_the_grid_and_under_the_capsule_and
     let pitch = page.layout.grid_pitch();
     page.scroll.jump(pitch);
     page.scroll_target = pitch;
+    page.handoff.step(0.0, pitch, pitch, pitch, page.capsule_wanted()); // a jump lands on the decided state
     let tucked = declared_by_a_draw(&fixture, &mut page);
     let at = tucked.iter().position(is_fade).expect("a tucked page draws the top fade");
     assert_eq!(tucked.iter().filter(|p| is_fade(p)).count(), 1, "exactly one fade");

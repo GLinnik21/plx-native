@@ -80,7 +80,7 @@ const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 
 pub const SHAPE: [&str; 10] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},handoff:Handoff{tucked:bool,chrome:f32,capsule:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,switched:bool,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     plx_ui::widgets::PageGround::SHAPE,
     "LibraryHeader{switched:bool}",
@@ -198,6 +198,9 @@ pub struct LibraryScreen {
     target_layout: Layout,
     scroll: Spring,
     scroll_target: f32,
+    /// The top chrome and the capsule, as drawn: decided from `scroll_target` and run on the swap
+    /// clock, in sequence (`plx_ui::scroll_chrome`). Stepped beside the scroll spring.
+    handoff: plx_ui::scroll_chrome::Handoff,
     restore_scroll: Option<f32>,
     viewports: Vec<LibraryViewport>,
     /// The grid key an `Enter::Fresh` names to seat, kept projected until the engine has seated it.
@@ -264,7 +267,7 @@ impl LibraryScreen {
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
-            scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
+            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
@@ -1258,6 +1261,7 @@ impl LibraryScreen {
                     // A page still dissolving in shows its seat unpopped: the pop starts when the
                     // page is opaque, where it can be seen, instead of playing out under the fade.
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
+                    self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
                     // tile where it was on screen; the scroll and its target both take it, so the
@@ -1471,7 +1475,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
     fn name(&self) -> &'static str { "library" }
-    fn chrome_tuck(&self) -> f32 { plx_ui::scroll_chrome::tuck(self.scroll.pos, self.layout.grid_pitch()) }
+    fn chrome_tuck(&self) -> f32 { self.handoff.tuck() }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>) { self.pair.prepare(b, cx); }
@@ -1507,6 +1511,7 @@ impl LogicalState for LibraryScreen {
         c.bool(self.grid_reset_pending);
         self.page_fade.write(c);
         self.grid_fade.write(c);
+        self.handoff.write(c);
         self.pair.state().write(c);
         // The pair's ids are registered in `keys` for the section and epoch, all three of which
         // `page_memory` below already carries.

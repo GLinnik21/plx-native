@@ -30,10 +30,10 @@
 /// Outgoing ramp (ms). Short on purpose: the data swap is deferred by exactly this long, and a
 /// control that acknowledges a press later than ~100 ms reads as dropped input. ≈4–5 frames at
 /// 60 Hz; bounded at 2 frames by `app.rs`'s 0.05 s `dt` clamp.
-const OUT_MS: f32 = 70.0;
+pub(crate) const OUT_MS: f32 = 70.0;
 /// Incoming ramp (ms) — deliberately longer than [`OUT_MS`]: leave fast, arrive gently, the
 /// standard dissolve asymmetry. ≈9 frames at 60 Hz.
-const IN_MS: f32 = 140.0;
+pub(crate) const IN_MS: f32 = 140.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {

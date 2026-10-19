@@ -1090,22 +1090,28 @@ fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
 }
 
 /// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
-/// page a whole row down (the row at the first row's y, 244): the header row has risen into the tab
-/// strip's band long before that, so it has faded out, and the strip has tucked (the tuck completes
-/// at that first rest; red when the ramp ran over a shorter distance and the page rested at tuck 0
-/// with the row's labels drawn over the strip).
+/// page a whole row down (the row at the first row's y, 244): the header row leaves with the top
+/// chrome on the handoff's clock (`plx_ui::scroll_chrome`), so by that first rest it has gone and the
+/// strip has tucked. Frame by frame it only ever fades out on the way down (monotone, in several
+/// frames, not cut), and it is the chrome's own alpha: the two are one value.
 #[test]
 fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
     use plx_ui::screen::Screen;
     let mut h = Harness::new(tiles(24));
+    assert_eq!(h.screen.head_alpha(), 1.0);
     h.focus_index(6);
-    h.run(240);
+    let mut seen = vec![h.screen.head_alpha()];
+    for _ in 0..240 {
+        h.run(1);
+        seen.push(h.screen.head_alpha());
+        assert_eq!(h.screen.head_alpha(), 1.0 - Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), "the header row is the chrome's own alpha");
+    }
     let rest = h.screen.scroll();
     assert!((rest - row_pitch()).abs() < 0.5, "premise: the second row rests a whole row down, at {rest}");
     assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first rest");
-    assert!(super::page::head_alpha(rest) < 0.01, "and the header is gone");
-    assert_eq!(super::page::head_alpha(0.0), 1.0);
-    assert!(super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) > 0.0 && super::page::head_alpha(plx_ui::scroll_chrome::TUCK_RAMP * 0.5) < 1.0, "it fades with the scroll");
+    assert_eq!(h.screen.head_alpha(), 0.0, "and the header is gone");
+    let leaving: Vec<f32> = seen.iter().copied().filter(|a| *a > 0.0 && *a < 1.0).collect();
+    assert!(leaving.len() >= 4 && leaving.windows(2).all(|w| w[1] < w[0]), "it fades out over several frames, never cut: {leaving:?}");
 }
 
 /// **The header row is built once per key, not once per question.** The page asks for the row in its
