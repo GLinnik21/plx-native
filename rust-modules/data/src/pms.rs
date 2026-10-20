@@ -34,16 +34,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub mod record;
 pub mod initial;
 
-/// Rows of Home (and of a Library section's Recommended page) that hold cards at once: the rows in view plus a margin. Every other row keeps its
-/// descriptor (identity, title, key, total, window offset, ledger, the count of cards it last
-/// showed) and publishes that many placeholder slots, so every row stays reachable and nothing is
-/// left off.
-///
-/// Bound on held cards: `HOLD_ROWS` x [`MAX_SHELF_ITEMS`] = 16 x 24 = 384, plus the merged
-/// Continue Watching row (one window of the deck, at most [`MAX_SHELF_ITEMS`]) and at most
-/// [`HERO_MAX`] retained heroes, however many rows the servers offer. Descriptors are a few hundred
-/// bytes each; they are the directory.
-pub(crate) const HOLD_ROWS: usize = 16;
+/// The rows a paged store keeps cards for, and the cut applied to what a screen asks: defined in
+/// `plx_base::hold`, because `ui::cards::HoldBand` applies the very same cut to know what the
+/// store kept (the store and `ui` cannot name each other).
+pub(crate) use plx_base::hold::{clamp_hold, HOLD_ROWS};
 
 /// Cards one shelf holds at once: the size of a WINDOW over the row's listing, which the grid can
 /// address (the owned Home's `MAX_ITEMS` is this constant). It is not a limit on the row: past it
@@ -1326,15 +1320,6 @@ fn carry_descriptors(old: &SourceBuild, new: &mut SourceBuild) {
         shelf.more = was.more;
         shelf.row = was.row.clone();
     }
-}
-
-/// The held range as the store keeps it: at most [`HOLD_ROWS`] rows, centred on what the screen
-/// asked for when it asked for more.
-pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
-    let hi = hi.max(lo);
-    if hi - lo < HOLD_ROWS { return (lo, hi); }
-    let lo = ((lo + hi) / 2).saturating_sub(HOLD_ROWS / 2);
-    (lo, lo + HOLD_ROWS - 1)
 }
 
 /// The shelves that publish a row, in catalog order after the deck: `(source, shelf)` indices.

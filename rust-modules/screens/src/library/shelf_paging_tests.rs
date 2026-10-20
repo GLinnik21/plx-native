@@ -133,6 +133,79 @@ fn the_held_range_is_sent_when_it_changes_and_not_otherwise() {
     assert!(moved[0].0 > 10 && moved[0].0 <= 20 && moved[0].1 >= 20, "{moved:?}");
 }
 
+/// Send the store what the page asked of it this frame, let the rows it now holds land, publish the
+/// result to the page and let the engine follow a focused card whose key changed with it.
+fn settle_holds(
+    page: &mut RecommendedScreen, engine: &mut FocusEngine<u32>, fixture: &mut Fixture, asked: &[(usize, usize)],
+) {
+    if asked.is_empty() { return; }
+    let id = fixture.listing.view().id().unwrap();
+    let stores = fixture.stores.take().unwrap();
+    for &(lo, hi) in asked {
+        stores.browse_run(BrowseCmd::Addressed {
+            target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
+            work: LibraryWork::HubHold { lo, hi },
+        });
+    }
+    stores.browse.borrow_mut().land_held_rows_for_test(0);
+    let publication = stores.capture_browse(&mut fixture.directory);
+    fixture.listing = publication.listing;
+    fixture.hubs = publication.section_hubs;
+    fixture.stores = Some(stores);
+    deliver(page, engine, fixture, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    if let Outcome::Moved { from, to, by } = engine.reconcile(OWNER, page, &fixture.cx(engine.current(OWNER))) {
+        deliver(page, engine, fixture, ScreenEvent::FocusMoved { from, to, by });
+    }
+}
+
+/// BACK on a long Recommended page seats focus on row 0 while the view glides up from row 20: the
+/// focused row is folded into the rows in view, a span the store (which keeps sixteen rows) cannot
+/// hold, so it keeps the middle of it and gives rows 0..4 up. The page must ask again as the glide
+/// shortens the span, so that the top of the page it arrives on is held, not placeholders with no
+/// read behind them.
+#[test]
+fn back_to_the_top_from_deep_rows_leaves_the_top_rows_held_not_placeholders() {
+    let _guard = plx_base::testlock::serial();
+    let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
+    let mut fixture = fixture_with(&rows, 12);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    // deep: the view and the focus on row 21, the store holding the rows around it
+    focus_shelf_card(&mut page, &mut engine, &fixture, 21, 0);
+    let y = reveal(&page.run, 21);
+    page.scroll.jump(y);
+    page.scroll_target = y;
+    let mut ms = 9000;
+    for _ in 0..6 {
+        ms += 17;
+        let asked = holds(&works(&mut page, &engine, &fixture, ms));
+        settle_holds(&mut page, &mut engine, &mut fixture, &asked);
+    }
+    assert!(fixture.hubs.view().shelves()[0].released(), "premise: the top of the page was given up");
+    assert!(!fixture.hubs.view().shelves()[21].released(), "premise: the rows in view are held");
+    // BACK: focus seats on row 0 and the view glides up on the scroll spring
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 0);
+    assert!(page.scroll_target < y / 2.0, "premise: the view is sent to the top ({} of {y})", page.scroll_target);
+    let mut frames = 0;
+    while page.scroll.pos > 0.5 && frames < 400 {
+        frames += 1;
+        ms += 17;
+        let asked = holds(&works(&mut page, &engine, &fixture, ms));
+        settle_holds(&mut page, &mut engine, &mut fixture, &asked);
+    }
+    assert!(page.scroll.pos <= 0.5 && frames > 4, "premise: the glide arrived over frames ({frames})");
+    for _ in 0..3 {
+        ms += 17;
+        let asked = holds(&works(&mut page, &engine, &fixture, ms));
+        settle_holds(&mut page, &mut engine, &mut fixture, &asked);
+    }
+    let shelves = fixture.hubs.view().shelves();
+    for row in 0..=4 {
+        assert!(!shelves[row].released(), "row {row} of the page the glide arrived on is held, not a placeholder");
+    }
+}
+
 #[test]
 fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_length() {
     let _guard = plx_base::testlock::serial();
