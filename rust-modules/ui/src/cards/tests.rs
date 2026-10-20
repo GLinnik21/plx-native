@@ -1,4 +1,4 @@
-//! Tier 1 of the card conformance suite: the seven `conformance` cases run against [`Shelf`] and
+//! Tier 1 of the card conformance suite: the eight `conformance` cases run against [`Shelf`] and
 //! [`Grid`] on `FixtureHost`, plus focused tests for the pop rule, the geometry, the events and
 //! idle. No expected-failure list: every case passes on both components.
 use super::conformance::{self, CardHarness, Landing, Mount, Nb, Outcome};
@@ -8,7 +8,7 @@ use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
 use crate::poster_grid;
 use crate::screen::{At, By, Dir, DrawFrame, Placed, ScreenEvent, Step};
 use crate::widgets::Art;
-use crate::{Painter, Rect};
+use crate::{Painter, Rect, Spring};
 use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
 };
@@ -71,6 +71,9 @@ struct Cards {
     title_only: bool,
     /// ...with the details line alone (the stored default: title off, Year · Length).
     details_only: bool,
+    /// How many times the section asked for a card's element ([`CardSource::elem`]): what a hash of
+    /// a card's identity costs the section, as a test reads it.
+    elem_calls: std::cell::Cell<usize>,
 }
 
 /// The census tag [`Cards::overlay`] notes after each tile it is handed.
@@ -78,7 +81,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false, title_only: false, details_only: false }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false, title_only: false, details_only: false, elem_calls: Default::default() }
     }
 }
 
@@ -90,6 +93,7 @@ impl CardSource<FixtureHost> for Cards {
         self.first + i
     }
     fn elem(&self, i: usize) -> u32 {
+        self.elem_calls.set(self.elem_calls.get() + 1);
         if i >= self.unindexed_from { 0 } else { self.elems[i] }
     }
     fn index_of(&self, e: &u32) -> Option<usize> {
@@ -493,14 +497,14 @@ fn mount_external_grid(n: usize) -> Box<dyn CardHarness> {
 }
 
 #[test]
-fn the_seven_conformance_cases_pass_on_shelf_and_grid() {
+fn the_eight_conformance_cases_pass_on_shelf_and_grid() {
     let table: [(&'static str, Mount); 3] =
         [("shelf", mount_shelf), ("grid", mount_grid), ("external", mount_external_grid)];
     let matrix = conformance::run_all(&table);
     for (s, c, o) in &matrix {
         eprintln!("{s:6} {c:18} {o:?}");
     }
-    assert_eq!(matrix.len(), 21);
+    assert_eq!(matrix.len(), 24);
     let bad: Vec<_> = matrix.iter().filter(|(_, _, o)| *o != Outcome::Pass).collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }
@@ -3199,6 +3203,220 @@ fn grid_pool_drops_a_let_go_pushed_beyond_the_search_window() {
     assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &100), Some(1.0), "100 is out of the window: its let-go is dropped");
 }
 
+/// **A held key on a grid lets EVERY released card go on a spring of its own.** `path` is the
+/// walk of the focus, one `By::Dir` press every `period` frames (a let-go lasts ~28 frames, so a
+/// short period leaves several in flight at once). Each card is shadowed by the free-running
+/// spring it must be: grown toward `focus_scale` while focused, let go toward rest after, landed by
+/// `Spring::land`, and picked up where it is if focus comes back to it before it has landed. No
+/// frame may draw a card more than the land epsilon from that spring, which also bounds the
+/// frame-to-frame jump of a released card: a press that replaced the let-go of the card still
+/// shrinking snapped it to rest in one frame (a Library grid's 3.8-5.4 px per edge). Returns the
+/// most cards letting go at once and how long a card walked past lets go, in frames.
+fn every_released_grid_card_runs_its_own_let_go(path: &[u32], period: u32) -> (usize, u32) {
+    let style = poster_grid::STYLE;
+    let dt = 16_667.0 / 1_000_000.0;
+    let mut r = settled::<Grid>(600);
+    r.land_focus(path[0], By::Restore);
+    r.run(240);
+    // (element, the spring it must be, whether it has landed)
+    let mut cards: Vec<(u32, Spring, bool)> = vec![(path[0], Spring::at(style.focus_scale), false)];
+    let mut focused = path[0];
+    let mut next = 1;
+    let mut most_in_flight = 0;
+    // how long a card walked past lets go: a lone spring grown for the `period` frames focus stayed
+    // on it, to its landing
+    let life = {
+        let mut lone = Spring::at(1.0);
+        for _ in 0..period {
+            lone.step(style.focus_scale, style.k_scale, dt);
+        }
+        (1..).find(|_| { lone.step(1.0, style.k_scale, dt); lone.land(1.0, dt) }).unwrap()
+    };
+    for frame in 0..path.len() as u32 * period + 200 {
+        if next < path.len() && frame % period == 0 {
+            focused = path[next];
+            next += 1;
+            r.land_focus(focused, By::Dir);
+            match cards.iter_mut().find(|c| c.0 == focused) {
+                // a card still letting go takes up where its let-go is
+                Some(c) if !c.2 => {}
+                Some(c) => *c = (focused, Spring::at(1.0), false),
+                None => cards.push((focused, Spring::at(1.0), false)),
+            }
+        }
+        r.run(1);
+        most_in_flight = most_in_flight.max(cards.iter().filter(|c| !c.2 && c.0 != focused).count());
+        for c in cards.iter_mut() {
+            let drawn = r.scale(c.0).unwrap();
+            if !c.2 {
+                c.1.step(if c.0 == focused { style.focus_scale } else { 1.0 }, style.k_scale, dt);
+                c.2 = c.0 != focused && c.1.land(1.0, dt);
+            }
+            // the grid holds a let-go for exactly the cards still letting go
+            let held = r.sect.letting_go(r.src.index_of(&c.0).unwrap());
+            assert_eq!(held, !c.2 && c.0 != focused, "frame {frame}: card {}: the grid holds its let-go while it is in flight, and no longer", c.0);
+            let jump = (drawn - c.1.pos).abs();
+            let epsilon = crate::LAND_REL * (1.0 + c.1.pos.max(1.0));
+            assert!(
+                jump <= epsilon,
+                "frame {frame}: card {} is drawn at {drawn}, {jump} from the spring it runs on ({}), past the land epsilon {epsilon}: \
+                 a width step of {} px on a {} px card; the focus is on {focused}",
+                c.0, c.1.pos, jump * poster_grid::STYLE.w, poster_grid::STYLE.w,
+            );
+        }
+    }
+    assert!(cards.iter().all(|c| c.2 || c.0 == focused), "every released card landed");
+    assert!(most_in_flight >= 2.min(path.len() - 1), "the walk left several let-gos in flight at once: {most_in_flight}");
+    for c in cards.iter().filter(|c| c.0 != focused) {
+        assert_eq!(r.scale(c.0), Some(1.0), "card {} lands exactly at rest", c.0);
+    }
+    (most_in_flight, life)
+}
+
+/// A held Right: ten presses, three frames apart, so up to nine let-gos are in flight.
+#[test]
+fn grid_held_key_every_released_card_runs_its_own_let_go() {
+    every_released_grid_card_runs_its_own_let_go(&(100..110).collect::<Vec<_>>(), 3);
+}
+
+/// A press every frame: as many let-gos in flight as presses fit in one let-go's life, which is more
+/// than a few. Nothing is capped and no card is retired early.
+#[test]
+fn grid_held_key_a_press_every_frame_snaps_no_released_card() {
+    let path: Vec<u32> = (100..140).collect();
+    let (most, life) = every_released_grid_card_runs_its_own_let_go(&path, 1);
+    let presses = path.len() as u32 - 1;
+    assert!(most as u32 + 1 >= life.min(presses), "{most} let-gos were in flight at once, a let-go lasts {life} frames and {presses} presses were made");
+}
+
+/// A held Right turned into a held Left: the card focus comes back to is still letting go, and
+/// grows from where it is rather than from rest.
+#[test]
+fn grid_held_key_turned_around_picks_each_let_go_up_where_it_is() {
+    let there: Vec<u32> = (100..106).collect();
+    let back: Vec<u32> = (100..105).rev().collect();
+    every_released_grid_card_runs_its_own_let_go(&[there, back].concat(), 3);
+}
+
+/// Several let-gos in flight when cards land ahead of them: every one follows its element, none
+/// jumps, and a frame drawn before the tick has seen the landing already shows each where it went.
+#[test]
+fn grid_pool_follows_every_let_go_through_a_landing() {
+    let mut r = settled::<Grid>(600);
+    r.land_focus(100, By::Restore);
+    r.run(240);
+    for e in 101..106 {
+        r.land_focus(e, By::Dir);
+        r.run(3);
+    }
+    let flying: Vec<u32> = (100..105).collect();
+    let before: Vec<f32> = flying.iter().map(|&e| r.scale(e).unwrap()).collect();
+    assert!(before.iter().filter(|&&s| s > 1.01).count() >= 3, "several are still letting go: {before:?}");
+    for k in 0..poster_grid::COLS {
+        r.src.elems.insert(0, 900 + k as u32);
+    }
+    for (&e, &was) in flying.iter().zip(&before) {
+        assert_eq!(r.scale(e), Some(was), "{e} keeps its scale in the first frame");
+    }
+    r.run(1);
+    for (&e, &was) in flying.iter().zip(&before) {
+        let now = r.scale(e).unwrap();
+        assert!(now <= was && was - now < 0.03, "{e} went from {was} to {now}");
+        // the tick moved the let-go to the cell its element stands in now: the draw reads cells
+        let at = r.src.index_of(&e).unwrap();
+        assert!(r.sect.letting_go(at), "{e}: its let-go is in the cell {at} it stands in");
+    }
+    r.run(240);
+    for &e in &flying {
+        assert_eq!(r.scale(e), Some(1.0), "{e} settles at rest wherever the landing put it");
+    }
+}
+
+/// **A press made over cards that shifted since the last tick still lets the card it left go from
+/// where it was, and grows the card it names from rest.** `shift` changes the cards between the last
+/// tick and the press (a landing, the same frame as the key); `from` held the pop (full) and `to` is
+/// named by the press. The pop's old cell and the index `to` now has can be the SAME cell: the let-go of
+/// `from` must not be taken back by it. Both are checked against the free-running springs, in the frame
+/// drawn before the tick has seen the shift and the frame after, and through to rest.
+fn a_press_over_cards_that_shifted_lets_the_card_it_left_go(shift: impl FnOnce(&mut Vec<u32>), from: u32, to: u32) {
+    let style = poster_grid::STYLE;
+    let dt = 16_667.0 / 1_000_000.0;
+    let mut r = settled::<Grid>(600);
+    r.land_focus(from, By::Restore);
+    r.run(240);
+    let full = r.scale(from).unwrap();
+    assert!((full - style.focus_scale).abs() < 1e-3, "{from} is popped whole at {full}");
+    let was = r.src.index_of(&from).unwrap();
+    shift(&mut r.src.elems);
+    let (now_from, now_to) = (r.src.index_of(&from).unwrap(), r.src.index_of(&to).unwrap());
+    assert!(now_from != was && now_to == was, "the shift put {to} in the cell {from} popped in ({was}): {from} {was} -> {now_from}, {to} -> {now_to}");
+    r.land_focus(to, By::Dir);
+    let near = |a: f32, b: f32| (a - b).abs() <= 1e-4;
+    let (mut let_go, mut grow) = (Spring::at(full), Spring::at(1.0));
+    let drawn = |r: &Rig<Grid>, e: u32| r.scale(e).unwrap();
+    for frame in 0..=1u32 {
+        if frame == 1 {
+            r.run(1);
+            let_go.step(1.0, style.k_scale, dt);
+            grow.step(style.focus_scale, style.k_scale, dt);
+        }
+        let (a, b) = (drawn(&r, from), drawn(&r, to));
+        let which = if frame == 0 { "before the tick" } else { "after the tick" };
+        assert!(near(a, let_go.pos), "{which}: {from} lets go from {full}: it is drawn at {a}, the spring is at {}", let_go.pos);
+        assert!(near(b, grow.pos), "{which}: {to} grows from rest: it is drawn at {b}, the spring is at {}", grow.pos);
+    }
+    assert!(drawn(&r, from) > 1.01, "{from} is still far from rest");
+    r.run(240);
+    assert_eq!(drawn(&r, from), 1.0, "{from} lands at rest");
+    assert!(near(drawn(&r, to), style.focus_scale), "{to} is popped");
+}
+
+/// A card removed ahead of the focus, then Right in the same frame: the card after the focus now
+/// has the focused card's old index.
+#[test]
+fn grid_a_press_after_a_card_was_removed_ahead_lets_the_card_it_left_go() {
+    a_press_over_cards_that_shifted_lets_the_card_it_left_go(|cards| { cards.remove(50); }, 205, 206);
+}
+
+/// A card inserted ahead of the focus, then Left in the same frame: the card before the focus now
+/// has the focused card's old index.
+#[test]
+fn grid_a_press_after_a_card_was_inserted_ahead_lets_the_card_it_left_go() {
+    a_press_over_cards_that_shifted_lets_the_card_it_left_go(|cards| cards.insert(50, 900), 205, 204);
+}
+
+/// A frame must not hash a card it draws because other cards are letting go: it verifies each
+/// let-go's own card once per pass (the draw, the stops) and resolves every other card by its cell.
+/// A source change no tick has seen yet is the one frame that does hash every card (the draw
+/// between an insert and the tick), and it has its own tests.
+#[test]
+fn grid_draw_hashes_no_drawn_card_while_cards_let_go() {
+    let mut r = settled::<Grid>(600);
+    // one row of the grid (cards 96..=101): the page does not scroll while they are walked
+    r.land_focus(196, By::Restore);
+    r.run(240);
+    let source_asks = |r: &Rig<Grid>| {
+        let before = r.src.elem_calls.get();
+        r.drawn_and_stops(1.0, 0.0);
+        r.src.elem_calls.get() - before
+    };
+    for e in 197..202 {
+        r.land_focus(e, By::Dir);
+        r.run(3);
+    }
+    let letting_go = (96..101).filter(|&cell| r.sect.letting_go(cell)).count();
+    assert!(letting_go >= 3, "several cards are letting go: {letting_go}");
+    let during = source_asks(&r);
+    r.run(240);
+    let at_rest = source_asks(&r);
+    assert!(at_rest > 20, "the frame asks the source about the cards it draws ({at_rest})");
+    assert!(
+        during <= at_rest + 2 * letting_go,
+        "a frame with {letting_go} cards letting go asked the source {during} times against {at_rest} at rest: more than \
+         one question per let-go for each of its two passes",
+    );
+}
+
 /// One frame of an abandoned press: the press dip and the drawn width of the pressed card and of
 /// its neighbour, each relative to a card at rest.
 struct AbandonRow {
@@ -4268,16 +4486,17 @@ fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFram
 /// caption is the newly focused card growing to its pop, up to 17 px above its cell, and on an Up
 /// the tile under the arriving caption is the released card still letting go; tiles are drawn over
 /// captions. Panics with the worst overlap in px, and when no line was ever on screen (a walk that
-/// observes nothing proves nothing).
-fn assert_captions_clear_of_the_tile_below(policy: crate::caption_policy::CaptionPolicy) {
+/// observes nothing proves nothing). Returns how many lines it saw with a card letting go directly
+/// under them, so a walk that is meant to leave one there can say it did.
+fn assert_captions_clear_of_the_tile_below(policy: crate::caption_policy::CaptionPolicy, walk: &[(usize, i32)]) -> usize {
     let cols = poster_grid::COLS;
     let rows = 6;
     let mut r = captioned_grid(rows, Some(policy));
     let mut at = 0i32;
     let mut worst = (f32::MIN, String::new());
-    let mut observed = 0;
+    let (mut observed, mut over_a_let_go) = (0, 0);
     for frame in 0..100 {
-        if let Some(&(_, dir)) = WALK.iter().find(|(f, _)| *f == frame) {
+        if let Some(&(_, dir)) = walk.iter().find(|(f, _)| *f == frame) {
             at += dir;
             r.land_focus(100 + (at as usize * cols) as u32, By::Dir);
         }
@@ -4290,6 +4509,7 @@ fn assert_captions_clear_of_the_tile_below(policy: crate::caption_policy::Captio
                 continue;
             }
             let below = r.place(r.src.elems[card + cols], At::Drawn).expect("the tile below a caption is painted").rect;
+            over_a_let_go += usize::from(r.sect.letting_go(card + cols));
             let over = bottom - below.y;
             if over > worst.0 {
                 worst = (over, format!("frame {frame}: the caption line of card {card} (alpha {alpha:.2}) ends {over:.1} px \
@@ -4299,9 +4519,15 @@ fn assert_captions_clear_of_the_tile_below(policy: crate::caption_policy::Captio
     }
     assert!(observed > 0, "{policy:?}: no caption line was ever on screen: the walk observed nothing");
     assert!(worst.0 <= 0.0, "{policy:?}: worst overlap {:.1} px: {}", worst.0, worst.1);
+    over_a_let_go
 }
 
 const WALK: [(usize, i32); 3] = [(0, 1), (30, 1), (60, -1)];
+
+/// A held Down then a held Up, a press every three frames: every press lands while the card the
+/// last one released is still letting go, so the tile under a departing caption (Down) and under an
+/// arriving one (Up) is a let-go in flight, with others still shrinking beside it.
+const HELD_WALK: [(usize, i32); 9] = [(0, 1), (3, 1), (6, 1), (9, 1), (12, 1), (18, -1), (21, -1), (24, -1), (27, -1)];
 
 /// The 112 px band (title over details), the 80 px band (title alone) and the stored DEFAULT (title
 /// off, details Year · Length: one details line in an 80 px band, which is what almost every install
@@ -4309,7 +4535,22 @@ const WALK: [(usize, i32); 3] = [(0, 1), (30, 1), (60, -1)];
 #[test]
 fn no_caption_line_is_drawn_where_the_tile_below_is() {
     for policy in [BOTH_LINES, TITLE_ONLY, crate::caption_policy::CaptionPolicy::DEFAULT] {
-        assert_captions_clear_of_the_tile_below(policy);
+        assert_captions_clear_of_the_tile_below(policy, &WALK);
+    }
+}
+
+/// **A caption line stops at the DRAWN top of a tile that is a let-go in a held walk.** The same rule
+/// as above on a walk whose presses outrun the let-gos: the tile directly below a line is a released
+/// card still shrinking from its pop (drawn above its rest top, over the caption), and the grid holds
+/// several let-gos at once (each card released by a held key keeps its own spring to the landing). The
+/// line reads that tile's scale from the one resolution the draw paints with
+/// (`Grid::rise_below` -> `drawn_rect` -> `pop_in`), so a resolution that left the let-gos out would
+/// stop the line at the tile's REST top and put it under the tile's pop.
+#[test]
+fn no_caption_line_is_drawn_where_a_tile_letting_go_below_it_is() {
+    for policy in [BOTH_LINES, TITLE_ONLY, crate::caption_policy::CaptionPolicy::DEFAULT] {
+        let over_a_let_go = assert_captions_clear_of_the_tile_below(policy, &HELD_WALK);
+        assert!(over_a_let_go > 0, "{policy:?}: the held walk never left a let-go under a caption line: it proves nothing");
     }
 }
 

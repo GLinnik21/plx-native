@@ -16,7 +16,9 @@
 //!    named classes, so a whole-frame `frame.ui` HWCNT A/B against the unmasked control prices that
 //!    class *as the frame sees it*, un-serialised. `drawmask=all` draws nothing at all and is
 //!    therefore the **compositor floor**: whatever `frame.ui` still costs with an empty page is
-//!    work this app cannot remove.
+//!    work this app cannot remove. The `card` class also answers to three PARTS, [`CardPart`]
+//!    (`card.interior`, `card.ring`, `card.focus`), which refuse only that part of the card
+//!    compositor's work, so a `card` delta can be split between the pieces that make it up.
 //!
 //! 3. **How is a card DRAWN?** The same armed ledger also books every `Class::Card` draw by the
 //!    path the compositor took ([`CardPath`]: split into pieces, or whole and why).
@@ -31,10 +33,10 @@
 //! mask exists so a control-leg difference can be taken, and every leg it produces except the
 //! control is unshippable by construction.
 //!
-//! All three surfaces are dev-only: with `devtriggers` off, [`gate`] is `false`, and [`note_px`],
-//! [`note_card_path`] and [`set_card_split`] are empty at compile time (and [`card_split`] is
-//! always `true`: a release build always splits), so a release binary carries neither the branch
-//! nor the counters.
+//! All three surfaces are dev-only: with `devtriggers` off, [`gate`] is `false`, [`masked_part`] is
+//! `false`, and [`note_px`], [`note_card_path`] and [`set_card_split`] are empty at compile time (and
+//! [`card_split`] is always `true`: a release build always splits), so a release binary carries
+//! neither the branch nor the counters.
 
 /// What kind of quad a draw call submits. One variant per PRIMITIVE FAMILY rather than per screen
 /// element, because that is the granularity `gfx`/`text` can label a draw at without every screen
@@ -100,17 +102,46 @@ pub const NPATH: usize = 6;
 /// The name each path answers to on the window line, in [`CardPath`] order.
 pub const PATH_NAMES: [&str; NPATH] = ["split", "focus", "clip", "nointerior", "plain", "off"];
 
+/// A PART of the card class's work that `/tmp/plxnative-drawmask` can refuse on its own, beside the
+/// whole classes of [`Class`]. They exist to split a `card` delta into its pieces on the TV: the
+/// whole class is one number, and what to do about it (cut the interior's texture cost, bake the
+/// ring, retire the focus program for a spring that has all but landed) depends on which part holds
+/// it. A part is named by the card-path ledger's own buckets ([`CardPath`]) so the window line says
+/// how many cards each one covers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardPart {
+    /// The interior piece of every SPLIT card ([`CardPath::Split`]): the one draw that leaves
+    /// through the shader's plain-texture exit. The card's ring is still drawn.
+    Interior = 0,
+    /// The four ring pieces of every SPLIT card: the rim, the anti-aliased edge and the shadow's
+    /// pad, through the full card math. The card's interior is still drawn.
+    Ring = 1,
+    /// Every card drawn whole through the focus program ([`CardPath::Focus`], whatever its pop
+    /// factor: the focused card, and every card whose spring has not landed exactly).
+    Focus = 2,
+}
+
+pub const NPART: usize = 3;
+
+/// The name each part answers to in `/tmp/plxnative-drawmask`, in [`CardPart`] order. The dot is
+/// part of the word: `card` masks the whole class, `card.ring` only the ring of the split cards.
+pub const PART_NAMES: [&str; NPART] = ["card.interior", "card.ring", "card.focus"];
+
+// The mask is one word: a bit per class, then a bit per part.
+const _: () = assert!(NCLASS + NPART <= u32::BITS as usize);
+
 /// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
 /// shape, doing nothing — and the `pub use` under it re-exports whichever one is compiled.
 #[cfg(feature = "devtriggers")]
 mod imp {
-    use super::{CardPath, Class, NAMES, NCLASS, NPATH, PATH_NAMES};
+    use super::{CardPart, CardPath, Class, NAMES, NCLASS, NPATH, PART_NAMES, PATH_NAMES};
     use plx_base::eventlog::log;
     use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
     use std::cell::Cell;
 
     thread_local! {
-        /// Bit per class: refuse every draw of that class. Zero = the shipped picture.
+        /// Bit per class, then (from bit `NCLASS`) bit per [`CardPart`]: refuse every draw of that
+        /// class, or that part of the card class's work. Zero = the shipped picture.
         static MASK: Cell<u32> = const { Cell::new(0) };
         /// Is the ledger armed? Separate from the mask so a masked leg can also be counted.
         static ON: Cell<bool> = const { Cell::new(false) };
@@ -186,36 +217,43 @@ mod imp {
         }
     }
 
-    /// Arm the mask from a trigger body: class names separated by anything non-alphanumeric, or
-    /// `all`. An unknown name is reported rather than silently ignored — a leg that measured the
-    /// control twice reads exactly like "this class costs nothing".
+    /// Arm the mask from a trigger body: class names (`card`) and card part names (`card.ring`)
+    /// separated by anything that is neither alphanumeric nor a dot, or `all`. A dot joins a word,
+    /// so a part name is one name and `card.` or `ring` alone is an unknown one. An unknown name is
+    /// reported rather than silently ignored — a leg that measured the control twice reads exactly
+    /// like "this class costs nothing".
     pub fn set_mask(spec: &str) {
         let mut mask = 0u32;
         let mut bad: Vec<&str> = Vec::new();
         for word in spec
-            .split(|c: char| !c.is_ascii_alphanumeric())
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
             .filter(|w| !w.is_empty())
         {
             if word.eq_ignore_ascii_case("all") {
-                mask = (1 << NCLASS) - 1;
+                // Every class. A part is a piece of the card class, so `all` already refuses it.
+                mask |= (1 << NCLASS) - 1;
             } else if word.eq_ignore_ascii_case(NAMES[Class::Blur as usize]) {
                 log("OVERDRAW drawmask: \"blur\" is accounting-only; mask \"glass\" to remove the whole chain");
             } else if let Some(i) = NAMES.iter().position(|n| n.eq_ignore_ascii_case(word)) {
                 mask |= 1 << i;
+            } else if let Some(i) = PART_NAMES.iter().position(|n| n.eq_ignore_ascii_case(word)) {
+                mask |= 1 << (NCLASS + i);
             } else {
                 bad.push(word);
             }
         }
         if !bad.is_empty() {
             log(&format!(
-                "OVERDRAW drawmask: unknown class {:?}; valid names: {} all",
+                "OVERDRAW drawmask: unknown class {:?}; valid names: {} {} all",
                 bad,
-                NAMES.join(" ")
+                NAMES.join(" "),
+                PART_NAMES.join(" ")
             ));
         }
         MASK.with(|f| f.set(mask));
         let on: Vec<&str> = NAMES
             .iter()
+            .chain(PART_NAMES.iter())
             .enumerate()
             .filter(|(i, _)| mask & (1 << i) != 0)
             .map(|(_, n)| *n)
@@ -246,6 +284,16 @@ mod imp {
     #[inline]
     pub fn masked(c: Class) -> bool {
         c != Class::Blur && MASK.with(|f| f.get()) & (1 << (c as usize)) != 0
+    }
+
+    /// Is this PART of the card class's work masked out (`card.interior`, `card.ring`,
+    /// `card.focus`)? Asked only by the card compositor, AFTER [`gate`] has booked the card's
+    /// logical composite and [`note_card_path`] the path it took, so a part-masked leg books exactly
+    /// what its control books and only the GPU work differs. (A card whose whole class is masked
+    /// never gets this far.)
+    #[inline]
+    pub fn masked_part(p: CardPart) -> bool {
+        MASK.with(|f| f.get()) & (1 << (NCLASS + p as usize)) != 0
     }
 
     /// Should this draw be REFUSED, and if not, book it. One call per primitive, immediately after
@@ -356,7 +404,7 @@ mod imp {
 /// same shape as each other.
 #[cfg(not(feature = "devtriggers"))]
 mod imp {
-    use super::{CardPath, Class};
+    use super::{CardPart, CardPath, Class};
 
     #[inline]
     pub fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
@@ -364,6 +412,10 @@ mod imp {
     }
     #[inline]
     pub fn masked(_c: Class) -> bool {
+        false
+    }
+    #[inline]
+    pub fn masked_part(_p: CardPart) -> bool {
         false
     }
     #[inline]
@@ -387,7 +439,10 @@ mod imp {
     }
 }
 
-pub use imp::{card_split, frame_end, gate, masked, note_card_path, note_px, set_card_split, set_clip, set_ledger, set_mask};
+pub use imp::{
+    card_split, frame_end, gate, masked, masked_part, note_card_path, note_px, set_card_split, set_clip, set_ledger,
+    set_mask,
+};
 
 #[cfg(test)]
 mod tests {
@@ -486,6 +541,70 @@ mod tests {
         // the window closed: a second one starts from zero
         assert!(imp::flush_window().contains("cardpath split=0/0.0 focus=0/0.0 clip=0/0.0"));
         set_ledger(false);
+    }
+
+    /// The part names the trigger accepts are the table the enum indexes, distinct from every class
+    /// name, and each is `card.` + a piece: a part added without a name, or named like a class, would
+    /// mask another bit than the one its leg claims.
+    #[test]
+    fn every_card_part_has_a_distinct_name_in_enum_order() {
+        assert_eq!(PART_NAMES.len(), NPART);
+        for (i, n) in PART_NAMES.iter().enumerate() {
+            assert!(n.starts_with("card.") && n.len() > "card.".len(), "part {i}: {n:?}");
+            assert_eq!(PART_NAMES.iter().filter(|m| *m == n).count(), 1, "duplicate part name {n}");
+            assert!(!NAMES.contains(n), "part {n:?} is also a class");
+        }
+        assert_eq!(CardPart::Interior as usize, 0);
+        assert_eq!(PART_NAMES[CardPart::Ring as usize], "card.ring");
+        assert_eq!(PART_NAMES[CardPart::Focus as usize], "card.focus");
+        assert_eq!(CardPart::Focus as usize, NPART - 1);
+        // and the focus part is the card-path ledger's own `focus` bucket, by name
+        assert_eq!(PART_NAMES[CardPart::Focus as usize], format!("card.{}", PATH_NAMES[CardPath::Focus as usize]));
+    }
+
+    /// Each part name masks THAT part and nothing else - no class, no other part - and a class name
+    /// masks no part (the card class's own gate refuses before a part is asked). The dot is part of
+    /// the word: `card.ring` is not `card` followed by an unknown `ring`, which would have masked the
+    /// whole class and so priced the wrong thing. Words are still separated by anything else.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_part_name_masks_that_part_and_nothing_else() {
+        let parts = [CardPart::Interior, CardPart::Ring, CardPart::Focus];
+        let classes = [
+            Class::Ambient, Class::Grad, Class::Rect, Class::Shadow, Class::Card, Class::Image, Class::Text, Class::Glass,
+            Class::Blur, Class::Field,
+        ];
+        assert_eq!(classes.len(), NCLASS, "every class, so the count below sees them all");
+        let classes_masked = || classes.iter().filter(|c| masked(**c)).count();
+        let parts_masked = || parts.iter().filter(|p| masked_part(**p)).copied().collect::<Vec<CardPart>>();
+        assert_eq!((classes_masked(), parts_masked()), (0, vec![]), "nothing is masked until a leg says so");
+        for (i, name) in PART_NAMES.iter().enumerate() {
+            for spec in [name.to_string(), name.to_uppercase(), format!("  {name},"), format!("{name}\n")] {
+                set_mask(&spec);
+                assert_eq!((classes_masked(), parts_masked()), (0, vec![parts[i]]), "{spec:?}");
+            }
+        }
+        set_mask("card.interior card.focus");
+        assert_eq!(parts_masked(), vec![CardPart::Interior, CardPart::Focus]);
+        set_mask("card.ring,text");
+        assert_eq!((masked(Class::Text), masked(Class::Card), parts_masked()), (true, false, vec![CardPart::Ring]));
+        // a class name masks the class and no part
+        set_mask("card");
+        assert_eq!((masked(Class::Card), parts_masked()), (true, vec![]));
+        // `all` is every class (a part is a piece of one), and the order of the words does not matter
+        set_mask("all");
+        assert_eq!((classes_masked() + 1, parts_masked()), (NCLASS, vec![]), "every class but the accounting-only blur");
+        set_mask("card.ring all");
+        assert_eq!(parts_masked(), vec![CardPart::Ring]);
+        set_mask("all card.ring");
+        assert_eq!(parts_masked(), vec![CardPart::Ring]);
+        // names that are not a part mask nothing: a misspelt leg must read as the control, loudly
+        for bad in ["ring", "interior", "focus", "card.", "card.rim", "card.ring.focus", ".ring", "card..ring"] {
+            set_mask(bad);
+            assert_eq!((classes_masked(), parts_masked()), (0, vec![]), "{bad:?}");
+        }
+        set_mask("");
+        assert_eq!((classes_masked(), parts_masked()), (0, vec![]), "disarmed");
     }
 
     /// The A/B switch: on by default, and off books the card as `off`, never as `plain`.
