@@ -99,6 +99,15 @@ pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
+/// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
+/// focus onto them**, from the poster's top (0..1). The page rests the focused shelf at one fixed
+/// line (`rest_scroll`), so the shelf below it stands cut by the bottom margin by a few tens of px
+/// and the shelf above it is off the top: a rule that wanted a shelf WHOLE on screen
+/// left the pointer nothing it could take focus onto (a shelf cut by the TOP still never takes it,
+/// so one passing under the pointer on its way off does not steal focus). The wheel moves the
+/// focus shelf by shelf either way (`bridge::wheel_input`, an Up or Down key).
+const POINTER_REACH: f32 = 0.5;
+
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 /// How near its target (px) a shelf's horizontal glide and the page's vertical reveal have to be
@@ -2053,12 +2062,11 @@ impl HomeScreen {
                 continue;
             }
             let row_y = self.grid.base_y(row);
-            // The heading rides the page under the chrome, which stays: it fades by where it STANDS
-            // (`scroll_chrome`'s clearance) and is gone before it reaches the chip. The place it is
-            // judged at is the row's own, without the focus pop's lift: the lift is a few pixels of
-            // the heading clearing the popped tile, not a ride on the scroll, and the focused row's
-            // heading must rest whole.
-            let alpha = env.sp * plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_y(row_y, 0.0));
+            // The heading rides the page under the chrome, which stays: it fades by where it is
+            // DRAWN (`scroll_chrome`'s clearance, at the place the lift leaves it) and is gone
+            // before it reaches the chip, so no ink of it ever stands over the chip's rows. The
+            // focused row's heading rests whole: its drawn place is clear of the ramp.
+            let alpha = env.sp * plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_y(row_y, self.grid.lift(row)));
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
                 let m = linked.measure(f.measure);
                 let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
@@ -2161,12 +2169,14 @@ impl HomeScreen {
                     continue;
                 }
                 // Every tile of the row shares one y, so one answer says whether a pointer passing
-                // over the row may take its focus.
+                // over the row may take its focus: its posters stand clear of the top margin and
+                // their upper part clears the bottom one ([`POINTER_REACH`]), which is what the shelf
+                // below the focused one is at rest.
                 let rest = Rect::new(0.0, self.grid.base_y(row_index) + CARD_DY, CARD_W, CARD_H)
                     .scaled(RowStyle::HOME.focus_scale);
-                let fully_visible = rest.y >= 40.0 && rest.y + rest.h <= SCR_H - 20.0;
+                let pointable = rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
                 let src = HomeCards {
-                    hover: if fully_visible || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
+                    hover: if pointable || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
                     ..self.cards(view, row_index)
                 };
                 if let Some(shelf) = self.grid.shelves.get(row_index) {
@@ -3326,7 +3336,7 @@ fn band_open() -> f32 {
 ///
 /// It was the NEAREST scroll that showed the focused shelf with its caption band open
 /// (`ui_cards::reveal` between a `lo` and the shelf's top): Down came to rest at `lo`, which is
-/// `caption_reach(band_h)` short of the bottom margin, so the focused shelf's y followed the Under
+/// the caption's reach short of the bottom margin, so the focused shelf's y followed the Under
 /// posters band (531 / 563 / 603 for 112 / 80 / 0) and the heading of the shelf above rested at
 /// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest at
 /// the shelf's top. A rest that depends on the band and on the direction of the last move is not a

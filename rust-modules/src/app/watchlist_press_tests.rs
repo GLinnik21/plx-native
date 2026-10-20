@@ -608,14 +608,13 @@ fn the_item_menu_watchlist_arms_queue_the_write_pulse_and_route() {
 /// **The lookup row's facts reach the focused caption** (audit N5): a title a reachable server holds
 /// is worded by its COPY under the Under posters setting, as every poster is, through the whole
 /// chain on a real `Dispatcher<AppHost>`: the guid lookup's row, the store's match table, the feed,
-/// the page's cell. The scripted plex.tv sends no year, so the default reads the length alone.
+/// the page's cell, read off the frame the page DRAWS. The scripted plex.tv sends no year, so the
+/// default reads the length alone.
 #[test]
 fn a_matched_titles_caption_reads_its_copys_facts_under_every_details_pick() {
-    use super::under_posters_shelf_route_tests::Cell;
-    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
-    use plx_screens::watchlist::page::WatchlistScreen;
-    let _serial = plx_base::testlock::serial();
-    let _cell = Cell::default();
+    use super::test_support::World;
+    use super::under_posters_shelf_route_tests::{set, Cell};
+    use plx_plex::plex::session::UnderPostersDetails as Details;
     let script = Script::new(&[1]);
     *script.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
     script.up.store(true, Ordering::SeqCst);
@@ -629,21 +628,24 @@ fn a_matched_titles_caption_reads_its_copys_facts_under_every_details_pick() {
         duration_ms: Some(100 * 60_000),
         ..Default::default()
     };
-    let (mut d, mut rig) = rig_over(&script);
-    super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
-    super::frame(&mut d, &mut rig, tick(1), vec![]);
-    settle(&mut d, &mut rig, 2);
-    assert_eq!(rig.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available),
+    let mut w = World::watchlist_over("watchlist-matched-facts", script);
+    let _cell = Cell::default(); // after the world, which holds the process-global lock the setting needs
+    assert_eq!(w.bridge.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available),
         "premise: a reachable server holds the title");
-    let page = d.top_screen().and_then(|s| s.as_any()).and_then(|s| s.downcast_ref::<WatchlistScreen>())
-        .expect("the Watchlist page is the top page");
+    // the focused poster's block as the frame DREW it (not the production label): Down brings focus onto
+    // the one title, then each pick words its details line alone (the Title switch is off)
+    set(&mut w, false, Details::YearLength);
+    for _ in 0..4 {
+        if !w.drawn().caption_lines().is_empty() { break; }
+        w.press(Key::Down);
+    }
     for (details, want) in [
         (Details::YearLength, "1h 40m"),
         (Details::Genre, "Drama"),
         (Details::Video, "1080p \u{b7} HDR"),
         (Details::AgeRatingScore, "PG-13 \u{b7} 7.8"),
     ] {
-        plx_media::route::restore_under_posters(UnderPosters { title: false, details });
-        assert_eq!(page.label_probe(0), (None, Some(want.to_string())), "{details:?}");
+        set(&mut w, false, details);
+        assert_eq!(w.drawn().caption_lines(), [want.to_string()], "{details:?}");
     }
 }

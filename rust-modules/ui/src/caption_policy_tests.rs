@@ -337,3 +337,28 @@ fn an_episode_whose_art_prints_its_address_names_its_show() {
     assert_eq!(at(DetailsKind::YearLength, &CaptionFacts { show: None, ..marked }).as_deref(), Some("S3 \u{b7} E4"),
         "no show to name: the address is better than nothing");
 }
+
+/// **A season whose art prints "SEASON 3" does not say its number twice either** (the Collection
+/// screen's members): its details line names the show, and a season with no show says nothing
+/// rather than "Season 3" under "SEASON 3". With the title on, the show is never read twice (the
+/// title line already names it, and so does an orphan season's own title).
+#[test]
+fn a_season_whose_art_prints_its_number_names_its_show_or_nothing() {
+    let cx = i18n::english();
+    let lines = |title, details, f: &CaptionFacts| caption_lines(&CaptionPolicy { title, details }, f, cx);
+    let marked = CaptionFacts {
+        title: Some("The Office".into()), season: Some((3, "Season 3".into())), show: Some("The Office".into()),
+        address_on_art: true, ..Default::default()
+    };
+    for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
+        assert_eq!(lines(false, details, &marked), [None, Some("The Office".into())], "{details:?}: the show, not the number");
+        assert_eq!(lines(true, details, &marked), [Some("The Office".into()), None], "{details:?}: the show is not read twice");
+        let plain = CaptionFacts { address_on_art: false, ..marked.clone() };
+        assert_eq!(lines(false, details, &plain), [None, Some("Season 3".into())], "{details:?}: the number where the art does not print it");
+    }
+    let orphan = CaptionFacts { title: Some("Season 3".into()), show: None, ..marked.clone() };
+    assert_eq!(lines(false, DetailsKind::YearLength, &orphan), [None, None], "no show to name: nothing, not 'Season 3' under 'SEASON 3'");
+    let unmarked_orphan = CaptionFacts { address_on_art: false, ..orphan };
+    assert_eq!(lines(true, DetailsKind::YearLength, &unmarked_orphan), [Some("Season 3".into()), None],
+        "an orphan season under Title On is its title once, never 'Season 3' over 'Season 3'");
+}

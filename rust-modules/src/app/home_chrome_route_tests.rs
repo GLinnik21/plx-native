@@ -113,12 +113,8 @@ fn a_resting_heading_is_always_clear_of_the_chrome_and_rests_where_it_did_whatev
 
 #[test]
 fn no_heading_is_drawn_over_the_chip_while_the_page_scrolls() {
-    // A heading is judged at its place on the page, without the focus pop's lift (a few pixels that
-    // let it clear the popped tile), so the heading of the shelf focus is leaving can stand up to
-    // that lift lower than the place it fades by. Its glyphs start below the line's top, so this
-    // bound is the most ink a run can leave on the chip's last rows, not a measure of any.
-    let lift = plx_ui::cards::heading_lift_max(&plx_ui::cards::RowStyle::HOME);
-    let most = plx_ui::scroll_chrome::clearance_under_shown_chrome(CHIP_FRAME.y + CHIP_FRAME.h + lift);
+    // A heading fades by where it is DRAWN (the lift included), so no ink of it stands over the
+    // chip's rows: over the chip it is gone, whatever the scroll is doing.
     for (setting, title, details, _) in SETTINGS {
         let mut w = home_shelves(&format!("hc-scroll-{}", setting.split(' ').next().unwrap_or("")));
         let _cell = Cell::default();
@@ -131,12 +127,80 @@ fn no_heading_is_drawn_over_the_chip_while_the_page_scrolls() {
                 for h in headings(&mut w) {
                     if overlaps(h.rect, CHIP_FRAME) {
                         crossed += 1;
-                        assert!(h.alpha <= most + 1e-3,
-                            "{setting}, Down {press} frame {frame}: the heading {:?} at {:?} is drawn at alpha {} over the chip (at most {most})", h.title, h.rect, h.alpha);
+                        assert!(h.alpha <= 0.02,
+                            "{setting}, Down {press} frame {frame}: the heading {:?} at {:?} is drawn at alpha {} over the chip (none allowed)", h.title, h.rect, h.alpha);
                     }
                 }
             }
         }
         assert!(crossed > 0, "{setting}: premise: a heading crosses the chip's rows while the page scrolls");
+    }
+}
+
+
+/// The y a shelf's heading is drawn at, if it is drawn at all.
+fn heading_y(w: &mut World, shelf: usize) -> Option<f32> {
+    headings(w).iter().find(|h| h.title == TITLES[shelf] && drawn(h)).map(|h| h.rect.y)
+}
+
+/// Present Home's pointer stops as its draw registers them, the way a frame's hit map is presented
+/// (a host has no GL to run the page's full draw through the dispatcher).
+fn present_home_stops(w: &mut World) {
+    let stops = w.bridge.with_home(&w.d, |home, cx, _| {
+        let mut draw = plx_ui::screen::DrawFrame::new(cx, plx_ui::Painter::root());
+        home.record_stops::<AppHost>(&mut draw, cx.views.hubs);
+        draw.into_stops()
+    }).expect("Home is the top page");
+    w.d.input.hit.fill(stops);
+    w.d.input.hit.swap();
+}
+
+/// **A Magic Remote user can reach the shelves either side of the one the page rests on.** The page
+/// rests the focused shelf at one fixed line, so the shelf above it stands off the top and the one
+/// below it stands cut by the bottom margin. The wheel is the direction key it stands for
+/// (`bridge::wheel_input`) and moves focus a shelf at a time; the pointer takes focus onto the
+/// poster of the shelf below, which is in view (the shelf above has nothing on screen to point at).
+#[test]
+fn a_pointer_user_reaches_the_shelves_either_side_of_a_resting_shelf() {
+    for (setting, title, details, _) in SETTINGS {
+        let name = setting.split(' ').next().unwrap_or("");
+        let mut w = home_shelves(&format!("hc-reach-{name}"));
+        let _cell = Cell::default();
+        set(&mut w, title, details);
+        to_shelf(&mut w, 2);
+        w.frames(150);
+        let rest = heading_y(&mut w, 2).unwrap_or_else(|| panic!("{setting}: premise: shelf 3's heading is drawn"));
+        // the wheel, one tick towards you, is Up: shelf 2 comes to the rest line
+        let at = super::test_support::tick(w.frame + 1);
+        w.step(super::wheel_input(1, at));
+        w.frames(150);
+        let up = heading_y(&mut w, 1).unwrap_or_else(|| panic!("{setting}: the wheel's Up brought no shelf 2 heading"));
+        assert!((up - rest).abs() < 1.0, "{setting}: shelf 2 rests at {up}, the rest line is {rest}");
+        // and one tick away from you is Down, back to shelf 3
+        let at = super::test_support::tick(w.frame + 1);
+        w.step(super::wheel_input(-1, at));
+        w.frames(150);
+        assert!((heading_y(&mut w, 2).unwrap_or(f32::NAN) - rest).abs() < 1.0, "{setting}: the wheel's Down is back on shelf 3 (rest {rest}, now {:?}, focus {:?})", heading_y(&mut w, 2), w.focus());
+        // the pointer: a poster of shelf 4 (below shelf 3, cut by the bottom margin) takes focus
+        present_home_stops(&mut w);
+        let focused = w.focus().expect("a poster holds focus");
+        let (focus_y, hit_map) = {
+            let stops = w.d.input.hit.front();
+            let own = stops.iter().find(|stop| stop.key == focused).unwrap_or_else(|| panic!("the focused poster {focused:?} is a stop of {:?}", stops.iter().map(|s| (s.key.entry.0, s.key.elem)).collect::<Vec<_>>()));
+            (own.rest_rect.y, stops.to_vec())
+        };
+        let below = hit_map.iter()
+            .filter(|stop| stop.key.entry == focused.entry && stop.rest_rect.y > focus_y + 300.0 && stop.rest_rect.y < 1000.0)
+            .min_by(|a, b| a.rest_rect.x.total_cmp(&b.rest_rect.x))
+            .unwrap_or_else(|| panic!("{setting}: shelf 4 registers a poster in view: {:?}", hit_map.iter().map(|s| s.rest_rect).collect::<Vec<_>>()));
+        assert_eq!(below.hover, plx_ui::screen::Hover::Focus, "{setting}: the shelf below a resting shelf takes the pointer");
+        let (x, y) = (below.rect.cx(), below.rect.y + below.rect.h * 0.25);
+        for (px, py) in [(x - 40.0, y + 30.0), (x, y)] {
+            let at = super::test_support::tick(w.frame + 1);
+            w.step(vec![super::pointer_input(px, py, at)]);
+        }
+        w.frames(150);
+        assert!((heading_y(&mut w, 3).unwrap_or(f32::NAN) - rest).abs() < 1.0,
+            "{setting}: pointing at a poster of shelf 4 brought it to the rest line ({:?})", heading_y(&mut w, 3));
     }
 }

@@ -41,44 +41,96 @@ fn the_episodes_listings_caption_clears_the_next_row_under_every_setting() {
     }
 }
 
-/// **The band the Library grid opens under its focused row is the policy's** (112 / 80 / 0 px), read
-/// off the grid's own geometry on a real `Dispatcher<AppHost>`: the gap to the next row grows over
-/// what a closed band (Title Off + Nothing) leaves by the growth the grid documents for each band
-/// (`poster_grid::growth_before_for`: 72 px for a two-line band, 40 for a one-line one, 0 for none),
-/// and the caption's lines end inside that gap, so the label drawn and the room reserved for it
-/// cannot disagree.
-#[test]
-fn the_library_grid_opens_the_band_its_setting_asks_for() {
+/// **What a poster grid opens under its focused row, read off the grid's own geometry**: the gap
+/// from the focused row's cards to the next row's grows over what a closed band (Title Off +
+/// Nothing) leaves by the growth the grid documents for each band (`poster_grid::growth_before_for`:
+/// 72 px for a two-line band, 40 for a one-line one, 0 for none), and the caption's lines end inside
+/// that gap, so the label drawn and the room reserved for it cannot disagree. The page's first
+/// poster holds focus; the page is a Library grid, the Collections page, the Watchlist or the
+/// Collection screen's members (`World::poster_cell`).
+fn grade_grid_bands(w: &mut World, surface: &str) {
     use plx_ui::caption_policy::{band_h, CaptionPolicy};
     use plx_screens::registry::caption_policy_of;
+    let _cell = Cell::default();
+    focus_first_poster(w, surface);
+    // the first cell of the row after the focused one
+    let below = |w: &World| {
+        let first = w.poster_cell(0);
+        (1..64).map(|i| w.poster_cell(i)).find(|cell| cell.y > first.y + 1.0)
+            .unwrap_or_else(|| panic!("{surface}: premise: the grid holds a second row"))
+    };
+    let gap = |w: &World| below(w).y - (w.poster_cell(0).y + w.poster_cell(0).h);
+    set(w, false, Details::None);
+    let closed = gap(w);
+    for (title, details, band, want) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
+        (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0)] {
+        set(w, title, details);
+        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details });
+        assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band");
+        let (card, next) = (w.poster_cell(0), below(w));
+        let opened = gap(w) - closed;
+        assert!((opened - want).abs() < 0.5, "{surface}: the grid opens {opened} px for title {title}, {details:?}; the policy asks {want}");
+        let drawn = w.drawn();
+        let under: Vec<_> = drawn.runs.iter()
+            .filter(|run| run.at.y >= card.y + card.h && run.at.y < next.y && run.at.x < card.x + card.w && run.at.x + run.at.w > card.x)
+            .collect();
+        assert_eq!(!under.is_empty(), band > 0.0, "{surface}: premise: the focused poster draws a caption exactly when a band is open ({title}, {details:?})");
+        for line in under {
+            assert!(line.at.y + line.at.h.max(line.size as f32) <= next.y,
+                "{surface}: {:?} ends under the next row (title {title}, {details:?})", line.text);
+        }
+    }
+}
+
+/// Press Down until a poster holds focus (the Title switch is on, so a focused poster draws its
+/// caption): a page that opens on its header is graded on its first poster.
+pub(super) fn focus_first_poster(w: &mut World, surface: &str) {
+    set(w, true, Details::Genre);
+    for _ in 0..6 {
+        if !w.drawn().caption_lines().is_empty() { return; }
+        w.press(super::Key::Down);
+    }
+    panic!("{surface}: premise: Down brought focus onto a poster");
+}
+
+/// **The band the Library grid opens under its focused row is the policy's** (112 / 80 / 0 px).
+#[test]
+fn the_library_grid_opens_the_band_its_setting_asks_for() {
     let mut w = World::movies_library("band-grid", false);
     let _cell = Cell::default();
     w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
     w.frames(30);
     assert_eq!(w.grid_cell(), Some((0, 0)), "premise: the library opens on its first poster");
-    let gap = |w: &mut World| {
-        let (card, cols) = w.library().probe_cell(0);
-        let (below, _) = w.library().probe_cell(cols);
-        below.y - (card.y + card.h)
-    };
-    set(&mut w, false, Details::None);
-    let closed = gap(&mut w);
-    for (title, details, band, want) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
-        (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0)] {
-        set(&mut w, title, details);
-        let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details });
-        assert_eq!(band_h(&policy), band, "premise: the policy's band");
-        let (card, cols) = w.library().probe_cell(0);
-        let below = w.library().probe_cell(cols).0;
-        let opened = gap(&mut w) - closed;
-        assert!((opened - want).abs() < 0.5, "the grid opens {opened} px for title {title}, {details:?}; the policy asks {want}");
-        let drawn = w.drawn();
-        for line in drawn.runs.iter().filter(|run| run.at.y >= card.y + card.h && run.at.y < below.y
-            && run.at.x >= card.x - 1.0 && run.at.x < card.x + card.w) {
-            assert!(line.at.y + line.at.h.max(line.size as f32) <= below.y,
-                "{:?} ends under the next row (title {title}, {details:?})", line.text);
-        }
-    }
+    grade_grid_bands(&mut w, "Library");
+}
+
+/// The Collections page's tiles are posters in the same grid.
+#[test]
+fn the_collections_page_opens_the_band_its_setting_asks_for() {
+    let mut w = World::collections("band-collections", false);
+    grade_grid_bands(&mut w, "Collections");
+}
+
+/// The Watchlist's titles are posters in the same grid.
+#[test]
+fn the_watchlist_opens_the_band_its_setting_asks_for() {
+    let mut w = World::watchlist("band-watchlist");
+    grade_grid_bands(&mut w, "Watchlist");
+}
+
+/// The Collection screen's members are posters in the same grid.
+#[test]
+fn the_collection_screen_opens_the_band_its_setting_asks_for() {
+    let mut w = super::arrival_seat_tests::collection_screen_of("band-collection", |sid| {
+        (0..16).map(|i| member(sid, &format!("m{i}"))).collect()
+    });
+    grade_grid_bands(&mut w, "Collection screen");
+}
+
+/// A film a server describes by its name alone.
+fn member(sid: plx_plex::plex::ServerId, rk: &str) -> plx_data::pms::PmsMovie {
+    plx_data::pms::PmsMovie { sid, sec: 1, rk: rk.into(), title: format!("M{rk}"), kind: 0, year: 1999,
+        dur_ns: 100 * 60 * 1_000_000_000, ..Default::default() }
 }
 
 // ── The same grade on every shelf surface ───────────────────────────────────────────────────────
@@ -163,4 +215,51 @@ fn detail_related_opens_the_band_its_setting_asks_for() {
         w.frames(30);
     }
     grade_shelf_bands(&mut w, "Detail", "Related", "About");
+}
+
+/// Detail: the collection shelf is the first poster shelf, Related the one below it.
+#[test]
+fn detail_collection_shelf_opens_the_band_its_setting_asks_for() {
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let detail = plx_data::metadata::Detail {
+        sid, rk: "movie".into(), kind: "movie".into(),
+        collection: Some(plx_data::metadata::CollectionShelf { title: "Trilogy".into(), section: 1, tag: 812,
+            members: vec![member(sid, "c1"), member(sid, "c2")], count: 2 }),
+        related: vec![member(sid, "r1"), member(sid, "r2")],
+        ..Default::default()
+    };
+    let mut w = World::detail_page("band-detail-collection", detail);
+    let _cell = Cell::default();
+    focus_first_poster(&mut w, "Detail collection");
+    grade_shelf_bands(&mut w, "Detail collection", "Trilogy", "Related");
+}
+
+/// Search: its Movies row is the focused shelf, the Shows row the one below it (the Stack hands each
+/// shelf its policy, `cards/stack.rs`'s `Body::Shelf` arm).
+#[test]
+fn search_opens_the_band_its_setting_asks_for() {
+    use plx_data::search::{Item, Kind, Shelf};
+    let mut w = World::search_results("band-search", |sid| {
+        let shelf = |kind, items| Shelf { epoch: 0, window: Default::default(), kind, items };
+        let show = plx_data::pms::PmsMovie { kind: 1, ..member(sid, "s1") };
+        vec![
+            shelf(Kind::Movie, vec![Item::Media(member(sid, "m1")), Item::Media(member(sid, "m2"))]),
+            shelf(Kind::Show, vec![Item::Media(show)]),
+        ]
+    });
+    let _cell = Cell::default();
+    focus_first_poster(&mut w, "Search");
+    grade_shelf_bands(&mut w, "Search", Kind::Movie.title(), Kind::Show.title());
+}
+
+/// The person page's filmography: the Movies shelf is the focused one, the Shows shelf below it.
+#[test]
+fn the_filmography_opens_the_band_its_setting_asks_for() {
+    use plx_platform::i18n::msg;
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let show = plx_data::pms::PmsMovie { kind: 1, ..member(sid, "s1") };
+    let mut w = World::person_page("band-person", vec![member(sid, "m1"), member(sid, "m2")], vec![show], &["", ""]);
+    let _cell = Cell::default();
+    focus_first_poster(&mut w, "Filmography");
+    grade_shelf_bands(&mut w, "Filmography", msg::browse_kind_movies(), msg::browse_kind_shows());
 }

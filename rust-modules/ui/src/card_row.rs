@@ -779,8 +779,10 @@ pub fn draw_tile(
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
-    /// lead the title with the amber play triangle (Continue Watching's tile has no play disc);
-    /// set only while a press on the tile plays — see `widgets::still_line`'s `press_plays`
+    /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
+    /// disc): the title when the block has one, else the details line. The mark hangs to the left of
+    /// the line, which is centred as if it were not there. Set only while a press on the tile plays
+    /// — see `widgets::still_line`'s `press_plays`
     pub glyph: bool,
     /// **How much of this block is on screen, 0..1** — [`band_reveal`] of the row's label band.
     /// 1 for every caller whose band does not animate (the Library grid, the profile picker, the
@@ -867,14 +869,6 @@ impl TileLabel {
             caption: std::ffi::CString::new(caption)
                 .ok()
                 .filter(|_| !caption.is_empty()),
-            ..Self::title(t)
-        }
-    }
-    /// Title led by the amber play triangle — Continue Watching's focused primary line while a press there plays
-    /// (`DeckPress::Play`).
-    pub fn played(t: &str) -> Self {
-        TileLabel {
-            glyph: true,
             ..Self::title(t)
         }
     }
@@ -1003,47 +997,10 @@ pub fn draw_label(
     let p = p.alpha(label.reveal);
     draw_label_block(p, rect, sty, label, ty, measure);
 }
-/// **The one trailing FACT under a focused tile** — the caption rung of a Continue Watching deck's
-/// state line (`registry::captions::shelf_label`). A plain poster's details line is worded by
-/// `caption_policy::caption_lines`.
-///
-/// It was `home.rs`'s, private, in two halves (`focused_caption` and `cw_caption`), and the Library
-/// simply had neither: its shelves passed a bare title, so every focused poster there reserved a
-/// two-rung block and drew one rung into it. The owner reported that as ragged rows
-/// (2026-09-05, "some rows have only one text label without detail label"), and the fix is the one
-/// this system asks for — share the rule, not shrink the box: `ROW_PITCH` reserves
-/// [`UNDER_LABEL_H`] for every shelf on both screens, so shrinking per shelf would make two rows of
-/// the same object different heights and leave the Library's grid disagreeing with the shelves
-/// above it.
-///
-/// **`is_continue` is the SHELF's fact, not the item's.** A deck says how much is left because that
-/// is what you came for; everywhere else the item identifies itself.
-///
-/// **The year is the fallback for ANY kind, which is the one behaviour change in the promotion.**
-/// Home's version restricted it to `kind == 0`, so a SHOW poster — the whole of a TV library's
-/// "Recently Added" — captioned nothing on either screen. The Library's own grid has always
-/// captioned a show with its year, so this makes the two agree rather than inventing a rule: on
-/// one screen, one object, one answer.
-///
-/// `None` is still possible and still means one rung: an item the server dated to nothing at all.
-pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi::CString> {
-    if is_continue {
-        return cw_caption(m);
-    }
-    let s = if m.kind == TileKind::Collection {
-        // A collection is its size, never a year: the members span several, and PMS sends none.
-        crate::fmt::collection_count(m.subtype, m.child_count)
-    } else if m.kind == TileKind::Episode && m.ep_index > 0 {
-        crate::fmt::episode_address(i64::from(m.season_index), i64::from(m.ep_index))
-    } else if m.year > 0 {
-        m.year.to_string()
-    } else {
-        return None;
-    };
-    std::ffi::CString::new(s).ok()
-}
-
-/// The focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
+/// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
+/// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
+/// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). The
+/// focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
 /// "<show> · 8m left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
 /// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
 ///
@@ -1056,7 +1013,7 @@ pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi:
 /// One item, described two ways in one draw. Whether that tile also wore the watched TICK is a
 /// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
-fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
+pub fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
     let show = m.show_title;
     let s = if let Some(resume) = m.resume {
         let left = crate::fmt::time_left(resume.left_ms);
@@ -1142,15 +1099,6 @@ const COLLAPSED_GAP: f32 = LABEL_BAND_COLLAPSED + crate::consts::UNDER_LABEL_AIR
 /// posters setting's 80 / 112 / 0).
 pub fn band_open_for(band_h: f32) -> f32 {
     under_band_for(band_h, 1.0) - LABEL_BAND_COLLAPSED
-}
-
-/// Air a revealed caption keeps under its last line, before the screen's bottom margin.
-const REVEAL_AIR: f32 = 4.0;
-
-/// How far below a card's bottom edge a focused caption reaches, with [`REVEAL_AIR`] under it: what
-/// a vertical reveal keeps on screen under the focused card (96 px for the legacy band).
-pub fn caption_reach(band_h: f32) -> f32 {
-    open_gap(band_h) - crate::consts::UNDER_LABEL_AIR + REVEAL_AIR
 }
 
 /// The gap a FOCUSED row opens to for a band of `band_h` ([`crate::caption_policy::band_h`]): the
@@ -1301,6 +1249,21 @@ fn glyph_lead(sz: std::os::raw::c_int, glyph: bool) -> f32 {
     } else {
         0.0
     }
+}
+
+/// **The amber play mark that leads a label line**, `isz` ([`play_icon_size`]) square at `x`, centred
+/// on the cap band of the line of size `sz` / weight `bold` whose cap top is `y`. The one drawing of
+/// it, whichever line (title or details) the block leads with.
+fn draw_play_mark(p: Painter, x: f32, y: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_int) {
+    let isz = play_icon_size(sz);
+    let (ct, cb) = plx_gfx::text::text_cap_band(sz, bold);
+    let icy = y + (ct + cb) * 0.5;
+    let mark = Rect::new(x, icy - isz * 0.5, isz, isz);
+    #[cfg(any(test, feature = "test-support"))]
+    if p.is_recording() || crate::frame::backdrop::discovering() {
+        crate::draw_census::note_play_mark(p.place(mark));
+    }
+    crate::icons::draw(p, crate::icons::Icon::Play, mark, theme::RESUME_FILL);
 }
 
 /// How the lines of a label block sit in its window — the one alignment every line shares.
@@ -1528,29 +1491,19 @@ fn title_marquee(
     fade: bool,
 ) {
     let (sz, bold) = (theme::size::LABEL, 1);
-    let isz = play_icon_size(sz);
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
-    let draw_glyph = |gx: f32| {
-        let (ct, cb) = plx_gfx::text::text_cap_band(sz, bold);
-        let icy = y + (ct + cb) * 0.5; // centre the glyph on the name's cap band
-        crate::icons::draw(
-            p,
-            crate::icons::Icon::Play,
-            Rect::new(gx, icy - isz * 0.5, isz, isz),
-            theme::RESUME_FILL,
-        );
-    };
     if w <= budget {
-        // The [glyph? + gap + name] group is ONE run, placed like every other line of the block.
-        let gx = at.run_x(lead + w);
+        // The text is placed as if the mark were not there (centred under the card, like the line
+        // below it); the mark hangs to its left, kept inside the block's window.
+        let tx = at.run_x(w).max(at.x + lead);
         if glyph {
-            draw_glyph(gx);
+            draw_play_mark(p, tx - lead, y, sz, bold);
         }
         if shadowed {
-            p.text(text, gx + lead, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
+            p.text(text, tx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
         }
-        p.text(text, gx + lead, y, sz, theme::TEXT_PRIMARY, 0, bold);
+        p.text(text, tx, y, sz, theme::TEXT_PRIMARY, 0, bold);
         return;
     }
     let Some(block) = block else { return };
@@ -1559,7 +1512,7 @@ fn title_marquee(
     // overflowing focused title never lets the screen rest (`Marquee::report`) — which is what
     // "marquee while focused" means, and why a fitting title must never reach this branch.
     if glyph {
-        draw_glyph(at.x);
+        draw_play_mark(p, at.x, y, sz, bold);
     }
     let text_x0 = at.x + lead;
     TITLE_CLOCK.with(|clock| {
@@ -1631,22 +1584,32 @@ fn draw_label_block(
     mut y: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
+    // Every run of the block is a label block's to a recording census, whatever its ink.
+    #[cfg(any(test, feature = "test-support"))]
+    let _label_scope = crate::draw_census::label_scope();
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
-    let lead = glyph_lead(theme::size::LABEL, label.glyph);
-    let title_run = title_w_val.map_or(0.0, |w| (lead + w).min(full));
+    // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
+    let title_mark = label.glyph && label.title.is_some();
+    let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
+    let lead = glyph_lead(theme::size::LABEL, title_mark);
+    let caption_lead = glyph_lead(csz, caption_mark);
+    // The mark HANGS left of a line that is centred as if it were not there, so the window keeps its
+    // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
+    let title_run = title_w_val.map_or(0.0, |w| (w + 2.0 * lead).min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
     let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.width_str(s, csz, false));
+    let caption_run = caption_w + 2.0 * caption_lead;
     // …and the UNCAPPED widest run, which only a block that reaches left of its card may use
     // ([`anchor_label`]).
-    let want = title_w_val.map_or(0.0, |w| lead + w).max(caption_w);
+    let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
     let at = if label.within_tile {
         tile_window(rect.cx() - sty.w * 0.5, sty.w, want)
     } else {
-        place_label_wide(p, rect, sty, title_run.max(caption_w.min(full)), want, label.settle_lag)
+        place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
     };
     #[cfg(feature = "devtriggers")]
     {
@@ -1658,7 +1621,7 @@ fn draw_label_block(
     // longest's); when none does, the clock is released so an overflowing block focused again
     // later starts from its rest beat rather than resuming mid-glide.
     let title_over = title_w_val.is_some_and(|w| w > (at.w - lead).max(0.0));
-    let caption_over = caption_w > at.w;
+    let caption_over = caption_w > (at.w - caption_lead).max(0.0);
     let title_text = label.title.as_ref().map_or(std::borrow::Cow::Borrowed(""), |t| t.to_string_lossy());
     let block = marquee::Block::of(
         (&title_text, title_over.then_some(title_w_val.unwrap_or(0.0))),
@@ -1668,13 +1631,19 @@ fn draw_label_block(
         TITLE_CLOCK.with(|c| c.release());
     }
     if let Some(t) = &label.title {
-        title_marquee(p, at, t.as_ptr(), y, label.glyph, title_w_val.unwrap_or(0.0), block.as_ref(), label.shadowed,
+        title_marquee(p, at, t.as_ptr(), y, title_mark, title_w_val.unwrap_or(0.0), block.as_ref(), label.shadowed,
             label.within_tile);
         y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
     if let Some(s) = &caption_str {
         let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
+        // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge
+        // and glides inside the window after it (the title's rule, `title_marquee`).
         if let Some(block) = block.as_ref().filter(|_| caption_over) {
+            if caption_mark {
+                draw_play_mark(p, at.x, y, csz, 0);
+            }
+            let x0 = at.x + caption_lead;
             TITLE_CLOCK.with(|clock| {
                 MARQUEE.glide_in(
                     clock,
@@ -1682,23 +1651,27 @@ fn draw_label_block(
                     &block.key,
                     caption_w,
                     block.cycle_w,
-                    Rect::new(at.x, y - MARQUEE_AIR, at.w, UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
                     |dx| {
-                        let window = label.within_tile.then_some((at.x, at.x + at.w));
+                        let window = label.within_tile.then_some((x0, at.x + at.w));
                         if label.shadowed {
-                            block_text(p, tc.as_ptr(), at.x + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
+                            block_text(p, tc.as_ptr(), x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                                 crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window);
                         }
-                        block_text(p, tc.as_ptr(), at.x + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window);
+                        block_text(p, tc.as_ptr(), x0 + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window);
                     },
                 )
             });
         } else {
+            let tx = at.run_x(caption_w).max(at.x + caption_lead);
+            if caption_mark {
+                draw_play_mark(p, tx - caption_lead, y, csz, 0);
+            }
             if label.shadowed {
-                p.text(tc.as_ptr(), at.run_x(caption_w), y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
+                p.text(tc.as_ptr(), tx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                     crate::caption_policy::CAPTION_SHADOW, 0, 0);
             }
-            p.text(tc.as_ptr(), at.run_x(caption_w), y, csz, theme::CAPTION_DETAIL_INK, 0, 0);
+            p.text(tc.as_ptr(), tx, y, csz, theme::CAPTION_DETAIL_INK, 0, 0);
         }
     }
 }
@@ -1811,20 +1784,6 @@ mod tests {
         assert_eq!(plx_machine::machine::PressRead::<()>::default().dip(), 1.0);
         let moving = plx_machine::machine::PressRead::<()> { scale: 0.92, ..Default::default() };
         assert_eq!(moving.dip(), 0.92);
-    }
-
-    /// A collection's caption is its size — "1 item", "3 items" — never a year it does not have.
-    #[test]
-    fn a_collection_caption_counts_its_items() {
-        use crate::tile::{TileFacts, TileKind};
-        let caption = |child_count, year| super::focused_caption(&TileFacts {
-            kind: TileKind::Collection, child_count, year, ..Default::default()
-        }, false).map(|c| c.into_string().unwrap());
-        assert_eq!(caption(3, 0).as_deref(), Some("3 items"));
-        assert_eq!(caption(1, 1999).as_deref(), Some("1 item"));
-        assert_eq!(caption(0, 0).as_deref(), Some("0 items"));
-        let film = TileFacts { year: 1999, child_count: 3, ..Default::default() };
-        assert_eq!(super::focused_caption(&film, false).unwrap().to_str().unwrap(), "1999");
     }
 
     #[test]
@@ -2717,6 +2676,103 @@ mod tests {
 
     fn leftmost(xs: &[f32]) -> f32 {
         xs.iter().copied().fold(f32::MAX, f32::min)
+    }
+
+    /// One focused tile's block as drawn: the text runs and the amber play marks, top to bottom.
+    fn block_of(label: &TileLabel) -> (Vec<crate::draw_census::Run>, Vec<Rect>) {
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let mut runs = Vec::new();
+        let marks = crate::draw_census::capture_play_marks(|| {
+            runs = crate::draw_census::capture_runs(|| {
+                draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, label,
+                    &crate::fixture::FixtureMeasure);
+            });
+        });
+        runs.retain(|run| run.at.y >= rect.y + rect.h);
+        runs.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
+        (runs, marks)
+    }
+
+    /// **The amber mark leads the FIRST line drawn and hangs left of it**: with a title it leads the
+    /// title, and the title is centred as if the mark were not there, on the same centre as the line
+    /// below it (a group centred WITH the mark sat half a mark off the line below it).
+    /// **The census reads a focused block's lines whatever their ink**: a shadowed Under posters
+    /// block, a stray UNSHADOWED legacy block (it would hide from a style whitelist), a line that
+    /// reads like its neighbour (two lines, not one) and a gliding line (its follower is the same
+    /// line) each come out as the lines a person reads.
+    #[test]
+    fn the_label_census_reads_every_block_line_whatever_its_ink() {
+        let lines_of = |label: &TileLabel| {
+            let runs = crate::draw_census::capture_runs(|| {
+                draw_focused(Painter::recording(), Art::Poster(None), Rect::new(700.0, 300.0, RowStyle::HOME.w, RowStyle::HOME.h),
+                    1.0, &RowStyle::HOME, None, label, &crate::fixture::FixtureMeasure);
+            });
+            crate::draw_census::label_lines(&runs)
+        };
+        let shadowed = TileLabel::from_lines([Some("Heat".into()), Some("Crime".into())]);
+        assert_eq!(lines_of(&shadowed), ["Heat", "Crime"]);
+        let stray = TileLabel::titled("Stray", "legacy line");
+        assert!(!stray.shadowed, "premise: the legacy block carries no shadow");
+        assert_eq!(lines_of(&stray), ["Stray", "legacy line"], "an unshadowed block is seen too");
+        let twins = TileLabel::from_lines([Some("Season 3".into()), Some("Season 3".into())]);
+        assert_eq!(lines_of(&twins), ["Season 3", "Season 3"], "two lines that read alike stay two");
+        let gliding = TileLabel::from_lines([None, Some("A details line far too long for the card it sits under to hold in one go".into())]).within_tile();
+        assert_eq!(lines_of(&gliding).len(), 1, "a gliding line and its follower are one line");
+        assert!(lines_of(&TileLabel::default()).is_empty(), "no block, no line");
+    }
+
+    #[test]
+    fn the_play_mark_hangs_left_of_a_title_centred_with_the_line_below() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        let label = TileLabel { glyph: true, ..TileLabel::titled("Sintel", "8m left") };
+        let (runs, marks) = block_of(&label);
+        assert_eq!(marks.len(), 1, "one mark: {marks:?}");
+        let (title, caption) = (&runs[0], &runs[1]);
+        assert_eq!((title.text.as_str(), caption.text.as_str()), ("Sintel", "8m left"));
+        let centre = |run: &crate::draw_census::Run| run.at.x + run.at.w * 0.5;
+        assert!((centre(title) - centre(caption)).abs() < 0.5,
+            "the title is centred like the line below it: {} vs {}", centre(title), centre(caption));
+        let mark = marks[0];
+        assert!((mark.x + mark.w + PLAY_ICON_GAP - title.at.x).abs() < 0.5, "the mark hangs left of the title: {mark:?} {:?}", title.at);
+        assert!(mark.y < title.at.y + UNDER_LINE_H && mark.y + mark.h > title.at.y, "on the title's line: {mark:?} {:?}", title.at);
+    }
+
+    /// With no title the mark leads the details line, centred the same way; with no line at all
+    /// (Nothing) there is nothing to lead and no mark.
+    #[test]
+    fn the_play_mark_leads_the_details_line_when_there_is_no_title() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        let label = TileLabel { glyph: true, caption: std::ffi::CString::new("8m left").ok(), ..TileLabel::default() };
+        let (runs, marks) = block_of(&label);
+        assert_eq!((runs.len(), marks.len()), (1, 1), "{runs:?} {marks:?}");
+        let (line, mark) = (&runs[0], marks[0]);
+        assert!((line.at.x + line.at.w * 0.5 - (700.0 + RowStyle::HOME.w * 0.5)).abs() < 0.5, "centred on the card: {:?}", line.at);
+        assert!((mark.x + mark.w + PLAY_ICON_GAP - line.at.x).abs() < 0.5, "the mark hangs left of the line: {mark:?} {:?}", line.at);
+        assert!(mark.y < line.at.y + UNDER_CAPTION_H && mark.y + mark.h > line.at.y, "on the line: {mark:?} {:?}", line.at);
+        let (runs, marks) = block_of(&TileLabel { glyph: true, ..TileLabel::default() });
+        assert!(runs.is_empty() && marks.is_empty(), "a block with no line draws no mark: {runs:?} {marks:?}");
+        let (_, marks) = block_of(&TileLabel { glyph: false, ..TileLabel::titled("Sintel", "8m left") });
+        assert!(marks.is_empty(), "a press that does not play draws none");
+    }
+
+    /// A details line the block cannot hold glides after a mark that stays at the window's left edge.
+    #[test]
+    fn a_gliding_details_line_keeps_the_play_mark_at_the_window_edge() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let label = TileLabel { glyph: true, caption: std::ffi::CString::new(LONG_CAPTION).ok(), ..TileLabel::default() };
+        let (rest, rest_marks) = block_of(&label);
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        let (gliding, marks) = block_of(&label);
+        assert_eq!((rest_marks.len(), marks.len()), (1, 1));
+        assert_eq!(rest_marks[0].x, marks[0].x, "the mark does not glide");
+        let leftmost_run = |runs: &[crate::draw_census::Run]| runs.iter().map(|r| r.at.x).fold(f32::MAX, f32::min);
+        assert!(leftmost_run(&gliding) < leftmost_run(&rest), "the line has moved left of its rest");
+        assert!((marks[0].x + marks[0].w + PLAY_ICON_GAP - leftmost_run(&rest)).abs() < 0.5, "at rest the text starts after the mark");
     }
 
     /// A focused tile's caption — a year, a character, an episode address — is read like its

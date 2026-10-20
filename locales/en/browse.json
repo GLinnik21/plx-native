@@ -53,7 +53,7 @@
   },
   "browse.detail.specials": {
     "value": "Specials",
-    "description": "A season numbered 0 that the server gave no title: its caption, and the name of the extras season."
+    "description": "A season numbered 0 that the server gave no title: the identity line of its caption (caption_policy)."
   },
   "browse.kind.show": {
     "value": "Show",

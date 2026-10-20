@@ -55,7 +55,7 @@ pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
             u32::try_from(item.season_index).unwrap_or(0),
             u32::try_from(item.ep_index).unwrap_or(0),
         )),
-        show: (item.kind == 3).then(|| item.show_title.clone()).filter(|show| !show.is_empty()),
+        show: (item.kind == 3 || season).then(|| item.show_title.clone()).filter(|show| !show.is_empty()),
         name_cut: item.kind == KIND_COLLECTION && face_cuts_name(item),
         ..Default::default()
     }

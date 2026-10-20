@@ -1012,7 +1012,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
             "offset {} is not in progress",
             m.resume_ms
         );
-        let cap = ui_cards::focused_caption(&tile_facts::of(&m), true).expect("a Continue Watching episode always captions");
+        let cap = ui_cards::cw_caption(&tile_facts::of(&m)).expect("a Continue Watching episode always captions");
         assert!(
             !cap.to_str().unwrap().contains("left"),
             "offset {}: no bar, so the caption must not promise time remaining ({cap:?})",
@@ -1025,7 +1025,7 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
         "20 minutes into 45 IS in progress"
     );
     assert_eq!(
-        ui_cards::focused_caption(&tile_facts::of(&mid), true).unwrap().to_str().unwrap(),
+        ui_cards::cw_caption(&tile_facts::of(&mid)).unwrap().to_str().unwrap(),
         "Laura \u{00b7} 25m left"
     );
 }
@@ -1099,13 +1099,19 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
 
 #[test]
 fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
-    // The block the Under posters setting can draw: nothing, one line or two.
-    let lines = crate::registry::captions::policy().max_lines();
-    let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
-    for rows in 1..=SWEEP_ROWS {
-        for focus_row in 0..rows {
-            let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - rest_scroll(focus_row, rows);
-            assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y);
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    // Every block the Under posters setting can draw: two lines, one line, nothing.
+    for (title, details) in [(true, Details::Genre), (false, Details::YearLength), (false, Details::None)] {
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+        let lines = crate::registry::captions::policy().max_lines();
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+        let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
+        for rows in 1..=SWEEP_ROWS {
+            for focus_row in 0..rows {
+                let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - rest_scroll(focus_row, rows);
+                assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y,
+                    "title {title}, {details:?}: row {focus_row} of {rows} ends its {lines}-line block at {}", row_y + CARD_DY + CARD_H + block);
+            }
         }
     }
 }
@@ -4610,13 +4616,18 @@ fn chrome_source_stale(rig: &mut WashRig, view: HubsView<'_>, sources: &std::rc:
     stale
 }
 
-/// The pixel row the first row's heading is drawn at: its text is snapped to whole pixels.
-fn heading_px(s: &HomeScreen) -> f32 {
-    plx_gfx::gfx::snap(heading_y(s.grid.base_y(0), s.grid.lift(0)))
+/// What the first row's heading is drawn as: the pixel row its text is snapped to, and the 8-bit
+/// code of the alpha it fades to by the place it is DRAWN at (`scroll_chrome`'s clearance: the lift
+/// included, so no ink of it stands over the chip).
+fn heading_px(s: &HomeScreen) -> (f32, u32) {
+    let y = heading_y(s.grid.base_y(0), s.grid.lift(0));
+    (plx_gfx::gfx::snap(y), (plx_ui::scroll_chrome::clearance_under_shown_chrome(y) * 255.0).round() as u32)
 }
 
 /// A held RIGHT along the first row: the chrome glass's blur source is re-rendered ONLY on frames
-/// where the row heading moves a whole pixel, and the heading is the one thing under the chrome's
+/// where the row heading's ink changes (it moves a whole pixel, or its fade steps an alpha code: it
+/// fades by where it is drawn, so the settle of its lift is also a ramp of its alpha), and the
+/// heading is the one thing under the chrome's
 /// region that really changes during a hold. The focused card's pop is let go while the key is held,
 /// so the heading (lifted to clear the popped tile, 17 px) settles back to its rest. That is a real
 /// change under the glass's lens (its top is 14 px below the glass), so it is left to invalidate;
@@ -4639,7 +4650,7 @@ fn a_held_right_along_the_first_row_re_renders_the_chrome_glass_source_only_for_
     }
     assert!(!chrome_source_stale(&mut rig, view, &sources), "a resting page is already stable");
     rig.key_edge(view, Edge::Repeat);
-    let mut frames = Vec::new(); // (stale, the heading moved this frame)
+    let mut frames = Vec::new(); // (stale, the heading's ink changed this frame)
     let mut heading = heading_px(&rig.s);
     let mut moves = 0;
     for _ in 0..16 {

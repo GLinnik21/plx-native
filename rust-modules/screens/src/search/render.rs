@@ -553,23 +553,6 @@ fn heading_flow(
     dx
 }
 
-/// The caption of a tile that is NOT a poster: an episode still's air date and a headshot's nothing,
-/// then the server it came from when it is not the household's own. A poster's caption is the Under
-/// posters setting's, built by `registry::captions` (see `RowCards::label`).
-pub(super) fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
-    let mut parts = Vec::new();
-    if let (Kind::Episode, Item::Media(media)) = (kind, item) {
-        let date = plx_ui::fmt::pretty_date(&media.aired, media.year as i64);
-        if !date.is_empty() {
-            parts.push(date);
-        }
-    }
-    if !handle.is_empty() {
-        parts.push(handle.into());
-    }
-    parts.join(" · ")
-}
-
 fn source_label(source: &ScopeSource) -> String {
     if source.household {
         return if source.name.is_empty() {
@@ -685,7 +668,7 @@ mod tests {
         assert_eq!(msg::browse_search_placeholder_c_in(&be).to_str().unwrap(), "Пошук у вашай бібліятэцы");
     }
 
-    use plx_data::search::{Item, Kind, State, TagHit};
+    use plx_data::search::{Item, Kind, State};
 
     fn own(name: &str) -> ScopeSource {
         ScopeSource {
@@ -1180,12 +1163,18 @@ mod tests {
         assert_eq!(runs("Collections", "", "").len(), 1);
     }
 
-    /// A tile that is not a poster keeps this caption: an episode still its air date, a headshot
-    /// nothing, each with the server it came from named last. (A poster's caption is the Under
-    /// posters setting's: `a_poster_result_is_worded_by_the_under_posters_builder`.)
+    /// A tile that is not a poster keeps this block: an episode still is worded by the one landscape
+    /// builder (`registry::captions::still_label`: its title over its air date, its address when it
+    /// has no title), a headshot has its name alone, each with the server it came from named last.
+    /// (A poster's caption is the Under posters setting's: `a_poster_result_is_worded_by_the_under_posters_builder`.)
     #[test]
     fn a_still_or_headshot_caption_names_a_borrowed_source_last() {
-        let ep = Item::Media(plx_data::pms::PmsMovie {
+        use crate::registry::captions::still_label;
+        let lines = |l: &plx_ui::cards::TileLabel| {
+            let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_string_lossy().into_owned());
+            [text(&l.title), text(&l.caption)]
+        };
+        let ep = plx_data::pms::PmsMovie {
             kind: 3,
             title: "A Grand Day Out".into(),
             show_title: "Wallace & Gromit".into(),
@@ -1193,28 +1182,22 @@ mod tests {
             ep_index: 3,
             aired: "1989-11-04".into(),
             ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Episode, &ep, ""), "11/4/1989");
+        };
+        assert_eq!(lines(&still_label(&ep, false, "")), [Some("A Grand Day Out".into()), Some("11/4/1989".into())]);
         assert_eq!(
-            subtitle(Kind::Episode, &ep, "friend"),
-            "11/4/1989 · friend"
+            lines(&still_label(&ep, false, "friend")),
+            [Some("A Grand Day Out".into()), Some("11/4/1989 \u{b7} friend".into())]
         );
-        let undated = Item::Media(plx_data::pms::PmsMovie {
+        let undated = plx_data::pms::PmsMovie {
             kind: 3,
-            title: "A Grand Day Out".into(),
             season_index: 1,
             ep_index: 3,
             ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Episode, &undated, ""), "");
-        assert_eq!(subtitle(Kind::Episode, &undated, "friend"), "friend");
-        let person = Item::Tag(TagHit {
-            name: "Peter Sallis".into(),
-            count: 9,
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Person, &person, ""), "");
-        assert_eq!(subtitle(Kind::Person, &person, "friend"), "friend");
+        };
+        assert_eq!(lines(&still_label(&undated, false, "")), [Some("S1 \u{b7} E3".into()), None],
+            "an untitled, undated episode says its address alone");
+        assert_eq!(lines(&still_label(&undated, false, "friend")), [Some("S1 \u{b7} E3".into()), Some("friend".into())]);
+        assert!(still_label(&ep, false, "").shadowed, "a still is shadowed like every other landscape block");
     }
 
     /// Every collection result reaches the shared card as `Art::Poster` with a kind-4 row, which

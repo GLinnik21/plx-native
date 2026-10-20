@@ -1286,6 +1286,13 @@ impl WatchlistScreen {
         self.stack.view(&self.page).scale_of(cx, elem)
     }
 
+    /// Poster `i`'s settled cell as the grid stands now, the caption band folded in: where an app-tier
+    /// test reads how much room the focused row opened under its posters.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_cell(&self, i: usize) -> Option<plx_ui::Rect> {
+        self.stack.grid(Sec::Items).map(|grid| grid.cell_probe(i))
+    }
+
     /// Test support: the focused caption band's height the grid opens (0 / 80 / 112 by the policy).
     #[cfg(test)]
     pub(crate) fn band_h(&self) -> Option<f32> {
@@ -1404,14 +1411,6 @@ impl WatchlistScreen {
         }
         let i = self.page.cell_of(focus?)?;
         self.page.tiles.get(i).map(|t| t.row.title.clone())
-    }
-
-    /// Test support: the caption lines (title, details) the tile at `i` would draw under the focus now.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn label_probe(&self, i: usize) -> (Option<String>, Option<String>) {
-        let label = self.page.label(i);
-        let text = |c: Option<std::ffi::CString>| c.map(|c| c.to_string_lossy().into_owned());
-        (text(label.title), text(label.caption))
     }
 
     /// The poster path and server the tile at `i` asks the poster store for (empty path: the

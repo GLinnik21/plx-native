@@ -1226,7 +1226,7 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
 
 pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
     let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::default() };
-    if shelf.landscape { return crate::registry::captions::still_label(item, shelf.is_continue); }
+    if shelf.landscape { return crate::registry::captions::still_label(item, shelf.is_continue, ""); }
     crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
 }
 

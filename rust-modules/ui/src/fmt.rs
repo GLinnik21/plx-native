@@ -175,7 +175,7 @@ pub fn clock(ms: i64) -> String {
 /// **An episode's ADDRESS — `S1 · E3`** — the ONE spelling of it, in every place the app prints it:
 /// the identifier printed inside a still's artwork, a poster's persistent mark, the Library grid's
 /// and Recommended's title line, and the Under posters caption (`caption_policy`, the Continue
-/// Watching deck's `focused_caption`). The separator is the MIDDLE DOT, the design's: the Library
+/// Watching deck's `cw_caption`). The separator is the MIDDLE DOT, the design's: the Library
 /// mock's still ("`Library Screens.dc.html` E") and the redesign spec's details line by kind
 /// ("Episode “S2 · E4 · 48 min”", `spec-collections.md`) both set it, as the official client's own
 /// hold menu does. (The caption used to spell it from a catalog key of its own, with a bullet, so one
@@ -391,8 +391,10 @@ mod tests {
     }
 }
 
-/// A calendar date from a Plex `YYYY-MM-DD` — `"1 Feb 1921"`. ONE spelling, because the same value
-/// is now drawn by two screens: detail's episode air dates and the person page's Born/Died line.
+/// A calendar date from a Plex `YYYY-MM-DD`, in the UI language's own short form (the locale's ICU
+/// short date: `"2/1/1921"` in English). ONE spelling, because the same
+/// value is drawn by several screens: detail's episode air dates, the person page's Born/Died line
+/// and the landscape stills' release date (`registry::captions::still_label`).
 /// `year` is the fallback when the item carries only a year (an episode with no `originallyAvailableAt`);
 /// pass 0 when there is none, and an unparseable date yields the empty string rather than a
 /// half-formatted one — every caller draws a date line only when it is non-empty.

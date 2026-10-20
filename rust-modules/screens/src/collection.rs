@@ -169,12 +169,15 @@ pub fn member_label(item: &PmsMovie) -> String {
 }
 
 /// A member's focused caption: the one Under posters builder, like every other poster. Every kind
-/// goes through it, an episode too. The poster of an episode already wears its address
-/// ([`member_label`], "S3 · E4", a persistent mark that stays), so its caption does not say it
-/// twice: where the setting would fall back to the address it names the show instead
-/// (`CaptionFacts::address_on_art`).
+/// goes through it, an episode or a season too. The poster of an episode or a numbered season
+/// already wears its address ([`member_label`], "S3 · E4" or "SEASON 3", a persistent mark that
+/// stays), so its caption does not say it twice: where the setting would fall back to the address it
+/// names the show instead (`CaptionFacts::address_on_art`).
 fn member_caption(item: &PmsMovie) -> TileLabel {
-    let facts = plx_ui::caption_policy::CaptionFacts { address_on_art: item.kind == 3, ..tile_facts::caption_facts(item) };
+    let facts = plx_ui::caption_policy::CaptionFacts {
+        address_on_art: item.kind == 3 || (item.kind == 2 && item.season_index > 0),
+        ..tile_facts::caption_facts(item)
+    };
     crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None, false)
 }
 
@@ -688,6 +691,13 @@ plx_ui::focusable_via_view!(CollectionScreen, H: [ContentLike + CollectionLike],
 
 impl CollectionScreen {
     pub const SHAPE: &'static str = "CollectionScreen{entry:u32,sid:u32,rk:String,sec:i64,tag:i64,name:String,header_marked:bool,return_pending:bool,next_elem:u32,card_keys:[{sid:u32,rk:String,elem:u32}],stack:Stack{scroll:{pos:f32,vel:f32},target:f32,sections:[Grid{bands,pop}]}}";
+
+    /// Member poster `i`'s settled cell as the grid stands now, the caption band folded in: where an
+    /// app-tier test reads how much room the focused row opened under its posters.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_cell(&self, i: usize) -> Option<Rect> {
+        self.stack.grid(Sec::Items).map(|grid| grid.cell_probe(i))
+    }
 
     pub fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self {

@@ -703,9 +703,10 @@ its ground participate in backdrop discovery, including texture changes and UV c
 - An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
   else: the detail page's episode filmstrip always, and a Continue Watching deck only while
   Settings > Playback > Continue Watching is "Play" (`DeckPress::Play`; the default opens the page
-  and draws none) AND the focused tile shows a title line: on a poster deck (Home's, Recommended's)
-  the mark leads the title line (`registry::captions::label`), so with Settings > Libraries > Under
-  posters > Title Off (the default) a deck that plays on OK draws no mark. Watch state does not
+  and draws none). On a poster deck (Home's, Recommended's) the mark leads the FIRST line the Under
+  posters setting draws (`registry::captions::label`): the title when Title is On, else the details
+  line ("8m left"), hanging to the left of a line that is centred as if it were not there; with the
+  title and the details both off (Nothing) no line is drawn and so no mark. Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
   the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
   FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely
@@ -716,8 +717,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
   always the mark that read as "this will play".
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES** (a poster deck with the Title switch Off is the one exception: it plays
-on OK and has no title line to carry the mark), and an episode navigates to its own detail page —
+**A card with no play indicator NAVIGATES** (a poster deck set to Play with the title and details both Off draws no
+line to carry the mark, the one exception), and an episode navigates to its own detail page —
 except on Continue Watching, where it opens the SHOW on the card's season
 (`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an

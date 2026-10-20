@@ -520,15 +520,18 @@ impl World {
         let sources = glass.sources.clone();
         sources.borrow_mut().begin(self.d.backdrop_layers(1.0));
         let mut words = Vec::new();
-        let runs = plx_ui::draw_census::capture_runs(|| {
-            let _declarations = backdrop::discover(sources.clone());
-            words = plx_ui::draw_census::capture_text(|| {
-                self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
+        let mut runs = Vec::new();
+        let marks = plx_ui::draw_census::capture_play_marks(|| {
+            runs = plx_ui::draw_census::capture_runs(|| {
+                let _declarations = backdrop::discover(sources.clone());
+                words = plx_ui::draw_census::capture_text(|| {
+                    self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
+                });
             });
         });
         sources.borrow_mut().resolve();
         backdrop::commit(&sources);
-        Drawn { words, runs }
+        Drawn { words, runs, marks }
     }
 
     /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
@@ -579,6 +582,16 @@ impl World {
     pub(super) fn library(&self) -> &plx_screens::library::LibraryScreen {
         self.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref())
             .expect("a Library page (the grid or the Collections page) is on top")
+    }
+
+    /// Poster `i`'s settled cell on the grid page on top (the Library grid or the Collections page, the
+    /// Watchlist, the Collection screen's members), the caption band folded in.
+    pub(super) fn poster_cell(&self, i: usize) -> plx_ui::Rect {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::library::LibraryScreen>() { return page.probe_cell(i).0; }
+        if let Some(page) = any.downcast_ref::<plx_screens::watchlist::page::WatchlistScreen>() { return page.probe_cell(i).expect("the Watchlist holds a grid"); }
+        if let Some(page) = any.downcast_ref::<plx_screens::collection::CollectionScreen>() { return page.probe_cell(i).expect("the Collection screen holds a grid"); }
+        panic!("the top page holds no poster grid");
     }
 
     /// The scroll the page on top is travelling to (0 at its top).
@@ -653,30 +666,22 @@ pub(super) struct Drawn {
     pub(super) words: Vec<(String, plx_ui::Rect)>,
     /// The same runs with their style: `ink[3]` is the alpha the page drew each at (the cascade folded in).
     pub(super) runs: Vec<plx_ui::draw_census::Run>,
+    /// Every amber play mark the frame drew (a host paints no icon: the census notes each one), as
+    /// the rect it stands in.
+    pub(super) marks: Vec<plx_ui::Rect>,
 }
 
 impl Drawn {
     /// Was `text` drawn, exactly as one run?
     pub(super) fn says(&self, text: &str) -> bool { self.words.iter().any(|(words, _)| words == text) }
 
-    /// **The lines of the focused Under posters caption this frame drew**, top to bottom, with no
-    /// list of words to look for: every line of that block is drawn with the policy caption's own
-    /// 1 px shadow (`plx_ui::caption_policy::CAPTION_SHADOW`, which only a block from
-    /// `TileLabel::from_lines` carries), so the shadow runs ARE the block. A line the setting
-    /// turned off, or one nothing asked for, is not there; one that should not be fails the test
-    /// that compares this list. A gliding line's follower is the same line.
-    pub(super) fn caption_lines(&self) -> Vec<String> {
-        let shadow = plx_ui::caption_policy::CAPTION_SHADOW;
-        let mut shadows: Vec<_> = self.runs.iter()
-            .filter(|run| run.ink[..3] == shadow[..3] && run.ink[3] > 0.0 && run.ink[3] <= shadow[3] + 1e-3)
-            .collect();
-        shadows.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
-        let mut lines: Vec<String> = Vec::new();
-        for run in shadows {
-            if lines.last() != Some(&run.text) { lines.push(run.text.clone()); }
-        }
-        lines
-    }
+    /// **The lines of the focused tile's label block this frame drew**, top to bottom, with no list of
+    /// words to look for: every run `card_row::draw_label_block` drew, whatever its ink
+    /// (`plx_ui::draw_census::label_lines`), so a line the setting turned off, or one nothing asked
+    /// for, is not there, and one that should not be (a stray UNSHADOWED legacy block under Nothing
+    /// included) fails the test that compares this list. A line's shadow and a gliding line's
+    /// follower are the same line; two lines that read alike stay two.
+    pub(super) fn caption_lines(&self) -> Vec<String> { plx_ui::draw_census::label_lines(&self.runs) }
 }
 
 pub(super) use super::super::words::every_route;

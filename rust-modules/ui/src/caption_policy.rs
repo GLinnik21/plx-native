@@ -113,12 +113,13 @@ pub struct CaptionFacts {
     /// title the server gave it ("Season 6", "Specials"). `title` then holds the name of its SHOW, the
     /// name a reader knows the tile by, and this is the season's identity line.
     pub season: Option<(u32, String)>,
-    /// An episode's SHOW name, which its details line says when its art already prints the address
-    /// ([`address_on_art`](Self::address_on_art)).
+    /// An episode's or a season's SHOW name, which the details line says when the tile's art already
+    /// prints its address ([`address_on_art`](Self::address_on_art)).
     pub show: Option<String>,
-    /// An episode whose poster already wears its address as a persistent mark (the Collection
-    /// screen's members, `widgets::poster_label`): its details line does not repeat the address, it
-    /// names the show.
+    /// An episode or a season whose poster already wears its address as a persistent mark ("S3 · E4",
+    /// "SEASON 3"; the Collection screen's members, `widgets::poster_label`): its details line does
+    /// not repeat it, it names the show, and a season with no show says nothing rather than its own
+    /// number twice.
     pub address_on_art: bool,
     /// A COLLECTION whose face cuts its name (`collection_tile::name_is_cut`: the live name over a
     /// baked fan or the neutral tile runs past its band). The face is the only other place the name
@@ -171,10 +172,14 @@ pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &Loca
         ),
     };
     let details = picked.or_else(|| identity_line(facts, locale));
+    // The same words are never drawn twice: a season named by its show over its show, or an orphan
+    // season over its own title, shows the one line.
+    let details = details.filter(|line| title.as_ref() != Some(line));
     [title, join(details.into_iter().chain(facts.source.clone().filter(|s| !s.is_empty())).collect())]
 }
 
-fn join(parts: Vec<String>) -> Option<String> {
+/// The facts of one caption line joined with the app's one separator (" · "); no facts, no line.
+pub fn join(parts: Vec<String>) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
 }
 
@@ -272,6 +277,10 @@ fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
         });
     }
     if let Some((number, own)) = &f.season {
+        if f.address_on_art {
+            // The art prints "SEASON 3": the line names the show, or nothing (never the number twice).
+            return f.show.clone().filter(|show| !show.is_empty());
+        }
         return Some(if !own.is_empty() {
             own.clone()
         } else if *number > 0 {

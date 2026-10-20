@@ -208,10 +208,10 @@ collection shelves** and **the Collection screen's members** (an episode member'
 (Stack hands it to a `Body::Shelf` as well as a `Body::Grid`); Detail owns its shelves and sets the policy on Related and the
 collection each step. **Landscape tiles and headshots are not posters and do not read it**: the Library's Episodes listing, Search's Episode stills and Person
 headshots, Detail's Extras and Cast, and Recommended's landscape rows keep the legacy block under every setting (the Episodes listing's grid is handed
-`None` for its policy, so its band is the legacy 114 px one the two-line label needs; a landscape still's block is `captions::still_label`). A shelf is
+`None` for its policy, so its band is the legacy 114 px one the two-line label needs; every landscape block is made by `captions::still_block`: `still_label` words an episode's, Extras hand theirs in). A shelf is
 handed the policy (`Shelf::set_caption_policy`) and reserves,
 opens and reveals its band from `caption_policy::band_h`; a tile that carries a state keeps it (the Continue Watching deck's
-time left is its details line, a filmography poster's character is its details line, the amber play mark leads its title while OK plays, a Watchlist title's release date or
+time left is its details line, a filmography poster's character is its details line, the amber play mark leads the first line drawn while OK plays, a Watchlist title's release date or
 "Server offline"), and with Title Off and Details set to Nothing no band opens (a state line is dropped with the details line).
 **One rule for every kind of tile: a line the setting turns on is never drawn empty** (`caption_policy::caption_lines`): the title line is the name a reader
 knows the tile by (`tile_facts::caption_facts`: a season by its SHOW, an episode by its own title, a show or movie by its title), and a

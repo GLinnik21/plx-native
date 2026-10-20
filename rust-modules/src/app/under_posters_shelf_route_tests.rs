@@ -95,6 +95,67 @@ fn a_continue_watching_tile_on_home_keeps_its_time_left_line() {
     }
 }
 
+/// **The amber play mark leads the FIRST line drawn whenever OK plays the deck card**, read off the
+/// frame the page draws (`Drawn::marks`, since a host paints no icon): the title when the Title switch
+/// is on, else the time-left line; Title Off with Details Nothing draws no line and so no mark; and a
+/// deck whose OK opens the page (the default) draws none under any setting.
+#[test]
+fn the_play_mark_leads_the_first_line_drawn_whenever_ok_plays_the_deck_card() {
+    use plx_media::route::{deck_press, restore_deck_press, DeckPress};
+    struct Back(DeckPress);
+    impl Drop for Back {
+        fn drop(&mut self) { restore_deck_press(self.0); }
+    }
+    let mut w = home(true, "cap-home-mark");
+    let _cell = Cell::default();
+    let _back = Back(deck_press());
+    for press in [DeckPress::Play, DeckPress::Details] {
+        restore_deck_press(press);
+        for (title, details, _) in TABLE {
+            set(&mut w, title, details);
+            let drawn = w.drawn();
+            let lines = drawn.caption_lines();
+            let setting = format!("{press:?}, title {title}, details {details:?}");
+            let marked = press == DeckPress::Play && !lines.is_empty();
+            assert_eq!(drawn.marks.len(), usize::from(marked), "{setting}: the mark is drawn exactly when OK plays and a line is: {lines:?}");
+            let Some(mark) = drawn.marks.first() else { continue };
+            // the first line drawn is the block's topmost run; the mark hangs left of it, on its line
+            let first = drawn.runs.iter().filter(|run| run.label)
+                .min_by(|a, b| a.at.y.total_cmp(&b.at.y)).expect("a block with a mark has a line");
+            assert_eq!(first.text, lines[0], "{setting}");
+            assert!(mark.x + mark.w <= first.at.x + 1.0, "{setting}: the mark {mark:?} hangs left of {:?} {:?}", first.text, first.at);
+            let line_mid = first.at.y + first.at.h.max(first.size as f32) * 0.5;
+            assert!((mark.cy() - line_mid).abs() < first.size as f32, "{setting}: the mark {mark:?} stands on its line (y {line_mid})");
+        }
+    }
+}
+
+/// **The focused title is drawn in ONE ink on every poster surface** (CONFIRM-4: the Watchlist and
+/// Collections page titles read a step dimmer than Home's): the ink of the title line's run, the
+/// cascade's alpha folded in, is the same on Home, the Collections page and the Watchlist, so a dimmer page is the ground behind the title and not the title.
+#[test]
+fn the_focused_title_is_one_ink_on_every_poster_surface() {
+    let title_ink = |w: &mut World, surface: &str| {
+        super::under_posters_band_route_tests::focus_first_poster(w, surface);
+        let drawn = w.drawn();
+        let first = drawn.runs.iter().filter(|run| run.label)
+            .min_by(|a, b| a.at.y.total_cmp(&b.at.y)).expect("a focused poster draws its title").text.clone();
+        // the line's own run, not its 1 px shadow beneath it
+        let shadow = plx_ui::caption_policy::CAPTION_SHADOW;
+        let ink = drawn.runs.iter().filter(|run| run.label && run.text == first && run.ink[..3] != shadow[..3])
+            .map(|run| run.ink).next().expect("the title line draws its ink");
+        (first, ink)
+    };
+    // each world holds the process-global lock the setting needs, so the setting is restored before it drops
+    let on_home = { let mut w = home(false, "ink-home"); let _cell = Cell::default(); title_ink(&mut w, "Home").1 };
+    let on_collections = { let mut w = World::collections("ink-collections", false); let _cell = Cell::default(); title_ink(&mut w, "Collections").1 };
+    let on_watchlist = { let mut w = World::watchlist("ink-watchlist"); let _cell = Cell::default(); title_ink(&mut w, "Watchlist").1 };
+    // (the cascade folds alpha in float: one 8-bit step is 0.004)
+    let same = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1.0 / 255.0);
+    assert!(same(on_collections, on_home), "the Collections page's title ink {on_collections:?} is Home's {on_home:?}");
+    assert!(same(on_watchlist, on_home), "the Watchlist's title ink {on_watchlist:?} is Home's {on_home:?}");
+}
+
 /// A Recommended page whose shelves are posters, the page arriving on the first poster of the first
 /// shelf: the Continue Watching deck first or second; every card carries the facts of [`facts`].
 fn recommended(resume_on_deck: bool, name: &str, deck_first: bool) -> World {

@@ -43,7 +43,7 @@ pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::pol
 /// a season on Home; a collection's details line is its size, and a name its face cuts rides it). An episode is a landscape still, not a poster, and keeps its own block in the
 /// legacy band ([`captions::still_label`](crate::registry::captions::still_label)).
 pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
-    if item.kind == 3 { return crate::registry::captions::still_label(item, false); }
+    if item.kind == 3 { return crate::registry::captions::still_label(item, false, ""); }
     crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
 }
 
