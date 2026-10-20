@@ -6270,7 +6270,7 @@ impl PersonOwnerGateFixture {
         "nav.txt": 0,
         "sibling-migration.txt": 0,
         "statics-migration.txt": 0,
-        "statics.txt": 2,  # the two data/search/recents.rs persistence-seam statics; every ui/ render cache is a thread_local!
+        "statics.txt": 5,  # the two data/search/recents.rs persistence-seam statics + the three gfx.rs GL-context heap statics (ci/check-statics-heap.py); every ui/ render cache, the elide memo, the key memo and the text-input queue are thread_local!
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,
