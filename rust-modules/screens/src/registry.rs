@@ -2733,7 +2733,8 @@ impl Compaction {
 /// cards, not its place), and by a map of the old rows, built the first time that misses. A row
 /// KEPT whole is taken out of its slot (`Vec<Option<R>>::take`, never `Vec::remove`: closing the
 /// gap moves every row behind it, ~13 MB for 170 rows of a 920-byte `Row`); a row built again
-/// leaves the old one standing for the caller to read from and for [`RowDiff::unclaimed`].
+/// leaves the old one standing for the caller to read from (or [`take`](Self::take) from) and for
+/// [`RowDiff::unclaimed`].
 pub(crate) struct RowSeats<R, K> {
     old: Vec<Option<R>>,
     by_identity: Option<HashMap<K, usize>>,
@@ -2751,7 +2752,7 @@ pub(crate) struct RowDiff<R> {
     pub(crate) matched: Vec<Option<usize>>,
     /// The new rows built anew, ascending.
     pub(crate) rebuilt: Vec<usize>,
-    /// The old rows that were not kept whole, by their old position, ascending.
+    /// The old rows that were neither kept whole nor taken, by their old position, ascending.
     pub(crate) unclaimed: Vec<(usize, R)>,
 }
 
@@ -2781,6 +2782,10 @@ impl<R, K: std::hash::Hash + Eq> RowSeats<R, K> {
             .get_or_insert_with(|| old.iter().enumerate().filter_map(|(at, row)| Some((key_of(row.as_ref()?), at))).collect())
             .get(key).copied().filter(|&at| old[at].is_some())
     }
+
+    /// Take the old row at `at` out of its slot, for a new row that moves what it owns out of it
+    /// (the Recommended page's card section). A row taken is no longer [`RowDiff::unclaimed`].
+    pub(crate) fn take(&mut self, at: usize) -> Option<R> { self.old.get_mut(at)?.take() }
 
     /// The next new row is built anew, from the old row at `from` when it has one.
     pub(crate) fn rebuilt(&mut self, from: Option<usize>) {
