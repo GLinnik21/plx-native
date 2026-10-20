@@ -1340,7 +1340,7 @@ pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
 /// The shelves that publish a row, in catalog order after the deck: `(source, shelf)` indices.
 /// The single definition of that order, shared by the merge's output and the ring.
 fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, usize)> {
-    let mut order = Vec::new();
+    let mut order = Vec::with_capacity(srcs.iter().filter_map(|source| source.last.as_ref()).map(|build| build.shelves.len()).sum());
     for (i, source) in srcs.iter().enumerate() {
         let Some(build) = &source.last else { continue };
         for (j, shelf) in build.shelves.iter().enumerate() {
@@ -1408,10 +1408,14 @@ fn merge_held(srcs: &mut [Src], scope: &BrowseScope, hold: (usize, usize)) -> (H
 }
 
 /// The rows to read again: held, a descriptor, not stalled. Per source, in catalog order.
-fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], deck: usize, hold: (usize, usize)) -> Vec<Vec<(String, String)>> {
+/// `published_rows` is the published catalog's row count, which with the shelves' own order says how
+/// many deck rows lead it.
+fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], published_rows: usize, hold: (usize, usize)) -> Vec<Vec<(String, String)>> {
     let (lo, hi) = clamp_hold(hold);
+    let order = published_order(srcs, pins);
+    let deck = published_rows.saturating_sub(order.len());
     let mut wanted = vec![Vec::new(); srcs.len()];
-    for (k, (i, j)) in published_order(srcs, pins).into_iter().enumerate() {
+    for (k, (i, j)) in order.into_iter().enumerate() {
         if !(lo..=hi).contains(&(k + deck)) { continue; }
         let Some(shelf) = srcs[i].last.as_ref().and_then(|build| build.shelves.get(j)) else { continue };
         if shelf.released() && !srcs[i].stalled.iter().any(|(id, key)| shelf.is(id, key)) {
@@ -1428,8 +1432,7 @@ fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], deck: usize, hol
 fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
-    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut ask = false;
     for (source, want) in srcs.iter_mut().zip(&wanted) {
@@ -2018,18 +2021,23 @@ fn publishable_shelves<'a>(
 /// Counted per catalog entry, so a card two shelves share is counted twice — a ceiling on what the
 /// catalog holds, which is the side a memory bound wants to err on.
 fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
-    cat.iter()
-        .map(|m| {
-            std::mem::size_of::<PmsMovie>()
+    let mut total = 0;
+    let mut run = cat.iter().peekable();
+    // a released row is one placeholder Arc repeated `shown` times: size it once for the run
+    while let Some(m) = run.next() {
+        let mut copies = 1;
+        while run.next_if(|next| Arc::ptr_eq(next, m)).is_some() { copies += 1; }
+        total += copies
+            * (std::mem::size_of::<PmsMovie>()
                 + [
                     &m.title, &m.rating, &m.part, &m.thumb, &m.still, &m.art, &m.summary, &m.rk,
                     &m.vcodec, &m.acodec, &m.show_rk, &m.show_title, &m.aired,
                 ]
                 .iter()
                 .map(|s| s.capacity())
-                .sum::<usize>()
-        })
-        .sum()
+                .sum::<usize>());
+    }
+    total
 }
 
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
@@ -2091,6 +2099,12 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     // many placeholder slots as it last showed, which carry its server so the row keeps its identity.
     let publishable = publishable_shelves(&live, pins);
     let sids: Vec<ServerId> = srcs.iter().filter(|s| s.last.is_some()).map(|s| s.sid).collect();
+    // the catalog is built in one pass of known size: no regrowth of three tables of thousands
+    let (rows, cards) = live.iter().zip(&publishable).flat_map(|((_, b), pub_)| b.shelves.iter().zip(pub_))
+        .fold((0, 0), |(rows, cards), (sh, items)| (rows + 1, cards + if sh.released() { sh.shown } else { items.len() }));
+    new_hubs.reserve(rows);
+    new_cat.reserve(cards);
+    row_handle.reserve(cards);
 
     for (i, (handle, b)) in live.iter().enumerate() {
         for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
@@ -3685,8 +3699,7 @@ pub fn hold_for_test(state: &mut PmsState, lo: usize, hi: usize) -> bool {
 pub fn land_ring_rows_for_test(state: &mut PmsState, items: usize, salt: &dyn Fn(usize) -> usize) -> bool {
     plx_base::testlock::assert_held("the pms hub catalog (land_ring_rows_for_test)");
     let scope = BrowseScope::standalone();
-    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
-    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut landed = false;
     for (source, want) in srcs.iter_mut().zip(wanted) {
@@ -3724,8 +3737,7 @@ pub fn land_ring_rows_for_test(state: &mut PmsState, items: usize, salt: &dyn Fn
 pub fn land_kept_rows_for_test(state: &mut PmsState) -> bool {
     plx_base::testlock::assert_held("the pms hub catalog (land_kept_rows_for_test)");
     let scope = BrowseScope::standalone();
-    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
-    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut landed = false;
     for (source, want) in srcs.iter_mut().zip(wanted) {
