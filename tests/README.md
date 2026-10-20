@@ -461,7 +461,7 @@ write `plxnative-token`, and a dev-token boot with no Discover stand-in armed ha
 page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
 reads=refused` at boot). That is a standing decision (fail closed), and it settles the page as for a
 person the provider has never heard of, once, with nothing retried; `person-page`, `person-bio`,
-`filmography-idle`, `push-100` and `deep-100` grade the header and the shelves under it. Arming the
+`filmography-idle`, `push-100` and `deep-100` are the scenes that open one. Arming the
 stand-in (`plxnative-discover`, or a loopback `plxnative-plextv`) brings the mock's synthetic reads
 back; `plxnative-personbio` and `plxnative-personcredits` seed the content instead.
 
