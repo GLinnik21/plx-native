@@ -594,6 +594,17 @@ impl World {
         panic!("the top page holds no poster grid");
     }
 
+    /// **Every card's pop as the top page's draw paints it**, shelf by shelf (Home or the Recommended
+    /// page): `1.0` is a card at EXACT rest, which `ui::widgets::pop_factor` turns into `0.0` and the card
+    /// compositor into the plain program and the resting split. Anything above `1.0` on a card the
+    /// focus is not on is a card that never came to rest (`Spring::land`).
+    pub(super) fn card_pops(&self) -> Vec<Vec<f32>> {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::home::HomeScreen>() { return page.probe_card_pops(self.d.focus()); }
+        if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_card_pops(self.d.focus()); }
+        panic!("the top page is neither Home nor the Recommended page");
+    }
+
     /// The scroll the page on top is travelling to (0 at its top).
     pub(super) fn scroll_target(&self) -> f32 {
         let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");

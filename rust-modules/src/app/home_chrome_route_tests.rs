@@ -8,13 +8,13 @@
 //! what the page DREW (`World::drawn`, the text runs with the alpha the cascade left on each).
 
 use super::*;
-use super::test_support::World;
-use super::under_posters_shelf_route_tests::{set, Cell};
+use super::test_support::{Drawn, World};
+use super::under_posters_shelf_route_tests::{describe_cards, set, Cell};
 use plx_plex::plex::session::UnderPostersDetails as Details;
 use plx_ui::widgets::{CHIP_FRAME, TAB_TRACK_PAD, TOP_BAR_BOTTOM, TOP_BAR_Y};
 use plx_ui::Rect;
 
-const TITLES: [&str; 6] = ["Shelf Alpha", "Shelf Bravo", "Shelf Charlie", "Shelf Delta", "Shelf Echo", "Shelf Foxtrot"];
+pub(super) const TITLES: [&str; 6] = ["Shelf Alpha", "Shelf Bravo", "Shelf Charlie", "Shelf Delta", "Shelf Echo", "Shelf Foxtrot"];
 
 /// The three band heights the Under posters setting opens under the focused poster:
 /// `(name, title on, details, band)`.
@@ -27,11 +27,17 @@ const SETTINGS: [(&str, bool, Details, f32); 3] = [
 /// Home over six named shelves of three posters, the hero's Down already taken: focus is on the first
 /// poster of the first shelf.
 fn home_shelves(name: &str) -> World {
+    home_shelves_of(name, 3)
+}
+
+/// [`home_shelves`] with `cols` posters on every shelf (rating keys `1..=cols`, the same on every
+/// shelf), for a walk along a shelf that needs room to scroll.
+pub(super) fn home_shelves_of(name: &str, cols: usize) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
     let ids: Vec<String> = (0..TITLES.len()).map(|i| format!("test.row.{i}")).collect();
     let rows: Vec<(&str, &str, &str)> = ids.iter().zip(TITLES).map(|(id, title)| (id.as_str(), "", title)).collect();
     let adapter = w.bridge.stores.hubs.adapter_for_test();
-    plx_data::pms::seed_named_hubs_for_test(w.bridge.stores.hubs.state_mut(), &adapter, 3, &rows);
+    plx_data::pms::seed_named_hubs_for_test(w.bridge.stores.hubs.state_mut(), &adapter, cols, &rows);
     w.frames(30);
     w.press(Key::Down);
     w
@@ -56,8 +62,13 @@ struct Heading {
 }
 
 fn headings(w: &mut World) -> Vec<Heading> {
+    headings_in(&w.drawn())
+}
+
+/// [`headings`] over a frame already drawn, so one draw can be graded for its headings and its caption.
+fn headings_in(drawn: &Drawn) -> Vec<Heading> {
     let line = plx_ui::theme::size::HEADLINE as f32;
-    w.drawn().runs.into_iter().filter_map(|run| {
+    drawn.runs.iter().filter_map(|run| {
         let title = *TITLES.iter().find(|title| **title == run.text)?;
         Some(Heading { title, rect: Rect { h: run.at.h.max(line), ..run.at }, alpha: run.ink[3] })
     }).collect()
@@ -202,5 +213,111 @@ fn a_pointer_user_reaches_the_shelves_either_side_of_a_resting_shelf() {
         w.frames(150);
         assert!((heading_y(&mut w, 3).unwrap_or(f32::NAN) - rest).abs() < 1.0,
             "{setting}: pointing at a poster of shelf 4 brought it to the rest line ({:?})", heading_y(&mut w, 3));
+    }
+}
+
+/// A genre wider than the whole panel's room, so the focused details line is a marquee at every
+/// card of the shelf (`card_row`'s glide: the line and its follower inside a clip window, after a rest
+/// beat). A shorter one would still glide under the first cards, but a block that reaches back left of
+/// a card near the right edge (`anchor_label`) holds a line that fits the room whole, at rest.
+const LONG_GENRE: &str = "Psychological Courtroom Neo-Noir Crime Thriller Saga Of Many Unusual Genres No Poster Can Hold, \
+And No Gap Beside It Can Spare, Not Even With The Caption Reaching Back Across The Panel To Its Left Edge";
+
+/// The most the focused shelf's heading is lifted by while focus is in the row's first slots
+/// (`card_row::heading_clearance`), which it gives up as a walk leaves them: a pixel of slack over it.
+const HEADING_LIFT_MAX: f32 = 18.0;
+
+/// The focused caption's long line as the frame drew it: the left edge of its leftmost run, and how many
+/// runs of it there were (the line and its follower, each with its shadow). `None`: the line was not
+/// drawn. (A host draw is a backdrop-discovery walk, which keeps the marquee's clip window to itself, so
+/// the line's place is read against another frame of the same tile, and its motion against
+/// `plx_machine::idle`'s local damage, which a marquee past its rest beat claims.)
+fn long_line(drawn: &Drawn) -> Option<(f32, usize)> {
+    let runs: Vec<_> = drawn.runs.iter().filter(|run| run.label && run.text == LONG_GENRE).collect();
+    (!runs.is_empty()).then(|| (runs.iter().map(|run| run.at.x).fold(f32::INFINITY, f32::min), runs.len()))
+}
+
+/// Draw the frame, and say whether a marquee is moving in it (past its rest beat).
+fn draw_and_glides(w: &mut World) -> (Drawn, bool) {
+    let _ = plx_machine::idle::take_local_damage();
+    let frame = w.drawn();
+    (frame, plx_machine::idle::take_local_damage() > 0)
+}
+
+/// **A held Right along a Home shelf glides the focused caption while the shelf headings stay clear
+/// of the chip.** The two were only ever graded apart: the glide DIRECT (`card_row`'s marquee tests),
+/// the headings on a page that scrolls vertically. Here a person holds Right along a shelf whose
+/// cards all carry a details line too long to hold, with the page resting on the third shelf: at every
+/// step of the walk the focused block is the setting's lines, the long line is a marquee that keeps
+/// gliding through the walk (the block's text is the same on every card, so its clock runs on), no
+/// heading is drawn over the chip, and the focused shelf's heading rests at one line whatever band the
+/// setting opens, only coming down from it by the lift it gives up as the walk leaves the first slots.
+#[test]
+fn a_held_right_along_a_home_shelf_glides_the_caption_without_a_heading_over_the_chip() {
+    // (name, Title switch, Details picker): a two-line band, a one-line band, and no band at all.
+    const WALKS: [(&str, bool, Details); 3] = [
+        ("title-and-genre", true, Details::Genre),
+        ("genre-alone", false, Details::Genre),
+        ("nothing", false, Details::None),
+    ];
+    const STEPS: usize = 6;
+    let mut rested: Vec<(&str, f32)> = Vec::new();
+    for (name, title, details) in WALKS {
+        let mut w = home_shelves_of(&format!("hc-walk-{name}"), 12);
+        describe_cards(&mut w, 12, &|m, _| { m.title = "Heat".into(); m.genre = Some(LONG_GENRE.into()); });
+        let _cell = Cell::default();
+        set(&mut w, title, details);
+        to_shelf(&mut w, 2);
+        w.frames(40);
+        let setting = format!("{name} (title {title}, details {details:?})");
+        let want: Vec<&str> = title.then_some("Heat").into_iter().chain((details != Details::None).then_some(LONG_GENRE)).collect();
+        // (the focused heading rises while focus is in the first slots: `heading_clearance`'s lift)
+        let rest = heading_y(&mut w, 2).unwrap_or_else(|| panic!("{setting}: premise: the focused shelf's heading is drawn"));
+        rested.push((name, rest));
+        let mut heading = rest;
+        // The block is drawn for the first time (that keys the marquee's clock), and its rest beat passes
+        // (`marquee::TITLE`, one second), so the walk starts on a line that is already moving.
+        let start = w.focus();
+        let (first, _) = draw_and_glides(&mut w);
+        assert_eq!(long_line(&first).is_some(), details != Details::None, "{setting}: premise: the long line is drawn exactly when the setting shows a details line");
+        w.frames(120);
+        // steps 0..=STEPS are the walk (0: before any Right); the two after it are the walk's end at rest,
+        // a second apart, where the line has visibly moved on.
+        let mut at_rest: Vec<f32> = Vec::new();
+        for step in 0..STEPS + 3 {
+            match step {
+                0 => {}
+                s if s <= STEPS => { w.tap(Key::Right, 2); }
+                s if s == STEPS + 1 => w.frames(120),
+                _ => w.frames(30),
+            }
+            let (frame, glides) = draw_and_glides(&mut w);
+            assert_eq!(frame.caption_lines(), want, "{setting}, step {step}: the focused block is the setting's lines");
+            for h in headings_in(&frame).iter().filter(|h| overlaps(h.rect, CHIP_FRAME)) {
+                assert!(h.alpha <= 0.02, "{setting}, step {step}: the heading {:?} at {:?} is drawn at alpha {} over the chip (none allowed)", h.title, h.rect, h.alpha);
+            }
+            let focused = headings_in(&frame).into_iter().find(|h| h.title == TITLES[2] && drawn(h))
+                .unwrap_or_else(|| panic!("{setting}, step {step}: the focused shelf's heading is drawn"));
+            // It only ever comes down from the place it rested at, and by no more than the lift it gives up:
+            // never up toward the chip, whatever the band or the glide under it.
+            assert!(focused.rect.y >= heading - 0.01 && focused.rect.y <= rest + HEADING_LIFT_MAX,
+                "{setting}, step {step}: the focused heading, resting at {rest}, only comes down by the lift ({heading} -> {})", focused.rect.y);
+            heading = focused.rect.y;
+            match long_line(&frame) {
+                Some((x, runs)) => {
+                    assert!(runs >= 2, "{setting}, step {step}: the long line is a marquee, a run and its follower, got {runs} runs");
+                    assert!(glides, "{setting}, step {step}: the line is past its rest beat and gliding, yet the frame reports no motion");
+                    if step > STEPS { at_rest.push(x); }
+                }
+                None => assert!(details == Details::None && !glides, "{setting}, step {step}: the long line is not drawn, and nothing glides in its place"),
+            }
+        }
+        if let [first, second] = at_rest[..] {
+            assert!(second < first - 5.0, "{setting}: a second on, the line has glided left on the card the walk landed on ({first} -> {second})");
+        }
+        assert_ne!(w.focus(), start, "{setting}: premise: the walk moved focus");
+    }
+    for pair in rested.windows(2) {
+        assert!((pair[0].1 - pair[1].1).abs() < 0.5, "the focused heading rests at one y whatever the band: {rested:?}");
     }
 }
