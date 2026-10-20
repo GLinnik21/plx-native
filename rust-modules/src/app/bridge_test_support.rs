@@ -393,6 +393,17 @@ impl World {
         w
     }
 
+    /// Home over `rows` shelves of `cols` cards each (`seed_grid_for_test`), settled, focus on the hero. The world is the Home-disc one (a scripted plex.tv), the
+    /// one Home mount the rig has with no library registry under it.
+    pub(super) fn home_grid(name: &str, rows: usize, cols: usize) -> World {
+        let mut w = Self::scripted(name);
+        w.bridge.stores.hubs.seed_grid_for_test(rows, cols);
+        super::show_page(&mut w.d, AppArg::Home);
+        w.frames(60);
+        assert!(w.on(&AppArg::Home), "premise: Home is on top");
+        w
+    }
+
     /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
     /// over the same scripted plex.tv, settled.
     pub(super) fn detail_with_disc(name: &str, hex: [u8; 12]) -> World {
@@ -539,6 +550,17 @@ impl World {
     pub(super) fn library(&self) -> &plx_screens::library::LibraryScreen {
         self.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref())
             .expect("a Library page (the grid or the Collections page) is on top")
+    }
+
+    /// **Every card's pop as the top page's draw paints it**, shelf by shelf (Home or the Recommended
+    /// page): `1.0` is a card at EXACT rest, which `ui::widgets::pop_factor` turns into `0.0` and the card
+    /// compositor into the plain program and the resting split. Anything above `1.0` on a card the
+    /// focus is not on is a card that never came to rest (`Spring::land`).
+    pub(super) fn card_pops(&self) -> Vec<Vec<f32>> {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::home::HomeScreen>() { return page.probe_card_pops(self.d.focus()); }
+        if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_card_pops(self.d.focus()); }
+        panic!("the top page is neither Home nor the Recommended page");
     }
 
     /// The scroll the page on top is travelling to (0 at its top).

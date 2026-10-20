@@ -1,4 +1,4 @@
-//! Tier 1 of the card conformance suite: the seven `conformance` cases run against [`Shelf`] and
+//! Tier 1 of the card conformance suite: the eight `conformance` cases run against [`Shelf`] and
 //! [`Grid`] on `FixtureHost`, plus focused tests for the pop rule, the geometry, the events and
 //! idle. No expected-failure list: every case passes on both components.
 use super::conformance::{self, CardHarness, Landing, Mount, Nb, Outcome};
@@ -486,14 +486,14 @@ fn mount_external_grid(n: usize) -> Box<dyn CardHarness> {
 }
 
 #[test]
-fn the_seven_conformance_cases_pass_on_shelf_and_grid() {
+fn the_eight_conformance_cases_pass_on_shelf_and_grid() {
     let table: [(&'static str, Mount); 3] =
         [("shelf", mount_shelf), ("grid", mount_grid), ("external", mount_external_grid)];
     let matrix = conformance::run_all(&table);
     for (s, c, o) in &matrix {
         eprintln!("{s:6} {c:18} {o:?}");
     }
-    assert_eq!(matrix.len(), 21);
+    assert_eq!(matrix.len(), 24);
     let bad: Vec<_> = matrix.iter().filter(|(_, _, o)| *o != Outcome::Pass).collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }

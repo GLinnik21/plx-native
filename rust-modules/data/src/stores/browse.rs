@@ -394,6 +394,12 @@ impl BrowseStore {
         crate::browse::section_hubs::land_held_rows_for_owner_test(&mut self.state, section);
     }
 
+    /// The rows of `section` the ring gave up (placeholders) and the band the store holds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn released_rows_for_test(&self, section: usize) -> (Vec<usize>, (usize, usize)) {
+        crate::browse::section_hubs::released_rows_for_owner_test(&self.state, section)
+    }
+
     /// One row of `section` takes a fresh window of `count` cards through the store's own landing
     /// (`section_hubs::land_row`).
     #[cfg(any(test, feature = "test-support"))]

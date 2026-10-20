@@ -65,7 +65,7 @@
 //! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the
 //! row and band geometry its own layout is built from, the heading painters) is re-exported here;
 //! the `cards` gate in `ci/check-deps.sh` is the backstop.
-//! Tier 1 of the conformance suite (`tests.rs`) runs the same seven cases the real screens run
+//! Tier 1 of the conformance suite (`tests.rs`) runs the same eight cases the real screens run
 //! (`conformance`, Tier 2) against both components on `FixtureHost`.
 
 use std::ops::Range;
