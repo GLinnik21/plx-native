@@ -1,7 +1,10 @@
 //! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
-//! draw_text. Main-thread only (all GL), so the caches are plain statics (no
-//! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
-//! the retui text backend.
+//! draw_text. Main-thread only (all GL), so the font and glyph caches (GL names, `TTF_Font`
+//! pointers, fixed arrays) are plain statics (no locking). The caches that OWN HEAP are not:
+//! the elide and measured-bounds memos are `thread_local!`, and each fallback face's cmap loads
+//! once into a `OnceLock`, because a heap-owning `static mut` that one thread replaces frees what
+//! another is using (`ci/check-statics-heap.py`). Uses gfx's link_program/use_prog (crate path).
+//! Mostly GL/TTF FFI — the retui text backend.
 //!
 //! The glyph cache is an LRU **with a hot window** since phase 11 (spec §8.1): an entry drawn
 //! within the last eight frames is not evicted while any colder slot exists, and the case where
@@ -914,10 +917,19 @@ const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 static mut FONTS_EMOJI: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
-/// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
-static mut COV: [Option<plx_base::fontcov::Coverage>; 4] = [None, None, None, None];
-static mut COV_TRIED: [bool; 4] = [false; 4];
+/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. A slot holding
+/// `None` means the file is absent or unreadable, i.e. the link is empty.
+///
+/// A `OnceLock` per link and not a `thread_local!`: the cmap is a pure function of a file, so one
+/// load serves every thread (a per-thread table would read the 44k-codepoint cmap once per thread
+/// for nothing), and `get_or_init` runs the load exactly once even when two threads ask for the
+/// same link first, which the old `COV_TRIED` flag plus a plain write did not guarantee.
+static COV: [std::sync::OnceLock<Option<plx_base::fontcov::Coverage>>; 4] = [
+    std::sync::OnceLock::new(),
+    std::sync::OnceLock::new(),
+    std::sync::OnceLock::new(),
+    std::sync::OnceLock::new(),
+];
 
 /// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
 /// through it, so the two can never disagree about which file a link is.
@@ -940,13 +952,9 @@ fn link_file(link: Link) -> std::path::PathBuf {
 /// `font_at`'s DroidSans branch and logged loudly, and in that state the useful behaviour is the
 /// pre-chain one — render the whole string in one call with whatever face opened — not to split
 /// every string into runs against a coverage set of nothing.
-unsafe fn link_covers(link: Link, cp: u32) -> bool {
-    let i = link as usize;
-    let tried = &mut *addr_of_mut!(COV_TRIED);
-    if !tried[i] {
-        tried[i] = true;
+fn link_covers(link: Link, cp: u32) -> bool {
+    let loaded = COV[link as usize].get_or_init(|| {
         let path = link_file(link);
-        let cov = &mut *addr_of_mut!(COV);
         match plx_base::fontcov::of_file(&path) {
             Ok(c) => {
                 log(&format!(
@@ -954,19 +962,22 @@ unsafe fn link_covers(link: Link, cp: u32) -> bool {
                     path.display(),
                     c.len()
                 ));
-                cov[i] = Some(c);
+                Some(c)
             }
             // Not a failure for Cjk/Sys — a television without DroidSansFallback, or a host
             // simulator with no bundled face, simply has a shorter chain. Logged once either way,
             // WITH the path, because "why is this still tofu" is otherwise unanswerable from a log
             // and the answer is usually that the file is not where the install put it.
-            Err(e) => log(&format!(
-                "font chain: {link:?} unavailable — {}: {e}",
-                path.display()
-            )),
+            Err(e) => {
+                log(&format!(
+                    "font chain: {link:?} unavailable — {}: {e}",
+                    path.display()
+                ));
+                None
+            }
         }
-    }
-    match &(*addr_of!(COV))[i] {
+    });
+    match loaded {
         Some(c) => c.contains(cp),
         None => link == Link::Base,
     }
@@ -1022,13 +1033,13 @@ struct Runs {
 ///
 /// The ASCII shortcut is the reason an English library pays nothing at all for this feature: it
 /// returns before any coverage is loaded, so `appfont-cjk.ttf`'s cmap is never even opened.
-unsafe fn split_runs(s: &str) -> Option<Runs> {
+fn split_runs(s: &str) -> Option<Runs> {
     split_runs_with(s, |link, cp| link_covers(link, cp))
 }
 
 /// [`split_runs`] with the coverage oracle passed in — the pure half, so the host suite can drive
 /// it against the REAL shipped cmaps without a `TTF_Font`, a GL context or an install directory.
-/// The `unsafe` half is only the lazy file load behind `link_covers`.
+/// The lazy file load is behind `link_covers`.
 fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> {
     if s.is_ascii() {
         return None;
@@ -1105,10 +1116,14 @@ fn is_emoji_joiner(cp: u32) -> bool {
 }
 
 /// [`run_text`] against the emoji face's own cmap.
-unsafe fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
-    run_text(link, s, |cp| match &(*addr_of!(COV))[Link::Emoji as usize] {
-        Some(c) => c.astral_rank(cp),
-        None => None,
+fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
+    // Reads the table only if `split_runs` already loaded it: an emoji run exists only because
+    // `link_covers` asked the emoji face about a codepoint.
+    run_text(link, s, |cp| {
+        COV[Link::Emoji as usize]
+            .get()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.astral_rank(cp))
     })
 }
 
@@ -1712,7 +1727,11 @@ impl plx_machine::machine::Measure for TtfMeasure {
     }
 }
 
-static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+thread_local! {
+    /// [`elide`]'s memo: (text, budget, size, weight, continuation) hashed to the elided string.
+    /// Per thread because it owns `String`s that a full memo frees wholesale; see [`elide`].
+    static ELIDE_MEMO: RefCell<HashMap<u64, String>> = RefCell::default();
+}
 
 #[derive(Default)]
 pub struct MeasuredBounds {
@@ -1968,8 +1987,9 @@ mod fitted_line_tests {
 /// cont) makes every later frame a hash lookup, thrash-proof no matter how long the input. `cont=false`
 /// returns `s` unchanged when it already fits (a plain elide — track menu / chapters / info card);
 /// `cont=true` always marks the result with `…` (a continued line whose caller already knows more text
-/// follows — `TextView`). The single truncation impl for the whole UI. Main-thread only, like the
-/// glyph cache.
+/// follows — `TextView`). The single truncation impl for the whole UI. The memo is the calling
+/// thread's own ([`ELIDE_MEMO`]): the frame loop is the one caller that matters, and a memo shared
+/// by every test thread is one that a clearing thread frees under a reading one (2026-10-20).
 pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
     let mut hh = DefaultHasher::new();
     s.hash(&mut hh);
@@ -1978,15 +1998,19 @@ pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String
     bold.hash(&mut hh);
     cont.hash(&mut hh);
     let key = hh.finish();
-    let cache = unsafe { (*addr_of_mut!(ELIDE_CACHE)).get_or_insert_with(HashMap::new) };
-    if let Some(v) = cache.get(&key) {
-        return v.clone();
+    // The cell is borrowed twice, never across `elide_compute` (which measures through
+    // `text_width` and its own memo and never calls back into `elide`).
+    if let Some(hit) = ELIDE_MEMO.with(|memo| memo.borrow().get(&key).cloned()) {
+        return hit;
     }
     let out = elide_compute(s, budget, sz, bold, cont);
-    if cache.len() > 512 {
-        cache.clear(); // crude cap — plenty for every label/line across a few screens
-    }
-    cache.insert(key, out.clone());
+    ELIDE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() > 512 {
+            memo.clear(); // crude cap — plenty for every label/line across a few screens
+        }
+        memo.insert(key, out.clone());
+    });
     out
 }
 
@@ -2026,6 +2050,55 @@ pub fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> S
         }
     }
     cut(lo)
+}
+
+/// `elide`'s memo is read and replaced by the thread that paints, and `cargo test` paints from many
+/// threads at once. A shared memo that one thread clears while another reads is the crash `plx_ui`'s
+/// tab labels had (2026-10-20), so every thread must see only its own memo.
+#[cfg(test)]
+mod elide_memo_tests {
+    use super::*;
+    use std::sync::{mpsc, Arc, Barrier};
+    use std::time::Duration;
+
+    /// Eight threads elide disjoint strings, far past the memo's 512-entry cap so every thread
+    /// clears it again and again while the others insert. With one process-wide memo that is a
+    /// data race on a `HashMap` that frees `String`s the other threads are cloning: an abort in
+    /// libmalloc, a wrong string, or a corrupted table that spins forever (the unfixed code did
+    /// exactly that, at 320% CPU for 13 minutes). So the workers are detached and the test waits
+    /// for them with a deadline rather than joining; a memo per thread is eight private loops that
+    /// finish in well under a second.
+    #[test]
+    fn every_thread_elides_through_its_own_memo() {
+        const THREADS: usize = 8;
+        const ROUNDS: usize = 4000;
+        let start = Arc::new(Barrier::new(THREADS));
+        let (done, finished) = mpsc::channel();
+        for t in 0..THREADS {
+            let (start, done) = (Arc::clone(&start), done.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let size = 20 + (t % 3) as c_int;
+                let outcome = std::panic::catch_unwind(|| {
+                    for i in 0..ROUNDS {
+                        let text = format!("thread {t} row {i} a title long enough to be cut short");
+                        let budget = 40.0 + (i % 7) as f32 * 8.0;
+                        let got = elide(&text, budget, size, 0, i % 2 == 0);
+                        let want = elide_compute(&text, budget, size, 0, i % 2 == 0);
+                        assert_eq!(got, want, "thread {t} round {i}");
+                    }
+                });
+                let _ = done.send((t, outcome.is_ok()));
+            });
+        }
+        drop(done);
+        for _ in 0..THREADS {
+            let (t, ok) = finished
+                .recv_timeout(Duration::from_secs(60))
+                .expect("a worker never finished: the elide memo is shared between threads and corrupted");
+            assert!(ok, "thread {t} read another thread's elided string");
+        }
+    }
 }
 
 #[cfg(test)]
