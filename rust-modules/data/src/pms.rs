@@ -1360,12 +1360,13 @@ fn give_up_cards(shelf: &mut Shelf) -> bool {
 }
 
 /// Gives the cards of every row outside the held range up to its descriptor. `hubs` is the merge
-/// that was just built from `srcs`; returns whether any row changed.
-fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> bool {
+/// that was just built from `srcs`; returns the rows that changed as `(row, source)`, `row` being
+/// the index into that merge's `hubs` and `source` the index into `srcs`.
+fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> Vec<(usize, usize)> {
     let order = published_order(srcs, pins);
     let deck = hubs.len().saturating_sub(order.len());
     let (lo, hi) = clamp_hold(hold);
-    let mut changed = false;
+    let mut released = Vec::new();
     for (k, &(i, j)) in order.iter().enumerate() {
         let row = k + deck;
         if (lo..=hi).contains(&row) { continue; }
@@ -1375,22 +1376,35 @@ fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow]
         shelf.shown = hubs[row].len;
         shelf.items = Vec::new();
         shelf.positions = Vec::new();
-        changed = true;
+        released.push((row, i));
     }
-    changed
+    released
 }
 
 /// [`merge_with_scope`] with the ring applied: rows outside the held range give their cards up and
-/// the catalog is built again from descriptors. The hero pool is the full merge's (it is built from
-/// the rows a refresh brought, before they were released); its cards are kept in the catalog.
+/// the catalog shows them as descriptors. The hero pool is the full merge's (it is built from the
+/// rows a refresh brought, before they were released); its cards are kept in the catalog.
+///
+/// A row that gives its cards up publishes as many placeholders as it showed (`Shelf::shown` is set
+/// to its length), so releasing it changes nothing about the catalog's shape: the same rows, the
+/// same starts and lengths, only the cards in its slice. The merge that was just built is therefore
+/// PATCHED for those rows, not built a second time from every source (every press of a Down key
+/// moves the band and used to pay for two whole merges here; `merge_held_equals_a_merge_of_the_settled_ring`
+/// pins that the patch is the merge it replaces).
 fn merge_held(srcs: &mut [Src], scope: &BrowseScope, hold: (usize, usize)) -> (HubBuild, bool) {
     let mut build = merge_with_scope(srcs, scope);
-    let changed = settle_ring(srcs, &scope.pins, &build.1, hold);
-    if changed {
-        let full = std::mem::replace(&mut build, merge_with_scope(srcs, scope));
-        keep_heroes(&full.0, &full.2, &mut build);
+    let released = settle_ring(srcs, &scope.pins, &build.1, hold);
+    if released.is_empty() { return (build, false); }
+    // the pool's cards, before the slices they sit in are overwritten
+    let pool: Vec<(Arc<PmsMovie>, String, usize)> = build.2.iter()
+        .map(|hero| (Arc::clone(&build.0[hero.idx]), hero.source.clone(), hero.idx)).collect();
+    for (row, i) in released {
+        let hub = &build.1[row];
+        let slot = Arc::new(PmsMovie { sid: srcs[i].sid, ..PmsMovie::default() });
+        for card in &mut build.0[hub.start..hub.start + hub.len] { *card = Arc::clone(&slot); }
     }
-    (build, changed)
+    place_heroes(pool, &mut build);
+    (build, true)
 }
 
 /// The rows to read again: held, a descriptor, not stalled. Per source, in catalog order.
@@ -1661,12 +1675,21 @@ fn preserve_heroes(state: &PmsState, build: &mut HubBuild) {
 /// Makes `heroes` (slots into `items`) the pool of `build`, adding to its catalog the cards it does
 /// not hold.
 fn keep_heroes(items: &[Arc<PmsMovie>], heroes: &[HeroSlot], build: &mut HubBuild) {
+    place_heroes(heroes.iter().map(|hero| (Arc::clone(&items[hero.idx]), hero.source.clone(), hero.idx)).collect(), build);
+}
+
+/// [`keep_heroes`] for a pool already lifted out of its catalog as `(card, source handle, the
+/// slot it held)`. A card still at the slot it held (the catalog's shape did not move, which is
+/// every call but a refresh that reordered rows) is found there without a scan; any other is looked
+/// for by identity, and appended when the catalog no longer holds it.
+fn place_heroes(pool: Vec<(Arc<PmsMovie>, String, usize)>, build: &mut HubBuild) {
     build.2.clear();
-    for hero in heroes {
-        let item = &items[hero.idx];
-        let idx = build.0.iter().position(|row| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk)))
-            .unwrap_or_else(|| { build.0.push(Arc::clone(item)); build.0.len() - 1 });
-        build.2.push(HeroSlot { idx, source: hero.source.clone() });
+    for (item, source, held) in pool {
+        let same = |row: &Arc<PmsMovie>| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk));
+        let idx = build.0.get(held).filter(|row| same(row)).map(|_| held)
+            .or_else(|| build.0.iter().position(|row| same(row)))
+            .unwrap_or_else(|| { build.0.push(Arc::clone(&item)); build.0.len() - 1 });
+        build.2.push(HeroSlot { idx, source });
     }
 }
 

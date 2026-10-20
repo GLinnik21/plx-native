@@ -293,3 +293,43 @@ fn a_released_row_keeps_a_ledger_only_when_its_window_cannot_be_read_without_it(
     assert_eq!(kept, (0..ROWS).filter(|row| row % 5 == 0 && build.shelves[*row].released()).count());
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A Hold moves the band and the rows that left it give their cards up. The catalog is PATCHED for
+/// them (their slices become placeholders, the shape is the same), not built a second time; the
+/// result must be the catalog a second merge of the settled ring produces, hero pool included - a
+/// hero in a row that left the band is kept as a card the catalog still holds.
+#[test]
+fn merge_held_equals_a_merge_of_the_settled_ring() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let id = plx_plex::plex::register_for_test("ring", "127.0.0.1", 9, "synthetic", "cid");
+    let hero_rows = [2, 60, 61, 300];
+    let shelves = (0..ROWS).map(|row| {
+        let mut sh = pageable_shelf(id.raw(), row);
+        if hero_rows.contains(&row) {
+            sh.hub_id = format!("x.recent.{row}");
+            for item in &mut sh.items { Arc::make_mut(item).art = format!("/art/{row}"); }
+        }
+        sh
+    }).collect();
+    let mut srcs = vec![src(id.raw(), "", HubState::Ready, Some(built(id.raw(), &[], shelves)))];
+    let scope = BrowseScope::standalone();
+    let full = merge_with_scope(&srcs, &scope);
+    assert!(full.2.len() >= 3, "the fixture pools heroes from several rows");
+    let (patched, changed) = merge_held(&mut srcs, &scope, (0, 15));
+    assert!(changed, "most rows are outside the band");
+    // the old way: the same sources, merged again once the ring has settled
+    let mut rebuilt = merge_with_scope(&srcs, &scope);
+    keep_heroes(&full.0, &full.2, &mut rebuilt);
+    let keys = |build: &HubBuild| build.0.iter().map(|m| (m.sid, m.rk.clone(), m.art.clone())).collect::<Vec<_>>();
+    assert_eq!(keys(&patched), keys(&rebuilt), "the patched catalog holds the cards a second merge holds");
+    let rows = |build: &HubBuild| build.1.iter().map(|h| (h.title.clone(), h.hub_id.clone(), h.key.clone(),
+        h.source.clone(), h.total, h.start, h.len, h.offset, h.more, h.epoch)).collect::<Vec<_>>();
+    assert_eq!(rows(&patched), rows(&rebuilt));
+    let pool = |build: &HubBuild| build.2.iter().map(|h| (build.0[h.idx].rk.clone(), h.source.clone())).collect::<Vec<_>>();
+    assert_eq!(pool(&patched), pool(&rebuilt));
+    assert!(patched.2.iter().all(|h| !patched.0[h.idx].rk.is_empty()), "no hero is a placeholder");
+    assert!(patched.1.iter().skip(16).all(|h| patched.0[h.start..h.start + h.len].iter().all(|m| m.rk.is_empty())),
+        "the rows outside the band are placeholders");
+    plx_plex::plex::reset_servers_for_test();
+}
