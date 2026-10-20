@@ -121,9 +121,11 @@ pub(super) struct GridPart {
     /// The poster wall (`ui::cards::Grid`, [`ScrollMode::External`](plx_ui::cards::ScrollMode)):
     /// the focused cell's pop and the let-gos of the cells it left, the caption bands, drawing, stops,
     /// placement and neighbours. The page scroll is the Library's; the grid is handed it
-    /// (`Grid::set_page`) before every call. A pop starts from REST only when a deliberate move
-    /// arms it; every other way a cell becomes focused is adopted at full scale, because a page
-    /// coming back from a Detail push must land exactly as it was left.
+    /// (`Grid::set_page`) before every call. A pop starts from REST when a deliberate move arms it
+    /// and when the first awake tick finds a focus no event announced since the last dormant tick;
+    /// a restore or reconcile announced after that is adopted at full scale (`ui::cards`, the pop
+    /// rule). A page returning from a Detail push is dormant under the BACK dip's held image, so
+    /// its focused poster regrows from rest when the image is let go.
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,

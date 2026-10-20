@@ -1249,9 +1249,10 @@ impl LibraryScreen {
             }
             ScreenEvent::FocusMoved { from, to, by } => {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
-                // tile from rest over the frames after this. A restore or a
-                // reconcile is adopted whole by its next tick so a page returning from a Detail
-                // push lands as it was left.
+                // tile from rest over the frames after this. A restore or a reconcile announced
+                // here is adopted whole by its next tick, unless a dormant tick ran since (a page
+                // returning from a Detail push under the held image, `Tick` below), in which case
+                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat

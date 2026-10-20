@@ -252,6 +252,19 @@ impl CardRow {
         self.band.jump(0.0);
         true
     }
+    /// Let go of focus and put every spring that is a rest value (each cell's scale, the heading's
+    /// lift, the label band) on its rest target AT ONCE, whatever it was doing: a row that is
+    /// [`at_exact_rest`](Self::at_exact_rest) afterwards. [`park`](Self::park) lands only a row whose
+    /// springs have already settled; this is the cut for a row nobody can see move (the page is a held
+    /// transition image). `scroll_x` is a retained viewport, not a rest value, and is left alone.
+    pub fn snap_to_rest(&mut self) {
+        self.focus = -1;
+        for sp in self.scale.iter_mut().chain([&mut self.overflow]) {
+            sp.jump(1.0);
+        }
+        self.lift.jump(0.0);
+        self.band.jump(0.0);
+    }
     /// Step every cell's scale spring (all `MAX_ROW_ITEMS` every call — invariant #10; Home skips the
     /// call for a row at [`at_exact_rest`](Self::at_exact_rest), a fixed point of this method) toward
     /// `focus_scale` for the focused cell else 1.0; then, ONLY when this row is focused, glide the
