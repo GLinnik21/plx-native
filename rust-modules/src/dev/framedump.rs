@@ -158,7 +158,7 @@
 //! slot 0` line plus one `home: hero page slot N rk=R` per page turn, checked by `gates` against the
 //! `demo_library.py hero-report` pass set and `not_in_video`) and `opened_rating_keys` (every title page opened, read from the mock's request log), which `gates`
 //! checks against the catalog's `not_in_video` flag. A storyboard render also writes the
-//! `plxnative-hintoff` trigger (`app::boot` teaches the hold hint on every screen kind, a one-time
+//! `plxnative-hintoff` trigger (`app::boot` teaches the hold hint on every screen, a one-time
 //! teaching overlay a film has no viewer for) and records `hold_hint: suppressed`. Nothing here assumes
 //! the script is "hold".
 //!

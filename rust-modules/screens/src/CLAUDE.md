@@ -176,7 +176,7 @@ smallest worked example.
 - Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
   through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
   (`focusable_via_view!(Screen, H: [Bounds], view)` for a screen generic over its host).
-- Opt into the hold hint with `Stack::hold_hint(Kind)`; `card_has_menu` says which cards a hold
+- Opt into the hold hint with `Stack::hold_hint()`; `card_has_menu` says which cards a hold
   actually opens a menu on.
 - Register a conformance mount: a `cards_harness.rs` child module of the screen exposing
   `mount` (see `collection/cards_harness.rs`), and a row for it in `table()` of

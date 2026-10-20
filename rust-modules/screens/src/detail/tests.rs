@@ -168,7 +168,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
-        hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
+        hold_hint: plx_ui::hold_hint::HoldHint::new(),
     };
     screen.sync_keys(test_store().view());
     screen
@@ -4111,7 +4111,7 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
 
 /// The hold hint (`ui::hold_hint`) on a Detail card shelf whose held OK opens an item menu
 /// (Related, Collection): it stands after the dwell on a settled card, not on the hero, not while
-/// a menu owns focus, and not a second time on a Detail page this run.
+/// a menu owns focus, and not a second time this run.
 #[test]
 fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     let sid = ServerId::UNSET;
@@ -4139,17 +4139,17 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     let on = |elem| Some(FocusKey { entry: EntryId(7), elem });
     rest(&mut screen, on(card), 1.2);
     assert!(!screen.hold_hint.visible(), "not before the dwell");
-    // negatives first: a stand spends the kind's latch and would make them vacuous
+    // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never while a menu owns focus");
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
     rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never on a hero control");
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never on a hero control");
     rest(&mut screen, on(card), 3.6);
     assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
     assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut screen, on(card), 4.0);
-    assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
+    assert!(!screen.hold_hint.visible(), "and not a second time this run");
     clear();
 }
 

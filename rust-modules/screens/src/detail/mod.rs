@@ -341,7 +341,7 @@ pub struct DetailScreen {
     /// deliberately absent from [`SHAPE`].
     spot_facts: SpotFacts,
     /// The standing "Hold OK for options" hint over a Related or Collection card
-    /// (`plx_ui::hold_hint`, the rarer cadence of a non-Home card screen). Paint-only: not hashed,
+    /// (`plx_ui::hold_hint`, once per run across the app). Paint-only: not hashed,
     /// not in [`SHAPE`].
     hold_hint: plx_ui::hold_hint::HoldHint,
 }
@@ -582,7 +582,7 @@ impl DetailScreen {
             layout: Cell::new(None),
             layout_pinned: Cell::new(false),
             spot_facts: SpotFacts::default(),
-            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
+            hold_hint: plx_ui::hold_hint::HoldHint::new(),
         }
     }
 

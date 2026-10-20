@@ -1450,7 +1450,7 @@ pub(crate) unsafe fn construct(
     // television. Armed after the projection above, whose sign-out arm only clears bound hosts.
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::clock_fact::arm_at_boot();
-    // dev: /tmp/plxnative-hintoff — the hold hint taught for this run, on every screen kind, read
+    // dev: /tmp/plxnative-hintoff — the hold hint taught for this run, on every screen, read
     // once here on the frame thread (the hint's latches are thread-local). The site demo film is
     // shot with it: the capsule is a one-time teaching overlay, and a film has no viewer to teach.
     #[cfg(feature = "devtriggers")]
