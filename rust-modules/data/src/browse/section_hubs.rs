@@ -1062,6 +1062,15 @@ pub fn land_held_rows_for_owner_test(state: &mut super::BrowseState, sec: usize)
     st.hubs.revised();
 }
 
+/// The rows of section `sec` that gave their cards up to the ring (descriptors, drawn as placeholders)
+/// and the band the store holds (`lo, hi`): what a route test reads to say the rows in view are published.
+#[cfg(any(test, feature = "test-support"))]
+pub fn released_rows_for_owner_test(state: &super::BrowseState, sec: usize) -> (Vec<usize>, (usize, usize)) {
+    let Some(st) = state.states().get(sec) else { return (Vec::new(), (0, 0)) };
+    let released = st.hubs.committed.iter().enumerate().filter(|(_, shelf)| shelf.released()).map(|(row, _)| row).collect();
+    (released, st.hubs.held())
+}
+
 /// A read of row `row` of section `sec` lands through [`SecHubs::land_row`], the real landing: the
 /// row's window becomes `count` cards with ratingKeys no earlier window had (`{id}-e{epoch}-{i}`),
 /// its epoch moves, and the revision with it. What a page the reader walked to, or a held row read
