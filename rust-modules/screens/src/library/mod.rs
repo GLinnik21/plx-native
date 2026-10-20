@@ -354,11 +354,10 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
 
-    /// The two caption lines (title, details) the grid draws under tile `i` of `view`.
+    /// Card `i`'s settled cell with the focused caption band folded in, and the grid's column count:
+    /// what a test reads the room the band opened under a row of cards from.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn probe_caption(&self, view: plx_data::stores::browse::ListingView<'_>, i: usize) -> [Option<String>; 2] {
-        self.pair.detail.probe_caption(view, i)
-    }
+    pub fn probe_cell(&self, i: usize) -> (plx_ui::Rect, usize) { (self.pair.detail.probe_cell(i), self.layout.cols()) }
 
     /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
     #[cfg(any(test, feature = "test-support"))]
@@ -441,11 +440,13 @@ impl LibraryScreen {
         self.store(target, LibraryWork::Requery, fx);
     }
 
-    /// The caption policy the grid reserves its band for: the Under posters setting, except on the
-    /// Collections page, whose band always holds the title line (`collections_page::band_policy`).
-    fn grid_policy(&self) -> plx_ui::caption_policy::CaptionPolicy {
-        let stored = parts::caption_policy();
-        if self.listed == plx_data::browse::LibraryType::Collections { collections_page::band_policy(stored) } else { stored }
+    /// The caption policy the grid reserves its band for: the Under posters setting for every
+    /// listing of POSTERS (the Collections page included), and `None`, the legacy band, for the
+    /// Episodes listing, whose landscape stills are not on the policy like every other landscape
+    /// surface (`registry::captions::still_label` words their block, 92 px, which the policy's 80 /
+    /// 40 px gap would run under the next row).
+    fn grid_policy(&self) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (self.listed != plx_data::browse::LibraryType::Episodes).then(parts::caption_policy)
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -604,7 +605,7 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let band_h = plx_ui::caption_policy::band_h(&self.grid_policy());
+        let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
         } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)

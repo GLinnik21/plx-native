@@ -285,6 +285,14 @@ impl World {
         w
     }
 
+    /// The Movies library showing its section's EPISODES listing (the landscape stills), settled.
+    pub(super) fn episodes_library(name: &str) -> World {
+        let mut w = Self::movies_library(name, false);
+        w.bridge.stores.browse.borrow_mut().seed_episodes_for_test(60);
+        w.frames(60);
+        w
+    }
+
     /// The Movies library whose section has published no shelves yet (its listing answered): the
     /// Recommended page opened from it has a first publication still to come.
     pub(super) fn movies_library_unshelved(name: &str) -> World {
@@ -650,6 +658,25 @@ pub(super) struct Drawn {
 impl Drawn {
     /// Was `text` drawn, exactly as one run?
     pub(super) fn says(&self, text: &str) -> bool { self.words.iter().any(|(words, _)| words == text) }
+
+    /// **The lines of the focused Under posters caption this frame drew**, top to bottom, with no
+    /// list of words to look for: every line of that block is drawn with the policy caption's own
+    /// 1 px shadow (`plx_ui::caption_policy::CAPTION_SHADOW`, which only a block from
+    /// `TileLabel::from_lines` carries), so the shadow runs ARE the block. A line the setting
+    /// turned off, or one nothing asked for, is not there; one that should not be fails the test
+    /// that compares this list. A gliding line's follower is the same line.
+    pub(super) fn caption_lines(&self) -> Vec<String> {
+        let shadow = plx_ui::caption_policy::CAPTION_SHADOW;
+        let mut shadows: Vec<_> = self.runs.iter()
+            .filter(|run| run.ink[..3] == shadow[..3] && run.ink[3] > 0.0 && run.ink[3] <= shadow[3] + 1e-3)
+            .collect();
+        shadows.sort_by(|a, b| a.at.y.total_cmp(&b.at.y));
+        let mut lines: Vec<String> = Vec::new();
+        for run in shadows {
+            if lines.last() != Some(&run.text) { lines.push(run.text.clone()); }
+        }
+        lines
+    }
 }
 
 pub(super) use super::super::words::every_route;

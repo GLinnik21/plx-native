@@ -1759,10 +1759,10 @@ fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
     let full = RowStyle::HOME.focus_scale;
     let mut r = Rig::<Grid>::new(4 * cols);
     r.src.captioned = true;
-    r.sect.set_caption_policy(crate::caption_policy::CaptionPolicy {
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
         title: true,
         details: crate::caption_policy::DetailsKind::YearLength,
-    });
+    }));
     r.run(2);
     // the caption of card 0 on the frame the grid last drew
     let caption = |r: &Rig<Grid>| -> f32 {
@@ -1804,7 +1804,7 @@ fn captions_are_painted_beneath_every_tile() {
     };
     let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
     r.src.captioned = true;
-    r.sect.set_caption_policy(policy);
+    r.sect.set_caption_policy(Some(policy));
     r.run(2);
     r.land_focus(100, By::Dir);
     r.run(200);
@@ -4145,10 +4145,10 @@ fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFram
     let cols = poster_grid::COLS;
     let mut r = Rig::<Grid>::new(rows * cols);
     r.src.captioned = true;
-    r.sect.set_caption_policy(crate::caption_policy::CaptionPolicy {
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
         title: true,
         details: crate::caption_policy::DetailsKind::YearLength,
-    });
+    }));
     r.land_focus(100, By::Restore);
     r.run(40);
     let mut trace = vec![Vec::new(); rows];
@@ -4284,4 +4284,18 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
     assert_eq!(h, crate::card_row::LEGACY_BAND_H, "a shelf that follows no policy keeps the legacy band");
     assert!((under - crate::card_row::under_band(1.0)).abs() < 0.01);
     assert!((crate::card_row::band_open_for(h) - crate::card_row::BAND_OPEN).abs() < 0.01, "the legacy band opens by BAND_OPEN");
+}
+
+/// A grid given `None` is back on the legacy band (a grid of landscape stills is off the policy): it
+/// reserves [`card_row::LEGACY_BAND_H`], not the stored setting's 80 / 40 px.
+#[test]
+fn a_grid_taken_off_the_policy_keeps_the_legacy_band() {
+    use crate::caption_policy::{band_h, CaptionPolicy, DetailsKind};
+    let mut r = Rig::<Grid>::new(2 * poster_grid::COLS);
+    let silent = CaptionPolicy { title: false, details: DetailsKind::None };
+    r.sect.set_caption_policy(Some(silent));
+    assert_eq!(r.sect.band_h(), band_h(&silent));
+    r.sect.set_caption_policy(None);
+    assert_eq!(r.sect.caption_policy(), None);
+    assert_eq!(r.sect.band_h(), crate::card_row::LEGACY_BAND_H);
 }

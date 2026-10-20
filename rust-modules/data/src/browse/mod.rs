@@ -3662,6 +3662,29 @@ pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
     });
 }
 
+/// [`seed_items_for_owner_test`]'s listing as a show section lists its EPISODES (`type=4`): `n`
+/// numbered episodes of one show, each with a title, an air date and a still, the section's library
+/// type set to [`LibraryType::Episodes`] so the Library page lays the landscape grid out.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_episodes_for_owner_test(state: &mut BrowseState, n: usize) {
+    plx_base::testlock::assert_held("browse's section table (seed_episodes_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("{}", i + 1),
+        title: format!("Episode title {i}"),
+        show_title: "Synthetic show".to_owned(),
+        still: format!("/s/{i}"),
+        kind: 3,
+        season_index: 1,
+        ep_index: i as i32 + 1,
+        aired: "2019-01-03".to_owned(),
+        year: 2019,
+        ..Default::default()
+    });
+    let c = state.cur();
+    if let Some(st) = state.state_mut(c) { st.library_type = LibraryType::Episodes; }
+}
+
 /// [`seed_collections_for_owner_test`] with each collection's `(title, thumb)` stated, for a test
 /// that needs a name a tile's face cuts (a long title over a server composite).
 #[cfg(any(test, feature = "test-support"))]

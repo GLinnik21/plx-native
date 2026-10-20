@@ -243,10 +243,12 @@ impl Grid {
         self.dormant = held;
     }
 
-    /// Size and caption the focused band by `policy` (the Library's Under posters setting). A grid
-    /// never given one keeps the legacy band.
-    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
-        self.caption_policy = Some(policy);
+    /// Size and caption the focused band by `policy` (the Library's Under posters setting), or with
+    /// `None` keep the legacy two-line band: a grid of LANDSCAPE stills (the Library's Episodes
+    /// listing) is not a poster surface and is off the policy, as a landscape [`Shelf`](super::Shelf)
+    /// is. A grid never given one keeps the legacy band.
+    pub fn set_caption_policy(&mut self, policy: Option<crate::caption_policy::CaptionPolicy>) {
+        self.caption_policy = policy;
         self.bands.set_caption_policy(policy);
     }
 
@@ -651,7 +653,7 @@ impl Grid {
     /// The caption bands closed and settled: a fresh content set whose old rows mean nothing.
     pub fn reset_bands(&mut self) {
         self.bands = GridBands::new();
-        if let Some(policy) = self.caption_policy { self.bands.set_caption_policy(policy); }
+        self.bands.set_caption_policy(self.caption_policy);
     }
 
     /// The grid's height for `len` cards with its caption bands as they are now: the span from the
@@ -1060,6 +1062,13 @@ impl Grid {
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
         focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
+    }
+
+    /// Card `i`'s settled (unpopped) cell as the grid stands now, the caption bands folded in: where
+    /// a test reads how much room the focused row opened under its cards.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn cell_probe(&self, i: usize) -> Rect {
+        self.cell(i, &self.bands.geometry())
     }
 
     /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.

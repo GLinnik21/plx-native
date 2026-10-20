@@ -38,21 +38,12 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
 /// The Under posters setting as the caption policy every Library grid card and band follows.
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
-/// A grid poster card's label under `policy`: the focused caption band shows exactly what the
-/// Under posters setting chose, for every kind but the episode, which keeps its own wording (its
-/// address and release date) and rides the same band. A season is named for its show by the one
-/// builder, like a season on Home.
+/// A grid card's label under `policy`: the focused caption band shows exactly what the Under
+/// posters setting chose, for every POSTER (a season is named for its show by the one builder, like
+/// a season on Home; a collection's details line is its size, and a name its face cuts rides it). An episode is a landscape still, not a poster, and keeps its own block in the
+/// legacy band ([`captions::still_label`](crate::registry::captions::still_label)).
 pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
-    if item.kind == 3 {
-        let name = if item.title.is_empty() || item.title == item.show_title {
-            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
-        } else { item.title.clone() };
-        // The shared still overlay already names the show and episode address on the artwork.
-        // Focus reveals the episode title and release date, as it does on an episode shelf.
-        return if item.aired.is_empty() && item.year <= 0 { ui_cards::TileLabel::title(&name) }
-        else { ui_cards::TileLabel::titled(&name,
-            &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
-    }
+    if item.kind == 3 { return crate::registry::captions::still_label(item, false); }
     crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
 }
 
@@ -246,13 +237,13 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
-        self.grid.set_caption_policy(caption_policy());
+        self.grid.set_caption_policy(Some(caption_policy()));
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
 
-    /// The policy the grid's focused band is sized by, when it is not the stored setting as is (the
-    /// Collections page: `collections_page::band_policy`). After [`set_geometry`](Self::set_geometry).
-    pub(super) fn set_band_policy(&mut self, policy: CaptionPolicy) {
+    /// The policy the grid's focused band is sized by when the listing is not on the stored setting
+    /// (`None`: the Episodes listing's legacy band). After [`set_geometry`](Self::set_geometry).
+    pub(super) fn set_band_policy(&mut self, policy: Option<CaptionPolicy>) {
         self.grid.set_caption_policy(policy);
     }
 
@@ -425,13 +416,9 @@ impl GridPart {
     #[cfg(test)]
     pub(super) fn swap_for_test(&mut self, a: usize, b: usize) { self.windows[0].elems.swap(a, b); }
 
-    /// The two caption lines (title, details) the grid would draw under tile `i` of `view` now.
+    /// Card `i`'s settled cell, the focused band folded in (see [`Grid::cell_probe`]).
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn probe_caption(&self, view: plx_data::stores::browse::ListingView<'_>, i: usize) -> [Option<String>; 2] {
-        let label = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view, policy: caption_policy() }.tile_label(i);
-        let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|c| c.to_string_lossy().into_owned());
-        [text(&label.title), text(&label.caption)]
-    }
+    pub(super) fn probe_cell(&self, i: usize) -> plx_ui::Rect { self.grid.cell_probe(i) }
 
     #[cfg(test)]
     pub(super) fn publication_ops(&self) -> (usize, usize) {
@@ -517,35 +504,8 @@ impl GridSrc<'_, '_> {
     /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
     fn tile_label(&self, i: usize) -> ui_cards::TileLabel {
         let Some(item) = self.view.item(i) else { return Default::default() };
-        if self.collections() { return collection_label(item); }
         grid_label(item, &self.policy)
     }
-}
-
-/// A collection tile's label on the Collections page: the lines the Under posters setting asks
-/// for, with the member count as the details line (`collections_page::caption`). A row with
-/// nothing to say gets the plain title.
-pub(super) fn collection_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
-    let facts = super::collections_page::TileFacts {
-        title: &item.title, subtype: item.subtype.as_deref(), child_count: item.child_count,
-        name_cut: face_cuts_name(item),
-    };
-    let stored = caption_policy();
-    let lines = super::collections_page::caption(stored, &facts, plx_platform::i18n::current());
-    if lines.iter().all(Option::is_none) { return ui_cards::TileLabel::default(); }
-    // The caption tells the name the face cut: it stays under its own tile (never under the next
-    // column) and glides there when it is longer than the tile.
-    ui_cards::TileLabel::from_lines(lines).within_tile()
-}
-
-/// Does this collection's face cut its name? The face is the grid's resting card: a baked fan names
-/// itself live, a collection with no artwork wears the neutral tile's name, and a custom poster is
-/// artwork with no name on it to cut.
-fn face_cuts_name(item: &plx_data::pms::PmsMovie) -> bool {
-    use plx_ui::collection_tile::{name_is_cut, Face};
-    let facts = crate::registry::tile_facts::of(item);
-    let face = if facts.thumb.is_empty() { Face::Neutral } else if facts.composite_thumb { Face::Fan } else { return false };
-    name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
 }
 
 impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {

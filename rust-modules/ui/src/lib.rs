@@ -1754,6 +1754,19 @@ impl Painter {
     ) -> f32 {
         if frame::backdrop::discovering() {
             let (width,height)=declared_text_bounds(s,sz,bold);
+            // The discovery walk is the one a whole page is drawn through on a host, so a run that
+            // dissolves at its edges (a gliding caption) is read here too, as `text` does.
+            #[cfg(any(test, feature = "test-support"))]
+            if !s.is_null() {
+                let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                let at = self.place(Rect::new(x, y, width, height));
+                draw_census::note_text(text.clone(), at);
+                let absolute = |b: Option<(f32, f32)>| b.map(|(from, to)| (at.x + from, at.x + to));
+                draw_census::note_run(draw_census::Run {
+                    text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
+                    clip: draw_census::clip(), fade: absolute(trail), lead: absolute(lead),
+                });
+            }
             self.declare(Rect::new(x,y,width,height),101,|data| {
                 use frame::backdrop::Value;
                 frame::backdrop::text_value(s,data);

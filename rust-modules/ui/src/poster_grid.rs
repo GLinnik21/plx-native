@@ -42,9 +42,10 @@ impl GridBand {
 pub struct GridBands {
     focus: Option<usize>,
     slots: [Slot; MAX_GRID_BANDS],
-    /// What the focused caption band shows (CONTRACT FREEZE: P3 sizes the band from it). A pref
-    /// input, not motion: it is not in [`write`](Self::write).
-    caption_policy: crate::caption_policy::CaptionPolicy,
+    /// What the focused caption band shows (CONTRACT FREEZE: P3 sizes the band from it); `None`
+    /// keeps the legacy two-line band, as the grid that owns these bands does. A pref input, not
+    /// motion: it is not in [`write`](Self::write).
+    caption_policy: Option<crate::caption_policy::CaptionPolicy>,
 }
 
 /// One band: the row it opens under, the card of that row whose caption it carries (known once the
@@ -66,22 +67,22 @@ impl GridBands {
         Self {
             focus: None,
             slots: [Slot::EMPTY; MAX_GRID_BANDS],
-            caption_policy: crate::caption_policy::CaptionPolicy::DEFAULT,
+            caption_policy: Some(crate::caption_policy::CaptionPolicy::DEFAULT),
         }
     }
 
-    pub fn set_caption_policy(&mut self, policy: crate::caption_policy::CaptionPolicy) {
+    pub fn set_caption_policy(&mut self, policy: Option<crate::caption_policy::CaptionPolicy>) {
         self.caption_policy = policy;
     }
 
-    pub fn caption_policy(&self) -> crate::caption_policy::CaptionPolicy {
+    pub fn caption_policy(&self) -> Option<crate::caption_policy::CaptionPolicy> {
         self.caption_policy
     }
 
     /// The focused band's height under this grid's caption policy (0 / 80 / 112), what
     /// [`growth_before_for`] and the other `_for` geometry take.
     pub fn band_h(&self) -> f32 {
-        crate::caption_policy::band_h(&self.caption_policy)
+        self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)
     }
 
     /// The row whose band is open (or opening).

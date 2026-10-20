@@ -3999,6 +3999,9 @@ mod under_posters_shelf_route_tests;
 #[path = "under_posters_pages_route_tests.rs"]
 mod under_posters_pages_route_tests;
 #[cfg(test)]
+#[path = "under_posters_band_route_tests.rs"]
+mod under_posters_band_route_tests;
+#[cfg(test)]
 #[path = "home_chrome_route_tests.rs"]
 mod home_chrome_route_tests;
 #[cfg(test)]

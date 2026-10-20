@@ -601,10 +601,9 @@ impl<K: Copy + Eq> Stack<K> {
         for i in 0..self.bodies.len() {
             match &mut self.bodies[i] {
                 Body::Grid(g) => {
-                    if let Some(policy) = p.caption_policy(self.specs[i].key) {
-                        if g.caption_policy() != Some(policy) {
-                            g.set_caption_policy(policy);
-                        }
+                    let policy = p.caption_policy(self.specs[i].key);
+                    if g.caption_policy() != policy {
+                        g.set_caption_policy(policy);
                     }
                 }
                 Body::Shelf(s) => s.set_caption_policy(p.caption_policy(self.specs[i].key)),
