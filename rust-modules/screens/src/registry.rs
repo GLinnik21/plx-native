@@ -2538,7 +2538,13 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // and was not self-delimiting. `LibraryGrid`'s `shrink:(index:Option<u32>,sp:..)` becomes
 // `let_gos:[(index:u32,sp:..)]`. One bump; the three replay fixtures were re-recorded against it;
 // the previous pin was 0xcbaf_3fdb_0c28_ad38.
-const SCREEN_SHAPES_PIN: u64 = 0x0803_2f8d_c828_6d70;
+// Grid bands slot card: `plx_ui::poster_grid::GridBands::write` has written each open band's card
+// (`c.option(s.card, ..)`, the one whose caption it carries) after the row and the spring since the
+// Library redesign (#843), and `LibraryGrid` declared the slot without it. The slot is now
+// `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
+// `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
+// were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
+const SCREEN_SHAPES_PIN: u64 = 0x6b71_df9e_04db_2b76;
 
 #[cfg(test)]
 mod arg_tests {

@@ -628,6 +628,39 @@ mod tests {
         assert!(bands.slots.iter().all(|s| s.row.is_none()));
     }
 
+    /// The bands' canon is the focused row, then a counted sequence of the open bands, each its row,
+    /// its spring and the card whose caption it carries (`None` until the row has held a tick).
+    /// Pinned from literals, in the order `LibraryGrid::SHAPE` declares
+    /// (`slots:[(row:u32,sp:..,card:Option<u32>)]`), so a dropped, reordered or undeclared field
+    /// fails here; the replay anchors (`make check-replay`) are what hold the bytes of a whole page.
+    #[test]
+    fn the_bands_canon_is_the_focus_then_a_counted_sequence_of_row_spring_and_card() {
+        use plx_machine::machine::Canon;
+        let written = |bands: &GridBands| { let mut c = Canon::new(); bands.write(&mut c); c.finish() };
+        let expect = |focus: Option<usize>, slots: &[(usize, f32, f32, Option<usize>)]| {
+            let mut c = Canon::new();
+            c.option(focus, |c, row| { c.u32(row as u32); });
+            c.seq(slots.len());
+            for &(row, pos, vel, card) in slots {
+                c.u32(row as u32).f32(pos).f32(vel);
+                c.option(card, |c, card| { c.u32(card as u32); });
+            }
+            c.finish()
+        };
+        let mut bands = GridBands::new();
+        assert_eq!(written(&bands), expect(None, &[]), "no focus, no band: the empty sequence");
+        bands.focus(Some(0), false);
+        assert_eq!(written(&bands), expect(Some(0), &[(0, 1.0, 0.0, None)]), "an open band no card has been noted on");
+        bands.note_card(0, 7);
+        assert_eq!(written(&bands), expect(Some(0), &[(0, 1.0, 0.0, Some(7))]), "the band carries its card");
+        bands.focus(Some(1), true);
+        assert_eq!(
+            written(&bands),
+            expect(Some(1), &[(0, 1.0, 0.0, Some(7)), (1, 0.0, 0.0, None)]),
+            "the closing band keeps its card and the opening one has none yet",
+        );
+    }
+
     /// The card in `cell`, an element that is its cell number (nothing here moves the cards).
     fn at(cell: usize) -> Card {
         Card { cell, key: cell as u64 }

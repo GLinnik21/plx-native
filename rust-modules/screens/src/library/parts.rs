@@ -169,7 +169,7 @@ impl GridPart {
         self.snapshot = None;
     }
 
-    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),let_gos:[(index:u32,sp:Spring{pos:f32,vel:f32})],bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
+    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),let_gos:[(index:u32,sp:Spring{pos:f32,vel:f32})],bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32},card:Option<u32>)]}}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
