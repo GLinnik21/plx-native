@@ -117,7 +117,8 @@ of widely spaced circles needs a bigger pop than a tight poster shelf to read as
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
 driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its
-box, for a shelf and a grid alike, so no caption line is drawn over the row under it). Row headings are `theme::size::HEADLINE` at the SHARED
+box, for a shelf and a grid alike, so no caption line is drawn over the tile or heading under it as it is
+drawn, pop and heading lift included). Row headings are `theme::size::HEADLINE` at the SHARED
 shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.rs`) — the same
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.

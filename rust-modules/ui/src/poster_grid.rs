@@ -50,7 +50,7 @@ pub struct GridBands {
 
 /// One band: the row it opens under, the card of that row whose caption it carries (known once the
 /// row has held focus on a tick, so a band that closes behind a focus move still knows whose
-/// caption fades with it) and the spring that opens and closes it.
+/// caption leaves with it) and the spring that opens and closes it.
 #[derive(Clone, Copy)]
 struct Slot {
     row: Option<usize>,
@@ -118,7 +118,8 @@ impl GridBands {
     }
 
     /// The bands closing behind a focus move, as `(row, card, expansion)`: each is the caption of
-    /// `card` (the one the row held focus on) at its band's own progress. The focused row's band is
+    /// `card` (the one the row held focus on) drawn by its band's own expansion
+    /// ([`card_row::line_reveal_for`] decides which of its lines the room still holds). The focused row's band is
     /// not among them; a band with no card noted (a row that never held a tick) or fully shut is not.
     pub fn closing(&self) -> impl Iterator<Item = (usize, usize, f32)> + '_ {
         self.slots.iter().filter_map(|s| {

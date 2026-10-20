@@ -53,7 +53,8 @@
 //!   listing that answered after the dissolve lands its first poster) says so with
 //!   [`Grid::arrive`], and that one `FocusMoved` grows from rest like a deliberate move, band and all.
 //! - **One frame convention.** A [`SectionFrame`]'s `y` is screen space; the painter handed to
-//!   `draw` may carry any translate (see [`SectionFrame`]).
+//!   `draw` may carry any translate (see [`SectionFrame`]). It also says how far the heading under
+//!   the shelf is drawn above its place (`below_rise`), which a caption line stops short of.
 //! - **Press comes from the frame**, `cx.press` / `f.press` through `PressRead::dip_of()`, never the
 //!   thread-local. The dip lands on the card the press OWNS (`PressRead::owner`), focused or not:
 //!   an abandoned press springs back on the card that was pressed while its neighbour takes the

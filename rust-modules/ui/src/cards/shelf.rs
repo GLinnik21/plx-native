@@ -12,7 +12,7 @@ use plx_machine::present::Provenance;
 use super::landing::{Landing, Scene};
 use super::pool::{self, Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
-use crate::card_row::{self, CardRow, RowStyle};
+use crate::card_row::{self, CardRow, RowStyle, TileLabel};
 use crate::consts::SCR_W;
 use crate::screen::{
     Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
@@ -868,8 +868,7 @@ impl Shelf {
             _ => pr,
         };
         if focused {
-            let label = self.row.reveal(src.label(i), at.below_rise)
-                .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
+            let label = self.focused_label(src, i, at);
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
@@ -882,6 +881,33 @@ impl Shelf {
         }
         let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
         src.overlay(pr, i, &tile, f.measure);
+    }
+
+    /// The label block the focused card `i` is drawn with: its source's label, revealed as far as
+    /// the band has opened and the room under it holds each line ([`card_row::line_reveal_for`],
+    /// the heading below it as `at.below_rise` says it is drawn), placed for where the tile settles.
+    /// What [`draw_card`](Self::draw_card) paints and [`caption_lines_probe`](Self::caption_lines_probe)
+    /// reads, so a test sees the ink the frame carries.
+    fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
+        self.row.reveal(src.label(i), at.below_rise)
+            .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep())
+    }
+
+    /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
+    /// `(card index, top y, bottom y, alpha)` in screen space for a painter with no translate and
+    /// no scroll (the tests'), from the same label and boxes the draw paints
+    /// ([`TileLabel::lines`](card_row::TileLabel::lines)): a line that is not drawn (alpha 0) is
+    /// not listed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_lines_probe<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, src: &S, at: SectionFrame) -> Vec<(usize, f32, f32, f32)> {
+        let Some(i) = super::focused_index(&f.focus, self.entry, src).filter(|&i| i < src.len() && src.loaded(i)) else {
+            return Vec::new();
+        };
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
+        let bottom = card_row::unscaled_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s);
+        self.focused_label(src, i, at).lines().into_iter().flatten().filter(|l| l.alpha > 0.0)
+            .map(|l| (i, bottom + l.top, bottom + l.bottom, l.alpha)).collect()
     }
 
     /// The `Focusable` neighbour of `key` inside the shelf: left and right by index, the edge

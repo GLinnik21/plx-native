@@ -791,8 +791,8 @@ pub struct TileLabel {
     /// **How far the band this block hangs in has opened**, the band's height, its expansion and
     /// the rise of what stands below it ([`TileLabel::revealed`]); each LINE of the block is on
     /// screen only once the room under the card holds its box ([`line_reveal_for`]). `None` for every caller whose band does not
-    /// animate (the profile picker, the detail Related shelf): the block is whole, which is why
-    /// `Default` gives it that.
+    /// animate (the profile picker's avatars, the settings sample row): the block is whole, which is
+    /// why `Default` gives it that. Every `cards::Shelf` and `cards::Grid` sets it.
     pub reveal: Option<BandOpen>,
     /// **How far the tile's row still has to scroll before this tile rests** (see
     /// [`CardRow::settle_lag`]); `0` for a tile that is not mid-glide. [`place_label`] judges the
@@ -1047,14 +1047,14 @@ pub fn draw_label(
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
     // the label into the next shelf's title.
-    let ty = unscaled_bottom(rect, s) + UNDER_DROP;
+    let bottom = unscaled_bottom(rect, s);
     // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
     if label.lines().iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
-    draw_label_block(p, rect, sty, label, ty, measure);
+    draw_label_block(p, rect, sty, label, bottom, measure);
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
@@ -1630,7 +1630,7 @@ fn draw_label_block(
     rect: Rect,
     sty: &RowStyle,
     label: &TileLabel,
-    mut y: f32,
+    bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     // Every run of the block is a label block's to a recording census, whatever its ink.
@@ -1679,23 +1679,21 @@ fn draw_label_block(
     if block.is_none() {
         TITLE_CLOCK.with(|c| c.release());
     }
-    // Each line is drawn at the alpha its box earns from the band ([`TileLabel::lines`]); a line the
-    // band has not made room for yet is not drawn at all.
+    // Each line is drawn where its box is and at the alpha that box earns from the band
+    // ([`TileLabel::lines`], the one place the block's vertical metrics live); a line the band has
+    // not made room for yet is not drawn at all.
     let [title_line, caption_line] = label.lines();
-    if let Some(t) = &label.title {
-        let a = title_line.map_or(0.0, |l| l.alpha);
-        if a > 0.0 {
-            title_marquee(p.alpha(a), at, t.as_ptr(), y, title_mark, title_w_val.unwrap_or(0.0), block.as_ref(),
-                label.shadowed, label.within_tile);
+    if let (Some(t), Some(line)) = (&label.title, title_line) {
+        if line.alpha > 0.0 {
+            title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
+                block.as_ref(), label.shadowed, label.within_tile);
         }
-        y += UNDER_LINE_H + UNDER_LINE_GAP;
     }
-    if let Some(s) = &caption_str {
-        let a = caption_line.map_or(0.0, |l| l.alpha);
-        if a <= 0.0 {
+    if let (Some(s), Some(line)) = (&caption_str, caption_line) {
+        if line.alpha <= 0.0 {
             return;
         }
-        let p = p.alpha(a);
+        let (p, y) = (p.alpha(line.alpha), bottom + line.top);
         let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
         // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge
         // and glides inside the window after it (the title's rule, `title_marquee`).
