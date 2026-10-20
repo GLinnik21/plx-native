@@ -104,9 +104,10 @@ fn down_from_the_hero_after_back_from_the_last_shelf_dives_to_the_first_shelf_on
     assert_dives_to_the_first_shelf_only("after BACK from the last shelf", &frames);
 }
 
-/// **The same by the other road: Up out of the first shelf to the billboard, from a page that had been
-/// resting deep.** The walk down and back up leaves the page at the first shelf, and Down from the
-/// billboard dives there.
+/// **The control: Up out of the first shelf to the billboard, from a page that had been resting deep,
+/// and the next Down dives to the first shelf only.** It passes on the old code by design: the walk
+/// down and back up leaves the page resting at the first shelf, so no deep target outlives the Up (only
+/// the BACK fold, above, left one standing).
 #[test]
 fn down_from_the_hero_after_up_from_a_deep_walk_dives_to_the_first_shelf_only() {
     let mut w = home_shelves_of("hh-up", 3);

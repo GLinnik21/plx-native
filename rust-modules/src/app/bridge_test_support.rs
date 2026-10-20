@@ -71,8 +71,8 @@ pub(super) fn tick(i: u32) -> Tick {
 /// does (after the dispatcher's frame).
 ///
 /// Returns one label per request it PERFORMED (`"library:BackToHome { kind: Movie }"`,
-/// `"content:Back"`, `"watchlist:Back"`, `"home:Detail"`), so a table can assert which request a key produced. A
-/// request that is not a navigation (a menu, a play) is labelled
+/// `"content:Back"`, `"watchlist:Back"`, `"home:FoldToHero"`, `"home:Detail"`), so a table can assert which request a key
+/// produced. A request that is not a navigation (a menu, a play) is labelled
 /// `"unperformed ..."` and left undone: this pump does not stand in for the rest of the loop, and
 /// a test that needs one of those should say so rather than have it dropped (a shelf publication is the
 /// store's business and is not listed). [`Pump`] is the one
@@ -89,7 +89,8 @@ pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> 
 /// It also drains the item menu's committed rows (`content::drain_item_menu_requests`, the Watchlist
 /// disc's Add/Remove among them), performs the Watchlist page's own requests
 /// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses) and a Home shelf
-/// card's Detail (`perform_home_detail`; Home's other requests are drained and left undone).
+/// card's Detail (`perform_home_detail`). The BACK fold (`content::fold_to_hero`) needs none of this
+/// state, so [`pump_navigation`] performs it too; Home's other requests are drained and left undone.
 pub(super) struct Pump {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
@@ -166,13 +167,14 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
     // Home's requests (`content::home_requests`), under the loop's guards: the asking page holds input and Home is the
     // route. Two are performed: the BACK fold, the one request of Home's that moves focus rather than navigating (the loop
     // runs `content::fold_to_hero`, so the world does, or a BACK on a shelf would fold the picture and leave the engine's
-    // focus where it was), and a card's Detail (`perform_home_detail`). The rest are drained and left undone, as they were
-    // before this arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
+    // focus where it was), which needs none of the Pump's resources and so is performed for `pump_navigation` as well, and a
+    // card's Detail (`perform_home_detail`, the Pump only). The rest are drained and left undone, as they were before this
+    // arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
     for (source, request, ret) in rig.take_home_reqs() {
         let Some(entry) = asker(d, source) else { continue };
         if d.top_arg() != Some(&AppArg::Home) { continue; }
         match (request, item.as_mut()) {
-            (plx_screens::registry::HomeReq::FoldToHero, Some(_)) => {
+            (plx_screens::registry::HomeReq::FoldToHero, _) => {
                 crate::app::content::fold_to_hero(d, source, entry);
                 seen.push("home:FoldToHero".into());
             }
