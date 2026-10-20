@@ -369,7 +369,9 @@ SEEKDONE: ASYNC_DONE with the pending-seek flag set -> app callback type 25
   point: `ty == 0` (FRAMEREADY) and, since 2026-09-03, `ty == 18` (the pipeline's error event —
   `num=601 Resource Allocation Error` is the shape measured on 10.3.1), which before any picture
   is published as a refused Load. This bullet said "one numeric test" until then; the 18 arm was
-  added with the shift in view, not in ignorance of it. **The first numeric handling ABOVE 0x1c
+  added with the shift in view, not in ignorance of it. Since 2026-10-20 a third sits exactly AT the shift point and is
+  therefore the same on both: `ty == 28` (0x1c, `ENDOFSTREAM` itself), which after a picture marks
+  the stream played out (`Shared::pipeline_eos`). **The first numeric handling ABOVE 0x1c
   landed the same day and does account for it:** the two libpf frame counters (46 dropped / 47
   displayed on webOS 4, hence 48/49 on 5+) go through `player::sink_counter_kind(ty, major)`
   before being logged as `sink: displayed=` / `sink: dropped=`, and the harness reads that line

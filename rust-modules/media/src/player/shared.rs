@@ -756,6 +756,13 @@ pub struct Shared {
     // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
     // has been presented). app.rs polls player::ended() to tear the player down at the credits.
     pub ended: AtomicBool,
+    /// The pipeline reported end-of-stream: `type=28` (0x1c, `STATE_UPDATE__ENDOFSTREAM`, the same
+    /// number on every webOS since the renumbering starts above it), `str=true`, after a picture.
+    /// It is the pipeline's own word that it presented the last of what it was given, which the
+    /// `ended` arithmetic cannot always reach: on the C1 (2026-10-20) a film whose audio ran 3 s
+    /// past its last video frame stopped its clock at 5894 s of 5897 s, refused the audio after
+    /// the EOS, and sat on the last frame for good. Cleared with the session and by a seek.
+    pub pipeline_eos: AtomicBool,
 
     // close-to-interrupt handle: raw ptr to the Engine-owned HttpStream box, so
     // the pump/teardown can close(fd) to unblock a blocked recv. The box outlives
@@ -1049,6 +1056,7 @@ impl Shared {
             hls_trial_reserve_ms: AtomicI64::new(-1),
             hls_candidate_generation: AtomicU64::new(0),
             ended: AtomicBool::new(false),
+            pipeline_eos: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
@@ -1723,6 +1731,7 @@ impl Shared {
             .store(-1, Ordering::Relaxed);
         self.reset_hls_clock();
         self.ended.store(false, Ordering::Relaxed);
+        self.pipeline_eos.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
     }
 
