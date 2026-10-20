@@ -542,8 +542,10 @@ pub struct HomeScreen {
     elem_at: HashMap<u32, (u32, u32)>,
     /// `items` / `groups` looked up by identity, so keying a card is a hash probe rather than a
     /// scan of the whole table. Positions into the two `Vec`s; kept in step by `push_item` /
-    /// `push_group`, the only places either grows, and rebuilt whole by `rebuild_indexes` after a
-    /// prune compacts them. Derived, not canon.
+    /// `push_group`, the only places either grows, and followed IN PLACE when a prune compacts the
+    /// tables (`registry::Compaction`: no key is cloned or re-hashed for the entries that stay).
+    /// `rebuild_indexes` rebuilds both whole, for the rare edit that rewrites identities in place.
+    /// Derived, not canon.
     item_index: HashMap<HomeHubIdentity, HubKeys>,
     group_index: HashMap<HomeHubIdentity, usize>,
     projected_generation: Option<u32>,
@@ -807,7 +809,8 @@ impl HomeScreen {
         }
     }
 
-    /// Both indexes from the tables, after a prune compacted them.
+    /// Both indexes from the tables, after an edit that rewrote identities in place (a rebind of a
+    /// finished episode's key). A prune does not come here: it follows the positions it moved.
     fn rebuild_indexes(&mut self) {
         #[cfg(test)]
         { self.cost.index_rebuilds += 1; self.cost.index_inserts += self.items.len() + self.groups.len(); }

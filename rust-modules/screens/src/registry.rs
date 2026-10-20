@@ -2713,3 +2713,33 @@ impl Compaction {
         self.follow(*at).map(|now| *at = now).is_some()
     }
 }
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::Compaction;
+
+    #[test]
+    fn a_compaction_keeps_the_order_and_every_survivor_finds_its_new_position() {
+        let mut table: Vec<char> = "abcdefgh".chars().collect();
+        // unsorted, with a repeat: the drop list is a set of positions
+        let moved = Compaction::remove(&mut table, vec![5, 1, 5, 6]).expect("something went");
+        assert_eq!(table, vec!['a', 'c', 'd', 'e', 'h']);
+        assert_eq!(moved.follow(0), Some(0));
+        assert_eq!(moved.follow(1), None, "b went");
+        assert_eq!((2..5).map(|at| moved.follow(at)).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
+        assert_eq!(moved.follow(5), None);
+        assert_eq!(moved.follow(6), None);
+        assert_eq!(moved.follow(7), Some(4));
+        let mut at = 7;
+        assert!(moved.follow_in_place(&mut at) && at == 4);
+        let mut gone = 1;
+        assert!(!moved.follow_in_place(&mut gone));
+    }
+
+    #[test]
+    fn removing_nothing_leaves_the_table_alone() {
+        let mut table = vec![1, 2, 3];
+        assert!(Compaction::remove(&mut table, Vec::new()).is_none());
+        assert_eq!(table, vec![1, 2, 3]);
+    }
+}
