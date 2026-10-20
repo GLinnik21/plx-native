@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T18:47:00Z",
+ "generated": "2026-10-20T18:56:00Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,27 +44,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": -28.8,
-   "change7_pct": 40.6,
-   "d30": 679,
-   "delta30": -195.5,
-   "delta7": 139.5,
-   "group": "ci",
-   "id": "pr_wait",
-   "kind": "wait",
-   "label": "PR CI wait",
-   "n_now": 278,
-   "n_prev": 206,
-   "now": 483.5,
-   "prev7": 344.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "better",
-   "threshold_abs": 90.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": null,
    "change7_pct": 40.2,
    "d30": null,
@@ -83,6 +62,27 @@
    "state30": "new",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -29.0,
+   "change7_pct": 39.3,
+   "d30": 679,
+   "delta30": -197,
+   "delta7": 136.0,
+   "group": "ci",
+   "id": "pr_wait",
+   "kind": "wait",
+   "label": "PR CI wait",
+   "n_now": 277,
+   "n_prev": 208,
+   "now": 482,
+   "prev7": 346.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "better",
+   "threshold_abs": 90.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -728,67 +728,6 @@
    "to": 341
   },
   {
-   "change_pct": 40.6,
-   "commits": [
-    {
-     "pr": 861,
-     "sha": "3882f6ebe",
-     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
-    },
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
-     "pr": 859,
-     "sha": "1fbab7089",
-     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
-    },
-    {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
-     "pr": 872,
-     "sha": "a06719da3",
-     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
-    },
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    }
-   ],
-   "from": 344.0,
-   "id": "pr_wait",
-   "label": "PR CI wait",
-   "since": "2026-10-20",
-   "threshold_pct": 25.0,
-   "to": 483.5
-  },
-  {
    "change_pct": 40.2,
    "commits": [
     {
@@ -848,6 +787,67 @@
    "since": "2026-10-20",
    "threshold_pct": 20.0,
    "to": 380
+  },
+  {
+   "change_pct": 39.3,
+   "commits": [
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
+    },
+    {
+     "pr": 863,
+     "sha": "d6ec840c1",
+     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
+    },
+    {
+     "pr": 864,
+     "sha": "1236b92eb",
+     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
+    },
+    {
+     "pr": 859,
+     "sha": "1fbab7089",
+     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
+    },
+    {
+     "pr": 871,
+     "sha": "a9dcfe67d",
+     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
+    },
+    {
+     "pr": 875,
+     "sha": "5d74e0ff1",
+     "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
+    }
+   ],
+   "from": 346.0,
+   "id": "pr_wait",
+   "label": "PR CI wait",
+   "since": "2026-10-20",
+   "threshold_pct": 25.0,
+   "to": 482
   },
   {
    "change_pct": 36.6,
