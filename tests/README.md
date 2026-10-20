@@ -507,16 +507,20 @@ the header's Recommended control), `plxnative-framedrop` and `plxnative-focus`, 
 `libhubs: section N landed S shelves` line (index 0 for Movies; `plxnative-library` content `1`
 seats Shows, index 1 — the last landing of that section, not the last such line in the log):
 **Down once per shelf, a second time for each linked shelf** (its heading is a stop of its own,
-then its row), and `extra_rows` more (6) past the last shelf, then **Up** back. It
-grades keys sent against that count, a `focus route=library … region=grid` fingerprint inside the
-walk window (`fingerprint_region` `grid`), `loop_floor` 50 and `fps_floor` 30; frame drops are
+then its row), and `extra_rows` more (0: the Recommended page seats its first shelf on arrival and
+has no toolbar to cross), then **Up** back. It
+grades keys sent against that count, a `focus route=library … region=shelf` fingerprint inside the
+walk window (`fingerprint_region` `shelf`; the Recommended page prints the Library's fingerprint
+grammar, `region=shelf row=R col=C` on a card and `heading`/`crumb`/`strip` elsewhere, and a harness
+test holds every scene's `fingerprint_region` / `reach.region` to a word its page prints),
+`loop_floor` 50 and `fps_floor` 30; frame drops are
 reported, not graded. This is the instrument for #412: the section has no shelf cap, so all 170
 land, and `walk.min_landed` (150) fails the scene when fewer do (a build that bounds each section at
 twelve shelves would land 12 and the walk, which follows what landed, would otherwise pass on those 12).
 The landed count is the data layer's, so a library walk with `min_landed` also requires a
 `focus route=library … region=shelf row=R` fingerprint in the walk window with `R >= min_landed - 1`
 (row 169 on a passing run): the screen must show the deep shelves the store published, or a screen
-that capped its rows again (store 170, page 12) would still walk into the grid and pass.
+that capped its rows again (store 170, page 12) would still pass.
 The linked-shelf count is derived from the mock's own arguments, not read from the app.
 
 `library-burst` is an **instrument, not a gate**: how many loading (placeholder) poster tiles a

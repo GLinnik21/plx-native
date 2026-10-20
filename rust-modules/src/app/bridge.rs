@@ -2473,10 +2473,13 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         return out;
     }
     if page.arg.is_library_family() {
-        // The Recommended page is a `RecommendedScreen`, not a `LibraryScreen`: it has no
-        // fingerprint of its own and answers the empty line, as it always has.
-        let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return String::new() };
+        // The Library page and the Collections page are `LibraryScreen`s and the Recommended page a
+        // `RecommendedScreen`; they answer ONE grammar (`region= row= col=` ...), so a scene that
+        // walks any of them reads the same fingerprint. Only an instance that holds neither (the
+        // page is not mounted yet) answers the empty line.
+        let screen = page.inst.as_ref().and_then(|i| i.screen.as_any());
+        let library = screen.and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>());
+        let recommended = screen.and_then(|s| s.downcast_ref::<plx_screens::library::RecommendedScreen>());
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
@@ -2485,8 +2488,11 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             plx_ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
         }};
-        let item = library.focused_item(focus, &cx);
-        let (region, row, col, x, y) = library.probe_viewport(focus);
+        let (item, (region, row, col, x, y)) = match (library, recommended) {
+            (Some(library), _) => (library.focused_item(focus, &cx), library.probe_viewport(focus)),
+            (None, Some(recommended)) => (recommended.focused_item(focus, &cx), recommended.probe_viewport(focus)),
+            (None, None) => return String::new(),
+        };
         let mut out = format!(" pill={pill} card={} menu={} region={region} row={row} col={col} viewport_x={x:.3} viewport_y={y:.3} sid=", u8::from(item.is_some() && !menu), u8::from(menu));
         if let Some(item) = item {
             let _ = write!(out, "{} rk=", item.sid.raw());
@@ -2496,8 +2502,10 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         // the fingerprint grammar the replay recordings pin does not change.
         #[cfg(feature = "devtriggers")]
         if plx_base::devtrig::flag("focusx") {
-            let (chrome, capsule) = library.probe_handoff();
-            let _ = write!(out, " hand={chrome:.3},{capsule:.3}");
+            if let Some(library) = library {
+                let (chrome, capsule) = library.probe_handoff();
+                let _ = write!(out, " hand={chrome:.3},{capsule:.3}");
+            }
         }
         return out;
     }

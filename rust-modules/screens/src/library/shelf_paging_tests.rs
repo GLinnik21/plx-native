@@ -7,28 +7,8 @@ use plx_ui::focus::{FocusEngine, Outcome};
 
 const GENRE: (&str, &str, &str) = ("movie.genre", "/hubs/sections/1/genre/5", "Genre");
 
-fn fixture_with(rows: &[(String, String, String)], per_row: usize) -> Fixture {
-    let mut fixture = Fixture::new();
-    let stores = plx_data::stores::Stores::default();
-    stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.capture_browse(&mut fixture.directory);
-    stores.browse_run(BrowseCmd::SetCur(0));
-    {
-        let mut browse = stores.browse.borrow_mut();
-        browse.seed_items_for_test(120);
-        let named: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str())).collect();
-        browse.seed_named_shelves_for_test(0, &named, per_row);
-        browse.seed_paging_for_test(0, 500);
-    }
-    let publication = stores.capture_browse(&mut fixture.directory);
-    fixture.listing = publication.listing;
-    fixture.hubs = publication.section_hubs;
-    fixture.stores = Some(stores);
-    fixture
-}
-
 fn genre_and_plain() -> Fixture {
-    fixture_with(&[(GENRE.0.into(), GENRE.1.into(), GENRE.2.into()), ("movie.plain".into(), String::new(), "Plain".into())], 12)
+    Fixture::named_shelves(&[(GENRE.0.into(), GENRE.1.into(), GENRE.2.into()), ("movie.plain".into(), String::new(), "Plain".into())], 12)
 }
 
 fn focus_shelf_card(page: &mut RecommendedScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, shelf: usize, col: usize) {
@@ -72,6 +52,49 @@ fn a_shelf_asks_for_its_next_window_at_its_trailing_edge_once() {
     focus_shelf_card(&mut page, &mut engine, &fixture, 0, 9);
     let asked: Vec<_> = (0..6).flat_map(|i| pages(&works(&mut page, &engine, &fixture, 9100 + i * 17))).collect();
     assert_eq!(asked, vec![("movie.genre".to_string(), false)], "one ask per window at the trailing edge");
+}
+
+/// The revision each hub-page ask of `works` was computed from.
+fn seen_by(works: &[LibraryWork]) -> Vec<u64> {
+    works.iter().filter_map(|w| match w { LibraryWork::HubPage { seen, .. } => Some(*seen), _ => None }).collect()
+}
+
+/// **A kept row asks again on the first tick after a publication**, whatever row the publication
+/// changed. A frame captures its views before its landings are delivered, so an ask can name a
+/// window the store has since replaced, and the store refuses it; the publication it missed
+/// rebuilds the changed rows and leaves this one as it stands, and the row's own latch must not
+/// hold the refused ask until a rung of the retry ladder (a quarter of a second at the first,
+/// climbing to half a minute) while the row's trailing cells paint as skeletons.
+#[test]
+fn a_kept_rows_refused_ask_is_asked_again_on_the_next_tick_after_a_publication() {
+    let _guard = plx_base::testlock::serial();
+    let other = ("movie.other".to_string(), "/hubs/sections/1/other/6".to_string(), "Other".to_string());
+    let mut fixture = Fixture::named_shelves(&[(GENRE.0.into(), GENRE.1.into(), GENRE.2.into()), other], 12);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 9);
+    let (kept, landing) = (page.shelves[0].elems.clone(), page.shelves[1].elems.clone());
+    // The store takes a landing on the OTHER row that this frame's views do not carry yet ...
+    let id = fixture.listing.view().id().unwrap();
+    let stores = fixture.stores.as_ref().unwrap();
+    assert!(stores.browse.borrow_mut().land_row_for_test(0, 1, 12), "premise: the other row took the landing");
+    // ... so the ask the tick sends names a window the store has left
+    let first = works(&mut page, &engine, &fixture, 9000);
+    let seen = seen_by(&first);
+    assert_eq!(seen.len(), 1, "premise: the trailing edge asks: {first:?}");
+    let target = plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+    for work in first { stores.browse_run(BrowseCmd::Addressed { target, work }); }
+    fixture.republish();
+    let now = fixture.hubs.view().revision().expect("a published section");
+    assert_ne!(seen[0], now, "premise: the store refused the ask for the window it had left");
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    assert_eq!(page.shelves[0].elems, kept, "premise: the publication left the asking row as it stood");
+    assert_ne!(page.shelves[1].elems, landing, "premise: and rebuilt the row it changed");
+    // the next tick is well inside the ladder's first rung
+    let again = works(&mut page, &engine, &fixture, 9017);
+    assert_eq!(pages(&again), vec![("movie.genre".to_string(), false)], "the refused ask goes out again at once");
+    assert_eq!(seen_by(&again), vec![now], "from the window that stands");
 }
 
 fn cancels(works: &[LibraryWork]) -> Vec<String> {
@@ -118,7 +141,7 @@ fn a_row_with_no_pageable_key_never_asks() {
 fn the_held_range_is_sent_when_it_changes_and_not_otherwise() {
     let _guard = plx_base::testlock::serial();
     let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
-    let fixture = fixture_with(&rows, 12);
+    let fixture = Fixture::named_shelves(&rows, 12);
     let mut page = fixture.screen();
     page.initial = false;
     let engine = FocusEngine::new();
@@ -167,7 +190,7 @@ fn settle_holds(
 fn back_to_the_top_from_deep_rows_leaves_the_top_rows_held_not_placeholders() {
     let _guard = plx_base::testlock::serial();
     let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
-    let mut fixture = fixture_with(&rows, 12);
+    let mut fixture = Fixture::named_shelves(&rows, 12);
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
@@ -210,7 +233,7 @@ fn back_to_the_top_from_deep_rows_leaves_the_top_rows_held_not_placeholders() {
 fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_length() {
     let _guard = plx_base::testlock::serial();
     let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
-    let mut fixture = fixture_with(&rows, 12);
+    let mut fixture = Fixture::named_shelves(&rows, 12);
     let page = fixture.screen();
     assert_eq!(page.shelves.len(), 30, "every row is there");
     let shelves = fixture.hubs.view().shelves();
@@ -242,7 +265,7 @@ fn shelf_cell(page: &RecommendedScreen, elem: u32) -> Option<(usize, usize)> {
 fn holding_down_onto_a_row_whose_cards_have_not_landed_keeps_row_and_column_when_they_land() {
     let _guard = plx_base::testlock::serial();
     let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
-    let mut fixture = fixture_with(&rows, 12);
+    let mut fixture = Fixture::named_shelves(&rows, 12);
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
