@@ -2532,7 +2532,13 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // the shape string of `LibraryScreen` and of the Watchlist page (which drops its private head ramp
 // for it). One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0xbd4f_cd3e_ff97_a15f.
-const SCREEN_SHAPES_PIN: u64 = 0xcbaf_3fdb_0c28_ad38;
+// Grid let-go canon: `plx_ui::poster_grid::GridPop::write` writes the pop, then the let-gos in
+// flight as a counted sequence (`c.seq`, a `(cell, spring)` each), where it wrote one slot per
+// let-go with no count -- a stream that did not match the one `shrink` slot `LibraryGrid` declared
+// and was not self-delimiting. `LibraryGrid`'s `shrink:(index:Option<u32>,sp:..)` becomes
+// `let_gos:[(index:u32,sp:..)]`. One bump; the three replay fixtures were re-recorded against it;
+// the previous pin was 0xcbaf_3fdb_0c28_ad38.
+const SCREEN_SHAPES_PIN: u64 = 0x0803_2f8d_c828_6d70;
 
 #[cfg(test)]
 mod arg_tests {

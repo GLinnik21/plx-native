@@ -357,20 +357,16 @@ impl GridPop {
     }
 
     /// Canonical animation state: a spring mid-flight decides the next frames even when two grids
-    /// draw the same rects. The pop, then one slot per let-go in flight (a grid with none writes one
-    /// empty slot: no cell, rest, no velocity), each a cell and a spring. A card's element is the
-    /// source's, not the grid's, and is not written.
+    /// draw the same rects. The pop (its cell and spring), then the let-gos in flight as a counted
+    /// sequence, oldest release first, each a cell and a spring — so the canon is self-delimiting
+    /// and a grid with none writes the empty sequence. A card's element is the source's, not the
+    /// grid's, and is not written.
     pub fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let slot = |c: &mut plx_machine::machine::Canon, cell: Option<usize>, spring: Spring| {
-            c.option(cell, |c, i| { c.u32(i as u32); });
-            c.f32(spring.pos).f32(spring.vel);
-        };
-        slot(c, self.cell(), self.pop.spring);
-        if self.let_gos.is_empty() {
-            slot(c, None, Spring::at(1.0));
-        }
+        c.option(self.cell(), |c, i| { c.u32(i as u32); });
+        c.f32(self.pop.spring.pos).f32(self.pop.spring.vel);
+        c.seq(self.let_gos.len());
         for l in &self.let_gos {
-            slot(c, Some(l.card.cell), l.spring);
+            c.u32(l.card.cell as u32).f32(l.spring.pos).f32(l.spring.vel);
         }
     }
 }
@@ -764,40 +760,66 @@ mod tests {
         assert!(pop.let_gos().any(|c| c == Card { cell: 4, key: 51 }), "the released card is the one now standing in the cell");
     }
 
-    /// The canon is the pop's cell and spring, then a (cell, spring) slot per let-go in flight, oldest
-    /// release first; a grid with none writes the one empty slot. Pinned from literals, not from
-    /// the fields the writer reads, so a reordered, dropped or doubled field fails here; the replay
-    /// anchors (`make check-replay`) are what hold the bytes of a whole page.
+    /// The canon is the pop's cell and spring, then a counted sequence of (cell, spring) let-gos in
+    /// flight, oldest release first; a grid with none writes the empty sequence. Pinned from
+    /// literals, not from the fields the writer reads, so a reordered, dropped or doubled field
+    /// fails here; the replay anchors (`make check-replay`) are what hold the bytes of a whole page.
     #[test]
-    fn the_canon_is_the_pop_then_a_slot_per_let_go() {
+    fn the_canon_is_the_pop_then_a_counted_sequence_of_let_gos() {
         use plx_machine::machine::Canon;
         let style = STYLE;
         let dt = 1.0 / 60.0;
-        let slot = |c: &mut Canon, cell: Option<usize>, pos: f32, vel: f32| {
-            c.option(cell, |c, i| { c.u32(i as u32); });
-            c.f32(pos).f32(vel);
-        };
         let written = |pop: &GridPop| { let mut c = Canon::new(); pop.write(&mut c); c.finish() };
-        let expect = |slots: &[(Option<usize>, f32, f32)]| {
+        let expect = |pop: (Option<usize>, f32, f32), let_gos: &[(usize, f32, f32)]| {
             let mut c = Canon::new();
-            for &(cell, pos, vel) in slots { slot(&mut c, cell, pos, vel); }
+            c.option(pop.0, |c, i| { c.u32(i as u32); });
+            c.f32(pop.1).f32(pop.2);
+            c.seq(let_gos.len());
+            for &(cell, pos, vel) in let_gos { c.u32(cell as u32).f32(pos).f32(vel); }
             c.finish()
         };
         let mut pop = GridPop::new();
-        assert_eq!(written(&pop), expect(&[(None, 1.0, 0.0), (None, 1.0, 0.0)]), "no pop, no let-go: two empty slots");
+        assert_eq!(written(&pop), expect((None, 1.0, 0.0), &[]), "no pop, no let-go: the empty sequence, no phantom slot");
         pop.tick(Some(at(3)), &style, dt);
         pop.arm(at(4));
         let whole = style.focus_scale;
-        assert_eq!(written(&pop), expect(&[(Some(4), 1.0, 0.0), (Some(3), whole, 0.0)]), "the pop, then the card it let go");
+        assert_eq!(written(&pop), expect((Some(4), 1.0, 0.0), &[(3, whole, 0.0)]), "the pop, then the card it let go");
         pop.arm(at(5));
         assert_eq!(
             written(&pop),
-            expect(&[(Some(5), 1.0, 0.0), (Some(3), whole, 0.0), (Some(4), 1.0, 0.0)]),
-            "a second let-go adds a slot after the first",
+            expect((Some(5), 1.0, 0.0), &[(3, whole, 0.0), (4, 1.0, 0.0)]),
+            "a second let-go adds an element after the first",
         );
         for _ in 0..240 { pop.tick(Some(at(5)), &style, dt); }
         let (pos, vel) = (pop.pop.spring.pos, pop.pop.spring.vel);
-        assert_eq!(written(&pop), expect(&[(Some(5), pos, vel), (None, 1.0, 0.0)]), "landed let-gos leave the empty slot");
+        assert_eq!(written(&pop), expect((Some(5), pos, vel), &[]), "landed let-gos leave the empty sequence");
+    }
+
+    /// **The canon is self-delimiting.** The grid's canon is followed by other state in the same
+    /// stream (the bands, in a Library page's `GridPart::write`), so two different grids must not
+    /// hash alike just because the bytes after one read as another let-go. One let-go followed by a
+    /// continuation shaped like a let-go is NOT two let-gos.
+    #[test]
+    fn a_grid_pop_canon_does_not_run_into_the_state_after_it() {
+        use plx_machine::machine::Canon;
+        let style = STYLE;
+        let dt = 1.0 / 60.0;
+        // focus on 5, with 3 letting go
+        let mut one = GridPop::new();
+        one.tick(Some(at(3)), &style, dt);
+        one.arm(at(5));
+        // focus on 5, with 3 and 4 letting go
+        let mut two = GridPop::new();
+        two.tick(Some(at(3)), &style, dt);
+        two.arm(at(4));
+        two.arm(at(5));
+        let mut a = Canon::new();
+        one.write(&mut a);
+        // the continuation: a cell and a spring at rest, which is cell 4's let-go in `two`
+        a.option(Some(4usize), |c, i| { c.u32(i as u32); }).f32(1.0).f32(0.0);
+        let mut b = Canon::new();
+        two.write(&mut b);
+        assert_ne!(a.finish(), b.finish(), "one let-go and a let-go-shaped continuation is not two let-gos");
     }
 
     #[test]
