@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T23:01:39Z",
+ "generated": "2026-10-20T23:06:01Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 60.9,
+   "change7_pct": 60.2,
    "d30": null,
    "delta30": null,
-   "delta7": 128.5,
+   "delta7": 127,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 339.5,
+   "now": 338,
    "prev7": 211,
    "shown": true,
    "state": "worse",
@@ -45,17 +45,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 40.0,
+   "change7_pct": 39.9,
    "d30": null,
    "delta30": null,
-   "delta7": 108.5,
+   "delta7": 108,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 379.5,
+   "now": 379,
    "prev7": 271,
    "shown": true,
    "state": "worse",
@@ -111,14 +111,14 @@
    "change7_pct": 27.1,
    "d30": null,
    "delta30": null,
-   "delta7": 35.0,
+   "delta7": 35,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 164.0,
+   "now": 164,
    "prev7": 129,
    "shown": true,
    "state": "worse",
@@ -128,18 +128,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -40.1,
-   "change7_pct": 26.6,
+   "change30_pct": -40.3,
+   "change7_pct": 26.1,
    "d30": 672,
-   "delta30": -269.5,
-   "delta7": 84.5,
+   "delta30": -271,
+   "delta7": 83,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 124,
+   "n_now": 125,
    "n_prev": 111,
-   "now": 402.5,
+   "now": 401,
    "prev7": 318,
    "shown": true,
    "state": "worse",
@@ -296,9 +296,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 0,
-   "now": 312,
+   "now": 312.0,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -312,14 +312,14 @@
    "change7_pct": 2.3,
    "d30": 233.0,
    "delta30": 79.0,
-   "delta7": 7.0,
+   "delta7": 7,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 312.0,
+   "now": 312,
    "prev7": 305,
    "shown": true,
    "state": "flat",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 2.6,
+   "change7_pct": 1.7,
    "d30": null,
    "delta30": null,
-   "delta7": 4.5,
+   "delta7": 3,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 177.5,
+   "now": 176,
    "prev7": 173,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.4,
+   "change7_pct": 14.8,
    "d30": null,
    "delta30": null,
-   "delta7": 20.5,
+   "delta7": 21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 162.5,
+   "now": 163,
    "prev7": 142,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 45,
+   "n_now": 46,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -566,14 +566,14 @@
    "change7_pct": -25.0,
    "d30": 676.0,
    "delta30": -673.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 99,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
@@ -657,6 +652,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 56.8,
@@ -667,13 +667,8 @@
    "to": 127.3
   },
   {
-   "change_pct": 60.9,
+   "change_pct": 60.2,
    "commits": [
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
     {
      "pr": 864,
      "sha": "1236b92eb",
@@ -718,6 +713,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 211,
@@ -725,16 +725,11 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-20",
    "threshold_pct": 20.0,
-   "to": 339.5
+   "to": 338
   },
   {
-   "change_pct": 40.0,
+   "change_pct": 39.9,
    "commits": [
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
     {
      "pr": 864,
      "sha": "1236b92eb",
@@ -779,6 +774,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 271,
@@ -786,16 +786,11 @@
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-20",
    "threshold_pct": 20.0,
-   "to": 379.5
+   "to": 379
   },
   {
    "change_pct": 38.4,
    "commits": [
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
     {
      "pr": 864,
      "sha": "1236b92eb",
@@ -840,6 +835,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 350.5,
@@ -853,11 +853,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
@@ -901,6 +896,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 103.0,
@@ -914,11 +914,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
@@ -962,6 +957,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 129,
@@ -969,16 +969,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 164.0
+   "to": 164
   },
   {
-   "change_pct": 26.6,
+   "change_pct": 26.1,
    "commits": [
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
     {
      "pr": 864,
      "sha": "1236b92eb",
@@ -1023,6 +1018,11 @@
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
     }
    ],
    "from": 318,
@@ -1030,7 +1030,7 @@
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 402.5
+   "to": 401
   }
  ],
  "schema": 2,
@@ -1045,25 +1045,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 379.5
+   "now": 379
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 339.5
+   "now": 338
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 312
+   "now": 312.0
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 312.0
+   "now": 312
   }
  ],
  "slowest_local": [
