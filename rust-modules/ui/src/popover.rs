@@ -1245,6 +1245,12 @@ pub mod host {
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
     pub fn begin_frame(page_moving: bool) {
+        // The page redirect ([`TARGET`]) is opened and closed inside one frame (`page_pass` opens
+        // it, `PagePass::drop` closes it through `capture_now`), so none can be open as a frame
+        // opens. The destructor of a `PageTarget` rebinds the framebuffer, which is only safe on
+        // the frame's own GL thread in mid-frame; a leaked one would drop wherever the thread-local
+        // is torn down.
+        debug_assert!(TARGET.with_borrow(Option::is_none), "a page redirect survived the frame boundary");
         // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's dims to its
         // frozen pictures). `app/run.rs` already cleared it at the head of the iteration through
         // [`clear_dims`], which the player and preview routes need because they never get here;

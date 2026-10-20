@@ -142,16 +142,23 @@ const TEXT_OFF: usize = if cfg!(feature = "hostsim") { 12 } else { 16 };
 /// Not a queue-depth tuning knob — a leak bound. Text events are delivered to the whole app, not
 /// to a screen, and on a desktop SDL they are enabled from `SDL_VideoInit` onward (see [`start`]),
 /// so every keystroke anywhere in the simulator lands here whether or not anything intends to
-/// read it. The screen that cares drains every frame, so a buffer this deep means nobody is
-/// draining at all, and the only thing left to protect is memory.
+/// read it. Nothing drains the queue in production (a focused search field takes its text through
+/// `ingest_text` instead, see [`PENDING`]), so this bound is the whole of the queue's memory
+/// discipline.
 const MAX_PENDING: usize = 256;
 
 thread_local! {
     /// Committed text, oldest first, waiting for [`drain`].
     ///
-    /// Main-thread-only by construction: written from the SDL event loop in `app.rs` (and by the
-    /// `txt:` remote token, which `ingress_token` also runs on the frame thread), read by the
-    /// screen's `update` in the same loop. A `thread_local!` for that reason and not a `static mut`:
+    /// Nothing drains it in production: while a search field owns input, typed text (the
+    /// television's keyboard and the `txt:` remote token alike) goes through `app/run.rs`'s
+    /// `ingest_text` into the app's input queue (`app.inputs`) and never reaches this one.
+    /// [`on_event`] fills it only on every other route, where it is a bounded buffer
+    /// ([`MAX_PENDING`]) that [`start`] clears, and [`drain`] is read by the tests and nothing else.
+    ///
+    /// Main-thread-only by construction: [`on_event`] is called from the SDL event loop in
+    /// `app/run.rs` and from the `txt:` remote token in `app/events.rs`, both on the frame thread. A
+    /// `thread_local!` for that reason and not a `static mut`:
     /// the queue owns `String`s that `on_event` trims and `start`/`drain` clear, so one process-wide
     /// queue lets two threads free each other's commits, which is how `cargo test`'s parallel threads
     /// aborted `plx_ui` in libmalloc (2026-10-20). `STARTED` and `WIN` below are plain `Copy` data
@@ -335,9 +342,9 @@ pub(crate) fn drain() -> Vec<String> {
     PENDING.take()
 }
 
-/// How many commits are waiting for [`drain`]. Diagnostic only — the screen drains rather than
-/// counts — but it is what makes the `txt:` remote token observable in the event log while
-/// nothing is draining yet.
+/// How many commits are waiting for [`drain`]. Diagnostic only — nothing in production drains or
+/// counts for a decision — but it is what makes the `txt:` remote token observable in the event log
+/// on a route whose text goes nowhere.
 pub(crate) fn pending() -> usize {
     PENDING.with(|pending| pending.borrow().len())
 }

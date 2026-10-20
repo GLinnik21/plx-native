@@ -631,7 +631,11 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
     let c = plx_plex::plex::client_for(srv)?;
     // The memo's `RefCell` is borrowed only for the lookup. `build` runs under that borrow, and
     // what it calls (`fan::fan_key`, `transcode_request`) is string building on the client: neither
-    // reaches `built_key`, so there is no second borrow to panic on.
+    // reaches `built_key`, so there is no second borrow to panic on. What they call into is the Plex
+    // client (`composite_parts`, `image_transcode_path`), in `plx_plex`, a layer below this adapter
+    // that cannot name it: `ci/check-module-layers.py` refuses that reference, so a later edit to
+    // the client cannot start calling back into `built_key`. The two poster-local callees are
+    // one-line wrappers over it, which only a reader keeps from growing a call back.
     let s = KEY_MEMO.with(|memo| {
         memo.borrow_mut().get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
             // A server-generated collection composite is replaced by the app's baked fan: one
