@@ -457,3 +457,15 @@ recorded afresh on the merged, committed tree (`tests/focusfp.sh --rec --only 1,
 was replaced: the manifests (anchor flag included) already equal the new recorder's header.
 `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and every
 difference counter at zero.
+
+A card the focus has left now lands exactly on rest (`plx_ui::Spring::land`, called by
+`CardRow::update` for every cell that does not hold focus): the spring used to park one ulp above
+1.0 with a velocity of ~1e-6, which the canon hashes bit for bit (`CardRow::write_motion`). The
+shape did not move. `1-boot-home-chip-grid` diverged on exactly 13 frames (381-393, the tail of the
+Home card spring that releases focus, until the row parks and both builds hold the same exact rest)
+with every other counter zero, in Targets and Resolve, while `6-settings-family` and
+`12-filmography-detail-return` stayed SAME. The divergence was attributed by replaying the committed
+anchors against a build with only `Spring::land` made a no-op (all three SAME, every counter zero).
+The anchor was recorded afresh (`tests/focusfp.sh --rec --only 1`) and only its `rec-0000.jsonl`
+replaced; `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and
+every difference counter at zero.
