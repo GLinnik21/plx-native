@@ -74,6 +74,52 @@ fn a_shelf_asks_for_its_next_window_at_its_trailing_edge_once() {
     assert_eq!(asked, vec![("movie.genre".to_string(), false)], "one ask per window at the trailing edge");
 }
 
+/// The revision each hub-page ask of `works` was computed from.
+fn seen_by(works: &[LibraryWork]) -> Vec<u64> {
+    works.iter().filter_map(|w| match w { LibraryWork::HubPage { seen, .. } => Some(*seen), _ => None }).collect()
+}
+
+/// **A kept row asks again on the first tick after a publication**, whatever row the publication
+/// changed. A frame captures its views before its landings are delivered, so an ask can name a
+/// window the store has since replaced, and the store refuses it; the publication it missed
+/// rebuilds the changed rows and leaves this one as it stands, and the row's own latch must not
+/// hold the refused ask until a rung of the retry ladder (a quarter of a second at the first,
+/// climbing to half a minute) while the row's trailing cells paint as skeletons.
+#[test]
+fn a_kept_rows_refused_ask_is_asked_again_on_the_next_tick_after_a_publication() {
+    let _guard = plx_base::testlock::serial();
+    let other = ("movie.other".to_string(), "/hubs/sections/1/other/6".to_string(), "Other".to_string());
+    let mut fixture = fixture_with(&[(GENRE.0.into(), GENRE.1.into(), GENRE.2.into()), other], 12);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 9);
+    let (kept, landing) = (page.shelves[0].elems.clone(), page.shelves[1].elems.clone());
+    // The store takes a landing on the OTHER row that this frame's views do not carry yet ...
+    let id = fixture.listing.view().id().unwrap();
+    let stores = fixture.stores.take().unwrap();
+    assert!(stores.browse.borrow_mut().land_row_for_test(0, 1, 12), "premise: the other row took the landing");
+    // ... so the ask the tick sends names a window the store has left
+    let first = works(&mut page, &engine, &fixture, 9000);
+    let seen = seen_by(&first);
+    assert_eq!(seen.len(), 1, "premise: the trailing edge asks: {first:?}");
+    let target = plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+    for work in first { stores.browse_run(BrowseCmd::Addressed { target, work }); }
+    let publication = stores.capture_browse(&mut fixture.directory);
+    fixture.listing = publication.listing;
+    fixture.hubs = publication.section_hubs;
+    fixture.stores = Some(stores);
+    let now = fixture.hubs.view().revision().expect("a published section");
+    assert_ne!(seen[0], now, "premise: the store refused the ask for the window it had left");
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    assert_eq!(page.shelves[0].elems, kept, "premise: the publication left the asking row as it stood");
+    assert_ne!(page.shelves[1].elems, landing, "premise: and rebuilt the row it changed");
+    // the next tick is well inside the ladder's first rung
+    let again = works(&mut page, &engine, &fixture, 9017);
+    assert_eq!(pages(&again), vec![("movie.genre".to_string(), false)], "the refused ask goes out again at once");
+    assert_eq!(seen_by(&again), vec![now], "from the window that stands");
+}
+
 fn cancels(works: &[LibraryWork]) -> Vec<String> {
     works.iter().filter_map(|w| match w { LibraryWork::HubPageCancel { id, .. } => Some(id.clone()), _ => None }).collect()
 }

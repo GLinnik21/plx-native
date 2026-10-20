@@ -541,8 +541,8 @@ pub enum LibraryWork {
     /// its hub identifier and key. `seen` is the revision of the hub view the ask was computed
     /// from (`HubsView::revision`): a frame captures its views before its landings are delivered,
     /// so the ask can come from a window the store has since replaced, and such an ask is refused
-    /// (the publication it missed rebuilds the shelves and re-arms the row, which asks again from
-    /// the window that stands if the ask is still due).
+    /// (the publication it missed re-arms every row of the page, changed or not, and the row asks
+    /// again on its next tick from the window that stands if the ask is still due).
     HubPage {
         id: String,
         key: String,

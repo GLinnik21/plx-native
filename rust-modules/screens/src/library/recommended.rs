@@ -447,6 +447,11 @@ impl RecommendedScreen {
                 let from = seats.locate(index, same_place, looked.as_ref(), |old| (old.id.clone(), old.landscape));
                 if let Some(at) = from.filter(|&at| incremental && seats.at(at).is_some_and(|old| old.basis.matches(shelf, query))) {
                     let mut row = seats.keep(at);
+                    // A publication answers an ask the row's latch may be holding: the store refuses
+                    // an ask computed from a window the publication replaced, and nothing else would
+                    // send it again before the ladder's next rung. The row's own landing is seen by
+                    // the card section (`observe_landing`); this one is another row's.
+                    row.cards.reset_page_requests();
                     if at != index { self.reseat_row(&mut row, section, shelf, index); }
                     rows.push(row);
                     continue;

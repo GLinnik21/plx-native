@@ -342,8 +342,9 @@ impl SecHubs {
     /// The page asks to move row `id`'s window; refused when the row cannot move that way.
     fn want_page(&mut self, seen: u64, id: &str, key: &str, before: bool) -> bool {
         // The asker read a window that a landing has since replaced: where its focus stood in the
-        // old one says nothing about the new one. The landing's publication rebuilds the shelves,
-        // which re-arms the row to ask again from the window that stands.
+        // old one says nothing about the new one. The landing's publication reaches the page, which
+        // re-arms every row it holds (the rows the publication changed and the ones it left as they
+        // stood), so a row whose edge is still wanted asks again from the window that stands.
         if seen != self.revision { return false; }
         let Some(shelf) = self.committed.iter().find(|shelf| shelf.is(id, key)) else { return false };
         if !plx_plex::plex::is_pageable_hub_key(key) || shelf.released()
