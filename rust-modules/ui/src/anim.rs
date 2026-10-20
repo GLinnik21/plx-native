@@ -59,7 +59,7 @@ pub fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32) {
     ENTRIES.with(|es| record(&mut es.borrow_mut(), name, pos, vel, target, dt));
 }
 
-/// [`probe`]'s body over the thread's entries; the borrow covers nothing but this function.
+/// [`probe`]'s body over the thread's entries.
 fn record(es: &mut Vec<Entry>, name: &'static str, pos: f32, vel: f32, target: f32, dt: f32) {
     let i = match es.iter().position(|e| e.name == name) {
         Some(i) => i,
@@ -173,8 +173,7 @@ pub fn draw_overlay() {
     ENTRIES.with(|es| paint_overlay(&es.borrow()));
 }
 
-/// [`draw_overlay`]'s body over the thread's entries. Painting never probes, so the shared borrow
-/// is not met by an exclusive one.
+/// [`draw_overlay`]'s body over the thread's entries.
 fn paint_overlay(es: &[Entry]) {
     if es.is_empty() {
         return;

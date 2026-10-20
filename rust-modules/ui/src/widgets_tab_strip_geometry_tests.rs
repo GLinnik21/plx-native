@@ -343,9 +343,7 @@ fn the_tab_pulse_envelope_is_zero_at_both_ends_and_one_at_the_peak() {
 /// it: it is decorative, so it adds no layout motion.
 #[test]
 fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
-    // Resets and asserts `plx_machine::idle`'s process-global flags, so it is serial by obligation
-    // (`serial_for_motion`; `ui/src/CLAUDE.md`, the `xfade.rs` rule).
-    let _g = serial_for_motion();
+    let _g = serial_for_motion(); // asserts `plx_machine::idle`'s process-global flags
     let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
     let labels = TabLabels { generation: 1, faces: &faces };
     let mut strip = StripRender::new();
@@ -376,9 +374,7 @@ fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
 /// against 9.2M the frame it ended.
 #[test]
 fn a_running_tab_pulse_reports_motion_not_page_damage() {
-    // Resets and asserts `plx_machine::idle`'s process-global flags, so it is serial by obligation
-    // (`serial_for_motion`; `ui/src/CLAUDE.md`, the `xfade.rs` rule).
-    let _g = serial_for_motion();
+    let _g = serial_for_motion(); // resets and asserts `plx_machine::idle`'s process-global flags
     let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
     let labels = TabLabels { generation: 1, faces: &faces };
     let mut strip = StripRender::new();

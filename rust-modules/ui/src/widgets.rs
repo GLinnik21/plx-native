@@ -7152,9 +7152,7 @@ latched_flag!(
 // Pure glyph-metric memo keyed by the full captured vocabulary: generation, label count and every
 // label byte. Every caller supplies Bridge-owned `TabLabels`, and a key mismatch deterministically
 // replaces the memo, so it is never read as logical state. A `thread_local!` render cache (the
-// form `ci/check-statics.sh` names, `nav.rs`'s precedent): the render thread is the only one that
-// paints, and a process-wide `static mut` here let two host tests with different vocabularies free
-// each other's `CString`s.
+// form `ci/check-statics.sh` names, `nav.rs`'s precedent): only the render thread paints.
 /// The memo's key is the generation AND the captured faces; `CString`s are kept beside them because
 /// paint hands `TabPill` a raw pointer into them.
 type TabMetrics = (u32, Vec<TabFace>, Vec<std::ffi::CString>, Vec<f32>);
@@ -7239,10 +7237,9 @@ fn tab_cache_matches(cache: &TabMetrics, data: TabLabels<'_>) -> bool {
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
 /// rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
-/// `*const c_char`. Scoping it here makes that impossible to write by accident. The rebuild takes
-/// the cell's exclusive borrow and releases it BEFORE `f` runs (which holds a shared one), so a
-/// nested call with the same key is harmless and a nested call with another key panics on the
-/// `RefCell` instead of freeing memory a caller still points into; no caller nests either way.
+/// `*const c_char`. Scoping it here makes that impossible to write by accident, and the `RefCell`
+/// enforces it: do NOT call this again from inside `f` (a nested call with another key panics
+/// rather than freeing what the caller points into).
 fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CString], &[f32]) -> R) -> R {
     TAB_CACHE.with(|cell| {
         if cell.borrow().as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {

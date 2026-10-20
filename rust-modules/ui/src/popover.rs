@@ -925,12 +925,10 @@ pub mod host {
         /// The snapshot represents one explicit prefix of the layer stack; nested live surfaces sit
         /// above that prefix rather than each owning a competing frozen picture of the page.
         ///
-        /// All three of the snapshot's cells are `thread_local!`: the render thread is the only one that
-        /// draws, and the texture names `FrameCache` holds belong to its GL context. `FrameCache` has no
-        /// destructor; [`TARGET`]'s `PageTarget` has one (it rebinds the frame's framebuffer), but it is
-        /// `None` at every frame boundary, so that drop only ever runs mid-frame, on the thread that
-        /// owns the GL context. The cells are reached through [`cache`], never held across a call that
-        /// could reach another cell: every method of `FrameCache` is a leaf.
+        /// All three cells are `thread_local!`: the texture names belong to the render thread's GL
+        /// context. `FrameCache` has no destructor; [`TARGET`]'s `PageTarget` does (it rebinds the
+        /// frame's framebuffer) but is `None` at every frame boundary, so it only drops mid-frame, on
+        /// the GL thread.
         static CACHE: std::cell::RefCell<FrameCache> = const { std::cell::RefCell::new(FrameCache::new()) };
 
         /// Which stage [`CACHE`] holds.
@@ -946,7 +944,7 @@ pub mod host {
     /// Run `f` on the one snapshot. The borrow lasts exactly the call, and `FrameCache`'s methods
     /// (GL calls, or the host stand-in's thread-local counters) never come back into this module.
     fn cache<R>(f: impl FnOnce(&mut FrameCache) -> R) -> R {
-        CACHE.with(|c| f(&mut c.borrow_mut()))
+        CACHE.with_borrow_mut(f)
     }
 
     /// Is the ground already on this frame's framebuffer, either drawn live and captured or
@@ -976,7 +974,7 @@ pub mod host {
         // The page went straight into the snapshot (`page_pass` redirected it): close that pass and
         // put the page on the frame from the texture. No copy, and no pointless-capture question —
         // the redirect is only ever opened when the capture is wanted.
-        if let Some(target) = TARGET.with(|t| t.borrow_mut().take()) {
+        if let Some(target) = TARGET.take() {
             cache(|c| c.rendered(target));
             HELD.set(Held::Page);
             PAGE_EPOCH.fetch_add(1, Relaxed);
@@ -1349,9 +1347,8 @@ pub mod host {
             // see `FrameCache::render_into` for what the copy cost. Not in a blur source pass (the
             // capture is refused there anyway) and not when the capture would be thrown away.
             if !plx_gfx::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
-                if TARGET.with(|t| t.borrow().is_none()) {
-                    let target = cache(|c| c.render_into());
-                    TARGET.with(|t| *t.borrow_mut() = target);
+                if TARGET.with_borrow(Option::is_none) {
+                    TARGET.set(cache(|c| c.render_into()));
                 }
             }
         }
@@ -1372,7 +1369,7 @@ pub mod host {
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
-            let redirected = TARGET.with(|t| t.borrow().is_some());
+            let redirected = TARGET.with_borrow(Option::is_some);
             if CAPTURE_OWED.swap(false, Relaxed) || redirected {
                 capture_now();
             }
