@@ -106,7 +106,7 @@ pub struct HeaderItem {
     /// [`HeaderSwap`]: a changed count cross-fades in place, a control the next row does not have
     /// fades out where it stood, one it did not have fades in, and one whose label stands at another
     /// x (a count of another digit count) leaves at the old x and arrives at the new, instead of
-    /// being cut.
+    /// being cut (a row for ANOTHER library shows only the controls that library has).
     pub value_slot: Option<String>,
 }
 
@@ -597,7 +597,9 @@ struct Carried {
 /// control the new row does not have fades out where it stood; one it did not have fades in. A
 /// control whose label stands at another x on the new row (a count of another digit count moves it
 /// by the digits' width, [`PageHeader::layout`] placing it by what it draws) does both: the old face
-/// leaves at the old x while the new one arrives at the new x. All on [`Xfade`], the one
+/// leaves at the old x while the new one arrives at the new x. That is the SAME page's row changing
+/// ([`Self::begin`]); a switch to another library's row ([`Self::begin_switch`]) shows only what the
+/// new library has: a control the old one had is not drawn on it, even fading. All on [`Xfade`], the one
 /// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
 /// a timer of its own. Nothing glides: a label is never drawn between its two places.
 ///
@@ -613,6 +615,19 @@ pub struct HeaderSwap {
     from: Vec<Carried>,
     /// A swap was begun and its clock has not run out.
     running: bool,
+    /// What the swap does with a control only one of the two rows has.
+    edge: Edge,
+}
+
+/// What a [`HeaderSwap`] does with a control that only one of the two rows has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Edge {
+    /// The row is the same page changing: the control fades out where it stood, or fades in.
+    Fade,
+    /// The rows are two libraries' (a switch): the new row stands as it is, so a control the old
+    /// one had is not drawn on the new library's page (not even fading out) and one it lacked is
+    /// simply there. Only a control both rows have dissolves, number to number.
+    Cut,
 }
 
 /// Two x positions this close are one place: a count of another digit count moves its label by a
@@ -625,7 +640,7 @@ impl Default for HeaderSwap {
 }
 
 impl HeaderSwap {
-    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new(), running: false } }
+    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new(), running: false, edge: Edge::Fade } }
 
     /// Is a swap on screen?
     pub fn is_active(&self) -> bool { self.running && self.clock.is_swapping() }
@@ -635,6 +650,20 @@ impl HeaderSwap {
     /// and leaves one already running to finish; a breadcrumb row on either side is a different
     /// page, not the same row changing, and cancels it.
     pub fn begin(&mut self, old: &HeaderRow, new: &HeaderRow) {
+        self.begin_with(old, new, Edge::Fade);
+    }
+
+    /// [`Self::begin`] for rows of two DIFFERENT libraries (a switch): the new library's page
+    /// arrives with the controls it has, and the old library's controls it does not have are not
+    /// drawn on it, not even fading (a Collections control on a library with none, for a few
+    /// frames, reads as that library having collections). A control both rows have still
+    /// dissolves: its number cross-fades in place, or leaves and arrives at each x when the
+    /// number's width moves its label.
+    pub fn begin_switch(&mut self, old: &HeaderRow, new: &HeaderRow) {
+        self.begin_with(old, new, Edge::Cut);
+    }
+
+    fn begin_with(&mut self, old: &HeaderRow, new: &HeaderRow, edge: Edge) {
         if old.page.spec().crumb.is_some() || new.page.spec().crumb.is_some() { return self.end(); }
         let carry = |row: &HeaderRow| -> Vec<Carried> {
             row.page.spec().right.iter().enumerate().filter(|(_, item)| item.value_slot.is_some()).filter_map(|(i, item)| {
@@ -644,11 +673,15 @@ impl HeaderSwap {
         };
         let before = carry(old);
         let after = carry(new);
-        let same = before.len() == after.len()
-            && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value));
+        let same = match edge {
+            Edge::Fade => before.len() == after.len()
+                && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value)),
+            Edge::Cut => after.iter().all(|a| before.iter().find(|b| b.item.label == a.item.label).is_none_or(|b| b.item.value == a.item.value)),
+        };
         if same { return; }
         self.from = before;
         self.running = true;
+        self.edge = edge;
         self.clock.arrive();
     }
 
@@ -683,7 +716,7 @@ impl HeaderSwap {
         let item = right.get(index).filter(|item| item.value_slot.is_some())?;
         let a = self.progress();
         let Some(before) = self.from.iter().find(|c| c.item.label == item.label) else {
-            return Some(FaceFade { face: a, from_value: None, value_in: 1.0 });
+            return (self.edge == Edge::Fade).then_some(FaceFade { face: a, from_value: None, value_in: 1.0 });
         };
         if before.item.value == item.value { return None; }
         if Self::moved(before, item, x) { return Some(FaceFade { face: a, from_value: None, value_in: 1.0 }); }
@@ -697,9 +730,10 @@ impl HeaderSwap {
     fn leaving<'a>(&'a self, right: &'a [HeaderItem], layout: &'a HeaderLayout) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
         let active = self.is_active();
         let opacity = 1.0 - self.progress();
+        let edge = self.edge;
         self.from.iter().filter(move |c| active && {
             let now = right.iter().enumerate().find(|(_, item)| item.label == c.item.label);
-            now.map_or(true, |(i, item)| {
+            now.map_or(edge == Edge::Fade, |(i, item)| {
                 layout.items.iter().find(|r| r.slot == Slot::Right(i)).is_some_and(|r| Self::moved(c, item, r.text.x))
             })
         }).map(move |c| (&c.item, c.x, c.w, opacity))

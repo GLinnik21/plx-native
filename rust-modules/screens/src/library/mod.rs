@@ -171,6 +171,10 @@ pub struct LibraryScreen {
     /// into the canon: the capsules' position steers the next frame, while `collections` is no part
     /// of the screen's shape (a recording never probes), so the swap has nothing to be a function of.
     header_swap: plx_ui::page_header::HeaderSwap,
+    /// The library (server, section key) the row in `header` was built for: a rebuild for another
+    /// library is a switch (`HeaderSwap::begin_switch`), for the same one the page's own row
+    /// changing (`HeaderSwap::begin`). A projection, not canon.
+    header_of: Option<(Option<plx_plex::plex::ServerId>, i64)>,
     /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
@@ -270,7 +274,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), header_of: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,

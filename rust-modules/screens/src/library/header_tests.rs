@@ -648,6 +648,8 @@ struct Frame {
     focusable: bool,
     /// Where the "Recommended" label is drawn.
     recommended_x: f32,
+    /// Its opacity: the page's own (a page that is arriving fades its whole header in).
+    recommended_alpha: f32,
 }
 
 /// The resting opacity of a label (its ink's alpha).
@@ -663,6 +665,7 @@ fn watch_frame(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEn
         built: page.header.row().and_then(|row| row.page.spec().right.iter().find(|item| item.label == collections).map(|item| item.value.clone())),
         focusable: page.toolbar_elems().contains(&COLLECTIONS),
         recommended_x: runs.iter().find(|run| run.text == msg::library_header_recommended()).map_or(f32::NAN, |run| run.at.x),
+        recommended_alpha: runs.iter().find(|run| run.text == msg::library_header_recommended()).map_or(f32::NAN, |run| run.ink[3]),
     }
 }
 
@@ -690,15 +693,16 @@ fn switch_and_watch(from: u32, to: Result<u32, crate::registry::Forbidden>, warm
     (rest.unwrap(), frames)
 }
 
-/// **A library switch never draws the count of the library it left as the new one's** (spec: "OK
-/// on a library: ... count and Collections number cross-fade"; the control is on the row only with
-/// a count KNOWN for the library on view). The probe answers for the new library a few frames
-/// after the press, and the control used to stay on the row as it was for that whole window: the
-/// previous library's "Collections · 4", at full strength, over the grid dissolving to a library
-/// that has another number (or none). Now the row follows the press at once: the built row never
-/// carries the old count again, the old control dissolves out, and the new one dissolves in when
-/// its count is known. (Replaces `a_library_switch_keeps_the_collections_label_still_and_cross_fades_its_count`,
-/// whose premise was "the old count stays while the new one is unknown".)
+/// **A library switch never draws the count of the library it left as the new one's** (the
+/// control is on the row only with a count KNOWN for the library on view). The probe answers for
+/// the new library a few frames after the press, and the control used to stay on the row as it
+/// was for that whole window: the previous library's "Collections · 4", at full strength, over the
+/// grid dissolving to a library that has another number (or none). Now the row follows the press
+/// at once: the built row never carries the old count again, NOTHING of the old control is drawn
+/// from the press on (it is the left library's, not this one's: not even fading out), and the new
+/// one fades in when its count lands. (Replaces
+/// `a_library_switch_keeps_the_collections_label_still_and_cross_fades_its_count`, whose premise
+/// was "the old count stays while the new one is unknown".)
 #[test]
 fn a_switch_never_draws_the_count_of_the_library_it_left_as_the_new_ones() {
     let _guard = plx_base::testlock::serial();
@@ -706,12 +710,13 @@ fn a_switch_never_draws_the_count_of_the_library_it_left_as_the_new_ones() {
     assert_eq!(rest.built, Some(Some("4".to_string())), "premise: the first library's control is on the row");
     for (n, frame) in frames.iter().enumerate() {
         assert_ne!(frame.built, Some(Some("4".to_string())), "frame {}: the built row carries the library left behind", n + 1);
-        if n + 1 < 12 { assert_eq!(frame.built, None, "frame {}: an unanswered library has no control on the row", n + 1); }
+        assert!(frame.numbers.iter().all(|(text, ..)| text != "4"), "frame {}: the old count is drawn: {:?}", n + 1, frame.numbers);
+        if n + 1 < 12 {
+            assert_eq!(frame.built, None, "frame {}: an unanswered library has no control on the row", n + 1);
+            assert!(frame.labels.is_empty() && frame.numbers.is_empty(), "frame {}: Collections is drawn for a library whose count is not known: {:?}", n + 1, frame.labels);
+        }
         assert!(!(frame.focusable && frame.built.is_none()), "frame {}: focus would walk a control that is not there", n + 1);
     }
-    let old: Vec<f32> = frames.iter().take(12).filter_map(|frame| frame.numbers.iter().find(|(text, ..)| text == "4").map(|(_, _, alpha)| *alpha)).collect();
-    assert!(!old.is_empty() && old.windows(2).all(|pair| pair[1] <= pair[0]), "the old number only ever fades: {old:?}");
-    assert!(old.iter().all(|alpha| *alpha < 1.0), "and is never at full strength once the press is made: {old:?}");
     let new: Vec<f32> = frames.iter().skip(11).filter_map(|frame| frame.numbers.iter().find(|(text, ..)| text == "2").map(|(_, _, alpha)| *alpha)).collect();
     assert!(new.iter().any(|alpha| *alpha > 0.0 && *alpha < 1.0), "the new count fades in, it does not blink on: {new:?}");
     assert!(new.windows(2).all(|pair| pair[1] >= pair[0]), "and only ever rises: {new:?}");
@@ -772,29 +777,25 @@ fn a_count_of_another_width_dissolves_at_each_x_and_moves_nothing_else() {
     }
 }
 
-/// **A library with no collections fades the control out where it stood** (never "· 0", never a
-/// cut), whether its answer was known at the press or lands after: the old control dissolves on the
-/// swap clock, over several frames, the label at the x it always had, and the row carries no
-/// control for the new library from the press on.
+/// **A library with no collections draws no Collections control, ever, from the press on**
+/// (owner, from the video: "when entering the library without collections, UI briefly shows
+/// collections button"), whether its answer was known at the press or lands after. The control the
+/// library left is the left library's: the row for another library is the new page's own and does
+/// not carry it, not even fading out ([`HeaderSwap::begin_switch`]), and never "· 0". 0 frames of
+/// it, label or number. (Replaces `a_library_without_collections_fades_the_control_out_in_place`,
+/// which asked for the old control to dissolve over the new library's page: the same label, still
+/// drawn for several frames.)
 #[test]
-fn a_library_without_collections_fades_the_control_out_in_place() {
+fn a_library_without_collections_draws_no_control_from_the_press_on() {
     let _guard = plx_base::testlock::serial();
     for warm in [true, false] {
         let (rest, frames) = switch_and_watch(4, Ok(0), warm, &["4", "0"]);
-        let x = rest.labels[0].0;
-        let mut faded = Vec::new();
+        assert_eq!(rest.labels.len(), 1, "warm {warm}: premise: the first library draws its control");
         for (n, frame) in frames.iter().enumerate() {
-            assert!(frame.numbers.iter().all(|(text, ..)| text != "0"), "warm {warm} frame {}: never '· 0'", n + 1);
+            assert!(frame.labels.is_empty() && frame.numbers.is_empty(), "warm {warm} frame {}: Collections is drawn: {:?} {:?}", n + 1, frame.labels, frame.numbers);
             assert_eq!(frame.built, None, "warm {warm} frame {}: the new library has no control to build", n + 1);
-            if let Some((label_x, alpha)) = frame.labels.first() {
-                assert!((label_x - x).abs() < 0.01, "warm {warm} frame {}: the label moved ({x} -> {label_x})", n + 1);
-                if *alpha > 0.0 && *alpha < rest_alpha() - 0.01 { faded.push(*alpha); }
-            }
+            assert!(!frame.focusable, "warm {warm} frame {}: focus would walk to it", n + 1);
         }
-        assert!(faded.len() >= 5, "warm {warm}: the control dissolves over several frames, it is not cut: {faded:?}");
-        assert!(faded.windows(2).all(|pair| pair[1] <= pair[0]), "warm {warm}: and only ever fainter: {faded:?}");
-        let last = frames.last().unwrap();
-        assert!(last.labels.is_empty() && last.numbers.is_empty(), "warm {warm}: gone once the clock has run: {:?}", last.labels);
     }
 }
 
@@ -888,9 +889,34 @@ fn entering_a_library_without_collections_never_builds_the_collections_control()
     for (n, frame) in frames.iter().enumerate() {
         assert_eq!(frame.built, None, "frame {}: a built row carries the control", n + 1);
         assert!(!frame.focusable, "frame {}: toolbar_elems lists COLLECTIONS", n + 1);
+        assert!(frame.labels.is_empty() && frame.numbers.is_empty(),
+            "frame {}: Movies' Collections is drawn on the library without: {:?} {:?}", n + 1, frame.labels, frame.numbers);
     }
-    let gone = frames.last().unwrap();
-    assert!(gone.labels.is_empty(), "and nothing of it is left on screen: {:?}", gone.labels);
+    knows_collections(&[]);
+}
+
+/// **A library whose count is already known has its control from the first frame of its row** (the
+/// probe is warmed for every library when the directory lands, so this is the usual entry): label
+/// and number together at the page's own opacity from the press on (the page dissolves in as a
+/// whole), no frame without it and no swap fading it separately, because the new library's page
+/// arrives with the controls it has.
+#[test]
+fn entering_a_library_whose_count_is_known_has_the_control_from_its_first_frame() {
+    let _guard = plx_base::testlock::serial();
+    knows_collections(&[(1, Ok(6)), (2, Ok(0))]);
+    let (rest, frames) = enter_and_watch(1, None);
+    assert_eq!(rest.built, None, "premise: TV Shows has no control");
+    for (n, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.built, Some(Some("6".to_string())), "frame {}: the built row has the control with its count", n + 1);
+        assert_eq!(frame.labels.len(), 1, "frame {}: one label: {:?}", n + 1, frame.labels);
+        // The page itself dissolves in on an entry, so "at rest" is the opacity of its other labels.
+        assert!((frame.labels[0].1 - frame.recommended_alpha).abs() < 1e-3,
+            "frame {}: the label is not at the page's opacity ({}): {:?}", n + 1, frame.recommended_alpha, frame.labels);
+        assert_eq!(frame.numbers.len(), 1, "frame {}: the number with it: {:?}", n + 1, frame.numbers);
+        assert!((frame.numbers[0].2 * rest_alpha() - frame.labels[0].1).abs() < 1e-3,
+            "frame {}: the number is not at the label's opacity ratio: {:?} {:?}", n + 1, frame.numbers, frame.labels);
+        assert!(frame.focusable, "frame {}: the control is a stop from the first frame", n + 1);
+    }
     knows_collections(&[]);
 }
 

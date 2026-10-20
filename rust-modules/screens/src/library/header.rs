@@ -193,7 +193,9 @@ impl LibraryScreen {
     /// read is that library's and a switch never carries the one it left: while the new library's
     /// count is not known the control is not on the row, and a count that lands later fades in
     /// through the row's [`HeaderSwap`] (the probe is warmed for every library when the directory
-    /// lands, so it is usually known before the switch is drawn).
+    /// lands, so it is usually known before the switch is drawn, and the control is then in the
+    /// new row's first frame). The control the library left is not drawn on the new one at all,
+    /// not even fading out ([`HeaderSwap::begin_switch`]).
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         self.collections = self.view_section(cx)
             .map_or(CollectionsControl::Unknown, |index| CollectionsControl::of(H::collections_count(cx, index)));
@@ -203,7 +205,13 @@ impl LibraryScreen {
         let key = self.header_key(cx);
         if self.header.is_current(key) { return; }
         let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
-        if let Some(old) = self.header.row() { self.header_swap.begin(old, &row); }
+        let of = self.view_section(cx).and_then(|index| H::directory(cx).sections().get(index)).map(|section| (section.sid, section.key));
+        if let Some(old) = self.header.row() {
+            // The same library's row changing fades what comes and goes; a row for ANOTHER library
+            // is the new page's own, and shows nothing of the one left (see `HeaderSwap::begin_switch`).
+            if of == self.header_of { self.header_swap.begin(old, &row); } else { self.header_swap.begin_switch(old, &row); }
+        }
+        self.header_of = of;
         self.header.install(key, row);
     }
 

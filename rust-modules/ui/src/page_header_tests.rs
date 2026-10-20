@@ -721,6 +721,39 @@ fn a_control_the_next_row_lacks_fades_out_in_place() {
     assert!(swap_runs(&new, &swap).iter().all(|(text, ..)| text != "Collections"), "and gone once the clock ran out");
 }
 
+/// **A switch to another library's row cuts a control only one of the rows has** (`begin_switch`):
+/// the old library's control is not drawn on the new one (not even fading out, which for a library
+/// with no collections shows its label for several frames), and a control the old row lacked is
+/// simply there at its resting opacity. A control both rows have still dissolves, number to number.
+#[test]
+fn a_switch_cuts_the_control_only_one_row_has_and_dissolves_the_one_both_have() {
+    let _g = plx_base::testlock::serial();
+    let with = |value: &str| row_with(Some(value));
+    // The library without: the control is gone from the first frame, and no swap is left running.
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&with("4"), &row_without_the_slotted_control());
+    let runs = swap_runs(&row_without_the_slotted_control(), &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "Collections" && text != "4"), "the left library's control is drawn: {runs:?}");
+    // The library with, from one without: there from the first frame, at its resting opacity.
+    let new = with("4");
+    swap.begin_switch(&row_without_the_slotted_control(), &new);
+    let runs = swap_runs(&new, &swap);
+    let label = runs.iter().find(|(text, ..)| text == "Collections").expect("the control is on the row");
+    assert!((label.2 - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "and not fading in: {label:?}");
+    // Both have it: the number cross-fades in place, as it does for one row changing.
+    swap.end();
+    let new = with("7");
+    swap.begin_switch(&with("4"), &new);
+    assert!(swap.is_active(), "a count that differs between the two libraries dissolves");
+    for _ in 0..8 { swap.step(1.0 / 60.0); }
+    let runs = swap_runs(&new, &swap);
+    assert!(runs.iter().any(|(text, ..)| text == "4") && runs.iter().any(|(text, ..)| text == "7"), "number to number: {runs:?}");
+    // Whereas the same page's own row losing the control (begin) fades it out where it stood.
+    swap.end();
+    swap.begin(&with("4"), &row_without_the_slotted_control());
+    assert!(swap_runs(&row_without_the_slotted_control(), &swap).iter().any(|(text, ..)| text == "Collections"));
+}
+
 /// **A label a capsule's shape crosses is painted once per ink region, each in its own ink**: the
 /// part under the white focus capsule in the dark accent ink and the rest in the resting white,
 /// split along the capsule's drawn shape (the regions are `TabStrip::pill_ink`'s, the per-fragment
