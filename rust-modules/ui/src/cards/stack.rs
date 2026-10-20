@@ -658,7 +658,13 @@ impl<K: Copy + Eq> Stack<K> {
 
     fn frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> SectionFrame {
         let heading = if let Kind::Shelf { heading, .. } = self.specs[i].kind { heading } else { 0.0 };
-        SectionFrame { y: self.top(p, cx, i) - self.scroll.pos + heading, clip: self.clip }
+        // what stands under a shelf's caption is the next section's heading when that is a shelf,
+        // drawn lifted by that shelf's own lift (`draw_heading`'s `lift`)
+        let below_rise = match (self.specs.get(i + 1).map(|next| &next.kind), self.bodies.get(i + 1)) {
+            (Some(Kind::Shelf { .. }), Some(Body::Shelf(next))) if self.len_of(p, cx, i + 1) > 0 => next.heading_lift(),
+            _ => 0.0,
+        };
+        SectionFrame { below_rise, ..SectionFrame::new(self.top(p, cx, i) - self.scroll.pos + heading, self.clip) }
     }
 
     // ---- events ----------------------------------------------------------------------------

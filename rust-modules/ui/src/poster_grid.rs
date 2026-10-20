@@ -529,7 +529,7 @@ mod tests {
         // the two captions of a move hand the title over: at no step of the 112 px band is neither
         // title on screen (the arriving one comes in as the room holds it, the departing one goes
         // out as the room that held it is gone)
-        let title = |e: f32| card_row::TileLabel::title("t").revealed(112.0, e).lines()[0].unwrap().alpha;
+        let title = |e: f32| card_row::TileLabel::title("t").revealed(112.0, e, 0.0).lines()[0].unwrap().alpha;
         assert!(
             title(opened) + title(closing) > 0.0,
             "a title is on screen through the move: arriving {} departing {}", title(opened), title(closing)
@@ -539,7 +539,7 @@ mod tests {
         assert!(!moving, "a settled grid lets idle suppression sleep");
         assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
         let settled = bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion;
-        let whole = card_row::TileLabel::titled("t", "d").revealed(112.0, settled).lines();
+        let whole = card_row::TileLabel::titled("t", "d").revealed(112.0, settled, 0.0).lines();
         assert!(whole.iter().flatten().all(|l| l.alpha > 0.999), "a settled band shows its whole caption");
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
@@ -557,7 +557,7 @@ mod tests {
     /// the row under it.
     #[test]
     fn a_focus_move_hands_the_title_over_without_a_blank_at_112_and_dips_once_at_80() {
-        let title = |band: f32, e: f32| card_row::TileLabel::title("t").revealed(band, e).lines()[0].unwrap().alpha;
+        let title = |band: f32, e: f32| card_row::TileLabel::title("t").revealed(band, e, 0.0).lines()[0].unwrap().alpha;
         let shown = |band: f32, e: f32| title(band, e).max(title(band, 1.0 - e));
         for step in 0..=1000 {
             let e = step as f32 / 1000.0;

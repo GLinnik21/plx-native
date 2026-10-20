@@ -342,6 +342,19 @@ pub enum CardEvent<E> {
 pub struct SectionFrame {
     pub y: f32,
     pub clip: Rect,
+    /// How far what the layout owner puts directly below this shelf's caption band (the next
+    /// shelf's heading) is DRAWN above where the layout rests it, in px: the next shelf's
+    /// `heading_lift()`. A caption line is drawn only where that thing is not
+    /// (`card_row::line_reveal_for`). 0 for a shelf with nothing under it, or one whose neighbour
+    /// does not lift.
+    pub below_rise: f32,
+}
+
+impl SectionFrame {
+    /// A frame whose neighbour below does not lift (nothing under the shelf, or a resting block).
+    pub const fn new(y: f32, clip: Rect) -> Self {
+        Self { y, clip, below_rise: 0.0 }
+    }
 }
 
 /// What the `FocusMoved` events since a section's last tick told it about the card focus went to.

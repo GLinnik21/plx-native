@@ -747,13 +747,33 @@ impl Grid {
     pub fn place<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, elem: &H::Elem, how: At) -> Option<Placed> {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
-        let pressed = super::pressed_index(cx, self.entry, src);
-        let cell = self.slot(i, src.len(), &self.bands.geometry());
-        let s = match how {
-            At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
-            At::SpringTarget => if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 },
+        let bands = self.bands.geometry();
+        let cell = self.slot(i, src.len(), &bands);
+        let rect = match how {
+            At::Drawn => self.drawn_rect(cx, src, i, &bands),
+            At::SpringTarget => cell.scaled(if focus == Some(i) { self.spec.style.focus_scale } else { 1.0 }),
         };
-        Some(Placed { rect: cell.scaled(s), rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
+        Some(Placed { rect, rest_rect: cell.scaled(self.spec.style.focus_scale), clip: Rect::FULL, index: Some(i as u32) })
+    }
+
+    /// Card `i` as it is DRAWN now: its slot (a landing's slide folded in) scaled by its live pop
+    /// and the press dip, the rect [`place`](Self::place) answers for `At::Drawn`.
+    fn drawn_rect<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, i: usize, bands: &[GridBand]) -> Rect {
+        let focus = super::focused_index(&cx.focus, self.entry, src);
+        let pressed = super::pressed_index(cx, self.entry, src);
+        self.slot(i, src.len(), bands).scaled(super::press_scale(self.pop(src, i, focus), i, pressed, cx))
+    }
+
+    /// **How far the tile directly below card `i` is drawn above its cell**, px: the live pop of the
+    /// card that takes (or lets go of) the focus under a caption, which is drawn OVER it. The one
+    /// number the grid hands the caption rule ([`card_row::line_reveal_for`]) so a line stops where
+    /// that tile's drawn top is, not where its cell rests. 0 for a card in the last row.
+    fn rise_below<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S, i: usize, bands: &[GridBand]) -> f32 {
+        let below = i + self.spec.cols;
+        if below >= src.len() {
+            return 0.0;
+        }
+        (self.cell(below, bands).y - self.drawn_rect(cx, src, below, bands).y).max(0.0)
     }
 
     /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
@@ -922,11 +942,11 @@ impl Grid {
             // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
             // focus reconciled to takes it up with the landing's first step.
             let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            Some(label.revealed(self.band_h(), open))
+            Some(label.revealed(self.band_h(), open, self.rise_below(f.cx, src, i, bands)))
         } else {
             self.bands.closing()
                 .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
-                .map(|(_, _, open)| src.label(i).revealed(self.band_h(), open))
+                .map(|(_, _, open)| src.label(i).revealed(self.band_h(), open, self.rise_below(f.cx, src, i, bands)))
         };
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, label.is_some()) {
@@ -1175,7 +1195,9 @@ impl Grid {
             // the new focus card's, which moves with the focus.
             if g.focused && self.landing_waiting() {
                 let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
-                let label = ghosts.label(j).revealed(self.band_h(), open);
+                // nothing below it lifts while the landing waits: the card focus reconciled to rests
+                // until the landing's first step (`pop`), so the ghost's caption sees its row at rest
+                let label = ghosts.label(j).revealed(self.band_h(), open, 0.0);
                 card_row::draw_label(pr, rect, s, &self.spec.style, &label, f.measure);
             }
         }

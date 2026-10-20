@@ -115,7 +115,7 @@ fn the_legacy_band_is_the_unchanged_geometry() {
         );
     }
     for e in [0.0, 0.3, 0.7, 1.0] {
-        assert_eq!(card_row::room_for(card_row::LEGACY_BAND_H, e), crate::consts::UNDER_LABEL_AIR + card_row::under_band(e));
+        assert_eq!(card_row::room_for(card_row::LEGACY_BAND_H, e, 0.0), crate::consts::UNDER_LABEL_AIR + card_row::under_band(e));
     }
 }
 
@@ -127,7 +127,7 @@ fn the_legacy_band_is_the_unchanged_geometry() {
 fn the_caption_waits_for_its_room_at_both_band_sizes() {
     for (band, two_lines) in [(80.0, false), (112.0, true)] {
         let lines = |e: f32| {
-            let label = card_row::TileLabel::from_lines([Some("t".into()), two_lines.then(|| "d".into())]).revealed(band, e);
+            let label = card_row::TileLabel::from_lines([Some("t".into()), two_lines.then(|| "d".into())]).revealed(band, e, 0.0);
             label.lines()
         };
         assert!(lines(0.0).iter().flatten().all(|l| l.alpha == 0.0), "no caption on a closed band ({band})");
@@ -137,16 +137,16 @@ fn the_caption_waits_for_its_room_at_both_band_sizes() {
             let e = step as f32 / 200.0;
             for (k, line) in lines(e).iter().enumerate() {
                 let Some(line) = line else { continue };
-                assert!(line.alpha == 0.0 || card_row::room_for(band, e) >= line.bottom,
+                assert!(line.alpha == 0.0 || card_row::room_for(band, e, 0.0) >= line.bottom,
                     "band {band}, e {e}: line {k} is drawn (alpha {}) with {} px of room under a {} px box",
-                    line.alpha, card_row::room_for(band, e), line.bottom);
+                    line.alpha, card_row::room_for(band, e, 0.0), line.bottom);
                 assert!(line.alpha >= last[k], "band {band}: line {k} dims while its band opens (e {e})");
                 last[k] = line.alpha;
             }
         }
     }
     // the title (the first line) is on screen before the details line under it, never after
-    let both = |e: f32| card_row::TileLabel::from_lines([Some("t".into()), Some("d".into())]).revealed(112.0, e).lines();
+    let both = |e: f32| card_row::TileLabel::from_lines([Some("t".into()), Some("d".into())]).revealed(112.0, e, 0.0).lines();
     for step in 0..=200 {
         let [t, d] = both(step as f32 / 200.0);
         assert!(t.unwrap().alpha >= d.unwrap().alpha, "the details line leads the title at {step}/200");

@@ -868,7 +868,7 @@ impl Shelf {
             _ => pr,
         };
         if focused {
-            let label = self.row.reveal(src.label(i))
+            let label = self.row.reveal(src.label(i), at.below_rise)
                 .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();

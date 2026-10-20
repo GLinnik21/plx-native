@@ -436,11 +436,12 @@ impl CardRow {
         self.caption_policy.as_ref().map_or(LEGACY_BAND_H, crate::caption_policy::band_h)
     }
     /// This shelf's focused label block, revealed as far as its band has opened — [`TileLabel::revealed`]
-    /// with this row's own band height and live expansion. Chain it onto the `TileLabel` of the
-    /// focused card.
+    /// with this row's own band height and live expansion, and `rise` how far what the layout owner
+    /// puts directly below the row (the next shelf's heading) is drawn above its place
+    /// ([`crate::cards::SectionFrame::below_rise`]). Chain it onto the `TileLabel` of the focused card.
     #[inline]
-    pub fn reveal(&self, label: TileLabel) -> TileLabel {
-        label.revealed(self.band_h(), self.band.pos)
+    pub fn reveal(&self, label: TileLabel, rise: f32) -> TileLabel {
+        label.revealed(self.band_h(), self.band.pos, rise)
     }
 }
 
@@ -787,9 +788,9 @@ pub struct TileLabel {
     /// the line, which is centred as if it were not there. Set only while a press on the tile plays
     /// — see `widgets::still_line`'s `press_plays`
     pub glyph: bool,
-    /// **How far the band this block hangs in has opened**, the band's height and its expansion
-    /// ([`TileLabel::revealed`]); each LINE of the block is on screen only once the room under the
-    /// card holds its box ([`line_reveal_for`]). `None` for every caller whose band does not
+    /// **How far the band this block hangs in has opened**, the band's height, its expansion and
+    /// the rise of what stands below it ([`TileLabel::revealed`]); each LINE of the block is on
+    /// screen only once the room under the card holds its box ([`line_reveal_for`]). `None` for every caller whose band does not
     /// animate (the profile picker, the detail Related shelf): the block is whole, which is why
     /// `Default` gives it that.
     pub reveal: Option<BandOpen>,
@@ -809,14 +810,17 @@ pub struct TileLabel {
     pub within_tile: bool,
 }
 
-/// A label band part-way through opening or closing: its whole height and its expansion
-/// ([`TileLabel::revealed`]).
+/// A label band part-way through opening or closing: its whole height, its expansion and how far
+/// what stands below it is drawn above its place ([`TileLabel::revealed`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BandOpen {
     /// the band's whole height when open ([`crate::caption_policy::band_h`]).
     pub band_h: f32,
     /// its expansion, 0 collapsed → 1 open.
     pub e: f32,
+    /// px the tile (a grid) or heading (a shelf) directly below the band is DRAWN above where the
+    /// layout rests it: its pop, its press, its heading's lift. It takes that much of the room.
+    pub rise: f32,
 }
 
 /// One line of a [`TileLabel`] block: its box under the card's unscaled bottom edge and its alpha
@@ -851,10 +855,12 @@ impl Default for TileLabel {
 impl TileLabel {
     /// **A line of the block is the label BAND's content, so it may not be on screen before the
     /// room for it is.** `band_h` is the band's whole height ([`CardRow::band_h`],
-    /// `Grid::band_h`) and `e` its live expansion, 0 collapsed → 1 open; see [`line_reveal_for`]
-    /// for the rule. The ONE rule for a shelf and a grid alike.
-    pub fn revealed(mut self, band_h: f32, e: f32) -> Self {
-        self.reveal = Some(BandOpen { band_h, e });
+    /// `Grid::band_h`), `e` its live expansion, 0 collapsed → 1 open, and `rise` how far the tile
+    /// (grid) or heading (shelf) directly below the band is DRAWN above where the layout rests it
+    /// (0 when it rests: a caller that passes 0 says what is below is not lifted); see
+    /// [`line_reveal_for`] for the rule. The ONE rule for a shelf and a grid alike.
+    pub fn revealed(mut self, band_h: f32, e: f32, rise: f32) -> Self {
+        self.reveal = Some(BandOpen { band_h, e, rise });
         self
     }
     /// Chain this off a shelf's [`CardRow::settle_lag`]: the label is placed for where the tile
@@ -917,7 +923,7 @@ impl TileLabel {
     }
     /// The line whose box is `top..bottom` under the card, at the alpha this block's band gives it.
     fn line(&self, top: f32, bottom: f32) -> LineBox {
-        let alpha = self.reveal.map_or(1.0, |b| line_reveal_for(b.band_h, b.e, bottom));
+        let alpha = self.reveal.map_or(1.0, |b| line_reveal_for(b.band_h, b.e, b.rise, bottom));
         LineBox { top, bottom, alpha }
     }
     /// THE height a screen must reserve under the poster row for this block. Derived from the same
@@ -1171,32 +1177,38 @@ pub fn under_band_for(band_h: f32, e: f32) -> f32 {
 /// it while it fades. Not a count of anything: a distance in the band's own units.
 pub const LINE_REVEAL_RAMP: f32 = 8.0;
 
-/// The room under a card's bottom edge at band expansion `e`: the label band and the air below it,
-/// which is how far down the NEXT row's tiles (a grid) or heading (a shelf) stand from this card's
-/// bottom.
-pub fn room_for(band_h: f32, e: f32) -> f32 {
-    crate::consts::UNDER_LABEL_AIR + under_band_for(band_h, e)
+/// The room under a card's bottom edge at band expansion `e`, to the DRAWN top of what stands below
+/// it: the label band and the air below it (how far down the NEXT row's tiles (a grid) or heading
+/// (a shelf) rest from this card's bottom) less `rise`, how far that thing is drawn above its rest
+/// (a tile popping to its focus scale lifts its top edge by up to [`heading_lift_max`]; a heading
+/// rises by its lift). A tile or heading is drawn over a caption, so the room that matters is to its
+/// drawn top, not its cell's.
+pub fn room_for(band_h: f32, e: f32, rise: f32) -> f32 {
+    crate::consts::UNDER_LABEL_AIR + under_band_for(band_h, e) - rise.max(0.0)
 }
 
 /// **How much of a caption line is on screen: only once the room under its card holds its box.**
 /// `bottom` is the line box's bottom edge below the card's bottom ([`LineBox::bottom`]), `band_h`
-/// the band's whole height and `e` its live expansion.
+/// the band's whole height, `e` its live expansion and `rise` how far what stands directly below it
+/// is drawn above its place ([`room_for`]).
 ///
 /// The block hangs at a FIXED offset under its card the instant its row takes focus, while the
 /// room for it opens over the band's whole travel and the next row's tiles (a grid) or heading (a
-/// shelf) are carried down on that same spring. A line drawn before the room holds it is drawn
+/// shelf) are carried down on that same spring, and the tile that takes the focus pops up into the
+/// room (or the one that loses it lets go of it). A line drawn before the room holds it is drawn
 /// OVER what is rising to its place (a half-faint title through the tiles of the row below, the
-/// departing block sliding under the row that rises into its place). So a line shows from the
-/// moment `room_for(band_h, e)` reaches its `bottom`, smoothstepped over [`LINE_REVEAL_RAMP`] px of
-/// further room, and never more than the band itself has opened (`e`), so a line is still its band's
-/// content after the room holds it. The title (the block's first line) therefore comes in before the
-/// details line under it, and goes out after it; and on the way out the departing line is gone as
-/// soon as the room that held it is. A shelf and a grid use this one rule.
+/// departing block sliding under the row that rises into its place, or under the card that pops
+/// into it). So a line shows from the moment `room_for(band_h, e, rise)` reaches its `bottom`,
+/// smoothstepped over [`LINE_REVEAL_RAMP`] px of further room, and never more than the band itself
+/// has opened (`e`), so a line is still its band's content after the room holds it. The title (the
+/// block's first line) therefore comes in before the details line under it, and goes out after it;
+/// and on the way out the departing line is gone as soon as the room that held it is. A shelf and a
+/// grid use this one rule.
 ///
 /// The ramp starts AT `bottom`, never before it: the first visible frame of a line already has the
-/// whole box clear of the row under it.
-pub fn line_reveal_for(band_h: f32, e: f32, bottom: f32) -> f32 {
-    let t = ((room_for(band_h, e) - bottom) / LINE_REVEAL_RAMP).clamp(0.0, 1.0);
+/// whole box clear of what is under it.
+pub fn line_reveal_for(band_h: f32, e: f32, rise: f32, bottom: f32) -> f32 {
+    let t = ((room_for(band_h, e, rise) - bottom) / LINE_REVEAL_RAMP).clamp(0.0, 1.0);
     (t * t * (3.0 - 2.0 * t)).min(e.clamp(0.0, 1.0))
 }
 
@@ -2008,7 +2020,7 @@ mod tests {
         assert_eq!(visited.band.pos, fresh.band.pos);
         assert_eq!(visited.lift.pos, fresh.lift.pos);
         assert_eq!(visited.under_band(), fresh.under_band());
-        assert_eq!(visited.reveal(TileLabel::title("x")).reveal, fresh.reveal(TileLabel::title("x")).reveal);
+        assert_eq!(visited.reveal(TileLabel::title("x"), 0.0).reveal, fresh.reveal(TileLabel::title("x"), 0.0).reveal);
     }
 
     #[test]

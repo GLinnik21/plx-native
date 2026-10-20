@@ -999,9 +999,13 @@ impl RecommendedScreen {
         }).unwrap_or_default()
     }
 
-    /// Where row `index` sits for the component, in screen space: the top of its tiles.
+    /// Where row `index` sits for the component, in screen space: the top of its tiles. What stands
+    /// under its caption is the next row's heading, drawn lifted by that row's `heading_lift`.
     fn shelf_frame(&self, index: usize) -> SectionFrame {
-        SectionFrame { y: shelf_y(&self.run, index, self.scroll.pos) + CARD_DY, clip: content_clip() }
+        SectionFrame {
+            below_rise: self.shelves.get(index + 1).map_or(0.0, |next| next.cards.heading_lift()),
+            ..SectionFrame::new(shelf_y(&self.run, index, self.scroll.pos) + CARD_DY, content_clip())
+        }
     }
 
     /// Row `index`'s content, read off the published hub (borrows only).

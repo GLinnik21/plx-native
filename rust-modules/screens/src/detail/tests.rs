@@ -4702,7 +4702,7 @@ fn related_pending_cells(screen: &DetailScreen, measure: &plx_ui::fixture::Fixtu
     let (_, frame) = plx_ui::placeholder::capture_declared(|| {
         let mut f = DrawFrame::new(&context, plx_ui::Painter::root());
         let p = f.painter;
-        let at = SectionFrame { y: 600.0, clip: Rect::FULL };
+        let at = SectionFrame::new(600.0, Rect::FULL);
         screen.related.draw(&mut f, p, &screen.cards(cards::Which::Related, d), at);
     });
     frame.entries.iter().filter(|e| e.reason == plx_ui::placeholder::Reason::CardSkeleton && e.key.is_empty()).count()

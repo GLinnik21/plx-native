@@ -903,21 +903,21 @@ impl DetailScreen {
                 f,
                 f.painter,
                 &self.cards(cards::Which::Related, d),
-                SectionFrame { y: self.section_top(3, d, measure) - self.scroll.pos + related::LABEL_H, clip: Rect::FULL },
+                self.shelf_frame(3, d, self.section_top(3, d, measure) - self.scroll.pos + related::LABEL_H),
                 focus,
             ),
             Some(Located::Extras(_)) => self.extras.redraw_focused(
                 f,
                 f.painter,
                 &self.cards(cards::Which::Extras, d),
-                SectionFrame { y: self.section_top(6, d, measure) - self.scroll.pos + extras::LABEL_H, clip: Rect::FULL },
+                self.shelf_frame(6, d, self.section_top(6, d, measure) - self.scroll.pos + extras::LABEL_H),
                 focus,
             ),
             Some(Located::Collection(_)) => self.collection.redraw_focused(
                 f,
                 f.painter,
                 &self.cards(cards::Which::Collection, d),
-                SectionFrame { y: self.section_top(7, d, measure) - self.scroll.pos + related::LABEL_H, clip: Rect::FULL },
+                self.shelf_frame(7, d, self.section_top(7, d, measure) - self.scroll.pos + related::LABEL_H),
                 focus,
             ),
             _ => {}
@@ -1154,6 +1154,27 @@ impl DetailScreen {
     /// still holding open.
     fn section_top(&self, section: i32, d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
         self.section_top_settled(section, d, measure) + self.band_lift(d, Some(section))
+    }
+
+    /// How far the heading of the section drawn directly under `section` is lifted now: what a
+    /// caption line of a shelf in `section` has to stop short of (`SectionFrame::below_rise`).
+    fn below_rise(&self, section: i32, d: &Detail) -> f32 {
+        let (sections, n) = self.sections(Some(d));
+        let live = &sections[1..n];
+        let next = live.iter().position(|&s| s == section).and_then(|at| live.get(at + 1));
+        match next {
+            Some(&s) if s == section::SectionId::Related.raw() => self.related.heading_lift(),
+            Some(&s) if s == section::SectionId::Cast.raw() => self.cast.heading_lift(),
+            Some(&s) if s == section::SectionId::Extras.raw() => self.extras.heading_lift(),
+            Some(&s) if s == section::SectionId::Collections.raw() => self.collection.heading_lift(),
+            _ => 0.0,
+        }
+    }
+
+    /// Where the tiles of the shelf in `section` sit for the component: `y` their top, and what is
+    /// under their caption ([`Self::below_rise`]).
+    fn shelf_frame(&self, section: i32, d: &Detail, y: f32) -> SectionFrame {
+        SectionFrame { below_rise: self.below_rise(section, d), ..SectionFrame::new(y, Rect::FULL) }
     }
 
     /// Where a section comes to REST, with every band collapsed behind it. A scroll target must be
@@ -1696,19 +1717,19 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             Located::Related(_) => {
                 let d = d?;
                 let top = self.section_top_at(3, d, measure, at) - vertical;
-                let frame = SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL };
+                let frame = self.shelf_frame(3, d, top + related::LABEL_H);
                 return self.related.place(cx, &self.cards(cards::Which::Related, d), key, frame, at);
             }
             Located::Extras(_) => {
                 let d = d?;
                 let top = self.section_top_at(6, d, measure, at) - vertical;
-                let frame = SectionFrame { y: top + extras::LABEL_H, clip: Rect::FULL };
+                let frame = self.shelf_frame(6, d, top + extras::LABEL_H);
                 return self.extras.place(cx, &self.cards(cards::Which::Extras, d), key, frame, at);
             }
             Located::Collection(_) => {
                 let d = d?;
                 let top = self.section_top_at(7, d, measure, at) - vertical;
-                let frame = SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL };
+                let frame = self.shelf_frame(7, d, top + related::LABEL_H);
                 return self.collection.place(cx, &self.cards(cards::Which::Collection, d), key, frame, at);
             }
             Located::CollectionHeading => {
@@ -1723,7 +1744,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             Located::Cast(_) => {
                 let d = d?;
                 let top = self.section_top_at(4, d, measure, at) - vertical;
-                let frame = SectionFrame { y: top + cast::LABEL_H, clip: Rect::FULL };
+                let frame = self.shelf_frame(4, d, top + cast::LABEL_H);
                 return self.cast.place(cx, &self.cards(cards::Which::Cast, d), key, frame, at);
             }
             Located::About(i) => {
@@ -2482,7 +2503,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             f,
                             below_hero,
                             &self.cards(cards::Which::Extras, d),
-                            SectionFrame { y: top + extras::LABEL_H, clip: Rect::FULL },
+                            self.shelf_frame(6, d, top + extras::LABEL_H),
                         );
                     }
                     7 => {
@@ -2498,7 +2519,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             f,
                             below_hero,
                             &self.cards(cards::Which::Collection, d),
-                            SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL },
+                            self.shelf_frame(7, d, top + related::LABEL_H),
                         );
                     }
                     3 => {
@@ -2507,7 +2528,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             f,
                             below_hero,
                             &self.cards(cards::Which::Related, d),
-                            SectionFrame { y: top + related::LABEL_H, clip: Rect::FULL },
+                            self.shelf_frame(3, d, top + related::LABEL_H),
                         );
                     }
                     4 => {
@@ -2522,7 +2543,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                             f,
                             below_hero,
                             &self.cards(cards::Which::Cast, d).drawn_at(row_y, self.entry, f.press),
-                            SectionFrame { y: row_y, clip: Rect::FULL },
+                            self.shelf_frame(4, d, row_y),
                         );
                     }
                     5 => self.about_rows.draw(

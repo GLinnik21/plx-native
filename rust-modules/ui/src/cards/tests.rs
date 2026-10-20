@@ -15,7 +15,7 @@ use plx_machine::machine::{
 use plx_machine::present::Present;
 
 const ENTRY: EntryId = EntryId(9);
-const SHELF_AT: SectionFrame = SectionFrame { y: 300.0, clip: Rect::FULL };
+const SHELF_AT: SectionFrame = SectionFrame::new(300.0, Rect::FULL);
 const GRID: GridSpec = GridSpec::new(520.0, 96.0);
 const MS: u32 = 16;
 /// Four narrow columns from x = 160 in a document the owner scrolls: nothing about it is the
@@ -4182,13 +4182,20 @@ fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFram
     trace
 }
 
-/// **A caption line is never on screen before the room for it.** Frame by frame through a Down, a
-/// Down and an Up on a grid, no caption line with ink (alpha > 0) reaches the top of the next row's
-/// tile: not the arriving caption while the band opens (the next row is still rising to its place
-/// under it), and not the departing one while the band closes (the rising row slides up under
-/// it). The old fade was the band's own progress, so a line sat at its fixed offset at half
+/// **A caption line is never drawn where the tile below it is DRAWN.** Frame by frame through a
+/// Down, a Down and an Up on a grid, no caption line with ink (alpha > 0) reaches the top of the
+/// tile directly below it AS IT IS DRAWN (`Grid::place(.., At::Drawn)`: its live pop and press
+/// folded in), not the arriving caption while the band opens (the next row is still rising to its
+/// place under it), not the departing one while the band closes (the rising row slides up under
+/// it), and not either while the tile below is popped: on a Down the tile under the departing
+/// caption is the newly focused card growing to its pop, up to 17 px above its cell, and on an Up
+/// the tile under the arriving caption is the released card still letting go; tiles are drawn over
+/// captions. The old fade was the band's own progress, so a line sat at its fixed offset at half
 /// strength with the next row's tiles on top of it (Library, 112 px band: 26 px of the title and
-/// details lines under the row at n=17). Returns the worst overlap in px, for the failure message.
+/// details lines under the row at n=17); the next rule measured to the next row's UNPOPPED cell and
+/// still cut the departing title under the popping tile (2.5 / 7.5 / 11.8 px at frames 9 / 10 / 11).
+/// Returns the worst overlap in px, for the failure message; panics when no line was ever on screen
+/// (a walk that observes nothing proves nothing).
 fn worst_caption_overlap(title_only: bool, band: f32, moves: &[(usize, i32)], frames: usize) -> (f32, String) {
     let cols = poster_grid::COLS;
     let rows = 6;
@@ -4206,6 +4213,7 @@ fn worst_caption_overlap(title_only: bool, band: f32, moves: &[(usize, i32)], fr
     let mut at = 0i32;
     let mut worst = (f32::MIN, String::new());
     let mut seen = (f32::MIN, String::new());
+    let mut observed = 0;
     for frame in 0..frames {
         if let Some(&(_, dir)) = moves.iter().find(|(f, _)| *f == frame) {
             at += dir;
@@ -4215,12 +4223,15 @@ fn worst_caption_overlap(title_only: bool, band: f32, moves: &[(usize, i32)], fr
         let cx = r.cx();
         let f = DrawFrame::new(&cx, Painter::root());
         for (card, _top, bottom, alpha) in r.sect.caption_lines_probe(&f, f.painter, &r.src) {
+            observed += 1;
             if card + cols >= rows * cols {
                 continue;
             }
-            let over = bottom - r.sect.cell_probe(card + cols).y;
+            let below = Section::place(&r.sect, &cx, &r.src, r.src.elems[card + cols], At::Drawn)
+                .expect("the tile below a caption is painted").rect;
+            let over = bottom - below.y;
             let said = || format!("frame {frame}: the caption line of card {card} (alpha {alpha:.2}) ends {over:.1} px \
-                below the top of the next row's tile");
+                below the top of the tile under it (drawn at y {:.1})", below.y);
             if over > worst.0 {
                 worst = (over, said());
             }
@@ -4229,6 +4240,7 @@ fn worst_caption_overlap(title_only: bool, band: f32, moves: &[(usize, i32)], fr
             }
         }
     }
+    assert!(observed > 0, "no caption line was ever on screen: the walk observed nothing");
     worst.1 = format!("{} (worst at alpha >= .25: {})", worst.1, seen.1);
     worst
 }
@@ -4298,9 +4310,10 @@ fn a_fast_repeat_of_downs_never_cuts_a_caption() {
 }
 
 /// **One hand-over, from the key frame.** The departing caption starts to leave on the key frame
-/// (its alpha is its band's progress while the room still holds its title), and the arriving one
-/// is drawn only once the room under it holds the title's box (`card_row::line_reveal_for`): never
-/// before the band has opened that far, never past the band's own progress. The old hand-over was
+/// (a line's alpha is never past its band's progress, and the room under it, less the pop of the
+/// card rising into it, takes it away as that room goes), and the arriving one is drawn only once
+/// the room under it holds the title's box (`card_row::line_reveal_for`): never before the band has
+/// opened that far, never past the band's own progress, and it DOES arrive. The old hand-over was
 /// `out = 1 - in` of the band spring (a title at half strength over the next row's tiles).
 #[test]
 fn a_down_hands_the_caption_over_from_the_key_frame_and_the_arrival_waits_for_its_room() {
@@ -4308,14 +4321,14 @@ fn a_down_hands_the_caption_over_from_the_key_frame_and_the_arrival_waits_for_it
     // sample 1 is the frame the key lands on: the departing caption is already leaving
     assert!(trace[0][1].alpha < 0.99, "the hand-over does not start on the key frame: out {:?}", trace[0][1]);
     let title_box = TileLabel::title("t").lines()[0].unwrap().bottom;
+    // the arriving caption does arrive (a walk that never drew it would pass every check below)
+    assert!(trace[1].iter().any(|f| f.alpha > 0.0), "the arriving caption never appeared: {:?}", trace[1]);
     for t in 0..=29 {
         let (out, inn) = (trace[0][t], trace[1][t]);
-        if out.open >= 0.45 {
-            assert!((out.alpha - out.open).abs() < 0.01,
-                "frame {t}: the departing caption {:.3} is not its band's progress {:.3}", out.alpha, out.open);
-        }
+        assert!(out.alpha <= out.open + 0.001,
+            "frame {t}: the departing caption {:.3} is past its band's progress {:.3}", out.alpha, out.open);
         if inn.alpha > 0.0 {
-            assert!(crate::card_row::room_for(112.0, inn.open) >= title_box,
+            assert!(crate::card_row::room_for(112.0, inn.open, 0.0) >= title_box,
                 "frame {t}: the arriving caption is drawn with the band {:.2} open, before the room holds its title", inn.open);
         }
     }
@@ -4338,7 +4351,7 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
         // the block the policy puts under a card: its title and/or its details line
         let (title, details) = policy.map_or((true, true), |p| (p.title, p.details != DetailsKind::None));
         let whole = TileLabel::from_lines([title.then(|| "t".into()), details.then(|| "d".into())])
-            .revealed(r.sect.band_h(), r.sect.band_expand());
+            .revealed(r.sect.band_h(), r.sect.band_expand(), 0.0);
         (r.sect.under_band(), r.sect.band_h(), whole.lines().iter().flatten().map(|l| l.alpha).fold(1.0, f32::min))
     };
     for (title, details, tall) in [(false, DetailsKind::None, 0.0), (false, DetailsKind::Genre, 80.0),
