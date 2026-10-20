@@ -1762,6 +1762,8 @@ fn fetch_credits(guid: &str, s: &plx_plex::plex::session::Session) -> Option<Vec
 /// HOST SUITE: [`fetch_profile`]'s cut, for its reason — this reaches libcurl.
 #[cfg(any(test, feature = "test-support"))]
 fn fetch_credits(_guid: &str, _session: &plx_plex::plex::session::Session) -> Option<Vec<plx_plex::plex::discover::CreditGroup>> {
+    #[cfg(test)]
+    transport_asks::CREDITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     None
 }
 
@@ -1777,7 +1779,19 @@ fn fetch_credits(_guid: &str, _session: &plx_plex::plex::session::Session) -> Op
 /// which is where the logic worth testing actually lives.
 #[cfg(any(test, feature = "test-support"))]
 fn fetch_profile(_guid: &str, _session: &plx_plex::plex::session::Session) -> Option<plx_plex::plex::discover::PersonProfile> {
+    #[cfg(test)]
+    transport_asks::PROFILE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     None
+}
+
+/// HOST SUITE: how many times a worker reached the plex.tv transport (the two cuts above), counted
+/// across threads because the workers are real threads. A test that reads them holds
+/// `plx_base::testlock::serial()`.
+#[cfg(test)]
+mod transport_asks {
+    use std::sync::atomic::AtomicUsize;
+    pub(super) static PROFILE: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static CREDITS: AtomicUsize = AtomicUsize::new(0);
 }
 
 /// `(ratingKey, character)` for every row of a batched `/library/metadata/{csv}` response, keeping
@@ -3340,6 +3354,80 @@ mod tests {
             "a failure must back off before retrying"
         );
         owner.close();
+    }
+
+    /// **A refused Discover read is the end of the question, not a failure to retry.** A dev-token
+    /// boot with no Discover stand-in armed has both person reads refused in-process, and that
+    /// answer is fixed at boot: asking again can only be refused again. Handled as a transient
+    /// failure it respawned a worker for each mailbox every ~2 s for as long as the page was open
+    /// (`address` kept asking while `profiled` stayed false). The page now settles as an empty
+    /// answer does: `profiled`/`credited` turn, the placeholders stop (`facts_pending`), the
+    /// transport is not reached again, and no content is invented.
+    ///
+    /// The trigger root is thread-local, so the decision is made on the pump's thread (a worker
+    /// would read the shared root and not be refused).
+    #[test]
+    fn a_refused_discover_read_settles_the_page_and_is_never_asked_again() {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("person-discover-refused");
+        plx_plex::plex::reset_servers_for_test();
+        let asks = || (transport_asks::PROFILE.load(SeqCst), transport_asks::CREDITS.load(SeqCst));
+        // One simulated frame: the pump, then the wait a real frame gives a worker.
+        let frame = |owner: &mut Owner| {
+            owner.pump();
+            for slot in [F_PROFILE, F_CREDITS] {
+                let mailbox = owner.adapter.mailbox(slot);
+                for _ in 0..2000 {
+                    if !mailbox.busy() || mailbox.has_mail() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        };
+
+        // The instrument is live: with nothing refused, an open page does reach the transport.
+        plx_base::devtrig::with_private_triggers(|| {
+            transport_asks::PROFILE.store(0, SeqCst);
+            transport_asks::CREDITS.store(0, SeqCst);
+            let mut owner = Owner::default();
+            owner.open(S0, "6059", "5d77682aeb5d26001f1de4b0", "Nobody", "");
+            for _ in 0..4 {
+                frame(&mut owner);
+            }
+            let (profile, credits) = asks();
+            assert!(profile >= 1 && credits >= 1, "an open read reaches the transport ({profile}, {credits})");
+            owner.close();
+        });
+
+        // The refusal: over ten simulated seconds the transport is reached at most once per read,
+        // and both reads end settled.
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("token"), "t").unwrap();
+            transport_asks::PROFILE.store(0, SeqCst);
+            transport_asks::CREDITS.store(0, SeqCst);
+            let mut owner = Owner::default();
+            owner.open(S0, "6059", "5d77682aeb5d26001f1de4b0", "Nobody", "");
+            for _ in 0..(10 * 60) {
+                frame(&mut owner);
+            }
+            let (profile, credits) = asks();
+            assert!(profile <= 1 && credits <= 1,
+                "at most one ask per read per page open, got profile={profile} credits={credits}");
+            let p = owner.current().unwrap();
+            assert!(p.profiled && p.profile_tried && p.credited, "a refusal settles both reads");
+            assert!(!facts_pending(p), "so the header's placeholders stop sweeping");
+            assert!(address(F_PROFILE, p).is_none() && address(F_CREDITS, p).is_none(), "and nothing is addressed");
+            assert!(p.bio.is_empty() && p.roles.is_empty() && filmography_total(p) == 0, "and nothing is invented");
+            assert!(!owner.adapter.mailbox(F_PROFILE).busy() && !owner.adapter.mailbox(F_CREDITS).busy(),
+                "and no worker is out");
+            owner.close();
+        });
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// A person with no plex.tv guid is never ASKED for a profile (`address` has nothing to send),
