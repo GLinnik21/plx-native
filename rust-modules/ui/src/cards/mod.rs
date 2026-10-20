@@ -1,7 +1,7 @@
 //! `plx_ui::cards` — the shared card sections (layer L1: the sections built on the L0 row and grid primitives).
 //!
 //! [`Shelf`] (one horizontal strip) and [`Grid`] (the six-column poster grid) own everything a card
-//! section does that is not the screen's content: the focus pop, the let-go of the tile that lost
+//! section does that is not the screen's content: the focus pop, the let-go of every tile that lost
 //! focus, scrolling to keep focus visible, the caption band, drawing the focused tile last, culling,
 //! hit-map stops, `Focusable` placement, paging requests and idle. A screen supplies its content
 //! through [`CardSource`] and reacts to the one [`CardEvent`] [`Shelf::on`] / [`Grid::on`] returns;
@@ -42,7 +42,8 @@
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
-//!   let-go of the one that just lost focus). A deliberate move grows from rest.
+//!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
+//!   where its own let-go is, when focus comes back to a tile still letting go).
 //!   A shelf or grid whose page is still dissolving in is [`dormant`](Shelf::dormant) /
 //!   [`Grid::dormant`]: nothing is lifted under the fade, and the first awake tick grows the focused
 //!   card from rest (a focus the engine restored meanwhile is adopted whole, as above). A grid keeps
@@ -61,13 +62,16 @@
 //!   ordinary focus pop. [`Shelf::place`] / [`Grid::place`] answer the live drawn rect and the stop the
 //!   draw registers is the same value; `rest_rect` is the settled focus-scaled rect.
 //! - **Idle.** Springs report their own motion; a settled section reports none and parks at exact
-//!   rest. No call allocates except the focused tile's label.
+//!   rest. What allocates: the focused tile's label, a landing's diff, a [`Grid`]'s draw plan (built
+//!   each frame) and its let-go list, which grows to the most cards a held key has had letting go at
+//!   once and is kept across a dormant wake and [`Grid::forget_pop`], so a press or a tick allocates
+//!   only when a key first puts more in flight than the grid has seen.
 //!
 //! The L0 primitives (`card_row`, `poster_grid`) are `pub(crate)`: a screen cannot hand-assemble a
 //! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the
 //! row and band geometry its own layout is built from, the heading painters) is re-exported here;
 //! the `cards` gate in `ci/check-deps.sh` is the backstop.
-//! Tier 1 of the conformance suite (`tests.rs`) runs the same seven cases the real screens run
+//! Tier 1 of the conformance suite (`tests.rs`) runs the same eight cases the real screens run
 //! (`conformance`, Tier 2) against both components on `FixtureHost`.
 
 use std::ops::Range;

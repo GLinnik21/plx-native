@@ -491,3 +491,54 @@ and the card landing at rest), and they landed apart: neither recording alone ma
 code. The anchor was therefore re-recorded once on the merged tree (`tests/focusfp.sh --rec
 --only 1`), only `1-boot-home-chip-grid/rec-0000.jsonl` was replaced, and `make check-replay`
 replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+The grid let-go canon (`plx_ui::poster_grid::GridPop::write` writes the pop, then the let-gos in
+flight as a counted sequence, where it wrote one slot per let-go with no count; `LibraryGrid`'s
+declared `shrink` slot became `let_gos:[(index:u32,sp:..)]`, pin `0x0803_2f8d_c828_6d70`) moved the
+state shape from 4058586095815036115 to 15892566164571969361, read from the old and the new recorder
+headers by `tools/plxnative-rec rerecord`. All three anchors were observed being refused on load
+(`replay: REFUSED — invalid or incompatible recording`, six replays), so nothing could be compared.
+The bytes were checked another way: a throwaway build with the new `GridPop::write` and the OLD
+`LibraryGrid` shape text (so the old fixtures load) replayed all three SAME in Targets and Resolve,
+every difference counter zero and `diverged=0` — none of the three flows mounts a grid, so no
+recorded frame hashes a let-go, and the bump moves the fingerprint alone. The anchors were then
+recorded afresh on the committed tree (`tests/focusfp.sh --rec --only 1,6,12`), passed
+`plxnative-rec check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained.
+
+The grid bands slot (`plx_ui::poster_grid::GridBands::write` has written each open band's card after
+its row and spring since #843; `LibraryGrid`'s declared `slots:[(row:u32,sp:..)]` became
+`slots:[(row:u32,sp:..,card:Option<u32>)]`, pin `0x6b71_df9e_04db_2b76`) moved the state shape from
+15892566164571969361 to 2896094977091175041, read from the old and the new recorder headers by
+`tools/plxnative-rec rerecord`. All three anchors were observed being refused on load (`replay:
+REFUSED — invalid or incompatible recording`, six replays). The bytes were checked another way: a
+throwaway build of the same tree with only the OLD `LibraryGrid` shape text restored (so the old
+fixtures load) replayed all three SAME in Targets and Resolve, every difference counter zero and
+`diverged=0` — none of the three flows mounts a grid, so no recorded frame hashes a band, and the
+bump moves the fingerprint alone. The anchors were then recorded afresh on the committed tree
+(`tests/focusfp.sh --rec --only 1,6,12`), passed `plxnative-rec check`, and were installed with
+`tools/plxnative-rec rerecord`, anchors retained; the manifest diff is the `state_fp` line only.
+
+The per-line caption reveal and the Person page on `StackPage::shelf_foot` (`crx-grid-reveal`, merged
+with #863, #864 and #866) moved what two anchors hash and draw without moving the shape (`state_fp`
+stayed 2896094977091175041, so `rerecord` refuses). `6-settings-family` stayed SAME.
+`12-filmography-detail-return` replayed `DIVERGED` in both modes on the merged tree: `diverged=884` of
+923 frames, every visible counter at zero (`present_diffs`, `input_diffs`, `result_diffs`,
+`land_diffs`, `effect_diffs`, `focus_diffs`, `hit_diffs`), a pure state-hash divergence. It was
+attributed by replaying the committed anchor against a build of the merged tree with only
+`person.rs` put back to `origin/main`'s (the filmography labels through the one caption policy, the
+air under a shelf as `shelf_foot` where `Sec::Gap(kind)` stood before each shelf): SAME, `diverged=0`,
+every counter zero, in Targets and Resolve. The text measurements agree too: the fresh recording and
+the old one hold the same 136 `metrics` queries. `1-boot-home-chip-grid` diverged from frame 296 and
+was then refused (`replay: REFUSED — replay measurement table miss`, both modes), because main's
+recording predates the Under posters captions this branch carries (the paragraph above): attributed
+from the measurements themselves, by comparing the `metrics` records of a fresh recording against
+the committed one, which differ by exactly one gained Width query, Home's focused poster caption
+"1992 · 1h 40m" (24 px), and three lost, the year alone "1992" (24 px) and the two synthetic title
+names (26 px bold) the old caption measured. The owner approved re-anchoring for intended UI
+changes (the 2026-09-29/30 entries above, and the standing instruction not to stall on it). Both
+anchors were recorded afresh on the merged tree (`tests/focusfp.sh --rec --only 1,12`), passed
+`plxnative-rec check` against the alphabet unchanged by this step, and only their `rec-0000.jsonl`
+was replaced (`git rm -r`, `tools/plxnative-rec import`, the committed manifests restored byte for
+byte, `anchor: true` kept: they already equal the new recorder's header). `make check-replay`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero
+(three consecutive runs).

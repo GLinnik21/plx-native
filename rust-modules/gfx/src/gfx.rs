@@ -7,7 +7,9 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
-use crate::overdraw::{card_split, gate, masked, note_card_path, note_px, set_clip, CardPath, Class};
+use crate::overdraw::{
+    card_split, gate, masked, masked_part, note_card_path, note_px, set_clip, CardPart, CardPath, Class,
+};
 
 // What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
 // overdraw ledger and the machine runtime (module-layers step L5). `ui` re-exports each of them
@@ -2642,6 +2644,9 @@ fn draw_tex_core(
 /// fragment shader just stops evaluating the card's SDF where its answer is "plain". The ledger and
 /// the cull above book and test the whole quad once, as before; the card-path ledger
 /// ([`note_card_path`]) books which way each card went.
+///
+/// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]; [`card_plan`],
+/// [`card_whole_refused`] and [`masked_part`] say how).
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core_in(
     class: Class,
@@ -2690,6 +2695,9 @@ fn draw_tex_core_in(
             CardCut::None => None,
             CardCut::Whole(path) => {
                 note_card_path(path, qx, qy, qw, qh);
+                if card_whole_refused(path, masked_part) {
+                    return;
+                }
                 None
             }
             CardCut::Pieces(rect) => match card_boxes([qx, qy, qw, qh], rect, radius, rimw) {
@@ -2707,8 +2715,9 @@ fn draw_tex_core_in(
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             return;
         };
-        let plan = card_plan(&boxes, LIVE_SCISSOR);
-        // A card wholly outside the clip the caller holds shades nothing: leave the scissor alone.
+        let plan = card_plan(&boxes, LIVE_SCISSOR, masked_part);
+        // A card wholly outside the clip the caller holds, or whose every piece a `drawmask` leg
+        // refuses, shades nothing: leave the scissor alone.
         if plan.pieces.iter().all(Option::is_none) {
             return;
         }
@@ -2855,13 +2864,29 @@ struct CardPlan {
     restore: Option<PxBox>,
 }
 
-fn card_plan(boxes: &CardBoxes, live: Option<PxBox>) -> CardPlan {
+/// DEV: `refused` says which [`CardPart`] a `drawmask` leg refuses (`overdraw::masked_part`; always
+/// `false` in release): a refused part's pieces are left out of the plan like a piece the clip
+/// misses, and the rest of the plan - their order, their boxes, the scissor to put back - is what it
+/// would have been.
+fn card_plan(boxes: &CardBoxes, live: Option<PxBox>, refused: impl Fn(CardPart) -> bool) -> CardPlan {
     let mut pieces = [None; 5];
-    let ring = boxes.ring.iter().map(|b| (*b, false));
-    for (slot, (b, interior)) in pieces.iter_mut().zip(ring.chain([(boxes.interior, true)])) {
-        *slot = clip_px(b, live).map(|scissor| Piece { scissor, interior });
+    let ring = boxes.ring.iter().map(|b| (*b, CardPart::Ring));
+    for (slot, (b, part)) in pieces.iter_mut().zip(ring.chain([(boxes.interior, CardPart::Interior)])) {
+        if refused(part) {
+            continue;
+        }
+        *slot = clip_px(b, live).map(|scissor| Piece { scissor, interior: part == CardPart::Interior });
     }
     CardPlan { pieces, restore: live }
+}
+
+/// Whether a card drawn WHOLE by `path` is refused by a `drawmask` part: only the focus program's
+/// cards are a part of their own (`card.focus`); a card that is whole for any other reason (a circle,
+/// a source pass, a square corner, the split switched off) has no part to refuse and is only ever
+/// removed by the whole `card` class ([`gate`]).
+#[inline]
+fn card_whole_refused(path: CardPath, refused: impl Fn(CardPart) -> bool) -> bool {
+    path == CardPath::Focus && refused(CardPart::Focus)
 }
 
 /// Whether a draw is focused or risen enough to need [`FOCUS_IMAGE`] rather than the plain
@@ -9015,8 +9040,8 @@ mod shadow_band_tests {
 #[cfg(test)]
 mod card_split_tests {
     use super::{
-        bands_around, card_cut, card_interior, card_pixel_boxes, card_plan, clip_px, image_card_geometry,
-        snap_inner, CardBoxes, CardCut, CardPath, Class, Piece, PxBox, SCR_H,
+        bands_around, card_cut, card_interior, card_pixel_boxes, card_plan, card_whole_refused, clip_px,
+        image_card_geometry, snap_inner, CardBoxes, CardCut, CardPart, CardPath, Class, Piece, PxBox, SCR_H,
     };
 
     /// The viewport box `[x0, y0, x1, y1]` of a 1920x1080 canvas at `s` px per authored px whose
@@ -9312,7 +9337,7 @@ mod card_split_tests {
         let boxes = card_pixel_boxes(hole, v, scale);
         let drawn = |plan: &super::CardPlan| plan.pieces.iter().flatten().copied().collect::<Vec<Piece>>();
 
-        let free = card_plan(&boxes, None);
+        let free = card_plan(&boxes, None, |_| false);
         assert_eq!(free.restore, None, "no clip was held: the test goes back off");
         let free = drawn(&free);
         assert_eq!(free.iter().map(|p| p.scissor).collect::<Vec<_>>(), all_boxes(&boxes), "the ring in order, then the interior");
@@ -9320,7 +9345,7 @@ mod card_split_tests {
 
         let int = boxes.interior;
         let live = [int[0], int[1] - 5, (int[0] + int[2]) / 2, int[3] + 5];
-        let plan = card_plan(&boxes, Some(live));
+        let plan = card_plan(&boxes, Some(live), |_| false);
         assert_eq!(plan.restore, Some(live), "the clip the caller held is the one put back");
         let cut = drawn(&plan);
         for p in &cut {
@@ -9336,9 +9361,149 @@ mod card_split_tests {
         }
 
         let off = [v[2] + 10, v[1], v[2] + 40, v[3]];
-        let plan = card_plan(&boxes, Some(off));
+        let plan = card_plan(&boxes, Some(off), |_| false);
         assert!(drawn(&plan).is_empty(), "a clip off the viewport draws nothing");
         assert_eq!(plan.restore, Some(off), "and is still put back");
+    }
+
+    /// **A `drawmask` part skips exactly its pieces and nothing else** (`card.interior`,
+    /// `card.ring`): over the whole table of cards, scales and origins, and with and without a clip
+    /// the caller holds. Whatever is refused, what is left is the unrefused plan's own pieces - the
+    /// same boxes, in the same order, cut to the same clip - minus the refused kind, the scissor to
+    /// put back is untouched, and refusing the other part (`card.focus`, which is not a piece of a
+    /// split card) changes nothing at all.
+    #[test]
+    fn a_part_mask_skips_exactly_its_pieces() {
+        let mut checked = 0;
+        for (c, at, scale, _card, _quad, hole) in holes() {
+            let boxes = card_pixel_boxes(hole, view(0, 0, scale), scale);
+            let int = boxes.interior;
+            // no clip held, a clip that holds the interior and bites into the ring on every side, and
+            // one that takes the interior's left half and cuts the ring's top and bottom bands off
+            let half = (int[0] + int[2]) / 2;
+            for live in [None, Some([int[0] - 9, int[1] - 3, int[2] + 9, int[3] + 3]), Some([int[0] - 5, int[1], half.max(int[0] + 1), int[3]])] {
+                let whole = card_plan(&boxes, live, |_| false);
+                let kind = |p: &Option<Piece>| p.map(|p| p.interior);
+                assert!(whole.pieces.iter().any(|p| kind(p) == Some(true)), "{c:?} at {at:?}: no interior in the plan {live:?}");
+                for (refuse, why) in [
+                    (&[CardPart::Interior][..], "card.interior"),
+                    (&[CardPart::Ring][..], "card.ring"),
+                    (&[CardPart::Interior, CardPart::Ring][..], "card.interior + card.ring"),
+                    (&[CardPart::Focus][..], "card.focus"),
+                    (&[][..], "nothing"),
+                ] {
+                    let plan = card_plan(&boxes, live, |p| refuse.contains(&p));
+                    assert_eq!(plan.restore, whole.restore, "{c:?} {why}: the clip put back must not change");
+                    for (i, (got, was)) in plan.pieces.iter().zip(&whole.pieces).enumerate() {
+                        let refused = match kind(was) {
+                            Some(true) => refuse.contains(&CardPart::Interior),
+                            Some(false) => refuse.contains(&CardPart::Ring),
+                            None => false,
+                        };
+                        let want = if refused { None } else { *was };
+                        assert_eq!(*got, want, "{c:?} at {at:?} scale {scale}, {why}: piece {i} of {live:?}");
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 5000, "the table barely exercised the masks: {checked}");
+    }
+
+    /// Refusing a part is a plan like any other: one that has nothing left is empty (the draw loop
+    /// then touches no GL state), the interior part is the one draw that carries the plain
+    /// `u_card`, and the ring part is the four that do not.
+    #[test]
+    fn the_parts_are_the_interior_draw_and_the_four_ring_draws() {
+        let (_, _, scale, _, _, hole) = holes().into_iter().find(|h| h.2 == 1.0).unwrap();
+        let boxes = card_pixel_boxes(hole, view(0, 0, scale), scale);
+        let left = |refuse: &[CardPart]| card_plan(&boxes, None, |p| refuse.contains(&p)).pieces.into_iter().flatten().collect::<Vec<Piece>>();
+        let no_interior = left(&[CardPart::Interior]);
+        assert_eq!(no_interior.len(), 4);
+        assert!(no_interior.iter().all(|p| !p.interior), "card.interior left an interior draw: {no_interior:?}");
+        let no_ring = left(&[CardPart::Ring]);
+        assert_eq!(no_ring.len(), 1);
+        assert!(no_ring[0].interior && no_ring[0].scissor == boxes.interior, "card.ring left more than the interior: {no_ring:?}");
+        assert!(left(&[CardPart::Interior, CardPart::Ring]).is_empty());
+        assert_eq!(left(&[CardPart::Focus]).len(), 5, "card.focus is not a piece of a split card");
+        assert_eq!(left(&[]).len(), 5);
+    }
+
+    /// `card.focus` refuses the cards drawn whole through the focus program and no other card: not
+    /// the ones whole for another reason, and not by way of the pieces' parts. (Which cards are on
+    /// the focus path is `card_cut`'s, tested above; here is what a part does with each path.)
+    #[test]
+    fn only_a_focus_program_card_is_a_part_of_its_own() {
+        let paths = [CardPath::Split, CardPath::Focus, CardPath::Clipped, CardPath::NoInterior, CardPath::Plain, CardPath::Off];
+        for path in paths {
+            assert_eq!(card_whole_refused(path, |p| p == CardPart::Focus), path == CardPath::Focus, "{path:?} under card.focus");
+            assert!(!card_whole_refused(path, |p| p != CardPart::Focus), "{path:?} under card.interior + card.ring");
+            assert!(!card_whole_refused(path, |_| false), "{path:?} under no mask");
+        }
+        // and the paths a real draw takes: a risen or popped card is `Focus` whatever else it is
+        let rect = [1.0, 2.0, 3.0, 4.0];
+        let refused = |class, radius, focus, dy| match card_cut(class, radius, focus, dy, true, rect) {
+            CardCut::Whole(path) => card_whole_refused(path, |p| p == CardPart::Focus),
+            CardCut::Pieces(_) | CardCut::None => false,
+        };
+        assert!(refused(Class::Card, 14.0, 0.01, 0.0), "a card still springing back (pop 0.01)");
+        assert!(refused(Class::Card, 14.0, 0.0, 0.5), "a risen shadow");
+        assert!(refused(Class::Card, 0.0, 0.3, 0.0), "a focused card with square corners is still the focus program");
+        assert!(!refused(Class::Card, 14.0, 0.0, 0.0), "a resting card is split, not whole");
+        assert!(!refused(Class::Card, 0.0, 0.0, 0.0), "a square resting card is the plain path");
+        assert!(!refused(Class::Image, 14.0, 0.3, 0.0), "an image is not a card");
+    }
+
+    /// The same, from the trigger's own text: what `/tmp/plxnative-drawmask` says reaches the plan
+    /// and the whole-card refusal through the real mask, and `card` (the whole class) is not any of
+    /// them, so a part leg still draws the card class's logical composite.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_drawmask_text_reaches_the_pieces() {
+        use crate::overdraw::{gate, set_mask};
+        let (_, _, scale, _, _, hole) = holes().into_iter().find(|h| h.2 == 1.0).unwrap();
+        let boxes = card_pixel_boxes(hole, view(0, 0, scale), scale);
+        let pieces = || card_plan(&boxes, None, super::masked_part).pieces.into_iter().flatten().map(|p| p.interior).collect::<Vec<bool>>();
+        let focus = || card_whole_refused(CardPath::Focus, super::masked_part);
+
+        assert_eq!((pieces(), focus()), (vec![false, false, false, false, true], false), "unarmed");
+        set_mask("card.interior");
+        assert_eq!((pieces(), focus()), (vec![false; 4], false));
+        assert!(!gate(Class::Card, 0.0, 0.0, 10.0, 10.0), "the card class is still drawn under card.interior");
+        set_mask("card.ring");
+        assert_eq!((pieces(), focus()), (vec![true], false));
+        assert!(!gate(Class::Card, 0.0, 0.0, 10.0, 10.0));
+        set_mask("card.focus");
+        assert_eq!((pieces(), focus()), (vec![false, false, false, false, true], true));
+        set_mask("card.ring, card.focus");
+        assert_eq!((pieces(), focus()), (vec![true], true));
+        set_mask("card.interior card.ring");
+        assert_eq!((pieces(), focus()), (Vec::<bool>::new(), false));
+        set_mask("card");
+        assert!(gate(Class::Card, 0.0, 0.0, 10.0, 10.0), "the whole class is refused");
+        assert_eq!((pieces(), focus()), (vec![false, false, false, false, true], false), "and a class mask is not a part mask");
+        set_mask("");
+        assert_eq!((pieces(), focus()), (vec![false, false, false, false, true], false), "disarmed");
+    }
+
+    /// The wiring no host test can drive: `draw_tex_core_in` hands the plan and the whole-card
+    /// refusal the real mask, and the refusal comes AFTER the card is booked in the card-path ledger
+    /// (the leg must book what its control books) and BEFORE the draw call.
+    #[test]
+    fn the_card_compositor_asks_the_mask_after_booking_and_before_drawing() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
+        let draw = &prod[from..from + prod[from..].find("\n}\n").expect("its end")];
+        let whole = draw.find("CardCut::Whole(path) =>").expect("the whole-card arm");
+        let (booked, refused, drawn) = (
+            draw[whole..].find("note_card_path(path").expect("booked"),
+            draw[whole..].find("card_whole_refused(path, masked_part)").expect("refused through the real mask"),
+            draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)").expect("drawn"),
+        );
+        assert!(booked < refused && whole + refused < drawn, "booked {booked}, refused {refused}, drawn {drawn}");
+        let split = draw.find("CardCut::Pieces(rect) =>").expect("the split arm");
+        assert!(draw[split..].find("note_card_path(CardPath::Split").is_some(), "a split card is booked before its parts are refused");
     }
 
     /// **The `LIVE_SCISSOR` invariant, pinned in the source.** The split cuts each piece to the clip
@@ -9369,7 +9534,7 @@ mod card_split_tests {
         let off = body("unsafe fn scissor_off(");
         assert!(off.contains("glDisable(GL_SCISSOR_TEST)") && off.contains("LIVE_SCISSOR = None"));
         let draw = body("fn draw_tex_core_in(");
-        assert!(draw.contains("card_plan(&boxes, LIVE_SCISSOR)"), "the plan is cut to the record");
+        assert!(draw.contains("card_plan(&boxes, LIVE_SCISSOR, masked_part)"), "the plan is cut to the record");
         assert!(draw.contains("glScissor(") && draw.contains("glEnable(GL_SCISSOR_TEST)"), "the piece loop moved");
         assert!(
             draw.contains("Some(b) => scissor_box(") && draw.contains("None => scissor_off()"),

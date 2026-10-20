@@ -5058,10 +5058,27 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     return all(ok for _, ok, _ in results), results
 
 
+def pull_runtime_file(tv, name):
+    """One file out of this install's runtime root, as text; empty when the app never wrote it."""
+    return ssh(tv, f"cat {RUNDIR}/{name} 2>/dev/null", timeout=30).stdout
+
+
 def pull_runtime_log(tv, name):
     """Read a case-owned diagnostic after playback; an absent/unreadable trace grades empty."""
-    proc = ssh(tv, f"cat {RUNDIR}/{name}", timeout=30)
-    return proc.stdout.splitlines() if proc.returncode == 0 else []
+    return pull_runtime_file(tv, name).splitlines()
+
+
+def save_logs_file(cfg, filename, text):
+    """Write `text` to `filename` in the --save-logs directory (made if need be); its path, or None
+    when --save-logs was not asked for."""
+    outdir = cfg.get("save_logs")
+    if not outdir:
+        return None
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
 
 
 def save_case_log(cfg, name, lines):
@@ -5072,14 +5089,41 @@ def save_case_log(cfg, name, lines):
     (transaction records, per-segment acquisition) and re-running a device case to recover a log
     costs a television lease.
     """
-    outdir = cfg.get("save_logs")
-    if not outdir:
-        return None
-    os.makedirs(outdir, exist_ok=True)
-    path = os.path.join(outdir, f"{name}.log")
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    return path
+    return save_logs_file(cfg, f"{name}.log", "\n".join(lines) + "\n")
+
+
+# The counter file each profiler trigger leaves in the runtime root (`paths::profile`). One mode is
+# armed per run (`gfx/profile.rs`): `plxnative-hwcnt` writes the first file and the GL timer behind
+# `plxnative-profile` the second, so the file of a leg is the one its own trigger names.
+HWCNT_FILE = "plxnative-hwcnt.jsonl"
+GPU_TIME_FILE = "plxnative-gputime.jsonl"
+PROFILER_FILES = {"plxnative-hwcnt": HWCNT_FILE, "plxnative-profile": GPU_TIME_FILE}
+
+
+def pull_profiler_files(cfg, armed):
+    """The counter file of each profiler trigger in `armed` (a scene's trigger list), off the set:
+    `{trigger: text}`, `''` for an armed trigger that left nothing.
+
+    The files are gone by the next scene's trigger wipe (`apply_triggers`) and by the harness's
+    teardown, so this must run after the scene's app run and before either.
+    """
+    triggers = dict.fromkeys(name for name, _ in armed if name in PROFILER_FILES)
+    return {name: pull_runtime_file(cfg["tv"], PROFILER_FILES[name]) for name in triggers}
+
+
+def save_profiler_files(cfg, stem, pulled):
+    """Keep the files `pull_profiler_files` brought off the set beside the event log, if --save-logs
+    asked for them. An armed leg that left no counters is said so on the spot: it is not a leg."""
+    if not cfg.get("save_logs"):
+        return
+    for name, text in pulled.items():
+        fname = f"{stem}.{PROFILER_FILES[name]}"
+        if text:
+            save_logs_file(cfg, fname, text)
+            print(f"    profiler: kept {fname}")
+        else:
+            print(f"    profiler: {name} was armed but the set holds no {PROFILER_FILES[name]} "
+                  "(phase unknown, trigger unread, or the counters refused): this leg has no counters")
 
 
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
@@ -6097,10 +6141,15 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
     # playback cases when --save-logs is requested; otherwise teardown closes the app and the
     # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
-    save_case_log(cfg, f"fps-{name}{log_suffix}", lines)
+    stem = f"fps-{name}{log_suffix}"
+    save_case_log(cfg, stem, lines)
+    # The counter files come off the set here, once, for --save-logs and for the graphics profile
+    # (which reads its HWCNT file out of `capture`) alike: the next trigger wipe deletes them.
+    profiler = pull_profiler_files(cfg, files) if cfg.get("save_logs") or capture is not None else {}
+    save_profiler_files(cfg, stem, profiler)
     if capture is not None:
         capture.update({"lines": lines, "warmup": warmup, "run_secs": run_secs,
-                        "route": route, "overlay": overlay})
+                        "route": route, "overlay": overlay, "profiler": profiler})
     # Same refusal as the playback cases, and it matters at least as much here: a scene graded
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
@@ -6452,8 +6501,8 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
             before_run=lambda: sampler.start(run_secs + 4.0),
         )
         hw_irq_raw = sampler.finish()
-        hwcnt_result = ssh(cfg["tv"], f"cat {RUNDIR}/plxnative-hwcnt.jsonl 2>/dev/null", timeout=30)
-        if not hwcnt_result.stdout:
+        hwcnt_jsonl = instrumented.get("profiler", {}).get("plxnative-hwcnt", "")
+        if not hwcnt_jsonl:
             raise RuntimeError(
                 "HWCNT produced no JSONL — phase unknown, trigger unread, or /dev/mali0 refused"
             )
@@ -6471,9 +6520,9 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
         out.write("\n".join(production["lines"]) + "\n")
     with open(os.path.join(bundle, "events-hwcnt.log"), "w", encoding="utf-8") as out:
         out.write("\n".join(instrumented["lines"]) + "\n")
-    hwcnt_path = os.path.join(bundle, "plxnative-hwcnt.jsonl")
+    hwcnt_path = os.path.join(bundle, HWCNT_FILE)
     with open(hwcnt_path, "w", encoding="utf-8") as out:
-        out.write(hwcnt_result.stdout)
+        out.write(hwcnt_jsonl)
 
     # The sampler starts immediately before make run. Drop launch plus the scene's declared
     # heartbeat warmup from active summaries; raw JSONL remains complete for a different cut.
@@ -6617,7 +6666,10 @@ def main():
     ap.add_argument("--save-logs", metavar="DIR", default=None,
                     help="write each case's full event log to DIR/<case>.log. The app truncates "
                          "its log every launch and each case overwrites the previous one, so a "
-                         "trace not captured here is gone when the run ends.")
+                         "trace not captured here is gone when the run ends. An FPS scene that "
+                         "arms a profiler (--extra-trigger plxnative-hwcnt=PHASE or "
+                         "plxnative-profile=PHASE) also keeps its counter file as "
+                         "DIR/fps-<scene>.<plxnative-hwcnt|plxnative-gputime>.jsonl.")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest.local.json)")
     # Deliberately NOT `choices=`: the Makefile's FLAVORS list is the one whitelist, and a second
     # copy here would be the copy that goes stale. A bad value fails on the first `make -s print-*`

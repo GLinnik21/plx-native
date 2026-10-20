@@ -287,7 +287,8 @@ pub(crate) fn arm_overdraw() {
     }
 }
 
-/// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes.
+/// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes, or, for the card
+/// class, one PART of its work (`card.interior`, `card.ring`, `card.focus`: `plx_gfx::overdraw`).
 pub(crate) fn arm_drawmask() {
     if let Some(spec) = plx_base::devtrig::read("drawmask") {
         plx_gfx::overdraw::set_mask(&spec);
