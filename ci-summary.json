@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T17:10:01Z",
+ "generated": "2026-10-20T17:19:12Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,19 +65,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -29.0,
-   "change7_pct": 40.1,
+   "change30_pct": -28.8,
+   "change7_pct": 41.0,
    "d30": 679,
-   "delta30": -197,
-   "delta7": 138.0,
+   "delta30": -195.5,
+   "delta7": 140.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 279,
-   "n_prev": 208,
-   "now": 482,
-   "prev7": 344.0,
+   "n_now": 278,
+   "n_prev": 207,
+   "now": 483.5,
+   "prev7": 343,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -267,18 +267,18 @@
   },
   {
    "change30_pct": 56.9,
-   "change7_pct": 4.2,
+   "change7_pct": 4.8,
    "d30": 611.0,
    "delta30": 347.5,
-   "delta7": 39.0,
+   "delta7": 43.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
    "n_now": 30,
-   "n_prev": 16,
+   "n_prev": 15,
    "now": 958.5,
-   "prev7": 919.5,
+   "prev7": 915,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -488,9 +488,9 @@
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
    "n_now": 30,
-   "n_prev": 16,
+   "n_prev": 15,
    "now": 19.0,
-   "prev7": 20.0,
+   "prev7": 20,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -521,18 +521,18 @@
   },
   {
    "change30_pct": 45.5,
-   "change7_pct": 10.3,
+   "change7_pct": 14.3,
    "d30": 11.0,
    "delta30": 5.0,
-   "delta7": 1.5,
+   "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
    "n_now": 30,
-   "n_prev": 16,
+   "n_prev": 15,
    "now": 16.0,
-   "prev7": 14.5,
+   "prev7": 14,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -789,7 +789,7 @@
    "to": 382
   },
   {
-   "change_pct": 40.1,
+   "change_pct": 41.0,
    "commits": [
     {
      "pr": 857,
@@ -842,12 +842,12 @@
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
     }
    ],
-   "from": 344.0,
+   "from": 343,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-20",
    "threshold_pct": 25.0,
-   "to": 482
+   "to": 483.5
   },
   {
    "change_pct": 36.6,
