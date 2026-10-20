@@ -17,7 +17,7 @@
 //! A controlled run (record / replay) never probes: the worker's landing time is not on the tape,
 //! so the header would differ between a recording and its replay. Its control stays off the row
 //! (nothing is known), as it does while a probe has learned nothing. A unit test never probes
-//! either; its rig answers [`TEST_COUNT`] for every section ([`count`]).
+//! either; its rig answers [`RIG_COLLECTIONS`] for every section ([`count`]).
 use plx_plex::plex::collections::CollectionsCount;
 use plx_screens::registry::Forbidden;
 use std::sync::Mutex;
@@ -99,14 +99,14 @@ pub(crate) fn count(
     if plx_data::stores::tape::active() { return None; }
     let section = directory.sections().get(section)?;
     // A unit test never reaches it either, and its rig has no server to ask: it stands in for one
-    // whose every section holds [`TEST_COUNT`] collections, so the Library header's Collections
+    // whose every section holds [`RIG_COLLECTIONS`] collections, so the Library header's Collections
     // control (on the row only with a known count) is there to walk to and press.
-    if cfg!(test) { return Some(Ok(TEST_COUNT)); }
+    if cfg!(test) { return Some(Ok(RIG_COLLECTIONS)); }
     ask(section.sid?, section.key, now)
 }
 
 /// The count a unit test's rig answers for every section (see [`count`]).
-const TEST_COUNT: u32 = 4;
+const RIG_COLLECTIONS: u32 = 4;
 
 /// What one landing of the directory is: its epoch and the table's generation and size. The same
 /// stamp means the same sections, so the warm pass has nothing new to ask.
