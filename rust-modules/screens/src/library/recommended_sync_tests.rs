@@ -8,6 +8,7 @@
 //! page held a publication ago to surviving it.
 use super::*;
 use super::recommended_tests::Fixture;
+use plx_ui::fixture::Walk;
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 
 const PER_ROW: usize = 24;
@@ -15,34 +16,7 @@ const PER_ROW: usize = 24;
 /// A section of `rows` hubs of `PER_ROW` cards, every hub pageable (so the store may give its cards
 /// up), the first window of a listing of 500.
 fn fixture_of(rows: usize) -> Fixture {
-    publish_named(&hub_names(0..rows), PER_ROW)
-}
-
-fn publish_named(rows: &[(String, String, String)], per_row: usize) -> Fixture {
-    let mut fixture = Fixture::new();
-    let stores = plx_data::stores::Stores::default();
-    stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.capture_browse(&mut fixture.directory);
-    stores.browse_run(BrowseCmd::SetCur(0));
-    {
-        let mut browse = stores.browse.borrow_mut();
-        browse.seed_items_for_test(120);
-        let named: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str())).collect();
-        browse.seed_named_shelves_for_test(0, &named, per_row);
-        browse.seed_paging_for_test(0, 500);
-    }
-    fixture.stores = Some(stores);
-    republish(&mut fixture);
-    fixture
-}
-
-/// Capture what the store publishes now, as the dispatcher does between frames.
-fn republish(fixture: &mut Fixture) {
-    let stores = fixture.stores.take().expect("a stored fixture");
-    let publication = stores.capture_browse(&mut fixture.directory);
-    fixture.listing = publication.listing;
-    fixture.hubs = publication.section_hubs;
-    fixture.stores = Some(stores);
+    Fixture::named_shelves(&hub_names(0..rows), PER_ROW)
 }
 
 fn hold(fixture: &mut Fixture, lo: usize, hi: usize) {
@@ -74,7 +48,7 @@ fn probes_for_one_landing(rows: usize) -> usize {
     let before = page.shelves[3].elems.clone();
     page.keys.reset_register_probes();
     assert!(fixture.stores.as_ref().unwrap().browse.borrow_mut().land_row_for_test(0, 3, PER_ROW), "premise: the row took the landing");
-    republish(&mut fixture);
+    fixture.republish();
     page.sync(&fixture.cx(None));
     assert_ne!(page.shelves[3].elems, before, "the landed row holds its new cards' keys");
     page.keys.register_probes()
@@ -100,7 +74,7 @@ fn a_hub_inserted_above_seats_the_rows_it_moved_without_registering_their_cards(
     let mut page = fixture.screen();
     page.keys.reset_register_probes();
     reseed(&mut fixture, &hub_names(std::iter::once(900).chain(0..rows)), PER_ROW);
-    republish(&mut fixture);
+    fixture.republish();
     page.sync(&fixture.cx(None));
     assert_eq!(page.shelves.len(), rows + 1);
     // the new row's group and slots, a seat (the group) for each moved row, and the one row the
@@ -173,17 +147,11 @@ fn snapshot(page: &RecommendedScreen) -> Vec<SnapRow> {
     }).collect()
 }
 
-struct Rng(u64);
+/// The shared generator (`plx_ui::fixture::Walk`) drawing a `usize` below a bound.
+struct Rng(Walk);
 impl Rng {
-    fn next(&mut self, below: usize) -> usize {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        (self.0 % below as u64) as usize
-    }
+    fn next(&mut self, below: usize) -> usize { self.0.below(below as u64) as usize }
 }
-
-fn cards_of(page: &RecommendedScreen) -> usize { page.shelves.iter().map(|row| row.elems.len()).sum() }
 
 /// What the random publications are drawn from.
 struct Stream {
@@ -203,10 +171,10 @@ struct Stream {
 fn run_random(stream: &Stream, seeds: std::ops::RangeInclusive<u64>) -> usize {
     let mut sweeps = 0;
     for seed in seeds {
-        let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ seed.wrapping_mul(0x1000_0000_01b3));
+        let mut rng = Rng(Walk(0x9e37_79b9_7f4a_7c15 ^ seed.wrapping_mul(0x1000_0000_01b3)));
         let rows = stream.rows + rng.next(stream.spread);
         let mut per_row = stream.cards.min(PER_ROW);
-        let mut fixture = publish_named(&hub_names(0..rows), per_row);
+        let mut fixture = Fixture::named_shelves(&hub_names(0..rows), per_row);
         let base_query = fixture.listing.view().id().expect("a section").query;
         let mut moved_query = 0u32;
         let mut page = fixture.screen();
@@ -251,10 +219,10 @@ fn run_random(stream: &Stream, seeds: std::ops::RangeInclusive<u64>) -> usize {
                 }
                 _ => "a publication that changes nothing".to_string(),
             };
-            republish(&mut fixture);
+            fixture.republish();
             if query_moves { moved_query += 1; }
             if moved_query > 0 { fixture.listing = fixture.listing.clone().with_query(base_query + moved_query); }
-            let (cards_before, keys_before) = (cards_of(&page), page.keys.count(KeyRegion::Shelf));
+            let (cards_before, keys_before) = (page.cards_held(), page.keys.count(KeyRegion::Shelf));
             let held: Vec<u32> = page.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
             let (publication, stale) = (page.shelf_publication, page.rows_stale);
             page.sync(&fixture.cx(None));
@@ -265,7 +233,7 @@ fn run_random(stream: &Stream, seeds: std::ops::RangeInclusive<u64>) -> usize {
             // builds nothing mints nothing, and stands where the last one left it): twice what the
             // page holds and held a publication ago, plus the slack, plus the batch a sweep waits for.
             let count = page.keys.count(KeyRegion::Shelf);
-            let bound = key_cap(cards_of(&page) + cards_before) + KEY_PRUNE_BATCH;
+            let bound = key_cap(page.cards_held() + cards_before) + KEY_PRUNE_BATCH;
             if stale || page.shelf_publication != publication {
                 assert!(count <= bound, "{context}: {count} keys over {bound}");
             }
@@ -307,15 +275,15 @@ fn an_incremental_sync_is_the_page_a_full_build_makes_across_the_sweep() {
 fn the_key_table_stays_bounded_over_many_rotating_refreshes() {
     let _guard = plx_base::testlock::serial();
     let (rows, per_row) = (3, 12);
-    let mut fixture = publish_named(&hub_names(0..rows), per_row);
+    let mut fixture = Fixture::named_shelves(&hub_names(0..rows), per_row);
     let mut page = fixture.screen();
     let (mut peak, mut sweeps) = (0, 0);
     for rotation in 1..=120 {
-        let (cards_before, keys_before) = (cards_of(&page), page.keys.count(KeyRegion::Shelf));
+        let (cards_before, keys_before) = (page.cards_held(), page.keys.count(KeyRegion::Shelf));
         reseed(&mut fixture, &hub_names(rotation * rows..(rotation + 1) * rows), per_row);
-        republish(&mut fixture);
+        fixture.republish();
         page.sync(&fixture.cx(None));
-        let bound = key_cap(cards_of(&page) + cards_before) + KEY_PRUNE_BATCH;
+        let bound = key_cap(page.cards_held() + cards_before) + KEY_PRUNE_BATCH;
         let count = page.keys.count(KeyRegion::Shelf);
         assert!(count <= bound, "rotation {rotation}: {count} item and slot keys over {bound}");
         assert_eq!(page.shelves.len(), rows, "rotation {rotation}: premise: every hub is a row");
@@ -348,7 +316,7 @@ fn the_registry_counts_each_region_as_a_scan_of_the_table_does() {
         }
     };
     for seed in 1..=8u64 {
-        let mut rng = Rng(0xd1b5_4a32_d192_ed03 ^ seed.wrapping_mul(0x1000_0000_01b3));
+        let mut rng = Rng(Walk(0xd1b5_4a32_d192_ed03 ^ seed.wrapping_mul(0x1000_0000_01b3)));
         let mut keys = KeyRegistry::default();
         let mut pruned = 0;
         for step in 0..300 {

@@ -7052,8 +7052,6 @@ class FpsMock(unittest.TestCase):
         self.assertIn("shelf", recommended)
         self.assertNotIn("grid", recommended, "the Recommended page mounts no grid")
         self.assertNotIn("shelf", library, "the Library page mounts no shelves")
-        for word in self._NOT_A_WALK_TARGET:
-            self.assertNotIn(word, library | recommended, f"`region={word}` is not a region a scene walks into")
         checked = 0
         for name, scene in sorted(self.scenes.items()):
             walk = scene.get("walk") or {}

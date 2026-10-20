@@ -435,7 +435,7 @@ impl RecommendedScreen {
         let shelves = H::section_hubs(cx).shelves();
         let query = self.query.unwrap_or(0);
         let incremental = !std::mem::take(&mut self.rows_stale) && ids_distinct(shelves);
-        let before: usize = self.shelves.iter().map(|row| row.elems.len()).sum();
+        let before = self.cards_held();
         let mut seats: RowSeats<Row, (String, bool)> = RowSeats::new(std::mem::take(&mut self.shelves), shelves.len());
         // What changed rows gave up: the previous publication's keys that this one may not hold.
         let mut departed: Vec<u32> = Vec::new();
@@ -447,37 +447,38 @@ impl RecommendedScreen {
                 let from = seats.locate(index, same_place, looked.as_ref(), |old| (old.id.clone(), old.landscape));
                 if let Some(at) = from.filter(|&at| incremental && seats.at(at).is_some_and(|old| old.basis.matches(shelf, query))) {
                     let mut row = seats.keep(at);
-                    // A publication answers an ask the row's latch may be holding: the store refuses
-                    // an ask computed from a window the publication replaced, and nothing else would
-                    // send it again before the ladder's next rung. The row's own landing is seen by
-                    // the card section (`observe_landing`); this one is another row's.
-                    row.cards.reset_page_requests();
                     if at != index { self.reseat_row(&mut row, section, shelf, index); }
                     rows.push(row);
                     continue;
                 }
                 seats.rebuilt(from);
-                let cards = match from.and_then(|at| seats.take(at)) {
-                    Some(old) => { departed.extend(old.elems); Some(old.cards) }
-                    None => None,
-                };
+                let cards = from.and_then(|at| seats.take(at)).map(|old| { departed.extend(old.elems); old.cards });
                 rows.push(self.build_row(section, shelf, index, epoch, query, cards));
             }
         }
-        for (_, old) in seats.finish(rows.len()).unclaimed { departed.extend(old.elems); }
+        for (_, old) in seats.finish().unclaimed { departed.extend(old.elems); }
         self.shelves = rows;
+        // A publication answers an ask a row's latch may be holding, kept row or built: the store
+        // refuses an ask computed from a window the publication replaced, and nothing else would
+        // send it again before the ladder's next rung. A row's own landing is seen by its card
+        // section (`observe_landing`); for a kept row this landing is another row's.
+        for row in &mut self.shelves { row.cards.reset_page_requests(); }
         // Rotating refetches mint a key per new item: keep the current rows, the previous
         // publication's (a focus on one recovers through it) and the focus; above twice that
         // plus 256, and a batch more, the oldest others go.
-        let live: usize = self.shelves.iter().map(|row| row.elems.len()).sum();
+        let live = self.cards_held();
         let cap = key_cap(live + before);
         if self.keys.count(KeyRegion::Shelf) > cap + KEY_PRUNE_BATCH {
-            let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
-            let previous: HashSet<u32> = departed.into_iter().collect();
-            let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-            self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
+            let mut keep: HashSet<u32> = HashSet::with_capacity(live + departed.len() + 1);
+            keep.extend(self.shelves.iter().flat_map(|row| row.elems.iter().copied()));
+            keep.extend(departed);
+            keep.extend(cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem));
+            self.keys.prune(KeyRegion::Shelf, cap, |elem| keep.contains(&elem));
         }
     }
+
+    /// How many card keys the rows hold between them.
+    fn cards_held(&self) -> usize { self.shelves.iter().map(|row| row.elems.len()).sum() }
 
     /// The row for `shelf` at `index`: its group, its keys and its linked heading registered, over
     /// the card section of the row it was (`cards`) or a new one at the scroll the page last left it.
@@ -493,7 +494,7 @@ impl RecommendedScreen {
             };
             self.keys.register(identity, group, col)
         }).collect();
-        let mut cards = cards.unwrap_or_else(|| {
+        let cards = cards.unwrap_or_else(|| {
             let mut cards = hub_cards(self.entry, shelf.landscape);
             let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && view.section == *section)
                 .and_then(|view| view.shelves.iter().find(|(id, _)| *id == shelf.id));
@@ -501,8 +502,6 @@ impl RecommendedScreen {
             cards
         });
         let heading = self.seat_heading(section, shelf, index);
-        // A page that landed (or a refresh) answers the ask the row's latch was holding.
-        cards.reset_page_requests();
         Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, cards, basis: Basis::of(shelf, query) }
     }
 

@@ -977,7 +977,7 @@ impl HomeScreen {
         // `unclaimed` is the old rows that were not kept whole, by position, for the element map.
         // `same_rows`: every row is the old row at its own position, so nothing moved, the shelves
         // stand and the element map is patched for the rows projected again.
-        let RowDiff { same_rows, matched, rebuilt: reprojected, unclaimed: left } = seats.finish(rows.len());
+        let RowDiff { same_rows, matched, rebuilt: reprojected, unclaimed: left } = seats.finish();
         if !same_rows {
             let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
             self.grid.shelves = Vec::with_capacity(rows.len());

@@ -2797,10 +2797,9 @@ impl<R, K: std::hash::Hash + Eq> RowSeats<R, K> {
         self.matched.push(from);
     }
 
-    /// The sync is over: `rows` new rows were matched.
-    pub(crate) fn finish(self, rows: usize) -> RowDiff<R> {
-        debug_assert_eq!(self.matched.len(), rows);
-        let same_rows = self.old.len() == rows && self.matched.iter().enumerate().all(|(row, from)| *from == Some(row));
+    /// The sync is over: every new row was matched, kept or built again.
+    pub(crate) fn finish(self) -> RowDiff<R> {
+        let same_rows = self.old.len() == self.matched.len() && self.matched.iter().enumerate().all(|(row, from)| *from == Some(row));
         let unclaimed = self.old.into_iter().enumerate().filter_map(|(at, old)| Some((at, old?))).collect();
         RowDiff { same_rows, matched: self.matched, rebuilt: self.rebuilt, unclaimed }
     }

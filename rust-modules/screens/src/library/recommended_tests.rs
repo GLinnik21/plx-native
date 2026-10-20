@@ -65,6 +65,31 @@ impl Fixture {
         fixture.stores = Some(stores);
         fixture
     }
+    /// A library whose server published the hubs `rows` name (id, key, title), `per_row` cards each,
+    /// every one pageable (so the store may give its cards up), the first window of a listing of 500.
+    pub(super) fn named_shelves(rows: &[(String, String, String)], per_row: usize) -> Self {
+        let mut fixture = Self::new();
+        let stores = plx_data::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.capture_browse(&mut fixture.directory);
+        stores.browse_run(BrowseCmd::SetCur(0));
+        {
+            let mut browse = stores.browse.borrow_mut();
+            browse.seed_items_for_test(120);
+            let named: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str())).collect();
+            browse.seed_named_shelves_for_test(0, &named, per_row);
+            browse.seed_paging_for_test(0, 500);
+        }
+        fixture.stores = Some(stores);
+        fixture.republish();
+        fixture
+    }
+    /// Capture what the store publishes now, as the dispatcher does between frames.
+    pub(super) fn republish(&mut self) {
+        let publication = self.stores.as_ref().expect("a fixture with stores").capture_browse(&mut self.directory);
+        self.listing = publication.listing;
+        self.hubs = publication.section_hubs;
+    }
     pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus, ..Default::default() },
