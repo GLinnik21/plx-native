@@ -7018,8 +7018,8 @@ const BAND_AIR: f32 = theme::space::SM;
 ///
 /// Two of those clearances are HORIZONTAL and live here ([`CHIP_CAP_MAX_R`], and through it
 /// [`GLASS_TRACK_TOUCH_MAX`]). The third is VERTICAL and belongs to another screen: Home's shelf
-/// headings begin at the very margin this capsule sits on, so the grid's vertical reveal is bounded
-/// by this rect's bottom edge (the home grid's `row_reveal_band`). Exported whole rather than as a
+/// headings begin at the very margin this capsule sits on, so the grid's resting top (`GRID_TOP_Y`)
+/// is graded against this rect's bottom edge (the home grid's tests). Exported whole rather than as a
 /// second edge constant, for the same reason the `_R` form exists at all — one expression, drawn
 /// and graded from the same place.
 pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);

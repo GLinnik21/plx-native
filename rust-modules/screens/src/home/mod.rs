@@ -1392,16 +1392,9 @@ impl HomeScreen {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
-        let revealed = focused.map(|(row, _)| (row, Some(row)))
-            .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
-        if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
-            let (lo, hi) = row_reveal_band(shelf_top_banded(row, band_row));
-            self.grid.scroll_target = ui_cards::reveal(
-                self.grid.scroll_y.pos,
-                lo,
-                hi,
-                grid_max_scroll(self.rows.len()),
-            );
+        let rested = focused.map(|(row, _)| row).or_else(|| self.focused_heading(cx.focus.current));
+        if let Some(row) = rested.filter(|row| *row < self.rows.len()) {
+            self.grid.scroll_target = rest_scroll(row, self.rows.len());
         }
         self.grid
             .scroll_y
@@ -2060,11 +2053,17 @@ impl HomeScreen {
                 continue;
             }
             let row_y = self.grid.base_y(row);
+            // The heading rides the page under the chrome, which stays: it fades by where it STANDS
+            // (`scroll_chrome`'s clearance) and is gone before it reaches the chip. The place it is
+            // judged at is the row's own, without the focus pop's lift: the lift is a few pixels of
+            // the heading clearing the popped tile, not a ride on the scroll, and the focused row's
+            // heading must rest whole.
+            let alpha = env.sp * plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_y(row_y, 0.0));
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
                 let m = linked.measure(f.measure);
                 let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
                 linked.draw(
-                    p.alpha(env.sp),
+                    p.alpha(alpha),
                     MARGIN_X,
                     heading_y(row_y, self.grid.lift(row)),
                     focus_t,
@@ -2073,7 +2072,7 @@ impl HomeScreen {
                 );
             } else if env.sp > 0.02 {
                 ui_cards::draw_heading(
-                    p.alpha(env.sp),
+                    p.alpha(alpha),
                     hub.title,
                     hub.source,
                     MARGIN_X,
@@ -2874,7 +2873,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     self.visible_activation = None;
                     if let Some(Located::Item(row, col)) = to_loc {
                         // The saved viewport is a preference, not an assertion about today's
-                        // catalog order. Minimally reveal the reconciled item before first draw.
+                        // catalog order. Rest the reconciled item's shelf before first draw.
                         if let (Some(shelf), Some(hub)) =
                             (self.grid.shelves.get_mut(row), self.rows.get(row))
                         {
@@ -2883,9 +2882,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                                 CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
                             shelf.restore_scroll(scroll, count);
                         }
-                        let (lo, hi) = row_reveal_band(shelf_top_settled(row, row));
-                        self.grid.scroll_target = ui_cards::reveal(self.grid.scroll_y.pos,
-                            lo, hi, grid_max_scroll(self.rows.len()));
+                        self.grid.scroll_target = rest_scroll(row, self.rows.len());
                         self.grid.scroll_y.jump(self.grid.scroll_target);
                     }
                     self.layout_grid();
@@ -3322,9 +3319,20 @@ fn band_h() -> f32 {
 fn band_open() -> f32 {
     ui_cards::band_open_for(band_h())
 }
-fn row_reveal_band(top: f32) -> (f32, f32) {
-    let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + ui_cards::caption_reach(band_h()) - (SCR_H - MARGIN_Y);
-    (lo, top)
+/// **The scroll a focused shelf RESTS at: the Library's rest rule** (`poster_grid::rest_scroll`,
+/// `ui_cards::grid_rest_scroll`): the shelf's top comes to `GRID_TOP_Y`, the first shelf's own
+/// resting line, and the document's end holds the last shelves lower. Every shelf above it has
+/// scrolled off, so no heading but the focused one stands in the top band.
+///
+/// It was the NEAREST scroll that showed the focused shelf with its caption band open
+/// (`ui_cards::reveal` between a `lo` and the shelf's top): Down came to rest at `lo`, which is
+/// `caption_reach(band_h)` short of the bottom margin, so the focused shelf's y followed the Under
+/// posters band (531 / 563 / 603 for 112 / 80 / 0) and the heading of the shelf above rested at
+/// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest at
+/// the shelf's top. A rest that depends on the band and on the direction of the last move is not a
+/// rest a heading can be kept out of the chrome by.
+fn rest_scroll(row: usize, rows: usize) -> f32 {
+    ui_cards::grid_rest_scroll(row, ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED, 0.0, grid_max_scroll(rows))
 }
 fn grid_max_scroll(rows: usize) -> f32 {
     let n = rows.max(1);

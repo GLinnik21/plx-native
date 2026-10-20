@@ -28,7 +28,7 @@
 //! with an ellipsis.
 //!
 //! Pure geometry and colour live here and are tested without a frame; the choice of WHEN to show
-//! them (`scroll_chrome`) is shared by the Library (and its Collections page) and the Watchlist.
+//! them (`scroll_chrome`) is owned by the Library (and its Collections page) and the Watchlist.
 use std::ffi::CStr;
 
 use plx_machine::machine::Measure;

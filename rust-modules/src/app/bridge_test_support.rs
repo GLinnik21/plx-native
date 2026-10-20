@@ -511,15 +511,16 @@ impl World {
         let mut glass = plx_ui::frame::glass::GlassPlan::new();
         let sources = glass.sources.clone();
         sources.borrow_mut().begin(self.d.backdrop_layers(1.0));
-        let words = {
+        let mut words = Vec::new();
+        let runs = plx_ui::draw_census::capture_runs(|| {
             let _declarations = backdrop::discover(sources.clone());
-            plx_ui::draw_census::capture_text(|| {
+            words = plx_ui::draw_census::capture_text(|| {
                 self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
-            })
-        };
+            });
+        });
         sources.borrow_mut().resolve();
         backdrop::commit(&sources);
-        Drawn { words }
+        Drawn { words, runs }
     }
 
     /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
@@ -642,6 +643,8 @@ impl World {
 /// One frame's draw, as [`World::drawn`] reads it: the text, since a host paints no pixels.
 pub(super) struct Drawn {
     pub(super) words: Vec<(String, plx_ui::Rect)>,
+    /// The same runs with their style: `ink[3]` is the alpha the page drew each at (the cascade folded in).
+    pub(super) runs: Vec<plx_ui::draw_census::Run>,
 }
 
 impl Drawn {

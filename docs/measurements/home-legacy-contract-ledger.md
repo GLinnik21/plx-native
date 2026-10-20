@@ -45,10 +45,10 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 | `the_home_hero_logo_never_reaches_the_top_bar` | Ported; same arithmetic over `hero_syn_h`, `hero_logo::band_h`, `hero_stack_top` and `TOP_BAR_BOTTOM`, message text dropped. |
 | `the_hero_logo_key_is_the_shows_for_an_episode` | Ported; byte-identical. |
 | `the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn` | Ported; byte-identical. |
-| `the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip` | Ported; same `heading_top(0, 0, settled_scroll(5, 0, from_below(5))) >= top_band_bottom()`. |
-| `no_shelf_heading_settles_inside_the_shared_top_band` | Ported; the same rows × focus-row × row sweep (`SWEEP_ROWS`, 40, past the data cap), with `settle_range`'s two ends spelled out as the two `settled_scroll` calls it returned. |
+| `the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip` | Ported; the first shelf rests at `rest_scroll(0, 5)` (0), whichever way focus arrived, and its raised heading is still `>= top_band_bottom()`. |
+| `no_shelf_heading_settles_inside_the_shared_top_band` | Ported; the same rows × focus-row × row sweep (`SWEEP_ROWS`, 40, past the data cap), now asserting the spatial rule: a heading either clears the shared top band or is drawn at clearance 0 (`clearance_under_shown_chrome`), never part way. |
 | `every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom` | Ported; same sweep, same `GRID_TOP_Y`/`shelf_top_settled`/`CARD_DY`/`CARD_H`/`UNDER_LABEL_H`/`MARGIN_Y` arithmetic. |
-| `the_grids_resting_top_is_the_highest_a_shelf_may_settle` | Ported; same `row_reveal_band` and top-band air assertions. |
+| `the_grids_resting_top_is_the_highest_a_shelf_may_settle` | Ported; rewritten 2026-10 for the Library's rest rule (`rest_scroll`, the old `row_reveal_band` clamp is gone): row 0 rests at 0 and a later row at its shelf's settled top, with the same top-band air assertions. |
 | `a_shelf_with_no_source_draws_exactly_the_title_and_nothing_else` | Ported; the local `flow` helper is now `heading_flow` over `card_row::heading_flow`, the production helper the owned screen draws through. |
 | `a_shared_source_extends_the_heading_past_the_title` | Ported; same, all six legs kept verbatim. |
 | `each_heading_run_carries_its_own_size_weight_and_ink` | Ported; same. |
