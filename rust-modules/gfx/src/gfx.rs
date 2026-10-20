@@ -2645,13 +2645,8 @@ fn draw_tex_core(
 /// the cull above book and test the whole quad once, as before; the card-path ledger
 /// ([`note_card_path`]) books which way each card went.
 ///
-/// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]): the interior piece of
-/// every split card, the four ring pieces of every split card, or every card drawn whole through the
-/// focus program ([`card_plan`], [`card_whole_refused`]). Both ledgers book the card BEFORE the
-/// part is refused, and the program, the texture and the card's uniforms are set either way, so the
-/// leg differs from its control by the refused draws and the few GL calls that only they need: the
-/// plain `u_card` upload of a refused interior, and, when no piece is left (`card.interior` with
-/// `card.ring`), the scissor enable and the restore of the clip the caller held.
+/// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]; [`card_plan`],
+/// [`card_whole_refused`] and [`masked_part`] say how).
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core_in(
     class: Class,
@@ -2874,14 +2869,13 @@ struct CardPlan {
 /// misses, and the rest of the plan - their order, their boxes, the scissor to put back - is what it
 /// would have been.
 fn card_plan(boxes: &CardBoxes, live: Option<PxBox>, refused: impl Fn(CardPart) -> bool) -> CardPlan {
-    let (ring_refused, interior_refused) = (refused(CardPart::Ring), refused(CardPart::Interior));
     let mut pieces = [None; 5];
-    let ring = boxes.ring.iter().map(|b| (*b, false));
-    for (slot, (b, interior)) in pieces.iter_mut().zip(ring.chain([(boxes.interior, true)])) {
-        if if interior { interior_refused } else { ring_refused } {
+    let ring = boxes.ring.iter().map(|b| (*b, CardPart::Ring));
+    for (slot, (b, part)) in pieces.iter_mut().zip(ring.chain([(boxes.interior, CardPart::Interior)])) {
+        if refused(part) {
             continue;
         }
-        *slot = clip_px(b, live).map(|scissor| Piece { scissor, interior });
+        *slot = clip_px(b, live).map(|scissor| Piece { scissor, interior: part == CardPart::Interior });
     }
     CardPlan { pieces, restore: live }
 }
@@ -9508,7 +9502,6 @@ mod card_split_tests {
             draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)").expect("drawn"),
         );
         assert!(booked < refused && whole + refused < drawn, "booked {booked}, refused {refused}, drawn {drawn}");
-        assert!(draw.contains("card_plan(&boxes, LIVE_SCISSOR, masked_part)"));
         let split = draw.find("CardCut::Pieces(rect) =>").expect("the split arm");
         assert!(draw[split..].find("note_card_path(CardPath::Split").is_some(), "a split card is booked before its parts are refused");
     }

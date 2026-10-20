@@ -519,9 +519,9 @@ nothing else. The harness's `fps=` is not a pacing number in these runs (a profi
 `fps-home-recent-paging-held.log` (the `OVERDRAW` lines) and the GPU counters
 `fps-home-recent-paging-held.plxnative-hwcnt.jsonl` (the `frame.ui` samples), copied off the set
 after the scene's app run, before the next scene's trigger wipe and the harness's teardown delete
-them (`plxnative-gputime.jsonl` is kept too when the set holds one; `tests/run.py`,
-`save_profiler_files`). It does so for any FPS scene that arms `plxnative-hwcnt`, by
-`--extra-trigger` or otherwise. Read each leg's `OVERDRAW drawmask=0x... skipping:` line first. A leg
+them (`tests/run.py`, `save_profiler_files`). It does so for any FPS scene that arms a profiler, by
+`--extra-trigger` or otherwise, and keeps the file of the trigger it armed: `plxnative-hwcnt` leaves
+`plxnative-hwcnt.jsonl`, `plxnative-profile` (the GL timer) `plxnative-gputime.jsonl`. Read each leg's `OVERDRAW drawmask=0x... skipping:` line first. A leg
 whose run prints `profiler: plxnative-hwcnt was armed but the set holds no ...` has no counters and
 is not a leg: run it again.
 

@@ -225,8 +225,6 @@ mod imp {
     pub fn set_mask(spec: &str) {
         let mut mask = 0u32;
         let mut bad: Vec<&str> = Vec::new();
-        // A word is alphanumerics and dots: the dot is what makes `card.ring` one name rather than
-        // `card` (the whole class) followed by an unknown `ring`.
         for word in spec
             .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
             .filter(|w| !w.is_empty())
@@ -572,7 +570,12 @@ mod tests {
     #[test]
     fn a_part_name_masks_that_part_and_nothing_else() {
         let parts = [CardPart::Interior, CardPart::Ring, CardPart::Focus];
-        let classes_masked = || (0..NCLASS).filter(|i| masked(class_at(*i))).count();
+        let classes = [
+            Class::Ambient, Class::Grad, Class::Rect, Class::Shadow, Class::Card, Class::Image, Class::Text, Class::Glass,
+            Class::Blur, Class::Field,
+        ];
+        assert_eq!(classes.len(), NCLASS, "every class, so the count below sees them all");
+        let classes_masked = || classes.iter().filter(|c| masked(**c)).count();
         let parts_masked = || parts.iter().filter(|p| masked_part(**p)).copied().collect::<Vec<CardPart>>();
         assert_eq!((classes_masked(), parts_masked()), (0, vec![]), "nothing is masked until a leg says so");
         for (i, name) in PART_NAMES.iter().enumerate() {
@@ -602,15 +605,6 @@ mod tests {
         }
         set_mask("");
         assert_eq!((classes_masked(), parts_masked()), (0, vec![]), "disarmed");
-    }
-
-    /// The class at ledger index `i`, for a loop over the table.
-    #[cfg(feature = "devtriggers")]
-    fn class_at(i: usize) -> Class {
-        [
-            Class::Ambient, Class::Grad, Class::Rect, Class::Shadow, Class::Card, Class::Image, Class::Text, Class::Glass,
-            Class::Blur, Class::Field,
-        ][i]
     }
 
     /// The A/B switch: on by default, and off books the card as `off`, never as `plain`.
