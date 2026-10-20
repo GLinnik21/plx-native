@@ -815,3 +815,52 @@ fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
     assert!(runs.iter().any(|run| same(run.ink, crate::ACCENT_INK)) && runs.iter().any(|run| same(run.ink, theme::CONTROL_TEXT_REST)),
         "both inks are on the label: the capsule is half across it");
 }
+
+/// **The gaps the eye reads are the gaps the stack says.** A Library header row is laid out on the
+/// shipped measure and DRAWN through a recording painter; each item's drawn extent is read back off
+/// the runs it painted (its label's x to the end of its last run, a fold glyph's box included), and
+/// the air between neighbours is [`GAP`] within half a pixel: in the left names, between the last name
+/// and the "+N", and across the right cluster, where the read-out stands [`READOUT_GAP`] before
+/// Collections. (The cluster's live width is its budget here, so the read-out's pin adds nothing.)
+#[test]
+fn the_drawn_runs_of_a_library_header_stand_one_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    let m = crate::widgets::LegacyMeasure;
+    let right = vec![
+        HeaderItem { readout: true, focusable: false, ..item("24 of 27 films", None) },
+        HeaderItem { value_slot: Some("9,999".into()), ..item("Collections", Some("9,999")) },
+        item("Recommended", None),
+        HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Title")) },
+    ];
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("Documentaries", false)],
+        overflow: 2,
+        right: right.clone(),
+        ..Default::default()
+    };
+    let page = PageHeader::new(spec, &right, &m);
+    let layout = page.layout(1920.0, &m);
+    let runs = crate::draw_census::capture_runs(|| page.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    // One item's drawn extent: its label's x to the end of the last thing it paints.
+    let extent = |label: &str, value: Option<&str>, fold: bool| -> (f32, f32) {
+        let drawn = |text: &str| runs.iter().find(|run| run.text == text).unwrap_or_else(|| panic!("{text:?} was not drawn: {runs:?}"));
+        let first = drawn(label).at;
+        let last = value.map_or(first, |value| drawn(value).at);
+        (first.x, last.x + last.w + if fold { FOLD_GAP + FOLD_SIZE } else { 0.0 })
+    };
+    let left = [extent("Movies", None, false), extent("Documentaries", None, false), extent("+2", None, false)];
+    let cluster = [
+        extent("24 of 27 films", None, false),
+        extent("Collections", Some("9,999"), false),
+        extent("Recommended", None, false),
+        extent("Sort & Filter", Some("Title"), true),
+    ];
+    let air = |row: &[(f32, f32)]| row.windows(2).map(|pair| pair[1].0 - pair[0].1).collect::<Vec<f32>>();
+    for (gap, want, who) in air(&left).into_iter().zip([GAP; 2]).map(|(gap, want)| (gap, want, "names"))
+        .chain(air(&cluster).into_iter().zip([READOUT_GAP, GAP, GAP]).map(|(gap, want)| (gap, want, "cluster")))
+    {
+        assert!((gap - want).abs() <= 0.5, "{who}: {gap} px drawn between neighbours, the layout says {want}");
+    }
+    assert!((cluster[3].1 - TEXT_X1).abs() <= 0.5, "the cluster ends at the right text edge, drawn: {}", cluster[3].1);
+    assert!((left[0].0 - TEXT_X0).abs() <= 0.5, "the names start at the left text edge");
+}

@@ -12,7 +12,16 @@
 //! controls inside the cluster stand by what they draw, one gap apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
 //! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
+use plx_ui::hstack::{self, Align, HStack};
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
+
+/// The width the names `picks` (then, with `more_w`, the "+N" after them) stand in, one
+/// [`page_header::GAP`] apart: the ui's own [`HStack::width`] of the run the header lays out, so what
+/// is packed here and where `PageHeader::layout` places the names cannot drift apart.
+fn names_w(widths: &[f32], picks: &[usize], more_w: Option<f32>) -> f32 {
+    let names: Vec<hstack::Item> = picks.iter().map(|&i| widths[i]).chain(more_w).map(hstack::Item::new).collect();
+    HStack::new(&names, page_header::GAP, Align::Leading(0.0)).width()
+}
 
 /// Which of `n` names show when the row cannot hold them all (`budget` is text edge to text edge
 /// for names plus "+N"). The picked library takes the LAST visible slot: names keep their order
@@ -22,13 +31,10 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     let n = widths.len();
     if n == 0 || cap == 0 { return Vec::new(); }
     let selected = selected.min(n - 1);
-    let span = |picks: &[usize]| picks.iter().map(|&i| widths[i]).sum::<f32>()
-        + page_header::GAP * picks.len().saturating_sub(1) as f32;
     let all: Vec<usize> = (0..n).collect();
-    if n <= cap && span(&all) <= budget { return all; }
+    if n <= cap && names_w(widths, &all, None) <= budget { return all; }
     // "+N" takes the end of the row, one gap after the last name.
-    let with_more = |picks: &[usize]| span(picks) + picks.last()
-        .map_or(0.0, |_| page_header::GAP) + more_w;
+    let with_more = |picks: &[usize]| names_w(widths, picks, Some(more_w));
     for k in (1..n.min(cap)).rev() {
         let mut picks: Vec<usize> = (0..k).collect();
         if selected >= k { picks[k - 1] = selected; }
