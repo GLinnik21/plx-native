@@ -686,6 +686,7 @@ static mut IL_RIMCOL: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 static mut IL_FOCUS: c_int = 0;
+static mut IL_POFS: c_int = 0;
 /// **The UNDERLAY FIELD program** (`shaders/fs_field.frag` over `vs_src.vert`) and its uniforms;
 /// 0 when the link failed, in which case [`draw_field`] draws nothing and its caller falls back to
 /// the flat rect it would otherwise have drawn.
@@ -714,6 +715,9 @@ static mut FP_DITHER: c_int = 0;
 struct ImageUniforms {
     rect: c_int, tint: c_int, uvrect: c_int, card: c_int, rimw: c_int,
     rimcol: c_int, shinv: c_int, shcol: c_int, focus: c_int,
+    /// `u_pofs`, the vertex shader's offset of `v_p` ([`draw_tex_core_in`] draws a resting card in
+    /// pieces with it). `< 0` if the link dropped it, and the card is then drawn whole.
+    pofs: c_int,
 }
 // Optional still specialization; the ordinary image shader remains the fallback.
 static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
@@ -1743,17 +1747,24 @@ pub fn draw_shadow(
         // on the drawable's pixel grid so a seam never splits a pixel (a pixel drawn twice would
         // blend twice) and `u_map` keeps `p` relative to the FULL quad. The ledger above books the
         // full quad once, as before.
-        let scale = match CLIP_TARGET {
-            Some((_, _, ts, _, _)) => ts,
-            None => plx_base::surface::scale() * plx_base::surface::render_scale() as f32,
-        };
         let inner = shadow_skip_rect([qx, qy, qw, qh], b, radius, off, cut);
-        let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, scale);
+        let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, pixel_scale());
         let (cx, cy) = (qx + qw * 0.5, qy + qh * 0.5);
         for r in &bands[..n] {
             glUniform4f(SL_RECT, r[0], r[1], r[2], r[3]);
             glUniform4f(SL_MAP, r[0] - cx, r[1] - cy, r[2], r[3]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+    }
+}
+
+/// Drawable pixels per authored (logical) px for the bound target: the grid a seam between two
+/// pieces of one quad must sit on to split no pixel ([`snap_inner`]).
+fn pixel_scale() -> f32 {
+    unsafe {
+        match CLIP_TARGET {
+            Some((_, _, ts, _, _)) => ts,
+            None => plx_base::surface::scale() * plx_base::surface::render_scale() as f32,
         }
     }
 }
@@ -1783,25 +1794,31 @@ fn shadow_skip_rect(quad: [f32; 4], blur: f32, radius: f32, off: f32, cut: f32) 
     (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
 }
 
-/// The rects (up to four, and how many are used) that tile `quad` minus `inner`: the full-width
-/// bands above and below `inner`, then the strips to its left and right. `inner` is first clipped
-/// to the quad and shrunk INWARD onto multiples of `1/scale` (the drawable's pixel edges), so a
-/// seam is on a pixel edge and no float ulp can move it across a pixel centre: every pixel is
-/// drawn exactly once. No `inner`, or one that clips away, returns the quad whole.
-fn shadow_bands(quad: [f32; 4], inner: Option<[f32; 4]>, scale: f32) -> ([[f32; 4]; 4], usize) {
-    let whole = ([quad, [0.0; 4], [0.0; 4], [0.0; 4]], 1);
-    let Some(i) = inner else { return whole };
+/// `inner` clipped to `quad` and shrunk INWARD onto multiples of `1/scale` (the drawable's pixel
+/// edges), as its edges `[x0, y0, x1, y1]`; `None` when nothing is left of it or `scale` is no grid.
+/// A seam on a pixel edge splits no pixel and no float ulp can move it across a pixel centre, so a
+/// quad cut along it still draws every pixel exactly once.
+fn snap_inner(quad: [f32; 4], inner: [f32; 4], scale: f32) -> Option<[f32; 4]> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
     let (qx1, qy1) = (quad[0] + quad[2], quad[1] + quad[3]);
     let snap_up = |v: f32| (v * scale).ceil() / scale;
     let snap_dn = |v: f32| (v * scale).floor() / scale;
-    let (x0, y0) = (snap_up(i[0].max(quad[0])), snap_up(i[1].max(quad[1])));
-    let (x1, y1) = (snap_dn((i[0] + i[2]).min(qx1)), snap_dn((i[1] + i[3]).min(qy1)));
-    if !(x1 > x0 && y1 > y0) || !scale.is_finite() || scale <= 0.0 {
-        return whole;
-    }
+    let (x0, y0) = (snap_up(inner[0].max(quad[0])), snap_up(inner[1].max(quad[1])));
+    let (x1, y1) = (snap_dn((inner[0] + inner[2]).min(qx1)), snap_dn((inner[1] + inner[3]).min(qy1)));
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1, y1])
+}
+
+/// The rects (up to four, and how many are used) that tile `quad` minus the rect with edges
+/// `hole` (`[x0, y0, x1, y1]`, inside `quad`, from [`snap_inner`]): the full-width bands above and
+/// below it, then the strips to its left and right. Edges, not sums: neighbouring bands share the
+/// very same f32 seam value.
+fn bands_around(quad: [f32; 4], hole: [f32; 4]) -> ([[f32; 4]; 4], usize) {
+    let (qx1, qy1) = (quad[0] + quad[2], quad[1] + quad[3]);
+    let [x0, y0, x1, y1] = hole;
     let mut out = [[0.0f32; 4]; 4];
     let mut n = 0;
-    // Edges, not sums: neighbouring bands share the very same f32 seam value.
     for r in [
         [quad[0], quad[1], quad[2], y0 - quad[1]],
         [quad[0], y1, quad[2], qy1 - y1],
@@ -1814,6 +1831,17 @@ fn shadow_bands(quad: [f32; 4], inner: Option<[f32; 4]>, scale: f32) -> ([[f32; 
         }
     }
     (out, n)
+}
+
+/// The rects (up to four, and how many are used) that tile `quad` minus `inner`: the full-width
+/// bands above and below `inner`, then the strips to its left and right. `inner` is first
+/// snapped inward onto the pixel grid ([`snap_inner`]), so every pixel is drawn exactly once. No
+/// `inner`, or one that clips away, returns the quad whole.
+fn shadow_bands(quad: [f32; 4], inner: Option<[f32; 4]>, scale: f32) -> ([[f32; 4]; 4], usize) {
+    match inner.and_then(|i| snap_inner(quad, i, scale)) {
+        Some(hole) => bands_around(quad, hole),
+        None => ([quad, [0.0; 4], [0.0; 4], [0.0; 4]], 1),
+    }
 }
 
 /// Critically-damped spring step — the **exact analytic** solution of `x'' + 2ω·x' + ω²·x = 0`
@@ -1951,6 +1979,7 @@ pub fn init_image() {
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
         IL_FOCUS = glGetUniformLocation(IPROG, c"u_focus".as_ptr());
+        IL_POFS = glGetUniformLocation(IPROG, c"u_pofs".as_ptr());
         // Set this program's constant uniforms once (per-program state): the fixed screen size
         // and sampler unit 0. draw_tex_impl no longer re-sends them per quad.
         use_prog(IPROG);
@@ -1963,6 +1992,7 @@ pub fn init_image() {
                 rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
                 card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
                 shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
+                pofs: loc(c"u_pofs"),
             };
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
@@ -1979,6 +2009,7 @@ pub fn init_image() {
                 rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
                 card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
                 shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
+                pofs: loc(c"u_pofs"),
             };
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
@@ -2584,6 +2615,40 @@ fn draw_tex_core(
     dy: f32,
     image: Option<(c_uint, ImageUniforms)>,
 ) {
+    draw_tex_core_in(
+        class, tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, chw, chh, shinv, shcol, focus, dy,
+        image, None,
+    );
+}
+
+/// [`draw_tex_core`], and `card` = the card's own rect `(x, y, w, h)` when the draw is a resting
+/// card that [`draw_tex_impl`] allows to be drawn in pieces ([`card_split`]): its interior through
+/// the shader's `u_card.z < 0.5` fast path (texture x tint, nothing else), its ring - the part with
+/// rim, anti-aliased edge and shadow - through the full card math. The picture is the same
+/// pixel for pixel; the fragment shader just stops evaluating the card's SDF where the answer is
+/// "plain". The ledger and the cull above book and test the whole quad once, as before.
+#[allow(clippy::too_many_arguments)]
+fn draw_tex_core_in(
+    class: Class,
+    tex: c_uint,
+    qx: f32,
+    qy: f32,
+    qw: f32,
+    qh: f32,
+    uv: [f32; 4],
+    radius: f32,
+    tint: *const f32,
+    rimw: f32,
+    rimcol: *const f32,
+    chw: f32,
+    chh: f32,
+    shinv: f32,
+    shcol: *const f32,
+    focus: f32,
+    dy: f32,
+    image: Option<(c_uint, ImageUniforms)>,
+    card: Option<[f32; 4]>,
+) {
     if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
         return;
     }
@@ -2591,6 +2656,7 @@ fn draw_tex_core(
         let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
             rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
             rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL, focus: IL_FOCUS,
+            pofs: IL_POFS,
         }));
         use_prog(program); // fixed screen size and sampler unit are initialized per program
         if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
@@ -2605,9 +2671,92 @@ fn draw_tex_core(
             glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
         }
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(loc.rect, qx, qy, qw, qh);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let quad = [qx, qy, qw, qh];
+        let split = card
+            .filter(|_| loc.pofs >= 0)
+            .and_then(|c| card_split(quad, c, radius, rimw, pixel_scale()));
+        let Some(split) = split else {
+            glUniform4f(loc.rect, qx, qy, qw, qh);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            return;
+        };
+        // The ring first, under the real `u_card` the uniforms above carry...
+        for piece in &split.bands[..split.n] {
+            draw_card_piece(&loc, quad, uv, piece);
+        }
+        // ...then the interior, whose `u_card.z` of 0 is the shader's own "plain texture" branch.
+        glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
+        draw_card_piece(&loc, quad, uv, &split.interior);
+        // `u_pofs` is per program and only a split card sets it: leave it at the zero every other
+        // draw through this program relies on (`v_p` centred on the rect it draws).
+        glUniform2f(loc.pofs, 0.0, 0.0);
     }
+}
+
+/// One piece of a split card's quad `quad` (`piece` is a sub-rect of it): the same triangles'
+/// worth of picture, with `v_cuv` and `v_p` still those of the WHOLE quad ([`card_piece_params`]).
+unsafe fn draw_card_piece(loc: &ImageUniforms, quad: [f32; 4], uv: [f32; 4], piece: &[f32; 4]) {
+    let (sub_uv, pofs) = card_piece_params(quad, uv, piece);
+    glUniform4f(loc.rect, piece[0], piece[1], piece[2], piece[3]);
+    glUniform4f(loc.uvrect, sub_uv[0], sub_uv[1], sub_uv[2], sub_uv[3]);
+    glUniform2f(loc.pofs, pofs[0], pofs[1]);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/// What drawing `piece` (a sub-rect of `quad`) needs so that every fragment sees the `v_cuv` and
+/// `v_p` it would have seen as part of the whole quad: the piece's `u_uvrect` (the quad's UV window
+/// restricted to it - `uv` composed with the piece's fractional place in the quad) and `u_pofs`
+/// (how far the piece's centre lies from the quad's, which `v_p` is measured from).
+fn card_piece_params(quad: [f32; 4], uv: [f32; 4], piece: &[f32; 4]) -> ([f32; 4], [f32; 2]) {
+    let place = [
+        (piece[0] - quad[0]) / quad[2],
+        (piece[1] - quad[1]) / quad[3],
+        piece[2] / quad[2],
+        piece[3] / quad[3],
+    ];
+    let pofs = [
+        (piece[0] + piece[2] * 0.5) - (quad[0] + quad[2] * 0.5),
+        (piece[1] + piece[3] * 0.5) - (quad[1] + quad[3] * 0.5),
+    ];
+    (uv_compose(uv, place), pofs)
+}
+
+/// A resting card's quad cut into the interior `fs_img.frag` writes as plain texture x tint and the
+/// ring around it ([`card_split`]).
+struct CardSplit {
+    /// The interior rect `(x, y, w, h)`, its edges on the drawable's pixel grid.
+    interior: [f32; 4],
+    /// The rects (the first `n`) that tile the quad minus `interior`.
+    bands: [[f32; 4]; 4],
+    n: usize,
+}
+
+/// Whether [`draw_tex_impl`] may draw this call as a split card: the card compositor (`Class::Card`,
+/// i.e. an art tile with a shadow pad), a rounded one (`radius < 0.5` is the shader's own whole-quad
+/// plain branch already), at rest. A focused or risen card is drawn by the focus program with its
+/// asymmetric quad, whose SDF centre is not the quad's centre; it is not split.
+#[inline]
+fn splits_card(class: Class, radius: f32, focus: f32, dy: f32) -> bool {
+    class == Class::Card && radius >= 0.5 && !wants_focus_program(focus, dy)
+}
+
+/// The part of a resting card's `quad` (symmetric about `card` = `(x, y, w, h)`) that `fs_img.frag`
+/// certainly shades as plain texture x tint, and the ring that is left; `None` when there is no such
+/// part. The interior is the card inset on every side by its corner `radius` + the rim's width `rimw`
+/// + 2 px, then shrunk onto the pixel grid. The shader's own early-out is `max(|p| - (half - radius))
+/// < min(radius - 2, 0)`: a rect inset by `radius` from the card edge lies inside it, the 2 px and the
+/// rim are margin for float error and the rim's reach, and the rounded corners (where `d` is a
+/// `length()`, not a box distance) are outside the inset altogether. The host test
+/// `the_interior_is_certainly_the_plain_branch` replays the shader's tests over the rect.
+fn card_split(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32, scale: f32) -> Option<CardSplit> {
+    let k = radius + rimw.max(0.0) + 2.0;
+    let rect = [card[0] + k, card[1] + k, card[2] - 2.0 * k, card[3] - 2.0 * k];
+    if !(rect[2] > 0.0 && rect[3] > 0.0) {
+        return None;
+    }
+    let hole = snap_inner(quad, rect, scale)?;
+    let (bands, n) = bands_around(quad, hole);
+    Some(CardSplit { interior: [hole[0], hole[1], hole[2] - hole[0], hole[3] - hole[1]], bands, n })
 }
 
 /// Whether a draw is focused or risen enough to need [`FOCUS_IMAGE`] rather than the plain
@@ -2660,7 +2809,10 @@ fn draw_tex_impl(
     // which `draw_tex_core` already defaults to `IPROG`) exactly as before this program existed —
     // see `FOCUS_IMAGE`'s own comment for why that split exists.
     let image = image.or_else(|| if wants_focus_program(focus, dy) { unsafe { FOCUS_IMAGE } } else { None });
-    draw_tex_core(
+    // A resting card's quad is symmetric about the card (`sides == top == bottom == pad`), which is
+    // what lets its interior be drawn apart from its ring; see `draw_tex_core_in`.
+    let card = splits_card(class, radius, focus, dy).then_some([x, y, w, h]);
+    draw_tex_core_in(
         class,
         tex,
         qx,
@@ -2679,6 +2831,7 @@ fn draw_tex_impl(
         focus,
         dy,
         image,
+        card,
     );
 }
 
@@ -7700,10 +7853,40 @@ mod tests {
         ] {
             assert!(fs.contains(line), "plain fs_img.frag missing pre-focus line `{line}`");
         }
-        assert!(vs.contains("v_p = (a_pos - 0.5) * u_trect.zw;"));
+        // `u_pofs` is the one addition (a split card's pieces, `draw_tex_core_in`): zero unless set.
+        assert!(vs.contains("v_p = (a_pos - 0.5) * u_trect.zw + u_pofs;"));
         // And none of the FOCUS-only identifiers/branches leak through under any spelling.
         for gone in ["wide", "wide2", " vp ", "dShadowBox", "glareTop", "qs", "straightS"] {
             assert!(!fs.contains(gone), "plain fs_img.frag must not carry focus identifier `{gone}`");
+        }
+    }
+
+    /// **The three ways a fragment leaves `fs_img.frag` as plain texture x tint are one expression.**
+    /// A split card's interior is drawn with `u_card.z = 0`, i.e. through the first; the picture it
+    /// replaces left through the second or third (and a ring fragment still can). If any of them ever
+    /// computes anything else, the split changes the picture - and this is the test that says so.
+    #[test]
+    fn the_plain_exits_of_the_card_shader_are_one_expression() {
+        for (defined, plain) in [
+            (&[][..], "gl_FragColor = vec4(tex, ta);"),
+            (&["PLX_STILL_GROUND"][..], "gl_FragColor = stillOver(tex, ta, 1.0, ramp);"),
+        ] {
+            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
+            let fast = fs
+                .lines()
+                .find(|l| l.contains("u_card.z < 0.5"))
+                .unwrap_or_else(|| panic!("the u_card.z < 0.5 exit is gone from {defined:?}"));
+            assert!(fast.contains(plain), "fast path of {defined:?} is not `{plain}`: {fast}");
+            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("`{needle}` missing from {defined:?}"));
+            let (box_exit, d_exit) = (at("if (straight < u_card.w) {"), at("if (d < -2.0) {"));
+            for (name, from) in [("straight < u_card.w", box_exit), ("d < -2.0", d_exit)] {
+                let body = &fs[from..];
+                let body = &body[..body.find('}').unwrap()];
+                assert!(body.contains(plain), "the `{name}` exit of {defined:?} is not `{plain}`: {body}");
+            }
+            // And nothing between the fast path and the box exit writes a fragment.
+            let between = &fs[fs.find("u_card.z < 0.5").unwrap()..box_exit];
+            assert_eq!(between.matches("gl_FragColor").count(), 1, "{defined:?}: a fourth exit: {between}");
         }
     }
 
@@ -8702,6 +8885,284 @@ mod shadow_band_tests {
                 assert!((1..=4).contains(&n));
                 assert!(bands[..n].iter().all(|r| r[2] > 0.0 && r[3] > 0.0));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod card_split_tests {
+    use super::{
+        bands_around, card_piece_params, card_split, image_card_geometry, snap_inner, splits_card,
+        uv_compose, CardSplit, Class,
+    };
+
+    /// `fs_img.frag`'s PLAIN program, line for line up to the three exits that write
+    /// `vec4(tex, ta)`: does the fragment at card-centred `p` leave through one of them?
+    /// Returns which (1 = `u_card.z < 0.5`, 2 = `straight < u_card.w`, 3 = `d < -2`), 0 = it
+    /// goes on to the rim, the anti-aliased edge and the shadow.
+    fn plain_exit(geo: [f32; 4], p: [f32; 2]) -> u8 {
+        if geo[2] < 0.5 {
+            return 1;
+        }
+        let q = [p[0].abs() - geo[0], p[1].abs() - geo[1]];
+        let straight = q[0].max(q[1]);
+        if straight < geo[3] {
+            return 2;
+        }
+        let mut d = straight - geo[2];
+        if q[0].min(q[1]) > 0.0 {
+            d = (q[0] * q[0] + q[1] * q[1]).sqrt() - geo[2];
+        }
+        if d < -2.0 { 3 } else { 0 }
+    }
+
+    /// (card w, h, corner radius, rim width, shadow pad) of every shape the app draws through
+    /// `Painter::tex_carded`: `RowStyle::HOME` (250x375, `CARD_RING_RAD` 14), the episode still
+    /// (420x236), the grid and detail posters at other sizes, a small thumbnail, the circular rows
+    /// (cast 190, profiles 220: radius = half the width), radii around the shader's 2 px
+    /// threshold, a rim wider than the 1 px the shader allows, and the resting shadow's pad
+    /// (`blur_r + 1`, 4..12 px).
+    fn cards() -> Vec<(f32, f32, f32, f32, f32)> {
+        vec![
+            (250.0, 375.0, 14.0, 1.0, 12.0),
+            (420.0, 236.0, 14.0, 1.0, 12.0),
+            (200.0, 300.0, 14.0, 1.0, 8.0),
+            (140.0, 210.0, 14.0, 1.0, 8.0),
+            (64.0, 96.0, 14.0, 1.0, 4.0),
+            (64.0, 96.0, 8.0, 0.5, 4.0),
+            (190.0, 190.0, 95.0, 1.0, 12.0),
+            (220.0, 220.0, 110.0, 1.0, 12.0),
+            (250.0, 375.0, 24.0, 1.5, 12.0),
+            (250.0, 375.0, 40.0, 1.0, 12.0),
+            (250.0, 375.0, 2.0, 1.0, 12.0),
+            (250.0, 375.0, 1.9, 1.0, 12.0),
+            (250.0, 375.0, 0.5, 1.0, 12.0),
+            (250.0, 375.0, 0.5, 0.0, 12.0),
+            (30.0, 30.0, 6.0, 1.0, 3.0),
+            (500.0, 40.0, 14.0, 1.0, 6.0),
+        ]
+    }
+
+    /// Where the drawable puts the card, so the pixel snap meets fractional authored coordinates:
+    /// the TV (1.0), the simulator's half drawable, an in-between and a 2x render scale.
+    const SCALES: [f32; 4] = [1.0, 0.5, 2.0 / 3.0, 2.0];
+    const AT: [(f32, f32); 3] = [(120.0, 80.0), (100.25, 50.5), (333.7, 211.3)];
+
+    /// The quad `draw_tex_impl` builds for a resting card (`dy` 0: `sides == top == bottom == pad`).
+    fn quad_of(c: (f32, f32, f32, f32, f32), at: (f32, f32)) -> ([f32; 4], [f32; 4]) {
+        let (w, h, _, _, pad) = c;
+        ([at.0, at.1, w, h], [at.0 - pad, at.1 - pad, w + 2.0 * pad, h + 2.0 * pad])
+    }
+
+    fn splits() -> Vec<((f32, f32, f32, f32, f32), (f32, f32), f32, [f32; 4], [f32; 4], CardSplit)> {
+        let mut v = Vec::new();
+        for c in cards() {
+            for at in AT {
+                for scale in SCALES {
+                    let (card, quad) = quad_of(c, at);
+                    if let Some(s) = card_split(quad, card, c.2, c.3, scale) {
+                        v.push((c, at, scale, card, quad, s));
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    /// The claim the whole split rests on: every fragment of the interior piece - sampled over its
+    /// whole rect, corners included, at the card-centred coordinate the vertex shader hands the
+    /// fragment shader - leaves the PLAIN program through `straight < u_card.w`, the box exit that
+    /// comes before the rim, the anti-aliased edge and the shadow are even computed. (The real
+    /// program is the same arithmetic at `mediump`/`highp`; the 2 px + rim margin in `card_split` is
+    /// what float error has to eat.)
+    #[test]
+    fn the_interior_is_certainly_the_plain_branch() {
+        let all = splits();
+        assert!(all.len() > 100, "the table should mostly split: {}", all.len());
+        for (c, at, scale, card, quad, s) in all {
+            let (w, h, r, rim, pad) = c;
+            let geo = image_card_geometry(w * 0.5, h * 0.5, r);
+            let i = s.interior;
+            let centre = [quad[0] + quad[2] * 0.5, quad[1] + quad[3] * 0.5];
+            for a in 0..=24 {
+                for b in 0..=24 {
+                    let pos = [i[0] + i[2] * a as f32 / 24.0, i[1] + i[3] * b as f32 / 24.0];
+                    let p = [pos[0] - centre[0], pos[1] - centre[1]];
+                    assert_eq!(
+                        plain_exit(geo, p), 2,
+                        "card {w}x{h} r{r} rim{rim} pad{pad} at {at:?} scale {scale}: {pos:?} of {i:?} is shaded"
+                    );
+                }
+            }
+            // Inside the card itself, with its whole rim to spare.
+            assert!(i[0] >= card[0] + r + rim && i[1] >= card[1] + r + rim, "{c:?}: {i:?} reaches the corner arc");
+            assert!(i[0] + i[2] <= card[0] + card[2] - r - rim && i[1] + i[3] <= card[1] + card[3] - r - rim);
+        }
+    }
+
+    /// The same predicate says what it must about the ring: a fragment on the card's own edge is NOT
+    /// plain, so the full card math still runs where it matters (a rim, an anti-aliased edge, a
+    /// shadow). A split that took the whole card would pass the test above and fail this one.
+    #[test]
+    fn the_ring_still_runs_the_card_math() {
+        for c in cards().into_iter().filter(|c| c.2 >= 2.0 && c.2 * 2.0 < c.0.min(c.1)) {
+            let geo = image_card_geometry(c.0 * 0.5, c.1 * 0.5, c.2);
+            for p in [[c.0 * 0.5 - 0.5, 0.0], [c.0 * 0.5 + 1.0, 0.0], [0.0, c.1 * 0.5 - 0.5], [0.0, c.1 * 0.5 + 3.0]] {
+                assert_eq!(plain_exit(geo, p), 0, "{c:?}: edge fragment {p:?} would be drawn plain");
+            }
+            // And the fast-path uniform really is the "plain everywhere" one.
+            assert_eq!(plain_exit(image_card_geometry(c.0 * 0.5, c.1 * 0.5, 0.0), [c.0 * 0.5, c.1 * 0.5]), 1);
+        }
+    }
+
+    fn area(r: &[f32; 4]) -> f64 {
+        r[2] as f64 * r[3] as f64
+    }
+
+    fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f64 {
+        let w = (a[0] + a[2]).min(b[0] + b[2]) as f64 - a[0].max(b[0]) as f64;
+        let h = (a[1] + a[3]).min(b[1] + b[3]) as f64 - a[1].max(b[1]) as f64;
+        w.max(0.0) * h.max(0.0)
+    }
+
+    /// Interior and ring together are the quad, each pixel exactly once: the areas add up, no two
+    /// pieces overlap, every piece is inside the quad, and the seams sit on the drawable's pixel grid.
+    #[test]
+    fn the_pieces_tile_the_quad_once() {
+        for (c, at, scale, _card, quad, s) in splits() {
+            let mut pieces = s.bands[..s.n].to_vec();
+            pieces.push(s.interior);
+            let sum: f64 = pieces.iter().map(area).sum();
+            assert!((sum - area(&quad)).abs() < 1e-2 * area(&quad).sqrt(), "{c:?} at {at:?} scale {scale}: areas {sum} vs {}", area(&quad));
+            for (a, ra) in pieces.iter().enumerate() {
+                assert!(ra[2] > 0.0 && ra[3] > 0.0, "empty piece kept");
+                assert!(ra[0] >= quad[0] && ra[1] >= quad[1] && ra[0] + ra[2] <= quad[0] + quad[2] + 1e-3 && ra[1] + ra[3] <= quad[1] + quad[3] + 1e-3);
+                for rb in &pieces[a + 1..] {
+                    assert!(overlap(ra, rb) < 1e-3, "{c:?}: pieces overlap: {ra:?} {rb:?}");
+                }
+            }
+            let on_grid = |v: f32| ((v * scale).round() - v * scale).abs() < 1e-3;
+            let i = s.interior;
+            for v in [i[0], i[1], i[0] + i[2], i[1] + i[3]] {
+                assert!(on_grid(v), "{c:?} at {at:?} scale {scale}: interior edge {v} is off the pixel grid");
+            }
+            // A card with room all round has the full four bands.
+            if c.0.min(c.1) > 3.0 * (c.2 + c.3 + 2.0) {
+                assert_eq!(s.n, 4, "{c:?}");
+            }
+        }
+    }
+
+    /// A circle (radius = half the width) and anything whose inset swallows it has no interior:
+    /// it is drawn whole, as it always was. Same for a degenerate or invalid pixel grid.
+    #[test]
+    fn a_card_with_no_interior_is_not_split() {
+        for scale in SCALES {
+            let card = [10.0, 10.0, 190.0, 190.0];
+            let quad = [-2.0, -2.0, 214.0, 214.0];
+            assert!(card_split(quad, card, 95.0, 1.0, scale).is_none(), "a circle has no box interior");
+            assert!(card_split(quad, card, 100.0, 1.0, scale).is_none(), "a radius past half the width");
+        }
+    }
+
+    #[test]
+    fn a_split_needs_a_pixel_grid() {
+        let card = [10.0, 10.0, 250.0, 375.0];
+        let quad = [-2.0, -2.0, 274.0, 399.0];
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(card_split(quad, card, 14.0, 1.0, bad).is_none(), "scale {bad}");
+        }
+        assert!(card_split(quad, card, 14.0, 1.0, 1.0).is_some());
+    }
+
+    /// Only a resting card of the card class is split.
+    #[test]
+    fn only_a_resting_rounded_card_is_split() {
+        assert!(splits_card(Class::Card, 14.0, 0.0, 0.0));
+        assert!(splits_card(Class::Card, 14.0, -1.0, 0.0), "a negative focus is still at rest");
+        assert!(splits_card(Class::Card, 14.0, 0.0, -3.0), "a negative dy clamps to rest");
+        assert!(!splits_card(Class::Card, 14.0, 0.01, 0.0), "a focused card is drawn by the focus program");
+        assert!(!splits_card(Class::Card, 14.0, 0.0, 0.5), "a risen shadow moves the quad's centre off the card's");
+        assert!(!splits_card(Class::Card, 0.0, 0.0, 0.0), "radius 0 is the shader's whole-quad plain branch");
+        assert!(!splits_card(Class::Card, 0.49, 0.0, 0.0));
+        assert!(!splits_card(Class::Image, 14.0, 0.0, 0.0), "a rounded image without a pad is not a card");
+        assert!(!splits_card(Class::Glass, 14.0, 0.0, 0.0));
+    }
+
+    /// Drawing a piece must hand the shaders what the whole quad would have: at the piece's four
+    /// corners `v_p` is the corner's offset from the QUAD's centre and `v_cuv` is the quad's own
+    /// UV window evaluated there - for a plain window, a cover crop, and the flipped (negative-scale)
+    /// window every FBO chain samples through.
+    #[test]
+    fn a_piece_keeps_the_quads_varyings() {
+        let crops = [
+            [0.0, 0.0, 1.0, 1.0],
+            [0.1, 0.2, 0.7, 0.55],
+            [0.0, 1.0, 1.0, -1.0],
+        ];
+        for (c, at, scale, _card, quad, s) in splits() {
+            let _ = (c, at, scale);
+            for crop in crops {
+                // The whole quad's UV window, as `draw_tex_impl` builds it from the card's.
+                let uv = uv_compose(crop, super::uv_rect_padded(c.0, c.1, c.4, c.4, quad[2], quad[3]));
+                let mut pieces = s.bands[..s.n].to_vec();
+                pieces.push(s.interior);
+                for piece in &pieces {
+                    let (sub, pofs) = card_piece_params(quad, uv, piece);
+                    for (ax, ay) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                        let (px, py) = (piece[0] + ax * piece[2], piece[1] + ay * piece[3]);
+                        // The vertex shader's `v_p` and `v_cuv` for this corner...
+                        let vp = [(ax - 0.5) * piece[2] + pofs[0], (ay - 0.5) * piece[3] + pofs[1]];
+                        let cuv = [sub[0] + ax * sub[2], sub[1] + ay * sub[3]];
+                        // ...against what the whole quad has at that point.
+                        let (tx, ty) = ((px - quad[0]) / quad[2], (py - quad[1]) / quad[3]);
+                        let want_p = [(tx - 0.5) * quad[2], (ty - 0.5) * quad[3]];
+                        let want_uv = [uv[0] + tx * uv[2], uv[1] + ty * uv[3]];
+                        assert!((vp[0] - want_p[0]).abs() < 2e-3 && (vp[1] - want_p[1]).abs() < 2e-3, "{c:?}: v_p {vp:?} vs {want_p:?}");
+                        assert!((cuv[0] - want_uv[0]).abs() < 1e-5 && (cuv[1] - want_uv[1]).abs() < 1e-5, "{c:?}: v_cuv {cuv:?} vs {want_uv:?}");
+                    }
+                }
+            }
+        }
+        // The whole quad as one piece is the identity (what every unsplit draw leaves `u_pofs` at).
+        let q = [10.0, 20.0, 100.0, 80.0];
+        let uv = [0.1, 0.2, 0.7, 0.55];
+        assert_eq!(card_piece_params(q, uv, &q), (uv, [0.0, 0.0]));
+    }
+
+    /// `bands_around` of a snapped hole and `snap_inner` agree with the shadow's own contract
+    /// (`shadow_bands`): same hole, same bands.
+    #[test]
+    fn the_hole_is_the_shadows_snapped_inner() {
+        let quad = [0.0, 0.0, 100.0, 80.0];
+        let hole = snap_inner(quad, [20.2, 10.1, 50.0, 40.0], 1.0).unwrap();
+        assert_eq!(hole, [21.0, 11.0, 70.0, 50.0]);
+        let (b, n) = bands_around(quad, hole);
+        assert_eq!(n, 4);
+        let sum: f64 = b[..n].iter().map(area).sum();
+        assert_eq!(sum, 100.0 * 80.0 - 49.0 * 39.0);
+        assert_eq!(snap_inner(quad, [20.2, 20.2, 0.5, 5.0], 1.0), None);
+    }
+
+    /// What the split buys: the share of a resting card's quad (and of the card itself) that no
+    /// longer runs the card math. Printed so a run states it (`cargo test -- --nocapture`); asserted
+    /// only as a floor. The quad's own ring is the shadow's pad (12 px a side at rest) plus the
+    /// card's border band, which is why the quad's share is lower than the card's.
+    #[test]
+    fn most_of_a_poster_quad_is_interior() {
+        for (name, c) in [
+            ("Home poster 250x375", (250.0, 375.0, 14.0, 1.0, 12.0)),
+            ("episode still 420x236", (420.0, 236.0, 14.0, 1.0, 12.0)),
+            ("grid poster 200x300", (200.0, 300.0, 14.0, 1.0, 8.0)),
+        ] {
+            let (card, quad) = quad_of(c, (120.0, 80.0));
+            let s = card_split(quad, card, c.2, c.3, 1.0).expect("a poster has an interior");
+            let (of_quad, of_card) = (area(&s.interior) / area(&quad), area(&s.interior) / area(&card));
+            eprintln!(
+                "{name}: interior {:.0} px = {:.1}% of the quad ({:.0} px), {:.1}% of the card; the ring is {} bands, {:.0} px",
+                area(&s.interior), of_quad * 100.0, area(&quad), of_card * 100.0, s.n, area(&quad) - area(&s.interior)
+            );
+            assert!(of_quad > 0.60 && of_card > 0.70, "{name}: {of_quad} {of_card}");
         }
     }
 }
