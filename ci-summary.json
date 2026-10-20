@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T12:43:46Z",
+ "generated": "2026-10-20T12:46:10Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -28.6,
-   "change7_pct": 39.8,
+   "change7_pct": 40.2,
    "d30": 679,
-   "delta30": -194.0,
-   "delta7": 138.0,
+   "delta30": -194,
+   "delta7": 139.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 276,
-   "n_prev": 211,
-   "now": 485.0,
-   "prev7": 347,
+   "n_now": 277,
+   "n_prev": 210,
+   "now": 485,
+   "prev7": 346.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -789,7 +789,7 @@
    "to": 382
   },
   {
-   "change_pct": 39.8,
+   "change_pct": 40.2,
    "commits": [
     {
      "pr": 855,
@@ -842,12 +842,12 @@
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
     }
    ],
-   "from": 347,
+   "from": 346.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-20",
    "threshold_pct": 25.0,
-   "to": 485.0
+   "to": 485
   },
   {
    "change_pct": 36.6,
