@@ -63,8 +63,6 @@ struct Cards {
     unloaded: std::ops::Range<usize>,
     /// Where the held window starts in the listing it is a window of ([`CardSource::global`]).
     first: usize,
-    /// The dive's sweep ([`CardSource::sweep`]).
-    sweep: f32,
     /// Every card carries a two-line caption (the Under posters setting's title over its details).
     captioned: bool,
     /// ...with the title alone (the 80 px Under posters band, no details line).
@@ -78,7 +76,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false, title_only: false, details_only: false }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, title_only: false, details_only: false }
     }
 }
 
@@ -107,9 +105,6 @@ impl CardSource<FixtureHost> for Cards {
         } else {
             TileLabel::default()
         }
-    }
-    fn sweep(&self) -> f32 {
-        self.sweep
     }
     fn more(&self) -> bool {
         self.more
@@ -2931,71 +2926,6 @@ fn a_source_can_answer_which_card_the_picture_shows_focused() {
     assert!((seen.w - RowStyle::HOME.w).abs() < 0.01, "so the card is drawn at rest: {}", seen.w);
 }
 
-/// A source whose screen shows only part of the shelf's scroll (Home's row sweeps in with its dive).
-struct Swept(Cards, f32);
-
-impl CardSource<FixtureHost> for Swept {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    fn elem(&self, i: usize) -> u32 {
-        self.0.elem(i)
-    }
-    fn index_of(&self, e: &u32) -> Option<usize> {
-        self.0.index_of(e)
-    }
-    fn art(&self, i: usize) -> Art<'_> {
-        self.0.art(i)
-    }
-    fn label(&self, i: usize) -> TileLabel {
-        self.0.label(i)
-    }
-    fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, m: &dyn plx_machine::machine::Measure) {
-        self.0.overlay(p, i, tile, m)
-    }
-    fn sweep(&self) -> f32 {
-        self.1
-    }
-}
-
-/// `CardSource::sweep` scales the offset the cards are drawn, placed and registered at, all three
-/// the same, and leaves the spring's own scroll alone.
-#[test]
-fn a_swept_source_shows_a_fraction_of_the_scroll_everywhere() {
-    let mut r = settled::<Shelf>(30);
-    r.land_focus(120, By::Dir);
-    r.run(300);
-    let scroll = r.sect.scroll();
-    assert!(scroll > 400.0, "the row has an offset to sweep: {scroll}");
-    let half = Swept(Cards::new(r.src.elems.clone(), false), 0.5);
-    let whole = Swept(Cards::new(r.src.elems.clone(), false), 1.0);
-    let x = |src: &Swept| {
-        let cx = r.cx();
-        r.sect.place(&cx, src, &105, SHELF_AT, At::Drawn).unwrap().rest_rect.x
-    };
-    assert!((x(&half) - x(&whole) - scroll * 0.5).abs() < 0.01, "placed at half the offset");
-    let drawn = |src: &Swept| {
-        let cx = r.cx();
-        let f = DrawFrame::new(&cx, Painter::recording());
-        src.0.drawn.borrow_mut().clear();
-        r.sect.paint(&f, f.painter, src, SHELF_AT);
-        src.0.drawn.take()
-    };
-    let (dh, dw) = (drawn(&half), drawn(&whole));
-    let at = |d: &[(u32, Rect)], e: u32| d.iter().find(|&&(x, _)| x == e).map(|&(_, r)| r.x);
-    let (h, w) = (at(&dh, 120).unwrap(), at(&dw, 120).unwrap());
-    assert!((h - w - scroll * 0.5).abs() < 0.01, "the focused card is drawn at half the offset: {h} vs {w}");
-    let cx = r.cx();
-    let mut f = DrawFrame::new(&cx, Painter::root());
-    let p = f.painter;
-    r.sect.record_stops(&mut f, p, &half, SHELF_AT);
-    let first = f.stops().first().expect("a card is on the swept axis");
-    let stop = first.rest_rect.x;
-    let placed = r.sect.place(&cx, &half, &first.key.elem, SHELF_AT, At::Drawn).unwrap().rest_rect.x;
-    assert!((stop - placed).abs() < 0.01, "the stop is where the draw puts the card");
-    assert!((r.sect.scroll() - scroll).abs() < f32::EPSILON, "the spring itself is untouched");
-}
-
 /// `paint_resting` leaves the focused card out and `paint_focused` draws it alone, so a screen
 /// can draw every shelf's others first and the focused card last.
 #[test]
@@ -3355,7 +3285,7 @@ fn ghost_paint(r: &Rig<Shelf>, elems: &[u32]) -> Vec<(u32, Rect)> {
     let cx = r.cx();
     let f = DrawFrame::new(&cx, Painter::recording());
     let ghosts = Cards::new(elems.to_vec(), false);
-    r.sect.paint_ghosts(&f, f.painter, &r.src, &ghosts, SHELF_AT);
+    r.sect.paint_ghosts(&f, f.painter, &ghosts, SHELF_AT);
     ghosts.drawn.take()
 }
 
@@ -3612,21 +3542,6 @@ fn a_second_landing_carries_the_live_ghost_and_gives_each_card_its_own_alpha() {
     let now = r.sect.landing_probe(n, 12).1;
     assert!(now >= a900 && now < 1.0, "the first arrival goes on from its alpha, not from nothing: {a900} -> {now}");
     assert!(!r.sect.ghost_probe().0.is_empty(), "and the removed card fades on its own");
-}
-
-/// The dive's sweep scales the scroll the cards are drawn at; a ghost follows it.
-#[test]
-fn a_ghost_follows_the_dive_sweep_like_every_other_card() {
-    let mut r = landing_rig();
-    r.src.elems.remove(11);
-    r.run(1);
-    let full = ghost_paint(&r, &[111])[0].1.x;
-    r.src.sweep = 0.9;
-    let swept = ghost_paint(&r, &[111])[0].1.x;
-    // x(s) = slot + shift * s - scroll * s, and the landing moved the scroll by one pitch left
-    let per_sweep = (full - swept) / 0.1;
-    let want = -pitch() - r.sect.scroll();
-    assert!((per_sweep - want).abs() < 2.0, "the ghost follows the sweep: {per_sweep} vs {want}");
 }
 
 /// A slide of the window the source holds (its offset or its page epoch moved) is adopted whole:

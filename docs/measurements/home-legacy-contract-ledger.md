@@ -35,7 +35,7 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 | `the_status_readout_tells_loading_empty_and_failed_apart` | Ported; owned test of the same name, same `status_read` helper, now taking a `HubsView` instead of reading the statics. All five legs kept (Working/Failed/Empty, the Retry action's presence, and both shelved states silencing the read-out). |
 | `no_shelves_means_no_grid_snap` | Ported; owned test of the same name, same `pinned_snap`. |
 | `the_status_screen_takes_ok_but_never_the_top_band` | Ported; owned test of the same name drives the real `ScreenEvent::Activate` step instead of `status_takes`, asserting the Retry `StoreCmd` on the status action, no Retry from any strip element, and that a populated Home's OK is a Play again. |
-| `pointer_hit_column_matches_the_drawn_card_at_every_snap_phase` | Ported; same `card_x`/`col_at` sweep over the same three scrolls × three snap phases × 24 columns. |
+| `pointer_hit_column_matches_the_drawn_card_at_every_snap_phase` | Ported as `pointer_hit_column_matches_the_drawn_card_at_every_scroll`; same `card_x`/`col_at` sweep over the same three scrolls × 24 columns. The three snap phases are gone: a shelf draws at its own offset whatever the dive is doing (no `CardSource::sweep`), so the hit column no longer depends on the dive. |
 | `the_card_anchor_rect_tracks_the_drawn_card_through_scroll_and_snap` | Ported; byte-identical. |
 | `the_wash_floors_on_the_app_surface_and_never_dims_toward_black` | Ported; byte-identical. |
 | `the_grid_end_of_the_dive_is_the_focused_tiles_ground` | Ported; byte-identical. |

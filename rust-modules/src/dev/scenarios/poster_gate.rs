@@ -129,8 +129,8 @@ fn dive_plan(cards: usize) -> Result<Vec<Stage>, Unfit> {
     Ok(vec![
         hold("warm", Target::GridSeed(col), true),
         Stage { name: "hero", target: Target::Hero, seed: false, handoff_snap: None, sweep: None, min_ms: 1600, max_ms: 6000, needs_art: false },
-        // Hand off while the retained horizontal product is still moving fast, so
-        // the natural deceleration and resulting requests/uploads belong to settle.
+        // Hand off while the dive is still moving, so the natural deceleration and
+        // resulting requests/uploads belong to settle.
         Stage { name: "dive", target: Target::Grid, seed: false, handoff_snap: Some(0.9), sweep: None, min_ms: 0, max_ms: 4000, needs_art: false },
         hold("settle", Target::Grid, false),
     ])

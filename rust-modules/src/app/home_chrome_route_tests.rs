@@ -33,13 +33,20 @@ fn home_shelves(name: &str) -> World {
 /// [`home_shelves`] with `cols` posters on every shelf (rating keys `1..=cols`, the same on every
 /// shelf), for a walk along a shelf that needs room to scroll.
 pub(super) fn home_shelves_of(name: &str, cols: usize) -> World {
+    let mut w = home_hero_of(name, cols);
+    w.press(Key::Down);
+    w
+}
+
+/// [`home_shelves_of`] before the hero's Down: the six shelves are published and settled, focus is
+/// still on the billboard.
+pub(super) fn home_hero_of(name: &str, cols: usize) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
     let ids: Vec<String> = (0..TITLES.len()).map(|i| format!("test.row.{i}")).collect();
     let rows: Vec<(&str, &str, &str)> = ids.iter().zip(TITLES).map(|(id, title)| (id.as_str(), "", title)).collect();
     let adapter = w.bridge.stores.hubs.adapter_for_test();
     plx_data::pms::seed_named_hubs_for_test(w.bridge.stores.hubs.state_mut(), &adapter, cols, &rows);
     w.frames(30);
-    w.press(Key::Down);
     w
 }
 
@@ -55,13 +62,13 @@ fn overlaps(a: Rect, b: Rect) -> bool {
 
 /// One drawn shelf heading: its title, the box its line stands in (the line is a `HEADLINE` tall),
 /// and the alpha it was drawn at.
-struct Heading {
-    title: &'static str,
-    rect: Rect,
-    alpha: f32,
+pub(super) struct Heading {
+    pub(super) title: &'static str,
+    pub(super) rect: Rect,
+    pub(super) alpha: f32,
 }
 
-fn headings(w: &mut World) -> Vec<Heading> {
+pub(super) fn headings(w: &mut World) -> Vec<Heading> {
     headings_in(&w.drawn())
 }
 
@@ -76,12 +83,12 @@ fn headings_in(drawn: &Drawn) -> Vec<Heading> {
 
 /// A heading is DRAWN once it has any ink worth the name: the fade takes it to nothing, and a run at
 /// alpha 0 paints no pixel.
-fn drawn(h: &Heading) -> bool {
+pub(super) fn drawn(h: &Heading) -> bool {
     h.alpha > 0.02
 }
 
 /// Focus on the first poster of shelf `n` (0-based), the way a person gets there: Down, a row at a time.
-fn to_shelf(w: &mut World, n: usize) {
+pub(super) fn to_shelf(w: &mut World, n: usize) {
     for _ in 0..n {
         w.press(Key::Down);
     }

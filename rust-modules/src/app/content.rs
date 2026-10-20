@@ -623,6 +623,20 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     }
 }
 
+/// **Home's BACK fold, performed**: the screen owns the fold (its dive), the input engine owns the
+/// hero group's last control. Restore that cursor without introducing a Home-local focus copy. The
+/// loop runs this from [`home_requests`] and the route-test world's pump from its own, so a BACK on a
+/// shelf lands focus on the billboard in both.
+pub(crate) fn fold_to_hero(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>, source: MachineId, entry: EntryId) {
+    let remembered = pages.input.engine.remembered_for(entry).into_iter()
+        .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
+    let focus = remembered.map(|elem| plx_ui::screen::FocusTarget::Elem(
+        plx_machine::machine::FocusKey { entry, elem }))
+        .unwrap_or(plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
+    pages.emit(MachineId::Nav, Fx::Deliver(source,
+        Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
+}
+
 /// Home chooses an action and a stable item; only the application performs navigation,
 /// playback or legacy-modal work. Recheck the emitting entry before every queued action.
 fn home_requests(app: &mut App, now: u32) {
@@ -632,17 +646,7 @@ fn home_requests(app: &mut App, now: u32) {
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry))
             || !matches!(app.route(), AppArg::Home) { continue; }
         match request {
-            HomeReq::FoldToHero => {
-                // The screen owns the fold; the input engine owns the hero group's last
-                // control. Restore that cursor without introducing a Home-local focus copy.
-                let remembered = app.pages.input.engine.remembered_for(entry).into_iter()
-                    .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
-                let focus = remembered.map(|elem| plx_ui::screen::FocusTarget::Elem(
-                    plx_machine::machine::FocusKey { entry, elem }))
-                    .unwrap_or(plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
-                app.pages.emit(MachineId::Nav, Fx::Deliver(source,
-                    Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
-            }
+            HomeReq::FoldToHero => fold_to_hero(&mut app.pages, source, entry),
             HomeReq::Account => chip_activate(&mut app.pages),
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The

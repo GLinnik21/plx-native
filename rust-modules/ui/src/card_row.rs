@@ -386,7 +386,7 @@ impl CardRow {
         self.scroll_x.pos
     }
     /// Read-only witness for the finite hero/grid device scene. A retained offset
-    /// must have a stationary shelf spring while snap transforms its placement.
+    /// must have a stationary shelf spring while the dive runs.
     #[cfg(feature = "devtriggers")]
     pub fn scroll_velocity(&self) -> f32 { self.scroll_x.vel }
 

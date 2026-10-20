@@ -253,12 +253,6 @@ pub trait CardSource<H: Host> {
     fn hover(&self, _i: usize) -> crate::screen::Hover {
         crate::screen::Hover::Focus
     }
-    /// How much of the shelf's scroll the screen shows, 0 to 1 (default 1, all of it): the offset
-    /// the cards are drawn, placed and registered at, and the caption's settle lag, are scaled by
-    /// it. Home's row sweeps in with its hero dive, so a row with a retained offset does not jump.
-    fn sweep(&self) -> f32 {
-        1.0
-    }
     /// Whether cards the source does not hold lie between card `i - 1` and card `i`: a row that
     /// is a fixed head and a sliding window of what follows draws the two side by side while the
     /// window is away from the head. A press does not step across (it would pass every card

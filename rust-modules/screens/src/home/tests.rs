@@ -137,7 +137,7 @@ impl HomeScreen {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
-        self.update_grid(view, cx, &mut fx, Tick { ms: 0, dt_us: (dt * 1_000_000.0).round() as u32 });
+        self.update_grid(view, cx, cx.focus.current, &mut fx, Tick { ms: 0, dt_us: (dt * 1_000_000.0).round() as u32 });
     }
 }
 
@@ -458,8 +458,12 @@ fn observe_card(h: &mut plx_ui::card_motion::History, s: &HomeScreen, view: Hubs
     h.observe(plx_ui::card_motion::Identity { owner: 1, asset: 1 }, drawn_rect(s, view, None, 0, 0), ms)
 }
 
+/// A shelf draws at its real offset whatever the dive is doing (it used to draw the offset TIMES the
+/// dive, `CardSource::sweep`, which made a retained offset of thousands of pixels a fast horizontal
+/// slide through the whole late dive). The late dive's card motion is the dive's vertical alone, and
+/// the same for a shelf that holds an offset as for one that does not.
 #[test]
-fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
+fn a_retained_shelf_offset_adds_no_motion_to_the_late_dive() {
     use plx_ui::card_motion::{History, Verdict};
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
@@ -478,7 +482,7 @@ fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
         observe_card(&mut h, &s, snapshot.view(), 16)
     };
     assert_eq!(late_dive_frame(0.0), Verdict::Settled, "vertical late-dive control is under 120px/s");
-    assert_eq!(late_dive_frame(4000.0), Verdict::Moving, "the retained-offset product moves the card fast");
+    assert_eq!(late_dive_frame(4000.0), Verdict::Settled, "the retained offset is held under the dive: it adds no horizontal motion");
 }
 
 #[test]
@@ -554,16 +558,13 @@ fn the_status_screen_takes_ok_but_never_the_top_band() {
 }
 
 #[test]
-fn pointer_hit_column_matches_the_drawn_card_at_every_snap_phase() {
+fn pointer_hit_column_matches_the_drawn_card_at_every_scroll() {
     for scroll in [0.0, 415.0, 830.0] {
-        for snap in [0.0, 0.37, 1.0] {
-            let effective = scroll * snap;
-            for col in 0..24 {
-                assert_eq!(
-                    col_at(card_x(col, effective) + CARD_W * 0.5, effective, 24),
-                    Some(col)
-                );
-            }
+        for col in 0..24 {
+            assert_eq!(
+                col_at(card_x(col, scroll) + CARD_W * 0.5, scroll, 24),
+                Some(col)
+            );
         }
     }
 }
@@ -1121,6 +1122,49 @@ fn the_grids_resting_top_is_the_highest_a_shelf_may_settle() {
     assert_eq!(rest_scroll(0, 8), 0.0);
     assert_eq!(rest_scroll(3, 8), shelf_top_settled(3, 3));
     assert!(heading_top(0, 0, 0.0) - top_band_bottom() >= theme::space::XS);
+}
+
+/// **The page rests by the ENGINE's focus, not by what the picture still shows.** BACK (or Up) from a
+/// deep shelf moves the engine to the billboard at once, but the picture keeps the card focused until
+/// the dive is half way (`visible_activation`), so a rest read from the picture kept the deep target
+/// through the fold and the next Down drew the deep shelves on its way back to the first. A billboard
+/// focus rests the first shelf, a card or a heading its own row, all by the one shared rule.
+#[test]
+fn the_page_rests_by_the_engines_focus_while_the_picture_still_shows_the_deep_shelf() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let view = snapshot.view();
+    let tick = |s: &mut HomeScreen, focus: FocusKey<u32>| {
+        step(s, view, Some(focus), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    };
+    let mut s = screen(view);
+    let rows = s.rows.len();
+    assert!(rows >= 3, "premise: the catalog has shelves below the first two ({rows})");
+    let deep = rows - 1;
+    assert!(rest_scroll(deep, rows) > 0.0, "premise: the last shelf rests the page below the first");
+    let card = FocusKey { entry: s.entry, elem: s.rows[deep].elems[0] };
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    // the dive has reached the last shelf and the page rests there
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    step(&mut s, view, Some(card), &ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir });
+    tick(&mut s, card);
+    assert_eq!(s.grid.scroll_target, rest_scroll(deep, rows), "a card's focus rests its own row");
+
+    // the fold: the engine is on the billboard, and the picture is still on the shelves
+    step(&mut s, view, Some(hero), &ScreenEvent::FocusMoved { from: Some(card), to: hero, by: By::Dir });
+    tick(&mut s, hero);
+    assert!(s.snap.pos > 0.5, "premise: the picture still shows the shelves ({})", s.snap.pos);
+    assert_eq!(s.grid.scroll_target, rest_scroll(0, rows), "a billboard focus rests the first shelf at once");
+
+    // a linked heading rests its row by the engine's focus as well
+    let row = (1..rows).find(|row| s.rows[*row].link.is_some()).expect("premise: a collection shelf has a linked heading");
+    let heading = heading_key(&s, row);
+    step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
+    tick(&mut s, heading);
+    assert_eq!(s.grid.scroll_target, rest_scroll(row, rows), "a heading's focus rests its row");
 }
 
 struct Run {

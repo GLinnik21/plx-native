@@ -162,6 +162,20 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
             _ => seen.push("unperformed content:request".into()),
         }
     }
+    // Home's BACK fold is the one request of Home's that moves focus rather than navigating: the
+    // loop performs it (`content::home_requests`), so the world does, or a BACK on a shelf would
+    // fold the picture and leave the engine's focus where it was. The rest stay queued, as before.
+    let mut kept = Vec::new();
+    for (source, request, ret) in rig.take_home_reqs() {
+        match (&request, asker(d, source)) {
+            (plx_screens::registry::HomeReq::FoldToHero, Some(entry)) if item.is_some() && d.top_arg() == Some(&AppArg::Home) => {
+                crate::app::content::fold_to_hero(d, source, entry);
+                seen.push("home:FoldToHero".into());
+            }
+            _ => kept.push((source, request, ret)),
+        }
+    }
+    rig.home_reqs = kept;
     for (source, request, ret) in rig.take_watchlist_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = d.nav.entry_of_instance(instance) else { continue };

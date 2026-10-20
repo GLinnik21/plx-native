@@ -241,10 +241,6 @@ impl Grid {
     fn scroll_x(&self, row: usize) -> f32 {
         self.shelves.get(row).map_or(0.0, Shelf::scroll)
     }
-
-    fn eff_scroll(&self, row: usize, snap: f32) -> f32 {
-        self.scroll_x(row) * snap
-    }
 }
 
 struct Backdrop {
@@ -1447,6 +1443,22 @@ impl HomeScreen {
         }
     }
 
+    /// **The shelf the page rests on for the ENGINE's `focus`**: the focused card's or linked
+    /// heading's, and the first for the billboard (`ui_cards::grid_rest_scroll` rests row 0 at the
+    /// head), so a fold to the billboard brings the page back to the first shelf instead of leaving
+    /// the deep rest it had under the hidden shelves. `None` (the top bar, nothing focused) leaves
+    /// the rest where it was.
+    ///
+    /// The picture's focus is not this: the billboard stays "focused" in the picture until the dive
+    /// is half way (`activation_elem`), so resting by it kept the page's last deep target through
+    /// the fold and the first Down drew the deep shelves on its way back up.
+    fn rest_row(&self, focus: Option<FocusKey<u32>>) -> Option<usize> {
+        match self.focused_loc(focus)? {
+            Located::Item(row, _) | Located::Heading(row) => Some(row),
+            Located::Hero(_) => Some(0),
+        }
+    }
+
     /// The row whose label band is open (or opening) for `focus` — the focused card's row, `None`
     /// on a linked heading, and `fallback` (the row a hero→grid door would open) otherwise.
     fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
@@ -1520,7 +1532,10 @@ impl HomeScreen {
         }
     }
 
-    fn update_grid<H: HomeLike>(&mut self, view: HubsView<'_>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>, t: Tick) {
+    /// `cx` is the PICTURE's view of focus (the shelves read it, and read none until the dive has
+    /// reached them); `engine` is the engine's own focus, which the page rests by ([`Self::rest_row`]).
+    fn update_grid<H: HomeLike>(&mut self, view: HubsView<'_>, cx: &Cx<'_, H>, engine: Option<FocusKey<u32>>,
+        fx: &mut Effects<'_, H>, t: Tick) {
         let dt = t.dt();
         let focused = self.focused_grid(cx.focus.current);
         // Until the dive has reached the shelves the engine's card is not the picture's focus: the
@@ -1572,8 +1587,7 @@ impl HomeScreen {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
-        let rested = focused.map(|(row, _)| row).or_else(|| self.focused_heading(cx.focus.current));
-        if let Some(row) = rested.filter(|row| *row < self.rows.len()) {
+        if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len()) {
             self.grid.scroll_target = rest_scroll(row, self.rows.len());
         }
         self.grid
@@ -1733,7 +1747,7 @@ impl HomeScreen {
             ..Default::default() },
             owner: cx.owner,
         };
-        self.update_grid(view, &visible_cx, fx, t);
+        self.update_grid(view, &visible_cx, cx.focus.current, fx, t);
 
         let grid_item = self
             .focused_grid(visible_focus)
@@ -2262,7 +2276,7 @@ impl HomeScreen {
             }
             if let Some(shelf) = self.grid.shelves.get(row) {
                 if shelf.has_ghosts() {
-                    shelf.paint_ghosts(f, p, &self.cards(view, row), &self.ghost_source(shelf), self.section(row));
+                    shelf.paint_ghosts(f, p, &self.ghost_source(shelf), self.section(row));
                 }
                 shelf.paint_resting(f, p, &self.cards(view, row), self.section(row));
             }
@@ -2746,7 +2760,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     .unwrap_or(row);
                 let y = GRID_TOP_Y + shelf_top_settled(row, focus_row) - self.grid.scroll_target;
                 let base = Rect::new(
-                    card_x(col, self.grid.eff_scroll(row, self.snap_target)),
+                    card_x(col, self.grid.scroll_x(row)),
                     y + CARD_DY,
                     CARD_W,
                     CARD_H,
@@ -3892,10 +3906,5 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn hover(&self, _i: usize) -> Hover {
         self.hover
-    }
-
-    /// The row sweeps in with the dive: its offset and its caption's lag are the spring's times `snap`.
-    fn sweep(&self) -> f32 {
-        self.home.snap.pos
     }
 }
