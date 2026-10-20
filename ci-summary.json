@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T17:24:09Z",
+ "generated": "2026-10-20T17:28:49Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.7,
-   "change7_pct": 27.2,
+   "change30_pct": -39.8,
+   "change7_pct": 27.0,
    "d30": 671.5,
-   "delta30": -266.5,
-   "delta7": 86.5,
+   "delta30": -267.0,
+   "delta7": 86.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 121,
+   "n_now": 122,
    "n_prev": 112,
-   "now": 405,
+   "now": 404.5,
    "prev7": 318.5,
    "shown": true,
    "state": "worse",
@@ -287,10 +287,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 34.6,
+   "change30_pct": 34.3,
    "change7_pct": 2.8,
-   "d30": 232.5,
-   "delta30": 80.5,
+   "d30": 233,
+   "delta30": 80,
    "delta7": 8.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -338,9 +338,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 241.0,
+   "now": 241,
    "prev7": 220.5,
    "shown": true,
    "state": "flat",
@@ -359,9 +359,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 191.0,
+   "now": 191,
    "prev7": 304.0,
    "shown": true,
    "state": "better",
@@ -414,17 +414,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.9,
+   "change7_pct": 7.1,
    "d30": null,
    "delta30": null,
-   "delta7": 11.0,
+   "delta7": 10.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 151.0,
+   "now": 150,
    "prev7": 140.0,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 676.0,
-   "delta30": -673.0,
+   "d30": 675,
+   "delta30": -672,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
-    {
      "pr": 858,
      "sha": "6635243fc",
      "title": "Home: a key press no longer costs a late frame - key tables update in place, the catalog sync touches only changed rows,"
@@ -657,6 +652,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 69.2,
    "commits": [
     {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
-    {
      "pr": 858,
      "sha": "6635243fc",
      "title": "Home: a key press no longer costs a late frame - key tables update in place, the catalog sync touches only changed rows,"
@@ -718,6 +713,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 211.0,
@@ -731,11 +731,6 @@
    "change_pct": 41.2,
    "commits": [
     {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
-    {
      "pr": 858,
      "sha": "6635243fc",
      "title": "Home: a key press no longer costs a late frame - key tables update in place, the catalog sync touches only changed rows,"
@@ -779,6 +774,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 270.5,
@@ -792,11 +792,6 @@
    "change_pct": 40.6,
    "commits": [
     {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
-    {
      "pr": 858,
      "sha": "6635243fc",
      "title": "Home: a key press no longer costs a late frame - key tables update in place, the catalog sync touches only changed rows,"
@@ -840,6 +835,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 344.0,
@@ -853,11 +853,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
-    {
      "pr": 858,
      "sha": "6635243fc",
      "title": "Home: a key press no longer costs a late frame - key tables update in place, the catalog sync touches only changed rows,"
@@ -901,6 +896,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 103.0,
@@ -911,13 +911,8 @@
    "to": 140.7
   },
   {
-   "change_pct": 27.2,
+   "change_pct": 27.0,
    "commits": [
-    {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
     {
      "pr": 858,
      "sha": "6635243fc",
@@ -962,6 +957,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 318.5,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 405
+   "to": 404.5
   },
   {
    "change_pct": 26.4,
    "commits": [
-    {
-     "pr": 857,
-     "sha": "1e433c419",
-     "title": "Discover: one base for the person page and the Watchlist; a mock boot never reaches the real provider"
-    },
     {
      "pr": 858,
      "sha": "6635243fc",
@@ -1023,6 +1018,11 @@
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
     }
    ],
    "from": 129.0,
