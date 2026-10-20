@@ -927,8 +927,10 @@ pub mod host {
         ///
         /// All three of the snapshot's cells are `thread_local!`: the render thread is the only one that
         /// draws, and the texture names `FrameCache` holds belong to its GL context. `FrameCache` has no
-        /// destructor, so nothing runs GL at thread exit. They are reached through [`cache`], never
-        /// held across a call that could reach another cell: every method of `FrameCache` is a leaf.
+        /// destructor; [`TARGET`]'s `PageTarget` has one (it rebinds the frame's framebuffer), but it is
+        /// `None` at every frame boundary, so that drop only ever runs mid-frame, on the thread that
+        /// owns the GL context. The cells are reached through [`cache`], never held across a call that
+        /// could reach another cell: every method of `FrameCache` is a leaf.
         static CACHE: std::cell::RefCell<FrameCache> = const { std::cell::RefCell::new(FrameCache::new()) };
 
         /// Which stage [`CACHE`] holds.
