@@ -1423,6 +1423,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         link: None,
         title: String::new(),
         cards: Vec::new(),
+        stale: false,
     });
     s.elem_at.insert(second_elem, (1, 0));
     s.snap.jump(1.0);
@@ -5101,6 +5102,61 @@ fn an_evicted_home_remounted_on_the_next_episode_keeps_the_remembered_tile() {
     assert_eq!(back.rows[0].elems, before, "the tile that held episode 3 holds episode 31 on the same element");
     assert!(back.find_item(&HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching,
         sid: plx_plex::plex::ServerId::UNSET, rk: "3".into() }).is_none(), "the old episode's key is retired, not re-added");
+}
+
+/// What a full projection of `view` over `s`'s key table would give, checked against what the
+/// incremental sync left: every row's elements are the keys of the cards it shows (a descriptor's
+/// are its slots), every shown card's key remembers the place it sits, and the element map is the
+/// first-wins map of the rows. A row the sync kept whole without projecting it again must agree
+/// with all three, so this is the invariant the fast path has to keep after ANY edit of the key
+/// table: a publication, a remount's restore, an adopted show.
+fn assert_matches_a_full_projection(s: &HomeScreen, view: HubsView<'_>) {
+    assert_eq!(s.rows.len(), view.hub_count(), "one projection per published row");
+    let mut expected: HashMap<u32, (u32, u32)> = HashMap::new();
+    for row in 0..view.hub_count() {
+        let hub = view.hub(row).expect("a published row");
+        let identity = HomeScreen::hub_identity(view, row, hub);
+        let projection = &s.rows[row];
+        assert_eq!(projection.identity, identity, "row {row} is the row the catalog publishes there");
+        assert_eq!(projection.elems.len(), hub.items.len().min(MAX_ITEMS), "row {row} has a tile per card");
+        for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
+            let item_ref = if item.rk.is_empty() {
+                ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
+            } else {
+                ItemRef::Item { sid: item.sid, rk: &item.rk }
+            };
+            let at = s.item_slot(&identity, item_ref).unwrap_or_else(|| panic!("({row}, {col}) has no key"));
+            let key = &s.items[at];
+            assert_eq!(projection.elems[col], key.elem,
+                "the tile at ({row}, {col}) holds the element of the card it shows (rk {:?})", item.rk);
+            if !projection.placeholders {
+                assert_eq!((key.last_row, key.last_col), (row as u32, col as u32),
+                    "the key of the card at ({row}, {col}) remembers where it sits (rk {:?})", item.rk);
+            }
+            expected.entry(key.elem).or_insert((row as u32, col as u32));
+        }
+    }
+    assert_eq!(s.elem_at, expected, "the element map is the rows' own, first row winning");
+}
+
+/// A remount's restore on the next episode coming back FIRST (Continue Watching is ordered by last
+/// viewed): the tile that held episode 3 in column 2 now holds 31 in column 0, and the key table
+/// the restore leaves must say so, not just hand the old element to the new card while the row
+/// still lists the elements the fresh page minted.
+#[test]
+fn an_evicted_home_remounted_on_a_next_episode_that_comes_first_moves_the_tile_with_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let memory = memory_of(&s);
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    plx_data::pms::promote_test_item(&mut state, "31");
+    let back = remount(&state, memory);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    assert_eq!(card_rk(&state, 0), "31", "premise: the next episode is first");
+    assert_eq!(back.rows[0].elems[0], before[2], "episode 31 is on the element that held episode 3");
+    assert_matches_a_full_projection(&back, snapshot.view());
+    assert_indexes_agree(&back);
 }
 
 #[test]

@@ -169,6 +169,11 @@ struct HubProjection {
     /// same cards (`Arc::ptr_eq`) in the same order. A pointer, not a rating key: a card the
     /// server answered again is a new card even when it reads alike.
     cards: Vec<Arc<PmsMovie>>,
+    /// The key table was edited from outside a projection (a restore, an adopted show) since this
+    /// row was projected, so its `elems` and the places its keys remember may no longer be the
+    /// table's: the row is projected again, whatever the next publication holds. Only
+    /// [`HomeScreen::invalidate_projection`] sets it, and a projection is always built unset.
+    stale: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -721,7 +726,21 @@ impl HomeScreen {
         self.grid.scroll_target = memory.scroll_y;
         self.restored_scroll = memory.row_scroll.clone();
         self.restore_reveal = true;
+        // The saved places overwrote the ones the fresh page's keys remember, and `adopt_shows`
+        // may have handed elements on: every row is projected again from the table as it stands.
+        self.invalidate_projection();
+    }
+
+    /// Make the next [`sync_catalog`](Self::sync_catalog) project EVERY row again, whatever the
+    /// publication holds. A row whose identity and cards are unchanged is otherwise kept whole,
+    /// and a key table edited from outside a projection (a restore, an adopted show) would then
+    /// disagree with the rows kept over it: a tile listing an element that now names another
+    /// card, a key remembering the place of the instance it came from.
+    fn invalidate_projection(&mut self) {
         self.projected_generation = None;
+        for row in &mut self.rows {
+            row.stale = true;
+        }
     }
 
     fn hub_identity(view: HubsView<'_>, row: usize, hub: HubRef<'_>) -> HomeHubIdentity {
@@ -904,7 +923,7 @@ impl HomeScreen {
             // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
             // A row of cards keeps them while they are the same cards.
             if same_place && taken[row].as_ref().is_some_and(|old|
-                old.placeholders == placeholders && old.title == hub.title
+                !old.stale && old.placeholders == placeholders && old.title == hub.title
                     && if placeholders {
                         old.elems.len() == hub.items.len()
                     } else {
@@ -931,7 +950,7 @@ impl HomeScreen {
                 self.rebind_shows(&identity, hub.items, hub.offset, old);
             }
             let reused = placeholders.then(|| old_index.and_then(|at| taken[at].as_ref()))
-                .flatten().filter(|old| old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
+                .flatten().filter(|old| !old.stale && old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
             let elems = match reused {
                 Some(elems) => elems,
                 None => {
@@ -966,6 +985,7 @@ impl HomeScreen {
                 link,
                 title: hub.title.to_owned(),
                 cards: if placeholders { Vec::new() } else { hub.items.iter().take(MAX_ITEMS).cloned().collect() },
+                stale: false,
             });
         }
         // The old rows that were not kept whole, by position, for the element map.
@@ -1117,8 +1137,9 @@ impl HomeScreen {
     /// one it remembers (the hold on the return from the player lets that land first) holds a
     /// fresh element for the new card while the memory names the old. Hand the remembered element
     /// to the new card, so the tile, and the focus on it, are the same; a fresh key that held that
-    /// element takes the displaced one's number (both are fresh, and the next projection rebuilds
-    /// the rows from the keys). Same rules as `rebind_shows`: the same server and show, a card the
+    /// element takes the displaced one's number (both are fresh). The rows were projected from the
+    /// numbers before the swap, so a swap invalidates the projection
+    /// ([`Self::invalidate_projection`]) and the next sync projects every row again from the keys. Same rules as `rebind_shows`: the same server and show, a card the
     /// row no longer holds, and not a window that slid.
     fn adopt_shows(&mut self, memory: &HomeMemory, view: HubsView<'_>) {
         if memory.cw_shows.is_empty() { return }
@@ -1147,7 +1168,9 @@ impl HomeScreen {
             self.rebound.insert(elem);
             changed = true;
         }
-        if changed { self.rebuild_indexes(); }
+        // The elements were swapped between keys, not their identities or places: the indexes
+        // stand, and the rows, which list the elements the keys held a moment ago, do not.
+        if changed { self.invalidate_projection(); }
     }
 
     /// Keep the Continue Watching cards the projection just removed (by element, so a later
