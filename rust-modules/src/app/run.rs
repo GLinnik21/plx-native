@@ -154,7 +154,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
         // What the hold hint has taught since last frame, written once to the install's session.
-        hint_taught.poll();
+        hint_taught.poll(app.boot_initial.is_some());
         ingest(app, fr);
         app.instr.mark(plx_base::diag::heartbeat::Phase::Ingest); // ingest
 

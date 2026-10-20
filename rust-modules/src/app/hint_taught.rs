@@ -30,14 +30,20 @@ impl HintTaught {
     }
 
     /// One frame's look: a thread-local flag read unless the hint was just taught.
-    pub(crate) fn poll(&mut self) {
-        self.poll_with(session::learn_hold_hint_taught);
+    ///
+    /// `controlled` is a replay or a controlled recording (`App::boot_initial`): the run brings its
+    /// own session and must not touch the install's stored one, so the lesson is drained and
+    /// dropped (the signal is a one-shot edge; leaving it queued would only grow stale).
+    pub(crate) fn poll(&mut self, controlled: bool) {
+        self.poll_with(controlled, session::learn_hold_hint_taught);
     }
 
     /// The decision, with the write injected so a test can count it.
-    fn poll_with(&mut self, write: impl FnOnce(HoldHintTaught) -> bool) {
+    fn poll_with(&mut self, controlled: bool, write: impl FnOnce(HoldHintTaught) -> bool) {
         if let Some(taught) = plx_ui::hold_hint::take_newly_taught() {
-            write(HoldHintTaught { card: taught.card, pill: taught.pill });
+            if !controlled {
+                write(HoldHintTaught { card: taught.card, pill: taught.pill });
+            }
         }
     }
 }
@@ -71,7 +77,7 @@ mod tests {
         seed(HoldHintTaught { card: true, pill: false });
         assert!(plx_ui::hold_hint::shown_this_run(), "the card latch is down");
         let writes = RefCell::new(Vec::new());
-        HintTaught::new().poll_with(|t| { writes.borrow_mut().push(t); true });
+        HintTaught::new().poll_with(false, |t| { writes.borrow_mut().push(t); true });
         assert!(writes.borrow().is_empty(), "seeding is not news: {:?}", writes.borrow());
     }
 
@@ -80,13 +86,25 @@ mod tests {
         let _fresh = Fresh::new();
         let mut poller = HintTaught::new();
         let writes = RefCell::new(Vec::new());
-        poller.poll_with(|t| { writes.borrow_mut().push(t); true });
+        poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
         assert!(writes.borrow().is_empty(), "nothing taught, nothing written");
         plx_ui::hold_hint::mark_learned();
         for _ in 0..3 {
-            poller.poll_with(|t| { writes.borrow_mut().push(t); true });
+            poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
         }
         assert_eq!(*writes.borrow(), vec![HoldHintTaught { card: true, pill: true }],
             "one write for the rising edge, none while it stays up");
+    }
+
+    #[test]
+    fn a_controlled_run_drains_the_lesson_and_writes_nothing() {
+        let _fresh = Fresh::new();
+        let mut poller = HintTaught::new();
+        let writes = RefCell::new(Vec::new());
+        plx_ui::hold_hint::mark_learned();
+        poller.poll_with(true, |t| { writes.borrow_mut().push(t); true });
+        assert!(writes.borrow().is_empty(), "a replay never writes the real session: {:?}", writes.borrow());
+        poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
+        assert!(writes.borrow().is_empty(), "and the edge was consumed, not deferred");
     }
 }

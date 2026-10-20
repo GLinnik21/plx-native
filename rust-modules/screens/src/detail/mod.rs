@@ -3862,6 +3862,11 @@ impl DetailScreen {
                 if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
                     return none;
                 }
+                // The hold opens a menu only through `focused_season`, which is `None` while the
+                // season loads or has no `rk`: no promise of a hold that does nothing.
+                if self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_none() {
+                    return none;
+                }
                 let page_still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
                 let settled = page_still
                     && self.tab_scroll.vel.abs() < 0.5
