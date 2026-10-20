@@ -115,16 +115,55 @@ fn the_legacy_band_is_the_unchanged_geometry() {
         );
     }
     for e in [0.0, 0.3, 0.7, 1.0] {
-        assert_eq!(card_row::band_reveal(e), card_row::band_reveal_for(card_row::LEGACY_BAND_H, e));
+        assert_eq!(card_row::room_for(card_row::LEGACY_BAND_H, e), crate::consts::UNDER_LABEL_AIR + card_row::under_band(e));
     }
 }
 
+/// **A line waits for the room that holds its box**, at both band sizes: on a closed band nothing is
+/// drawn, on an open one the whole block is, and on no frame between is a line drawn while the room
+/// under its card is smaller than its box (the row under it would be on top of it). The lines come
+/// from `TileLabel::lines`, the boxes the block is drawn with.
 #[test]
 fn the_caption_waits_for_its_room_at_both_band_sizes() {
-    for band in [80.0, 112.0] {
-        assert_eq!(card_row::band_reveal_for(band, 0.0), 0.0, "no caption on a closed band ({band})");
-        assert!(card_row::band_reveal_for(band, 1.0) > 0.999, "whole caption on an open band ({band})");
+    for (band, two_lines) in [(80.0, false), (112.0, true)] {
+        let lines = |e: f32| {
+            let label = card_row::TileLabel::from_lines([Some("t".into()), two_lines.then(|| "d".into())]).revealed(band, e);
+            label.lines()
+        };
+        assert!(lines(0.0).iter().flatten().all(|l| l.alpha == 0.0), "no caption on a closed band ({band})");
+        assert!(lines(1.0).iter().flatten().all(|l| l.alpha > 0.999), "whole caption on an open band ({band})");
+        let mut last = [0.0f32; 2];
+        for step in 0..=200 {
+            let e = step as f32 / 200.0;
+            for (k, line) in lines(e).iter().enumerate() {
+                let Some(line) = line else { continue };
+                assert!(line.alpha == 0.0 || card_row::room_for(band, e) >= line.bottom,
+                    "band {band}, e {e}: line {k} is drawn (alpha {}) with {} px of room under a {} px box",
+                    line.alpha, card_row::room_for(band, e), line.bottom);
+                assert!(line.alpha >= last[k], "band {band}: line {k} dims while its band opens (e {e})");
+                last[k] = line.alpha;
+            }
+        }
     }
+    // the title (the first line) is on screen before the details line under it, never after
+    let both = |e: f32| card_row::TileLabel::from_lines([Some("t".into()), Some("d".into())]).revealed(112.0, e).lines();
+    for step in 0..=200 {
+        let [t, d] = both(step as f32 / 200.0);
+        assert!(t.unwrap().alpha >= d.unwrap().alpha, "the details line leads the title at {step}/200");
+    }
+}
+
+/// A block with no title starts its details line where the title would have been: its box (and so
+/// the room it waits for) is the details line's own, not the second line's.
+#[test]
+fn a_details_only_block_waits_for_the_room_its_own_box_needs() {
+    let label = card_row::TileLabel::from_lines([None, Some("d".into())]);
+    let [title, details] = label.lines();
+    assert!(title.is_none());
+    let details = details.unwrap();
+    let both = card_row::TileLabel::from_lines([Some("t".into()), Some("d".into())]).lines();
+    assert!(details.bottom < both[1].unwrap().bottom, "alone, the details line sits where the title would");
+    assert_eq!(details.top, both[0].unwrap().top);
 }
 
 #[test]
@@ -145,7 +184,7 @@ impl plx_machine::machine::Measure for Flat {
 fn the_details_line_under_a_poster_is_white_at_82_percent() {
     let _g = plx_base::testlock::serial();
     let mut l = card_row::TileLabel::from_lines([None, Some("2019 · 2h 6m".into())]);
-    l.reveal = 1.0;
+    l.reveal = None;
     let runs = crate::draw_census::capture_runs(|| {
         card_row::draw_label(crate::Painter::recording(), crate::Rect::new(100.0, 100.0, 200.0, 300.0), 1.0, &card_row::RowStyle::HOME, &l, &Flat);
     });

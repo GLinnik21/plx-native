@@ -920,11 +920,11 @@ impl Grid {
             // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
             // focus reconciled to takes it up with the landing's first step.
             let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            Some(label.revealed(card_row::band_fade(open)))
+            Some(label.revealed(self.band_h(), open))
         } else {
             self.bands.closing()
                 .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
-                .map(|(_, _, open)| src.label(i).revealed(card_row::band_fade(open)))
+                .map(|(_, _, open)| src.label(i).revealed(self.band_h(), open))
         };
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, label.is_some()) {
@@ -993,8 +993,32 @@ impl Grid {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             let paint = self.card_paint(f, p, src, i, s, role == DrawRole::Focus, &bands)?;
             let label = paint.label?;
-            (label.title.is_some() || label.caption.is_some()).then(|| (i, label.reveal * paint.p.opacity()))
+            (label.title.is_some() || label.caption.is_some()).then(|| {
+                (i, label.lines().iter().flatten().map(|l| l.alpha).fold(0.0, f32::max) * paint.p.opacity())
+            })
         }).collect()
+    }
+
+    /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now, `(card index, top y,
+    /// bottom y, alpha)` in the grid's own space, from the same decision the draw paints
+    /// (`card_paint`) and the same boxes ([`TileLabel::lines`](card_row::TileLabel::lines)): a line
+    /// that is not drawn (alpha 0) is not listed, so a test reads exactly the ink a frame carries.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_lines_probe<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S) -> Vec<(usize, f32, f32, f32)> {
+        let focus = super::focused_index(&f.focus, self.entry, src);
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let bands = self.bands.geometry();
+        let mut out = Vec::new();
+        for (role, i) in self.draw_plan(src.len(), focus, &bands) {
+            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let Some(paint) = self.card_paint(f, p, src, i, s, role == DrawRole::Focus, &bands) else { continue };
+            let Some(label) = paint.label else { continue };
+            let bottom = card_row::unscaled_bottom(paint.rect, s);
+            for line in label.lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
+                out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
+            }
+        }
+        out
     }
 
     /// The focused card left as a ghost and the landing has not made its first moving step (the menu's
@@ -1148,10 +1172,8 @@ impl Grid {
             // the new focus card's, which moves with the focus.
             if g.focused && self.landing_waiting() {
                 let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
-                let label = ghosts.label(j).revealed(card_row::band_fade(open));
-                if label.reveal > 0.0 {
-                    card_row::draw_label(pr.alpha(label.reveal), rect, s, &self.spec.style, &label, f.measure);
-                }
+                let label = ghosts.label(j).revealed(self.band_h(), open);
+                card_row::draw_label(pr, rect, s, &self.spec.style, &label, f.measure);
             }
         }
     }

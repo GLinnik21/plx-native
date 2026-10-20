@@ -526,18 +526,48 @@ mod tests {
         let closing = geometry.iter().find(|b| b.row == 0).unwrap().expansion;
         assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
         assert!((opened + closing - 1.0).abs() < 0.0001);
+        // the two captions of a move hand the title over: at no step of the 112 px band is neither
+        // title on screen (the arriving one comes in as the room holds it, the departing one goes
+        // out as the room that held it is gone)
+        let title = |e: f32| card_row::TileLabel::title("t").revealed(112.0, e).lines()[0].unwrap().alpha;
         assert!(
-            (card_row::band_fade(opened) + card_row::band_fade(closing) - 1.0).abs() < 0.0001,
-            "the two captions of a move are one hand-over, out = 1 - in"
+            title(opened) + title(closing) > 0.0,
+            "a title is on screen through the move: arriving {} departing {}", title(opened), title(closing)
         );
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
         assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
-        assert!(card_row::band_fade(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
+        let settled = bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion;
+        let whole = card_row::TileLabel::titled("t", "d").revealed(112.0, settled).lines();
+        assert!(whole.iter().flatten().all(|l| l.alpha > 0.999), "a settled band shows its whole caption");
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         assert!(bands.slots.iter().all(|s| s.row.is_none()));
+    }
+
+    /// **A focus move always has a title on screen at the 112 px band, and dims once at the 80 px
+    /// one.** The arriving row's title is drawn once the room under it holds its box and the
+    /// departing row's until the room that held it is gone ([`card_row::line_reveal_for`]); the two
+    /// bands of a move sum to 1 (`e` and `1 - e`). At 112 the two windows overlap (the title's box
+    /// is held from e = .28 on the way in and until e = .72 on the way out), so one of them is
+    /// always drawn. At 80 the room holds the box exactly at e = .5 for both rows: the departing
+    /// title is gone as the arriving one begins, so the crossing reads as a dip to nothing at that
+    /// frame (and a dim title for the few percent of the move either side), not as a title over
+    /// the row under it.
+    #[test]
+    fn a_focus_move_hands_the_title_over_without_a_blank_at_112_and_dips_once_at_80() {
+        let title = |band: f32, e: f32| card_row::TileLabel::title("t").revealed(band, e).lines()[0].unwrap().alpha;
+        let shown = |band: f32, e: f32| title(band, e).max(title(band, 1.0 - e));
+        for step in 0..=1000 {
+            let e = step as f32 / 1000.0;
+            assert!(shown(112.0, e) > 0.0, "112 px band: no title on screen at e {e}");
+        }
+        assert!(shown(80.0, 0.5) < 0.001, "80 px band: the crossing holds neither title");
+        let dim: Vec<u32> = (0..=1000).filter(|&k| shown(80.0, k as f32 / 1000.0) < 0.5).collect();
+        let (lo, hi) = (dim[0], *dim.last().unwrap());
+        assert!(dim.len() as u32 == hi - lo + 1 && hi - lo < 200,
+            "80 px band: the dim window is one short run around e = .5 ({lo}..{hi} of 1000)");
     }
 
     /// The pop is armed from rest by a deliberate move, adopted whole when focus arrives

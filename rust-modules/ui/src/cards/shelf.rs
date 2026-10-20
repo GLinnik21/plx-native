@@ -868,7 +868,7 @@ impl Shelf {
             _ => pr,
         };
         if focused {
-            let label = src.label(i).revealed(self.row.band_reveal())
+            let label = self.row.reveal(src.label(i))
                 .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
@@ -971,11 +971,6 @@ impl Shelf {
     /// The focused band's whole height under this shelf's policy ([`CardRow::band_h`]).
     pub fn band_h(&self) -> f32 {
         self.row.band_h()
-    }
-
-    /// How much of the focused caption block may show now ([`CardRow::band_reveal`]), 0..1.
-    pub fn band_reveal(&self) -> f32 {
-        self.row.band_reveal()
     }
 
     /// The live label-band expansion, 0 collapsed to 1 focused: what a screen that lays its column

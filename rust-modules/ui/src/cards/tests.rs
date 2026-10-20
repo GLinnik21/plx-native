@@ -67,6 +67,8 @@ struct Cards {
     sweep: f32,
     /// Every card carries a two-line caption (the Under posters setting's title over its details).
     captioned: bool,
+    /// ...with the title alone (the 80 px Under posters band, no details line).
+    title_only: bool,
 }
 
 /// The census tag [`Cards::overlay`] notes after each tile it is handed.
@@ -74,7 +76,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0, captioned: false, title_only: false }
     }
 }
 
@@ -96,7 +98,7 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn label(&self, i: usize) -> TileLabel {
         if self.captioned {
-            TileLabel::from_lines([Some(format!("Title {}", self.elems[i])), Some("2005 \u{b7} 1h 40m".into())])
+            TileLabel::from_lines([Some(format!("Title {}", self.elems[i])), (!self.title_only).then(|| "2005 \u{b7} 1h 40m".into())])
         } else {
             TileLabel::default()
         }
@@ -1748,11 +1750,12 @@ fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {
 }
 
 /// **A dormant seat's caption opens with the lift, not under the dissolve.** A caption is its
-/// band's content (alpha = the band's expansion, `card_row::band_fade`), and a dormant grid keeps
-/// the focused tile at rest: with the band settled open, the details line stood at full strength
-/// under a tile that had not begun to lift (Library arrival, frames 19-25 of 46 measured in the
-/// simulator). The band of a seat nobody has lifted yet is shut; it opens on the same frames the
-/// lift runs, a Down's way.
+/// band's content (a line is drawn once the room under its card holds it and never beyond the
+/// band's expansion, `card_row::line_reveal_for`), and a dormant grid keeps the focused tile at
+/// rest: with the band settled open, the details line stood at full strength under a tile that had
+/// not begun to lift (Library arrival, frames 19-25 of 46 measured in the simulator). The band of a
+/// seat nobody has lifted yet is shut; it opens on the same frames the lift runs, a Down's way, and
+/// the title comes in once the room holds it.
 #[test]
 fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
     let cols = poster_grid::COLS;
@@ -1786,7 +1789,8 @@ fn a_dormant_seats_caption_opens_with_its_lift_and_never_before_it() {
     let early: Vec<_> = trace.iter().enumerate().filter(|(_, (alpha, lift))| *alpha > 0.0 && *lift <= 0.0).collect();
     assert!(early.is_empty(), "a caption on a frame the tile is still at rest: {early:?}");
     let (first, lift) = trace[0];
-    assert!(first > 0.0 && first < 0.5 && lift > 0.0 && lift < 0.5, "the caption and the lift start together, from nothing: caption {first}, lift {lift}");
+    assert!(first == 0.0 && lift > 0.0 && lift < 0.5, "the lift starts from nothing and the caption waits for its room: caption {first}, lift {lift}");
+    assert!(trace.iter().any(|&(alpha, lift)| alpha > 0.0 && lift < 1.0), "the title comes in while the tile is still lifting: {trace:?}");
     assert!(trace.windows(2).all(|w| w[1].0 >= w[0].0 - 1e-4), "the caption does not open monotonically: {trace:?}");
     assert!((trace[79].0 - 1.0).abs() < 0.01 && (trace[79].1 - 1.0).abs() < 0.01, "caption and lift both end full: {:?}", trace[79]);
 }
@@ -4178,9 +4182,73 @@ fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFram
     trace
 }
 
-/// **A caption is the band's content: it fades with the band it sits in.** A Down closes the
+/// **A caption line is never on screen before the room for it.** Frame by frame through a Down, a
+/// Down and an Up on a grid, no caption line with ink (alpha > 0) reaches the top of the next row's
+/// tile: not the arriving caption while the band opens (the next row is still rising to its place
+/// under it), and not the departing one while the band closes (the rising row slides up under
+/// it). The old fade was the band's own progress, so a line sat at its fixed offset at half
+/// strength with the next row's tiles on top of it (Library, 112 px band: 26 px of the title and
+/// details lines under the row at n=17). Returns the worst overlap in px, for the failure message.
+fn worst_caption_overlap(title_only: bool, band: f32, moves: &[(usize, i32)], frames: usize) -> (f32, String) {
+    let cols = poster_grid::COLS;
+    let rows = 6;
+    let mut r = Rig::<Grid>::new(rows * cols);
+    r.src.captioned = true;
+    r.src.title_only = title_only;
+    let policy = crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: if title_only { crate::caption_policy::DetailsKind::None } else { crate::caption_policy::DetailsKind::YearLength },
+    };
+    assert_eq!(crate::caption_policy::band_h(&policy), band);
+    r.sect.set_caption_policy(Some(policy));
+    r.land_focus(100, By::Restore);
+    r.run(40);
+    let mut at = 0i32;
+    let mut worst = (f32::MIN, String::new());
+    let mut seen = (f32::MIN, String::new());
+    for frame in 0..frames {
+        if let Some(&(_, dir)) = moves.iter().find(|(f, _)| *f == frame) {
+            at += dir;
+            r.land_focus(100 + (at as usize * cols) as u32, By::Dir);
+        }
+        r.run(1);
+        let cx = r.cx();
+        let f = DrawFrame::new(&cx, Painter::root());
+        for (card, _top, bottom, alpha) in r.sect.caption_lines_probe(&f, f.painter, &r.src) {
+            if card + cols >= rows * cols {
+                continue;
+            }
+            let over = bottom - r.sect.cell_probe(card + cols).y;
+            let said = || format!("frame {frame}: the caption line of card {card} (alpha {alpha:.2}) ends {over:.1} px \
+                below the top of the next row's tile");
+            if over > worst.0 {
+                worst = (over, said());
+            }
+            if alpha >= 0.25 && over > seen.0 {
+                seen = (over, said());
+            }
+        }
+    }
+    worst.1 = format!("{} (worst at alpha >= .25: {})", worst.1, seen.1);
+    worst
+}
+
+#[test]
+fn no_caption_line_is_drawn_where_the_next_row_is_at_112() {
+    let (over, at) = worst_caption_overlap(false, 112.0, &[(0, 1), (30, 1), (60, -1)], 100);
+    assert!(over <= 0.0, "worst overlap {over:.1} px: {at}");
+}
+
+#[test]
+fn no_caption_line_is_drawn_where_the_next_row_is_at_80() {
+    let (over, at) = worst_caption_overlap(true, 80.0, &[(0, 1), (30, 1), (60, -1)], 100);
+    assert!(over <= 0.0, "worst overlap {over:.1} px: {at}");
+}
+
+/// **A caption is the band's content: it follows the band it sits in.** A Down closes the
 /// departing row's band and opens the arriving row's over the same few frames, and the caption of
-/// each follows ITS band's progress, never a cut and never a late arrival:
+/// each follows ITS band, never a cut and never a caption over the row under it
+/// (`worst_caption_overlap`):
 ///
 /// * the departing caption was cut in one frame (full on the frame before, gone on the next) while
 ///   its gap was still closing, because only the FOCUSED card drew one;
@@ -4194,13 +4262,14 @@ fn assert_captions_follow_their_bands(trace: &[Vec<RowFrame>]) {
     for (row, series) in trace.iter().enumerate() {
         for (t, w) in series.windows(2).enumerate() {
             let jump = (w[1].alpha - w[0].alpha).abs();
-            assert!(jump <= 0.35, "row {row}: the caption jumped {jump:.2} between frames {t} and {} \
+            assert!(jump <= 0.5, "row {row}: the caption jumped {jump:.2} between frames {t} and {} \
                 (alpha {:.2} -> {:.2}, band open {:.2} -> {:.2})", t + 1, w[0].alpha, w[1].alpha, w[0].open, w[1].open);
         }
         for (t, w) in series.iter().enumerate() {
             assert!(w.open < 0.5 || w.alpha > 0.0,
                 "row {row} frame {t}: its band is {:.2} open and its caption is not on screen", w.open);
             assert!(w.open > 0.0 || w.alpha == 0.0, "row {row} frame {t}: a caption under a closed band");
+            assert!(w.alpha <= w.open + 0.001, "row {row} frame {t}: the caption {:.2} is past its band's {:.2}", w.alpha, w.open);
         }
     }
     // never a frame mid-move with no caption anywhere while any gap is more than half open
@@ -4228,28 +4297,27 @@ fn a_fast_repeat_of_downs_never_cuts_a_caption() {
     assert_captions_follow_their_bands(&trace);
 }
 
-/// **One hand-over, on the one progress, from the key frame.** The departing and the arriving
-/// caption are `out = 1 - in` of the band spring that moves their gaps (the rule the Grid landing's
-/// leaving copy and arriving card are drawn by, `Landing::leaving`): each caption's alpha IS its
-/// own band's expansion, with no easing laid over the spring's own. Eased again, the hand-over
-/// is invisible on the key frame (the caption moved 0.1 % while its gap had opened 2 %) and the
-/// arriving caption is still 5 % in when its gap is 14 % open: it starts late, not in the scroll's
-/// first half.
+/// **One hand-over, from the key frame.** The departing caption starts to leave on the key frame
+/// (its alpha is its band's progress while the room still holds its title), and the arriving one
+/// is drawn only once the room under it holds the title's box (`card_row::line_reveal_for`): never
+/// before the band has opened that far, never past the band's own progress. The old hand-over was
+/// `out = 1 - in` of the band spring (a title at half strength over the next row's tiles).
 #[test]
-fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
+fn a_down_hands_the_caption_over_from_the_key_frame_and_the_arrival_waits_for_its_room() {
     let trace = caption_trace(4, &[0], 30);
-    // sample 1 is the frame the key lands on: both captions are already moving
-    assert!(trace[0][1].alpha < 0.99 && trace[1][1].alpha > 0.01,
-        "the hand-over does not start on the key frame: out {:?}, in {:?}", trace[0][1], trace[1][1]);
-    // through the move, each caption is its band's progress and the pair is complementary
-    for t in 0..=14 {
+    // sample 1 is the frame the key lands on: the departing caption is already leaving
+    assert!(trace[0][1].alpha < 0.99, "the hand-over does not start on the key frame: out {:?}", trace[0][1]);
+    let title_box = TileLabel::title("t").lines()[0].unwrap().bottom;
+    for t in 0..=29 {
         let (out, inn) = (trace[0][t], trace[1][t]);
-        assert!((out.alpha - out.open).abs() < 0.01,
-            "frame {t}: the departing caption {:.3} is not its band's progress {:.3}", out.alpha, out.open);
-        assert!((inn.alpha - inn.open).abs() < 0.01,
-            "frame {t}: the arriving caption {:.3} is not its band's progress {:.3}", inn.alpha, inn.open);
-        assert!((out.alpha + inn.alpha - 1.0).abs() < 0.01,
-            "frame {t}: out {:.3} + in {:.3} is not one hand-over", out.alpha, inn.alpha);
+        if out.open >= 0.45 {
+            assert!((out.alpha - out.open).abs() < 0.01,
+                "frame {t}: the departing caption {:.3} is not its band's progress {:.3}", out.alpha, out.open);
+        }
+        if inn.alpha > 0.0 {
+            assert!(crate::card_row::room_for(112.0, inn.open) >= title_box,
+                "frame {t}: the arriving caption is drawn with the band {:.2} open, before the room holds its title", inn.open);
+        }
     }
 }
 
@@ -4267,7 +4335,11 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
         r.sect.set_caption_policy(policy);
         r.land_focus(101, By::Dir);
         r.run(240);
-        (r.sect.under_band(), r.sect.band_h(), r.sect.band_reveal())
+        // the block the policy puts under a card: its title and/or its details line
+        let (title, details) = policy.map_or((true, true), |p| (p.title, p.details != DetailsKind::None));
+        let whole = TileLabel::from_lines([title.then(|| "t".into()), details.then(|| "d".into())])
+            .revealed(r.sect.band_h(), r.sect.band_expand());
+        (r.sect.under_band(), r.sect.band_h(), whole.lines().iter().flatten().map(|l| l.alpha).fold(1.0, f32::min))
     };
     for (title, details, tall) in [(false, DetailsKind::None, 0.0), (false, DetailsKind::Genre, 80.0),
         (true, DetailsKind::YearLength, 112.0), (true, DetailsKind::None, 80.0)] {

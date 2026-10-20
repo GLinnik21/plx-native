@@ -692,9 +692,10 @@ screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a she
 no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
 band and its two-line block, under every setting; the band must follow the label, never the setting):
 only the focused row opens its caption; a bounded set of springs closes rows left behind, and
-each row's caption is drawn at its band's own expansion (`card_row::band_fade`), so a move is one
-hand-over (`out = 1 - in`) that starts on the key frame; `GridBands::closing` names the card a
-closing band's caption belongs to.
+each LINE of a row's caption is drawn only once the room under its card holds the line's box, and
+never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for a shelf and a grid), so
+a move hands the title over from the departing row to the arriving one with no line over the row
+under it; `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and
