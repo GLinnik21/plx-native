@@ -169,8 +169,9 @@ impl GridBands {
 /// and the settled pop is what the opener redraw reads ([`scale`](Self::scale)).
 pub struct GridPop {
     pop: (Option<usize>, Spring),
-    /// The previously focused cell shrinking back to 1.0; its index clears once it has settled,
-    /// so a settled grid pays for no shrinking tile.
+    /// The previously focused cell shrinking back to 1.0; its index clears once the spring has landed
+    /// ([`Spring::land`](crate::Spring::land), the shared landing rule), so a settled grid pays for no
+    /// shrinking tile.
     shrink: (Option<usize>, Spring),
 }
 
@@ -251,7 +252,11 @@ impl GridPop {
         }
         self.pop.1.step(if self.pop.0.is_some() { style.focus_scale } else { 1.0 }, style.k_scale, dt);
         self.shrink.1.step(1.0, style.k_scale, dt);
-        if self.shrink.1.pos < 1.003 { self.shrink.0 = None; }
+        // The let-go ends by the one landing rule a shelf's released tile ends by (`CardRow::update`):
+        // within `LAND_REL` of rest AND no longer travelling, put exactly at rest. A threshold of its
+        // own (the old `pos < 1.003`, with no velocity check) dropped the tile ~25x further out, a
+        // ~0.5 px / ~3% shadow-and-sheen step while the spring was still falling.
+        if self.shrink.1.land(1.0, dt) { self.shrink.0 = None; }
     }
 
     /// The focused cell's LIVE scale: the pop spring's position while the pop belongs to this
@@ -559,6 +564,46 @@ mod tests {
         assert_eq!(pop.scale(3, false, &style), 1.0);
         let (_, moving) = plx_machine::idle::scoped_motion(|| pop.tick(Some(4), &style, dt));
         assert!(!moving, "a settled grid lets idle suppression sleep");
+    }
+
+    /// **A released grid card lands by the one shared rule** (`Spring::land`, the rule a shelf's
+    /// `CardRow::update` uses): the let-go is judged finished only once the spring is within `LAND_REL`
+    /// of rest AND no longer travelling, so the frame the tile leaves the shrink list steps its rect,
+    /// radius and shadow by no more than that epsilon. A private `pos < 1.003` cut (no velocity check)
+    /// dropped it ~25x further out with the spring still falling: a ~0.5 px / ~3% shadow step.
+    ///
+    /// The reference is the same spring stepped alone, so the test also pins that nothing but the
+    /// landing differs: the let-go runs the same constants toward the same target.
+    #[test]
+    fn a_released_grid_card_lands_by_the_shared_rule_and_never_snaps_while_moving() {
+        let style = STYLE;
+        let dt = 1.0 / 60.0;
+        let mut pop = GridPop::new();
+        pop.tick(Some(3), &style, dt); // seated whole
+        pop.arm(4);
+        let mut reference = Spring::at(style.focus_scale);
+        let mut landed = false;
+        for frame in 1..=600 {
+            let was_shrinking = pop.shrinking() == Some(3);
+            pop.tick(Some(4), &style, dt);
+            reference.step(1.0, style.k_scale, dt);
+            let drawn = pop.scale(3, false, &style);
+            if was_shrinking && pop.shrinking().is_none() {
+                let epsilon = crate::LAND_REL * (1.0 + reference.pos.max(1.0));
+                assert!(
+                    (drawn - reference.pos).abs() <= epsilon,
+                    "frame {frame}: the let-go left the shrink list at {} while still travelling ({}/frame), a {} step to {drawn} against the land epsilon {epsilon}",
+                    reference.pos,
+                    reference.vel * dt,
+                    (drawn - reference.pos).abs(),
+                );
+                assert_eq!(drawn, 1.0, "it lands exactly at rest");
+                landed = true;
+                break;
+            }
+            assert_eq!(drawn, reference.pos, "frame {frame}: the let-go is the unchanged shrink spring until it lands");
+        }
+        assert!(landed, "the let-go never landed");
     }
 
     #[test]
