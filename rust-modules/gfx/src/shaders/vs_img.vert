@@ -17,10 +17,9 @@
 // varying live behind the SAME macro as fs_img.frag's focus code, rather than always being
 // declared: every draw through the plain (non-`PLX_FOCUS`) program - every resting card, glyph,
 // blur reduction, `field_kick`, `FrameCache` quad - stays the exact smaller program main shipped
-// before this feature, with no v_gloss load and no focus uniform to fetch (`u_pofs` below is one
-// vec2 add per VERTEX, and the fragment shader is untouched), which is the entire point of splitting
-// the program in two. `u_focus.z` is the risen shadow's downward shift `dy` (0 unless this card is
-// focused) - the CARD's own coordinate is `v_p.y + u_focus.z`, never raw
+// before this feature, with no v_gloss load and no extra uniform to fetch, which is the entire
+// point of splitting the program in two. `u_focus.z` is the risen shadow's downward shift `dy` (0
+// unless this card is focused) - the CARD's own coordinate is `v_p.y + u_focus.z`, never raw
 // `v_p.y`, matching the fragment shader's own `vp` correction exactly, so the gloss reads from the
 // card's TRUE centre even though the quad's own centre (what `v_p` is relative to) sits `dy` px
 // above it once the shadow's asymmetric padding is in play (see gfx.rs's `draw_tex_impl`).
@@ -28,12 +27,6 @@ attribute vec2 a_pos;
 uniform vec4 u_trect;
 uniform vec2 u_tscreen;
 uniform vec4 u_uvrect;
-// u_pofs: where the drawn rect's centre lies relative to the centre of the QUAD whose card-local
-// coordinates `v_p` reports, in px. Zero (a uniform's default, and what every draw but a split card
-// leaves it at) makes `v_p` centred on the rect itself, as it always was. `gfx::draw_tex_core` sets
-// it to draw one band of a card's quad - the interior through the fast path, the ring through the
-// full card math - with the SDF still measured against the whole card.
-uniform vec2 u_pofs;
 #ifdef PLX_FOCUS
 uniform highp vec4 u_card; // half-size minus radius, radius, conservative interior threshold
 uniform highp vec3 u_focus; // (pop factor f, 1/gloss-gradient-length, shadow y-offset px)
@@ -55,7 +48,7 @@ varying mediump float v_still_ramp;
 #endif
 void main(){
   v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;
-  v_p = (a_pos - 0.5) * u_trect.zw + u_pofs;
+  v_p = (a_pos - 0.5) * u_trect.zw;
 #ifdef PLX_FOCUS
   // Same 160deg CSS direction / literals as fs_img.frag's GLOSS term (pinned together by
   // `image_focus_geometry_matches_the_shader_literals`); `u_focus.x <= 0` (every draw but at most

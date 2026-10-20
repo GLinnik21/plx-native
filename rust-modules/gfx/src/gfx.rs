@@ -345,6 +345,26 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// away the region clamp for the rest of the pass.
 static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
 
+/// The scissor box the GL context holds right now, as window-pixel edges `[x0, y0, x1, y1]` (GL's
+/// bottom-left origin, the far edges exclusive); `None` while `GL_SCISSOR_TEST` is off. Every
+/// scissor change in this file goes through [`scissor_box`] / [`scissor_off`], so a draw that
+/// scissors pieces of its own ([`draw_tex_core_in`]'s resting cards) can intersect them with the
+/// clip a scrolling list set and put that clip back afterwards.
+static mut LIVE_SCISSOR: Option<[c_int; 4]> = None;
+
+/// Enable the scissor test with this box (`w`, `h` clamped to >= 0 by the caller) and record it.
+unsafe fn scissor_box(x: c_int, y: c_int, w: c_int, h: c_int) {
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(x, y, w, h);
+    LIVE_SCISSOR = Some([x, y, x + w, y + h]);
+}
+
+/// Disable the scissor test and record that.
+unsafe fn scissor_off() {
+    glDisable(GL_SCISSOR_TEST);
+    LIVE_SCISSOR = None;
+}
+
 pub fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     backdrop::clip(Some(Rect::new(x,y,w,h)));
     if backdrop::discovering() { return; }
@@ -392,10 +412,7 @@ pub fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     // GL y is bottom-up, so the box's BOTTOM comes from the band's logical bottom edge.
     let gy0 = vy + ((SCR_H - (y_top + hi)) * s).round() as c_int;
     let gy1 = vy + ((SCR_H - y_top) * s).round() as c_int;
-    unsafe {
-        glEnable(GL_SCISSOR_TEST);
-        glScissor(gx0, gy0, (gx1 - gx0).max(0), (gy1 - gy0).max(0));
-    }
+    unsafe { scissor_box(gx0, gy0, (gx1 - gx0).max(0), (gy1 - gy0).max(0)) }
 }
 /// Remove the scissor clip set by [`clip_set`].
 ///
@@ -409,8 +426,8 @@ pub fn clip_clear() {
     set_clip(None);
     unsafe {
         match CLIP_TARGET {
-            Some((_, _, _, tw, th)) => glScissor(0, 0, tw, th),
-            None => glDisable(GL_SCISSOR_TEST),
+            Some((_, _, _, tw, th)) => scissor_box(0, 0, tw, th),
+            None => scissor_off(),
         }
     }
 }
@@ -686,7 +703,6 @@ static mut IL_RIMCOL: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 static mut IL_FOCUS: c_int = 0;
-static mut IL_POFS: c_int = 0;
 /// **The UNDERLAY FIELD program** (`shaders/fs_field.frag` over `vs_src.vert`) and its uniforms;
 /// 0 when the link failed, in which case [`draw_field`] draws nothing and its caller falls back to
 /// the flat rect it would otherwise have drawn.
@@ -715,9 +731,6 @@ static mut FP_DITHER: c_int = 0;
 struct ImageUniforms {
     rect: c_int, tint: c_int, uvrect: c_int, card: c_int, rimw: c_int,
     rimcol: c_int, shinv: c_int, shcol: c_int, focus: c_int,
-    /// `u_pofs`, the vertex shader's offset of `v_p` ([`draw_tex_core_in`] draws a resting card in
-    /// pieces with it). `< 0` if the link dropped it, and the card is then drawn whole.
-    pofs: c_int,
 }
 // Optional still specialization; the ordinary image shader remains the fallback.
 static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
@@ -1759,12 +1772,14 @@ pub fn draw_shadow(
 }
 
 /// Drawable pixels per authored (logical) px for the bound target: the grid a seam between two
-/// pieces of one quad must sit on to split no pixel ([`snap_inner`]).
+/// pieces of one quad must sit on to split no pixel ([`snap_inner`]). `surface::scale()` is already
+/// the drawable's own factor - under simulator supersampling the drawable IS the `n`x framebuffer,
+/// so it reads `n` there - which is also what [`clip_set`] builds its scissor box from.
 fn pixel_scale() -> f32 {
     unsafe {
         match CLIP_TARGET {
             Some((_, _, ts, _, _)) => ts,
-            None => plx_base::surface::scale() * plx_base::surface::render_scale() as f32,
+            None => plx_base::surface::scale(),
         }
     }
 }
@@ -1979,7 +1994,6 @@ pub fn init_image() {
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
         IL_FOCUS = glGetUniformLocation(IPROG, c"u_focus".as_ptr());
-        IL_POFS = glGetUniformLocation(IPROG, c"u_pofs".as_ptr());
         // Set this program's constant uniforms once (per-program state): the fixed screen size
         // and sampler unit 0. draw_tex_impl no longer re-sends them per quad.
         use_prog(IPROG);
@@ -1992,7 +2006,6 @@ pub fn init_image() {
                 rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
                 card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
                 shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
-                pofs: loc(c"u_pofs"),
             };
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
@@ -2009,7 +2022,6 @@ pub fn init_image() {
                 rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
                 card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
                 shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
-                pofs: loc(c"u_pofs"),
             };
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
@@ -2622,11 +2634,14 @@ fn draw_tex_core(
 }
 
 /// [`draw_tex_core`], and `card` = the card's own rect `(x, y, w, h)` when the draw is a resting
-/// card that [`draw_tex_impl`] allows to be drawn in pieces ([`card_split`]): its interior through
-/// the shader's `u_card.z < 0.5` fast path (texture x tint, nothing else), its ring - the part with
-/// rim, anti-aliased edge and shadow - through the full card math. The picture is the same
-/// pixel for pixel; the fragment shader just stops evaluating the card's SDF where the answer is
-/// "plain". The ledger and the cull above book and test the whole quad once, as before.
+/// card that [`draw_tex_impl`] allows to be drawn in pieces ([`card_boxes`]): the SAME quad is drawn
+/// five times, each under its own scissor box - once for the interior, through the shader's
+/// `u_card.z < 0.5` fast path (texture x tint, nothing else), and once for each of the four bands
+/// of the ring (the part with rim, anti-aliased edge and shadow) through the full card math. The
+/// vertices are the whole quad's every time, so `v_p`, `v_cuv` and the texture's derivatives are
+/// the very numbers the single draw interpolates, and the picture is the same pixel for pixel; the
+/// fragment shader just stops evaluating the card's SDF where its answer is "plain". The ledger and
+/// the cull above book and test the whole quad once, as before.
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core_in(
     class: Class,
@@ -2656,7 +2671,6 @@ fn draw_tex_core_in(
         let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
             rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
             rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL, focus: IL_FOCUS,
-            pofs: IL_POFS,
         }));
         use_prog(program); // fixed screen size and sampler unit are initialized per program
         if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
@@ -2671,64 +2685,56 @@ fn draw_tex_core_in(
             glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
         }
         glBindTexture(GL_TEXTURE_2D, tex);
-        let quad = [qx, qy, qw, qh];
-        let split = card
-            .filter(|_| loc.pofs >= 0)
-            .and_then(|c| card_split(quad, c, radius, rimw, pixel_scale()));
-        let Some(split) = split else {
-            glUniform4f(loc.rect, qx, qy, qw, qh);
+        glUniform4f(loc.rect, qx, qy, qw, qh);
+        let Some(boxes) = card.and_then(|c| card_boxes([qx, qy, qw, qh], c, radius, rimw)) else {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             return;
         };
+        let live = LIVE_SCISSOR;
+        glEnable(GL_SCISSOR_TEST);
         // The ring first, under the real `u_card` the uniforms above carry...
-        for piece in &split.bands[..split.n] {
-            draw_card_piece(&loc, quad, uv, piece);
+        for b in boxes.ring.iter().filter_map(|b| clip_px(*b, live)) {
+            glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
         // ...then the interior, whose `u_card.z` of 0 is the shader's own "plain texture" branch.
-        glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
-        draw_card_piece(&loc, quad, uv, &split.interior);
-        // `u_pofs` is per program and only a split card sets it: leave it at the zero every other
-        // draw through this program relies on (`v_p` centred on the rect it draws).
-        glUniform2f(loc.pofs, 0.0, 0.0);
+        if let Some(b) = clip_px(boxes.interior, live) {
+            glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
+            glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+        // The clip the caller had (a scrolling list's, a source pass's box) is theirs: put it back.
+        match live {
+            Some(b) => glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]),
+            None => glDisable(GL_SCISSOR_TEST),
+        }
     }
 }
 
-/// One piece of a split card's quad `quad` (`piece` is a sub-rect of it): the same triangles'
-/// worth of picture, with `v_cuv` and `v_p` still those of the WHOLE quad ([`card_piece_params`]).
-unsafe fn draw_card_piece(loc: &ImageUniforms, quad: [f32; 4], uv: [f32; 4], piece: &[f32; 4]) {
-    let (sub_uv, pofs) = card_piece_params(quad, uv, piece);
-    glUniform4f(loc.rect, piece[0], piece[1], piece[2], piece[3]);
-    glUniform4f(loc.uvrect, sub_uv[0], sub_uv[1], sub_uv[2], sub_uv[3]);
-    glUniform2f(loc.pofs, pofs[0], pofs[1]);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+/// A scissor box in window pixels, `[x0, y0, x1, y1]`: GL's bottom-left origin, the far edges
+/// exclusive. [`PX_FAR`] stands for "to the edge of the target".
+type PxBox = [c_int; 4];
+
+/// Further than any drawable reaches, and nowhere near `c_int`'s limits: the open edge of a ring band.
+const PX_FAR: c_int = 1 << 20;
+
+/// `b` cut down to the clip `live` (`None` = no clip), or `None` when nothing of it is left.
+fn clip_px(b: PxBox, live: Option<PxBox>) -> Option<PxBox> {
+    let c = match live {
+        Some(l) => [b[0].max(l[0]), b[1].max(l[1]), b[2].min(l[2]), b[3].min(l[3])],
+        None => b,
+    };
+    (c[2] > c[0] && c[3] > c[1]).then_some(c)
 }
 
-/// What drawing `piece` (a sub-rect of `quad`) needs so that every fragment sees the `v_cuv` and
-/// `v_p` it would have seen as part of the whole quad: the piece's `u_uvrect` (the quad's UV window
-/// restricted to it - `uv` composed with the piece's fractional place in the quad) and `u_pofs`
-/// (how far the piece's centre lies from the quad's, which `v_p` is measured from).
-fn card_piece_params(quad: [f32; 4], uv: [f32; 4], piece: &[f32; 4]) -> ([f32; 4], [f32; 2]) {
-    let place = [
-        (piece[0] - quad[0]) / quad[2],
-        (piece[1] - quad[1]) / quad[3],
-        piece[2] / quad[2],
-        piece[3] / quad[3],
-    ];
-    let pofs = [
-        (piece[0] + piece[2] * 0.5) - (quad[0] + quad[2] * 0.5),
-        (piece[1] + piece[3] * 0.5) - (quad[1] + quad[3] * 0.5),
-    ];
-    (uv_compose(uv, place), pofs)
-}
-
-/// A resting card's quad cut into the interior `fs_img.frag` writes as plain texture x tint and the
-/// ring around it ([`card_split`]).
-struct CardSplit {
-    /// The interior rect `(x, y, w, h)`, its edges on the drawable's pixel grid.
-    interior: [f32; 4],
-    /// The rects (the first `n`) that tile the quad minus `interior`.
-    bands: [[f32; 4]; 4],
-    n: usize,
+/// A resting card's picture cut into the part `fs_img.frag` writes as plain texture x tint and the
+/// ring around it, as the five scissor boxes that tile the whole target: the four of the ring (the
+/// rows above and below the interior, then the columns left and right of it) and the interior. No
+/// two share a pixel and none leaves one out, so a quad drawn once under each puts every pixel of
+/// itself through exactly one of them.
+struct CardBoxes {
+    ring: [PxBox; 4],
+    interior: PxBox,
 }
 
 /// Whether [`draw_tex_impl`] may draw this call as a split card: the card compositor (`Class::Card`,
@@ -2741,22 +2747,51 @@ fn splits_card(class: Class, radius: f32, focus: f32, dy: f32) -> bool {
 }
 
 /// The part of a resting card's `quad` (symmetric about `card` = `(x, y, w, h)`) that `fs_img.frag`
-/// certainly shades as plain texture x tint, and the ring that is left; `None` when there is no such
-/// part. The interior is the card inset on every side by its corner `radius` + the rim's width `rimw`
-/// + 2 px, then shrunk onto the pixel grid. The shader's own early-out is `max(|p| - (half - radius))
-/// < min(radius - 2, 0)`: a rect inset by `radius` from the card edge lies inside it, the 2 px and the
-/// rim are margin for float error and the rim's reach, and the rounded corners (where `d` is a
-/// `length()`, not a box distance) are outside the inset altogether. The host test
-/// `the_interior_is_certainly_the_plain_branch` replays the shader's tests over the rect.
-fn card_split(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32, scale: f32) -> Option<CardSplit> {
+/// certainly shades as plain texture x tint, as its edges `[x0, y0, x1, y1]` in authored px on the
+/// pixel grid of `scale` ([`snap_inner`]); `None` when there is no such part. It is the card inset on
+/// every side by its corner `radius` + the rim's width `rimw` + 2 px, then shrunk onto the grid. The
+/// shader's own early-out is `max(|p| - (half - radius)) < min(radius - 2, 0)`: a rect inset by
+/// `radius` from the card edge lies inside it, the 2 px and the rim are margin for float error and
+/// the rim's reach, and the rounded corners (where `d` is a `length()`, not a box distance) are
+/// outside the inset altogether. The host test `every_interior_pixel_takes_the_plain_exit` replays
+/// the shader's tests over every pixel centre of the rect.
+fn card_interior(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32, scale: f32) -> Option<[f32; 4]> {
     let k = radius + rimw.max(0.0) + 2.0;
     let rect = [card[0] + k, card[1] + k, card[2] - 2.0 * k, card[3] - 2.0 * k];
     if !(rect[2] > 0.0 && rect[3] > 0.0) {
         return None;
     }
-    let hole = snap_inner(quad, rect, scale)?;
-    let (bands, n) = bands_around(quad, hole);
-    Some(CardSplit { interior: [hole[0], hole[1], hole[2] - hole[0], hole[3] - hole[1]], bands, n })
+    snap_inner(quad, rect, scale)
+}
+
+/// [`CardBoxes`] for the interior `hole` (edges, authored px, on the pixel grid) of a drawable whose
+/// authored canvas starts at window pixel `(vx, vy)` and is `s` pixels per authored px. The same
+/// edge arithmetic as [`clip_set`]: each edge is rounded in physical space on its own, so the seams
+/// the grid put on whole pixels come out as whole pixels and the neighbours' shared edges are the
+/// same number.
+fn card_pixel_boxes(hole: [f32; 4], vx: c_int, vy: c_int, s: f32) -> CardBoxes {
+    let x = |v: f32| vx + (v * s).round() as c_int;
+    // GL rows count upward from the bottom of the target; the canvas's rows count down.
+    let y = |v: f32| vy + ((SCR_H - v) * s).round() as c_int;
+    let (x0, x1) = (x(hole[0]), x(hole[2]));
+    let (top, bottom) = (y(hole[1]), y(hole[3]));
+    const F: c_int = PX_FAR;
+    CardBoxes {
+        ring: [[-F, top, F, F], [-F, -F, F, bottom], [-F, bottom, x0, top], [x1, bottom, F, top]],
+        interior: [x0, bottom, x1, top],
+    }
+}
+
+/// The scissor boxes to draw a resting card's `quad` in pieces, or `None` to draw it whole: when the
+/// card has no interior, and on a reduced-resolution source pass ([`CLIP_TARGET`]), whose quarter-size
+/// pixels have no shading to save and no draw calls to spare.
+fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Option<CardBoxes> {
+    if unsafe { CLIP_TARGET }.is_some() {
+        return None;
+    }
+    let (vx, vy, _, _) = plx_base::surface::viewport();
+    let s = plx_base::surface::scale();
+    Some(card_pixel_boxes(card_interior(quad, card, radius, rimw, s)?, vx, vy, s))
 }
 
 /// Whether a draw is focused or risen enough to need [`FOCUS_IMAGE`] rather than the plain
@@ -5635,7 +5670,7 @@ impl Drop for DirectPass {
             BLUR_IN_PASS = false;
             CLIP_TARGET = None;
             CULL_RECT = None;
-            glDisable(GL_SCISSOR_TEST);
+            scissor_off();
             glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
             let (vx, vy, vw, vh) = plx_base::surface::viewport();
             glViewport(vx, vy, vw, vh);
@@ -5760,8 +5795,7 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
             // writing over the tap targets' other content — and it bounds `glClear`, which is
             // viewport-independent. `home_draw` opens with its own `frame_clear`, so the ground
             // is laid inside this box rather than across the whole allocation.
-            glEnable(GL_SCISSOR_TEST);
-            glScissor(0, 0, tw, th);
+            scissor_box(0, 0, tw, th);
             // **The replay starts on the app ground, never on what the target last held.** `a`
             // is the tap chain's ping-pong target, so a scene that paints nothing under the
             // region (the dip's capture frames) would publish the previous source's blur as this
@@ -7853,8 +7887,7 @@ mod tests {
         ] {
             assert!(fs.contains(line), "plain fs_img.frag missing pre-focus line `{line}`");
         }
-        // `u_pofs` is the one addition (a split card's pieces, `draw_tex_core_in`): zero unless set.
-        assert!(vs.contains("v_p = (a_pos - 0.5) * u_trect.zw + u_pofs;"));
+        assert!(vs.contains("v_p = (a_pos - 0.5) * u_trect.zw;"));
         // And none of the FOCUS-only identifiers/branches leak through under any spelling.
         for gone in ["wide", "wide2", " vp ", "dShadowBox", "glareTop", "qs", "straightS"] {
             assert!(!fs.contains(gone), "plain fs_img.frag must not carry focus identifier `{gone}`");
@@ -8892,8 +8925,8 @@ mod shadow_band_tests {
 #[cfg(test)]
 mod card_split_tests {
     use super::{
-        bands_around, card_piece_params, card_split, image_card_geometry, snap_inner, splits_card,
-        uv_compose, CardSplit, Class,
+        bands_around, card_interior, card_pixel_boxes, clip_px, image_card_geometry, snap_inner, splits_card,
+        CardBoxes, Class, PxBox, PX_FAR, SCR_H,
     };
 
     /// `fs_img.frag`'s PLAIN program, line for line up to the three exits that write
@@ -8947,6 +8980,8 @@ mod card_split_tests {
     /// the TV (1.0), the simulator's half drawable, an in-between and a 2x render scale.
     const SCALES: [f32; 4] = [1.0, 0.5, 2.0 / 3.0, 2.0];
     const AT: [(f32, f32); 3] = [(120.0, 80.0), (100.25, 50.5), (333.7, 211.3)];
+    /// The drawable's centring offset (`surface::viewport`): none, and a letterboxed one.
+    const ORIGINS: [(i32, i32); 2] = [(0, 0), (7, -3)];
 
     /// The quad `draw_tex_impl` builds for a resting card (`dy` 0: `sides == top == bottom == pad`).
     fn quad_of(c: (f32, f32, f32, f32, f32), at: (f32, f32)) -> ([f32; 4], [f32; 4]) {
@@ -8954,14 +8989,18 @@ mod card_split_tests {
         ([at.0, at.1, w, h], [at.0 - pad, at.1 - pad, w + 2.0 * pad, h + 2.0 * pad])
     }
 
-    fn splits() -> Vec<((f32, f32, f32, f32, f32), (f32, f32), f32, [f32; 4], [f32; 4], CardSplit)> {
+    type Case = ((f32, f32, f32, f32, f32), (f32, f32), f32, [f32; 4], [f32; 4], [f32; 4]);
+
+    /// Every (card, position, scale) of the tables that has an interior, with its quad and the
+    /// interior's edges.
+    fn holes() -> Vec<Case> {
         let mut v = Vec::new();
         for c in cards() {
             for at in AT {
                 for scale in SCALES {
                     let (card, quad) = quad_of(c, at);
-                    if let Some(s) = card_split(quad, card, c.2, c.3, scale) {
-                        v.push((c, at, scale, card, quad, s));
+                    if let Some(h) = card_interior(quad, card, c.2, c.3, scale) {
+                        v.push((c, at, scale, card, quad, h));
                     }
                 }
             }
@@ -8969,34 +9008,51 @@ mod card_split_tests {
         v
     }
 
-    /// The claim the whole split rests on: every fragment of the interior piece - sampled over its
-    /// whole rect, corners included, at the card-centred coordinate the vertex shader hands the
-    /// fragment shader - leaves the PLAIN program through `straight < u_card.w`, the box exit that
-    /// comes before the rim, the anti-aliased edge and the shadow are even computed. (The real
-    /// program is the same arithmetic at `mediump`/`highp`; the 2 px + rim margin in `card_split` is
-    /// what float error has to eat.)
+    /// The window pixel `(px, py)` (GL rows, bottom-up) as the authored point at its centre.
+    fn centre_of(px: i32, py: i32, vx: i32, vy: i32, s: f32) -> [f32; 2] {
+        [(px as f32 + 0.5 - vx as f32) / s, SCR_H - (py as f32 + 0.5 - vy as f32) / s]
+    }
+
+    fn all_boxes(b: &CardBoxes) -> Vec<PxBox> {
+        let mut v = b.ring.to_vec();
+        v.push(b.interior);
+        v
+    }
+
+    fn inside(b: &PxBox, x: i32, y: i32) -> bool {
+        x >= b[0] && x < b[2] && y >= b[1] && y < b[3]
+    }
+
+    /// The claim the whole split rests on, tested on the pixels themselves: EVERY pixel the interior
+    /// box shades - at its centre, converted back to the card-centred coordinate the vertex shader
+    /// hands the fragment shader - leaves the PLAIN program through `straight < u_card.w`, the box
+    /// exit that comes before the rim, the anti-aliased edge and the shadow are even computed. (The
+    /// real program is the same arithmetic at `mediump`/`highp`; the 2 px + rim margin in
+    /// `card_interior` is what float error has to eat.)
     #[test]
-    fn the_interior_is_certainly_the_plain_branch() {
-        let all = splits();
+    fn every_interior_pixel_takes_the_plain_exit() {
+        let all = holes();
         assert!(all.len() > 100, "the table should mostly split: {}", all.len());
-        for (c, at, scale, card, quad, s) in all {
+        let (vx, vy) = ORIGINS[1];
+        for (c, at, scale, card, quad, hole) in all {
             let (w, h, r, rim, pad) = c;
             let geo = image_card_geometry(w * 0.5, h * 0.5, r);
-            let i = s.interior;
             let centre = [quad[0] + quad[2] * 0.5, quad[1] + quad[3] * 0.5];
-            for a in 0..=24 {
-                for b in 0..=24 {
-                    let pos = [i[0] + i[2] * a as f32 / 24.0, i[1] + i[3] * b as f32 / 24.0];
-                    let p = [pos[0] - centre[0], pos[1] - centre[1]];
+            let b = card_pixel_boxes(hole, vx, vy, scale).interior;
+            assert!(b[2] > b[0] && b[3] > b[1], "{c:?}: empty interior box {b:?}");
+            for py in b[1]..b[3] {
+                for px in b[0]..b[2] {
+                    let at_px = centre_of(px, py, vx, vy, scale);
+                    let p = [at_px[0] - centre[0], at_px[1] - centre[1]];
                     assert_eq!(
                         plain_exit(geo, p), 2,
-                        "card {w}x{h} r{r} rim{rim} pad{pad} at {at:?} scale {scale}: {pos:?} of {i:?} is shaded"
+                        "card {w}x{h} r{r} rim{rim} pad{pad} at {at:?} scale {scale}: pixel {px},{py} ({at_px:?}) is shaded"
                     );
                 }
             }
             // Inside the card itself, with its whole rim to spare.
-            assert!(i[0] >= card[0] + r + rim && i[1] >= card[1] + r + rim, "{c:?}: {i:?} reaches the corner arc");
-            assert!(i[0] + i[2] <= card[0] + card[2] - r - rim && i[1] + i[3] <= card[1] + card[3] - r - rim);
+            assert!(hole[0] >= card[0] + r + rim && hole[1] >= card[1] + r + rim, "{c:?}: {hole:?} reaches the corner arc");
+            assert!(hole[2] <= card[0] + card[2] - r - rim && hole[3] <= card[1] + card[3] - r - rim);
         }
     }
 
@@ -9015,42 +9071,80 @@ mod card_split_tests {
         }
     }
 
-    fn area(r: &[f32; 4]) -> f64 {
-        r[2] as f64 * r[3] as f64
-    }
-
-    fn overlap(a: &[f32; 4], b: &[f32; 4]) -> f64 {
-        let w = (a[0] + a[2]).min(b[0] + b[2]) as f64 - a[0].max(b[0]) as f64;
-        let h = (a[1] + a[3]).min(b[1] + b[3]) as f64 - a[1].max(b[1]) as f64;
-        w.max(0.0) * h.max(0.0)
-    }
-
-    /// Interior and ring together are the quad, each pixel exactly once: the areas add up, no two
-    /// pieces overlap, every piece is inside the quad, and the seams sit on the drawable's pixel grid.
+    /// Interior and ring together are the whole target, each pixel in exactly one box: this is what
+    /// makes five draws of one quad equal one draw of it (a pixel in two boxes would blend twice, in
+    /// none would not be drawn at all). Checked over a window of pixels that reaches well past the
+    /// quad on every side, for the whole table.
     #[test]
-    fn the_pieces_tile_the_quad_once() {
-        for (c, at, scale, _card, quad, s) in splits() {
-            let mut pieces = s.bands[..s.n].to_vec();
-            pieces.push(s.interior);
-            let sum: f64 = pieces.iter().map(area).sum();
-            assert!((sum - area(&quad)).abs() < 1e-2 * area(&quad).sqrt(), "{c:?} at {at:?} scale {scale}: areas {sum} vs {}", area(&quad));
-            for (a, ra) in pieces.iter().enumerate() {
-                assert!(ra[2] > 0.0 && ra[3] > 0.0, "empty piece kept");
-                assert!(ra[0] >= quad[0] && ra[1] >= quad[1] && ra[0] + ra[2] <= quad[0] + quad[2] + 1e-3 && ra[1] + ra[3] <= quad[1] + quad[3] + 1e-3);
-                for rb in &pieces[a + 1..] {
-                    assert!(overlap(ra, rb) < 1e-3, "{c:?}: pieces overlap: {ra:?} {rb:?}");
+    fn the_boxes_tile_the_target_once() {
+        for (c, at, scale, _card, quad, hole) in holes() {
+            for (vx, vy) in ORIGINS {
+                let boxes = all_boxes(&card_pixel_boxes(hole, vx, vy, scale));
+                // The quad in window pixels, GL rows, with a margin.
+                let (x0, x1) = (vx + (quad[0] * scale).floor() as i32 - 6, vx + ((quad[0] + quad[2]) * scale).ceil() as i32 + 6);
+                let (y0, y1) = (
+                    vy + ((SCR_H - quad[1] - quad[3]) * scale).floor() as i32 - 6,
+                    vy + ((SCR_H - quad[1]) * scale).ceil() as i32 + 6,
+                );
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let n = boxes.iter().filter(|b| inside(b, x, y)).count();
+                        assert_eq!(n, 1, "{c:?} at {at:?} scale {scale} origin ({vx},{vy}): pixel {x},{y} is in {n} boxes");
+                    }
                 }
             }
-            let on_grid = |v: f32| ((v * scale).round() - v * scale).abs() < 1e-3;
-            let i = s.interior;
-            for v in [i[0], i[1], i[0] + i[2], i[1] + i[3]] {
-                assert!(on_grid(v), "{c:?} at {at:?} scale {scale}: interior edge {v} is off the pixel grid");
-            }
-            // A card with room all round has the full four bands.
-            if c.0.min(c.1) > 3.0 * (c.2 + c.3 + 2.0) {
-                assert_eq!(s.n, 4, "{c:?}");
+        }
+    }
+
+    /// The interior box is the hole, whole pixels and nothing else: its size in pixels is the hole's
+    /// size in authored px times the scale (the hole is on the pixel grid, so exactly), and the box
+    /// lies inside the hole.
+    #[test]
+    fn the_interior_box_is_the_hole_in_pixels() {
+        for (c, at, scale, _card, _quad, hole) in holes() {
+            for (vx, vy) in ORIGINS {
+                let b = card_pixel_boxes(hole, vx, vy, scale).interior;
+                let (w, h) = ((hole[2] - hole[0]) * scale, (hole[3] - hole[1]) * scale);
+                assert_eq!(((b[2] - b[0]) as f32, (b[3] - b[1]) as f32), (w.round(), h.round()), "{c:?} at {at:?} scale {scale}");
+                assert!((w - w.round()).abs() < 1e-2 && (h - h.round()).abs() < 1e-2, "{c:?}: hole {hole:?} is off the grid");
+                // The box's pixel edges, back in authored px, are the hole's.
+                let (tl, br) = (
+                    [(b[0] - vx) as f32 / scale, SCR_H - (b[3] - vy) as f32 / scale],
+                    [(b[2] - vx) as f32 / scale, SCR_H - (b[1] - vy) as f32 / scale],
+                );
+                for (got, want) in [(tl[0], hole[0]), (tl[1], hole[1]), (br[0], hole[2]), (br[1], hole[3])] {
+                    assert!((got - want).abs() < 1e-3, "{c:?} at {at:?} scale {scale}: edge {got} vs {want}");
+                }
             }
         }
+    }
+
+    /// A clip the caller already holds (a scrolling list's) cuts every box, never widens one, and the
+    /// pieces that remain still tile exactly what the clip leaves.
+    #[test]
+    fn the_callers_clip_cuts_the_boxes() {
+        let (c, at, scale, _card, _quad, hole) = holes().into_iter().find(|h| h.2 == 1.0).unwrap();
+        let boxes = all_boxes(&card_pixel_boxes(hole, 0, 0, scale));
+        let (x0, y0) = (hole[0] as i32 - 20, (SCR_H - hole[3]) as i32 - 20);
+        let (x1, y1) = (hole[2] as i32 + 20, (SCR_H - hole[1]) as i32 + 20);
+        for live in [
+            [x0, y0, x1, y1],
+            [x0 + 30, y0 + 30, x1 - 30, y1 - 30],
+            [(hole[0] + hole[2]) as i32 / 2, y0, x1 + 50, (hole[1] + hole[3]) as i32 / 2],
+        ] {
+            let cut: Vec<PxBox> = boxes.iter().filter_map(|b| clip_px(*b, Some(live))).collect();
+            for y in y0 - 5..y1 + 5 {
+                for x in x0 - 5..x1 + 5 {
+                    let want = usize::from(inside(&live, x, y));
+                    let got = cut.iter().filter(|b| inside(b, x, y)).count();
+                    assert_eq!(got, want, "{c:?} at {at:?}: live {live:?}, pixel {x},{y}");
+                }
+            }
+        }
+        // No clip at all is the box itself, and a clip that misses it leaves nothing.
+        assert_eq!(clip_px([1, 2, 30, 40], None), Some([1, 2, 30, 40]));
+        assert_eq!(clip_px([1, 2, 30, 40], Some([30, 0, 90, 90])), None);
+        assert_eq!(clip_px([-PX_FAR, -PX_FAR, PX_FAR, 5], Some([10, 0, 20, 90])), Some([10, 0, 20, 5]));
     }
 
     /// A circle (radius = half the width) and anything whose inset swallows it has no interior:
@@ -9060,8 +9154,8 @@ mod card_split_tests {
         for scale in SCALES {
             let card = [10.0, 10.0, 190.0, 190.0];
             let quad = [-2.0, -2.0, 214.0, 214.0];
-            assert!(card_split(quad, card, 95.0, 1.0, scale).is_none(), "a circle has no box interior");
-            assert!(card_split(quad, card, 100.0, 1.0, scale).is_none(), "a radius past half the width");
+            assert!(card_interior(quad, card, 95.0, 1.0, scale).is_none(), "a circle has no box interior");
+            assert!(card_interior(quad, card, 100.0, 1.0, scale).is_none(), "a radius past half the width");
         }
     }
 
@@ -9070,9 +9164,9 @@ mod card_split_tests {
         let card = [10.0, 10.0, 250.0, 375.0];
         let quad = [-2.0, -2.0, 274.0, 399.0];
         for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert!(card_split(quad, card, 14.0, 1.0, bad).is_none(), "scale {bad}");
+            assert!(card_interior(quad, card, 14.0, 1.0, bad).is_none(), "scale {bad}");
         }
-        assert!(card_split(quad, card, 14.0, 1.0, 1.0).is_some());
+        assert!(card_interior(quad, card, 14.0, 1.0, 1.0).is_some());
     }
 
     /// Only a resting card of the card class is split.
@@ -9089,47 +9183,6 @@ mod card_split_tests {
         assert!(!splits_card(Class::Glass, 14.0, 0.0, 0.0));
     }
 
-    /// Drawing a piece must hand the shaders what the whole quad would have: at the piece's four
-    /// corners `v_p` is the corner's offset from the QUAD's centre and `v_cuv` is the quad's own
-    /// UV window evaluated there - for a plain window, a cover crop, and the flipped (negative-scale)
-    /// window every FBO chain samples through.
-    #[test]
-    fn a_piece_keeps_the_quads_varyings() {
-        let crops = [
-            [0.0, 0.0, 1.0, 1.0],
-            [0.1, 0.2, 0.7, 0.55],
-            [0.0, 1.0, 1.0, -1.0],
-        ];
-        for (c, at, scale, _card, quad, s) in splits() {
-            let _ = (c, at, scale);
-            for crop in crops {
-                // The whole quad's UV window, as `draw_tex_impl` builds it from the card's.
-                let uv = uv_compose(crop, super::uv_rect_padded(c.0, c.1, c.4, c.4, quad[2], quad[3]));
-                let mut pieces = s.bands[..s.n].to_vec();
-                pieces.push(s.interior);
-                for piece in &pieces {
-                    let (sub, pofs) = card_piece_params(quad, uv, piece);
-                    for (ax, ay) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-                        let (px, py) = (piece[0] + ax * piece[2], piece[1] + ay * piece[3]);
-                        // The vertex shader's `v_p` and `v_cuv` for this corner...
-                        let vp = [(ax - 0.5) * piece[2] + pofs[0], (ay - 0.5) * piece[3] + pofs[1]];
-                        let cuv = [sub[0] + ax * sub[2], sub[1] + ay * sub[3]];
-                        // ...against what the whole quad has at that point.
-                        let (tx, ty) = ((px - quad[0]) / quad[2], (py - quad[1]) / quad[3]);
-                        let want_p = [(tx - 0.5) * quad[2], (ty - 0.5) * quad[3]];
-                        let want_uv = [uv[0] + tx * uv[2], uv[1] + ty * uv[3]];
-                        assert!((vp[0] - want_p[0]).abs() < 2e-3 && (vp[1] - want_p[1]).abs() < 2e-3, "{c:?}: v_p {vp:?} vs {want_p:?}");
-                        assert!((cuv[0] - want_uv[0]).abs() < 1e-5 && (cuv[1] - want_uv[1]).abs() < 1e-5, "{c:?}: v_cuv {cuv:?} vs {want_uv:?}");
-                    }
-                }
-            }
-        }
-        // The whole quad as one piece is the identity (what every unsplit draw leaves `u_pofs` at).
-        let q = [10.0, 20.0, 100.0, 80.0];
-        let uv = [0.1, 0.2, 0.7, 0.55];
-        assert_eq!(card_piece_params(q, uv, &q), (uv, [0.0, 0.0]));
-    }
-
     /// `bands_around` of a snapped hole and `snap_inner` agree with the shadow's own contract
     /// (`shadow_bands`): same hole, same bands.
     #[test]
@@ -9139,7 +9192,7 @@ mod card_split_tests {
         assert_eq!(hole, [21.0, 11.0, 70.0, 50.0]);
         let (b, n) = bands_around(quad, hole);
         assert_eq!(n, 4);
-        let sum: f64 = b[..n].iter().map(area).sum();
+        let sum: f64 = b[..n].iter().map(|r| r[2] as f64 * r[3] as f64).sum();
         assert_eq!(sum, 100.0 * 80.0 - 49.0 * 39.0);
         assert_eq!(snap_inner(quad, [20.2, 20.2, 0.5, 5.0], 1.0), None);
     }
@@ -9156,11 +9209,12 @@ mod card_split_tests {
             ("grid poster 200x300", (200.0, 300.0, 14.0, 1.0, 8.0)),
         ] {
             let (card, quad) = quad_of(c, (120.0, 80.0));
-            let s = card_split(quad, card, c.2, c.3, 1.0).expect("a poster has an interior");
-            let (of_quad, of_card) = (area(&s.interior) / area(&quad), area(&s.interior) / area(&card));
+            let hole = card_interior(quad, card, c.2, c.3, 1.0).expect("a poster has an interior");
+            let inner = ((hole[2] - hole[0]) * (hole[3] - hole[1])) as f64;
+            let (of_quad, of_card) = (inner / (quad[2] * quad[3]) as f64, inner / (card[2] * card[3]) as f64);
             eprintln!(
-                "{name}: interior {:.0} px = {:.1}% of the quad ({:.0} px), {:.1}% of the card; the ring is {} bands, {:.0} px",
-                area(&s.interior), of_quad * 100.0, area(&quad), of_card * 100.0, s.n, area(&quad) - area(&s.interior)
+                "{name}: interior {inner:.0} px = {:.1}% of the quad ({:.0} px), {:.1}% of the card; the ring is {:.0} px",
+                of_quad * 100.0, quad[2] * quad[3], of_card * 100.0, (quad[2] * quad[3]) as f64 - inner
             );
             assert!(of_quad > 0.60 && of_card > 0.70, "{name}: {of_quad} {of_card}");
         }

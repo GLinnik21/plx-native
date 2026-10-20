@@ -13,14 +13,16 @@
 // straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path.
 // v_cuv/v_p and the SDF chain are highp - see the PRECISION note in fs_src.frag.
 //
-// RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in` / `card_split`): the interior - the
-// card inset by radius + rim + 2 px, on the pixel grid - is a draw of its own with `u_card.z = 0`,
-// i.e. the `u_card.z < 0.5` exit below (texture x tint and nothing else), and the ring (rim, AA edge,
-// shadow penumbra) is four more draws through the full path with `v_p` still measured from the whole
-// card (vs_img.vert's `u_pofs`). The picture is the one the early-outs below already produced for
-// those fragments - the three exits that write `vec4(tex, ta)` must stay one expression, which
-// `the_plain_exits_of_the_card_shader_are_one_expression` pins - but the fragments no longer pay the
-// `abs`/`max` that reach the second one. A focused or risen card (PLX_FOCUS) is not split.
+// RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in` / `card_boxes`): the card's WHOLE quad
+// is drawn five times, each under its own scissor box - the interior (the card inset by radius + rim
+// + 2 px, on the pixel grid) with `u_card.z = 0`, i.e. the `u_card.z < 0.5` exit below (texture x
+// tint and nothing else), and the four bands of the ring (rim, AA edge, shadow penumbra) with the
+// real card geometry. The vertices, and so `v_p` and `v_cuv` at every pixel, are the whole quad's,
+// bit for bit; only the pixels that are shaded change. The picture is the one the early-outs below
+// already produced for the interior - the three exits that write `vec4(tex, ta)` must stay one
+// expression, which `the_plain_exits_of_the_card_shader_are_one_expression` pins - but those
+// fragments no longer pay the `abs`/`max` that reach the second one. A focused or risen card
+// (PLX_FOCUS) is not split.
 //
 // PLX_FOCUS (linked as its own program, gfx.rs's FOCUS_IMAGE/VS_FOCUS/FS_FOCUS): the lit-glass
 // edge and risen shadow for a FOCUSED ArtTile used to be inline here unconditionally, behind
