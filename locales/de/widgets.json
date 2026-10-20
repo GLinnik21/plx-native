@@ -52,8 +52,6 @@
   "widgets.player.chapters": "Kapitel",
   "widgets.card.new_episode": "Neue Episode",
   "widgets.card.show_new_episode": "{show} · Neue Episode",
-  "widgets.card.season_episode": "S{season} • E{episode}",
-  "widgets.card.episode": "E{episode}",
   "widgets.failure.jail": "Wiedergabe fehlgeschlagen – die Sandbox dieses Fernsehers blockiert natives Video",
   "widgets.failure.refused": "Wiedergabe fehlgeschlagen – der Server kann diese Datei weder abspielen noch konvertieren",
   "widgets.failure.audio_only": "Wiedergabe fehlgeschlagen – der Server hat nur Audio gesendet",

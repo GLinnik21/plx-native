@@ -1208,7 +1208,7 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
         }
     }
     fn label(&self, i: usize) -> ui_cards::TileLabel {
-        self.shelf.map_or_else(|| ui_cards::TileLabel::title(""), |shelf| shelf_label(shelf, i))
+        self.shelf.map_or_else(ui_cards::TileLabel::default, |shelf| shelf_label(shelf, i))
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
@@ -1225,18 +1225,8 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
 }
 
 pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
-    let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::title("") };
-    if shelf.landscape {
-        let name = if item.title.is_empty() || item.title == item.show_title {
-            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
-        } else { item.title.clone() };
-        let fact = if shelf.is_continue && item.resume_frac().is_some() {
-            plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
-        } else if item.aired.is_empty() && item.year <= 0 { String::new() }
-        else { plx_ui::fmt::pretty_date(&item.aired, item.year as i64) };
-        return if fact.is_empty() { ui_cards::TileLabel::title(&name) }
-        else { ui_cards::TileLabel::titled(&name, &fact) };
-    }
+    let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::default() };
+    if shelf.landscape { return crate::registry::captions::still_label(item, shelf.is_continue); }
     crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
 }
 

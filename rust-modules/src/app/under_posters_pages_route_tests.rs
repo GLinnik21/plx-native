@@ -20,6 +20,7 @@ use plx_plex::plex::session::UnderPostersDetails as Details;
 /// A poster tile as a server describes a film it knows everything about.
 fn rich(sid: plx_plex::plex::ServerId, rk: &str, title: &str) -> PmsMovie {
     PmsMovie { sid, rk: rk.into(), title: title.into(), kind: 0, year: 1999, genre: Some("Drama".into()),
+        video_resolution: Some("1080".into()), rating: "PG-13".into(), audience_rating: Some(7.8),
         dur_ns: 100 * 60 * 1_000_000_000, ..Default::default() }
 }
 
@@ -29,36 +30,29 @@ fn bare(sid: plx_plex::plex::ServerId, rk: &str, title: &str) -> PmsMovie {
 }
 
 /// One poster of a page and the words the setting owes it: its title line, and its details line
-/// under Genre and under Year · Length (both are the tile's identity when it has no such fact).
+/// under each picker (the tile's identity when it has no such fact).
 struct Tile {
     title: &'static str,
     /// The key that brings focus to it from the tile before it (the first is reached with Down).
     key: Key,
     genre: String,
     year_length: String,
+    video: String,
+    age: String,
 }
 
 fn heat(key: Key) -> Tile {
-    Tile { title: "Heat", key, genre: "Drama".into(), year_length: "1999 \u{b7} 1h 40m".into() }
+    Tile { title: "Heat", key, genre: "Drama".into(), year_length: "1999 \u{b7} 1h 40m".into(),
+        video: "1080p".into(), age: "PG-13 \u{b7} 7.8".into() }
 }
 /// A film with no year, genre or length: Genre has nothing to say, so the line says what it is.
 fn nameless_facts(key: Key) -> Tile {
-    Tile { title: "Bare", key, genre: "Movie".into(), year_length: "Movie".into() }
+    Tile { title: "Bare", key, genre: "Movie".into(), year_length: "Movie".into(), video: "Movie".into(), age: "Movie".into() }
 }
 
-/// Every string a tile of this file can put on a line, so a run is read whichever line it is on.
-const WORDS: [&str; 12] = [
-    "Heat", "Bare", "Severance", "Noir", "Pilot", "Drama", "1999 \u{b7} 1h 40m", "Movie", "2022", "7 films", "Cop", "Show",
-];
-
-/// The caption lines the focused poster drew, top to bottom. Each line is drawn twice, the second
-/// run its 1 px shadow, which reads as the same line.
-fn caption(w: &mut World) -> Vec<String> {
-    let mut runs: Vec<_> = w.drawn().words.into_iter().filter(|(words, _)| WORDS.contains(&words.as_str())).collect();
-    runs.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
-    runs.dedup_by(|b, a| a.0 == b.0 && (b.1.y - a.1.y).abs() <= plx_ui::caption_policy::CAPTION_SHADOW_DY + 0.5);
-    runs.into_iter().map(|(words, _)| words).collect()
-}
+/// The caption lines the focused poster drew, top to bottom (`Drawn::caption_lines`: the block
+/// itself, not a search for words), so a line nothing asked for fails the comparison.
+fn caption(w: &mut World) -> Vec<String> { w.drawn().caption_lines() }
 
 /// Bring focus to the poster named `title`: `key` until some poster is focused, then along its row
 /// (a row is entered at the tile nearest where focus came from, not at its first), then `key` again
@@ -89,9 +83,11 @@ fn grade(w: &mut World, tiles: &[Tile], state: &dyn Fn(&Tile) -> Option<&'static
         reach(w, tile.title, tile.key);
         let own = state(tile);
         let details = |picked: &str| own.map_or_else(|| picked.to_owned(), str::to_owned);
-        let table: [(bool, Details, Vec<String>); 4] = [
+        let table: [(bool, Details, Vec<String>); 6] = [
             (true, Details::Genre, vec![tile.title.into(), details(&tile.genre)]),
             (false, Details::YearLength, vec![details(&tile.year_length)]),
+            (true, Details::Video, vec![tile.title.into(), details(&tile.video)]),
+            (false, Details::AgeRatingScore, vec![details(&tile.age)]),
             (true, Details::None, vec![tile.title.into()]),
             (false, Details::None, vec![]),
         ];
@@ -127,8 +123,10 @@ fn search_results_caption_the_focused_poster_per_the_stored_setting() {
     let tiles = [
         heat(Key::Down),
         nameless_facts(Key::Right),
-        Tile { title: "Severance", key: Key::Down, genre: "2022".into(), year_length: "2022".into() },
-        Tile { title: "Noir", key: Key::Down, genre: "7 films".into(), year_length: "7 films".into() },
+        Tile { title: "Severance", key: Key::Down, genre: "2022".into(), year_length: "2022".into(),
+            video: "2022".into(), age: "2022".into() },
+        Tile { title: "Noir", key: Key::Down, genre: "7 films".into(), year_length: "7 films".into(),
+            video: "7 films".into(), age: "7 films".into() },
     ];
     let _cell = Cell::default();
     grade(&mut w, &tiles, &no_state);

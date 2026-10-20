@@ -52,8 +52,6 @@
   "widgets.player.chapters": "Capítulos",
   "widgets.card.new_episode": "Nuevo episodio",
   "widgets.card.show_new_episode": "{show} · Nuevo episodio",
-  "widgets.card.season_episode": "T{season} • E{episode}",
-  "widgets.card.episode": "E{episode}",
   "widgets.failure.jail": "Error de reproducción: el entorno aislado del televisor bloquea el vídeo nativo",
   "widgets.failure.refused": "Error de reproducción: el servidor no puede reproducir ni convertir este archivo",
   "widgets.failure.audio_only": "Error de reproducción: el servidor solo envió audio",

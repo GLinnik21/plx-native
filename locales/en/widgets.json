@@ -244,21 +244,6 @@
       "show": "str"
     }
   },
-  "widgets.card.season_episode": {
-    "value": "S{season} • E{episode}",
-    "description": "Secondary caption beneath a focused media card.",
-    "args": {
-      "episode": "i64",
-      "season": "i64"
-    }
-  },
-  "widgets.card.episode": {
-    "value": "E{episode}",
-    "description": "Secondary caption beneath a focused media card.",
-    "args": {
-      "episode": "i64"
-    }
-  },
   "widgets.failure.jail": {
     "value": "Playback failed — this TV's sandbox blocks native video",
     "description": "failure jail"

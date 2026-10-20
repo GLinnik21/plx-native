@@ -170,11 +170,13 @@ fn a_details_line_the_tile_has_no_facts_for_says_its_identity() {
         assert_eq!(at(details, &season("Specials", 0)).as_deref(), Some("Specials"), "its own title when it is not the numbered form");
         assert_eq!(at(details, &season("", 3)).as_deref(), Some("Season 3"), "the catalog's words when the server named it nothing");
     }
-    assert_eq!(at(DetailsKind::YearLength, &season("", 0)), None, "a season with no title and no number has no identity");
+    assert_eq!(at(DetailsKind::YearLength, &season("", 0)).as_deref(), Some("Specials"),
+        "a season with no title and no number is the specials season, never an empty line");
     assert_eq!(at(DetailsKind::None, &season("Season 6", 6)), None, "Nothing shows no line, fallback or not");
     // the kind's own facts win over the identity
     let rich = CaptionFacts { year: Some(2009), genre: Some("Comedy".into()), content_rating: Some("TV-14".into()), ..season("Season 6", 6) };
-    assert_eq!(at(DetailsKind::YearLength, &rich).as_deref(), Some("2009"));
+    assert_eq!(at(DetailsKind::YearLength, &rich).as_deref(), Some("Season 6"),
+        "a season's identity beats its year: 'Season 6', not a bare '2009' that names neither show nor season");
     assert_eq!(at(DetailsKind::Genre, &rich).as_deref(), Some("Comedy"));
     assert_eq!(at(DetailsKind::AgeRatingScore, &rich).as_deref(), Some("TV-14"));
     assert_eq!(at(DetailsKind::Video, &rich).as_deref(), Some("Season 6"), "no stream facts: the season's identity, not its year");
@@ -184,7 +186,7 @@ fn a_details_line_the_tile_has_no_facts_for_says_its_identity() {
     let movie = CaptionFacts { year: Some(1995), ..Default::default() };
     let films = CaptionFacts { subtype: Some("movie".into()), child_count: Some(7), ..Default::default() };
     for details in pickers {
-        assert_eq!(at(details, &episode).as_deref(), Some("S1 \u{2022} E8"), "{details:?}");
+        assert_eq!(at(details, &episode).as_deref(), Some("S1 \u{b7} E8"), "{details:?}");
         assert_eq!(at(details, &show).as_deref(), Some("2022"), "{details:?}");
         assert_eq!(at(details, &movie).as_deref(), Some("1995"), "{details:?}");
         assert_eq!(at(details, &films).as_deref(), Some("7 films"), "{details:?}");
@@ -245,4 +247,93 @@ fn a_friends_server_is_credited_after_the_details_line() {
         Some("Movie \u{b7} @alex"), "the kind word is the line it is credited on");
     let none = CaptionFacts { source: Some(String::new()), ..f };
     assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &none, cx)[1].as_deref(), Some("Crime"), "an empty handle credits nothing");
+}
+
+/// **S2: the identity fallback ends in a word for every kind.** An episode the server numbered and
+/// dated nothing for says "Episode"; a season with no title says "Season N", or "Specials" for the
+/// season numbered 0, even when it has a year: no kind has a chain that ends empty.
+#[test]
+fn every_kind_ends_its_identity_chain_in_a_word() {
+    let cx = i18n::english();
+    let pickers = [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore];
+    let at = |details, f: &CaptionFacts| caption_lines(&CaptionPolicy { title: false, details }, f, cx)[1].clone();
+    let bare_episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((0, 0)), ..Default::default() };
+    let dated_episode = CaptionFacts { year: Some(2019), ..bare_episode.clone() };
+    let untitled_season = |number, year| CaptionFacts {
+        title: Some("The Office".into()), season: Some((number, String::new())), year, ..Default::default()
+    };
+    for details in pickers {
+        assert_eq!(at(details, &bare_episode).as_deref(), Some("Episode"), "{details:?}");
+        assert_eq!(at(details, &dated_episode).as_deref(), Some("2019"), "{details:?}: a year beats the kind word");
+        assert_eq!(at(details, &untitled_season(0, None)).as_deref(), Some("Specials"), "{details:?}");
+        assert_eq!(at(details, &untitled_season(0, Some(2009))).as_deref(), Some("Specials"), "{details:?}: a year does not empty it");
+        assert_eq!(at(details, &untitled_season(4, None)).as_deref(), Some("Season 4"), "{details:?}");
+    }
+    assert_eq!(at(DetailsKind::None, &bare_episode), None, "Nothing has no fallback");
+    for &l in Language::SHIPPED.iter() {
+        with_language(l, |cx| {
+            assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &bare_episode, cx)[1].as_deref(),
+                Some(&*plx_platform::i18n::msg::browse_kind_episode_in(cx)), "{l:?}");
+            assert_eq!(caption_lines(&CaptionPolicy { title: false, details: DetailsKind::Genre }, &untitled_season(0, None), cx)[1].as_deref(),
+                Some(&*plx_platform::i18n::msg::browse_detail_specials_in(cx)), "{l:?}");
+        });
+    }
+}
+
+/// **S4: "N new episodes" is for a show in progress.** A show nobody opened has every episode
+/// unwatched, and "62 new episodes" says nothing a reader needs: it reads its year and seasons.
+#[test]
+fn a_show_reads_new_episodes_only_when_it_is_in_progress() {
+    let cx = i18n::english();
+    let line = |f: &CaptionFacts| caption_lines(&CaptionPolicy::DEFAULT, f, cx)[1].clone();
+    let unopened = CaptionFacts { leaf_count: Some(62), viewed_leaf_count: Some(0), ..show(0) };
+    assert_eq!(line(&unopened).as_deref(), Some("2019 \u{b7} 3 seasons"), "viewed 0: nothing is 'new' to a show never opened");
+    let no_count = CaptionFacts { viewed_leaf_count: None, ..show(4) };
+    assert_eq!(line(&no_count).as_deref(), Some("2019 \u{b7} 3 seasons"), "no viewed count: not known to be started");
+    assert_eq!(line(&show(4)).as_deref(), Some("4 new episodes"), "started with 4 unwatched");
+    assert_eq!(line(&show(0)).as_deref(), Some("2019 \u{b7} 3 seasons"), "all watched: nothing new");
+}
+
+/// **S1 + S3: ONE rule for a collection tile, on every surface.** The Title switch governs its title
+/// line like any kind; its details line is its size under every details kind but Nothing (a server
+/// content rating, a genre never replace it); Nothing opens nothing. A name its face cuts is carried
+/// by the details line when the title is off, inside the band the policy opened.
+#[test]
+fn a_collection_follows_the_policy_like_any_kind() {
+    let cx = i18n::english();
+    let films = CaptionFacts {
+        title: Some("Marvel".into()), subtype: Some("movie".into()), child_count: Some(7),
+        content_rating: Some("PG-13".into()), genre: Some("Action".into()), ..Default::default()
+    };
+    let lines = |title, details, f: &CaptionFacts| caption_lines(&CaptionPolicy { title, details }, f, cx);
+    for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
+        assert_eq!(lines(false, details, &films), [None, Some("7 films".into())], "{details:?}: its size, whatever is picked");
+        assert_eq!(lines(true, details, &films), [Some("Marvel".into()), Some("7 films".into())], "{details:?}");
+    }
+    assert_eq!(lines(true, DetailsKind::None, &films), [Some("Marvel".into()), None]);
+    assert_eq!(lines(false, DetailsKind::None, &films), [None, None], "Nothing opens nothing");
+    let cut = CaptionFacts { name_cut: true, ..films.clone() };
+    assert_eq!(lines(false, DetailsKind::YearLength, &cut), [None, Some("Marvel \u{b7} 7 films".into())],
+        "a cut name rides the one line the policy opened");
+    assert_eq!(lines(false, DetailsKind::Genre, &cut), [None, Some("Marvel \u{b7} 7 films".into())]);
+    assert_eq!(lines(true, DetailsKind::Genre, &cut), [Some("Marvel".into()), Some("7 films".into())], "the title is on: said once");
+    assert_eq!(lines(false, DetailsKind::None, &cut), [None, None], "Nothing opens nothing, a cut name or not");
+    assert_eq!(lines(true, DetailsKind::None, &cut), [Some("Marvel".into()), None]);
+}
+
+/// **S6: an episode whose art prints its address does not say it twice.** Its details line names the
+/// show instead; without a show it keeps the address, and the address everywhere else.
+#[test]
+fn an_episode_whose_art_prints_its_address_names_its_show() {
+    let cx = i18n::english();
+    let at = |details, f: &CaptionFacts| caption_lines(&CaptionPolicy { title: false, details }, f, cx)[1].clone();
+    let marked = CaptionFacts {
+        title: Some("Pilot".into()), episode: Some((3, 4)), show: Some("Severance".into()), address_on_art: true, ..Default::default()
+    };
+    for details in [DetailsKind::YearLength, DetailsKind::Genre, DetailsKind::Video, DetailsKind::AgeRatingScore] {
+        assert_eq!(at(details, &marked).as_deref(), Some("Severance"), "{details:?}");
+        assert_eq!(at(details, &CaptionFacts { address_on_art: false, ..marked.clone() }).as_deref(), Some("S3 \u{b7} E4"), "{details:?}");
+    }
+    assert_eq!(at(DetailsKind::YearLength, &CaptionFacts { show: None, ..marked }).as_deref(), Some("S3 \u{b7} E4"),
+        "no show to name: the address is better than nothing");
 }

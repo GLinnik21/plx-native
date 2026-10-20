@@ -172,9 +172,16 @@ pub fn clock(ms: i64) -> String {
 /// title. It lives here rather than as a `format!` beside its one caller because the two spellings
 /// have to stay one vocabulary: a page that said "S2, E3" while the HUD said "S2E3" for the same
 /// leaf is exactly the drift this module exists to prevent, and nothing but shared code enforces it.
-/// **An episode's ADDRESS — `S1 · E3`** — the identifier printed inside a still's artwork.
+/// **An episode's ADDRESS — `S1 · E3`** — the ONE spelling of it, in every place the app prints it:
+/// the identifier printed inside a still's artwork, a poster's persistent mark, the Library grid's
+/// and Recommended's title line, and the Under posters caption (`caption_policy`, the Continue
+/// Watching deck's `focused_caption`). The separator is the MIDDLE DOT, the design's: the Library
+/// mock's still ("`Library Screens.dc.html` E") and the redesign spec's details line by kind
+/// ("Episode “S2 · E4 · 48 min”", `spec-collections.md`) both set it, as the official client's own
+/// hold menu does. (The caption used to spell it from a catalog key of its own, with a bullet, so one
+/// episode read two ways: on a poster's art and under it.)
 ///
-/// `Library Screens.dc.html` E is why it is the printed line rather than the episode's name: "four
+/// `Library Screens.dc.html` E is also why it is the printed line rather than the episode's name: "four
 /// tiles of one show differ only by number, so the number cannot be the thing behind focus. The
 /// episode's *name* can: it distinguishes nothing until you have already picked a tile."
 ///
@@ -187,12 +194,17 @@ pub fn clock(ms: i64) -> String {
 /// apart deliberately: this one is a printed mark on artwork, sized and inked as its own line,
 /// while the ordinal is a run inside sentences elsewhere in the app.
 pub fn episode_address(season: i64, index: i64) -> String {
+    episode_address_in(plx_platform::i18n::current(), season, index)
+}
+
+/// [`episode_address`] in `cx`'s language, for the formatters that carry a locale.
+pub fn episode_address_in(cx: &LocaleContext, season: i64, index: i64) -> String {
     let mut parts: Vec<String> = Vec::new();
     if season > 0 {
-        parts.push(plx_platform::i18n::msg::core_season(season));
+        parts.push(msg::core_season_in(cx, season));
     }
     if index > 0 {
-        parts.push(plx_platform::i18n::msg::core_episode(index));
+        parts.push(msg::core_episode_in(cx, index));
     }
     parts.join(" \u{b7} ")
 }

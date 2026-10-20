@@ -52,8 +52,6 @@
   "widgets.player.chapters": "Раздзелы",
   "widgets.card.new_episode": "Новая серыя",
   "widgets.card.show_new_episode": "{show} · Новая серыя",
-  "widgets.card.season_episode": "С{season} • Серыя {episode}",
-  "widgets.card.episode": "Серыя {episode}",
   "widgets.failure.jail": "Не ўдалося прайграць: ізаляванае асяроддзе тэлевізара блакуе натыўнае відэа",
   "widgets.failure.refused": "Не ўдалося прайграць: сервер не можа прайграць або сканвертаваць гэты файл",
   "widgets.failure.audio_only": "Не ўдалося прайграць: сервер адправіў толькі аўдыя",

@@ -204,10 +204,11 @@ maps the stored `UnderPosters` to the ui `CaptionPolicy`. **EVERY poster tile re
 poster's `[title, details]`, `shelf_label()` for Home's and Recommended's shelves): the Library grid, the Collections page, the Watchlist,
 Home's shelves, Recommended's poster shelves, **Search's poster rows** (Movies, Shows, Collections; a result from a server that is not the
 household's own is credited after its details line, `CaptionFacts::source`), **the person page's filmography**, **Detail's Related and
-collection shelves** and **the Collection screen's members**. A grid page hands its grid the policy through `StackPage::caption_policy`
+collection shelves** and **the Collection screen's members** (an episode member's poster already prints its "S3 · E4" mark, so its caption names the show instead: `CaptionFacts::address_on_art`). A grid page hands its grid the policy through `StackPage::caption_policy`
 (Stack hands it to a `Body::Shelf` as well as a `Body::Grid`); Detail owns its shelves and sets the policy on Related and the
-collection each step. **Landscape tiles and headshots are not posters and do not read it**: Search's Episode stills and Person
-headshots, Detail's Extras and Cast, and Recommended's landscape rows keep the legacy block (92 px) under every setting. A shelf is
+collection each step. **Landscape tiles and headshots are not posters and do not read it**: the Library's Episodes listing, Search's Episode stills and Person
+headshots, Detail's Extras and Cast, and Recommended's landscape rows keep the legacy block under every setting (the Episodes listing's grid is handed
+`None` for its policy, so its band is the legacy 114 px one the two-line label needs; a landscape still's block is `captions::still_label`). A shelf is
 handed the policy (`Shelf::set_caption_policy`) and reserves,
 opens and reveals its band from `caption_policy::band_h`; a tile that carries a state keeps it (the Continue Watching deck's
 time left is its details line, a filmography poster's character is its details line, the amber play mark leads its title while OK plays, a Watchlist title's release date or
@@ -215,8 +216,10 @@ time left is its details line, a filmography poster's character is its details l
 **One rule for every kind of tile: a line the setting turns on is never drawn empty** (`caption_policy::caption_lines`): the title line is the name a reader
 knows the tile by (`tile_facts::caption_facts`: a season by its SHOW, an episode by its own title, a show or movie by its title), and a
 details kind the tile has no facts for (a season has no length, often no genre or rating) says the tile's identity instead: a season "Season 6" (its own title,
-else "Season N"), an episode "S1 • E8", a show or movie its year, a collection its size, and for a movie, show or collection
-with not even that the KIND word ("Movie", "Show", "Collection") as the last fallback, so no band opens over nothing and no per-tile band is needed (a per-tile band
+else "Season N", else "Specials" for the season numbered 0), an episode "S1 · E8" (the app's ONE address spelling, `fmt::episode_address`), a show or movie its year, a collection its size, and for an episode, movie, show or collection
+with not even that the KIND word ("Episode", "Movie", "Show", "Collection") as the last fallback, so no band opens over nothing and no per-tile band is needed (a per-tile band
 would move the rows below it as focus walks a row). Home's season tiles ("Recently Added TV") and the Library grid's seasons read it the same way; the
-Library grid's episodes keep their own wording (address and release date). The Library page is the full grid under one
+Library grid's episodes keep their own wording (title and release date). **A collection follows one rule on every surface**: its details line is its
+size under every details kind but Nothing, the Title switch governs its title line, and a name its face cuts (`registry::tile_facts::face_cuts_name`) rides the details line
+("Name · 7 films") when the title line is off; the Collections page has no caption transform of its own. The Library page is the full grid under one
 header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.

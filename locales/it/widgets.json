@@ -52,8 +52,6 @@
   "widgets.player.chapters": "Capitoli",
   "widgets.card.new_episode": "Nuovo episodio",
   "widgets.card.show_new_episode": "{show} · Nuovo episodio",
-  "widgets.card.season_episode": "S{season} • E{episode}",
-  "widgets.card.episode": "E{episode}",
   "widgets.failure.jail": "Riproduzione non riuscita — la sandbox di questa TV blocca il video nativo",
   "widgets.failure.refused": "Riproduzione non riuscita: il server non può riprodurre né convertire questo file",
   "widgets.failure.audio_only": "Riproduzione non riuscita — il server ha inviato solo l'audio",

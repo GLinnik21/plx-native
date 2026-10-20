@@ -315,7 +315,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength })));
         let l = shelf_label(&poster, 0);
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
-        assert_eq!((title(&l).as_str(), caption(&l).as_str()), ("Violet", "S3 \u{2022} E4"));
+        assert_eq!((title(&l).as_str(), caption(&l).as_str()), ("Violet", "S3 \u{b7} E4"));
     }
 
 /// The artwork FALLBACK CHAIN: the episode's own still, then the show's POSTER, and its

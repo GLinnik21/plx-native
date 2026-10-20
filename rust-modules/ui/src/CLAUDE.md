@@ -685,11 +685,12 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 ## Card marks — three marks, three meanings, and no card may blur them
 
-Library All uses the shared caption-band policy for movies, shows, seasons and episodes (so does every other POSTER tile: Home's shelves,
+Library All uses the shared caption-band policy for movies, shows, seasons and collections (so does every other POSTER tile: Home's shelves,
 Recommended's poster shelves, Search's poster rows, the person page's filmography, Detail's Related and collection shelves and the Collection
 screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a shelf reserves and the caption block it reveals by
-`caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf with no policy,
-a landscape still row or a headshot row, keeps the legacy 114 px band):
+`caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
+no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
+band and its two-line block, under every setting; the band must follow the label, never the setting):
 only the focused row opens its caption; a bounded set of springs closes rows left behind, and
 each row's caption is drawn at its band's own expansion (`card_row::band_fade`), so a move is one
 hand-over (`out = 1 - in`) that starts on the key frame; `GridBands::closing` names the card a

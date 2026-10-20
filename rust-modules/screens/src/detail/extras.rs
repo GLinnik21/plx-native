@@ -71,15 +71,13 @@ pub fn art(d: &Detail, i: usize) -> Art<'_> {
     })
 }
 
-/// Card `i`'s label block: its title (its caption when it has none) over its caption.
+/// Card `i`'s label block: its title over its caption. A line the extra has nothing for is absent,
+/// never drawn empty and never the other line twice (an extra with no title used to draw its caption
+/// on both lines).
 pub fn label(d: &Detail, i: usize) -> TileLabel {
     let e = &d.extras[i];
-    let title = if e.title.is_empty() {
-        e.caption()
-    } else {
-        e.title.as_str()
-    };
-    TileLabel::titled(title, e.caption())
+    let line = |text: &str| Some(text.to_owned()).filter(|text| !text.is_empty());
+    TileLabel::from_lines([line(e.title.as_str()), line(e.caption())])
 }
 
 /// The shelf's heading, `lift` being the row's live label lift (`Shelf::heading_lift`).

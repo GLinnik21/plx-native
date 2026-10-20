@@ -9,7 +9,7 @@
 //! Recommended read ([`crate::registry::captions`], [`plx_ui::caption_policy`]); only that tile
 //! wears a caption, and a face with no artwork carries no word. A line the setting turns on is
 //! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
-//! length, often no genre) says the tile's identity instead ("Season 6", "S1 • E8", its year, and
+//! length, often no genre) says the tile's identity instead ("Season 6", "S1 · E8", its year, and
 //! for a film, show or collection with not even that, what it is: "Movie", "Show", "Collection").
 //! The setting is the same under every POSTER in the app (Search results, a person's filmography,
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
@@ -23,7 +23,7 @@
 
 use super::*;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
-use plx_ui::caption_policy::{band_h, caption_lines, CaptionPolicy, DetailsKind};
+use plx_ui::caption_policy::{band_h, CaptionPolicy, DetailsKind};
 use plx_data::pms::PmsMovie;
 use plx_ui::caption_policy::CaptionFacts;
 use plx_ui::cards::{RowStyle, SampleRow, TileLabel};
@@ -310,15 +310,25 @@ fn sample_facts() -> CaptionFacts {
     }
 }
 
-/// The preview's caption lines for a stored value — what the lifted tile wears. Pure, so a test
-/// states the exact words. `None` is the sample.
+/// The preview's focused block for a stored value, built by the ONE builder every poster surface
+/// uses ([`crate::registry::captions::label`]), so the preview cannot word, mark or hold a caption
+/// differently from the screens it previews.
+fn label_of(v: UnderPosters, facts: &CaptionFacts) -> TileLabel {
+    crate::registry::captions::label(&caption_policy_of(v), facts, None, false)
+}
+
+/// The preview's caption lines for a stored value, as that block's words — what the lifted tile
+/// wears. Pure, so a test states the exact words. `None` is the sample.
+#[cfg(test)]
 fn preview_lines(v: UnderPosters, poster: Option<&PmsMovie>) -> [Option<String>; 2] {
     lines_of(v, &caption_facts_of(poster))
 }
 
 /// [`preview_lines`] from facts already in hand.
 fn lines_of(v: UnderPosters, facts: &CaptionFacts) -> [Option<String>; 2] {
-    caption_lines(&caption_policy_of(v), facts, plx_platform::i18n::current())
+    let label = label_of(v, facts);
+    let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|line| line.to_string_lossy().into_owned());
+    [text(&label.title), text(&label.caption)]
 }
 
 /// The preview: a frame holding the row of posters, the lifted one wearing the caption the policy
@@ -329,7 +339,7 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], measure: &dy
     p.rect(frame, theme::CARD_RING_RAD, theme::scrim_black(0.30), theme::scrim_black(0.30), 0.0);
     let lifted = lifted_tile(posters.len());
     let label = if band_h(&caption_policy_of(v)) > 0.0 {
-        TileLabel::from_lines(preview_lines(v, lifted_poster(posters)))
+        label_of(v, &caption_facts_of(lifted_poster(posters)))
     } else {
         TileLabel::default()
     };

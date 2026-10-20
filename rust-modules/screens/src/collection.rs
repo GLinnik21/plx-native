@@ -169,10 +169,13 @@ pub fn member_label(item: &PmsMovie) -> String {
 }
 
 /// A member's focused caption: the one Under posters builder, like every other poster. Every kind
-/// goes through it, an episode too (its own title over its "S3 \u{2022} E4" address under the default
-/// details; the persistent mark on the poster, [`member_label`], is a separate thing and stays).
+/// goes through it, an episode too. The poster of an episode already wears its address
+/// ([`member_label`], "S3 · E4", a persistent mark that stays), so its caption does not say it
+/// twice: where the setting would fall back to the address it names the show instead
+/// (`CaptionFacts::address_on_art`).
 fn member_caption(item: &PmsMovie) -> TileLabel {
-    crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(item), None, false)
+    let facts = plx_ui::caption_policy::CaptionFacts { address_on_art: item.kind == 3, ..tile_facts::caption_facts(item) };
+    crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None, false)
 }
 
 /// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.
@@ -1144,11 +1147,12 @@ mod tests {
             show_title: "Example Show".into(), ..Default::default() };
         assert_eq!(member_label(&episode), "S3 · E4");
         // the focused caption is the Under posters builder's, not a copy of it: an episode is its own
-        // title over its address under the default details, and the Title switch decides the title
+        // title over its show (its address is already on the poster's mark), and the Title switch
+        // decides the title
         let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_str().unwrap().to_owned());
         for (title, details, want) in [
-            (true, Details::YearLength, [Some("The Answer"), Some("S3 \u{2022} E4")]),
-            (false, Details::YearLength, [None, Some("S3 \u{2022} E4")]),
+            (true, Details::YearLength, [Some("The Answer"), Some("Example Show")]),
+            (false, Details::YearLength, [None, Some("Example Show")]),
             (true, Details::None, [Some("The Answer"), None]),
         ] {
             TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));

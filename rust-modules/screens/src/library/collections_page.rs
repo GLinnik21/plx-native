@@ -11,9 +11,10 @@
 //!   the right edge ([`header_spec`], built into the shared `PageHeader` by `header.rs`);
 //! * which of the library page's behaviours do not run here ([`syncs_section`], read by
 //!   `LibraryScreen::sync`);
-//! * the tile: no count badge, and a caption of "N films" / "N shows" under the focused tile (the
-//!   collection's name above it when Under posters > Title is on, or when the face cuts the name) ([`caption`], [`TileFacts`],
-//!   read by the grid's card source, which also draws the smart mark);
+//! * the tile: no count badge, and the smart mark; its caption is the ONE rule every collection tile
+//!   reads on every surface (`registry::captions::label`: the Under posters policy, "N films" as the
+//!   details line under every kind but Nothing, a name the face cuts riding that line), in the
+//!   policy's own band like every poster;
 //! * the empty page's sentence ([`empty_text`], read by the status read-out).
 //!
 //! OK on a tile already opens the collection: `app::input::activate_card` routes a collection row
@@ -21,9 +22,8 @@
 use super::Listing;
 use plx_data::browse::LibraryType;
 use plx_data::stores::browse::SecKind;
-use plx_platform::i18n::{msg, LocaleContext};
+use plx_platform::i18n::msg;
 use plx_ui::breadcrumb::Crumb;
-use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::page_header::{HeaderItem, PageHeaderSpec};
 
 /// A server that declares at least this many sorts for the listing gets the Sort control. PMS
@@ -82,52 +82,6 @@ pub fn header_spec(library: &str, kind: SecKind, declared_sorts: usize, sort_val
         }]
     } else { Vec::new() };
     PageHeaderSpec { crumb: Some(Crumb::new(root_label(library, kind), msg::browse_kind_collections())), right, ..Default::default() }
-}
-
-/// The facts of one collection row the tile and its caption read.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TileFacts<'a> {
-    pub title: &'a str,
-    /// `movie`, `show`, ... (PMS `subtype`); `None` = the server sent none.
-    pub subtype: Option<&'a str>,
-    /// The member count; 0 = unknown (an empty collection and an unread one look alike on the
-    /// wire, so neither gets a count line).
-    pub child_count: i64,
-    /// The tile's face cuts the name (`collection_tile::name_is_cut`): the caption then carries it.
-    pub name_cut: bool,
-}
-
-/// The policy a collection's caption follows: the stored Title switch is honoured; the details
-/// line is always the member count unless the reader chose None (nothing opens). Genre, Video and
-/// Age rating describe a film, not a collection, so they fall back to the count.
-///
-/// A name the face cuts is the exception to the Title switch: the focused caption carries the full
-/// name whatever the setting (`name_cut`), as the face is the only other place it is told.
-pub fn policy(stored: CaptionPolicy, name_cut: bool) -> CaptionPolicy {
-    CaptionPolicy {
-        title: stored.title || name_cut,
-        details: if stored.details == DetailsKind::None { DetailsKind::None } else { DetailsKind::YearLength },
-    }
-}
-
-/// The policy the grid reserves its caption band for on this page: the title line is always part of
-/// it. The band is one height for every tile of the page, and any tile's face may cut its name
-/// (and then needs the line), so it cannot depend on which tile happens to be focused.
-pub fn band_policy(stored: CaptionPolicy) -> CaptionPolicy {
-    CaptionPolicy { title: true, ..policy(stored, false) }
-}
-
-/// The focused tile's caption lines `[name, "N films"]` under `stored`. No count badge exists on
-/// the page: this caption is the only place the size is told.
-pub fn caption(stored: CaptionPolicy, facts: &TileFacts<'_>, locale: &LocaleContext) -> [Option<String>; 2] {
-    let f = CaptionFacts {
-        title: Some(facts.title.to_owned()),
-        // An unknown subtype still takes the collection arm (a generic "N items").
-        subtype: Some(facts.subtype.unwrap_or("").to_owned()),
-        child_count: u32::try_from(facts.child_count).ok().filter(|n| *n > 0),
-        ..Default::default()
-    };
-    caption_lines(&policy(stored, facts.name_cut), &f, locale)
 }
 
 /// The empty page's sentence, "No collections in {library}".

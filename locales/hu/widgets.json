@@ -52,8 +52,6 @@
   "widgets.player.chapters": "Fejezetek",
   "widgets.card.new_episode": "Új epizód",
   "widgets.card.show_new_episode": "{show} · Új epizód",
-  "widgets.card.season_episode": "É{season} • E{episode}",
-  "widgets.card.episode": "E{episode}",
   "widgets.failure.jail": "Sikertelen lejátszás – a TV sandboxa tiltja a natív videót",
   "widgets.failure.refused": "Sikertelen lejátszás – a szerver nem tudja lejátszani vagy konvertálni a fájlt",
   "widgets.failure.audio_only": "Sikertelen lejátszás – a szerver csak hangot küldött",

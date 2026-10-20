@@ -2,8 +2,9 @@
 //! (Settings > Libraries > Under posters), for EVERY poster tile: the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
-//! members. (A landscape still or a headshot is not a poster and is not on the policy: Search's Episode
-//! and Person rows, Detail's Extras and Cast and Recommended's landscape rows keep the legacy block.)
+//! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
+//! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
+//! landscape rows keep the legacy block, [`still_label`].)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -13,8 +14,8 @@
 //!   is never drawn empty, for any kind of tile** (`plx_ui::caption_policy::caption_lines`): the title
 //!   line is the name a reader knows the tile by (`tile_facts::caption_facts` puts a season's SHOW
 //!   there, an episode keeps its own title), and a details kind the tile has no facts for says its
-//!   identity instead (a season "Season 6", an episode "S1 • E8", a show or movie its year, a collection
-//!   its size) and a tile with not even that says what KIND it is ("Movie", "Show", "Collection"), so a
+//!   identity instead (a season "Season 6" or "Specials", an episode "S1 · E8", a show or movie its year, a collection
+//!   its size) and a tile with not even that says what KIND it is ("Episode", "Movie", "Show", "Collection"), so a
 //!   band the setting opens is never open over nothing. A tile that carries a STATE
 //!   keeps it (a filmography poster's character is one, as a Continue Watching tile's time left is): its `state` line REPLACES the details line whenever the setting shows one (a
 //!   Continue Watching tile's time left, a Watchlist title's release date or "Server offline"), and
@@ -51,7 +52,10 @@ pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>
     let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
     let details = if policy.details == DetailsKind::None { None } else { state.or(details) };
     let glyph = plays && title.is_some();
-    TileLabel { glyph, ..TileLabel::from_lines([title, details]) }
+    let label = TileLabel { glyph, ..TileLabel::from_lines([title, details]) };
+    // A name the face cut rides the details line (`caption_lines`): it stays under its own tile
+    // (never under the next column) and glides there when it is longer than the tile.
+    if facts.name_cut { label.within_tile() } else { label }
 }
 
 /// A poster shelf tile's label under `policy`: Home's shelves and the Library's Recommended
@@ -59,7 +63,7 @@ pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>
 /// (`is_continue`) its time left ("8m left", "Show · 8m left", or "Show · New episode" for a
 /// next-up episode) is the details line whatever kind the setting asks for (but Nothing), and the
 /// amber play mark leads the title while OK on the deck plays (`DeckPress::Play`) and the title is
-/// shown. An episode's default details line is its address ("S1 • E8"), as it was on a shelf.
+/// shown. An episode's default details line is its address ("S1 · E8"), as it was on a shelf.
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let facts = crate::registry::tile_facts::caption_facts(item);
     let state = is_continue
@@ -67,6 +71,29 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
         .flatten()
         .map(|c| c.to_string_lossy().into_owned());
     label(policy, &facts, state, is_continue && plx_media::route::deck_press().press_plays())
+}
+
+/// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
+/// posters policy, in its own legacy band (92 px, [`plx_ui::cards::LEGACY_BAND_H`]), under every
+/// setting: the episode's own title (its address when it has none, or when it only repeats the
+/// show's name) over one fact, the time it has left on the Continue Watching deck (`is_continue`),
+/// else its release date. The Library's Episodes listing and the Recommended page's landscape rows
+/// read this ONE builder; a line the row has nothing for is absent, never drawn empty.
+pub fn still_label(item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
+    let name = if item.title.is_empty() || item.title == item.show_title {
+        plx_ui::fmt::episode_address(i64::from(item.season_index), i64::from(item.ep_index))
+    } else {
+        item.title.clone()
+    };
+    let fact = if is_continue && item.resume_frac().is_some() {
+        plx_ui::fmt::time_left(item.dur_ns / 1_000_000 - item.resume_ms)
+    } else if item.aired.is_empty() && item.year <= 0 {
+        String::new()
+    } else {
+        plx_ui::fmt::pretty_date(&item.aired, i64::from(item.year))
+    };
+    let line = |text: String| Some(text).filter(|text| !text.is_empty());
+    TileLabel::from_lines([line(name), line(fact)])
 }
 
 #[cfg(test)]
@@ -94,7 +121,7 @@ mod tests {
         assert!(!with(false, DetailsKind::Genre, true).glyph, "no title line, nothing to lead");
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
-        assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{2022} E8".into())]);
+        assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{b7} E8".into())]);
     }
 
     /// A SEASON on a shelf (Recently Added TV) is named by its show and, with no fact the picked

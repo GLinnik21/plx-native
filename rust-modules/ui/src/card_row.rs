@@ -769,7 +769,7 @@ pub fn draw_tile(
 }
 
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
-/// ("S1 • E8", a year, a character name), optionally led by the Continue-Watching play glyph. Only
+/// ("S1 · E8", a year, a character name), optionally led by the Continue-Watching play glyph. Only
 /// the focused tile carries it, so a row builds exactly one of these per frame.
 ///
 /// It is a type rather than three parameters because the block's height is a fact the SCREEN needs:
@@ -1034,11 +1034,7 @@ pub fn focused_caption(m: &TileFacts<'_>, is_continue: bool) -> Option<std::ffi:
         // A collection is its size, never a year: the members span several, and PMS sends none.
         crate::fmt::collection_count(m.subtype, m.child_count)
     } else if m.kind == TileKind::Episode && m.ep_index > 0 {
-        if m.season_index > 0 {
-            plx_platform::i18n::msg::widgets_card_season_episode(m.ep_index as i64, m.season_index as i64)
-        } else {
-            plx_platform::i18n::msg::widgets_card_episode(m.ep_index as i64)
-        }
+        crate::fmt::episode_address(i64::from(m.season_index), i64::from(m.ep_index))
     } else if m.year > 0 {
         m.year.to_string()
     } else {

@@ -30,6 +30,8 @@ fn facts(resume: bool) -> impl Fn(&mut plx_data::pms::PmsMovie) {
         m.genre = Some("Drama".into());
         m.rating = "PG-13".into();
         m.audience_rating = Some(7.8);
+        m.video_resolution = Some("1080".into());
+        m.hdr = true;
         m.dur_ns = 100 * 60 * 1_000_000_000;
         m.resume_ms = if resume { 20 * 60 * 1000 } else { 0 };
     }
@@ -38,6 +40,7 @@ fn facts(resume: bool) -> impl Fn(&mut plx_data::pms::PmsMovie) {
 const YEAR_LENGTH: &str = "1999 \u{b7} 1h 40m";
 const GENRE: &str = "Drama";
 const AGE_SCORE: &str = "PG-13 \u{b7} 7.8";
+const VIDEO: &str = "1080p \u{b7} HDR";
 /// 80 of 100 minutes left, as the deck words it.
 fn left() -> String { plx_ui::fmt::time_left(80 * 60 * 1000) }
 
@@ -48,20 +51,16 @@ pub(super) fn set(w: &mut World, title: bool, details: Details) {
 
 /// The caption table both pages must follow, for a tile with no state: (title on, details, the
 /// second line it must draw).
-const TABLE: [(bool, Details, Option<&str>); 6] = [
+const TABLE: [(bool, Details, Option<&str>); 8] = [
     (false, Details::YearLength, Some(YEAR_LENGTH)),
     (false, Details::Genre, Some(GENRE)),
     (true, Details::Genre, Some(GENRE)),
+    (true, Details::Video, Some(VIDEO)),
+    (false, Details::Video, Some(VIDEO)),
     (true, Details::AgeRatingScore, Some(AGE_SCORE)),
     (true, Details::None, None),
     (false, Details::None, None),
 ];
-
-/// What the focused poster drew, as `(title line, details line)` words out of `candidates`.
-fn drew(w: &mut World, title: &str, details: &[&str]) -> (bool, Vec<String>) {
-    let drawn = w.drawn();
-    (drawn.says(title), details.iter().filter(|d| drawn.says(d)).map(|d| (*d).to_owned()).collect())
-}
 
 fn home(resume: bool, name: &str) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
@@ -76,13 +75,10 @@ fn home(resume: bool, name: &str) -> World {
 fn home_shelves_caption_the_focused_poster_per_the_stored_setting() {
     let mut w = home(false, "cap-home");
     let _cell = Cell::default();
-    let every = [YEAR_LENGTH, GENRE, AGE_SCORE];
     for (title, details, line) in TABLE {
         set(&mut w, title, details);
-        let (title_drawn, lines) = drew(&mut w, "Heat", &every);
-        let setting = format!("title {title}, details {details:?}");
-        assert_eq!(title_drawn, title, "the title line follows the Title switch on Home ({setting})");
-        assert_eq!(lines, line.map(str::to_owned).into_iter().collect::<Vec<_>>(), "the details line is the picked one ({setting})");
+        let want: Vec<&str> = title.then_some("Heat").into_iter().chain(line).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "the caption is exactly the setting's lines on Home (title {title}, details {details:?})");
     }
 }
 
@@ -90,15 +86,12 @@ fn home_shelves_caption_the_focused_poster_per_the_stored_setting() {
 fn a_continue_watching_tile_on_home_keeps_its_time_left_line() {
     let mut w = home(true, "cap-home-deck");
     let _cell = Cell::default();
-    let every = [YEAR_LENGTH, GENRE, AGE_SCORE];
     for (title, details, _) in TABLE {
         set(&mut w, title, details);
-        let (title_drawn, lines) = drew(&mut w, "Heat", &every);
-        let drawn_left = w.drawn().says(&left());
-        let setting = format!("title {title}, details {details:?}");
-        assert_eq!(title_drawn, title, "the Title switch still decides the title line ({setting})");
-        assert!(lines.is_empty(), "the deck's details line is not the picked fact ({setting}): {lines:?}");
-        assert_eq!(drawn_left, details != Details::None, "time left is its details line unless the setting shows none ({setting})");
+        // The deck's details line is the time left, not the picked fact, unless the setting shows none.
+        let left = left();
+        let want: Vec<&str> = title.then_some("Heat").into_iter().chain((details != Details::None).then_some(left.as_str())).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "title {title}, details {details:?}");
     }
 }
 
@@ -121,13 +114,10 @@ fn recommended(resume_on_deck: bool, name: &str, deck_first: bool) -> World {
 fn recommended_shelves_caption_the_focused_poster_per_the_stored_setting() {
     let mut w = recommended(false, "cap-rec", false);
     let _cell = Cell::default();
-    let every = [YEAR_LENGTH, GENRE, AGE_SCORE];
     for (title, details, line) in TABLE {
         set(&mut w, title, details);
-        let (title_drawn, lines) = drew(&mut w, "Recently Added 0", &every);
-        let setting = format!("title {title}, details {details:?}");
-        assert_eq!(title_drawn, title, "the title line follows the Title switch on Recommended ({setting})");
-        assert_eq!(lines, line.map(str::to_owned).into_iter().collect::<Vec<_>>(), "the details line is the picked one ({setting})");
+        let want: Vec<&str> = title.then_some("Recently Added 0").into_iter().chain(line).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "the caption is exactly the setting's lines on Recommended (title {title}, details {details:?})");
     }
 }
 
@@ -135,15 +125,11 @@ fn recommended_shelves_caption_the_focused_poster_per_the_stored_setting() {
 fn a_continue_watching_tile_on_recommended_keeps_its_time_left_line() {
     let mut w = recommended(true, "cap-rec-deck", true);
     let _cell = Cell::default();
-    let every = [YEAR_LENGTH, GENRE, AGE_SCORE];
     for (title, details, _) in TABLE {
         set(&mut w, title, details);
-        let (title_drawn, lines) = drew(&mut w, "Continue Watching 0", &every);
-        let drawn_left = w.drawn().says(&left());
-        let setting = format!("title {title}, details {details:?}");
-        assert_eq!(title_drawn, title, "the Title switch still decides the title line ({setting})");
-        assert!(lines.is_empty(), "the deck's details line is not the picked fact ({setting}): {lines:?}");
-        assert_eq!(drawn_left, details != Details::None, "time left is its details line unless the setting shows none ({setting})");
+        let left = left();
+        let want: Vec<&str> = title.then_some("Continue Watching 0").into_iter().chain((details != Details::None).then_some(left.as_str())).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "title {title}, details {details:?}");
     }
 }
 
@@ -182,34 +168,34 @@ fn bare_show(m: &mut plx_data::pms::PmsMovie) {
 fn bare_episode(m: &mut plx_data::pms::PmsMovie) {
     m.kind = 3; m.title = "Pilot".into(); m.show_title = "Severance".into(); m.season_index = 1; m.ep_index = 8;
 }
+/// An episode the server numbered neither by season nor by episode (a date-numbered series, an
+/// item mid-scan): its address is empty, so the line says what it is.
+fn unnumbered_episode(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 3; m.title = "Pilot".into(); m.show_title = "Severance".into(); m.season_index = 0; m.ep_index = 0;
+}
+/// A season the server gave neither a title nor a number: the specials folder.
+fn untitled_specials(m: &mut plx_data::pms::PmsMovie) {
+    m.kind = 2; m.title = String::new(); m.show_title = "The Office".into(); m.season_index = 0;
+}
 fn bare_movie(m: &mut plx_data::pms::PmsMovie) {
     m.kind = 0; m.title = "Heat".into(); m.year = 1995;
 }
 
-const TILES: [Tile; 6] = [
+const TILES: [Tile; 8] = [
     Tile { name: "a season with no facts", edit: bare_season, title: "The Office", details: ["Season 6"; 4] },
     Tile { name: "a season with every fact but a length", edit: rich_season, title: "The Office",
-           details: ["2009", "Comedy", "1080p \u{b7} HDR", "TV-14 \u{b7} 8.5"] },
+           details: ["Season 6", "Comedy", "1080p \u{b7} HDR", "TV-14 \u{b7} 8.5"] },
     Tile { name: "a season the server titled itself", edit: specials, title: "The Office", details: ["Specials"; 4] },
     Tile { name: "a show with a year only", edit: bare_show, title: "Severance", details: ["2022"; 4] },
-    Tile { name: "an episode with no facts", edit: bare_episode, title: "Pilot", details: ["S1 \u{2022} E8"; 4] },
+    Tile { name: "an episode with no facts", edit: bare_episode, title: "Pilot", details: ["S1 \u{b7} E8"; 4] },
+    Tile { name: "an unnumbered episode", edit: unnumbered_episode, title: "Pilot", details: ["Episode"; 4] },
+    Tile { name: "a season with no title or number", edit: untitled_specials, title: "The Office", details: ["Specials"; 4] },
     Tile { name: "a movie with a year only", edit: bare_movie, title: "Heat", details: ["1995"; 4] },
 ];
 
-/// Every string a tile above can put on a line, so a run is read whichever line it is on.
-const WORDS: [&str; 17] = [
-    "The Office", "Season 6", "Specials", "Severance", "Pilot", "Heat", "2009", "2022", "1995", "Comedy",
-    "1080p \u{b7} HDR", "TV-14 \u{b7} 8.5", "S1 \u{2022} E8", "Season 0", "Show", "Drama", "PG-13",
-];
-
-/// The caption lines the focused poster drew, top to bottom. Each line is drawn twice, the second
-/// run its 1 px shadow (`CAPTION_SHADOW_DY`), which reads as the same line.
-fn caption(w: &mut World) -> Vec<String> {
-    let mut runs: Vec<_> = w.drawn().words.into_iter().filter(|(words, _)| WORDS.contains(&words.as_str())).collect();
-    runs.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
-    runs.dedup_by(|b, a| a.0 == b.0 && (b.1.y - a.1.y).abs() <= plx_ui::caption_policy::CAPTION_SHADOW_DY + 0.5);
-    runs.into_iter().map(|(words, _)| words).collect()
-}
+/// The caption lines the focused poster drew, top to bottom (`Drawn::caption_lines`: the block
+/// itself, not a search for words), so a line nothing asked for fails the comparison.
+fn caption(w: &mut World) -> Vec<String> { w.drawn().caption_lines() }
 
 /// Home with the Continue Watching deck as row 0 and a Recently Added shelf as row 1, focused on the
 /// shelf's first poster (`r1`), which `edit` has made the kind of tile the test wants: a poster that

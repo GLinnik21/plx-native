@@ -55,8 +55,23 @@ pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
             u32::try_from(item.season_index).unwrap_or(0),
             u32::try_from(item.ep_index).unwrap_or(0),
         )),
+        show: (item.kind == 3).then(|| item.show_title.clone()).filter(|show| !show.is_empty()),
+        name_cut: item.kind == KIND_COLLECTION && face_cuts_name(item),
         ..Default::default()
     }
+}
+
+/// **Does this collection's face cut its name?** The face is the grid's resting card, drawn by the
+/// ONE card art every poster surface shares (`widgets::card_named_led`: a baked fan names itself
+/// live, a collection with no artwork wears the neutral tile's name, a custom poster is artwork with
+/// no name on it to cut), so the answer is the row's, the same on the Collections page, Search, Home,
+/// Recommended, Detail and the Collection screen. A name the face cuts is carried whole by the
+/// caption ([`CaptionFacts::name_cut`]).
+pub fn face_cuts_name(item: &PmsMovie) -> bool {
+    use plx_ui::collection_tile::{name_is_cut, Face};
+    let facts = of(item);
+    let face = if facts.thumb.is_empty() { Face::Neutral } else if facts.composite_thumb { Face::Fan } else { return false };
+    name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
 }
 
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address

@@ -7,19 +7,25 @@
 //! **A line the setting turns on is never drawn empty**, whatever the tile is. The title line is the
 //! name a reader knows the tile by (a season by its SHOW, an episode by its own title). The details
 //! line is the picked kind's facts, and a tile that has none of them (a season has no length and
-//! often no genre or rating) says its identity line instead (a season "Season 6", an episode its
-//! "S1 • E8" address, a show or movie its year, a collection its size), and a tile with not even that
-//! says what KIND it is ("Movie", "Show", "Collection"), so a band the policy opens is never open over
-//! nothing. Under Nothing with Title Off no band opens at all.
+//! often no genre or rating) says its identity line instead (a season "Season 6" or "Specials", an
+//! episode its "S1 · E8" address, a show or movie its year, a collection its size), and a tile with
+//! not even that says what KIND it is ("Episode", "Movie", "Show", "Collection"), so a band the
+//! policy opens is never open over nothing. Under Nothing with Title Off no band opens at all.
+//!
+//! **One collection rule, on every surface.** A collection's details line is its size ("7 films")
+//! under every details kind but Nothing; the Title switch governs its title line like any poster's;
+//! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
+//! line is off, since the face is the only other place it is told.
 //!
 //! **Every POSTER tile reads this one setting**: the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
 //! (the screens build the focused block through `registry::captions`, and hand a
 //! [`crate::cards::Shelf`] / grid the policy so the room it reserves is [`band_h`] of the same value).
-//! **Landscape tiles and headshots are not posters and are not on it**: an episode still (Search's
-//! Episode row, Detail's Extras) and a cast or search-result headshot keep their own block, in
-//! their own height, under every setting. The types and the two function signatures are what the
+//! **Landscape tiles and headshots are not posters and are not on it**: an episode still (the
+//! Library's Episodes listing, Search's Episode row, Recommended's landscape rows, Detail's Extras)
+//! and a cast or search-result headshot keep their own block, in their own height (the legacy band,
+//! `Grid::set_caption_policy(None)` for a grid), under every setting. The types and the two function signatures are what the
 //! library, collection and settings packages compile against. [`band_h`] sizes the band;
 //! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 
@@ -107,6 +113,18 @@ pub struct CaptionFacts {
     /// title the server gave it ("Season 6", "Specials"). `title` then holds the name of its SHOW, the
     /// name a reader knows the tile by, and this is the season's identity line.
     pub season: Option<(u32, String)>,
+    /// An episode's SHOW name, which its details line says when its art already prints the address
+    /// ([`address_on_art`](Self::address_on_art)).
+    pub show: Option<String>,
+    /// An episode whose poster already wears its address as a persistent mark (the Collection
+    /// screen's members, `widgets::poster_label`): its details line does not repeat the address, it
+    /// names the show.
+    pub address_on_art: bool,
+    /// A COLLECTION whose face cuts its name (`collection_tile::name_is_cut`: the live name over a
+    /// baked fan or the neutral tile runs past its band). The face is the only other place the name
+    /// is told, so with the Title switch off the details line carries it ("Name · 7 films"): the
+    /// band is still the policy's, one line, and the cut name is never lost.
+    pub name_cut: bool,
 }
 
 /// The caption's lines for `facts` under `policy`: `[title, details]` with absent lines `None`.
@@ -127,8 +145,19 @@ pub struct CaptionFacts {
 /// technical marks `HDR`, `4K`, `1080p` and the middle dot.
 pub fn caption_lines(policy: &CaptionPolicy, facts: &CaptionFacts, locale: &LocaleContext) -> [Option<String>; 2] {
     let title = policy.title.then(|| facts.title.clone()).flatten().filter(|t| !t.is_empty());
+    if policy.details == DetailsKind::None {
+        return [title, None];
+    }
+    // A COLLECTION has one fact worth a line, its size, under every details kind (it has no genre,
+    // stream or age rating to pick): one rule on every surface that shows one. A name its face cuts
+    // is the only other place the name is told, so with the title line off it rides the details line.
+    if facts.subtype.is_some() {
+        let size = identity_line(facts, locale);
+        let name = facts.title.clone().filter(|name| facts.name_cut && title.is_none() && !name.is_empty());
+        return [title, join(name.into_iter().chain(size).chain(facts.source.clone().filter(|s| !s.is_empty())).collect())];
+    }
     let picked = match policy.details {
-        DetailsKind::None => return [title, None],
+        DetailsKind::None => unreachable!("returned above"),
         DetailsKind::YearLength => year_length(facts, locale),
         DetailsKind::Genre => facts.genre.clone().filter(|g| !g.is_empty()),
         DetailsKind::Video => join(
@@ -161,31 +190,44 @@ fn resolution_mark(raw: &str) -> Option<String> {
     }
 }
 
-/// An episode's address, "S1 • E8" (or "E8" for one the server did not give a season).
+/// An episode's address, "S1 · E8" (or "E8" for one the server did not give a season): the app's one
+/// spelling of it ([`crate::fmt::episode_address_in`]), the same as the art's mark and the still
+/// overlay. `None` for an episode the server did not number.
 fn episode_address(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
-    use plx_platform::i18n::msg;
     let (season, ep) = f.episode.filter(|(_, ep)| *ep > 0)?;
-    Some(if season > 0 {
-        msg::widgets_card_season_episode_in(cx, i64::from(ep), i64::from(season))
-    } else {
-        msg::widgets_card_episode_in(cx, i64::from(ep))
-    })
+    Some(crate::fmt::episode_address_in(cx, i64::from(season), i64::from(ep)))
 }
 
-/// The default details line, by kind: a collection is its size, an episode its address, a show its
-/// season count (or its unwatched new episodes), a started item the time it has left, anything else year and length
-/// (a season has no length: its year, or nothing, which [`identity_line`] then answers).
+/// What an EPISODE's caption says first: its address, "S1 · E8", unless its art already prints that
+/// ([`CaptionFacts::address_on_art`]), in which case the show it belongs to (the address, when the
+/// server named no show: the repeat beats an empty line). `None` for an episode with neither.
+fn episode_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
+    f.episode?;
+    f.address_on_art.then(|| f.show.clone().filter(|show| !show.is_empty())).flatten()
+        .or_else(|| episode_address(f, cx))
+}
+
+/// The default details line, by kind: a collection is its size, an episode its address, a season its
+/// own identity ("Season 6": it beats its year, which names neither the show nor the season), a show
+/// its season count (or, once it is in progress, its unwatched new episodes), a started item the time
+/// it has left, anything else year and length ([`identity_line`] answers when there is none).
 fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
+    if f.season.is_some() {
+        return identity_line(f, cx);
+    }
     if let Some(sub) = f.subtype.as_deref() {
         return Some(crate::fmt::collection_count_in(cx, Some(sub), i64::from(f.child_count?)));
     }
-    if let Some(address) = episode_address(f, cx) {
-        return Some(address);
+    if let Some(line) = episode_line(f, cx) {
+        return Some(line);
     }
     let year = f.year.filter(|y| *y > 0).map(|y| y.to_string());
     if f.is_show {
-        let unwatched = f.leaf_count.zip(f.viewed_leaf_count).map(|(l, v)| l.saturating_sub(v)).filter(|n| *n > 0);
+        // "N new episodes" is for a show IN PROGRESS: something watched and something left. A show
+        // nobody opened has every episode unwatched, and "62 new episodes" tells a reader nothing.
+        let in_progress = f.viewed_leaf_count.filter(|v| *v > 0);
+        let unwatched = f.leaf_count.zip(in_progress).map(|(l, v)| l.saturating_sub(v)).filter(|n| *n > 0);
         if let Some(n) = unwatched {
             return Some(msg::captions_new_episodes_in(cx, i64::from(n)));
         }
@@ -203,12 +245,24 @@ fn year_length(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     join(year.into_iter().chain(length).collect())
 }
 
-/// What a tile IS, in one short line, for a tile the picked details kind has nothing to say about:
-/// a collection its size, an episode its address ("S1 • E8"), a season its own title ("Season 6",
-/// "Specials", or "Season N" from the catalog when the server named it nothing), anything else its
-/// year; and for a movie, show or collection that has not even that, the kind word ("Movie", "Show",
-/// "Collection"), so a tile the server told us nothing about still has a line and the band the policy
-/// opened over it is not empty. `None` only for a tile that is none of those (an unnumbered episode).
+/// What a tile IS, in one short line, for a tile the picked details kind has nothing to say about,
+/// and **every kind's chain ends in a word, so a line the setting turns on is never drawn empty**:
+///
+/// - a collection its size, else "Collection";
+/// - an episode its address ("S1 · E8", or its show when its art prints the address), else its
+///   year, else "Episode";
+/// - a season its own title ("Season 6", "Specials"), else "Season N" from the catalog, else
+///   "Specials" for the season numbered 0 the server gave no title;
+/// - a show its year, else "Show"; a movie its year, else "Movie".
+///
+/// `None` only for a tile that is none of those (a bare default with no kind flag).
+///
+/// **Why the last rung is the kind word and not the tile's name.** Under Title Off the word says
+/// little the poster does not already show, and the tile's own name would say more. But the name is
+/// the very line the reader switched off, and a name here would make the Title switch lie about its
+/// own state; a kind word is true of every tile, needs no fact the server may not have sent, and
+/// keeps the rule that a band the setting opens is never open over nothing. It is the last rung, so
+/// it is read only by a tile with no year, address, title or size at all (an owner call, kept).
 fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
     use plx_platform::i18n::msg;
     if let Some(sub) = f.subtype.as_deref() {
@@ -217,18 +271,22 @@ fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
             None => msg::browse_collection_kind_in(cx).to_string(),
         });
     }
-    if let Some(address) = episode_address(f, cx) {
-        return Some(address);
-    }
     if let Some((number, own)) = &f.season {
-        return if !own.is_empty() {
-            Some(own.clone())
+        return Some(if !own.is_empty() {
+            own.clone()
+        } else if *number > 0 {
+            msg::browse_detail_season_number_in(cx, i64::from(*number))
         } else {
-            (*number > 0).then(|| msg::browse_detail_season_number_in(cx, i64::from(*number)))
-        };
+            msg::browse_detail_specials_in(cx).to_string()
+        });
+    }
+    if let Some(line) = episode_line(f, cx) {
+        return Some(line);
     }
     f.year.filter(|y| *y > 0).map(|y| y.to_string()).or_else(|| {
-        if f.is_show {
+        if f.episode.is_some() {
+            Some(msg::browse_kind_episode_in(cx).to_string())
+        } else if f.is_show {
             Some(msg::browse_kind_show_in(cx).to_string())
         } else {
             f.is_movie.then(|| msg::browse_kind_movie_in(cx).to_string())
