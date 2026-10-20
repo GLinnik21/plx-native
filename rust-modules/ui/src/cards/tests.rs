@@ -4267,7 +4267,9 @@ fn the_hold_band_speaks_once_per_slack_and_never_leaves_the_view_short_of_its_ma
         let need = hold_band(seen, len);
         assert!(held.0 <= need.0 && held.1 >= need.1, "row {top}: {held:?} must cover {need:?}");
     }
-    assert!(sent.len() <= 1 + (len - 2).div_ceil(HOLD_SLACK), "one band per {HOLD_SLACK} rows: {sent:?}");
+    // the band reaches HOLD_MARGIN + HOLD_SLACK past the view and is sent again once the view needs
+    // more than the margin of it: one band per HOLD_SLACK + 1 rows
+    assert!(sent.len() <= (len - 2).div_ceil(HOLD_SLACK + 1), "one band per {} rows: {sent:?}", HOLD_SLACK + 1);
     assert_eq!(sent.last().map(|b| b.1), Some(len - 1), "the walk reached the last row");
     // the same rows again: nothing to say; a forgotten band is said again
     assert_eq!(band.next((len - 3, len - 1), len), None);

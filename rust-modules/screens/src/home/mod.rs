@@ -1566,7 +1566,9 @@ impl HomeScreen {
         if !self.ghost_cards.is_empty() && !self.grid.shelves.iter().any(Shelf::landing_pending) {
             self.ghost_cards.clear();
         }
-        // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
+        // The store holds cards for the rows in view and `HOLD_MARGIN` either side (`HoldBand` asks
+        // for `HOLD_SLACK` more, once, so a scroll does not re-send the band on every row); the rest
+        // keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
             if let Some(hold) = self.hold.next((lo, hi), self.rows.len()) {

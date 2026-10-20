@@ -762,7 +762,9 @@ pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
 /// slots) sweeps them. Closing the gap a key at a time moves every key behind it in the table and
 /// in the indexes that name positions, so a page that changes a few keys per publication paid for
 /// the whole table on each one; the sweep is batched instead, and what waits is a key no card can
-/// name again (a slot's identity carries its publication), at most this many of them.
+/// name again (a slot's identity carries its publication). The sweep runs in the sync that finds
+/// the batch full, and keeps what that very sync took off the page (a focus on a card that rotated
+/// out recovers to its row), so what waits is the batch plus the departures of one or two syncs.
 pub(crate) const KEY_PRUNE_BATCH: usize = 256;
 
 /// Which keys of a table go first when it stands over its bound.

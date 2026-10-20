@@ -159,6 +159,12 @@ pub fn hold_band((lo, hi): (usize, usize), len: usize) -> (usize, usize) {
 /// say nothing more; judged against the cut, it asks again as the glide shortens the span until the
 /// rows in view are held. It is not asked again for a band the store would keep exactly as it keeps
 /// the one it has (a span too tall for any band), which would flood the store with the same cut.
+///
+/// **What a band costs the store.** A walk down a page sends one band per `HOLD_SLACK + 1` rows (the
+/// band reaches `HOLD_MARGIN + HOLD_SLACK` past the view and is sent again once the view uses up
+/// the slack). The store takes a changed band as its signal to ask again for rows whose reload
+/// failed (`stalled`), so a failed row is retried about once per three rows of movement, not once
+/// per row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HoldBand {
     /// The rows the store keeps of the band last sent: `clamp_hold(sent)`.

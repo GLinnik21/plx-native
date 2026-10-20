@@ -2232,7 +2232,10 @@ struct Src {
     /// so the tick asks again; nothing is dropped.
     deferred: bool,
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
-    /// screen's hold moves.
+    /// screen's hold moves. A screen's `HoldBand` sends a band once per about three rows of
+    /// movement (its slack, `ui::cards::HOLD_SLACK`), not once per row, so a failed row is
+    /// retried about once per three rows the view travels. That is the cadence the retry has;
+    /// a failed row does not ask again on every press.
     stalled: Vec<(String, String)>,
     /// The publish order of view-state edits (`stores::Stores` shares one across the stores), and
     /// where the read now in flight for this source was issued in it: its landing describes the

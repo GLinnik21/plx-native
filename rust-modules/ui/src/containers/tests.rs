@@ -1338,10 +1338,11 @@ fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
     );
 }
 
-/// A tap that grades the logical-state hash (the recorder's, the fixture's) asks for it.
+/// A tap that grades the logical-state hash (the recorder's, the fixture's) asks for it by calling
+/// the thunk it is offered.
 struct Hashing;
 impl Tap<FixtureHost> for Hashing {
-    fn wants_state(&self) -> bool { true }
+    fn state(&mut self, _f: u64, hash: &mut dyn FnMut() -> u64) { hash(); }
 }
 
 /// §5.4: a presenting frame's prepare pass leaves the logical-state hash where it was. The

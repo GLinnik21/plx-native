@@ -3414,8 +3414,9 @@ fn scrolling_inside_the_held_band_does_not_send_the_store_a_new_band() {
         assert!(band.0 <= need.0 && band.1 >= need.1,
             "after press {press} the rows in view and {} either side are held: sent {band:?}, need {need:?}", ui_cards::HOLD_MARGIN);
     }
-    assert!(sent.len() <= 1 + presses.div_ceil(2),
-        "{presses} one-row presses inside the band cost at most one new band per two rows: {sent:?}");
+    assert!(sent.len() <= 1 + presses.div_ceil(ui_cards::HOLD_SLACK + 1),
+        "{presses} one-row presses inside the band cost at most one new band per {} rows: {sent:?}",
+        ui_cards::HOLD_SLACK + 1);
 }
 
 #[test]
