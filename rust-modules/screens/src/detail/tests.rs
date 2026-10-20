@@ -4113,7 +4113,7 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
 /// (Related, Collection): it stands after the dwell on a settled card, not on the hero, not while
 /// a menu owns focus, and not a second time this run.
 #[test]
-fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
+fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
     plx_ui::hold_hint::reset_learned_for_test();

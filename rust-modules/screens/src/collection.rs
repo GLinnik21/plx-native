@@ -1255,7 +1255,7 @@ mod tests {
     /// The hold hint on a Collection page (`ui::hold_hint`): the first time it teaches
     /// (a 1.5 s dwell on a settled member), and no page self-teaches again this run.
     #[test]
-    fn the_hold_hint_stands_on_a_resting_member_once_per_run() {
+    fn the_hold_hint_stands_on_a_resting_member_once_per_install() {
         let _g = plx_base::testlock::serial();
         plx_ui::hold_hint::reset_learned_for_test();
         plx_ui::hold_hint::reset_shown_for_test();

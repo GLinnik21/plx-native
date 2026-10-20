@@ -1350,7 +1350,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
 /// The hold hint (`ui::hold_hint`) on a result card: it stands after the dwell on a settled card,
 /// not on the field (not a card), not while a menu owns focus, and not a second time this run.
 #[test]
-fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
+fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     let _serial = plx_base::testlock::serial();
     plx_ui::hold_hint::reset_learned_for_test();
     plx_ui::hold_hint::reset_shown_for_test();

@@ -1590,7 +1590,7 @@ mod tests {
     /// settled card, not on the Filmography pill (not a card), not while a menu owns focus, and
     /// not a second time this run.
     #[test]
-    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_run() {
+    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_install() {
         let _g = plx_base::testlock::serial();
         plx_ui::hold_hint::reset_learned_for_test();
         plx_ui::hold_hint::reset_shown_for_test();
