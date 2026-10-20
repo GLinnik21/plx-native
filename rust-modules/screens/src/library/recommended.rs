@@ -683,6 +683,17 @@ impl RecommendedScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header(&self) -> (GroupId, Vec<(&'static str, u32)>) { (CRUMB_GROUP, vec![("crumb", CRUMB_ELEM)]) }
 
+    /// Every card's pop exactly as the draw paints it, shelf by shelf (`focus` the engine's focus): the
+    /// Recommended page's answer to `HomeScreen::probe_card_pops`, for the same route test.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_card_pops(&self, focus: Option<FocusKey<u32>>) -> Vec<Vec<f32>> {
+        let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        self.shelves.iter().map(|shelf| {
+            let col = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem));
+            (0..shelf.elems.len()).map(|i| shelf.cards.drawn_pop(i, col)).collect()
+        }).collect()
+    }
+
     /// `(page alpha, focused card's pop scale)` — what a viewer sees of a focus arrival. The page
     /// is opaque from its first frame (the container's own transition carries the arrival).
     #[cfg(any(test, feature = "test-support"))]

@@ -8,6 +8,7 @@
 //! Continue Watching tile keeps its time-left line under every details kind but Nothing.
 
 use super::*;
+use super::home_chrome_route_tests::{home_shelves_of, TITLES};
 use super::test_support::World;
 use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
 
@@ -332,4 +333,108 @@ fn an_untitled_season_is_drawn_in_homes_recently_added_seasons() {
     assert_eq!(caption(&mut w), ["Specials"], "the untitled season is the shelf's second poster, worded by its identity");
     set(&mut w, true, Details::Genre);
     assert_eq!(caption(&mut w), ["The Office", "Specials"], "Title On names its show over its identity line");
+}
+
+// ── The setting and the walk, together, on Home ─────────────────────────────────────────────────
+
+/// Rewrite the cards with rating keys `1..=cols` (the keys every shelf of [`home_shelves_of`] shares)
+/// with `edit(card, rating key)`, and let the page take the publication in.
+pub(super) fn describe_cards(w: &mut World, cols: usize, edit: &dyn Fn(&mut plx_data::pms::PmsMovie, usize)) {
+    for rk in 1..=cols {
+        plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), &rk.to_string(), &|m| edit(m, rk));
+    }
+    w.frames(30);
+}
+
+/// **A setting changed while Home is kept under the Settings page reaches the focused poster once
+/// Home is back.** Home is not on top while Settings > Under posters is, so nothing redraws it, and the
+/// caption is worded at the draw from the setting, never baked into the kept row
+/// (`screens/home`'s `a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block` pins that
+/// for the page alone). Here the keys do the round trip, for a run of settings: open Settings, the
+/// setting is published the way the write door ends (`restore_under_posters`), BACK. Home is the same
+/// entry, focus is on the same poster, the store published nothing in between (a setting is not a
+/// publication, so the kept rows were not projected again), and the poster is captioned from the NEW
+/// setting. (The number of rows a sync projects has no app-tier reader: the FIX test counts them.)
+#[test]
+fn a_setting_changed_under_a_kept_home_reaches_the_card_after_back() {
+    let mut w = home(false, "cap-home-kept");
+    let _cell = Cell::default();
+    let published = |w: &World| plx_data::pms::hubs_snapshot(w.bridge.stores.hubs.state()).view().generation;
+    let (focus, generation, entry) = (w.focus(), published(&w), w.d.nav.top_page().map(|page| page.id));
+    assert!(focus.is_some() && entry.is_some(), "premise: Home holds focus on a poster");
+    assert_eq!(w.drawn().caption_lines(), [YEAR_LENGTH], "premise: the default draws the year and length");
+    // A change to a Title line, to Nothing, to a one-line band, to another picker, and back to the default.
+    for (title, details, line) in [TABLE[2], TABLE[6], TABLE[7], TABLE[4], (false, Details::YearLength, Some(YEAR_LENGTH))] {
+        let setting = format!("title {title}, details {details:?}");
+        open_settings_at(&mut w.d, plx_screens::family::SettingsPage::UnderPosters);
+        w.frames(40);
+        assert_ne!(w.focus(), focus, "premise ({setting}): the Settings page holds focus over the kept Home");
+        plx_media::route::restore_under_posters(UnderPosters { title, details });
+        w.frames(30);
+        w.press(Key::Back);
+        w.frames(60);
+        assert!(w.on(&AppArg::Home), "premise ({setting}): BACK returns to Home");
+        assert_eq!(w.focus(), focus, "{setting}: BACK returns to the same poster");
+        assert_eq!(w.d.nav.top_page().map(|page| page.id), entry, "{setting}: Home is the entry it was, not a remount");
+        assert_eq!(published(&w), generation, "{setting}: nothing was published, so no kept row was projected again");
+        let want: Vec<&str> = title.then_some("Heat").into_iter().chain(line).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "{setting}: the poster is captioned from the new setting");
+    }
+}
+
+/// **#861's rest and #859's band together on Home.** Each is pinned alone (`ui::card_row`'s rest on a
+/// row; `grade_shelf_bands` on a page that never walked): after a held Right along a long Home shelf,
+/// at a held remote's cadence, every card the walk released is at EXACT rest (`pop == 1.0`: the plain
+/// card program, not the focus program one ulp above it), only the card the walk landed on is popped,
+/// the block under it is the setting's lines and nobody else's, and the band the shelf opens under
+/// it is the setting's band (`band_open_for`: the next shelf's heading stands that far lower than
+/// under a closed band, before the walk and after it), its lines ending above that heading.
+#[test]
+fn a_released_poster_is_captioned_at_rest_after_a_held_walk() {
+    use plx_ui::cards::band_open_for;
+    const STEPS: usize = 8;
+    // The pop of every card that is not at exactly 1.0, as `(shelf, card, pop)`.
+    let off_rest = |w: &World| -> Vec<(usize, usize, f32)> {
+        w.card_pops().iter().enumerate()
+            .flat_map(|(shelf, cards)| cards.iter().enumerate().filter(|(_, pop)| **pop != 1.0).map(move |(card, pop)| (shelf, card, *pop)))
+            .collect()
+    };
+    // Where the next shelf's heading stands, the focused shelf's lines ending above it. The page rests the
+    // focused shelf at one line whatever the band and a Right does not scroll it, so the next shelf is
+    // carried down by the band the setting opens and by nothing else. (The focused shelf's OWN heading
+    // is not a reference: `heading_clearance` lifts it ~17 px while focus is in the first two slots.)
+    let next_heading = |w: &mut World, setting: &str| {
+        let drawn = w.drawn();
+        let top = |text: &str| drawn.words.iter().find(|(words, _)| words == text).unwrap_or_else(|| panic!(
+            "{setting}: premise: the heading {text:?} is drawn: {:?}", drawn.words)).1.y;
+        let (from, to) = (top(TITLES[0]), top(TITLES[1]));
+        for run in drawn.runs.iter().filter(|run| run.at.y > from && run.at.y < to) {
+            let bottom = run.at.y + run.at.h.max(run.size as f32);
+            assert!(bottom <= to, "{setting}: {:?} ends at {bottom} under the next shelf's heading at {to}", run.text);
+        }
+        to
+    };
+    for (title, details, band) in [(true, Details::Genre, 112.0), (false, Details::YearLength, 80.0), (true, Details::None, 80.0), (false, Details::None, 0.0)] {
+        let setting = format!("title {title}, details {details:?}");
+        let mut w = home_shelves_of(&format!("cap-rest-{title}-{details:?}"), 12);
+        describe_cards(&mut w, 12, &|m, rk| { facts(false)(m); m.title = format!("Card {rk}"); });
+        let _cell = Cell::default();
+        set(&mut w, false, Details::None);
+        let closed = next_heading(&mut w, &setting);
+        set(&mut w, title, details);
+        assert_eq!(off_rest(&w).len(), 1, "{setting}: premise: the first card holds focus and is the only one popped");
+        let before = next_heading(&mut w, &setting) - closed;
+        assert!((before - band_open_for(band)).abs() < 0.5, "{setting}: premise: before the walk the shelf opens {before} px, the {band} px band asks {}", band_open_for(band));
+        for _ in 0..STEPS { w.tap(Key::Right, 2); }
+        w.frames(120);
+        let off = off_rest(&w);
+        assert_eq!(off.len(), 1, "{setting}: after {STEPS} cards of a held walk only the focused card is off rest, got {off:?}");
+        let (shelf, card, pop) = off[0];
+        assert!(pop > 1.0 && (shelf, card) == (0, STEPS), "{setting}: the focused card is the popped one the walk landed on: {off:?}");
+        let line = match details { Details::Genre => Some(GENRE), Details::YearLength => Some(YEAR_LENGTH), _ => None };
+        let want: Vec<String> = title.then(|| format!("Card {}", card + 1)).into_iter().chain(line.map(str::to_owned)).collect();
+        assert_eq!(w.drawn().caption_lines(), want, "{setting}: only the landed poster is captioned, by the setting's lines");
+        let opened = next_heading(&mut w, &setting) - closed;
+        assert!((opened - band_open_for(band)).abs() < 0.5, "{setting}: the shelf opens {opened} px, the {band} px band asks {}", band_open_for(band));
+    }
 }
