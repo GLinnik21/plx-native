@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T07:34:16Z",
+ "generated": "2026-10-20T07:41:07Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.5,
-   "change7_pct": 29.1,
+   "change30_pct": -38.6,
+   "change7_pct": 28.9,
    "d30": 672,
-   "delta30": -259,
-   "delta7": 93,
+   "delta30": -259.5,
+   "delta7": 92.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 115,
-   "now": 413,
+   "now": 412.5,
    "prev7": 320,
    "shown": true,
    "state": "worse",
@@ -332,15 +332,15 @@
    "change30_pct": 105.1,
    "change7_pct": 6.9,
    "d30": 117,
-   "delta30": 123.0,
+   "delta30": 123,
    "delta7": 15.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 104,
-   "now": 240.0,
+   "now": 240,
    "prev7": 224.5,
    "shown": true,
    "state": "flat",
@@ -353,15 +353,15 @@
    "change30_pct": 172.9,
    "change7_pct": -38.4,
    "d30": 70,
-   "delta30": 121.0,
+   "delta30": 121,
    "delta7": -119.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 104,
-   "now": 191.0,
+   "now": 191,
    "prev7": 310.0,
    "shown": true,
    "state": "better",
@@ -422,9 +422,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 104,
-   "now": 152.0,
+   "now": 152,
    "prev7": 141.0,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
+   "delta30": 2,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 112,
+   "n_now": 113,
    "n_prev": 104,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 219.1,
    "commits": [
     {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
-    {
      "pr": 850,
      "sha": "f8a6883cf",
      "title": "Dependencies: sentry-native -> 0.17.4"
@@ -657,6 +652,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 56.2,
@@ -670,11 +670,6 @@
    "change_pct": 73.0,
    "commits": [
     {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
-    {
      "pr": 850,
      "sha": "f8a6883cf",
      "title": "Dependencies: sentry-native -> 0.17.4"
@@ -718,6 +713,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 211,
@@ -731,11 +731,6 @@
    "change_pct": 44.6,
    "commits": [
     {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
-    {
      "pr": 850,
      "sha": "f8a6883cf",
      "title": "Dependencies: sentry-native -> 0.17.4"
@@ -779,6 +774,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 269,
@@ -792,11 +792,6 @@
    "change_pct": 38.7,
    "commits": [
     {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
-    {
      "pr": 850,
      "sha": "f8a6883cf",
      "title": "Dependencies: sentry-native -> 0.17.4"
@@ -840,6 +835,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 350.5,
@@ -853,11 +853,6 @@
    "change_pct": 32.6,
    "commits": [
     {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
-    {
      "pr": 850,
      "sha": "f8a6883cf",
      "title": "Dependencies: sentry-native -> 0.17.4"
@@ -901,6 +896,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 99.7,
@@ -911,13 +911,8 @@
    "to": 132.2
   },
   {
-   "change_pct": 29.1,
+   "change_pct": 28.9,
    "commits": [
-    {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
     {
      "pr": 850,
      "sha": "f8a6883cf",
@@ -962,6 +957,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 320,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 413
+   "to": 412.5
   },
   {
    "change_pct": 23.3,
    "commits": [
-    {
-     "pr": 852,
-     "sha": "bd16fa5dc",
-     "title": "site: say plainly that the LG Content Store listing isn't available"
-    },
     {
      "pr": 850,
      "sha": "f8a6883cf",
@@ -1023,6 +1018,11 @@
      "pr": 860,
      "sha": "8629ca7b8",
      "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
+    },
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
     }
    ],
    "from": 129,
