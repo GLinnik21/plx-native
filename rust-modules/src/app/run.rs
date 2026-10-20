@@ -589,7 +589,13 @@ unsafe fn present_and_swap(
             #[cfg(feature = "threadcheck")]
             let _present_scope = plx_base::task::watchdog::present_scope();
             #[cfg(feature = "hostsim")]
-            plx_base::surface::present_supersampled();
+            {
+                // `present_supersampled` disables the scissor test itself (a clip left armed would
+                // crop the window copy) - below gfx's `LIVE_SCISSOR`, which it cannot name. Clearing
+                // the clip through gfx first leaves the two in step for the next frame.
+                plx_gfx::gfx::clip_clear();
+                plx_base::surface::present_supersampled();
+            }
             // dev (`/tmp/plxnative-framecb`): this frame's compositor callback, requested before
             // the swap that commits it. One latched bool unarmed.
             plx_platform::tv::window::frame_probe_request();

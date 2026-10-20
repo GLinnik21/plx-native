@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
-use crate::overdraw::{gate, masked, note_px, set_clip, Class};
+use crate::overdraw::{card_split, gate, masked, note_card_path, note_px, set_clip, CardPath, Class};
 
 // What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
 // overdraw ledger and the machine runtime (module-layers step L5). `ui` re-exports each of them
@@ -327,12 +327,15 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// edge instead of poking over the video / buttons (`Painter` otherwise has no clip). Rect is
 /// clamped to the canvas so a negative edge can't underflow the unsigned scissor box.
 ///
-/// **This is the one drawing call that is NOT in logical coordinates.** Everything else reaches GL
-/// through `u_screen`, which the shaders divide by — so the viewport transform scales the whole
-/// authored canvas to whatever the drawable is, for free. `glScissor` bypasses all of that: it
-/// takes bottom-left *window pixels*. So it needs both the Y flip and the logical→physical scale,
-/// which is 1.0 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one) (`surface::scale`) and would otherwise clip the
-/// wrong band of the screen.
+/// **A scissor is NOT in logical coordinates.** Everything else reaches GL through `u_screen`,
+/// which the shaders divide by — so the viewport transform scales the whole authored canvas to
+/// whatever the drawable is, for free. `glScissor` bypasses all of that: it takes bottom-left
+/// *window pixels*. So it needs both the Y flip and the logical→physical scale, which is 1.0 unless
+/// a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for
+/// one) (`surface::scale`) and would otherwise clip the wrong band of the screen. [`target_map`] is
+/// the one mapping, and [`win_x`] / [`win_y`] the one edge rounding, for every scissor this file
+/// sets: [`clip_set`]'s, and the pieces of a split card ([`draw_tex_core_in`]).
+///
 /// Where authored coordinates land in the CURRENTLY BOUND target, as the same `(vx, vy, scale)`
 /// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.
 ///
@@ -365,6 +368,43 @@ unsafe fn scissor_off() {
     LIVE_SCISSOR = None;
 }
 
+/// Where authored coordinates land in the bound target: its window origin `(vx, vy)` and the window
+/// pixels per authored px. The same triple `glViewport` was given - the main surface's
+/// ([`plx_base::surface`]), or the reduced-resolution source pass's ([`CLIP_TARGET`]) - which is what
+/// keeps a scissor box and the pixel grid of a quad cut along it on the very pixels the viewport maps to.
+fn target_map() -> (c_int, c_int, f32) {
+    match unsafe { CLIP_TARGET } {
+        Some((tx, ty, ts, _, _)) => (tx, ty, ts),
+        None => {
+            let (vx, vy, _, _) = plx_base::surface::viewport();
+            (vx, vy, plx_base::surface::scale())
+        }
+    }
+}
+
+/// Window column of authored `x` in a target at `(vx, _)` with `s` pixels per authored px.
+///
+/// **Round each EDGE in physical space; derive an extent as the difference of two rounded edges.**
+/// Never truncate the origin and the extent independently: because `trunc(a) + trunc(b) <=
+/// trunc(a + b)`, a box's far edge can fall SHORT of where the next box's near edge begins, and
+/// adjacent scissored bands could then only ever gap, never abut (a bright hairline the full width
+/// of the tile was measured in the simulator). Deriving both edges from the same expression on the
+/// same input is what makes it safe: band k's top and band k+1's bottom are then literally the same
+/// computation, so float error moves them together and no row can fall between. On a 1:1 surface
+/// every value is already an integer, so this is bit-identical to what the television has always
+/// rendered.
+#[inline]
+fn win_x(x: f32, vx: c_int, s: f32) -> c_int {
+    vx + (x * s).round() as c_int
+}
+
+/// Window row of authored `y`, GL's rows counting upward from the bottom of the target while the
+/// canvas's rows count down; see [`win_x`] for the rounding.
+#[inline]
+fn win_y(y: f32, vy: c_int, s: f32) -> c_int {
+    vy + ((SCR_H - y) * s).round() as c_int
+}
+
 pub fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     backdrop::clip(Some(Rect::new(x,y,w,h)));
     if backdrop::discovering() { return; }
@@ -377,41 +417,14 @@ pub fn clip_set(x: f32, y: f32, w: f32, h: f32) {
     // differenced, same as the y ones.
     let hi = (y1 - y_top).max(0.0);
     // The same uniform scale and centring offset `glViewport` was given, because the scissor box
-    // has to land on the same pixels the viewport maps to. Deriving both from `surface` rather
-    // than duplicating the arithmetic is what keeps them in step.
-    let (vx, vy, s) = match unsafe { CLIP_TARGET } {
-        Some((tx, ty, ts, _, _)) => (tx, ty, ts),
-        None => {
-            let (vx, vy, _, _) = plx_base::surface::viewport();
-            (vx, vy, plx_base::surface::scale())
-        }
-    };
-    // **Round each EDGE in physical space; derive the extent as the difference of the two rounded
-    // edges.** Never truncate the origin and the extent independently.
-    //
-    // The old form did exactly that — four separate `as c_int` — and because
-    // `trunc(a) + trunc(b) <= trunc(a + b)`, a box's far edge can fall SHORT of where the next
-    // box's near edge begins. Adjacent scissored bands could therefore only ever gap, never abut.
-    // With a hard-edged neighbour (`art_scrim`'s gradient quad takes `draw_rect`'s no-AA radius-0
-    // fast path, so it paints to an exact boundary) the row in between is covered by nothing and
-    // the artwork shows through it — a bright hairline the full width of the tile. Measured in the
-    // simulator: one row per seam, ~3x the brightness of its neighbours, its colour tracking the
-    // artwork underneath rather than any UI colour.
-    //
-    // Deriving both edges from the same expression on the same input is what makes it safe: band
-    // k's top and band k+1's bottom are then literally the same computation, so float error moves
-    // them together and no row can fall between. Rounding is also what the hard-edged quad
-    // actually paints (pixel-centre coverage), which truncation structurally cannot match.
-    //
-    // On a 1:1 surface every value here is already an integer, so this is bit-identical to what
-    // the television has always rendered — `snap` rounds in LOGICAL space, and at scale 1.0
-    // logical and physical are the same number. That equality is precisely what stopped being
-    // true the first time the app met a surface that was not 1920x1080.
-    let gx0 = vx + (x0 * s).round() as c_int;
-    let gx1 = vx + (x1.max(x0) * s).round() as c_int;
+    // has to land on the same pixels the viewport maps to ([`target_map`]), each edge rounded on its
+    // own ([`win_x`]).
+    let (vx, vy, s) = target_map();
+    let gx0 = win_x(x0, vx, s);
+    let gx1 = win_x(x1.max(x0), vx, s);
     // GL y is bottom-up, so the box's BOTTOM comes from the band's logical bottom edge.
-    let gy0 = vy + ((SCR_H - (y_top + hi)) * s).round() as c_int;
-    let gy1 = vy + ((SCR_H - y_top) * s).round() as c_int;
+    let gy0 = win_y(y_top + hi, vy, s);
+    let gy1 = win_y(y_top, vy, s);
     unsafe { scissor_box(gx0, gy0, (gx1 - gx0).max(0), (gy1 - gy0).max(0)) }
 }
 /// Remove the scissor clip set by [`clip_set`].
@@ -1761,25 +1774,13 @@ pub fn draw_shadow(
         // blend twice) and `u_map` keeps `p` relative to the FULL quad. The ledger above books the
         // full quad once, as before.
         let inner = shadow_skip_rect([qx, qy, qw, qh], b, radius, off, cut);
-        let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, pixel_scale());
+        // the target's pixel grid: a seam between two bands must sit on it ([`snap_inner`])
+        let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, target_map().2);
         let (cx, cy) = (qx + qw * 0.5, qy + qh * 0.5);
         for r in &bands[..n] {
             glUniform4f(SL_RECT, r[0], r[1], r[2], r[3]);
             glUniform4f(SL_MAP, r[0] - cx, r[1] - cy, r[2], r[3]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-    }
-}
-
-/// Drawable pixels per authored (logical) px for the bound target: the grid a seam between two
-/// pieces of one quad must sit on to split no pixel ([`snap_inner`]). `surface::scale()` is already
-/// the drawable's own factor - under simulator supersampling the drawable IS the `n`x framebuffer,
-/// so it reads `n` there - which is also what [`clip_set`] builds its scissor box from.
-fn pixel_scale() -> f32 {
-    unsafe {
-        match CLIP_TARGET {
-            Some((_, _, ts, _, _)) => ts,
-            None => plx_base::surface::scale(),
         }
     }
 }
@@ -2629,19 +2630,21 @@ fn draw_tex_core(
 ) {
     draw_tex_core_in(
         class, tex, qx, qy, qw, qh, uv, radius, tint, rimw, rimcol, chw, chh, shinv, shcol, focus, dy,
-        image, None,
+        image, CardCut::None,
     );
 }
 
-/// [`draw_tex_core`], and `card` = the card's own rect `(x, y, w, h)` when the draw is a resting
-/// card that [`draw_tex_impl`] allows to be drawn in pieces ([`card_boxes`]): the SAME quad is drawn
-/// five times, each under its own scissor box - once for the interior, through the shader's
+/// [`draw_tex_core`], and `card` = what [`draw_tex_impl`] decided about a `Class::Card` draw
+/// ([`card_cut`]). A resting card ([`CardCut::Pieces`], with the card's own rect `(x, y, w, h)`) is
+/// drawn in pieces when it has an interior ([`card_boxes`]): the SAME quad is drawn five times, each
+/// under its own scissor box ([`card_plan`]) - once for the interior, through the shader's
 /// `u_card.z < 0.5` fast path (texture x tint, nothing else), and once for each of the four bands
 /// of the ring (the part with rim, anti-aliased edge and shadow) through the full card math. The
 /// vertices are the whole quad's every time, so `v_p`, `v_cuv` and the texture's derivatives are
 /// the very numbers the single draw interpolates, and the picture is the same pixel for pixel; the
 /// fragment shader just stops evaluating the card's SDF where its answer is "plain". The ledger and
-/// the cull above book and test the whole quad once, as before.
+/// the cull above book and test the whole quad once, as before; the card-path ledger
+/// ([`note_card_path`]) books which way each card went.
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core_in(
     class: Class,
@@ -2662,7 +2665,7 @@ fn draw_tex_core_in(
     focus: f32,
     dy: f32,
     image: Option<(c_uint, ImageUniforms)>,
-    card: Option<[f32; 4]>,
+    card: CardCut,
 ) {
     if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
         return;
@@ -2686,37 +2689,51 @@ fn draw_tex_core_in(
         }
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(loc.rect, qx, qy, qw, qh);
-        let Some(boxes) = card.and_then(|c| card_boxes([qx, qy, qw, qh], c, radius, rimw)) else {
+        let boxes = match card {
+            CardCut::None => None,
+            CardCut::Whole(path) => {
+                note_card_path(path, qx, qy, qw, qh);
+                None
+            }
+            CardCut::Pieces(rect) => match card_boxes([qx, qy, qw, qh], rect, radius, rimw) {
+                Ok(boxes) => {
+                    note_card_path(CardPath::Split, qx, qy, qw, qh);
+                    Some(boxes)
+                }
+                Err(path) => {
+                    note_card_path(path, qx, qy, qw, qh);
+                    None
+                }
+            },
+        };
+        let Some(boxes) = boxes else {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             return;
         };
-        let live = LIVE_SCISSOR;
+        let plan = card_plan(&boxes, LIVE_SCISSOR);
         glEnable(GL_SCISSOR_TEST);
-        // The ring first, under the real `u_card` the uniforms above carry...
-        for b in boxes.ring.iter().filter_map(|b| clip_px(*b, live)) {
+        for piece in plan.pieces.iter().flatten() {
+            // The ring first, under the real `u_card` the uniforms above carry; the interior is the
+            // last piece, and its `u_card.z` of 0 is the shader's own "plain texture" branch.
+            if piece.interior {
+                glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
+            }
+            let b = piece.scissor;
             glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
-        // ...then the interior, whose `u_card.z` of 0 is the shader's own "plain texture" branch.
-        if let Some(b) = clip_px(boxes.interior, live) {
-            glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
-            glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-        // The clip the caller had (a scrolling list's, a source pass's box) is theirs: put it back.
-        match live {
-            Some(b) => glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]),
-            None => glDisable(GL_SCISSOR_TEST),
+        // The clip the caller had (a scrolling list's, a source pass's box) is theirs: put it back,
+        // through the two functions that keep `LIVE_SCISSOR` honest.
+        match plan.restore {
+            Some(b) => scissor_box(b[0], b[1], b[2] - b[0], b[3] - b[1]),
+            None => scissor_off(),
         }
     }
 }
 
 /// A scissor box in window pixels, `[x0, y0, x1, y1]`: GL's bottom-left origin, the far edges
-/// exclusive. [`PX_FAR`] stands for "to the edge of the target".
+/// exclusive.
 type PxBox = [c_int; 4];
-
-/// Further than any drawable reaches, and nowhere near `c_int`'s limits: the open edge of a ring band.
-const PX_FAR: c_int = 1 << 20;
 
 /// `b` cut down to the clip `live` (`None` = no clip), or `None` when nothing of it is left.
 fn clip_px(b: PxBox, live: Option<PxBox>) -> Option<PxBox> {
@@ -2728,22 +2745,46 @@ fn clip_px(b: PxBox, live: Option<PxBox>) -> Option<PxBox> {
 }
 
 /// A resting card's picture cut into the part `fs_img.frag` writes as plain texture x tint and the
-/// ring around it, as the five scissor boxes that tile the whole target: the four of the ring (the
+/// ring around it, as the five scissor boxes that tile the whole viewport: the four of the ring (the
 /// rows above and below the interior, then the columns left and right of it) and the interior. No
 /// two share a pixel and none leaves one out, so a quad drawn once under each puts every pixel of
-/// itself through exactly one of them.
+/// itself through exactly one of them. Boxes may be empty (a card at the edge of the viewport).
 struct CardBoxes {
     ring: [PxBox; 4],
     interior: PxBox,
 }
 
-/// Whether [`draw_tex_impl`] may draw this call as a split card: the card compositor (`Class::Card`,
-/// i.e. an art tile with a shadow pad), a rounded one (`radius < 0.5` is the shader's own whole-quad
-/// plain branch already), at rest. A focused or risen card is drawn by the focus program with its
-/// asymmetric quad, whose SDF centre is not the quad's centre; it is not split.
+/// What [`draw_tex_impl`] decided about how a draw may be cut, from [`card_cut`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CardCut {
+    /// Not a card (`Class::Card` is the art tiles): nothing to cut, nothing to book.
+    None,
+    /// A card drawn whole, and the reason ([`CardPath`], booked by the card-path ledger).
+    Whole(CardPath),
+    /// A resting card that may be drawn in pieces if it has an interior: the card's own rect
+    /// `(x, y, w, h)`, which the quad is symmetric about.
+    Pieces([f32; 4]),
+}
+
+/// How a draw of `class` (with this corner `radius`, focus pop `focus` and shadow rise `dy`) is cut,
+/// for the card whose rect is `rect` - given the split `enabled` (the dev A/B switch, always on in
+/// release). Only the card compositor (`Class::Card`, i.e. an art tile with a shadow pad) is ever cut,
+/// and only a ROUNDED one (`radius < 0.5` is the shader's own whole-quad plain branch already) AT
+/// REST: a focused or risen card is drawn by the focus program with its asymmetric quad, whose SDF
+/// centre is not the quad's centre, and is never split.
 #[inline]
-fn splits_card(class: Class, radius: f32, focus: f32, dy: f32) -> bool {
-    class == Class::Card && radius >= 0.5 && !wants_focus_program(focus, dy)
+fn card_cut(class: Class, radius: f32, focus: f32, dy: f32, enabled: bool, rect: [f32; 4]) -> CardCut {
+    if class != Class::Card {
+        CardCut::None
+    } else if wants_focus_program(focus, dy) {
+        CardCut::Whole(CardPath::Focus)
+    } else if radius < 0.5 {
+        CardCut::Whole(CardPath::Plain)
+    } else if !enabled {
+        CardCut::Whole(CardPath::Off)
+    } else {
+        CardCut::Pieces(rect)
+    }
 }
 
 /// The part of a resting card's `quad` (symmetric about `card` = `(x, y, w, h)`) that `fs_img.frag`
@@ -2751,10 +2792,11 @@ fn splits_card(class: Class, radius: f32, focus: f32, dy: f32) -> bool {
 /// pixel grid of `scale` ([`snap_inner`]); `None` when there is no such part. It is the card inset on
 /// every side by its corner `radius` + the rim's width `rimw` + 2 px, then shrunk onto the grid. The
 /// shader's own early-out is `max(|p| - (half - radius)) < min(radius - 2, 0)`: a rect inset by
-/// `radius` from the card edge lies inside it, the 2 px and the rim are margin for float error and
-/// the rim's reach, and the rounded corners (where `d` is a `length()`, not a box distance) are
-/// outside the inset altogether. The host test `every_interior_pixel_takes_the_plain_exit` replays
-/// the shader's tests over every pixel centre of the rect.
+/// `radius` from the card edge lies inside it, the 2 px and the rim are margin for float error, and
+/// the rounded corners (where `d` is a `length()`, not a box distance) are outside the inset
+/// altogether. (The rim itself is pure margin: `fs_img.frag` only reaches it after that early-out.)
+/// The host test `every_interior_pixel_takes_the_plain_exit` replays the shader's tests over every
+/// pixel centre of the rect.
 fn card_interior(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32, scale: f32) -> Option<[f32; 4]> {
     let k = radius + rimw.max(0.0) + 2.0;
     let rect = [card[0] + k, card[1] + k, card[2] - 2.0 * k, card[3] - 2.0 * k];
@@ -2765,33 +2807,60 @@ fn card_interior(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32, scale: 
 }
 
 /// [`CardBoxes`] for the interior `hole` (edges, authored px, on the pixel grid) of a drawable whose
-/// authored canvas starts at window pixel `(vx, vy)` and is `s` pixels per authored px. The same
-/// edge arithmetic as [`clip_set`]: each edge is rounded in physical space on its own, so the seams
-/// the grid put on whole pixels come out as whole pixels and the neighbours' shared edges are the
-/// same number.
-fn card_pixel_boxes(hole: [f32; 4], vx: c_int, vy: c_int, s: f32) -> CardBoxes {
-    let x = |v: f32| vx + (v * s).round() as c_int;
-    // GL rows count upward from the bottom of the target; the canvas's rows count down.
-    let y = |v: f32| vy + ((SCR_H - v) * s).round() as c_int;
-    let (x0, x1) = (x(hole[0]), x(hole[2]));
-    let (top, bottom) = (y(hole[1]), y(hole[3]));
-    const F: c_int = PX_FAR;
+/// authored canvas starts at window pixel `(view[0], view[1])`, is `s` pixels per authored px, and
+/// whose viewport is the window box `view`. The same edge arithmetic as [`clip_set`] ([`win_x`],
+/// [`win_y`]): each edge is rounded in physical space on its own, so the seams the grid put on whole
+/// pixels come out as whole pixels and the neighbours' shared edges are the same number. Every box
+/// is inside `view`, which is where a quad's fragments can be: a band that lies wholly off the
+/// viewport is empty and draws nothing.
+fn card_pixel_boxes(hole: [f32; 4], view: PxBox, s: f32) -> CardBoxes {
+    let [vx0, vy0, vx1, vy1] = view;
+    let (x0, x1) = (win_x(hole[0], vx0, s).clamp(vx0, vx1), win_x(hole[2], vx0, s).clamp(vx0, vx1));
+    let (top, bottom) = (win_y(hole[1], vy0, s).clamp(vy0, vy1), win_y(hole[3], vy0, s).clamp(vy0, vy1));
     CardBoxes {
-        ring: [[-F, top, F, F], [-F, -F, F, bottom], [-F, bottom, x0, top], [x1, bottom, F, top]],
+        ring: [[vx0, top, vx1, vy1], [vx0, vy0, vx1, bottom], [vx0, bottom, x0, top], [x1, bottom, vx1, top]],
         interior: [x0, bottom, x1, top],
     }
 }
 
-/// The scissor boxes to draw a resting card's `quad` in pieces, or `None` to draw it whole: when the
-/// card has no interior, and on a reduced-resolution source pass ([`CLIP_TARGET`]), whose quarter-size
-/// pixels have no shading to save and no draw calls to spare.
-fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Option<CardBoxes> {
+/// The scissor boxes to draw a resting card's `quad` in pieces, or why it is drawn whole
+/// ([`CardPath::Clipped`]: on a reduced-resolution source pass ([`CLIP_TARGET`]), whose quarter-size
+/// pixels have no shading to save and no draw calls to spare; [`CardPath::NoInterior`]: the card
+/// leaves no certainly-plain part).
+fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Result<CardBoxes, CardPath> {
     if unsafe { CLIP_TARGET }.is_some() {
-        return None;
+        return Err(CardPath::Clipped);
     }
-    let (vx, vy, _, _) = plx_base::surface::viewport();
-    let s = plx_base::surface::scale();
-    Some(card_pixel_boxes(card_interior(quad, card, radius, rimw, s)?, vx, vy, s))
+    let (vx, vy, s) = target_map();
+    let (.., vw, vh) = plx_base::surface::viewport();
+    let hole = card_interior(quad, card, radius, rimw, s).ok_or(CardPath::NoInterior)?;
+    Ok(card_pixel_boxes(hole, [vx, vy, vx + vw, vy + vh], s))
+}
+
+/// One draw of a split card: the scissor box it runs under and whether it is the interior (drawn
+/// with the plain-texture `u_card`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Piece {
+    scissor: PxBox,
+    interior: bool,
+}
+
+/// What [`draw_tex_core_in`] does to GL for a split card, as data so it can be tested without a
+/// context: the draws in order - the ring's bands, then the interior, so `u_card` changes once - each
+/// cut to the clip `live` the caller had (a piece outside it draws nothing and is left out), and the
+/// scissor state to put back afterwards, which is exactly `live` (`None`: the test was off).
+struct CardPlan {
+    pieces: [Option<Piece>; 5],
+    restore: Option<PxBox>,
+}
+
+fn card_plan(boxes: &CardBoxes, live: Option<PxBox>) -> CardPlan {
+    let mut pieces = [None; 5];
+    let ring = boxes.ring.iter().map(|b| (*b, false));
+    for (slot, (b, interior)) in pieces.iter_mut().zip(ring.chain([(boxes.interior, true)])) {
+        *slot = clip_px(b, live).map(|scissor| Piece { scissor, interior });
+    }
+    CardPlan { pieces, restore: live }
 }
 
 /// Whether a draw is focused or risen enough to need [`FOCUS_IMAGE`] rather than the plain
@@ -2846,7 +2915,7 @@ fn draw_tex_impl(
     let image = image.or_else(|| if wants_focus_program(focus, dy) { unsafe { FOCUS_IMAGE } } else { None });
     // A resting card's quad is symmetric about the card (`sides == top == bottom == pad`), which is
     // what lets its interior be drawn apart from its ring; see `draw_tex_core_in`.
-    let card = splits_card(class, radius, focus, dy).then_some([x, y, w, h]);
+    let card = card_cut(class, radius, focus, dy, card_split(), [x, y, w, h]);
     draw_tex_core_in(
         class,
         tex,
@@ -7923,6 +7992,26 @@ mod tests {
         }
     }
 
+    /// `card_split_tests::plain_exit` is a transcription of `fs_img.frag`'s plain program; this is
+    /// what keeps it one. The box distance it computes `straight` from, and the exits it tests it
+    /// against, are pinned in the shader text (both the plain and the still program), so editing the
+    /// shader's math without editing the replica fails here instead of passing a stale test.
+    #[test]
+    fn the_card_split_test_replica_still_matches_the_shaders_box_distance() {
+        for defined in [&[][..], &["PLX_STILL_GROUND"][..]] {
+            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
+            for line in [
+                "highp vec2 q = abs(v_p) - u_card.xy;",
+                "highp float straight = max(q.x, q.y);",
+                "if (straight < u_card.w) {",
+                "float d = straight - u_card.z;",
+                "if (u_card.z < 0.5)",
+            ] {
+                assert!(fs.contains(line), "{defined:?}: `{line}` is gone from the shader: plain_exit() no longer replays it");
+            }
+        }
+    }
+
     /// `draw_tex_impl` must reach for [`FOCUS_IMAGE`] exactly when a draw is actually focused or
     /// risen, and never otherwise — that boundary is the entire point of splitting the program in
     /// two, so it is worth pinning as its own assertion rather than trusting the `||` at the call
@@ -8925,9 +9014,15 @@ mod shadow_band_tests {
 #[cfg(test)]
 mod card_split_tests {
     use super::{
-        bands_around, card_interior, card_pixel_boxes, clip_px, image_card_geometry, snap_inner, splits_card,
-        CardBoxes, Class, PxBox, PX_FAR, SCR_H,
+        bands_around, card_cut, card_interior, card_pixel_boxes, card_plan, clip_px, image_card_geometry,
+        snap_inner, CardBoxes, CardCut, CardPath, Class, Piece, PxBox, SCR_H,
     };
+
+    /// The viewport box `[x0, y0, x1, y1]` of a 1920x1080 canvas at `s` px per authored px whose
+    /// window origin is `(vx, vy)`: what `card_boxes` hands `card_pixel_boxes`.
+    fn view(vx: i32, vy: i32, s: f32) -> PxBox {
+        [vx, vy, vx + (1920.0 * s).round() as i32, vy + (1080.0 * s).round() as i32]
+    }
 
     /// `fs_img.frag`'s PLAIN program, line for line up to the three exits that write
     /// `vec4(tex, ta)`: does the fragment at card-centred `p` leave through one of them?
@@ -9038,7 +9133,7 @@ mod card_split_tests {
             let (w, h, r, rim, pad) = c;
             let geo = image_card_geometry(w * 0.5, h * 0.5, r);
             let centre = [quad[0] + quad[2] * 0.5, quad[1] + quad[3] * 0.5];
-            let b = card_pixel_boxes(hole, vx, vy, scale).interior;
+            let b = card_pixel_boxes(hole, view(vx, vy, scale), scale).interior;
             assert!(b[2] > b[0] && b[3] > b[1], "{c:?}: empty interior box {b:?}");
             for py in b[1]..b[3] {
                 for px in b[0]..b[2] {
@@ -9058,17 +9153,36 @@ mod card_split_tests {
 
     /// The same predicate says what it must about the ring: a fragment on the card's own edge is NOT
     /// plain, so the full card math still runs where it matters (a rim, an anti-aliased edge, a
-    /// shadow). A split that took the whole card would pass the test above and fail this one.
+    /// shadow). A split that took the whole card would pass the test above and fail this one - and
+    /// so would a `card_interior` that returned the whole card, because the edge fragments are
+    /// followed to the PIXEL the production boxes put them in: it must be a ring band's, never the
+    /// interior's.
     #[test]
     fn the_ring_still_runs_the_card_math() {
-        for c in cards().into_iter().filter(|c| c.2 >= 2.0 && c.2 * 2.0 < c.0.min(c.1)) {
-            let geo = image_card_geometry(c.0 * 0.5, c.1 * 0.5, c.2);
-            for p in [[c.0 * 0.5 - 0.5, 0.0], [c.0 * 0.5 + 1.0, 0.0], [0.0, c.1 * 0.5 - 0.5], [0.0, c.1 * 0.5 + 3.0]] {
+        let mut checked = 0;
+        for (c, at, scale, card, quad, hole) in holes() {
+            let (w, h, r, _, _) = c;
+            if r < 2.0 || r * 2.0 >= w.min(h) {
+                continue;
+            }
+            let geo = image_card_geometry(w * 0.5, h * 0.5, r);
+            let centre = [card[0] + w * 0.5, card[1] + h * 0.5];
+            let (vx, vy) = ORIGINS[1];
+            let boxes = card_pixel_boxes(hole, view(vx, vy, scale), scale);
+            // card-centred points on the edge, just inside it, just outside it (the shadow)
+            for p in [[w * 0.5 - 0.5, 0.0], [w * 0.5 + 1.0, 0.0], [0.0, h * 0.5 - 0.5], [0.0, h * 0.5 + 3.0], [-(w * 0.5) + 0.5, 0.0]] {
                 assert_eq!(plain_exit(geo, p), 0, "{c:?}: edge fragment {p:?} would be drawn plain");
+                // the window pixel that point falls in (GL rows, bottom-up), and the box that draws it
+                let (ax, ay) = (centre[0] + p[0], centre[1] + p[1]);
+                let (px, py) = (vx + (ax * scale).floor() as i32, vy + ((SCR_H - ay) * scale).floor() as i32);
+                assert!(!inside(&boxes.interior, px, py), "{c:?} at {at:?} scale {scale}: edge fragment {p:?} is in the interior box");
+                assert!(boxes.ring.iter().any(|b| inside(b, px, py)), "{c:?}: edge fragment {p:?} is in no ring band (quad {quad:?})");
+                checked += 1;
             }
             // And the fast-path uniform really is the "plain everywhere" one.
-            assert_eq!(plain_exit(image_card_geometry(c.0 * 0.5, c.1 * 0.5, 0.0), [c.0 * 0.5, c.1 * 0.5]), 1);
+            assert_eq!(plain_exit(image_card_geometry(w * 0.5, h * 0.5, 0.0), [w * 0.5, h * 0.5]), 1);
         }
+        assert!(checked > 200, "the table barely exercised the ring: {checked}");
     }
 
     /// Interior and ring together are the whole target, each pixel in exactly one box: this is what
@@ -9079,7 +9193,7 @@ mod card_split_tests {
     fn the_boxes_tile_the_target_once() {
         for (c, at, scale, _card, quad, hole) in holes() {
             for (vx, vy) in ORIGINS {
-                let boxes = all_boxes(&card_pixel_boxes(hole, vx, vy, scale));
+                let boxes = all_boxes(&card_pixel_boxes(hole, view(vx, vy, scale), scale));
                 // The quad in window pixels, GL rows, with a margin.
                 let (x0, x1) = (vx + (quad[0] * scale).floor() as i32 - 6, vx + ((quad[0] + quad[2]) * scale).ceil() as i32 + 6);
                 let (y0, y1) = (
@@ -9103,7 +9217,7 @@ mod card_split_tests {
     fn the_interior_box_is_the_hole_in_pixels() {
         for (c, at, scale, _card, _quad, hole) in holes() {
             for (vx, vy) in ORIGINS {
-                let b = card_pixel_boxes(hole, vx, vy, scale).interior;
+                let b = card_pixel_boxes(hole, view(vx, vy, scale), scale).interior;
                 let (w, h) = ((hole[2] - hole[0]) * scale, (hole[3] - hole[1]) * scale);
                 assert_eq!(((b[2] - b[0]) as f32, (b[3] - b[1]) as f32), (w.round(), h.round()), "{c:?} at {at:?} scale {scale}");
                 assert!((w - w.round()).abs() < 1e-2 && (h - h.round()).abs() < 1e-2, "{c:?}: hole {hole:?} is off the grid");
@@ -9124,7 +9238,7 @@ mod card_split_tests {
     #[test]
     fn the_callers_clip_cuts_the_boxes() {
         let (c, at, scale, _card, _quad, hole) = holes().into_iter().find(|h| h.2 == 1.0).unwrap();
-        let boxes = all_boxes(&card_pixel_boxes(hole, 0, 0, scale));
+        let boxes = all_boxes(&card_pixel_boxes(hole, view(0, 0, scale), scale));
         let (x0, y0) = (hole[0] as i32 - 20, (SCR_H - hole[3]) as i32 - 20);
         let (x1, y1) = (hole[2] as i32 + 20, (SCR_H - hole[1]) as i32 + 20);
         for live in [
@@ -9144,7 +9258,122 @@ mod card_split_tests {
         // No clip at all is the box itself, and a clip that misses it leaves nothing.
         assert_eq!(clip_px([1, 2, 30, 40], None), Some([1, 2, 30, 40]));
         assert_eq!(clip_px([1, 2, 30, 40], Some([30, 0, 90, 90])), None);
-        assert_eq!(clip_px([-PX_FAR, -PX_FAR, PX_FAR, 5], Some([10, 0, 20, 90])), Some([10, 0, 20, 5]));
+        assert_eq!(clip_px([-(1 << 20), -(1 << 20), 1 << 20, 5], Some([10, 0, 20, 90])), Some([10, 0, 20, 5]));
+    }
+
+    /// **The ring is bounded by the viewport the quad is drawn into**, not by a far-off sentinel:
+    /// whatever the hole's place - on the canvas, over each of its edges, wholly off it - every box
+    /// lies inside the viewport box, none is inverted, and the five still tile that viewport exactly
+    /// once (a coarse grid of window pixels each in one box, and the areas add up to the viewport's).
+    #[test]
+    fn the_boxes_stay_inside_the_viewport_and_tile_it() {
+        let (w, h) = (1920.0, 1080.0);
+        let holes = [
+            [100.0, 100.0, 300.0, 400.0],
+            [-50.0, 100.0, 300.0, 400.0],
+            [100.0, -50.0, 300.0, 400.0],
+            [100.0, 100.0, w + 50.0, 400.0],
+            [100.0, 100.0, 300.0, h + 50.0],
+            [-300.0, -300.0, -100.0, -100.0],
+            [w + 100.0, h + 100.0, w + 300.0, h + 300.0],
+        ];
+        for scale in SCALES {
+            for (vx, vy) in ORIGINS {
+                let v = view(vx, vy, scale);
+                for hole in holes {
+                    let all = all_boxes(&card_pixel_boxes(hole, v, scale));
+                    for b in &all {
+                        assert!(b[0] >= v[0] && b[2] <= v[2] && b[1] >= v[1] && b[3] <= v[3], "{b:?} leaves the viewport {v:?} (hole {hole:?}, scale {scale})");
+                        assert!(b[2] >= b[0] && b[3] >= b[1], "{b:?} is inverted (hole {hole:?}, scale {scale})");
+                    }
+                    let area = |b: &PxBox| i64::from(b[2] - b[0]) * i64::from(b[3] - b[1]);
+                    assert_eq!(all.iter().map(area).sum::<i64>(), area(&v), "the boxes do not add up to the viewport (hole {hole:?}, scale {scale})");
+                    for y in (v[1]..v[3]).step_by(7) {
+                        for x in (v[0]..v[2]).step_by(7) {
+                            let n = all.iter().filter(|b| inside(b, x, y)).count();
+                            assert_eq!(n, 1, "pixel {x},{y} is in {n} boxes (hole {hole:?}, scale {scale}, origin {vx},{vy})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// **What the split does to the scissor state**, as data (`card_plan` is what `draw_tex_core_in`
+    /// runs): with no clip held, the five pieces in draw order (the ring's four, then the interior -
+    /// the only one drawn with the plain `u_card`) and nothing to restore but the test being off;
+    /// under a clip, every piece cut to it, those it misses left out, and exactly that clip put back
+    /// afterwards, including when no piece survives.
+    #[test]
+    fn the_plan_cuts_the_pieces_to_the_callers_clip_and_puts_it_back() {
+        let (_, _, scale, _, _, hole) = holes().into_iter().find(|h| h.2 == 1.0).unwrap();
+        let v = view(0, 0, scale);
+        let boxes = card_pixel_boxes(hole, v, scale);
+        let drawn = |plan: &super::CardPlan| plan.pieces.iter().flatten().copied().collect::<Vec<Piece>>();
+
+        let free = card_plan(&boxes, None);
+        assert_eq!(free.restore, None, "no clip was held: the test goes back off");
+        let free = drawn(&free);
+        assert_eq!(free.iter().map(|p| p.scissor).collect::<Vec<_>>(), all_boxes(&boxes), "the ring in order, then the interior");
+        assert_eq!(free.iter().map(|p| p.interior).collect::<Vec<_>>(), [false, false, false, false, true]);
+
+        let int = boxes.interior;
+        let live = [int[0], int[1] - 5, (int[0] + int[2]) / 2, int[3] + 5];
+        let plan = card_plan(&boxes, Some(live));
+        assert_eq!(plan.restore, Some(live), "the clip the caller held is the one put back");
+        let cut = drawn(&plan);
+        for p in &cut {
+            assert!(p.scissor[0] >= live[0] && p.scissor[1] >= live[1] && p.scissor[2] <= live[2] && p.scissor[3] <= live[3], "{p:?} escapes {live:?}");
+        }
+        assert_eq!(cut.len(), 3, "the rows above and below and the interior meet the clip; the columns beside the card do not: {cut:?}");
+        assert!(cut.last().unwrap().interior && cut.iter().filter(|p| p.interior).count() == 1);
+        for y in live[1] - 3..live[3] + 3 {
+            for x in live[0] - 3..live[2] + 3 {
+                let n = cut.iter().filter(|p| inside(&p.scissor, x, y)).count();
+                assert_eq!(n, usize::from(inside(&live, x, y)), "pixel {x},{y} under the clip {live:?}");
+            }
+        }
+
+        let off = [v[2] + 10, v[1], v[2] + 40, v[3]];
+        let plan = card_plan(&boxes, Some(off));
+        assert!(drawn(&plan).is_empty(), "a clip off the viewport draws nothing");
+        assert_eq!(plan.restore, Some(off), "and is still put back");
+    }
+
+    /// **The `LIVE_SCISSOR` invariant, pinned in the source.** The split cuts each piece to the clip
+    /// the caller held and puts that clip back, which is only right while `LIVE_SCISSOR` is the box
+    /// GL holds. So the GL scissor is touched in exactly three places: `scissor_box` and
+    /// `scissor_off` (which keep the record) and the piece loop of `draw_tex_core_in` (which leaves
+    /// through them). A fourth `glScissor` / `glEnable(GL_SCISSOR_TEST)` / `glDisable(GL_SCISSOR_TEST)`
+    /// anywhere in this file fails here, and so does an assignment of the record outside the two.
+    #[test]
+    fn only_scissor_box_scissor_off_and_the_piece_loop_touch_the_gl_scissor() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let code = |needle: &str| {
+            prod.lines().filter(|l| !l.trim_start().starts_with("//") && l.contains(needle) && !l.contains("fn glScissor")).count()
+        };
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        assert_eq!(code("glScissor("), 2, "a glScissor outside scissor_box and the card pieces");
+        assert_eq!(code("glEnable(GL_SCISSOR_TEST)"), 2, "a glEnable(GL_SCISSOR_TEST) outside scissor_box and the card pieces");
+        assert_eq!(code("glDisable(GL_SCISSOR_TEST)"), 1, "a glDisable(GL_SCISSOR_TEST) outside scissor_off");
+        assert_eq!(code("LIVE_SCISSOR = Some("), 1);
+        assert_eq!(code("LIVE_SCISSOR = None"), 1);
+        let on = body("unsafe fn scissor_box(");
+        assert!(on.contains("glEnable(GL_SCISSOR_TEST)") && on.contains("glScissor(") && on.contains("LIVE_SCISSOR = Some("));
+        let off = body("unsafe fn scissor_off(");
+        assert!(off.contains("glDisable(GL_SCISSOR_TEST)") && off.contains("LIVE_SCISSOR = None"));
+        let draw = body("fn draw_tex_core_in(");
+        assert!(draw.contains("card_plan(&boxes, LIVE_SCISSOR)"), "the plan is cut to the record");
+        assert!(draw.contains("glScissor(") && draw.contains("glEnable(GL_SCISSOR_TEST)"), "the piece loop moved");
+        assert!(
+            draw.contains("Some(b) => scissor_box(") && draw.contains("None => scissor_off()"),
+            "the loop must leave the scissor through the two functions that keep the record"
+        );
     }
 
     /// A circle (radius = half the width) and anything whose inset swallows it has no interior:
@@ -9169,18 +9398,23 @@ mod card_split_tests {
         assert!(card_interior(quad, card, 14.0, 1.0, 1.0).is_some());
     }
 
-    /// Only a resting card of the card class is split.
+    /// How each kind of draw is cut: only a resting, rounded card of the card class is a candidate
+    /// for pieces, and every other card says WHY it is whole (the counter books it by reason).
     #[test]
     fn only_a_resting_rounded_card_is_split() {
-        assert!(splits_card(Class::Card, 14.0, 0.0, 0.0));
-        assert!(splits_card(Class::Card, 14.0, -1.0, 0.0), "a negative focus is still at rest");
-        assert!(splits_card(Class::Card, 14.0, 0.0, -3.0), "a negative dy clamps to rest");
-        assert!(!splits_card(Class::Card, 14.0, 0.01, 0.0), "a focused card is drawn by the focus program");
-        assert!(!splits_card(Class::Card, 14.0, 0.0, 0.5), "a risen shadow moves the quad's centre off the card's");
-        assert!(!splits_card(Class::Card, 0.0, 0.0, 0.0), "radius 0 is the shader's whole-quad plain branch");
-        assert!(!splits_card(Class::Card, 0.49, 0.0, 0.0));
-        assert!(!splits_card(Class::Image, 14.0, 0.0, 0.0), "a rounded image without a pad is not a card");
-        assert!(!splits_card(Class::Glass, 14.0, 0.0, 0.0));
+        let rect = [1.0, 2.0, 3.0, 4.0];
+        let cut = |class, radius, focus, dy, on| card_cut(class, radius, focus, dy, on, rect);
+        assert_eq!(cut(Class::Card, 14.0, 0.0, 0.0, true), CardCut::Pieces(rect));
+        assert_eq!(cut(Class::Card, 14.0, -1.0, 0.0, true), CardCut::Pieces(rect), "a negative focus is still at rest");
+        assert_eq!(cut(Class::Card, 14.0, 0.0, -3.0, true), CardCut::Pieces(rect), "a negative dy clamps to rest");
+        assert_eq!(cut(Class::Card, 14.0, 0.01, 0.0, true), CardCut::Whole(CardPath::Focus), "the focus program");
+        assert_eq!(cut(Class::Card, 14.0, 0.0, 0.5, true), CardCut::Whole(CardPath::Focus), "a risen shadow moves the quad's centre off the card's");
+        assert_eq!(cut(Class::Card, 0.0, 0.0, 0.0, true), CardCut::Whole(CardPath::Plain), "radius 0 is the shader's whole-quad plain branch");
+        assert_eq!(cut(Class::Card, 0.49, 0.0, 0.0, true), CardCut::Whole(CardPath::Plain));
+        assert_eq!(cut(Class::Card, 14.0, 0.0, 0.0, false), CardCut::Whole(CardPath::Off), "the dev switch is its own bucket");
+        assert_eq!(cut(Class::Card, 14.0, 0.3, 0.0, false), CardCut::Whole(CardPath::Focus), "a focused card is the focus path whatever the switch says");
+        assert_eq!(cut(Class::Image, 14.0, 0.0, 0.0, true), CardCut::None, "a rounded image without a pad is not a card");
+        assert_eq!(cut(Class::Glass, 14.0, 0.0, 0.0, true), CardCut::None);
     }
 
     /// `bands_around` of a snapped hole and `snap_inner` agree with the shadow's own contract

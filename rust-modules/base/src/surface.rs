@@ -305,7 +305,9 @@ pub fn present_supersampled() {
     let (vx, vy, vw, vh) = viewport();
     let w: Vec<i32> = WIN_VIEW.iter().map(|a| a.load(Ordering::Relaxed)).collect();
     unsafe {
-        // The blit honours the scissor test; a clip left armed would crop the window copy.
+        // The blit honours the scissor test; a clip left armed would crop the window copy. This
+        // layer sits below gfx and cannot touch its `LIVE_SCISSOR` record of the test, so the
+        // caller (`app::run`) clears the clip through gfx first and this only makes sure.
         glDisable(0x0C11);
         glBindFramebuffer(0x8CA8, fbo); // READ
         glBindFramebuffer(0x8CA9, 0); // DRAW

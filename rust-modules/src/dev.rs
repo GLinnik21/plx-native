@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 39] = [
+const DIAG: [&str; 40] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -92,14 +92,15 @@ const DIAG: [&str; 39] = [
     // `fx=` on Home's fingerprint (the focused card's drawn x) and, on every page that draws a
     // card section, the `cd*` fields (`plx_ui::card_probe`): a pure observer of `focus`.
     "plxnative-focusx",
-    // The two OVERDRAW surfaces and the hero-ground fold ([`plx_gfx::overdraw`],
-    // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
+    // The two OVERDRAW surfaces, the resting-card split's off switch and the hero-ground fold
+    // ([`plx_gfx::overdraw`], `docs/backdrop-blur-profiling.md` Part 5). All four are measurement knobs whose whole
     // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the
     // who's-watching picker, so the control leg and the masked leg would boot to DIFFERENT
     // SCREENS and the difference between them would be the screen, not the class being priced.
     // That is the exact failure this list exists to stop, and it is invisible in the numbers.
     "plxnative-overdraw",
     "plxnative-drawmask",
+    "plxnative-nocardsplit",
     "plxnative-heroground",
     // The FRAME BUDGET's A/B control leg (`ui/frame/budget.rs`, spec §8.1): admission as it was
     // before phase 11 — quota only, no time ceiling, no solo rule. DIAG for exactly the argument
