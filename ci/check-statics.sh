@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The statics gate of the UI restructure (spec §0 done-criterion 1, §15.2): `static mut` in a
-# screen or engine module is ZERO except for render caches allowlisted BY NAME with a reason, and
+# screen or engine module is ZERO except for process-wide statics allowlisted BY NAME with a reason
+# (a frame-loop render cache is a `thread_local!`, never an entry), and
 # the three main-thread machine globals (`route/decision.rs SESSION`, `player/engine.rs ENGINE`,
 # `ui/press.rs S`) are gone. `ui/press.rs S` went in phase 2; the other two go in phase 9.
 #
@@ -8,7 +9,7 @@
 # entries, every path exists):
 #   ci/allow/statics.txt           the PERMANENT list — `path<TAB>NAME: reason`, one entry per
 #                                  static, matched by path AND name. A `Rect` static is never a
-#                                  render cache (§15.2), so a hit rect cannot be entered here.
+#                                  process-wide static (§15.2), so a hit rect cannot be entered here.
 #   ci/allow/statics-migration.txt the MIGRATION list — `path<TAB>phase N: reason`, one entry per
 #                                  legacy FILE, matched by path alone; it shrinks with each phase
 #                                  and is EMPTY at phase 12. A stale entry (a path with no static
@@ -85,7 +86,7 @@ while IFS=$'\t' read -r path name; do
   elif grep -qE "^${path}	" "$migr"; then n_migr=$((n_migr+1))
   else echo "    $path: static mut $name"; bad=$((bad+1)); fi
 done <<<"$all"
-if [ "$bad" -eq 0 ]; then ok "statics: $n_perm named render cache(s), $n_migr in legacy modules awaiting their phase"
+if [ "$bad" -eq 0 ]; then ok "statics: $n_perm named static(s), $n_migr in legacy modules awaiting their phase"
 else fail "statics: $bad static mut(s) outside ci/allow/statics.txt and ci/allow/statics-migration.txt"; fi
 
 # the tree-wide heap rule: a heap-owning `static mut` outside the gated directories (those were

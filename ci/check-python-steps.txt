@@ -131,9 +131,11 @@ python3 ci/check-package.py --selftest
 # cycles while the crate split is under way, and webOS from spreading. ~3 s, no cargo.
 python3 ci/test_module_graph.py
 python3 ci/check-module-layers.py
-# The statics gate (spec §0 done-criterion 1): static mut under ui/ and screens/ is zero except
-# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
-# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.
+# The statics gate (spec §0 done-criterion 1): a static mut under ui/, screens/, appkit/ and the
+# gated data modules must be named in ci/allow/statics.txt or sit in a legacy module still awaiting
+# its phase in ci/allow/statics-migration.txt (a counted list that only shrinks). A static mut that
+# OWNS HEAP is refused anywhere under rust-modules unless ci/allow/statics.txt names it with the
+# thread that owns it (ci/check-statics-heap.py); a frame-loop render cache is a thread_local!.
 ci/check-statics.sh
 # The module-cycle ratchet: the top-level module cycle may shrink, never grow. The checker runs on the
 # real tree against ci/module-cycle-baseline.json (~1.5 s); its self-test uses a synthetic crate.

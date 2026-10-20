@@ -6132,9 +6132,10 @@ impl PersonOwnerGateFixture {
         self.assertIn("_check_deps_selftest_dt_fn.rs", out)
 
     def test_check_statics_is_green(self):
-        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` under ui/ and screens/
-        is a named render cache (ci/allow/statics.txt) or sits in a legacy module still awaiting its
-        phase (ci/allow/statics-migration.txt), and no allowlist entry is stale."""
+        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` in the gated
+        directories is named in ci/allow/statics.txt or sits in a legacy module still awaiting its
+        phase (ci/allow/statics-migration.txt), every heap-owning `static mut` anywhere under
+        rust-modules is named in ci/allow/statics.txt, and no allowlist entry is stale."""
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
