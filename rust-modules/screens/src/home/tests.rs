@@ -5112,6 +5112,24 @@ fn an_evicted_home_remounted_on_the_next_episode_keeps_the_remembered_tile() {
 /// table: a publication, a remount's restore, an adopted show.
 fn assert_matches_a_full_projection(s: &HomeScreen, view: HubsView<'_>) {
     assert_eq!(s.rows.len(), view.hub_count(), "one projection per published row");
+    for row in 0..view.hub_count() {
+        let hub = view.hub(row).expect("a published row");
+        let identity = HomeScreen::hub_identity(view, row, hub);
+        for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate().filter(|(_, item)| !s.rows[row].placeholders && !item.rk.is_empty()) {
+            let at = s.item_slot(&identity, ItemRef::Item { sid: item.sid, rk: &item.rk }).unwrap_or_else(|| panic!("({row}, {col}) has no key"));
+            let key = &s.items[at];
+            assert_eq!((key.last_row, key.last_col), (row as u32, col as u32),
+                "the key of the card at ({row}, {col}) remembers where it sits (rk {:?})", item.rk);
+        }
+    }
+    assert_element_map_is_the_rows(s, view);
+}
+
+/// The rows hold the element of the card each shows, and the element map is the first-wins map of
+/// those (which is all a screen that publishes one hub twice can ask of it: its two rows share
+/// keys, so a key can remember only the place of the last row projected).
+fn assert_element_map_is_the_rows(s: &HomeScreen, view: HubsView<'_>) {
+    assert_eq!(s.rows.len(), view.hub_count(), "one projection per published row");
     let mut expected: HashMap<u32, (u32, u32)> = HashMap::new();
     for row in 0..view.hub_count() {
         let hub = view.hub(row).expect("a published row");
@@ -5129,10 +5147,6 @@ fn assert_matches_a_full_projection(s: &HomeScreen, view: HubsView<'_>) {
             let key = &s.items[at];
             assert_eq!(projection.elems[col], key.elem,
                 "the tile at ({row}, {col}) holds the element of the card it shows (rk {:?})", item.rk);
-            if !projection.placeholders {
-                assert_eq!((key.last_row, key.last_col), (row as u32, col as u32),
-                    "the key of the card at ({row}, {col}) remembers where it sits (rk {:?})", item.rk);
-            }
             expected.entry(key.elem).or_insert((row as u32, col as u32));
         }
     }
@@ -5157,6 +5171,164 @@ fn an_evicted_home_remounted_on_a_next_episode_that_comes_first_moves_the_tile_w
     assert_eq!(back.rows[0].elems[0], before[2], "episode 31 is on the element that held episode 3");
     assert_matches_a_full_projection(&back, snapshot.view());
     assert_indexes_agree(&back);
+}
+
+/// xorshift64*: a repeatable stream for the histories below (a seed names a failure).
+struct History(u64);
+
+impl History {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+    }
+}
+
+/// One random change to the catalog the server publishes: the first (Continue Watching) shelf gains,
+/// loses, reorders or replaces a card, the next episode of a show arrives under another rating key,
+/// every shelf reorders its cards, or a plain republication with no change at all.
+fn publish_something(state: &mut plx_data::pms::PmsState, rng: &mut History, fresh: &mut u32, log: &mut Vec<String>) {
+    let shelf = plx_data::pms::hubs_snapshot(state);
+    let cards: Vec<(String, String)> = shelf.view().hub(0).expect("a first row").items.iter()
+        .map(|card| (card.rk.clone(), card.show_rk.clone())).collect();
+    let at = rng.below(cards.len());
+    *fresh += 1;
+    let new_rk = format!("n{fresh}");
+    match rng.below(8) {
+        0 => {
+            log.push(format!("the next episode of {} arrives as {new_rk} in place", cards[at].0));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk;
+                items[at] = Arc::new(card);
+            });
+        }
+        1 => {
+            log.push(format!("{new_rk} arrives first as the next episode of {}", cards[at].0));
+            let (new_rk, show) = (new_rk.clone(), cards[at].1.clone());
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk;
+                card.show_rk = show;
+                items.remove(at);
+                items.insert(0, Arc::new(card));
+            });
+        }
+        2 => {
+            log.push(format!("{} moves to the front", cards[at].0));
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| { let card = items.remove(at); items.insert(0, card); });
+        }
+        3 if cards.len() > 2 => {
+            log.push(format!("{} leaves", cards[at].0));
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| { items.remove(at); });
+        }
+        4 if cards.len() < MAX_ITEMS => {
+            log.push(format!("{new_rk} joins at {at}"));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk.clone();
+                card.show_rk = format!("show{new_rk}");
+                items.insert(at, Arc::new(card));
+            });
+        }
+        5 => {
+            log.push("every shelf reorders".into());
+            plx_data::pms::rotate_test_shelves_right(state);
+        }
+        6 => {
+            log.push(format!("{} is answered again under {new_rk} on every shelf", cards[at].0));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_test_item(state, &cards[at].0, &move |card| card.rk = new_rk.clone());
+        }
+        _ => {
+            log.push("republished unchanged".into());
+            plx_data::pms::edit_first_shelf_for_test(state, |_| {});
+        }
+    }
+}
+
+/// The incremental sync is a PROJECTION, not a history: after any run of publications, evictions
+/// (the page remounted on the current catalog and handed its memory), in-place restores and
+/// reorders, the rows, the element map and every shown card's remembered place are what a full
+/// projection over the same key table gives. A row kept whole, a row inheriting a finished
+/// episode's element, a restore swapping elements between keys: each is a way for the fast path to
+/// leave a row that disagrees with the table, which `an_evicted_home_remounted_on_a_next_episode_that_comes_first_…`
+/// was the one example of.
+#[test]
+fn the_incremental_sync_equals_a_full_projection_over_random_histories() {
+    let _guard = plx_base::testlock::serial();
+    for seed in 1..=150u64 {
+        let mut rng = History(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 6, &[
+            ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent"),
+            ("home.movies.genre", "/hubs/genre", "Genre"),
+        ]);
+        for rk in 1..=6 {
+            plx_data::pms::edit_test_item(&mut state, &rk.to_string(), &|card| { card.kind = 3; card.show_rk = format!("show{}", card.rk); });
+        }
+        let mut s = screen(plx_data::pms::hubs_snapshot(&state).view());
+        let (mut fresh, mut log) = (0u32, Vec::new());
+        for step in 0..24 {
+            let op = rng.below(5);
+            if op == 0 {
+                // evicted while the catalog moves on, then mounted on the current one and restored
+                let memory = memory_of(&s);
+                for _ in 0..rng.below(3) { publish_something(&mut state, &mut rng, &mut fresh, &mut log); }
+                log.push("the page is remounted from its memory".into());
+                s = remount(&state, memory);
+            } else if op == 1 {
+                log.push("the page restores its own memory".into());
+                let memory = memory_of(&s);
+                s.restore(&memory);
+                s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+            } else {
+                publish_something(&mut state, &mut rng, &mut fresh, &mut log);
+                s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+            }
+            let snapshot = plx_data::pms::hubs_snapshot(&state);
+            let history = || format!("seed {seed}, step {step}: {:?}", log);
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_matches_a_full_projection(&s, snapshot.view());
+                assert_indexes_agree(&s);
+            }));
+            if let Err(failure) = checked {
+                eprintln!("{}", history());
+                std::panic::resume_unwind(failure);
+            }
+        }
+    }
+}
+
+/// A publication can carry one hub twice (the store does not dedupe `(hubIdentifier, key)`): the two
+/// rows share their keys, and the element map keeps the first row's place for a shared element. When
+/// the FIRST of the two changes and the second is kept whole, the element a card of the first row
+/// left behind is still the second row's, so the map must keep it (it would be swept as gone while
+/// on screen).
+#[test]
+fn a_hub_published_twice_keeps_its_second_rows_elements_when_the_first_row_changes() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 4,
+        &[("x.twice", "/hubs/twice", "Twice"), ("x.once", "/hubs/once", "Once"), ("x.twice", "/hubs/twice", "Twice")]);
+    let first = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(first.view());
+    assert_element_map_is_the_rows(&s, first.view());
+    // the first row loses its first card; the second keeps all four
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| { items.remove(0); });
+    let after = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(after.view(), None));
+    assert_eq!(s.rows[0].elems.len(), 3, "premise: the first row changed");
+    assert_eq!(s.rows[2].elems.len(), 4, "premise: the second row is the one it was");
+    assert_element_map_is_the_rows(&s, after.view());
+    for (col, &elem) in s.rows[2].elems.iter().enumerate() {
+        assert!(s.elem_at.contains_key(&elem), "the second row's card {col} is still on the page");
+    }
 }
 
 #[test]

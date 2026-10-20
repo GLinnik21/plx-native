@@ -1018,7 +1018,12 @@ impl HomeScreen {
         // between the two showed the new rows at the top of the screen, over the billboard.
         self.layout_grid();
         let mut removed: HashSet<u32> = HashSet::new();
-        if same_rows {
+        // The patch is exact while every row is its own hub. A publication can carry one hub twice
+        // (the store does not dedupe `(hubIdentifier, key)`): the two rows share their keys, the map
+        // keeps the first row's place for a shared element, and a first row that changed while the
+        // second was kept would take the element away from the second. Two rows of one group are
+        // that case, and it maps the page again (a pass over the groups, no hashing of identities).
+        if same_rows && (reprojected.is_empty() || Self::groups_are_distinct(&rows)) {
             // the changed rows only: forget what each held, map what it holds now
             for &row in &reprojected {
                 if let Ok(found) = left.binary_search_by_key(&row, |(at, _)| *at) {
@@ -1060,6 +1065,12 @@ impl HomeScreen {
         self.stash_removed_continue_watching(view);
         self.prune_keys(&removed, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
+    }
+
+    /// Whether every row has a group of its own, which is to say every row is its own hub.
+    fn groups_are_distinct(rows: &[HubProjection]) -> bool {
+        let mut seen: HashSet<u32> = HashSet::with_capacity(rows.len());
+        rows.iter().all(|row| seen.insert(row.group.0))
     }
 
     /// **Focus follows the show** (layer-1 view state, 3g). A show's Continue Watching tile is its
