@@ -5,7 +5,7 @@
 //! screen pixel** and that the glass is only 11.4% of it. That number came from the GPU's global
 //! `FRAG_QUADS_RAST`, which cannot say *whose* quads they are: the wayland compositor draws into
 //! the same counters, and one full-screen composite is a quarter of the budget on its own. This
-//! module answers the two questions that follow, and neither of them needs a GPU counter:
+//! module answers the three questions that follow, and none of them needs a GPU counter:
 //!
 //! 1. **What does the APP submit?** [`gate`] sums, per draw class, the screen-visible area of every
 //!    quad the app actually issues, on the CPU, exactly. `/tmp/plxnative-overdraw` arms it and it
@@ -31,8 +31,10 @@
 //! mask exists so a control-leg difference can be taken, and every leg it produces except the
 //! control is unshippable by construction.
 //!
-//! Both surfaces are dev-only: with `devtriggers` off, [`gate`] is `false` and [`note_px`] is empty
-//! at compile time, so a release binary carries neither the branch nor the counters.
+//! All three surfaces are dev-only: with `devtriggers` off, [`gate`] is `false`, and [`note_px`],
+//! [`note_card_path`] and [`set_card_split`] are empty at compile time (and [`card_split`] is
+//! always `true`: a release build always splits), so a release binary carries neither the branch
+//! nor the counters.
 
 /// What kind of quad a draw call submits. One variant per PRIMITIVE FAMILY rather than per screen
 /// element, because that is the granularity `gfx`/`text` can label a draw at without every screen
