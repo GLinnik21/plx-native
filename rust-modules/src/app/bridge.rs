@@ -3877,6 +3877,10 @@ mod library_bookmark_tests;
 mod library_push_capture_tests;
 
 #[cfg(test)]
+#[path = "recommended_enter_tests.rs"]
+mod recommended_enter_tests;
+
+#[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]
 mod library_diagnostic_tests;
 
