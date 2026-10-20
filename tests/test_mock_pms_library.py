@@ -340,7 +340,7 @@ class CaptionEdgeCases(unittest.TestCase):
     def test_two_collections_are_named_by_more_than_a_face_can_set(self):
         pms = MockPms(self.lib())
         rows = get(pms, "/library/sections/1/collections")["Metadata"]
-        long = [r for r in rows if len(r["title"].split()) == 5]
+        long = [r for r in rows if len(r["title"].split()) >= 5]
         self.assertEqual(len(long), 2)
         self.assertEqual(sorted("thumb" in r for r in long), [False, True], "a fan and a neutral tile")
         self.assertGreater(max(r["childCount"] for r in long), 0)
