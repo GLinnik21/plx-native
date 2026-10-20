@@ -104,6 +104,9 @@ pub fn fed_totals() -> (i64, i64) {
 /// taken only when a video push would park at this cap with no audio yet. The reachable-reserve
 /// model (`abr::plant::b_max_est_ms`) wants exactly this steady-state number: the headroom is a
 /// transient of the start of one kind of file, gone before the buffer-driven controller acts.
+/// The audio lane has the mirror-image transient: a file that stores more than this much audio
+/// ahead of its first video packet lifts the audio lane's cap by `ff::PRE_VIDEO_AUDIO_HEADROOM`
+/// (16 MiB) until that video packet is read.
 pub const fn aq_caps() -> (i64, i64) {
     (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
 }
