@@ -3467,11 +3467,28 @@ impl DetailScreen {
         if self.return_waiting(meta) { return; }
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
         let Some(detail) = self.detail(meta) else { return };
-        self.scroll_target = if located.section() == 0 { 0.0 } else {
-            (self.section_top_settled(located.section(), detail, measure)
-                - plx_ui::detail_layout::TOP_MARGIN)
-                .max(0.0)
+        self.scroll_target = self.reveal_target(located.section(), detail, measure);
+    }
+
+    /// The scroll that brings `section` into reading position: its top at `TOP_MARGIN`, the hero
+    /// for section 0.
+    ///
+    /// The episodes are read together with the season strip that sits right above them, so they
+    /// anchor on the STRIP: it rests at `TOP_MARGIN`, just under the pinned title, and the episodes
+    /// follow it. Anchoring on the episodes themselves scrolled the strip up into the title's band
+    /// at a scroll where `compact_title_alpha` is still half-way, so the wordmark was drawn across
+    /// the season pills for as long as an episode held focus (issue #679). This way the logo is
+    /// fully shown while an episode is chosen, and moving between the strip and the episodes moves
+    /// nothing.
+    fn reveal_target(&self, section: i32, d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
+        if section == 0 { return 0.0 }
+        let (sections, n) = self.sections(Some(d));
+        let anchor = match sections[..n].iter().position(|&s| s == section) {
+            Some(at) if section == section::SectionId::Episode.raw()
+                && at > 0 && sections[at - 1] == section::SectionId::Season.raw() => sections[at - 1],
+            _ => section,
         };
+        (self.section_top_settled(anchor, d, measure) - plx_ui::detail_layout::TOP_MARGIN).max(0.0)
     }
 
     fn return_waiting(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
