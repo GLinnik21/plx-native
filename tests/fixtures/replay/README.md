@@ -482,3 +482,16 @@ every difference counter zero and `diverged=0` — none of the three flows mount
 recorded frame hashes a let-go, and the bump moves the fingerprint alone. The anchors were then
 recorded afresh on the committed tree (`tests/focusfp.sh --rec --only 1,6,12`), passed
 `plxnative-rec check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained.
+
+The grid bands slot (`plx_ui::poster_grid::GridBands::write` has written each open band's card after
+its row and spring since #843; `LibraryGrid`'s declared `slots:[(row:u32,sp:..)]` became
+`slots:[(row:u32,sp:..,card:Option<u32>)]`, pin `0x6b71_df9e_04db_2b76`) moved the state shape from
+15892566164571969361 to 2896094977091175041, read from the old and the new recorder headers by
+`tools/plxnative-rec rerecord`. All three anchors were observed being refused on load (`replay:
+REFUSED — invalid or incompatible recording`, six replays). The bytes were checked another way: a
+throwaway build of the same tree with only the OLD `LibraryGrid` shape text restored (so the old
+fixtures load) replayed all three SAME in Targets and Resolve, every difference counter zero and
+`diverged=0` — none of the three flows mounts a grid, so no recorded frame hashes a band, and the
+bump moves the fingerprint alone. The anchors were then recorded afresh on the committed tree
+(`tests/focusfp.sh --rec --only 1,6,12`), passed `plxnative-rec check`, and were installed with
+`tools/plxnative-rec rerecord`, anchors retained; the manifest diff is the `state_fp` line only.
