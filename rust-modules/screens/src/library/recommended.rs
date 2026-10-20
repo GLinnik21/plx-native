@@ -676,13 +676,12 @@ impl RecommendedScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header(&self) -> (GroupId, Vec<(&'static str, u32)>) { (CRUMB_GROUP, vec![("crumb", CRUMB_ELEM)]) }
 
-    /// Every card's pop exactly as the draw paints it, shelf by shelf (`focus` the engine's focus): the
-    /// Recommended page's answer to `HomeScreen::probe_card_pops`, for the same route test.
+    /// Every card's pop as the draw paints it, shelf by shelf: the page's answer to `HomeScreen::probe_card_pops`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_card_pops(&self, focus: Option<FocusKey<u32>>) -> Vec<Vec<f32>> {
-        let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        self.shelves.iter().map(|shelf| {
-            let col = elem.and_then(|elem| shelf.elems.iter().position(|key| *key == elem));
+        let at = self.shelf_position(focus);
+        self.shelves.iter().enumerate().map(|(row, shelf)| {
+            let col = at.filter(|&(r, _)| r == row).map(|(_, c)| c);
             (0..shelf.elems.len()).map(|i| shelf.cards.drawn_pop(i, col)).collect()
         }).collect()
     }

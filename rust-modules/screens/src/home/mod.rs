@@ -2386,17 +2386,15 @@ impl HomeScreen {
         self.rows.get(row).map(|projection| projection.elems.len())
     }
 
-    /// Every card's pop exactly as the draw paints it, shelf by shelf (`focus` the engine's focus): what a
-    /// route test reads to say a card the focus has left is at EXACT rest (`pop == 1.0`, so its
-    /// `pop_factor` is `0.0` and it draws with the plain card program, `Spring::land`).
+    /// Every card's pop as the draw paints it, shelf by shelf (`focus` the engine's focus): what a route test
+    /// reads to say a card the focus has left is at EXACT rest (see `World::card_pops`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_card_pops(&self, focus: Option<FocusKey<u32>>) -> Vec<Vec<f32>> {
         let at = self.focused_grid(focus);
         self.rows.iter().enumerate().map(|(row, projection)| {
             let col = at.filter(|&(r, _)| r == row).map(|(_, c)| c);
-            (0..projection.elems.len())
-                .map(|i| self.grid.shelves.get(row).map_or(1.0, |shelf| shelf.drawn_pop(i, col)))
-                .collect()
+            let shelf = &self.grid.shelves[row];
+            (0..projection.elems.len()).map(|i| shelf.drawn_pop(i, col)).collect()
         }).collect()
     }
 

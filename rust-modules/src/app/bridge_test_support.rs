@@ -387,21 +387,23 @@ impl World {
         let mut w = Self::scripted(name);
         w.bridge.stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
         plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "1", &|m| { m.kind = 0; m.guid = Some(hero); });
-        super::show_page(&mut w.d, AppArg::Home);
-        w.frames(60);
-        assert!(w.on(&AppArg::Home), "premise: Home is on top");
-        w
+        w.mount_home()
     }
 
-    /// Home over `rows` shelves of `cols` cards each (`seed_grid_for_test`), settled, focus on the hero. The world is the Home-disc one (a scripted plex.tv), the
-    /// one Home mount the rig has with no library registry under it.
+    /// Home over `rows` shelves of `cols` cards each (`seed_grid_for_test`), settled, focus on the hero. The
+    /// world is the Home-disc one (a scripted plex.tv), the one Home mount the rig has with no library registry.
     pub(super) fn home_grid(name: &str, rows: usize, cols: usize) -> World {
         let mut w = Self::scripted(name);
         w.bridge.stores.hubs.seed_grid_for_test(rows, cols);
-        super::show_page(&mut w.d, AppArg::Home);
-        w.frames(60);
-        assert!(w.on(&AppArg::Home), "premise: Home is on top");
-        w
+        w.mount_home()
+    }
+
+    /// Home shown over the seeded hubs and settled.
+    fn mount_home(mut self) -> World {
+        super::show_page(&mut self.d, AppArg::Home);
+        self.frames(60);
+        assert!(self.on(&AppArg::Home), "premise: Home is on top");
+        self
     }
 
     /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
@@ -556,19 +558,37 @@ impl World {
     /// page): `1.0` is a card at EXACT rest, which `ui::widgets::pop_factor` turns into `0.0` and the card
     /// compositor into the plain program and the resting split. Anything above `1.0` on a card the
     /// focus is not on is a card that never came to rest (`Spring::land`).
-    pub(super) fn card_pops(&self) -> Vec<Vec<f32>> {
+    fn card_pops(&self) -> Vec<Vec<f32>> {
         let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
         if let Some(page) = any.downcast_ref::<plx_screens::home::HomeScreen>() { return page.probe_card_pops(self.d.focus()); }
         if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_card_pops(self.d.focus()); }
         panic!("the top page is neither Home nor the Recommended page");
     }
 
-    /// The cards [`Self::card_pops`] draws off exact rest, as `(shelf, card, pop)`: the focused card (popped)
-    /// and any card that never came to rest.
-    pub(super) fn cards_off_rest(&self) -> Vec<(usize, usize, f32)> {
-        self.card_pops().iter().enumerate()
+    /// **Only the focused card is off exact rest, and it is popped:** every other card draws with the plain
+    /// program (`pop_factor == 0.0`). Returns the focused card's `(shelf, card)`; `what` names the page in the
+    /// failure message.
+    pub(super) fn sole_card_off_rest(&self, what: &str) -> (usize, usize) {
+        let pops = self.card_pops();
+        let off: Vec<(usize, usize, f32)> = pops.iter().enumerate()
             .flat_map(|(shelf, cards)| cards.iter().enumerate().filter(|(_, pop)| **pop != 1.0).map(move |(card, pop)| (shelf, card, *pop)))
-            .collect()
+            .collect();
+        assert_eq!(off.len(), 1, "{what}: only the focused card is off rest, got {off:?}");
+        let (shelf, card, pop) = off[0];
+        assert!(pop > 1.0, "{what}: the focused card is popped: {off:?}");
+        for (s, cards) in pops.iter().enumerate() {
+            for (c, pop) in cards.iter().enumerate().filter(|&(c, _)| (s, c) != (shelf, card)) {
+                assert_eq!(plx_ui::widgets::pop_factor(*pop, plx_ui::cards::RowStyle::HOME.focus_scale), 0.0,
+                    "{what}: card ({s}, {c}) still draws with the focus program (pop {pop})");
+            }
+        }
+        (shelf, card)
+    }
+
+    /// The Home card holding focus: its `(row, col)` in the grid and its ratingKey (`None` while focus is elsewhere).
+    pub(super) fn home_card(&self) -> (Option<(usize, usize)>, Option<String>) {
+        self.bridge.with_home(&self.d, |home, cx, focus| (home.grid_position::<super::AppHost>(focus, cx),
+            home.focused_item::<super::AppHost>(focus, cx).map(|item| item.rk.clone()))).expect("Home is the top page")
     }
 
     /// The scroll the page on top is travelling to (0 at its top).
