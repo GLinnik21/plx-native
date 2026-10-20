@@ -15,7 +15,9 @@
 //! ask (no client yet) is asked when the header first names it.
 //!
 //! A controlled run (record / replay) never probes: the worker's landing time is not on the tape,
-//! so the header would differ between a recording and its replay.
+//! so the header would differ between a recording and its replay. Its control stays off the row
+//! (nothing is known), as it does while a probe has learned nothing. A unit test never probes
+//! either; its rig answers [`TEST_COUNT`] for every section ([`count`]).
 use plx_plex::plex::collections::CollectionsCount;
 use plx_screens::registry::Forbidden;
 use std::sync::Mutex;
@@ -69,8 +71,8 @@ fn shown(answer: Option<CollectionsCount>) -> Option<Result<u32, Forbidden>> {
 }
 
 /// Record what a finished probe learned, then ask for a frame: a resting page runs no ticks, so
-/// without the wake the header would keep showing "Collections" with no number (or a control the
-/// answer says to hide) until the next input.
+/// without the wake the header would keep the control off the row after its count landed (or keep
+/// a control the answer says to hide) until the next input.
 fn land(key: Key, learned: CollectionsCount) {
     {
         let mut cache = lock();
@@ -92,12 +94,19 @@ pub(crate) fn count(
     section: usize,
     now: u32,
 ) -> Option<Result<u32, Forbidden>> {
-    // A controlled run (replay, record) and a unit test never reach the network: the probe would
-    // be a request the run's own script did not make.
-    if cfg!(test) || plx_data::stores::tape::active() { return None; }
+    // A controlled run (replay, record) never reaches the network: the probe would be a request the
+    // run's own script did not make, and its landing time is not on the tape.
+    if plx_data::stores::tape::active() { return None; }
     let section = directory.sections().get(section)?;
+    // A unit test never reaches it either, and its rig has no server to ask: it stands in for one
+    // whose every section holds [`TEST_COUNT`] collections, so the Library header's Collections
+    // control (on the row only with a known count) is there to walk to and press.
+    if cfg!(test) { return Some(Ok(TEST_COUNT)); }
     ask(section.sid?, section.key, now)
 }
+
+/// The count a unit test's rig answers for every section (see [`count`]).
+const TEST_COUNT: u32 = 4;
 
 /// What one landing of the directory is: its epoch and the table's generation and size. The same
 /// stamp means the same sections, so the warm pass has nothing new to ask.

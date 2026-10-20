@@ -153,7 +153,8 @@ pub struct HeaderLayout {
     pub items: Vec<ItemRect>,
     /// The breadcrumb's `›`, when the row has one.
     pub glyph: Option<Rect>,
-    /// The fixed width of the right cluster (text only), measured from the widest case.
+    /// The right cluster's budget width (text only), measured from the widest case. The cluster
+    /// DRAWN is narrower whenever a value slot goes unused.
     pub cluster_w: f32,
     /// The width the left group may fill, text edge to text edge, before it would meet the
     /// cluster: what the caller packs library names (and the "+N") into.
@@ -171,7 +172,7 @@ impl HeaderLayout {
 
 pub struct PageHeader {
     spec: PageHeaderSpec,
-    /// The right cluster's width, from [`PageHeader::new`]'s widest case.
+    /// The right cluster's budget width, from [`PageHeader::new`]'s widest case.
     cluster_w: f32,
 }
 
@@ -226,8 +227,9 @@ fn drawn_cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
 }
 
 impl PageHeader {
-    /// `widest` is the right cluster in its widest case (every value at its longest); the cluster
-    /// takes that width whatever `spec.right` holds now.
+    /// `widest` is the right cluster in its widest case (every value at its longest): it sizes the
+    /// cluster's BUDGET (`cluster_w`, and so `left_budget`), whatever `spec.right` holds now. The
+    /// live items are placed by what they draw.
     pub fn new(spec: PageHeaderSpec, widest: &[HeaderItem], measure: &dyn Measure) -> Self {
         let live = cluster_width(&spec.right, measure);
         let cluster_w = cluster_width(widest, measure).max(live);
@@ -409,8 +411,10 @@ impl PageHeader {
     /// a blend that kept the source's alpha would land the dark ink at 65%.
     ///
     /// A face riding a [`HeaderSwap`] wears `fade.face` as its opacity and paints the value it
-    /// replaces beside its own, at the same x, under the swap's two opacities: the label is drawn
-    /// once and never moves with the numbers.
+    /// replaces beside its own, at the same x, under the swap's two opacities: in place the label
+    /// is drawn once and the two values cross-fade beside it. When the count's width moves the
+    /// label, the swap draws the face twice instead (the old one leaving at its x, the new one
+    /// arriving at its own), neither with a replaced value beside it.
     fn draw_face_at(&self, p: Painter, text: Rect, face: &Face<'_>, (dx, dy): (f32, f32), (focus, selected): (f32, f32)) {
         let (rest, strong) = if face.readout {
             (theme::COUNT_FILTERED_INK, theme::COUNT_FILTERED_INK)

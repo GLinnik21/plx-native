@@ -355,7 +355,7 @@ impl World {
     }
 
     /// The Collections page, opened with OK on the Library header's Collections control, its own
-    /// listing held LOADING (the Library under it is answered, so the control is there to press).
+    /// listing held LOADING (the Library under it is answered, and the rig's probe stand-in answers a count, so the control is there to press).
     pub(super) fn collections_loading(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
         w.bridge.stores.browse.borrow_mut().hold_listing_for_test();
