@@ -148,10 +148,14 @@ impl RowStyle {
         circular: true,
         right_reserve: 0.0,
     };
-    /// ring focus scalar denominator — `(s-1)/ring_denom` maps scale∈[1, focus_scale] to [0, 1].
+    /// The pop scalar `f` the card compositor is handed for a tile drawn at scale `s`:
+    /// `(s - 1) / (focus_scale - 1)`, mapping scale ∈ [1, focus_scale] to [0, 1]. It is what ramps
+    /// the shadow and the perimeter sheen in, and `f > 0` is what sends a card to the heavier focus
+    /// program ([`plx_gfx::gfx::wants_focus_program`]) and out of the resting card split, so a tile at
+    /// rest must yield EXACTLY `0.0` (the pop springs land there: [`Spring::land`]).
     #[inline]
-    fn ring_denom(&self) -> f32 {
-        self.focus_scale - 1.0
+    pub(crate) fn pop_factor(&self, s: f32) -> f32 {
+        ((s - 1.0) / (self.focus_scale - 1.0)).clamp(0.0, 1.0)
     }
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop.
@@ -230,9 +234,10 @@ impl CardRow {
     }
     /// Snap an unfocused row whose every spring is already [`settled`](plx_machine::idle::settled)
     /// onto its rest target, so [`at_exact_rest`](Self::at_exact_rest) holds and a caller may stop
-    /// stepping it. `step` never lands a released spring exactly: the focused cell's `scale` stalls
-    /// one ulp above 1.0 and `band` decays into denormals, so without this a row that was ever
-    /// focused is stepped every frame forever. Inert by construction: it fires only inside the
+    /// stepping it. `step` never lands a released spring exactly: `band` decays into denormals and a
+    /// cell's `scale` stalls one ulp above 1.0 ([`update`](Self::update) lands those cells itself,
+    /// [`Spring::land`], so a row that keeps focus elsewhere has none), so without this a row that
+    /// was ever focused is stepped every frame forever. Inert by construction: it fires only inside the
     /// threshold the idle gate already treats as "motion finished". `scroll_x` is a retained
     /// viewport, not a rest value, and is left alone. Returns whether the row is now at exact rest.
     pub fn park(&mut self) -> bool {
@@ -271,6 +276,12 @@ impl CardRow {
                 1.0
             };
             sp.step(target, sty.k_scale, dt);
+            // A cell the focus has left comes to EXACT rest. `step` stalls it one ulp above 1.0 and
+            // `park` never runs while the row holds focus on another cell, so a row walked by a held
+            // key left every visited card at an `f` of 1e-6: the focus program, never the resting split.
+            if focused != Some(i) {
+                sp.land(1.0, dt);
+            }
         }
         // the shared overflow spring pops only while focus is actually out past the array
         let ot = if focused.is_some_and(|f| f >= MAX_ROW_ITEMS) {
@@ -279,6 +290,9 @@ impl CardRow {
             1.0
         };
         self.overflow.step(ot, sty.k_scale, dt);
+        if ot == 1.0 {
+            self.overflow.land(1.0, dt);
+        }
         if let Some(fc) = focused {
             if n > 0 {
                 self.scroll_x
@@ -755,7 +769,7 @@ pub fn draw_tile(
     // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
     // shadow via `f`.
-    let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
+    let f = sty.pop_factor(s);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
     card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
@@ -900,7 +914,7 @@ impl TileLabel {
 ///
 /// **`s` IS THE SCALE `rect` WAS BUILT FROM — pop AND press, not the pop alone.** It is not a
 /// second, decorative knob: this function divides by it twice, and both readings are wrong the
-/// moment the two disagree. `f = (s - 1) / ring_denom` is the drop-shadow and perimeter sheen, so
+/// moment the two disagree. `f = RowStyle::pop_factor(s)` is the drop-shadow and perimeter sheen, so
 /// a press that reaches the rect but not `s` leaves the tile wearing a full focus shadow while it
 /// shrinks — the click reads as a jitter instead of the tile pressing INTO the page. And `ty`
 /// anchors the label block to the UNSCALED card bottom as `rect.h / s`, which is the resting
@@ -965,7 +979,7 @@ pub fn draw_focused_tile_led(
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
     // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
-    let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
+    let f = sty.pop_factor(s);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
     crate::widgets::card_named_led(p, rect.scaled(1.0 / s), art, None, rad, true, s, f, led);
@@ -1900,6 +1914,54 @@ mod tests {
         let before = motion_hash(&row);
         row.update(24, None, &RowStyle::HOME, dt);
         assert_eq!(motion_hash(&row), before, "update of a parked row is a fixed point");
+    }
+
+    /// What the card compositor does with a tile drawn at `scale`: the pop scalar the painter passes
+    /// (`draw_tile`), the shadow lift `Painter::tex_carded` derives from it, and whether that sends the
+    /// card to the focus program (and out of the resting split) rather than the plain one.
+    fn card_path(sty: &RowStyle, scale: f32) -> (f32, bool) {
+        let f = sty.pop_factor(scale);
+        let (_, _, _, off_l) = crate::card_shadow_params(sty.h, f, theme::CARD_SHADOW[3]);
+        let dy = f.clamp(0.0, 1.0) * off_l;
+        (f, plx_gfx::gfx::wants_focus_program(f, dy))
+    }
+
+    /// **A held key walks the focus along a row, and the row never lets go of focus: it moves on to
+    /// the next cell.** `park` refuses a focused row, so every cell the walk leaves behind used to
+    /// stall one ulp above 1.0 (`step` never lands a released spring), which is `f` of about 1e-6,
+    /// which sends the card to the focus program (gloss, glow band, shadow branch) and out of the
+    /// resting split, for as long as the walk lasts. They must come to EXACT rest, the same
+    /// `scale == 1.0` / `f == 0.0` a card never visited has, within a bounded number of frames.
+    #[test]
+    fn a_cell_the_walk_leaves_lands_exactly_on_rest_while_the_row_stays_focused() {
+        let dt = 1.0 / 60.0;
+        for (name, sty) in [("HOME", RowStyle::HOME), ("EPISODE", RowStyle::EPISODE), ("CAST", RowStyle::CAST)] {
+            // an ordinary cell, and one past the spring array (those share the one `overflow` spring)
+            for (from, to) in [(3, 4), (MAX_ROW_ITEMS + 5, MAX_ROW_ITEMS + 6), (MAX_ROW_ITEMS + 5, 2)] {
+                let mut row = CardRow::new();
+                for _ in 0..30 {
+                    row.update(80, Some(from), &sty, dt);
+                }
+                assert!(row.scale(from) > 1.0, "{name}: the cell {from} was popped");
+                let mut landed = None;
+                for frame in 0..90 {
+                    row.update(80, Some(to), &sty, dt);
+                    if row.scale(from) == 1.0 {
+                        landed = Some(frame);
+                        break;
+                    }
+                }
+                assert!(landed.is_some(), "{name}: cell {from} still at {} 90 frames after focus moved to {to}", row.scale(from));
+                assert_eq!(card_path(&sty, row.scale(from)), (0.0, false), "{name}: a settled cell draws the plain program");
+                // and it stays there: the row is still focused and still stepping every frame
+                for _ in 0..30 {
+                    row.update(80, Some(to), &sty, dt);
+                    assert_eq!(row.scale(from), 1.0, "{name}: cell {from} left rest again");
+                }
+                // the focused cell is not touched: it is on its way up to the pop (or at it)
+                assert!(row.scale(to) > 1.0, "{name}: the new focus cell {to} pops");
+            }
+        }
     }
 
     #[test]

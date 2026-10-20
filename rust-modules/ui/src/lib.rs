@@ -182,6 +182,12 @@ pub struct Size {
     pub h: f32,
 }
 
+/// The distance (and per-frame travel), relative to `1 +` the larger magnitude, inside which
+/// [`Spring::land`] puts a spring on its target: 2^-14. Far above the ulp a released spring stalls
+/// at (1.2e-7 at 1.0), far below the idle gate's own `REST_REL` (1e-3), so a landing is never the
+/// visible end of a motion.
+pub const LAND_REL: f32 = 1.0 / 16384.0;
+
 /// One animated scalar, delegating to the existing critically-damped C spring so
 /// motion is byte-identical. "Springs live in views": a view owns one per value.
 #[derive(Clone, Copy, Default)]
@@ -203,6 +209,30 @@ impl Spring {
     #[inline]
     pub fn step_zeta(&mut self, target: f32, k: f32, zeta: f32, dt: f32) {
         plx_gfx::gfx::spring_zeta(&mut self.pos, &mut self.vel, target, k, zeta, dt);
+    }
+    /// Put a spring that has ARRIVED exactly on `target` (position and velocity both), and say whether
+    /// it is there. [`step`](Self::step) never does: the closed form's last addition rounds to the
+    /// nearest f32, so a released spring parks one ulp off its target with a velocity of about
+    /// 1e-6 and stays at that fixed point forever (a pop of `1.0000001`, an `f` of 1e-6 that sends
+    /// a card to the focus program for as long as the row keeps focus elsewhere).
+    ///
+    /// Arrived means within [`LAND_REL`] of the larger magnitude (plus one) and travelling less than
+    /// that per frame (`vel * dt`, the form [`plx_machine::idle::settled`] judges): about 1.2e-4 for
+    /// a 0..1 pop, a hundredth of a pixel on a 280 px scroll, a thousand times the ulp it has to
+    /// catch and a seventeenth of what the idle gate already treats as finished, so nothing visible moves.
+    /// The caller picks which springs: a cell that is NOT focused calls it with its rest value.
+    /// Change-guarded like [`jump`](Self::jump), so a spring already exactly there reports nothing.
+    #[inline]
+    pub fn land(&mut self, target: f32, dt: f32) -> bool {
+        if self.pos == target && self.vel == 0.0 {
+            return true;
+        }
+        let near = LAND_REL * (1.0 + self.pos.abs().max(target.abs()));
+        if (self.pos - target).abs() <= near && (self.vel * dt).abs() <= near {
+            self.jump(target);
+            return true;
+        }
+        false
     }
     /// Teleport, with no motion in between. Reports to [`plx_machine::idle`](plx_machine::idle) — a jump
     /// changes the drawn value without ever reaching a spring integrator, so nothing else would

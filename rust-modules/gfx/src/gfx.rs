@@ -2798,7 +2798,7 @@ fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Option<
 /// program — the entire reason that split exists, so it is its own named, tested predicate rather
 /// than an inline `||` at the one call site.
 #[inline]
-fn wants_focus_program(focus: f32, dy: f32) -> bool {
+pub fn wants_focus_program(focus: f32, dy: f32) -> bool {
     focus > 0.0 || dy.max(0.0) > 0.0
 }
 
