@@ -13,7 +13,7 @@ Whether it works or not, the form asks for the same things.
 
 | TV | webOS (platform release) | Build | Install | Result | Tried | Report |
 |---|---|---|---|---|---|---|
-| LG 75UK6570AUA (2018), board `LM18A_ATSC_KR` | 4.4.3 (4.4.3-22, firmware 05.50.70) | 0.8.0 prebuilt | Developer Mode | Works | Sign-in, browsing, direct play of an MKV, resume, fast-forward | [#880](https://github.com/GLinnik21/plx-native/issues/880) |
+| LG 75UK6570AUA (2018), board `LM18A_ATSC_KR` | 4.4.3 (4.4.3-22, firmware 05.50.70) | 0.8.0 prebuilt | Developer Mode | Works | Sign-in, browsing, direct play of an MKV, resume, fast-forward | [#882](https://github.com/GLinnik21/plx-native/discussions/882) |
 | LG 65UJ6200-UA (2017) | 3.9.0 (shipped with 3.5) | nightly 0.9.0-nightly-20261020 | Developer Mode | Works | Sign-in by QR code, browsing, search, video playback | [#878](https://github.com/GLinnik21/plx-native/discussions/878) |
 | LG OLED55C7V-Z (2017) | 3.9.0 | 0.8.0 prebuilt | Developer Mode | The app closes on Play, with no message | Not recorded | [#249](https://github.com/GLinnik21/plx-native/issues/249) (comment) |
 | 2018 sets on the M16P chip | 3.9.3 | 0.6.0 to 0.6.6 (prebuilt) | Developer Mode | Sign-in and browsing work; playback never starts | Opt-in usage reports | [#249](https://github.com/GLinnik21/plx-native/issues/249) |
