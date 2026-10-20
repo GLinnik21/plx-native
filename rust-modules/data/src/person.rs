@@ -241,7 +241,8 @@ pub struct Person {
     /// "nothing in your libraries" over a fetch still out on the server that does have them.
     pub landed: bool,
     /// the plex.tv profile fetch has ANSWERED at least once — including the answer "no such
-    /// person", which arrives as an all-empty profile. Its only job is to stop the retry; the page
+    /// person", which arrives as an all-empty profile — or was REFUSED in-process
+    /// (`Landing::Refused`), which settles the page the same way. Its only job is to stop the retry; the page
     /// never renders a "loading" state for the header, because a header that is complete without a
     /// biography must not flicker a spinner into a space it will never fill.
     pub profiled: bool,
@@ -254,7 +255,8 @@ pub struct Person {
     /// because its availability column is a function of the sources and changes under it.
     credits: Vec<plx_plex::plex::discover::CreditGroup>,
     /// the credits fetch has ANSWERED at least once — including the answer "no credits", which is
-    /// an empty vector. [`Person::profiled`]'s twin, and the gate the Filmography entry row is
+    /// an empty vector — or was REFUSED in-process (`Landing::Refused`), which leaves the vector
+    /// empty. [`Person::profiled`]'s twin, and the gate the Filmography entry row is
     /// drawn on: an entry naming no count is an entry that cannot promise a list.
     pub credited: bool,
     /// Exact registry identity this source vector was built from. Background roster refresh can
@@ -373,17 +375,16 @@ impl PersonState {
 /// the wait.
 pub fn facts_pending(p: &Person) -> bool {
     // **Bounded by a real ATTEMPT, not only by success.** `!p.profiled` alone is unbounded whenever
-    // plex.tv cannot be reached — an offline or LAN-only television, a provider outage, or any
-    // headless boot, where the injected `/tmp/plxnative-token` leaves `Session::account_token`
-    // empty, so the credits answer 401 (measured) and a dev-token boot with no Discover stand-in
-    // armed has the read refused locally and logged (`plex::account::discover_read_allowed`). The
-    // profile mailbox then re-arms its back-off
-    // forever, `profiled` never turns true, and `draw_header` paints five `skeleton_bar`s a frame,
+    // plex.tv cannot be reached — an offline or LAN-only television, or a provider outage. The
+    // profile mailbox then re-arms its back-off forever, `profiled` never turns true, and `draw_header` paints five `skeleton_bar`s a frame,
     // each of which calls `idle::invalidate()` — so the whole-frame present gate never closes and
     // the page repaints at 60fps for as long as it is open, for a sweep over content that is never
     // arriving. One failed attempt is enough to say "this is what the page is": the band degrades
     // to the name it already has, which is exactly the finished-not-broken read the doc above asks
     // for. A later success still fills it in — `profiled` is what draws the content.
+    //
+    // A REFUSED read (a dev-token boot with no Discover stand-in armed) is not part of that wait at
+    // all: it lands `Landing::Refused`, which settles `profiled` and `profile_tried` together, once.
     //
     // **And only when there is something to ask.** A person with no plex.tv guid is never
     // addressed (`address` has nothing to send), so no attempt can ever turn `profile_tried`; the
@@ -550,6 +551,14 @@ enum Landing {
     /// lands and cannot be baked into a worker's answer.
     Credits(Option<Vec<plx_plex::plex::discover::CreditGroup>>),
     Roles(Option<RolesLanding>),
+    /// The two plex.tv reads only ([`F_PROFILE`], [`F_CREDITS`]): the read was REFUSED in-process
+    /// before a request existed (`plex::discover::person_profile_refused`: a dev-token boot with no
+    /// Discover stand-in armed, a standing decision stated at `plex::account::permit_read`).
+    /// **Not a failure, so not a `None`**: that is retried every [`RETRY_FRAMES`], and a refusal
+    /// cannot change during the process. It settles the page as an empty answer does (see
+    /// [`apply_landing`]), with no content invented and no backoff armed. Never produced on a
+    /// controlled boot, which lands `None` on a tape without asking.
+    Refused,
 }
 
 /// One source's finished `/media` read: the two shelves it drew, and the **uncapped** guid index
@@ -597,8 +606,8 @@ pub fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'sta
         return Err("noncanonical person reply");
     }
     let legal = match slot as usize {
-        F_PROFILE => matches!(mail.what, Landing::Profile(_)),
-        F_CREDITS => matches!(mail.what, Landing::Credits(_)),
+        F_PROFILE => matches!(mail.what, Landing::Profile(_) | Landing::Refused),
+        F_CREDITS => matches!(mail.what, Landing::Credits(_) | Landing::Refused),
         i => match un_fx(i).map(|(_, kind)| kind) {
             Some(K_RESOLVE) => matches!(mail.what, Landing::Resolve(_)),
             Some(K_MEDIA) => matches!(mail.what, Landing::Media(_)),
@@ -984,10 +993,11 @@ fn open(
 /// birthplace and the biography itself — comes from `discover.provider.plex.tv`, which is a
 /// different identity from the PMS. An automated boot signs in with `/tmp/plxnative-token`, a
 /// *server* token and leaves `Session::account_token` empty, so no account token reaches the
-/// provider (`plex::account::discover_read_allowed` refuses the read and logs it unless a Discover
-/// stand-in — `plxnative-discover`, or a `plxnative-plextv` redirect — is armed, which answers with
-/// the mock's synthetic record instead); a real interactive session gets a real biography and an
-/// automated one never does. So neither `tests/run.py` nor `make sim-shot` can reach a person page
+/// provider. The app therefore does not ask: a dev-token boot with no Discover stand-in armed
+/// (`plxnative-discover`, or a `plxnative-plextv` redirect) has the read refused and the page
+/// settled empty, by a standing decision whose cost is stated once at `plex::account::permit_read`;
+/// with one armed the mock answers with its synthetic record. A real interactive session gets a
+/// real biography and an automated one never does. So neither `tests/run.py` nor `make sim-shot` can reach a person page
 /// with the real prose on it at all, and the panel this seeds is by construction only reachable when there is MORE
 /// prose than the header shows. That is the same argument
 /// `/tmp/plxnative-search`'s query seed makes (no harness can type) and `/tmp/plxnative-failtest`'s
@@ -1220,9 +1230,9 @@ impl PersonState {
 ///
 /// It exists for exactly [`seed_dev_profile`]'s reason and the argument is not repeated here: the
 /// credits come from `discover.provider.plex.tv`, an automated boot leaves `Session::account_token`
-/// empty, and the provider answers a tokenless credits read `401` (the app refuses the read, as
-/// above, unless a stand-in is armed). So no harness and no `make sim-shot` can reach this screen
-/// with a single real row on it.
+/// empty, and the provider answers a tokenless credits read `401`; the app does not ask at all
+/// unless a stand-in is armed (as above, the page settles empty). So no harness and no
+/// `make sim-shot` can reach this screen with a single real row on it.
 ///
 /// **It seeds the JOIN as well as the rows**, which the biography's twin has no equivalent of and
 /// which is the whole reason this runs from [`PersonState::pump`] instead of from [`open`]: every row the page's
@@ -1525,6 +1535,29 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             }
             true
         }
+        // REFUSED: the end of the question, settled the way an empty answer settles it, so `address`
+        // stops asking and [`facts_pending`] stops the header's placeholder sweep. No backoff is armed
+        // (nothing will be retried) and no content is touched or invented: the biography stays blank
+        // and a filmography seeded by `personcredits` stays as it is. The consequence — no biography
+        // and no credits on a dev-token boot with no stand-in armed — is stated once, at
+        // `plex::account::permit_read`.
+        Landing::Refused => {
+            match i {
+                F_PROFILE if !(p.profiled && p.profile_tried) => {
+                    p.profiled = true;
+                    p.profile_tried = true;
+                    plx_base::eventlog::log(&format!(
+                        "person: profile guid={} not read (Discover reads are refused on this boot)", p.guid));
+                }
+                F_CREDITS if !p.credited => {
+                    p.credited = true;
+                    plx_base::eventlog::log(&format!(
+                        "person: credits guid={} not read (Discover reads are refused on this boot)", p.guid));
+                }
+                _ => return false,
+            }
+            true
+        }
     }
 }
 
@@ -1636,6 +1669,19 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
         if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
         adapter.mailbox(i).claim(generation);
+        // **A refused read is the end of the question, so it is answered HERE, on the pump's thread,
+        // and no worker exists to be respawned.** The refusal is fixed at boot (a dev-token boot with
+        // no Discover stand-in armed, `plex::account::permit_read`); landing it as the failure it
+        // used to be re-armed the backoff and spawned again every ~2 s for as long as the page was
+        // open. It goes through the mailbox like any answer: the pump takes it on a later frame.
+        if !controlled && (if profile {
+            plx_plex::plex::discover::person_profile_refused(&arg[0])
+        } else {
+            plx_plex::plex::discover::person_credits_refused(&arg[0])
+        }) {
+            adapter.land(i, generation, Landing::Refused);
+            return;
+        }
         let worker_adapter = Arc::clone(adapter);
         let spawned = crate::stores::tape::admit(serde_json::json!({
             "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
@@ -3428,6 +3474,44 @@ mod tests {
             owner.close();
         });
         plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A refusal is not an answer and not a failure: it settles the two plex.tv reads (so `address`
+    /// stops asking and the placeholders stop), arms no backoff, repaints once, and touches no
+    /// content: a filmography the `personcredits` seed put there is still there, and no biography
+    /// is invented. It is legal only on those two slots, on a tape too.
+    #[test]
+    fn a_refused_landing_settles_the_reads_and_touches_no_content() {
+        let mut owner = Owner::default();
+        let _serial = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.open(S0, "6059", "0000000000000000000000ff", "Nobody", "");
+        owner.state.install_credits_for_test(&[("Actor", 4)]);
+        owner.state.current.as_mut().unwrap().credited = false; // the seed ran before the read answered
+        let rows = filmography_total(owner.current().unwrap());
+        assert!(rows > 0);
+
+        assert!(owner.apply(F_PROFILE, Landing::Refused), "settling the header is a change the screen must see");
+        assert!(owner.apply(F_CREDITS, Landing::Refused));
+        let p = owner.current().unwrap();
+        assert!(p.profiled && p.profile_tried && p.credited);
+        assert!(!facts_pending(p));
+        assert!(address(F_PROFILE, p).is_none() && address(F_CREDITS, p).is_none());
+        assert!(p.bio.is_empty() && p.roles.is_empty() && p.born.is_empty(), "no biography is invented");
+        assert_eq!(filmography_total(p), rows, "a seeded filmography is not overwritten");
+        assert_eq!(owner.state.retry_cd[F_PROFILE], 0, "a refusal arms no backoff: nothing will be retried");
+        assert_eq!(owner.state.retry_cd[F_CREDITS], 0);
+
+        assert!(!owner.apply(F_PROFILE, Landing::Refused) && !owner.apply(F_CREDITS, Landing::Refused),
+            "settled already: nothing changed, nothing to repaint");
+        let media_slot = fx(S0, K_MEDIA).unwrap();
+        assert!(!owner.apply(media_slot, Landing::Refused), "it means nothing to a per-server read");
+
+        let refused = serde_json::json!({"gen": 3, "what": "Refused"});
+        assert_eq!(validate_record(F_PROFILE as u32, &refused), Ok(()));
+        assert_eq!(validate_record(F_CREDITS as u32, &refused), Ok(()));
+        assert_eq!(validate_record(media_slot as u32, &refused), Err("mismatched person terminal kind"));
+        owner.close();
     }
 
     /// A person with no plex.tv guid is never ASKED for a profile (`address` has nothing to send),

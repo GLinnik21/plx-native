@@ -65,9 +65,11 @@ root when done.
 **Watchlist writes.** The same `--mock-plextv` boot arms `plxnative-discover`, so a Watchlist
 add/remove on the set goes to the mock, and so do a person page's biography and filmography reads
 (the mock's Discover stand-in answers them with synthetic data; the app's Discover also follows a bare
-`plxnative-plextv`). A `--guest --mock` boot has no loopback stand-in to arm, so it never reaches
-`discover.provider.plex.tv` either: the boot logs `discover: base=real reads=refused` and a person
-page's two reads are refused and logged (`discover: GET … refused`). Without a stand-in a debug build also refuses a Watchlist
+`plxnative-plextv`). A `--guest` boot (with or without `--mock`) has no loopback stand-in to arm, so it
+never reaches `discover.provider.plex.tv` either: the boot logs `discover: base=real reads=refused`
+and a person page's two reads are refused once and logged (`discover: GET … refused`). **That is a
+standing decision, and its cost is that such a boot shows no person biography and no filmography
+credits** (the page settles as for an unknown person); arm the stand-in to see them. Without a stand-in a debug build also refuses a Watchlist
 write, and the page header says `Debug: watchlist write blocked`. `plxnative-watchlist-live` is the OWNER's switch that lets a
 debug build write to their real plex.tv Watchlist: **never create it, and never pass
 `--arm watchlist-live`, unless the owner asks for it in this same session** (AGENTS.md; the

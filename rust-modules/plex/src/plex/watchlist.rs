@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(permit_write("PUT", true, false, true), Ok(()), "the owner's live switch lets it out");
         assert_eq!(permit_write("PUT", true, true, true), Ok(()), "both armed: allowed, and the stand-in is the base");
         assert_eq!(permit_write("PUT", false, false, false), Ok(()), "release builds write");
-        assert_eq!(permit_write("GET", true, false, false), Ok(()), "reads are never refused");
+        assert_eq!(permit_write("GET", true, false, false), Ok(()), "the WRITE gate never refuses a read (reads have their own, account::permit_read)");
         // The refusal travels up as the write's own error.
         let (out, _) = run(vec![Err(WatchlistError::Refused)], |c, t| c.watchlist_add(HEX, t));
         assert_eq!(out, Err(WatchlistError::Refused));

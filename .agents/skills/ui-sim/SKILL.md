@@ -167,18 +167,23 @@ sim-clean SIM_DIR=…` resets a root.
 
 A person page reads its biography and filmography from the plex.tv metadata provider, not from the
 PMS. The mock serves those two reads (`GET /library/people/{tagKey}` and `.../credits`) on the same
-listener as everything else, but the app only asks it when told where Discover lives. A
-`plxnative-token` boot has no account token, so the biography arrives (synthetic prose, or just the
-name for a demo-library actor) while the credits answer `401` exactly as the real provider does and
-the Filmography stays empty unless `plxnative-personcredits` seeds it:
+listener as everything else, but the app only asks it when told where Discover lives:
 
 ```sh
 echo "http://127.0.0.1:$MOCK_PORT" > $SIM_DIR/plxnative-discover     # the mock's own port
 ```
 
 (`plxnative-plextv=http://127.0.0.1:$MOCK_PORT`, which the QR sign-in flow needs anyway, is followed by
-Discover too.) A `plxnative-token` boot with neither armed does NOT fall through to
-`discover.provider.plex.tv`: its person-page reads are refused locally and the event log says so
+Discover too.) A `plxnative-token` boot has no account token, so with the stand-in armed the biography
+arrives (synthetic prose, or just the name for a demo-library actor) while the credits answer `401`
+exactly as the real provider does, and the Filmography stays empty unless `plxnative-personcredits`
+seeds it.
+
+**Decision: a `plxnative-token` boot with neither stand-in armed does NOT fall through to
+`discover.provider.plex.tv`; the app refuses both person reads locally and does not ask again.** The
+cost is accepted: such a boot (`--guest`, `--guest --mock`, `tests/run.py --mock`, a real-PMS
+`--guest` scene) shows no biography and no filmography credits, and the page settles as it does for a
+person the provider has never heard of. To see them, arm the stand-in. The event log says so once
 (`discover: GET discover.provider.plex.tv/library/people/{id} refused`, and `discover: base=real
 reads=refused` at boot). **Before opening a person page, read the boot line**: `discover:
 base=stand-in reads=open` (or `base=real reads=refused`) means nothing reaches the real provider;

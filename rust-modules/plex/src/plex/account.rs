@@ -173,19 +173,33 @@ pub(super) fn stand_in_armed() -> bool {
 
 /// The dev-build failsafe for READS, [`watchlist`](super::watchlist)'s `permit_write` for the other
 /// verb: a `devtriggers` build driven by a dev-token boot must not dial the real provider unless a
-/// stand-in is armed. That boot signs in as an injected server token with no plex.tv account, so
-/// the credits answer 401 without a token (measured) and the profile is read anonymously (what
-/// that carries for a real tagKey is not determined) — never a signed-in person's data — while a
-/// flow that depended on either answer depended on the internet. Release
-/// builds and interactive boots (a stored session, no `plxnative-token`) always read.
+/// stand-in is armed. Release builds and interactive boots (a stored session, no `plxnative-token`)
+/// always read.
+///
+/// **The decision, and its cost.** This fails CLOSED, by decision, and it is not to be narrowed or
+/// dropped: that boot signs in as an injected server token with no plex.tv account, so a request
+/// could only speak for nobody. The credits answer `401` without a token (measured); what the
+/// profile read would carry for a real tagKey, anonymously, is not determined, and the refusal gives
+/// that up on purpose rather than depend on it. **The consequence:** a dev-token boot with neither
+/// stand-in armed (`tools/tv-session.sh up --guest`, `--guest --mock`, `tests/run.py --mock`, and
+/// the real-PMS `--guest` scenes) shows no person biography and no filmography credits; the person
+/// page settles as for a person the provider has never heard of. To see them, arm the stand-in
+/// (`plxnative-discover`, or a loopback `plxnative-plextv`): `tests/mock_pms.py` answers with
+/// synthetic data.
+///
+/// **A refusal is terminal.** It cannot change during the process (the trigger files and the
+/// dev-token boot are read once), so the person store asks [`super::discover::person_profile_refused`] /
+/// [`super::discover::person_credits_refused`] before it spawns a worker and settles its page on a refusal;
+/// the Watchlist and catalog land it once as `WatchlistError::Refused` and have no timer that asks
+/// again.
 fn permit_read(devtriggers_build: bool, token_boot: bool, armed: bool) -> bool {
     !(devtriggers_build && token_boot && !armed)
 }
 
 /// Gate one READ of the provider before it is built into a request: `true` = go ahead; `false` =
-/// refuse, and a line (the endpoint SHAPE, which folds real ids; a synthetic id from the mock
-/// survives it) says so the FIRST time each shape is refused: the person page re-asks every couple of seconds, and a boot that cannot be answered
-/// does not need the same line for as long as the page is open. The caller sends nothing.
+/// refuse ([`permit_read`] states the decision and what it costs), and a line says so the FIRST time
+/// each endpoint shape is refused, so a refused boot does not repeat itself in the event log. The
+/// caller sends nothing.
 pub(super) fn discover_read_allowed(url: &str) -> bool {
     let resolved = discover_resolved();
     if permit_read(cfg!(feature = "devtriggers"), resolved.token_boot, resolved.source != DiscoverSource::Real) {

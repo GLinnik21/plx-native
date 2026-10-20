@@ -29,9 +29,13 @@
 //! build the loopback stand-in named by `plxnative-discover` — or, with that unset, the one
 //! `plxnative-plextv` already redirects plex.tv to, since the mock answers both on one listener — and
 //! a dev-token boot (`plxnative-token`) with neither armed REFUSES these two reads, logged, instead
-//! of dialling the real provider with an identity that has no account behind it. Both routes are
-//! built by [`person_profile_url`] / [`person_credits_url`] and the gate sits in front of each
-//! request; `tests/mock_pms.py`'s Discover stand-in answers them with synthetic data.
+//! of dialling the real provider with an identity that has no account behind it. That is a standing
+//! decision (fail closed; see `account::permit_read` for the cost: such a boot shows no biography and
+//! no filmography credits). Both routes are built by [`person_profile_url`] / [`person_credits_url`]
+//! and the gate sits in front of each request; `tests/mock_pms.py`'s Discover stand-in answers them
+//! with synthetic data. The refusal is fixed for the life of the process, so the person store asks
+//! [`person_profile_refused`] / [`person_credits_refused`] BEFORE it spawns a worker and settles its
+//! page on a refusal rather than retrying it as a failure.
 //!
 //! The token is optional here (the endpoint answered 200 unauthenticated in the same probe), but we
 //! send whatever the session holds anyway — an unauthenticated read is not a promise plex.tv has
@@ -85,6 +89,22 @@ fn person_credits_url(guid: &str) -> String {
     format!("{}/library/people/{guid}/credits", discover())
 }
 
+/// Would [`AccountClient::person_profile`] refuse the read for `guid` before building a request?
+///
+/// **A refusal is the END of the question, not a failure.** It is fixed at boot (the trigger files
+/// and the dev-token boot are read once), so the person store asks this on its own thread, before it
+/// spawns a worker, and settles the page when it is `true`; the read is never retried. It goes
+/// through the same gate the request does ([`discover_read_allowed`]), so the refusal is logged once
+/// per endpoint shape here as well. A release build never refuses.
+pub fn person_profile_refused(guid: &str) -> bool {
+    !discover_read_allowed(&person_profile_url(guid))
+}
+
+/// [`person_profile_refused`] for the filmography read.
+pub fn person_credits_refused(guid: &str) -> bool {
+    !discover_read_allowed(&person_credits_url(guid))
+}
+
 impl AccountClient {
     /// GET {discover()}/library/people/{guid} — one person's biography record.
     ///
@@ -92,7 +112,9 @@ impl AccountClient {
     /// module docs).
     ///
     /// `None` = the request FAILED (offline, TLS, timeout, unparseable body) — the caller should
-    /// back off and retry. A person plex.tv has never heard of is NOT that: the provider answers
+    /// back off and retry — or was REFUSED by the dev-token gate (the same `None`: a caller that
+    /// must not retry a refusal asks [`person_profile_refused`] first, as the person store does).
+    /// A person plex.tv has never heard of is NOT a failure: the provider answers
     /// 200 with an empty container, and that comes back here as a **default (all-empty) profile**,
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
@@ -413,6 +435,27 @@ mod tests {
         let real = REAL_DISCOVER;
         assert_eq!(read(&[]), [format!("{real}/library/people/abc"), format!("{real}/library/people/abc/credits")],
             "nothing armed: the real provider, and only then");
+    }
+
+    /// The refusal as the person store meets it: asked BEFORE a worker exists, through the same gate
+    /// the request goes through. A refused read asks the transport nothing (the recorder sees no
+    /// URL), and the same two reads go out once a stand-in is armed or the boot is not a dev-token
+    /// boot. The decision itself (fail closed) is stated at `account::permit_read`.
+    #[test]
+    fn a_refused_person_read_is_reported_before_and_sends_nothing() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        let client = AccountClient::new("synthetic-client", None);
+        let ask = |armed: &[(&str, &str)]| with_triggers(armed, || {
+            let refused = (person_profile_refused("abc"), person_credits_refused("abc"));
+            let (_, urls) = probe_gets(|| (client.person_profile("abc"), client.person_credits("abc")));
+            (refused, urls.len())
+        });
+        assert_eq!(ask(&[("token", "t")]), ((true, true), 0), "dev-token boot, no stand-in: refused, nothing sent");
+        assert_eq!(ask(&[("token", "t"), ("discover", "http://127.0.0.1:41999")]), ((false, false), 2));
+        assert_eq!(ask(&[("token", "t"), ("plextv", "http://127.0.0.1:41998")]), ((false, false), 2));
+        assert_eq!(ask(&[]), ((false, false), 2), "an interactive boot reads");
     }
 
     /// A dev-token boot (the harness identity: an injected server token, no account) with no
