@@ -358,7 +358,10 @@ impl HoldHint {
         }
         let show = hold.is_some() || standing;
 
-        self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt);
+        // The capsule stands over the page and moves nothing under it: its springs wake the
+        // present gate but are not LAYOUT motion, so a fade still running when a route's dip ends
+        // cannot hold the page image past the dissolve (`idle::decorative`).
+        plx_machine::idle::decorative(|| self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt));
         // the kind's one showing is spent only once it could be read: the fade-in has completed
         // while this instance holds the claim (an interrupted fade-in clears the claim and spends
         // nothing, so the kind is offered again)
@@ -372,7 +375,7 @@ impl HoldHint {
             _ => self.full_at = None,
         }
         if show {
-            self.rise.step(1.0, K_RISE, dt);
+            plx_machine::idle::decorative(|| self.rise.step(1.0, K_RISE, dt));
         } else if self.fade.pos <= VISIBLE {
             // leaving is a plain fade; the capsule goes back under its resting place unseen
             self.rise.jump(0.0);
@@ -650,6 +653,32 @@ mod tests {
         plx_machine::idle::frame_begin(DT);
         tstep(h, input, &mut |ev| plx_machine::idle::note(ev));
         plx_machine::idle::should_present(10_016)
+    }
+
+    /// **The capsule's fade is decoration, not page layout.** It stands over the page and moves
+    /// nothing under it, so its springs must wake the present gate and count as page motion
+    /// (`page_moving`) but not as LAYOUT motion (`page_layout_moving`): a route's page image
+    /// is held until the layout stops, and a hint fading out on a page that returns from a Detail
+    /// held the dip's image four frames past its dissolve (`idle::decorative`).
+    #[test]
+    fn its_fade_wakes_the_gate_but_moves_no_layout() {
+        let (_g, mut h) = fresh();
+        run(&mut h, rested(7), secs(2.5));
+        assert!(h.visible(), "premise: the hint stands");
+        // a focus move starts its fade out
+        plx_machine::idle::frame_begin(DT);
+        tstep(&mut h, rested(8), &mut |ev| plx_machine::idle::note(ev));
+        assert!(h.visible() && h.opacity() < 1.0, "premise: the fade out is under way");
+        assert!(plx_machine::idle::page_moving(), "the fade is page motion (the gate presents it)");
+        assert!(!plx_machine::idle::page_layout_moving(), "but no layout moves, so it cannot hold a page image");
+        // and the fade in
+        let mut h = HoldHint::new();
+        run(&mut h, rested(7), secs(1.6));
+        plx_machine::idle::frame_begin(DT);
+        tstep(&mut h, rested(7), &mut |ev| plx_machine::idle::note(ev));
+        assert!(h.visible() && h.opacity() < 1.0, "premise: the fade in is under way");
+        assert!(plx_machine::idle::page_moving());
+        assert!(!plx_machine::idle::page_layout_moving());
     }
 
     #[test]

@@ -185,10 +185,20 @@ impl Shelf {
     }
 
     /// Hold every card at rest while the owner's page is still dissolving in: a lifted tile under
-    /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile (the
-    /// springs ease to rest like an unfocused shelf's); the first awake tick starts the focused
-    /// card's pop from rest, as a deliberate move does (a restore or reconcile announced since the last
-    /// dormant tick is still adopted whole). Set it before each [`on`](Self::on).
+    /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile; the
+    /// first awake tick starts the focused card's pop from rest, as a deliberate move does (a restore
+    /// or reconcile announced since the last dormant tick is still adopted whole). Set it before each
+    /// [`on`](Self::on).
+    ///
+    /// What was lifted lets go in one of two ways, by whether the page can be seen. On a page in
+    /// view (Home's shelves while its dive has not reached them, the Recommended page's while its
+    /// shelves dissolve in) the springs EASE to rest like an unfocused shelf's and park once they
+    /// settle. While the page is a held transition image
+    /// ([`page_image_held`](crate::containers::transition::page_image_held): a dip's Out and In
+    /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
+    /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
+    /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
+    /// first tick, as [`Grid::dormant`](super::Grid::dormant) does. The scroll is kept either way.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -278,8 +288,14 @@ impl Shelf {
             self.anchor = None;
             self.landing.snap(src);
             if !self.row.at_exact_rest() {
-                self.row.update(src.len(), None, self.style, dt);
-                self.row.park();
+                if crate::containers::transition::page_image_held() {
+                    // an image hides the page: nothing may step under it (it would hold the image
+                    // past its dissolve), so what was lifted is at rest now
+                    self.row.snap_to_rest();
+                } else {
+                    self.row.update(src.len(), None, self.style, dt);
+                    self.row.park();
+                }
             }
             return;
         }

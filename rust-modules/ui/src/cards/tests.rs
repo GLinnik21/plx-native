@@ -1847,6 +1847,83 @@ fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
     assert!(!r.run(1));
 }
 
+/// The page image a test sets must not outlive it (`PAGE_IMAGE_HELD` is a thread-local the
+/// dispatcher sets and a section reads on its next tick).
+struct ImageHeld;
+impl ImageHeld {
+    fn set() -> Self {
+        crate::containers::transition::set_page_image_held(true);
+        ImageHeld
+    }
+}
+impl Drop for ImageHeld {
+    fn drop(&mut self) {
+        crate::containers::transition::set_page_image_held(false);
+    }
+}
+
+/// **Nothing steps under an image that hides it.** A shelf that is dormant while the page is a held
+/// image (a route dip's Out and In halves, the hold after it) parks at exact rest on its FIRST
+/// tick, as a grid does: the card that was lifted, the caption band and the heading's lift are all
+/// closed at once, with no spring left moving to hold the image past the dissolve.
+#[test]
+fn a_dormant_shelf_under_a_held_page_image_parks_on_its_first_tick() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    let full = RowStyle::HOME.focus_scale;
+    assert!(r.scale(101).unwrap() > full - 0.002, "premise: the card is whole in its lift");
+    assert!(r.sect.under_band() > crate::card_row::under_band(0.0) + 1.0, "premise: the focused card's caption band is open");
+    let _held = ImageHeld::set();
+    r.sect.dormant(true);
+    r.run(1);
+    assert_eq!(r.scale(101), Some(1.0), "the lifted card is at rest on the first tick under the image");
+    assert_eq!(r.sect.heading_lift(), 0.0, "and the heading it lifted is down");
+    assert_eq!(r.sect.under_band(), crate::card_row::under_band(0.0), "and the caption band it opened is shut");
+    assert!(r.sect.at_rest(), "no spring is left moving");
+    assert!(!r.run(1), "and the shelf reports no motion to hold the image");
+}
+
+/// **A shelf whose let-go was under way when the image went up finishes it at once.** The page
+/// that is covered by a pushed screen freezes its shelves mid-ease; the first tick it runs again
+/// is under the BACK dip's image, which hides the rest of the ease, so the springs jump to rest
+/// there instead of stepping on under it (the Recommended page's return from a card's Detail held
+/// the image ~25 frames past the dissolve and then snapped).
+#[test]
+fn a_dormant_shelf_mid_ease_jumps_to_rest_when_the_page_image_goes_up() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    r.sect.dormant(true);
+    r.run(3);
+    let eased = r.scale(101).unwrap();
+    assert!(eased > 1.0 + 1e-3 && eased < RowStyle::HOME.focus_scale - 1e-3, "premise: mid-ease on a visible page: {eased}");
+    let _held = ImageHeld::set();
+    r.run(1);
+    assert_eq!(r.scale(101), Some(1.0), "the ease is finished under the image");
+    assert!(r.sect.at_rest());
+    assert!(!r.run(1));
+}
+
+/// **On a page that can be seen, dormant still eases** (Home's dive lets its shelves go while the
+/// page stands in view): only a held image hides the ease.
+#[test]
+fn a_dormant_shelf_on_a_visible_page_still_eases_to_rest() {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    let full = RowStyle::HOME.focus_scale;
+    r.sect.dormant(true);
+    r.run(1);
+    let first = r.scale(101).unwrap();
+    assert!(first > 1.0 + 1e-3 && first < full, "one tick eases, it does not cut: {first}");
+    assert!(!r.sect.at_rest());
+    assert!(r.run(1), "and it reports its motion");
+    r.run(300);
+    assert_eq!(r.scale(101), Some(1.0));
+    assert!(r.sect.at_rest());
+}
+
 /// `cull_margin` keeps painting and registering a card whose left edge is just past the screen's.
 #[test]
 fn a_cull_margin_keeps_a_card_just_off_the_left_edge() {

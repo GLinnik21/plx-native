@@ -743,10 +743,13 @@ impl RecommendedScreen {
     ///
     /// **The shelves are held at rest while the page is not yet seen** (`Shelf::dormant`): under
     /// the route dip's image (`page_image_held`) or while the shelves dissolve in (the page's
-    /// `fade`), the Library's grid rule. The seat the page makes for itself then grows from rest
-    /// the frame the page can be seen, on the standard lift spring, and the caption band it opens
-    /// and the heading it lifts play live, instead of landing whole where an image hides them and
-    /// keeps the dip's picture standing for half a second.
+    /// `fade`). Under the image a card that was lifted (a page returning from a Detail it froze
+    /// mid-ease) is put at rest on the first tick, as the Library's grid does, because an ease
+    /// stepped under the image would hold it past the dissolve; while the shelves dissolve in the
+    /// page is in view and the let-go eases like an unfocused shelf's. The seat the page makes for
+    /// itself then grows from rest the frame the page can be seen, on the standard lift spring, and
+    /// the caption band it opens and the heading it lifts play live, instead of landing whole where
+    /// an image hides them and keeps the dip's picture standing for half a second.
     fn shelves_on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let hubs = H::section_hubs(cx);
         let unseen = self.fade.is_arriving() || plx_ui::containers::transition::page_image_held();

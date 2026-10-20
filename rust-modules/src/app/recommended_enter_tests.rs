@@ -16,8 +16,9 @@ use super::test_support::*;
 use plx_ui::containers::transition::{PageDip, PageImage, PagePaint};
 use plx_ui::screen::At;
 
-/// The pop is a multiple of the card's resting size (`RowStyle::focus_scale` at full lift).
-const FULL_LIFT: f32 = 1.09;
+/// The pop is a multiple of the card's resting size: the Recommended page's shelves are `HOME`
+/// shelves (`hub_style`), so the style's own focus scale is the card whole in its lift.
+const FULL_LIFT: f32 = plx_ui::cards::RowStyle::HOME.focus_scale;
 
 /// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
 /// thread-local the dispatcher sets and the screens read on their next tick).
@@ -82,18 +83,29 @@ impl Entry {
 
     /// The first frame after the floor (the dip's `hold`) on which the dip is over: the image
     /// has finished fading IN.
-    fn in_end(&self) -> usize {
-        let floor = self.frames.iter().position(|f| f.phase == "hold").expect("the dip reached its floor");
-        floor + self.frames[floor..].iter().position(|f| f.phase == "live").expect("the dip's In ended")
-    }
+    fn in_end(&self) -> usize { self.in_end_after(0) }
 
     /// The first frame after the floor on which the page is drawn live again (the image is
     /// replaced by one last capture, or let go).
-    fn release(&self) -> usize {
-        let floor = self.frames.iter().position(|f| f.phase == "hold").expect("the dip reached its floor");
+    fn release(&self) -> usize { self.release_after(0) }
+
+    /// [`Self::in_end`] of the first dip that reaches its floor at or after frame `from` (the
+    /// frames before it belong to an earlier dip of the same run).
+    fn in_end_after(&self, from: usize) -> usize {
+        let floor = self.floor_after(from);
+        floor + self.frames[floor..].iter().position(|f| f.phase == "live").expect("the dip's In ended")
+    }
+
+    /// [`Self::release`] of the first dip that reaches its floor at or after frame `from`.
+    fn release_after(&self, from: usize) -> usize {
+        let floor = self.floor_after(from);
         floor + self.frames[floor..].iter()
             .position(|f| matches!(f.paint, PagePaint::ReplacementCapture | PagePaint::Live))
             .expect("the image was released")
+    }
+
+    fn floor_after(&self, from: usize) -> usize {
+        from + self.frames[from..].iter().position(|f| f.phase == "hold").expect("the dip reached its floor")
     }
 }
 
@@ -166,16 +178,76 @@ fn a_warm_recommended_entry_grows_its_focused_card_from_rest_after_the_image() {
     let (_w, entry) = warm_entry("rec-enter-grow", false);
     let release = entry.release();
     let scales: Vec<f32> = entry.frames[release..].iter().map_while(|f| f.scale).collect();
+    assert_grows_from_rest(&scales);
+}
+
+/// The card's drawn scale on the frames from the image's release on: at rest on the release frame,
+/// the lift starting within a couple of frames (the shelf wakes on the first tick after it), growing
+/// on every live frame after, and whole in the end.
+fn assert_grows_from_rest(scales: &[f32]) {
     assert!(scales.len() > 20, "premise: the page keeps a focused card after the release ({} frames read)", scales.len());
     assert!(scales[0] < 1.05, "the card is drawn at {:.3} the frame the image is released: whole before anyone could see it", scales[0]);
-    // The lift starts within a couple of frames of the release (the shelf wakes on the first tick
-    // after it) and then keeps growing on every live frame.
     let start = scales.iter().position(|scale| *scale > 1.0 + 1e-4).expect("the card starts to grow");
     assert!(start <= 3, "the card stands at rest for {start} frames after the image is released: {:?}", &scales[..8]);
     let rising = scales[start - 1..].windows(2).take(8).filter(|pair| pair[1] > pair[0]).count();
     assert_eq!(rising, 8, "the lift must keep growing over its first live frames, not stand: {:?}", &scales[..start + 8]);
     let top = scales.iter().copied().fold(0.0f32, f32::max);
     assert!(top > FULL_LIFT - 0.002, "the card reaches its full lift ({top:.4})");
+}
+
+/// A warm Recommended page that has been left for a card's Detail and returned from it: the frames
+/// before the BACK are the entry's (header OK, 120 frames, 60 more settled), the Detail's dip and
+/// its settle; the returned entry's `from` is the first frame of the BACK.
+fn warm_return(name: &str) -> (World, Entry, usize) {
+    let (mut w, mut entry) = warm_entry(name, false);
+    entry.frames(&mut w, 60, false);
+    assert!(w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: the Recommended page is on top");
+    entry.key(&mut w, Key::Ok);
+    entry.frames(&mut w, 60, false);
+    assert!(!w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: OK on the first card opened its Detail");
+    let from = entry.frames.len();
+    entry.key(&mut w, Key::Back);
+    entry.frames(&mut w, 120, false);
+    assert!(w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: BACK returned to the Recommended page");
+    (w, entry, from)
+}
+
+/// **BACK onto a Recommended page that kept its body releases the dip's image when the dissolve
+/// ends.** The page's shelves go dormant under the dip's image and (on a shelf alone) ease to rest;
+/// the push froze that ease mid-way (the page is covered, it does not tick), BACK resumed it under
+/// the BACK dip's image, and the layout animation it set moving (the heading, the caption band) held
+/// the image ~25 frames past the dissolve until the replacement capture snapped from mid-ease to
+/// rest. Nothing steps under an image that hides it (`transition::page_image_held`): a dormant
+/// shelf under one is at rest on its first tick.
+#[test]
+fn a_recommended_page_returning_from_detail_lets_the_dip_image_go_when_its_dissolve_ends() {
+    let _held = ImageHeld;
+    let (_w, entry, from) = warm_return("rec-return-release");
+    let (in_end, release) = (entry.in_end_after(from), entry.release_after(from));
+    assert!(
+        release - in_end <= 2,
+        "the BACK dip's dissolve ended on frame {in_end} and the image stood until frame {release} ({} frames)",
+        release - in_end
+    );
+}
+
+/// **The returned page's focused card grows from rest after the image, where it can be seen.** The
+/// card was drawn mid-ease (not at rest) under the image, so the replacement capture snapped it to
+/// rest and the awake tick grew it back; it must be at rest under the image and rise to the full
+/// lift on the standard spring once the page is live.
+#[test]
+fn a_recommended_page_returning_from_detail_grows_its_focused_card_from_rest_after_the_image() {
+    let _held = ImageHeld;
+    let (_w, entry, from) = warm_return("rec-return-grow");
+    let (floor, release) = (entry.floor_after(from), entry.release_after(from));
+    // Nothing eases under the image: from the floor's second frame on (the page wakes on the first
+    // tick after its Uncover) the card the page draws stands exactly at rest until the image goes.
+    let held: Vec<Option<f32>> = entry.frames[floor + 2..release].iter().map(|f| f.scale).collect();
+    assert!(held.len() >= 6, "premise: the image stands past the floor for a few frames ({} read)", held.len());
+    assert!(held.iter().all(|scale| scale.is_some_and(|scale| (scale - 1.0).abs() < 1e-5)),
+        "the card is still moving under the held image (floor + 2 .. release): {held:.4?}");
+    let scales: Vec<f32> = entry.frames[release..].iter().map_while(|f| f.scale).collect();
+    assert_grows_from_rest(&scales);
 }
 
 /// **Cold: the shelves dissolve in instead of cutting in.** The section's hubs are still on their
