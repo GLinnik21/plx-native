@@ -191,8 +191,9 @@ pub struct RecommendedScreen {
     /// Search's results are on): a page opened before its first publication has nothing on screen
     /// to dissolve, so it is mounted dark ([`Xfade::mount`]) and the rows that land fade in. A page
     /// whose hubs were already published never mounts it: its arrival is the route dip's. Draws
-    /// around the shelves and their headings alone (never the title row or the spinner), and holds
-    /// the shelves dormant while it arrives ([`Self::shelves_on`]).
+    /// around the shelves, their headings and the Empty status caption (never the title row, the
+    /// ground, the spinner or the hold hint), and holds the shelves dormant while it arrives
+    /// ([`Self::shelves_on`]).
     fade: Xfade,
     sweep_down: bool,
     /// The crumb row's pills (the focus capsule, the selection plate under "Recommended") and its
@@ -1149,8 +1150,8 @@ impl RecommendedScreen {
         self.run.window(-base, SCR_H - base)
     }
 
-    /// The painter the rows (their headings and their cards) are drawn through: the page's alpha
-    /// under the shelves' own dissolve.
+    /// The painter the rows (their headings and their cards) and the Empty status caption are drawn
+    /// through: the page's alpha under the shelves' own dissolve.
     fn shelf_painter<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) -> plx_ui::Painter {
         f.painter.alpha(f.page_alpha * self.fade.alpha())
     }
