@@ -20,15 +20,19 @@
 //! 4. Nothing else. The item menu's `Mount` already calls [`mark_learned`], so opening a menu from
 //!    any card screen retires the hint everywhere; [`step`](HoldHint::step) reads that itself.
 //!
-//! **Cadence.** The self-appearing hint stands ONCE PER RUN, app-wide, on whichever card screen
-//! (Home included) the viewer first rests on a card long enough: the schedule below, then never
-//! again on any screen, because a viewer who has read it once has been taught. A held OK still
-//! shows the capsule with its fill after that (the fill is hold progress, not a lesson). A
+//! **Cadence.** The self-appearing hint stands ONCE PER INSTALL per [`Surface`], app-wide: the
+//! [`Surface::Card`] hint on whichever card screen (Home included) the viewer first rests on a card
+//! long enough, the [`Surface::SeasonPill`] hint on a Detail season tab (a held OK there opens the
+//! season's item menu too). Each is the schedule below, then never again on any screen and never
+//! again after a relaunch, because a viewer who has read it once has been taught; a read showing
+//! on one surface leaves the other unspent. A held OK still shows the capsule with its fill after
+//! that (the fill is hold progress, not a lesson), except within the run an item menu was opened.
+//! A page with a season pill builds its input with [`HintInput::surface`]. A
 //! `cards::Stack` page adopts it with ONE builder call ([`Stack::hold_hint`](crate::cards::Stack::hold_hint):
 //! the stack steps it, answers `focus` and `settled` from its own placement, and draws it last);
 //! a page without a stack builds `HintInput` with [`HintInput::for_placed`].
 //!
-//! **Spent means read.** The run's one showing is spent once the hint has stood at full opacity
+//! **Spent means read.** A surface's one showing is spent once the hint has stood at full opacity
 //! ([`FULL`]) for [`READ_MS`] without interruption, not when it starts to appear and not when its
 //! life ends: a viewer who rests 1.6 s on a card and moves on mid-fade, or a beat after it landed,
 //! saw a flicker rather than read it, so it stays unspent and the hint returns the next time its
@@ -57,7 +61,7 @@
 //!
 //! **When it shows is a schedule, and the schedule lives here**, advanced by the owner's `Tick`
 //! `Tick` (`ms` readings, and a silence over [`GAP_MS`] between two steps is not rest, so the time a covered page is not stepped never counts) — no wall clock, so replay and host tests are deterministic: focus must have RESTED on one
-//! card for [`DWELL_MS`] (any move of `focus`, or any frame that is not `settled`, re-arms the dwell
+//! card for [`DWELL_MS`] ([`DWELL_PILL_MS`] on a season pill; any move of `focus`, or any frame that is not `settled`, re-arms the dwell
 //! from zero and hides it), and the hint then stands for [`LIFE_MS`] and leaves on its own. A held OK shows it regardless of the dwell — that is the fill's moment.
 //! `focus == None` shows nothing, and once the viewer has opened a context menu it RETIRES for good
 //! ([`learned`]; the design's "until first use" mode — "always" and "off" were design-time toggles
@@ -93,9 +97,12 @@
 //! track solves its density per frame from a framebuffer readback, and a standing hint does not
 //! take one.
 //!
-//! **Where "learned" and "read" live.** Frame-thread `thread_local`s, not the persisted session
-//! record (whose format is not this widget's to change): after a relaunch the hint teaches once
-//! more until the next menu opens.
+//! **Where "learned" and "read" live.** Frame-thread `thread_local`s, backed by the install's
+//! session preference record without this crate naming it: the application seeds the per-surface
+//! "read" latches at boot ([`seed_taught`], from the stored `hold_hint_taught` preference) and
+//! persists each transition it drains from the frame tick ([`take_newly_taught`]). "Learned" (an
+//! item menu was opened) is per run, but opening one also teaches every surface, which is stored,
+//! so the self-appearing hint does not come back after a relaunch either.
 
 use std::ffi::CString;
 
@@ -119,6 +126,10 @@ const RUN_GAP: f32 = 16.0;
 pub const RISE_PX: f32 = 14.0;
 /// Focus must rest this long on one shelf tile before the hint appears (`--hint-dwell`).
 pub const DWELL_MS: u32 = 1500;
+/// Focus must rest this long on a season pill before the hint appears ([`Surface::SeasonPill`]).
+/// Shorter than [`DWELL_MS`] on purpose: a pill has no picture to look at, so a viewer resting on it
+/// is already asking what it does.
+pub const DWELL_PILL_MS: u32 = 500;
 /// How long it stands once shown before leaving on its own (`--hint-life`).
 pub const LIFE_MS: u32 = 6000;
 /// Opacity spring: critically damped, settles to the idle gate's rest band in about .36 s
@@ -140,17 +151,62 @@ const FULL: f32 = 0.98;
 /// showing counts as read and is spent (a viewer who moves a beat after it lands has not read it).
 pub const READ_MS: u32 = 1000;
 
-// ---- "has the viewer learned it" -----------------------------------------------------------------
+// ---- "has the viewer learned it", and "has this install been taught" -----------------------------
 //
-// The hint retires for good once a context menu has been opened — from ANY card screen, since the
-// lesson is the gesture. It is held for the life of the process on the FRAME THREAD (a
-// `thread_local`, the same shape as `idle`'s and `press`'s published snapshots): every writer (the
-// item-menu surface mounting) and every reader (a card screen's tick) runs there, and a host test gets a
-// fresh answer per test thread with no lock to forget. It is deliberately NOT persisted: the
-// persisted preference store is the session record, whose format and migration are not this
-// widget's to change, so after a relaunch the hint teaches once more until the next menu opens.
+// Two frame-thread `thread_local`s (the same shape as `idle`'s and `press`'s published snapshots):
+// every writer (the item-menu surface mounting, a card screen's tick) and every reader runs there,
+// and a host test gets a fresh answer per test thread with no lock to forget.
+//
+// `LEARNED` is the within-a-run fact: the viewer has opened a context menu, so the self-appearing
+// hint retires everywhere for the rest of the run, and a held OK no longer shows the capsule either.
+// It is NOT stored. What is stored, once per INSTALL, is `SHOWN`: one bit per [`Surface`], set when a
+// read showing happened on that surface (or a menu was opened, which teaches every surface). This
+// crate cannot name the session record (`plx_ui` may not name Plex types), so the application seeds
+// the bits at boot ([`seed_taught`]) and persists the transitions it polls ([`take_newly_taught`]),
+// the way `plx_platform::i18n` is handed its saved preference. After a relaunch on a taught install
+// `LEARNED` is false again, so a held OK shows the capsule's fill (progress feedback) but nothing
+// self-appears.
 thread_local! {
     static LEARNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Which surfaces have had their one showing read (bit per [`Surface`]) on this install.
+    static SHOWN: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    /// A bit of `SHOWN` was set since the application last drained it.
+    static CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Where the hint stands. Each surface has its own cadence and its own once-per-install latch, so
+/// teaching one leaves the other unspent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Surface {
+    /// A media card on any card screen (Home, the Library, Search, Detail's shelves, ...).
+    #[default]
+    Card,
+    /// A season tab on the Detail page: a held OK on it opens the season's item menu.
+    SeasonPill,
+}
+
+impl Surface {
+    fn bit(self) -> u8 {
+        match self {
+            Surface::Card => 1,
+            Surface::SeasonPill => 2,
+        }
+    }
+
+    /// How long focus must rest on this surface before the hint appears.
+    fn dwell_ms(self) -> u32 {
+        match self {
+            Surface::Card => DWELL_MS,
+            Surface::SeasonPill => DWELL_PILL_MS,
+        }
+    }
+}
+
+/// Which surfaces an install has been taught: the value the application stores and seeds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Taught {
+    pub card: bool,
+    pub pill: bool,
 }
 
 /// The viewer has opened a context menu, so the hint has done its job and never shows again.
@@ -158,9 +214,13 @@ pub fn learned() -> bool {
     LEARNED.with(|l| l.get())
 }
 
-/// Record that a context menu was opened. Idempotent.
+/// Record that a context menu was opened: the self-appearing hint retires for the run and every
+/// surface counts as taught, which [`take_newly_taught`] reports so the install remembers it.
+/// Idempotent.
 pub fn mark_learned() {
     LEARNED.with(|l| l.set(true));
+    mark_shown(Surface::Card);
+    mark_shown(Surface::SeasonPill);
 }
 
 /// Forget it — a test's start state, and nothing else.
@@ -169,37 +229,59 @@ pub fn reset_learned_for_test() {
     LEARNED.with(|l| l.set(false));
 }
 
-thread_local! {
-    /// Whether the self-appearing hint has been read this run, for the life of the process on the
-    /// frame thread (the same shape and the same reasons as `LEARNED`).
-    static SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// Whether `surface`'s one showing has been read on this install (seeded or this run).
+pub fn shown(surface: Surface) -> bool {
+    SHOWN.with(|s| s.get()) & surface.bit() != 0
 }
 
-/// Whether the self-appearing hint has already been read this run, on any screen.
+/// Whether the self-appearing hint has been read on ANY surface.
 pub fn shown_this_run() -> bool {
-    SHOWN.with(|s| s.get())
+    SHOWN.with(|s| s.get()) != 0
 }
 
-fn mark_shown() {
-    SHOWN.with(|s| s.set(true));
+fn mark_shown(surface: Surface) {
+    SHOWN.with(|s| {
+        if s.get() & surface.bit() == 0 {
+            s.set(s.get() | surface.bit());
+            CHANGED.with(|c| c.set(true));
+        }
+    });
 }
 
-/// Forget the run's one showing — a test's start state, and nothing else.
+/// Seed the latches from what the install stored. Raises no signal: it is the stored fact, not news.
+/// Only ever turns a surface on.
+pub fn seed_taught(card: bool, pill: bool) {
+    let bits = u8::from(card) * Surface::Card.bit() | u8::from(pill) * Surface::SeasonPill.bit();
+    SHOWN.with(|s| s.set(s.get() | bits));
+}
+
+/// The surfaces taught since the last call, or `None` when nothing changed: the application polls
+/// this from its frame tick and persists what it returns. The value is the whole current state, so a
+/// lost or repeated poll can never un-teach a surface.
+pub fn take_newly_taught() -> Option<Taught> {
+    CHANGED.with(|c| c.replace(false)).then(|| {
+        let bits = SHOWN.with(|s| s.get());
+        Taught { card: bits & Surface::Card.bit() != 0, pill: bits & Surface::SeasonPill.bit() != 0 }
+    })
+}
+
+/// Forget every showing and any pending news — a test's start state, and nothing else.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_shown_for_test() {
-    SHOWN.with(|s| s.set(false));
+    SHOWN.with(|s| s.set(0));
+    CHANGED.with(|c| c.set(false));
 }
 
-/// Mark the hint as taught for this run: the viewer-has-opened-a-menu state ([`mark_learned`]) and
-/// the run's one showing already spent. Called once at boot by the dev
-/// trigger `plxnative-hintoff` (`app::boot`), so the site demo film, which is shot headless with no
-/// viewer to teach, is not the one place a one-time teaching overlay appears. It changes no timing
-/// and no rest clock: it only sets the two latches the hint already honours. Compiled only with
-/// `devtriggers`, so no shipping build carries it.
+/// Mark the hint as taught for this run: the viewer-has-opened-a-menu state and every surface's one
+/// showing already spent. Called once at boot by the dev trigger `plxnative-hintoff`
+/// (`app::boot`), so the site demo film, which is shot headless with no viewer to teach, is not the
+/// one place a one-time teaching overlay appears. It changes no timing and no rest clock, and it is
+/// a seed: nothing is reported for storage. Compiled only with `devtriggers`, so no shipping build
+/// carries it.
 #[cfg(feature = "devtriggers")]
 pub fn teach_all_for_dev() {
-    mark_learned();
-    mark_shown();
+    LEARNED.with(|l| l.set(true));
+    seed_taught(true, true);
 }
 
 /// What the owner tells the hint each frame. Build it with [`HintInput::new`].
@@ -214,6 +296,8 @@ pub struct HintInput {
     /// How far through the hold a held OK is, 0..=1: `held_ms / press::LONG_MS`, clamped. `None`
     /// when OK is not held on a holdable card press.
     pub hold: Option<f32>,
+    /// Where the hint is standing; picks its dwell and its once-per-install latch.
+    pub surface: Surface,
 }
 
 impl HintInput {
@@ -221,7 +305,14 @@ impl HintInput {
     /// the division by the hold threshold happens here so no screen names `press::LONG_MS`.
     pub fn new(focus: Option<u32>, settled: bool, held_ms: Option<u32>) -> Self {
         let hold = held_ms.map(|ms| (ms as f32 / crate::press::LONG_MS as f32).clamp(0.0, 1.0));
-        Self { focus, settled, hold }
+        Self { focus, settled, hold, surface: Surface::Card }
+    }
+
+    /// The same input for another [`Surface`] (a season pill rather than a card), so one
+    /// [`HoldHint`] serves a page that has both.
+    pub fn surface(mut self, surface: Surface) -> Self {
+        self.surface = surface;
+        self
     }
 
     /// The input for a page that can PLACE the card focus rests on: `elem` is that card's stable
@@ -251,6 +342,8 @@ const REST_PX: f32 = 0.5;
 #[derive(Clone, Copy)]
 pub struct HoldHint {
     key: Option<u32>,
+    /// The surface `key` was resting on; a change of surface is a change of resting place.
+    surface: Surface,
     /// The tick clock (`Tick.ms`) at which continuous rest on [`key`](Self::key) began; `None`
     /// while not resting. An absolute reading rather than an accumulated per-frame delta, so a slow
     /// or skipped tick cannot drift the schedule (the same idiom as `motion::Phase`); a silence
@@ -283,14 +376,15 @@ impl Default for HoldHint {
 }
 
 impl HoldHint {
-    /// A hint with the run-wide cadence (module doc, "Cadence"): the self-appearing hint stands at
-    /// most once per run, on any screen. The first time a hint has stood in full for [`READ_MS`] it
-    /// takes the run's latch, and no hint stands on its own again until the process restarts. An
-    /// opened item menu ([`learned`]) retires it as well. A hint that never stood, or whose showing
-    /// was cut short by a focus move before it had been readable, spends nothing and is offered
-    /// again after the dwell; a physical hold shows it regardless, with its fill.
+    /// A hint with the install-wide cadence (module doc, "Cadence"): the self-appearing hint stands
+    /// at most once per install per [`Surface`], on any screen. The first time a hint has stood in
+    /// full for [`READ_MS`] it takes its surface's latch, and no hint stands on its own on that
+    /// surface again, this run or after a relaunch. An opened item menu ([`learned`]) retires it as
+    /// well. A hint that never stood, or whose showing was cut short by a focus move before it had
+    /// been readable, spends nothing and is offered again after the dwell; a physical hold shows it
+    /// regardless, with its fill.
     pub const fn new() -> Self {
-        Self { key: None, rest_at: None, last_ms: None, spent: false, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
+        Self { key: None, surface: Surface::Card, rest_at: None, last_ms: None, spent: false, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
     }
 
     /// Advance one frame — the owner's whole per-`Tick` job. `note` receives [`PresentEvent::Motion`]
@@ -307,13 +401,15 @@ impl HoldHint {
             self.full_at = None;
         }
         let focus = input.focus.filter(|_| !learned());
-        if focus != self.key {
+        if focus != self.key || input.surface != self.surface {
             self.key = focus;
+            self.surface = input.surface;
             self.rest_at = None;
             self.spent = false;
             self.claimed = false;
             self.full_at = None;
         }
+        let dwell = input.surface.dwell_ms();
         let mut rested_ms = 0;
         if focus.is_none() || !input.settled {
             self.rest_at = None;
@@ -323,14 +419,14 @@ impl HoldHint {
         } else if !self.spent {
             let at = *self.rest_at.get_or_insert(now_ms);
             rested_ms = now_ms.wrapping_sub(at);
-            if rested_ms >= DWELL_MS + LIFE_MS {
+            if rested_ms >= dwell + LIFE_MS {
                 self.spent = true;
             }
         }
         // a hold on no card (or under a retired hint) is no hold
         let hold = input.hold.filter(|_| focus.is_some());
-        let may = self.claimed || !shown_this_run();
-        let standing = may && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= DWELL_MS;
+        let may = self.claimed || !shown(input.surface);
+        let standing = may && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= dwell;
         if standing {
             self.claimed = true;
         }
@@ -343,7 +439,7 @@ impl HoldHint {
         if self.claimed && self.fade.pos >= FULL {
             let at = *self.full_at.get_or_insert(now_ms);
             if now_ms.wrapping_sub(at) >= READ_MS {
-                mark_shown();
+                mark_shown(input.surface);
             }
         } else {
             self.full_at = None;
@@ -376,10 +472,16 @@ impl HoldHint {
     /// hold shows a spent hint with its fill, so it always needs the card). `ok_held` is
     /// `cx.press.held_ms.is_some()`.
     pub fn wants_input(&self, ok_held: bool) -> bool {
+        self.wants_input_on(Surface::Card, ok_held)
+    }
+
+    /// [`wants_input`](Self::wants_input) for a hint that stands on `surface`. A page with both
+    /// surfaces asks for each: the input is worth building if either could matter.
+    pub fn wants_input_on(&self, surface: Surface, ok_held: bool) -> bool {
         if learned() {
             return false;
         }
-        ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown_this_run()
+        ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown(surface)
     }
 
     /// Whether any of it is on screen.
@@ -585,7 +687,11 @@ mod tests {
     }
 
     fn rested(focus: u32) -> HintInput {
-        HintInput { focus: Some(focus), settled: true, hold: None }
+        HintInput { focus: Some(focus), settled: true, ..HintInput::default() }
+    }
+
+    fn rested_pill(focus: u32) -> HintInput {
+        rested(focus).surface(Surface::SeasonPill)
     }
 
     /// Step `n` frames of `input` through the present gate, counting the `Motion` notes. Going
@@ -613,6 +719,7 @@ mod tests {
         let g = plx_base::testlock::serial();
         reset_learned_for_test();
         reset_shown_for_test();
+        let _ = take_newly_taught();
         // drain whatever the previous test left on the gate's process-wide damage flag
         frame_asks(&mut HoldHint::new(), HintInput::default());
         (g, HoldHint::new())
@@ -680,11 +787,11 @@ mod tests {
     #[test]
     fn no_focus_on_a_shelf_tile_shows_nothing() {
         let (_g, mut h) = fresh();
-        run(&mut h, HintInput { focus: None, settled: true, hold: None }, secs(10.0));
+        run(&mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(10.0));
         assert!(!h.visible(), "the tab strip, a menu or a covered page has no shelf focus");
         run(&mut h, rested(7), secs(2.5));
         assert!(h.visible());
-        run(&mut h, HintInput { focus: None, settled: true, hold: None }, secs(1.0));
+        run(&mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(1.0));
         assert!(!h.visible(), "a menu opening over it takes it away");
     }
 
@@ -850,7 +957,7 @@ mod tests {
         let mut h = HoldHint::new();
         run(&mut h, rested(7), secs(5.0));
         assert!(!h.visible());
-        assert!(!shown_this_run(), "nothing was shown, so nothing is spent");
+        assert!(shown(Surface::Card) && shown(Surface::SeasonPill), "the menu taught every surface; the hint itself never stood");
         reset_learned_for_test();
     }
 
@@ -1072,6 +1179,81 @@ mod tests {
         o.held_ms = Some(100);
         o.frames(secs(10.0));
         assert!(!o.hint.visible() && o.hint.fill() == 0.0, "retired for good, even under a hold");
+        reset_learned_for_test();
+    }
+
+    // ---- once per INSTALL, and one latch per surface ------------------------------------------------------
+
+    #[test]
+    fn a_seeded_taught_card_surface_never_self_appears() {
+        let (_g, mut h) = fresh();
+        seed_taught(true, false);
+        run(&mut h, rested(7), secs(6.0));
+        assert!(!h.visible(), "an install that was taught the card hint is not offered it again");
+        assert_eq!(take_newly_taught(), None, "a seed is the stored fact, not news");
+        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(h.visible() && (h.fill() - 0.5).abs() < 1e-6, "a physical hold still shows the capsule with its fill");
+        let mut pill = HoldHint::new();
+        run(&mut pill, rested_pill(7), secs(1.5));
+        assert!(pill.visible(), "the season pill was never taught: the card seed leaves it unspent");
+    }
+
+    #[test]
+    fn a_read_on_one_surface_leaves_the_other_unspent() {
+        let (_g, _) = fresh();
+        let mut card = HoldHint::new();
+        run(&mut card, rested(7), secs(3.5));
+        assert!(shown(Surface::Card) && !shown(Surface::SeasonPill));
+        let mut pill = HoldHint::new();
+        run(&mut pill, rested_pill(7), secs(2.0));
+        assert!(pill.visible(), "the pill still teaches after the card did");
+
+        reset_shown_for_test();
+        let mut pill = HoldHint::new();
+        run(&mut pill, rested_pill(7), secs(2.5));
+        assert!(shown(Surface::SeasonPill) && !shown(Surface::Card));
+        let mut card = HoldHint::new();
+        run(&mut card, rested(7), secs(3.5));
+        assert!(card.visible(), "the card still teaches after the pill did");
+    }
+
+    #[test]
+    fn the_season_pill_dwells_for_half_a_second_and_the_card_for_one_and_a_half() {
+        let (_g, mut pill) = fresh();
+        run(&mut pill, rested_pill(7), secs(0.4));
+        assert!(!pill.visible(), "not before DWELL_PILL_MS");
+        run(&mut pill, rested_pill(7), secs(0.2));
+        assert!(pill.visible(), "the fade is under way just past it");
+        let mut card = HoldHint::new();
+        reset_shown_for_test();
+        run(&mut card, rested(7), secs(0.8));
+        assert!(!card.visible(), "the card dwell is unchanged");
+        assert_eq!((DWELL_MS, DWELL_PILL_MS), (1500, 500));
+    }
+
+    #[test]
+    fn a_read_showing_raises_the_newly_taught_signal_exactly_once() {
+        let (_g, mut h) = fresh();
+        run(&mut h, rested(7), secs(1.9));
+        assert_eq!(take_newly_taught(), None, "a showing that has not been read is not a lesson");
+        run(&mut h, rested(7), secs(2.0));
+        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: false }));
+        assert_eq!(take_newly_taught(), None, "drained");
+        run(&mut h, rested(7), secs(2.0));
+        assert_eq!(take_newly_taught(), None, "nothing new on a later frame");
+        let mut pill = HoldHint::new();
+        run(&mut pill, rested_pill(7), secs(2.5));
+        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: true }), "the second surface reports both");
+    }
+
+    #[test]
+    fn an_opened_menu_teaches_every_surface_and_says_so_once() {
+        let (_g, _) = fresh();
+        mark_learned();
+        assert!(shown(Surface::Card) && shown(Surface::SeasonPill));
+        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: true }));
+        mark_learned();
+        assert_eq!(take_newly_taught(), None, "idempotent");
         reset_learned_for_test();
     }
 

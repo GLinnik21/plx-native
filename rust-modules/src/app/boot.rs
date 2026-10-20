@@ -1457,6 +1457,8 @@ pub(crate) unsafe fn construct(
     if plx_base::devtrig::flag("hintoff") {
         plx_ui::hold_hint::teach_all_for_dev();
     }
+    // The hold hint offers itself once per INSTALL: seed what an earlier run taught, before frame one.
+    super::hint_taught::seed(session.hold_hint_taught());
     #[cfg(not(test))]
     plx_platform::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();

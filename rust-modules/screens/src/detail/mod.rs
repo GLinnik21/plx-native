@@ -340,8 +340,9 @@ pub struct DetailScreen {
     /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
     /// deliberately absent from [`SHAPE`].
     spot_facts: SpotFacts,
-    /// The standing "Hold OK for options" hint over a Related or Collection card
-    /// (`plx_ui::hold_hint`, once per run across the app). Paint-only: not hashed,
+    /// The standing "Hold OK for options" hint over a Related or Collection card or the season
+    /// pill (`plx_ui::hold_hint`: one `HoldHint`, the surface carried per frame; once per install
+    /// per surface). Paint-only: not hashed,
     /// not in [`SHAPE`].
     hold_hint: plx_ui::hold_hint::HoldHint,
 }
@@ -3832,25 +3833,45 @@ impl DetailScreen {
         cx: &Cx<'_, H>,
         focused: Option<Located>,
     ) -> plx_ui::hold_hint::HintInput {
+        use plx_ui::hold_hint::Surface;
         let none = plx_ui::hold_hint::HintInput::default();
-        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
-            return none;
-        }
-        let (Some(key), Some(Located::Related(_) | Located::Collection(_))) = (cx.focus.current, focused) else {
+        let ok_held = cx.press.held_ms.is_some();
+        let Some(key) = cx.focus.current.filter(|k| k.entry == self.entry && self.preview_chrome >= 0.99) else {
             return none;
         };
-        if key.entry != self.entry || self.preview_chrome < 0.99 {
-            return none;
+        match focused {
+            Some(Located::Related(_) | Located::Collection(_)) => {
+                if !self.hold_hint.wants_input(ok_held) {
+                    return none;
+                }
+                let has_menu = self
+                    .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
+                    .is_some_and(crate::registry::item_has_menu);
+                if !has_menu {
+                    return none;
+                }
+                let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
+                let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
+                plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
+            }
+            // A held OK on a season tab opens the season's item menu (`PressHold`), so the pill
+            // teaches the same gesture, on its own surface and its own, shorter dwell. Settled is
+            // the page's and the strip's own motion: the scroll, the tab strip's scroll, the focus
+            // capsule's travel, and the season switch the focus move queued.
+            Some(Located::Season(_)) => {
+                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
+                    return none;
+                }
+                let page_still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
+                let settled = page_still
+                    && self.tab_scroll.vel.abs() < 0.5
+                    && !self.tabs.moving()
+                    && self.pending_season.is_none()
+                    && !plx_machine::motion::phase_clocks_held();
+                plx_ui::hold_hint::HintInput::new(Some(key.elem), settled, cx.press.held_ms).surface(Surface::SeasonPill)
+            }
+            _ => none,
         }
-        let has_menu = self
-            .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
-            .is_some_and(crate::registry::item_has_menu);
-        if !has_menu {
-            return none;
-        }
-        let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
-        let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
-        plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
     }
 
     fn preview_tick<H: ContentLike>(

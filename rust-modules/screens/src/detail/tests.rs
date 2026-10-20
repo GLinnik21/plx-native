@@ -4153,6 +4153,46 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     clear();
 }
 
+/// The hold hint on a season tab (`hold_hint::Surface::SeasonPill`): a held OK there opens the
+/// season's item menu, so the pill teaches it, after the shorter pill dwell (well before the card
+/// dwell would have), once per install on its own latch (the Card latch stays unspent).
+#[test]
+fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let mut rest = |screen: &mut DetailScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            ms += 17;
+            let mut context = cx(&measure, None);
+            context.focus.current = focus;
+            context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+            let mut effects = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        }
+    };
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    rest(&mut screen, pill, 0.3);
+    assert!(!screen.hold_hint.visible(), "not before the pill dwell");
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 3.0);
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    rest(&mut screen, pill, 1.4);
+    assert!(screen.hold_hint.visible(), "1.4 s on the pill is past its dwell and the tab capsule's arrival, short of the card's");
+    rest(&mut screen, pill, 2.0);
+    assert!(plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::SeasonPill), "a read showing taught the pill");
+    assert!(!plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::Card), "and left the card hint unspent");
+    clear();
+}
+
 /// Every season switch lands a different set of episode identities. The key table keeps the
 /// current pass, the previous one, the focus and the remembered keys, and above twice one pass plus
 /// 256 drops the oldest rest, so a hundred switches stay bounded. The focused card's key never
