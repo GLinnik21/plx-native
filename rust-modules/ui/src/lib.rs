@@ -2432,4 +2432,60 @@ mod spring_tests {
         s.jump(2.0); // teleported
         assert!(should_present(10_032));
     }
+
+    /// `step` parks a released spring one ulp off its target and leaves it there; `land` is what puts
+    /// it on the target. Every pop/scroll-shaped spring of the app (stiffness `K_SCALE`/`K_SCROLL`,
+    /// targets 1.0, 1.09, 0 and a few hundred px, released from either side) must reach EXACT rest
+    /// within a second of release, and a landing must never take a spring that is still travelling.
+    #[test]
+    fn a_stepped_spring_lands_exactly_and_a_moving_one_is_left_alone() {
+        let _g = plx_base::testlock::serial();
+        let dt = 1.0 / 60.0;
+        let mut stalled = 0;
+        for k in [crate::consts::K_SCALE, crate::consts::K_SCROLL, crate::consts::K_SNAP] {
+            for target in [0.0f32, 1.0, 1.09, 1.18, 280.0, 1500.0] {
+                for start in [target + 0.09, target - 0.09, target + 300.0, target - 40.0] {
+                    let mut s = Spring::at(start);
+                    let mut stepped = s;
+                    for frame in 0..90 {
+                        s.step(target, k, dt);
+                        stepped.step(target, k, dt);
+                        let before = s;
+                        if s.land(target, dt) {
+                            assert!(
+                                (before.pos - target).abs() <= super::LAND_REL * (1.0 + target.abs().max(before.pos.abs())),
+                                "k={k} {start}->{target}: landed from {} (frame {frame}), still {} away",
+                                before.pos, (before.pos - target).abs()
+                            );
+                            assert_eq!((s.pos, s.vel), (target, 0.0));
+                        } else {
+                            assert_eq!((s.pos, s.vel), (before.pos, before.vel), "a spring that has not arrived is untouched");
+                        }
+                    }
+                    assert_eq!((s.pos, s.vel), (target, 0.0), "k={k} {start}->{target}: not on its target after 90 frames");
+                    stalled += (stepped.pos != target) as u32;
+                }
+            }
+        }
+        assert!(stalled > 0, "the premise: step alone leaves some of these springs off their target");
+    }
+
+    /// Landing a spring that is already exactly on its target reports nothing (the guard `jump` has),
+    /// and one that landed reports once, so a settled screen can still sleep.
+    #[test]
+    fn landing_reports_to_the_present_gate_only_when_it_moves_something() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let mut s = Spring { pos: 1.0 + 1.2e-7, vel: -9.8e-7 }; // where a released pop parks
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        assert!(s.land(1.0, 1.0 / 60.0));
+        assert!(should_present(10_016), "the landing is a change, so the exactly-resting frame is presented");
+        note_present(10_016);
+        frame_begin(1.0 / 60.0);
+        assert!(s.land(1.0, 1.0 / 60.0));
+        assert!(!should_present(10_032), "already there: nothing to report");
+        assert!(!Spring::at(1.5).land(1.0, 1.0 / 60.0), "a spring half a unit away has not arrived");
+        assert!(!Spring { pos: 1.0, vel: 5.0 }.land(1.0, 1.0 / 60.0), "on the target but still travelling is not arrived");
+    }
 }
