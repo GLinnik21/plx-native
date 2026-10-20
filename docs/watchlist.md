@@ -81,11 +81,21 @@ rotates the epoch and resets the store (the catalog store re-opens under the new
 the status and the endpoint SHAPE only: no token, and no id beyond what is scrubbed.
 
 **A debug build does not write unless someone switched it on.** In a `devtriggers` build a `PUT` is
-refused and logged (`WatchlistError::Refused`) unless the loopback stand-in named by
-`/tmp/plxnative-discover` is armed (the stand-in then takes the write) or the owner's live switch is on;
-the UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
+refused and logged (`WatchlistError::Refused`) unless the loopback stand-in is armed (the stand-in then
+takes the write) or the owner's live switch is on. "Armed" is `account::discover()`, the ONE Discover base
+the person page shares: `/tmp/plxnative-discover`, else the loopback `/tmp/plxnative-plextv` already
+redirects plex.tv to (the mock answers both on one listener). The UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
 goes out (`header::dev_blocked_text`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
 silence). Release builds write. Host tests never reach curl: they drive the request closure.
+
+**Reads are refused on a dev-token boot too.** A dev-token boot (`plxnative-token`) with neither
+stand-in armed has its READS of the provider refused and logged once per endpoint, the person page's profile
+and credits included, rather than reaching the real host with a server token. That is a fixed decision
+(fail closed), and the cost is accepted: such a boot shows no person biography and no filmography
+credits; arm the stand-in to see them. A refused person read settles its page at once (no retry). A
+refused Watchlist or catalog read (reachable only after an in-process sign-in: a dev-token boot with no
+account seated makes no request at all) lands once as the unavailable read-out, never as an empty list,
+and is not re-asked on a timer.
 
 **The live switch** is `plxnative-watchlist-live` in the install's runtime root (on the television
 `/tmp/com.beb.plxnative.debug/plxnative-watchlist-live`). It is read once at boot, which logs

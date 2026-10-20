@@ -61,6 +61,15 @@ def post(port, path, obj):
         return json.load(r)
 
 
+def require_stand_in(events):
+    """Fail the capture unless the boot's own event log says Discover is the mock's stand-in."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_pms
+    problem = mock_pms.discover_stand_in_problem(events.read_text(errors="replace") if events.exists() else "")
+    if problem:
+        raise Failure(problem)
+
+
 def sign_in(sim, runtime, port, timeout=90):
     (runtime / "plxnative-login").write_text("")
     log = open(runtime / "prep.out", "w")
@@ -78,6 +87,7 @@ def sign_in(sim, runtime, port, timeout=90):
                 raise Failure(f"the mock sign-in did not finish within {timeout}s")
             time.sleep(0.5)
         time.sleep(1.5)  # the session's last revision is written a moment after the hubs land
+        require_stand_in(events)
     finally:
         proc.kill()
         proc.wait()
@@ -111,6 +121,7 @@ def capture(sim, spec, scenario, out_dir):
         proc = subprocess.Popen([str(sim), "127.0.0.1", str(port)], stdout=log, stderr=subprocess.STDOUT,
                                 env=sim_env(runtime))
         time.sleep(scenario["boot_wait_s"])
+        require_stand_in(runtime / "plxnative-events.log")  # before a single key is sent
         fifo = runtime / "plxnative-remote"
         for _ in range(50):
             if fifo.exists():

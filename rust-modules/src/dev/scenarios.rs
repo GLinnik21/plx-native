@@ -745,8 +745,9 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                 // needs `credited`/`landed` because it is a list of them; the biography needs the
                 // person's own facts, which the header already has. Requiring the credits here
                 // would be requiring something a headless boot cannot have: they come from
-                // plex.tv, which answers an injected server token 401 (`account: … HTTP 401` in
-                // the event log), so the wait would never end and the trigger would present
+                // the Discover provider: a dev-token boot with no Discover stand-in armed has the
+                // read REFUSED locally (`discover: GET … refused` in the event log), and one with
+                // the mock's stand-in armed gets the credits' 401 (no account token), so the wait would never end and the trigger would present
                 // nothing at all — measured on the simulator, 2026-09-10.
                 && (boot.bio || (p.credited && p.landed)))
         })
@@ -767,7 +768,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
         // door OK on the header uses (`ContentPanel::Bio`) and gated on the same predicate, so the
         // trigger cannot open a sheet an interactive press would have refused. It exists because
         // this sheet has no other headless route: OK on the header only opens it when the prose is
-        // TRUNCATED, and the bio comes from plex.tv, which answers an injected server token 401 —
+        // TRUNCATED, and the bio comes from the Discover provider, which a dev-token boot either
+        // refuses locally (no stand-in armed) or gets only the mock's synthetic prose from —
         // so pair it with `/tmp/plxnative-personbio=<text>` for a boot that has any prose at all.
         let available = app
             .pages
@@ -1183,8 +1185,10 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
         // `/tmp/plxnative-watchlist` — boot straight onto the Watchlist page (`SelectTab`, as the
-        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>`, or the
-        // page reads the real discover host; `tools/tv-session.sh --mock-plextv` arms both.
+        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>` (or a
+        // `plxnative-plextv` redirect, which Discover follows); a dev-token boot with neither armed
+        // has its Discover reads refused, logged at boot as `discover: base=real reads=refused`.
+        // `tools/tv-session.sh --mock-plextv` arms both.
         if plx_base::devtrig::flag("watchlist") {
             crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
         }

@@ -456,6 +456,14 @@ or any other server version, fails the scene before it is graded. Debug flavor o
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
 turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
 the run stops if either cannot be done — and neither is ever turned back on.
+**A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
+write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
+page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
+reads=refused` at boot). That is a standing decision (fail closed), and it settles the page as for a
+person the provider has never heard of, once, with nothing retried; `person-page`, `person-bio`,
+`filmography-idle`, `push-100` and `deep-100` are the scenes that open one. Arming the
+stand-in (`plxnative-discover`, or a loopback `plxnative-plextv`) brings the mock's synthetic reads
+back; `plxnative-personbio` and `plxnative-personcredits` seed the content instead.
 
 A scene is runnable under `--mock` only if it carries a `"mock"` block (`{}` for the default
 library); everything else needs real library content and is skipped with that reason. `"only":
