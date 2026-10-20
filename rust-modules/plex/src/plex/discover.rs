@@ -67,6 +67,16 @@ use serde::Deserialize;
 
 const DISCOVER: &str = "https://discover.provider.plex.tv";
 
+/// `{DISCOVER}/library/people/{guid}` — the one place the profile URL is spelled.
+fn person_profile_url(guid: &str) -> String {
+    format!("{DISCOVER}/library/people/{guid}")
+}
+
+/// `{DISCOVER}/library/people/{guid}/credits` — the one place the filmography URL is spelled.
+fn person_credits_url(guid: &str) -> String {
+    format!("{DISCOVER}/library/people/{guid}/credits")
+}
+
 impl AccountClient {
     /// GET {DISCOVER}/library/people/{guid} — one person's biography record.
     ///
@@ -78,7 +88,7 @@ impl AccountClient {
     /// 200 with an empty container, and that comes back here as a **default (all-empty) profile**,
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
-        let env: PersonEnvelope = self.get(&format!("{DISCOVER}/library/people/{guid}"))?;
+        let env: PersonEnvelope = self.get(&person_profile_url(guid))?;
         Some(
             env.media_container
                 .metadata
@@ -100,8 +110,7 @@ impl AccountClient {
     /// department: the provider sends every group in one body, and the screen's tabs are those
     /// groups.
     pub fn person_credits(&self, guid: &str) -> Option<Vec<CreditGroup>> {
-        let env: CreditsEnvelope =
-            self.get(&format!("{DISCOVER}/library/people/{guid}/credits"))?;
+        let env: CreditsEnvelope = self.get(&person_credits_url(guid))?;
         // **A body that carried NO recognized container key is a FAILURE, not an empty career** —
         // and keeping those apart is the whole reason [`CreditsContainer`]'s fields are `Option`
         // rather than `#[serde(default)]` vectors.
@@ -299,4 +308,24 @@ pub struct CreditItem {
     /// shipped with no posters at all. Nothing was measured before that claim was written down.
     #[serde(default)]
     pub thumb: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dev build with the Discover stand-in armed must build BOTH person routes on it. The
+    /// stand-in is armed in a private trigger root (thread-local), and the resolver is read per
+    /// call under test, so this cannot leak into `watchlist`'s real-host test.
+    #[test]
+    fn person_urls_are_built_on_the_armed_stand_in() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("discover"), "http://127.0.0.1:41999").unwrap();
+            assert_eq!(person_profile_url("abc"), "http://127.0.0.1:41999/library/people/abc");
+            assert_eq!(person_credits_url("abc"), "http://127.0.0.1:41999/library/people/abc/credits");
+        });
+    }
 }
