@@ -90,6 +90,11 @@ const COMPACT_TITLE_FADE: f32 = 200.0;
 const K_SCROLL: f32 = plx_ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
+/// The page scroll counts as in place for the season pill's hold hint when it is within this many
+/// pixels of its target: the hint stands at the bottom of the screen and need not wait for the last
+/// of the spring.
+const PILL_PAGE_PX: f32 = 24.0;
+
 pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 // The blocks packed end to end: each section starts where the one before it ends, so the chain
@@ -3855,25 +3860,24 @@ impl DetailScreen {
                 plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
             }
             // A held OK on a season tab opens the season's item menu (`PressHold`), so the pill
-            // teaches the same gesture, on its own surface and its own, shorter dwell. Settled is
-            // the page's and the strip's own motion: the scroll, the tab strip's scroll, the focus
-            // capsule's travel, and the season switch the focus move queued.
+            // teaches the same gesture, on its own surface and its own, shorter dwell. The dwell
+            // counts from focus LANDING on the tab: the page scroll, the tab strip's glide and the
+            // season switch the focus move queued only gate STANDING (`ready`), they do not restart
+            // the clock. The hold opens a menu only through `focused_season`, which is `None` while
+            // the season loads or has no `rk`: no promise of a hold that does nothing, so not ready
+            // there, and a hold shows no capsule either. The page need only be roughly in place
+            // (the hint stands at the bottom of the screen); the capsule glide is quick enough not
+            // to be waited for. Pinned animation clocks (documentation figures) never settle.
             Some(Located::Season(_)) => {
                 if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
                     return none;
                 }
-                // The hold opens a menu only through `focused_season`, which is `None` while the
-                // season loads or has no `rk`: no promise of a hold that does nothing.
-                if self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_none() {
-                    return none;
-                }
-                let page_still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
-                let settled = page_still
-                    && self.tab_scroll.vel.abs() < 0.5
-                    && !self.tabs.moving()
-                    && self.pending_season.is_none()
-                    && !plx_machine::motion::phase_clocks_held();
-                plx_ui::hold_hint::HintInput::new(Some(key.elem), settled, cx.press.held_ms).surface(Surface::SeasonPill)
+                let menu = self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_some();
+                let ready = menu && (self.scroll.pos - self.scroll_target).abs() < PILL_PAGE_PX;
+                let settled = !plx_machine::motion::phase_clocks_held();
+                plx_ui::hold_hint::HintInput::new(Some(key.elem), settled, cx.press.held_ms)
+                    .surface(Surface::SeasonPill)
+                    .ready(ready)
             }
             _ => none,
         }

@@ -4193,6 +4193,45 @@ fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
     clear();
 }
 
+/// The dwell counts from FOCUS LANDING on the pill: the page scroll still gliding, the tab strip's
+/// capsule still travelling and the season switch the focus move queued are motion that only gates
+/// standing, they do not restart the clock. Pre-fix this took the motion's whole settle plus a
+/// second dwell (about 1.5 s on the TV).
+#[test]
+fn the_pill_dwell_counts_from_focus_landing_not_from_the_motion_ending() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    // the page is mid-glide, the tab strip is travelling and a season switch is queued
+    screen.scroll_target = screen.scroll.pos + 300.0;
+    screen.tab_scroll.vel = 400.0;
+    screen.pending_season = Some(0);
+    for frame in 0..60u32 {
+        ms += 17;
+        let mut context = cx(&measure, None);
+        context.focus.current = pill;
+        context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+        let mut effects = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut sink = Effects::new(&mut effects,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+        Machine::<TestHost>::step(&mut screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        if frame == 20 {
+            assert!(!screen.hold_hint.visible(), "not before the pill dwell (0.34 s in)");
+        }
+    }
+    // 60 frames at 17 ms is 1.02 s: dwell 0.5 s plus the glide and the fade, never a second dwell
+    assert!(screen.hold_hint.visible(), "stands about one dwell after focus landed, motion notwithstanding");
+    clear();
+}
+
 /// A held OK on a season pill opens a menu only through `focused_season`, which answers `None`
 /// while the season has no `rk` (or a season fetch is in flight). The hint must not promise a hold
 /// that does nothing, and a read of it there must not mark the pill taught for good.

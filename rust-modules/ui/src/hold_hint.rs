@@ -63,6 +63,10 @@
 //! `Tick` (`ms` readings, and a silence over [`GAP_MS`] between two steps is not rest, so the time a covered page is not stepped never counts) — no wall clock, so replay and host tests are deterministic: focus must have RESTED on one
 //! card for [`DWELL_MS`] ([`DWELL_PILL_MS`] on a season pill; any move of `focus`, or any frame that is not `settled`, re-arms the dwell
 //! from zero and hides it), and the hint then stands for [`LIFE_MS`] and leaves on its own. A held OK shows it regardless of the dwell — that is the fill's moment.
+//! A surface can also say it is not [`ready`](HintInput::ready) (the season pill while its season
+//! loads or the page glides into place): that does NOT re-arm the dwell. Resting keeps counting,
+//! so the hint stands the frame the surface becomes ready, and until then it shows nothing, spends
+//! nothing and shows no fill for a hold (the hold opens nothing yet). Cards are always ready.
 //! `focus == None` shows nothing, and once the viewer has opened a context menu it RETIRES for good
 //! ([`learned`]; the design's "until first use" mode — "always" and "off" were design-time toggles
 //! and have no setting here).
@@ -285,7 +289,7 @@ pub fn teach_all_for_dev() {
 }
 
 /// What the owner tells the hint each frame. Build it with [`HintInput::new`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HintInput {
     /// The card focus is resting on, by the owner's own stable element id; `None` whenever the hint
     /// has no business on screen (focus is not on a card, or a menu or modal covers the page).
@@ -293,6 +297,12 @@ pub struct HintInput {
     /// Nothing under that card is still moving — no scroll, snap or focus glide in flight. The
     /// dwell only runs while this holds.
     pub settled: bool,
+    /// Whether the hint MAY stand this frame. Unlike [`settled`](Self::settled) it never restarts
+    /// the dwell: focus resting on the same place keeps counting while `ready` is false, and the
+    /// hint stands the frame it turns true (once the dwell is met). A surface whose hold opens
+    /// nothing yet (a season still loading, the page not in place) says so here; a hold while not
+    /// ready shows nothing either. `true` for every card ([`HintInput::new`]).
+    pub ready: bool,
     /// How far through the hold a held OK is, 0..=1: `held_ms / press::LONG_MS`, clamped. `None`
     /// when OK is not held on a holdable card press.
     pub hold: Option<f32>,
@@ -300,12 +310,24 @@ pub struct HintInput {
     pub surface: Surface,
 }
 
+impl Default for HintInput {
+    fn default() -> Self {
+        Self { focus: None, settled: false, ready: true, hold: None, surface: Surface::Card }
+    }
+}
+
 impl HintInput {
     /// `held_ms` is the press machine's own clock (`cx.press.held_ms`), passed through unchanged;
     /// the division by the hold threshold happens here so no screen names `press::LONG_MS`.
     pub fn new(focus: Option<u32>, settled: bool, held_ms: Option<u32>) -> Self {
         let hold = held_ms.map(|ms| (ms as f32 / crate::press::LONG_MS as f32).clamp(0.0, 1.0));
-        Self { focus, settled, hold, surface: Surface::Card }
+        Self { focus, settled, ready: true, hold, surface: Surface::Card }
+    }
+
+    /// Gate standing without restarting the dwell (see [`ready`](Self::ready)).
+    pub fn ready(mut self, ready: bool) -> Self {
+        self.ready = ready;
+        self
     }
 
     /// The same input for another [`Surface`] (a season pill rather than a card), so one
@@ -419,14 +441,26 @@ impl HoldHint {
         } else if !self.spent {
             let at = *self.rest_at.get_or_insert(now_ms);
             rested_ms = now_ms.wrapping_sub(at);
+            if !input.ready {
+                // Resting counts while the surface is not ready, but the showing's life does not
+                // begin until it is: hold the clock at the dwell so the hint stands the frame
+                // `ready` turns true, with its whole life ahead of it. A showing in progress is
+                // interrupted (it is not resumed), as by an unsettled frame.
+                if rested_ms > dwell {
+                    self.rest_at = Some(now_ms.wrapping_sub(dwell));
+                    rested_ms = dwell;
+                }
+                self.claimed = false;
+                self.full_at = None;
+            }
             if rested_ms >= dwell + LIFE_MS {
                 self.spent = true;
             }
         }
         // a hold on no card (or under a retired hint) is no hold
-        let hold = input.hold.filter(|_| focus.is_some());
+        let hold = input.hold.filter(|_| focus.is_some() && input.ready);
         let may = self.claimed || !shown(input.surface);
-        let standing = may && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= dwell;
+        let standing = may && input.ready && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= dwell;
         if standing {
             self.claimed = true;
         }
@@ -1229,6 +1263,40 @@ mod tests {
         run(&mut card, rested(7), secs(0.8));
         assert!(!card.visible(), "the card dwell is unchanged");
         assert_eq!((DWELL_MS, DWELL_PILL_MS), (1500, 500));
+    }
+
+    /// A pill that is not READY (its season loading, the page not in place) does not restart the
+    /// dwell: resting counts, and the hint stands the frame it becomes ready.
+    #[test]
+    fn a_pill_that_becomes_ready_stands_at_once_not_a_dwell_later() {
+        let (_g, mut h) = fresh();
+        run(&mut h, rested_pill(7).ready(false), secs(0.8));
+        assert!(!h.visible(), "not ready: nothing shows");
+        assert!(!shown_this_run() && !shown(Surface::SeasonPill), "and nothing is spent");
+        run(&mut h, rested_pill(7), 2);
+        assert!(h.visible(), "ready after 0.8 s of rest: fading in within two frames, not 0.5 s later");
+        run(&mut h, rested_pill(7), secs(2.5));
+        assert!(shown(Surface::SeasonPill), "and a full showing is read, its life undiminished by the wait");
+    }
+
+    #[test]
+    fn a_surface_that_is_never_ready_never_shows_and_a_hold_there_shows_nothing() {
+        let (_g, mut h) = fresh();
+        run(&mut h, rested_pill(7).ready(false), secs(10.0));
+        assert!(!h.visible() && !shown(Surface::SeasonPill), "never ready, never shown, never spent");
+        let held = HintInput { hold: Some(0.5), ..rested_pill(7).ready(false) };
+        run(&mut h, held, secs(0.5));
+        assert!(!h.visible() && h.fill() == 0.0, "a hold that opens nothing shows no capsule and no fill");
+        run(&mut h, HintInput { hold: Some(0.5), ..rested_pill(7) }, secs(0.5));
+        assert!(h.visible(), "ready: the same hold shows");
+    }
+
+    #[test]
+    fn a_focus_move_still_restarts_the_dwell_while_not_ready() {
+        let (_g, mut h) = fresh();
+        run(&mut h, rested_pill(7).ready(false), secs(0.8));
+        run(&mut h, rested_pill(8), secs(0.3));
+        assert!(!h.visible(), "a new place starts its own dwell even though the last was long met");
     }
 
     #[test]
