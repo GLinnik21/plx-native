@@ -5,7 +5,7 @@
 //! screen pixel** and that the glass is only 11.4% of it. That number came from the GPU's global
 //! `FRAG_QUADS_RAST`, which cannot say *whose* quads they are: the wayland compositor draws into
 //! the same counters, and one full-screen composite is a quarter of the budget on its own. This
-//! module answers the two questions that follow, and neither of them needs a GPU counter:
+//! module answers the three questions that follow, and none of them needs a GPU counter:
 //!
 //! 1. **What does the APP submit?** [`gate`] sums, per draw class, the screen-visible area of every
 //!    quad the app actually issues, on the CPU, exactly. `/tmp/plxnative-overdraw` arms it and it
@@ -18,12 +18,23 @@
 //!    therefore the **compositor floor**: whatever `frame.ui` still costs with an empty page is
 //!    work this app cannot remove.
 //!
+//! 3. **How is a card DRAWN?** The same armed ledger also books every `Class::Card` draw by the
+//!    path the compositor took ([`CardPath`]: split into pieces, or whole and why).
+//!    [`note_card_path`] books the quad's visible area once per path and the window line prints
+//!    them as `cardpath`. The class
+//!    ledger above counts logical composites and cannot see this (a split card is one composite and
+//!    five GL draws); this can, and it is how a stalled spring that kept every visited card on the
+//!    focus program was found. `/tmp/plxnative-nocardsplit` ([`set_card_split`]) switches the split
+//!    off for a leg, so one binary measures it on and off interleaved.
+//!
 //! A masked leg is deliberately a BROKEN PICTURE. This is a measurement knob, not a feature — the
 //! mask exists so a control-leg difference can be taken, and every leg it produces except the
 //! control is unshippable by construction.
 //!
-//! Both surfaces are dev-only: with `devtriggers` off, [`gate`] is `false` and [`note_px`] is empty
-//! at compile time, so a release binary carries neither the branch nor the counters.
+//! All three surfaces are dev-only: with `devtriggers` off, [`gate`] is `false`, and [`note_px`],
+//! [`note_card_path`] and [`set_card_split`] are empty at compile time (and [`card_split`] is
+//! always `true`: a release build always splits), so a release binary carries neither the branch
+//! nor the counters.
 
 /// What kind of quad a draw call submits. One variant per PRIMITIVE FAMILY rather than per screen
 /// element, because that is the granularity `gfx`/`text` can label a draw at without every screen
@@ -64,11 +75,36 @@ pub const NAMES: [&str; NCLASS] = [
     "ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur", "field",
 ];
 
+/// How the compositor drew one `Class::Card` draw (an art tile), as booked by [`note_card_path`].
+/// Every card the ledger would book as a logical `card` composite falls in exactly one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardPath {
+    /// A resting card drawn in five scissored pieces: the interior through the shader's plain-texture
+    /// exit, the ring through the full card math.
+    Split = 0,
+    /// A focused or risen card (`f > 0` or `dy > 0`): the focus program, the whole quad, unsplit.
+    Focus = 1,
+    /// A resting card on a reduced-resolution source pass (`CLIP_TARGET`): whole.
+    Clipped = 2,
+    /// A resting card with no certainly-plain interior (a circle, a sliver): whole.
+    NoInterior = 3,
+    /// A resting card whose corner radius is under half a pixel: the shader's whole-quad plain
+    /// branch already, so there is nothing to cut.
+    Plain = 4,
+    /// A resting card that could have been split, with the split switched off for this leg.
+    Off = 5,
+}
+
+pub const NPATH: usize = 6;
+
+/// The name each path answers to on the window line, in [`CardPath`] order.
+pub const PATH_NAMES: [&str; NPATH] = ["split", "focus", "clip", "nointerior", "plain", "off"];
+
 /// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
 /// shape, doing nothing — and the `pub use` under it re-exports whichever one is compiled.
 #[cfg(feature = "devtriggers")]
 mod imp {
-    use super::{Class, NAMES, NCLASS};
+    use super::{CardPath, Class, NAMES, NCLASS, NPATH, PATH_NAMES};
     use plx_base::eventlog::log;
     use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
     use std::cell::Cell;
@@ -89,6 +125,57 @@ mod imp {
         static PX: [Cell<f64>; NCLASS] = const { [const { Cell::new(0.0) }; NCLASS] };
         static DRAWS: [Cell<u32>; NCLASS] = const { [const { Cell::new(0) }; NCLASS] };
         static FRAMES: Cell<u32> = const { Cell::new(0) };
+        /// The card-path ledger: visible px and draws per [`CardPath`], per-path cells for the same
+        /// reason as `PX`.
+        static PATH_PX: [Cell<f64>; NPATH] = const { [const { Cell::new(0.0) }; NPATH] };
+        static PATH_DRAWS: [Cell<u32>; NPATH] = const { [const { Cell::new(0) }; NPATH] };
+        /// Is the resting-card split allowed? On unless a leg switched it off.
+        static SPLIT: Cell<bool> = const { Cell::new(true) };
+    }
+
+    /// Switch the resting-card split off (`false`) or back on, for an A/B on one binary
+    /// (`/tmp/plxnative-nocardsplit`). Off, a card that could be split is drawn whole and booked
+    /// as [`CardPath::Off`].
+    pub fn set_card_split(on: bool) {
+        SPLIT.with(|f| f.set(on));
+    }
+
+    /// Whether the resting-card split is allowed (the shipped answer: always).
+    #[inline]
+    pub fn card_split() -> bool {
+        SPLIT.with(|f| f.get())
+    }
+
+    /// Book one card draw against the path it took: the quad's screen-visible area (the very
+    /// arithmetic [`gate`] books a class with) and one draw. Unlike [`gate`] this INCLUDES a blur
+    /// source pass's draws, because those are the ones [`CardPath::Clipped`] exists to count; the
+    /// class ledger keeps leaving them out, so the paths' draws can exceed the `card` class's.
+    #[inline]
+    pub fn note_card_path(path: CardPath, x: f32, y: f32, w: f32, h: f32) {
+        if ON.with(|f| f.get()) {
+            let i = path as usize;
+            PATH_PX.with(|f| f[i].set(f[i].get() + visible_px(x, y, w, h)));
+            PATH_DRAWS.with(|f| f[i].set(f[i].get() + 1));
+        }
+    }
+
+    /// The area of the quad that can reach the panel: clipped to the canvas and to `Painter::clip`'s
+    /// live box. What both ledgers book.
+    #[inline]
+    fn visible_px(x: f32, y: f32, w: f32, h: f32) -> f64 {
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            x.max(0.0),
+            y.max(0.0),
+            (x + w).min(SCR_W),
+            (y + h).min(SCR_H),
+        );
+        if let Some(cl) = CLIP.with(|f| f.get()) {
+            x0 = x0.max(cl[0]);
+            y0 = y0.max(cl[1]);
+            x1 = x1.min(cl[2]);
+            y1 = y1.min(cl[3]);
+        }
+        ((x1 - x0).max(0.0) * (y1 - y0).max(0.0)) as f64
     }
 
     /// Arm the ledger (`/tmp/plxnative-overdraw`).
@@ -179,19 +266,7 @@ mod imp {
         // A blur source pass draws the page a second time into a small target; its quads are not
         // on the panel and would double every class in the ledger.
         if ON.with(|f| f.get()) && !crate::gfx::blur_source_pass() {
-            let (mut x0, mut y0, mut x1, mut y1) = (
-                x.max(0.0),
-                y.max(0.0),
-                (x + w).min(SCR_W),
-                (y + h).min(SCR_H),
-            );
-            if let Some(cl) = CLIP.with(|f| f.get()) {
-                x0 = x0.max(cl[0]);
-                y0 = y0.max(cl[1]);
-                x1 = x1.min(cl[2]);
-                y1 = y1.min(cl[3]);
-            }
-            add(i, ((x1 - x0).max(0.0) * (y1 - y0).max(0.0)) as f64);
+            add(i, visible_px(x, y, w, h));
         }
         false
     }
@@ -225,10 +300,19 @@ mod imp {
         if n < LOG_EVERY {
             return;
         }
+        log(&flush_window());
+    }
+
+    /// Close the window: the `OVERDRAW` line for the frames since the last one, and every cell back
+    /// to zero. Each class prints `name=px/draws` and each card path `name=px/draws` after
+    /// `cardpath`, all per frame.
+    pub(super) fn flush_window() -> String {
+        let n = FRAMES.with(|f| f.replace(0));
         let px: [f64; NCLASS] = PX.with(|f| std::array::from_fn(|i| f[i].replace(0.0)));
         let draws: [u32; NCLASS] = DRAWS.with(|f| std::array::from_fn(|i| f[i].replace(0)));
-        FRAMES.with(|f| f.set(0));
-        let frames = n as f64;
+        let path_px: [f64; NPATH] = PATH_PX.with(|f| std::array::from_fn(|i| f[i].replace(0.0)));
+        let path_draws: [u32; NPATH] = PATH_DRAWS.with(|f| std::array::from_fn(|i| f[i].replace(0)));
+        let frames = n.max(1) as f64;
         let screen = (SCR_W * SCR_H) as f64;
         // `blur` writes reduced-resolution targets, so it is NOT part of the panel's overdraw
         // ratio; it is reported beside it rather than inside it.
@@ -247,12 +331,17 @@ mod imp {
                 )
             })
             .collect();
-        log(&format!(
-            "OVERDRAW frames={n} panel={:.0}px x{:.2} | {}",
+        // Draws to one decimal: a path that fires on one frame in ten still shows.
+        let paths: Vec<String> = (0..NPATH)
+            .map(|i| format!("{}={:.0}/{:.1}", PATH_NAMES[i], path_px[i] / frames, path_draws[i] as f64 / frames))
+            .collect();
+        format!(
+            "OVERDRAW frames={n} panel={:.0}px x{:.2} | {} | cardpath {}",
             panel / frames,
             panel / frames / screen,
-            parts.join(" ")
-        ));
+            parts.join(" "),
+            paths.join(" ")
+        )
     }
 }
 
@@ -267,7 +356,7 @@ mod imp {
 /// same shape as each other.
 #[cfg(not(feature = "devtriggers"))]
 mod imp {
-    use super::Class;
+    use super::{CardPath, Class};
 
     #[inline]
     pub fn gate(_c: Class, _x: f32, _y: f32, _w: f32, _h: f32) -> bool {
@@ -287,9 +376,18 @@ mod imp {
     pub fn set_ledger(_on: bool) {}
     #[inline]
     pub fn set_mask(_spec: &str) {}
+    #[inline]
+    pub fn note_card_path(_path: CardPath, _x: f32, _y: f32, _w: f32, _h: f32) {}
+    #[inline]
+    pub fn set_card_split(_on: bool) {}
+    /// A release build always splits: the switch does not exist.
+    #[inline]
+    pub fn card_split() -> bool {
+        true
+    }
 }
 
-pub use imp::{frame_end, gate, masked, note_px, set_clip, set_ledger, set_mask};
+pub use imp::{card_split, frame_end, gate, masked, note_card_path, note_px, set_card_split, set_clip, set_ledger, set_mask};
 
 #[cfg(test)]
 mod tests {
@@ -334,5 +432,70 @@ mod tests {
         assert!(!gate(Class::Blur, 0.0, 0.0, 1280.0, 720.0));
         set_mask("");
         set_ledger(false);
+    }
+
+    /// The names the window line prints are the table the enum indexes; a path added without a name
+    /// (or reordered against it) would book its draws under another path's label.
+    #[test]
+    fn every_card_path_has_a_distinct_name_in_enum_order() {
+        assert_eq!(PATH_NAMES.len(), NPATH);
+        for (i, n) in PATH_NAMES.iter().enumerate() {
+            assert!(!n.is_empty() && PATH_NAMES.iter().filter(|m| *m == n).count() == 1, "path {i}: {n:?}");
+        }
+        assert_eq!(CardPath::Split as usize, 0);
+        assert_eq!(PATH_NAMES[CardPath::Focus as usize], "focus");
+        assert_eq!(PATH_NAMES[CardPath::Clipped as usize], "clip");
+        assert_eq!(PATH_NAMES[CardPath::NoInterior as usize], "nointerior");
+        assert_eq!(PATH_NAMES[CardPath::Plain as usize], "plain");
+        assert_eq!(CardPath::Off as usize, NPATH - 1);
+    }
+
+    /// The counter's whole contract on the window line: a path's draws and its px, per frame, each
+    /// path under its own name, the px the visible area of the quad (clipped to the canvas and to the
+    /// live clip box, as the class ledger books it), the source-pass draws counted too, and nothing
+    /// booked while the ledger is not armed. Reads the line itself, not the event log.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_window_line_books_each_card_path_once_per_draw() {
+        set_ledger(false);
+        note_card_path(CardPath::Split, 0.0, 0.0, 100.0, 100.0);
+        assert!(imp::flush_window().contains("cardpath split=0/0.0 focus=0/0.0"), "an unarmed ledger books nothing");
+
+        set_ledger(true);
+        for _ in 0..5 {
+            frame_end(); // five frames in the window (60 would log it)
+        }
+        for _ in 0..8 {
+            note_card_path(CardPath::Split, 100.0, 100.0, 250.0, 375.0); // 93750 px each
+        }
+        note_card_path(CardPath::Focus, 100.0, 100.0, 250.0, 375.0);
+        note_card_path(CardPath::Focus, 100.0, 100.0, 250.0, 375.0);
+        note_card_path(CardPath::Clipped, -50.0, -50.0, 100.0, 100.0); // half off the canvas: 50 x 50
+        note_card_path(CardPath::NoInterior, 0.0, 0.0, 10.0, 10.0);
+        set_clip(Some([0.0, 0.0, 5.0, 5.0]));
+        note_card_path(CardPath::Plain, 0.0, 0.0, 10.0, 10.0); // cut by the live clip: 5 x 5
+        set_clip(None);
+        note_card_path(CardPath::Off, 1900.0, 1060.0, 100.0, 100.0); // 20 x 20 on the canvas
+        let line = imp::flush_window();
+        assert!(line.starts_with("OVERDRAW frames=5 "), "{line}");
+        // per frame: 8 splits of 93750 px over 5 frames = 150000 px, 1.6 draws; and so on
+        assert!(
+            line.ends_with("| cardpath split=150000/1.6 focus=37500/0.4 clip=500/0.2 nointerior=20/0.2 plain=5/0.2 off=80/0.2"),
+            "{line}"
+        );
+        // the window closed: a second one starts from zero
+        assert!(imp::flush_window().contains("cardpath split=0/0.0 focus=0/0.0 clip=0/0.0"));
+        set_ledger(false);
+    }
+
+    /// The A/B switch: on by default, and off books the card as `off`, never as `plain`.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_card_split_switch_defaults_on_and_turns_off() {
+        assert!(card_split());
+        set_card_split(false);
+        assert!(!card_split());
+        set_card_split(true);
+        assert!(card_split());
     }
 }

@@ -1442,7 +1442,9 @@ pub fn draw_card_peaked(
 }
 
 /// A pop spring's scale as a 0..1 focus factor against the `peak` it targets — what drives a
-/// card's folded shadow and an episode still's lift.
+/// card's folded shadow and an episode still's lift. `f > 0` is also what sends a card to the
+/// heavier focus program ([`plx_gfx::gfx::wants_focus_program`]) and out of the resting card split,
+/// so a tile at rest must yield EXACTLY `0.0` (the pop springs land there: [`crate::Spring::land`]).
 pub fn pop_factor(scale: f32, peak: f32) -> f32 {
     ((scale - 1.0) / (peak - 1.0)).clamp(0.0, 1.0)
 }

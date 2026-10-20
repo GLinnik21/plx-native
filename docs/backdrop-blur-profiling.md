@@ -435,6 +435,35 @@ in authored coordinates.
 un-serialised. `all` draws nothing, and is therefore the **compositor floor**. Every leg it
 produces except the control is a broken picture by construction; it is a measurement knob.
 
+**The card-path counter, and `/tmp/plxnative-nocardsplit`.** The `card` class above counts LOGICAL
+composites, so it cannot say how a card was drawn: a resting card is cut into its plain-texture
+interior and a ring (`gfx::draw_tex_core_in`, five scissored draws of one quad), a focused or risen
+one runs the focus program, and both are one `card` composite. With `/tmp/plxnative-overdraw` armed
+the window line therefore ends in one more section, per frame, as `<px visible>/<card draws>`:
+
+```
+OVERDRAW frames=60 panel=... | card=... image=... | cardpath split=P/D focus=P/D clip=P/D nointerior=P/D plain=P/D off=P/D
+```
+
+`split` is a resting card cut into pieces; `focus` a card with `f > 0` or `dy > 0` (the focus
+program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass with the
+split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
+`plain` a corner radius under half a pixel (the shader's own whole-quad plain branch); `off` a card
+that would have been split with the split switched off. A card is sorted focus, then plain, then
+off, and only a card that is still to be split has its target checked, so a popped, square-cornered
+or split-off card on a source pass is booked under `focus`, `plain` or `off` like any other. The
+six add up to the `card` entry plus every card draw on a source pass, which the class ledger leaves
+out (a source pass is not the panel). So on a `nocardsplit` leg with glass up `card + clip` will not
+reconcile, because those source-pass cards are in `off`, and that is not a bug. Draws are logical (a
+split card is one) and printed to one decimal, so a path that fires on one frame in ten still shows.
+A resting shelf should be all `split`; a card sitting in `focus` that no key put there is a
+spring that did not land (`CardRow::update`, `Spring::land`).
+
+`/tmp/plxnative-nocardsplit` (present = off, unarmed = the split is on) draws every resting card
+whole again, as `off`, so ONE binary measures the split on and off, interleaved, like `drawmask`'s
+control leg. It is in `dev::DIAG` for the same reason the other three are: the legs must boot to
+the same screen. Unlike a masked leg it draws the same picture as the control, bit for bit.
+
 ### The frame, decomposed
 
 Scene: Home, `plxnative-homeosc` + `plxnative-noidle`, no glass. Three interleaved repeats per leg,

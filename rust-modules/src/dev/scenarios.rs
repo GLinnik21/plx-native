@@ -294,6 +294,16 @@ pub(crate) fn arm_drawmask() {
     }
 }
 
+/// `/tmp/plxnative-nocardsplit` — draw every resting card WHOLE again, as before the split of a
+/// resting card into its interior and ring (`gfx::draw_tex_core_in`). Unarmed the split is on,
+/// which is the shipped behaviour; present, the very same binary is the control leg of a split
+/// on/off A/B, with the card-path ledger (`plxnative-overdraw`) booking the whole draws as `off`.
+pub(crate) fn arm_cardsplit() {
+    if plx_base::devtrig::flag("nocardsplit") {
+        plx_gfx::overdraw::set_card_split(false);
+    }
+}
+
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
 pub(crate) fn arm_heroground() {
     if plx_base::devtrig::flag("heroground") {
