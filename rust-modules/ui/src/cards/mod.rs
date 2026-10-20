@@ -60,7 +60,11 @@
 //!   ordinary focus pop. [`Shelf::place`] / [`Grid::place`] answer the live drawn rect and the stop the
 //!   draw registers is the same value; `rest_rect` is the settled focus-scaled rect.
 //! - **Idle.** Springs report their own motion; a settled section reports none and parks at exact
-//!   rest. No call allocates except the focused tile's label.
+//!   rest. Allocation: the focused tile's label, a landing's diff and a [`Grid`]'s draw plan (built
+//!   each frame) are the calls that allocate, and a grid's one more: its list of let-gos, which
+//!   grows to the most cards a held key has had letting go at once and is KEPT (a dormant wake and
+//!   [`Grid::forget_pop`] empty it, not free it), so it allocates when a key first puts more in
+//!   flight than the grid has seen, and a press, a tick and a draw allocate nothing for as many again.
 //!
 //! The L0 primitives (`card_row`, `poster_grid`) are `pub(crate)`: a screen cannot hand-assemble a
 //! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the

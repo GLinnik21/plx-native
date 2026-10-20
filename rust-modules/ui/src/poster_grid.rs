@@ -161,8 +161,8 @@ impl GridBands {
 /// It only starts from REST when a deliberate MOVE arms it ([`arm`](Self::arm), from the
 /// `FocusMoved` arm for `By::Dir` / `By::Pointer`); every other way a cell becomes focused — a
 /// restore, a reconcile, a command seating the cursor — is adopted at full scale by
-/// [`tick`](Self::tick), because a page coming back from a Detail push must land exactly as it
-/// was left. Inputs and the `FocusMoved` they deliver run BEFORE the screen's `Tick`, so a D-pad
+/// [`tick`](Self::tick), because a page coming back from a Detail push must land exactly as it was
+/// left. Inputs and the `FocusMoved` they deliver run BEFORE the screen's `Tick`, so a D-pad
 /// step has already armed the pop by the time `tick` steps it on from 1.0.
 ///
 /// **Every card that lost focus lets go on a spring of its own** ([`LetGo`]), the way a shelf's
@@ -174,160 +174,165 @@ impl GridBands {
 /// none and pays for none, and the count is whatever the presses of the last ~30 frames left in
 /// flight — no cap, no eviction.
 ///
+/// **A card is its element, not its cell.** The pop knows which [`Card`] it is on and a let-go is
+/// born with the card it was released from, so no let-go is ever without its element: a press that
+/// finds the cards shifted since the last tick (a landing and a key in one frame) hands the card it
+/// left a let-go that follows that card, and picks up the spring of the card it names, by element,
+/// whatever index the shift gave either. The cells a let-go carries are where the last tick saw its
+/// element (`cards::pool::follow_let_gos` keeps them so).
+///
 /// A hold menu changes nothing here: the menu is its own input scope, the page keeps its focus,
 /// and the settled pop is what the opener redraw reads ([`scale`](Self::scale)).
 pub struct GridPop {
-    pop: (Option<usize>, Spring),
+    pop: Pop,
     /// The cards letting go, one entry each and never two on a cell nor on the popped one, oldest
     /// release first. An entry is removed by the shared landing rule
     /// ([`Spring::land`](crate::Spring::land)), so a settled grid pays for no shrinking tile.
     shrink: Vec<LetGo>,
 }
 
-/// One card letting go: where it is, which element it is (so a content landing can carry the
-/// let-go with its card, `cards/pool.rs`) and the spring that brings it back to 1.0.
+/// A card of a grid: the cell it stands in and which element it is (`cards::pool::key`, a number
+/// because a section is not generic over the host's element).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Card {
+    pub cell: usize,
+    pub key: u64,
+}
+
+/// The focused card and the spring that grows it.
+#[derive(Clone, Copy)]
+struct Pop {
+    /// `None`: the pop belongs to no card.
+    card: Option<Card>,
+    spring: Spring,
+}
+
+impl Pop {
+    const NONE: Self = Self { card: None, spring: Spring::at(1.0) };
+}
+
+/// One card letting go: which card it is (so a content landing carries the let-go with it,
+/// `cards/pool.rs`) and the spring that brings it back to 1.0.
 #[derive(Clone, Copy)]
 struct LetGo {
-    cell: usize,
-    /// The element's identity (`cards::pool::key`), known once a tick has seen the let-go: one
-    /// armed since the last tick is still where it started and has no key yet.
-    key: Option<u64>,
+    card: Card,
     spring: Spring,
 }
 
 impl GridPop {
     pub const fn new() -> Self {
-        Self { pop: (None, Spring::at(1.0)), shrink: Vec::new() }
+        Self { pop: Pop::NONE, shrink: Vec::new() }
+    }
+
+    /// Forget the pop and every let-go (a fresh content set whose cells mean nothing), keeping the
+    /// room the let-go list has grown to: a grid that wakes from dormancy or is handed new content
+    /// does not allocate again for the presses it already had room for.
+    pub fn reset(&mut self) {
+        self.pop = Pop::NONE;
+        self.shrink.clear();
     }
 
     /// Hand the pop's card to the let-gos: it was released, so it goes on from where its spring is.
     fn release(&mut self) {
-        if let Some(cell) = self.pop.0 {
+        if let Some(card) = self.pop.card {
             // a card is on one spring: the pop's is the live one
-            self.take(cell);
-            self.shrink.push(LetGo { cell, key: None, spring: self.pop.1 });
+            self.take(card.key);
+            self.shrink.push(LetGo { card, spring: self.pop.spring });
         }
     }
 
-    /// Take the let-go on `cell` out of the running, if there is one: its spring.
-    fn take(&mut self, cell: usize) -> Option<Spring> {
-        let at = self.shrink.iter().position(|l| l.cell == cell)?;
+    /// Take the let-go of the element `key` out of the running, if it has one: its spring.
+    fn take(&mut self, key: u64) -> Option<Spring> {
+        let at = self.shrink.iter().position(|l| l.card.key == key)?;
         Some(self.shrink.remove(at).spring)
     }
 
-    /// Arm the pop: cell `index` grows from REST, or from where its let-go has got to when it is a
-    /// card still letting go (focus came back to it before it landed: one spring goes on, as a
-    /// shelf's cell does, and nothing jumps). Whatever held the pop before starts its own let-go.
-    pub fn arm(&mut self, index: usize) {
+    /// Arm the pop: `card` grows from REST, or from where its let-go has got to when it is a card
+    /// still letting go (focus came back to it before it landed: one spring goes on, as a shelf's
+    /// cell does, and nothing jumps). Whatever held the pop before starts its own let-go.
+    pub fn arm(&mut self, card: Card) {
         self.release();
-        let from = self.take(index).unwrap_or(Spring::at(1.0));
-        self.pop = (Some(index), from);
+        let spring = self.take(card.key).unwrap_or(Spring::at(1.0));
+        self.pop = Pop { card: Some(card), spring };
     }
 
     /// Whether the card in `cell` is letting go.
     #[cfg(test)]
     pub(crate) fn letting_go(&self, cell: usize) -> bool {
-        self.shrink.iter().any(|l| l.cell == cell)
+        self.shrink.iter().any(|l| l.card.cell == cell)
     }
 
-    /// The cell whose let-go the move that just armed the pop started, which is the one with no key
-    /// yet, is now at cell `to` (`None`: gone).
-    pub(crate) fn move_new_let_go(&mut self, from: usize, to: Option<usize>) {
-        let Some(at) = self.shrink.iter().position(|l| l.cell == from && l.key.is_none()) else { return };
-        match to {
-            Some(to) => self.shrink[at].cell = to,
-            None => drop(self.shrink.remove(at)),
-        }
-    }
-
-    /// Before the tick: every let-go that has been seen follows its element. `locate(cell, key)` says
-    /// where the element is now, `Some(cell)` when it did not move, `None` when it left. All moves
-    /// are decided against the cells as they stood and applied together, so two let-gos that swap
-    /// cells (a reorder) are not confused with each other.
+    /// Every let-go follows its element: `locate(cell, key)` says where the element is now,
+    /// `Some(cell)` when it did not move, `None` when it left (its let-go goes with it). A locate
+    /// reads the source and the let-go it is asked about, nothing of the others, so the moves are
+    /// made in place: two let-gos that swap cells (a reorder) are not confused with each other.
     pub(crate) fn follow_let_gos(&mut self, mut locate: impl FnMut(usize, u64) -> Option<usize>) {
-        let mut moved: Vec<(usize, Option<usize>)> = Vec::new();
-        for (at, l) in self.shrink.iter().enumerate() {
-            if let Some(key) = l.key {
-                let to = locate(l.cell, key);
-                if to != Some(l.cell) {
-                    moved.push((at, to));
-                }
+        self.shrink.retain_mut(|l| match locate(l.card.cell, l.card.key) {
+            Some(to) => {
+                l.card.cell = to;
+                true
             }
-        }
-        if moved.is_empty() {
-            return;
-        }
-        // newest entry first, so a removal never moves one that is still to be visited
-        for &(at, to) in moved.iter().rev() {
-            match to {
-                Some(to) => self.shrink[at].cell = to,
-                None => drop(self.shrink.remove(at)),
-            }
-        }
+            None => false,
+        });
     }
 
-    /// After the tick: let-gos that have no key yet learn the identity of the card they are on.
-    pub(crate) fn key_let_gos(&mut self, mut key_of: impl FnMut(usize) -> Option<u64>) {
-        for l in self.shrink.iter_mut().filter(|l| l.key.is_none()) {
-            l.key = key_of(l.cell);
-        }
-    }
-
-    /// `(cell, key)` of every let-go: what a draw that comes before the tick has seen the source
-    /// change reads to put each card at its own let-go's scale.
-    pub(crate) fn let_gos(&self) -> impl Iterator<Item = (usize, Option<u64>)> + '_ {
-        self.shrink.iter().map(|l| (l.cell, l.key))
+    /// Every card letting go, oldest release first: where the last tick saw each and which element
+    /// it is, what a draw reads to put each card at its own let-go's scale.
+    pub(crate) fn let_gos(&self) -> impl Iterator<Item = Card> + '_ {
+        self.shrink.iter().map(|l| l.card)
     }
 
     /// The cell the pop currently belongs to.
     pub fn cell(&self) -> Option<usize> {
-        self.pop.0
+        self.pop.card.map(|c| c.cell)
     }
 
     /// The focused element moved to cell `to` because the CONTENT changed (a landing): the pop
-    /// spring, velocity and all, goes with it, and a let-go already running on `to` is dropped
-    /// (that cell now holds the element that is popped).
+    /// spring, velocity and all, goes with it. (The card is the same element, so it has no let-go
+    /// to drop: a let-go and the pop never share a card.)
     pub fn relocate(&mut self, to: usize) {
-        if self.pop.0.is_some() {
-            self.pop.0 = Some(to);
+        if let Some(card) = &mut self.pop.card {
+            card.cell = to;
         }
-        self.take(to);
     }
 
-    /// The focused card at cell `to` took over a cell whose card left lifted (a landing's ghost
-    /// carries that lift down while it fades): its pop starts from REST and grows with the
-    /// landing, so the two never stand lifted side by side. Nothing lets go — the card that held
-    /// the pop is the ghost, which eases itself.
-    pub fn rise(&mut self, to: usize) {
-        self.pop = (Some(to), Spring::at(1.0));
-        self.take(to);
+    /// The focused `card` took over a cell whose card left lifted (a landing's ghost carries that
+    /// lift down while it fades): its pop starts from REST and grows with the landing, so the two
+    /// never stand lifted side by side. Nothing lets go — the card that held the pop is the ghost,
+    /// which eases itself.
+    pub fn rise(&mut self, card: Card) {
+        self.pop = Pop { card: Some(card), spring: Spring::at(1.0) };
+        self.take(card.key);
     }
 
     /// The focused card left as a ghost and focus has not been reconciled yet: the pop belongs to
     /// no card and nothing lets go (the card now in that cell was never lifted; the ghost eases
     /// itself).
     pub fn vacate(&mut self) {
-        self.pop = (None, Spring::at(1.0));
+        self.pop = Pop::NONE;
     }
 
-    /// Cell `to` is focused with no deliberate move (a restore, a reconcile): FULL scale at once
+    /// `card` is focused with no deliberate move (a restore, a reconcile): FULL scale at once
     /// and the card it left does not let go, the cell it left is simply at rest. (The cards still
     /// letting go from earlier moves go on to rest on their own springs.)
-    pub fn adopt(&mut self, to: usize, style: &RowStyle) {
-        self.take(to);
-        self.pop = (Some(to), Spring::at(style.focus_scale));
+    pub fn adopt(&mut self, card: Card, style: &RowStyle) {
+        self.take(card.key);
+        self.pop = Pop { card: Some(card), spring: Spring::at(style.focus_scale) };
     }
 
-    /// Advance the pop one tick; `focused` is the focused cell's index, if focus is in the grid.
-    pub fn tick(&mut self, focused: Option<usize>, style: &RowStyle, dt: f32) {
-        if focused != self.pop.0 {
+    /// Advance the pop one tick; `focused` is the focused card, if focus is in the grid.
+    pub fn tick(&mut self, focused: Option<Card>, style: &RowStyle, dt: f32) {
+        if focused.map(|c| c.cell) != self.cell() {
             self.release();
-            if let Some(cell) = focused {
-                self.take(cell);
+            if let Some(card) = focused {
+                self.take(card.key);
             }
-            self.pop = (focused, Spring::at(if focused.is_some() { style.focus_scale } else { 1.0 }));
+            self.pop = Pop { card: focused, spring: Spring::at(if focused.is_some() { style.focus_scale } else { 1.0 }) };
+        } else {
+            // the card standing in the popped cell is the popped one (a refresh may have put another there)
+            self.pop.card = focused;
         }
-        self.pop.1.step(if self.pop.0.is_some() { style.focus_scale } else { 1.0 }, style.k_scale, dt);
+        self.pop.spring.step(if self.pop.card.is_some() { style.focus_scale } else { 1.0 }, style.k_scale, dt);
         // Each let-go ends by the one landing rule a shelf's released tile ends by (`CardRow::update`):
         // within `LAND_REL` of rest AND no longer travelling, put exactly at rest. A threshold of its
         // own (the old `pos < 1.003`, with no velocity check) dropped the tile ~25x further out, a
@@ -343,7 +348,7 @@ impl GridPop {
     /// restore, a reconcile, a seat that landed after this frame's tick) lands finished rather
     /// than animating, so drawing it at rest would be a one-frame collapse.
     pub fn pop_scale(&self, index: usize, style: &RowStyle) -> f32 {
-        if self.pop.0 == Some(index) { self.pop.1.pos } else { style.focus_scale }
+        if self.cell() == Some(index) { self.pop.spring.pos } else { style.focus_scale }
     }
 
     /// **The one scale a cell draws at — for its RECT and for its TREATMENT, always together**
@@ -352,22 +357,22 @@ impl GridPop {
     /// every other. The press is the caller's to multiply in.
     pub fn scale(&self, index: usize, focused: bool, style: &RowStyle) -> f32 {
         if focused { return self.pop_scale(index, style) }
-        self.shrink.iter().find(|l| l.cell == index).map_or(1.0, |l| l.spring.pos)
+        self.shrink.iter().find(|l| l.card.cell == index).map_or(1.0, |l| l.spring.pos)
     }
 
     /// Canonical animation state: a spring mid-flight decides the next frames even when two grids
-    /// draw the same rects. The pop, then one slot per let-go in flight; a grid with none writes the
-    /// one empty slot it always has, so a settled grid's bytes are what they were when it kept a
-    /// single let-go.
+    /// draw the same rects. The pop, then one slot per let-go in flight (a grid with none writes one
+    /// empty slot: no cell, rest, no velocity), each a cell and a spring. A card's element is the
+    /// source's, not the grid's, and is not written.
     pub fn write(&self, c: &mut plx_machine::machine::Canon) {
-        c.option(self.pop.0, |c, i| { c.u32(i as u32); });
-        c.f32(self.pop.1.pos).f32(self.pop.1.vel);
+        c.option(self.cell(), |c, i| { c.u32(i as u32); });
+        c.f32(self.pop.spring.pos).f32(self.pop.spring.vel);
         if self.shrink.is_empty() {
             c.option(None::<usize>, |c, i| { c.u32(i as u32); });
             c.f32(1.0).f32(0.0);
         }
         for l in &self.shrink {
-            c.option(Some(l.cell), |c, i| { c.u32(i as u32); });
+            c.option(Some(l.card.cell), |c, i| { c.u32(i as u32); });
             c.f32(l.spring.pos).f32(l.spring.vel);
         }
     }
@@ -630,6 +635,11 @@ mod tests {
         assert!(bands.slots.iter().all(|s| s.row.is_none()));
     }
 
+    /// The card in `cell`, an element that is its cell number (nothing here moves the cards).
+    fn at(cell: usize) -> Card {
+        Card { cell, key: cell as u64 }
+    }
+
     /// The pop is armed from rest by a deliberate move, adopted whole when focus arrives
     /// unannounced, lets the old cell back down and sleeps once settled.
     #[test]
@@ -638,17 +648,17 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut pop = GridPop::new();
         assert_eq!(pop.scale(3, true, &style), style.focus_scale, "an unannounced focus draws whole");
-        pop.tick(Some(3), &style, dt);
+        pop.tick(Some(at(3)), &style, dt);
         assert_eq!(pop.scale(3, true, &style), style.focus_scale, "…and the tick adopts it unanimated");
-        pop.arm(4);
-        pop.tick(Some(4), &style, dt);
+        pop.arm(at(4));
+        pop.tick(Some(at(4)), &style, dt);
         let (new, old) = (pop.scale(4, true, &style), pop.scale(3, false, &style));
         assert!(new > 1.0 && new < style.focus_scale, "the new cell grows from rest: {new}");
         assert!(old > 1.0 && old < style.focus_scale, "the old cell lets go: {old}");
-        for _ in 0..120 { pop.tick(Some(4), &style, dt); }
+        for _ in 0..120 { pop.tick(Some(at(4)), &style, dt); }
         assert!((pop.scale(4, true, &style) - style.focus_scale).abs() < 0.001);
         assert_eq!(pop.scale(3, false, &style), 1.0);
-        let (_, moving) = plx_machine::idle::scoped_motion(|| pop.tick(Some(4), &style, dt));
+        let (_, moving) = plx_machine::idle::scoped_motion(|| pop.tick(Some(at(4)), &style, dt));
         assert!(!moving, "a settled grid lets idle suppression sleep");
     }
 
@@ -665,13 +675,13 @@ mod tests {
         let style = STYLE;
         let dt = 1.0 / 60.0;
         let mut pop = GridPop::new();
-        pop.tick(Some(3), &style, dt); // seated whole
-        pop.arm(4);
+        pop.tick(Some(at(3)), &style, dt); // seated whole
+        pop.arm(at(4));
         let mut reference = Spring::at(style.focus_scale);
         let mut landed = false;
         for frame in 1..=600 {
             let was_shrinking = pop.letting_go(3);
-            pop.tick(Some(4), &style, dt);
+            pop.tick(Some(at(4)), &style, dt);
             reference.step(1.0, style.k_scale, dt);
             let drawn = pop.scale(3, false, &style);
             if was_shrinking && !pop.letting_go(3) {
@@ -700,12 +710,12 @@ mod tests {
         let style = STYLE;
         let dt = 1.0 / 60.0;
         let mut pop = GridPop::new();
-        pop.tick(Some(3), &style, dt); // seated whole
+        pop.tick(Some(at(3)), &style, dt); // seated whole
         let mut reference = [Spring::at(style.focus_scale), Spring::at(1.0), Spring::at(1.0), Spring::at(1.0)];
         for (n, cell) in [4usize, 5, 6].into_iter().enumerate() {
-            pop.arm(cell);
+            pop.arm(at(cell));
             for _ in 0..3 {
-                pop.tick(Some(cell), &style, dt);
+                pop.tick(Some(at(cell)), &style, dt);
                 for (c, sp) in reference.iter_mut().enumerate().take(n + 2) {
                     sp.step(if c == n + 1 { style.focus_scale } else { 1.0 }, style.k_scale, dt);
                 }
@@ -718,48 +728,51 @@ mod tests {
         assert!(!pop.letting_go(6), "the focused cell is the pop, not a let-go");
         // focus comes back to 5 while it is letting go: it grows from where it is, with its velocity
         let was = pop.scale(5, false, &style);
-        pop.arm(5);
+        pop.arm(at(5));
         assert_eq!(pop.scale(5, true, &style), was, "no jump on the press");
         assert!(!pop.letting_go(5) && pop.letting_go(6), "5 is the pop again and 6 let go");
         // a seat adopted whole does not stop the others
-        pop.adopt(9, &style);
+        pop.adopt(at(9), &style);
         assert!(pop.letting_go(3) && pop.letting_go(4) && pop.letting_go(6), "the let-gos in flight go on");
-        for _ in 0..120 { pop.tick(Some(9), &style, dt); }
+        for _ in 0..120 { pop.tick(Some(at(9)), &style, dt); }
         assert!((3..=6).all(|c| !pop.letting_go(c)), "and each lands");
         assert!((3..=6).all(|c| pop.scale(c, false, &style) == 1.0), "exactly at rest");
     }
 
-    /// A grid that lets at most one card go writes the canon it wrote when it kept a single slot
-    /// (the replay fixtures grade it); each further let-go adds a slot.
+    /// The canon is the pop's cell and spring, then a (cell, spring) slot per let-go in flight, oldest
+    /// release first; a grid with none writes the one empty slot. Pinned from literals, not from
+    /// the fields the writer reads, so a reordered, dropped or doubled field fails here; the replay
+    /// anchors (`make check-replay`) are what hold the bytes of a whole page.
     #[test]
-    fn the_canon_of_a_grid_with_one_let_go_is_that_of_the_single_slot() {
+    fn the_canon_is_the_pop_then_a_slot_per_let_go() {
         use plx_machine::machine::Canon;
         let style = STYLE;
         let dt = 1.0 / 60.0;
-        let slots = |pop: &GridPop| {
+        let slot = |c: &mut Canon, cell: Option<usize>, pos: f32, vel: f32| {
+            c.option(cell, |c, i| { c.u32(i as u32); });
+            c.f32(pos).f32(vel);
+        };
+        let written = |pop: &GridPop| { let mut c = Canon::new(); pop.write(&mut c); c.finish() };
+        let expect = |slots: &[(Option<usize>, f32, f32)]| {
             let mut c = Canon::new();
-            c.option(pop.pop.0, |c, i| { c.u32(i as u32); });
-            c.f32(pop.pop.1.pos).f32(pop.pop.1.vel);
-            match pop.shrink.first() {
-                Some(l) => { c.option(Some(l.cell), |c, i| { c.u32(i as u32); }); c.f32(l.spring.pos).f32(l.spring.vel); }
-                None => { c.option(None::<usize>, |c, i| { c.u32(i as u32); }); c.f32(1.0).f32(0.0); }
-            }
+            for &(cell, pos, vel) in slots { slot(&mut c, cell, pos, vel); }
             c.finish()
         };
-        let whole = |pop: &GridPop| { let mut c = Canon::new(); pop.write(&mut c); c.finish() };
         let mut pop = GridPop::new();
-        assert_eq!(whole(&pop), slots(&pop), "no let-go");
-        pop.tick(Some(3), &style, dt);
-        pop.arm(4);
-        pop.tick(Some(4), &style, dt);
-        assert_eq!(whole(&pop), slots(&pop), "one let-go");
-        for _ in 0..120 { pop.tick(Some(4), &style, dt); }
-        assert_eq!(whole(&pop), slots(&pop), "a landed let-go leaves the empty slot");
-        pop.arm(5);
-        pop.tick(Some(5), &style, dt);
-        pop.arm(6);
-        pop.tick(Some(6), &style, dt);
-        assert_ne!(whole(&pop), slots(&pop), "two let-gos are two slots");
+        assert_eq!(written(&pop), expect(&[(None, 1.0, 0.0), (None, 1.0, 0.0)]), "no pop, no let-go: two empty slots");
+        pop.tick(Some(at(3)), &style, dt);
+        pop.arm(at(4));
+        let whole = style.focus_scale;
+        assert_eq!(written(&pop), expect(&[(Some(4), 1.0, 0.0), (Some(3), whole, 0.0)]), "the pop, then the card it let go");
+        pop.arm(at(5));
+        assert_eq!(
+            written(&pop),
+            expect(&[(Some(5), 1.0, 0.0), (Some(3), whole, 0.0), (Some(4), 1.0, 0.0)]),
+            "a second let-go adds a slot after the first",
+        );
+        for _ in 0..240 { pop.tick(Some(at(5)), &style, dt); }
+        let (pos, vel) = (pop.pop.spring.pos, pop.pop.spring.vel);
+        assert_eq!(written(&pop), expect(&[(Some(5), pos, vel), (None, 1.0, 0.0)]), "landed let-gos leave the empty slot");
     }
 
     #[test]
