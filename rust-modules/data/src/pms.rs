@@ -1398,10 +1398,11 @@ fn merge_held(srcs: &mut [Src], scope: &BrowseScope, hold: (usize, usize)) -> (H
     // the pool's cards, before the slices they sit in are overwritten
     let pool: Vec<(Arc<PmsMovie>, String, usize)> = build.2.iter()
         .map(|hero| (Arc::clone(&build.0[hero.idx]), hero.source.clone(), hero.idx)).collect();
+    let mut slots: Vec<Option<Arc<PmsMovie>>> = vec![None; srcs.len()];
     for (row, i) in released {
         let hub = &build.1[row];
-        let slot = Arc::new(PmsMovie { sid: srcs[i].sid, ..PmsMovie::default() });
-        for card in &mut build.0[hub.start..hub.start + hub.len] { *card = Arc::clone(&slot); }
+        let slot = slots[i].get_or_insert_with(|| placeholder_slot(srcs[i].sid));
+        for card in &mut build.0[hub.start..hub.start + hub.len] { *card = Arc::clone(slot); }
     }
     place_heroes(pool, &mut build);
     (build, true)
@@ -1994,27 +1995,17 @@ fn live_sources(srcs: &[Src]) -> Vec<(&str, &SourceBuild)> {
         .collect()
 }
 
-/// What each live source's shelves publish: every pinned card they hold, at most
-/// [`MAX_SHELF_ITEMS`] per shelf. A shelf that gave its cards up to the ring holds none and
-/// publishes placeholder slots instead (see [`Shelf::released`]).
-fn publishable_shelves<'a>(
-    live: &[(&str, &'a SourceBuild)],
-    pins: &[(ServerId, i64, bool)],
-) -> Vec<Vec<Vec<&'a Arc<PmsMovie>>>> {
-    live.iter()
-        .map(|(_, b)| {
-            b.shelves
-                .iter()
-                .map(|sh| {
-                    sh.items
-                        .iter()
-                        .filter(|m| item_pinned(pins, m))
-                        .take(MAX_SHELF_ITEMS)
-                        .collect()
-                })
-                .collect()
-        })
-        .collect()
+/// What a shelf publishes: every pinned card it holds, at most [`MAX_SHELF_ITEMS`]. A shelf that
+/// gave its cards up to the ring holds none and publishes placeholder slots instead (see
+/// [`Shelf::released`]).
+fn publishable<'a>(sh: &'a Shelf, pins: &'a [(ServerId, i64, bool)]) -> impl Iterator<Item = &'a Arc<PmsMovie>> {
+    sh.items.iter().filter(move |m| item_pinned(pins, m)).take(MAX_SHELF_ITEMS)
+}
+
+/// The card every released row of `sid`'s source publishes `shown` times: no rating key, and the
+/// server, so the row keeps its identity.
+fn placeholder_slot(sid: ServerId) -> Arc<PmsMovie> {
+    Arc::new(PmsMovie { sid, ..PmsMovie::default() })
 }
 
 /// Approximate resident bytes of a catalog: each card's struct plus the heap its strings own.
@@ -2097,29 +2088,31 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     // cards publishes them (pin-filtered first, so an unpinned library's whole shelf disappears
     // rather than becoming an empty heading); a shelf that gave them up to the ring publishes as
     // many placeholder slots as it last showed, which carry its server so the row keeps its identity.
-    let publishable = publishable_shelves(&live, pins);
     let sids: Vec<ServerId> = srcs.iter().filter(|s| s.last.is_some()).map(|s| s.sid).collect();
     // the catalog is built in one pass of known size: no regrowth of three tables of thousands
-    let (rows, cards) = live.iter().zip(&publishable).flat_map(|((_, b), pub_)| b.shelves.iter().zip(pub_))
-        .fold((0, 0), |(rows, cards), (sh, items)| (rows + 1, cards + if sh.released() { sh.shown } else { items.len() }));
+    let (rows, cards) = live.iter().flat_map(|(_, b)| b.shelves.iter())
+        .fold((0, 0), |(rows, cards), sh| (rows + 1, cards + if sh.released() { sh.shown } else { sh.items.len().min(MAX_SHELF_ITEMS) }));
     new_hubs.reserve(rows);
     new_cat.reserve(cards);
     row_handle.reserve(cards);
 
     for (i, (handle, b)) in live.iter().enumerate() {
-        for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
+        // one placeholder, shared by every released row of the source
+        let mut slot: Option<Arc<PmsMovie>> = None;
+        for sh in &b.shelves {
             let start = new_cat.len();
             if sh.released() {
-                let slot = Arc::new(PmsMovie { sid: sids[i], ..PmsMovie::default() });
+                let slot = slot.get_or_insert_with(|| placeholder_slot(sids[i]));
                 for _ in 0..sh.shown {
-                    new_cat.push(Arc::clone(&slot));
+                    new_cat.push(Arc::clone(slot));
                     row_handle.push(handle);
                 }
             } else {
-                if items.is_empty() {
+                let mut cards = publishable(sh, pins);
+                let Some(first) = cards.next() else {
                     continue;
-                }
-                for m in items {
+                };
+                for m in std::iter::once(first).chain(cards) {
                     new_cat.push(Arc::clone(m));
                     row_handle.push(handle);
                 }
