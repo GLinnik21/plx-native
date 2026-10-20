@@ -9,6 +9,8 @@
 //! for 13 minutes). So the workers are DETACHED and the caller waits on a channel; a worker that
 //! never reports is a test failure, and the process exit reaps it.
 //!
+//! Workers start through [`crate::task::spawn`], the tree's one spawn.
+//!
 //! The body is `'static` because the workers outlive the call when they hang: it cannot borrow the
 //! test's locals, so build per-thread fixtures inside it, from the thread number.
 
@@ -40,11 +42,12 @@ where
     let (done, finished) = mpsc::channel();
     for t in 0..threads {
         let (body, start, done) = (Arc::clone(&body), Arc::clone(&start), done.clone());
-        std::thread::spawn(move || {
+        crate::task::spawn("race worker", move || {
             start.wait();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(t)));
             let _ = done.send((t, outcome.map_err(|payload| panic_message(payload.as_ref()))));
-        });
+        })
+        .expect("the OS refused a race worker thread");
     }
     drop(done);
     for _ in 0..threads {
