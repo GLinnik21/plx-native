@@ -1631,7 +1631,15 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
 /// rows that entered it without cards are read at their windows.
 fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo: usize, hi: usize,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
-    if state.hold == (lo, hi) { return Default::default(); }
+    if !apply_hold(state, scope, lo, hi) { return Default::default(); }
+    pump_reloads(state, adapter, scope, launch)
+}
+
+/// The store's half of a hold that moved, before any read is asked for: the band is kept, rows
+/// outside it give their cards up and the catalog is published without them. False when the band
+/// is the one held already.
+fn apply_hold(state: &mut PmsState, scope: &BrowseScope, lo: usize, hi: usize) -> bool {
+    if state.hold == (lo, hi) { return false; }
     state.hold = (lo, hi);
     for source in &mut state.srcs { source.stalled.clear(); }
     let mut srcs = std::mem::take(&mut state.srcs);
@@ -1641,7 +1649,7 @@ fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo:
         preserve_heroes(state, &mut build);
         commit(state, build);
     }
-    pump_reloads(state, adapter, scope, launch)
+    true
 }
 
 // Scrolling an old Recently Added page must not change the banner's current selection.
@@ -3635,6 +3643,54 @@ pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
     let (build, _) = merge_held(&mut srcs, &scope, hold);
     state.srcs = srcs;
     commit(state, build);
+}
+
+/// Test hook: the store's half of `HubsCmd::Hold` (the band moves, the rows that left it give their
+/// cards up, the catalog is published), without the reads for the rows that entered it; land those
+/// with [`land_kept_rows_for_test`]. Returns whether the band moved.
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_for_test(state: &mut PmsState, lo: usize, hi: usize) -> bool {
+    plx_base::testlock::assert_held("the pms hub catalog (hold_for_test)");
+    apply_hold(state, &BrowseScope::standalone(), lo, hi)
+}
+
+/// Test hook: the answer a server would give every held descriptor of a [`seed_ring_for_test`]
+/// fixture (its rows page, so they come back from their listing, not through `RowState::kept`):
+/// `items` cards, keyed as the fixture keys them, landed as a reload lands. Returns whether a row
+/// landed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_ring_rows_for_test(state: &mut PmsState, items: usize, salt: &dyn Fn(usize) -> usize) -> bool {
+    plx_base::testlock::assert_held("the pms hub catalog (land_ring_rows_for_test)");
+    let scope = BrowseScope::standalone();
+    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let mut landed = false;
+    for (source, want) in srcs.iter_mut().zip(wanted) {
+        for (id, key) in want {
+            let Some(row) = key.rsplit('/').next().and_then(|row| row.parse::<usize>().ok()) else { continue };
+            let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, &id, &key)).cloned() else { continue };
+            let cards = (0..items).map(|c| Arc::new(PmsMovie {
+                sid: source.sid,
+                rk: format!("{}-{row}-{c}", salt(row)),
+                art: format!("/art/{}", c + 1),
+                ..PmsMovie::default()
+            })).collect();
+            let page = PageQuery { id, key, start: shelf.offset, before: false, hidden: Vec::new(), reload: true };
+            let build = SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+                items: cards, positions: (0..items).collect(), shown: 0, ..shelf }] };
+            landed |= land_reload(source, &page, build);
+        }
+    }
+    if landed {
+        let (mut build, _) = merge_held(&mut srcs, &scope, state.hold);
+        state.srcs = srcs;
+        preserve_heroes(state, &mut build);
+        commit(state, build);
+    } else {
+        state.srcs = srcs;
+    }
+    landed
 }
 
 /// Test hook: the answer a server would give every held row that waits for the cards it showed

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::registry::{
-    unlive_excess, EvictOrder, LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
+    unlive_excess, Compaction, EvictOrder, LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
 };
 use plx_machine::machine::GroupId;
 
@@ -139,12 +139,11 @@ impl KeyRegistry {
             EvictOrder::Elem,
         );
         if drop.is_empty() { return false; }
-        Arc::make_mut(&mut self.keys).retain(|key| !drop.contains(&key.elem));
-        self.identity_index.clear();
-        self.elem_index.clear();
-        for (at, key) in self.keys.iter().enumerate() {
-            self.identity_index.entry(key.identity.clone()).or_insert(at);
-            self.elem_index.entry(key.elem).or_insert(at);
+        let gone = self.keys.iter().enumerate().filter(|(_, key)| drop.contains(&key.elem)).map(|(at, _)| at).collect();
+        // compact in place; the indexes follow the positions that moved and no identity is cloned
+        if let Some(moved) = Compaction::remove(Arc::make_mut(&mut self.keys), gone) {
+            self.identity_index.retain(|_, at| moved.follow_in_place(at));
+            self.elem_index.retain(|_, at| moved.follow_in_place(at));
         }
         true
     }

@@ -834,12 +834,30 @@ pub struct FilmographyMemory {
 ///
 /// A provider which publishes no identity receives an explicitly ephemeral identity scoped to
 /// that publication generation. Neither its title nor its position is claimed as stable.
+///
+/// The strings are `Arc<str>`: every card of a row carries its row's identity, and a key table
+/// that clones two strings per card it registers (or per entry it re-indexes) costs the catalog's
+/// size on every landing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HomeHubIdentity {
     ContinueWatching,
-    Identifier { sid: plx_plex::plex::ServerId, id: String, key: String },
-    Key { sid: plx_plex::plex::ServerId, key: String },
+    Identifier { sid: plx_plex::plex::ServerId, id: Arc<str>, key: Arc<str> },
+    Key { sid: plx_plex::plex::ServerId, key: Arc<str> },
     Ephemeral { generation: u32, ordinal: u32 },
+}
+
+impl HomeHubIdentity {
+    /// The identity as the store publishes it, borrowed, to look a published row up by; `None` for an
+    /// ephemeral row, which the store gave no identity.
+    pub fn borrowed(&self) -> Option<plx_data::pms::HubIdentity<'_>> {
+        use plx_data::pms::HubIdentity;
+        match self {
+            Self::ContinueWatching => Some(HubIdentity::ContinueWatching),
+            Self::Identifier { sid, id, key } => Some(HubIdentity::Identifier { sid: *sid, id, key }),
+            Self::Key { sid, key } => Some(HubIdentity::Key { sid: *sid, key }),
+            Self::Ephemeral { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -850,7 +868,7 @@ pub struct HomeGroupKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HomeItemIdentity {
-    Item { hub: HomeHubIdentity, sid: plx_plex::plex::ServerId, rk: String },
+    Item { hub: HomeHubIdentity, sid: plx_plex::plex::ServerId, rk: Arc<str> },
     Slot { hub: HomeHubIdentity, generation: u32, ordinal: u32 },
 }
 
@@ -2651,5 +2669,47 @@ mod arg_tests {
         assert!(!a.same_instance(&AppArg::Content(ContentArg::Detail {
             sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(),
         })));
+    }
+}
+
+/// What removing entries from a table did to the positions that index it, so an index of
+/// `identity -> position` follows the table in place instead of being rebuilt from it (a rebuild
+/// clones and hashes every identity in the table for the sake of the few that went). The table
+/// keeps its order: `HomeMemory` and `LibraryMemory` are canon in table order.
+pub(crate) struct Compaction {
+    /// The positions removed, ascending.
+    removed: Vec<usize>,
+}
+
+impl Compaction {
+    /// Remove the entries at `positions` (any order, repeats allowed) from `table`; `None` when
+    /// there was nothing to remove.
+    pub(crate) fn remove<T>(table: &mut Vec<T>, mut positions: Vec<usize>) -> Option<Self> {
+        positions.sort_unstable();
+        positions.dedup();
+        if positions.is_empty() { return None; }
+        let mut next = 0;
+        let mut at = 0;
+        table.retain(|_| {
+            let drop = positions.get(next) == Some(&at);
+            next += usize::from(drop);
+            at += 1;
+            !drop
+        });
+        Some(Self { removed: positions })
+    }
+
+    /// Where the entry that stood at `at` stands now; `None` if it was removed.
+    pub(crate) fn follow(&self, at: usize) -> Option<usize> {
+        match self.removed.binary_search(&at) {
+            Ok(_) => None,
+            Err(before) => Some(at - before),
+        }
+    }
+
+    /// [`follow`](Self::follow) in place, for `HashMap::retain` and `Vec::retain_mut`: false when
+    /// the entry is gone.
+    pub(crate) fn follow_in_place(&self, at: &mut usize) -> bool {
+        self.follow(*at).map(|now| *at = now).is_some()
     }
 }

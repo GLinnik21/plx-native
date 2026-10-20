@@ -64,7 +64,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 }
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    key_cap, tile_facts, unlive_excess, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -160,6 +160,13 @@ struct HubProjection {
     /// lists, classified once per publication. Every other row is unlinked and keeps its plain
     /// heading.
     link: Option<plx_plex::plex::collections::CollectionRef>,
+    /// The row's title, which the link above was classified from.
+    title: String,
+    /// The cards the projection was made from (an `Arc` clone each, none for a descriptor): the row
+    /// is the same row, and needs no projecting again, while the next publication holds the very
+    /// same cards (`Arc::ptr_eq`) in the same order. A pointer, not a rating key: a card the
+    /// server answered again is a new card even when it reads alike.
+    cards: Vec<Arc<PmsMovie>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -504,11 +511,15 @@ enum ItemRef<'a> {
 /// One hub's entries in the key table: positions in `HomeScreen::items`.
 #[derive(Default)]
 struct HubKeys {
-    by_rk: HashMap<String, Vec<(plx_plex::plex::ServerId, usize)>>,
+    by_rk: HashMap<Arc<str>, Vec<(plx_plex::plex::ServerId, usize)>>,
     slots: HashMap<(u32, u32), usize>,
 }
 
 impl HubKeys {
+    fn is_empty(&self) -> bool {
+        self.by_rk.is_empty() && self.slots.is_empty()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.by_rk.values().map(Vec::len).sum::<usize>() + self.slots.len()
@@ -710,12 +721,12 @@ impl HomeScreen {
             Some(HubIdentity::ContinueWatching) => HomeHubIdentity::ContinueWatching,
             Some(HubIdentity::Identifier { sid, id, key }) => HomeHubIdentity::Identifier {
                 sid,
-                id: id.to_owned(),
-                key: key.to_owned(),
+                id: id.into(),
+                key: key.into(),
             },
             Some(HubIdentity::Key { sid, key }) => HomeHubIdentity::Key {
                 sid,
-                key: key.to_owned(),
+                key: key.into(),
             },
             None => HomeHubIdentity::Ephemeral {
                 generation: view.generation,
@@ -821,7 +832,7 @@ impl HomeScreen {
             .expect("Home element-key space exhausted");
         assert!(elem < HEADING_BASE, "Home elements overlap the linked headings");
         let identity = match item {
-            ItemRef::Item { sid, rk } => HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.to_owned() },
+            ItemRef::Item { sid, rk } => HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.into() },
             ItemRef::Slot { generation, ordinal } => HomeItemIdentity::Slot { hub: hub.clone(), generation, ordinal },
         };
         self.push_item(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
@@ -852,6 +863,13 @@ impl HomeScreen {
         self.items[index].elem
     }
 
+    /// Project the published catalog onto the page's rows, keys and shelves. **The cost follows the
+    /// change, not the catalog**: the ring moves a row on or off its cards on every press of a long
+    /// page, and a row whose identity, title and cards (or descriptor size) are the ones it was
+    /// projected from keeps its projection, its shelf and its entries in `elem_at` untouched, so a
+    /// landing that changes two of 170 rows registers and maps two rows. A row inserted or removed
+    /// above the rest moves them, and then every row from there on is projected again (`last_row`
+    /// is where a card's key remembers it sat).
     fn sync_catalog<H: HomeLike>(&mut self, cx: &Cx<'_, H>) {
         let view = H::hubs(cx);
         if self.projected_generation == Some(view.generation) {
@@ -859,23 +877,55 @@ impl HomeScreen {
         }
         let mut rows = Vec::with_capacity(view.hub_count());
         let old_rows = std::mem::take(&mut self.rows);
-        let old_at: HashMap<&HomeHubIdentity, usize> = old_rows.iter().enumerate().map(|(at, row)| (&row.identity, at)).collect();
+        let old_len = old_rows.len();
+        let mut taken: Vec<Option<HubProjection>> = old_rows.into_iter().map(Some).collect();
+        // Where a row was, by identity: at the same position first (the ring changes a row's
+        // cards, not its place), and by a map of the rows not yet claimed, built the first time
+        // that misses.
+        let mut by_identity: Option<HashMap<HomeHubIdentity, usize>> = None;
+        // Per new row: the old row it is (kept or projected again), and whether it was kept whole.
+        let mut matched: Vec<Option<usize>> = Vec::with_capacity(view.hub_count());
+        let mut reprojected: Vec<usize> = Vec::new();
         for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
-            let identity = Self::hub_identity(view, row, hub);
-            let group = self.group_for(&identity);
+            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
+            let same_place = hub.identity.is_some()
+                && taken.get(row).and_then(Option::as_ref).is_some_and(|old| old.identity.borrowed() == hub.identity);
             // A descriptor that is still a descriptor of the same size keeps the slots it has: its
             // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
-            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
-            let reused = placeholders.then(|| old_at.get(&identity).map(|&at| &old_rows[at]))
+            // A row of cards keeps them while they are the same cards.
+            if same_place && taken[row].as_ref().is_some_and(|old|
+                old.placeholders == placeholders && old.title == hub.title
+                    && if placeholders {
+                        old.elems.len() == hub.items.len()
+                    } else {
+                        old.cards.len() == hub.items.len().min(MAX_ITEMS)
+                            && old.cards.iter().zip(hub.items).all(|(a, b)| Arc::ptr_eq(a, b))
+                    }) {
+                rows.push(taken[row].take().expect("checked above"));
+                matched.push(Some(row));
+                continue;
+            }
+            let identity = Self::hub_identity(view, row, hub);
+            let old_index = if same_place {
+                Some(row)
+            } else if hub.identity.is_some() {
+                by_identity.get_or_insert_with(|| taken.iter().enumerate()
+                    .filter_map(|(at, old)| Some((old.as_ref()?.identity.clone(), at))).collect())
+                    .get(&identity).copied().filter(|&at| taken[at].is_some())
+            } else {
+                None
+            };
+            let group = self.group_for(&identity);
+            if identity == HomeHubIdentity::ContinueWatching && !placeholders {
+                let old = old_index.and_then(|at| taken[at].as_ref());
+                self.rebind_shows(&identity, hub.items, hub.offset, old);
+            }
+            let reused = placeholders.then(|| old_index.and_then(|at| taken[at].as_ref()))
                 .flatten().filter(|old| old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
             let elems = match reused {
                 Some(elems) => elems,
                 None => {
-                    if identity == HomeHubIdentity::ContinueWatching && !placeholders {
-                        let old = old_at.get(&identity).map(|&at| &old_rows[at]);
-                        self.rebind_shows(&identity, hub.items, hub.offset, old);
-                    }
                     let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
                     for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
                         let item_ref = if item.rk.is_empty() {
@@ -897,38 +947,80 @@ impl HomeScreen {
                         sid, id, key, hub.title, hub.items.first().map_or(0, |item| item.sec)),
                 _ => None,
             };
+            reprojected.push(row);
+            matched.push(old_index);
             rows.push(HubProjection {
                 identity,
                 group,
                 elems,
                 placeholders,
                 link,
+                title: hub.title.to_owned(),
+                cards: if placeholders { Vec::new() } else { hub.items.iter().take(MAX_ITEMS).cloned().collect() },
             });
         }
-        let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
-        self.grid.shelves = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let kept = old_at.get(&row.identity).and_then(|&old| old_shelves.get_mut(old)?.take());
-            let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
-                .animate_landings(row.identity == HomeHubIdentity::ContinueWatching));
-            if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == row.group.0) {
-                shelf.restore_scroll(scroll, row.elems.len());
+        // The old rows that were not kept whole, by position, for the element map.
+        let left: Vec<(usize, HubProjection)> = taken.into_iter().enumerate()
+            .filter_map(|(at, old)| Some((at, old?))).collect();
+        // Every row is the old row at its own position: nothing moved, so the shelves stand and
+        // the element map is patched for the rows projected again.
+        let same_rows = old_len == rows.len() && matched.iter().enumerate().all(|(row, from)| *from == Some(row));
+        if !same_rows {
+            let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
+            self.grid.shelves = Vec::with_capacity(rows.len());
+            for (row, projection) in rows.iter().enumerate() {
+                // a shelf stays with its identity, wherever the row went
+                let kept = matched[row].and_then(|old| old_shelves.get_mut(old)?.take());
+                let shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
+                    .animate_landings(projection.identity == HomeHubIdentity::ContinueWatching));
+                self.grid.shelves.push(shelf);
             }
-            self.grid.shelves.push(shelf);
+        }
+        if !self.restored_scroll.is_empty() {
+            for (row, projection) in rows.iter().enumerate() {
+                if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == projection.group.0) {
+                    self.grid.shelves[row].restore_scroll(scroll, projection.elems.len());
+                }
+            }
         }
         debug_assert_eq!(self.grid.shelves.len(), rows.len());
         // A fresh shelf rests at `base_y = 0`, and this runs on events (`Mount`, `StoreChanged`,
         // `Uncover`) as well as on the `Tick` whose `update_grid` lays the grid out. A frame drawn
         // between the two showed the new rows at the top of the screen, over the billboard.
         self.layout_grid();
-        let was = std::mem::take(&mut self.elem_at);
-        for (row, hub) in rows.iter().enumerate() {
-            for (col, &elem) in hub.elems.iter().enumerate() {
-                // First row wins, as the scan this replaces did.
-                #[cfg(test)]
-                { self.cost.elem_at_writes += 1; }
-                self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+        let mut removed: HashSet<u32> = HashSet::new();
+        if same_rows {
+            // the changed rows only: forget what each held, map what it holds now
+            for &row in &reprojected {
+                if let Ok(found) = left.binary_search_by_key(&row, |(at, _)| *at) {
+                    let old = &left[found].1;
+                    for &elem in &old.elems {
+                        if self.elem_at.get(&elem).is_some_and(|&(r, _)| r as usize == row) {
+                            self.elem_at.remove(&elem);
+                            removed.insert(elem);
+                        }
+                    }
+                }
             }
+            for &row in &reprojected {
+                for (col, &elem) in rows[row].elems.iter().enumerate() {
+                    // First row wins, as the scan this replaces did.
+                    #[cfg(test)]
+                    { self.cost.elem_at_writes += 1; }
+                    self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+                }
+            }
+            removed.retain(|elem| !self.elem_at.contains_key(elem));
+        } else {
+            let was = std::mem::take(&mut self.elem_at);
+            for (row, hub) in rows.iter().enumerate() {
+                for (col, &elem) in hub.elems.iter().enumerate() {
+                    #[cfg(test)]
+                    { self.cost.elem_at_writes += 1; }
+                    self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+                }
+            }
+            removed.extend(was.keys().filter(|elem| !self.elem_at.contains_key(elem)));
         }
         self.rows = rows;
         self.restored_scroll.retain(|(group, _)| {
@@ -937,7 +1029,7 @@ impl HomeScreen {
         });
         self.projected_generation = Some(view.generation);
         self.stash_removed_continue_watching(view);
-        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
+        self.prune_keys(&removed, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
     }
 
@@ -991,7 +1083,7 @@ impl HomeScreen {
         let keys = Arc::make_mut(&mut self.items);
         for (elem, sid, rk) in inherited {
             if let Some(key) = keys.iter_mut().find(|key| key.elem == elem) {
-                key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk };
+                key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.into() };
                 self.rebound.insert(elem);
             }
         }
@@ -1035,7 +1127,7 @@ impl HomeScreen {
             let Some(show) = show_of(item) else { continue };
             if item.rk.is_empty() { continue }
             let named = |key: &HomeItemKey| matches!(&key.identity,
-                HomeItemIdentity::Item { hub, sid, rk } if *hub == HomeHubIdentity::ContinueWatching && *sid == item.sid && *rk == item.rk);
+                HomeItemIdentity::Item { hub, sid, rk } if *hub == HomeHubIdentity::ContinueWatching && *sid == item.sid && **rk == *item.rk);
             if memory.items.iter().any(named) { continue }
             let Some(at) = gone.iter().position(|(_, sid, _, s)| *sid == item.sid && s == show) else { continue };
             let (elem, ..) = *gone.remove(at);
@@ -1078,14 +1170,15 @@ impl HomeScreen {
     /// Each row's remembered card (`remembered`, the engine's cursor per group) is kept whether or
     /// not the row holds cards now: a row the ring released is a row of placeholders, and the card
     /// the user left in it must still be the card they return to. One key per row.
-    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>,
+    fn prune_keys(&mut self, removed: &HashSet<u32>, generation: u32, focus: Option<u32>,
         remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
         let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
-        let shown = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        // shown now, or a sync ago (`removed` is what left the page this sync), or the focus
+        let shown = |elem: u32| now.contains_key(&elem) || removed.contains(&elem) || Some(elem) == focus;
         let live = |elem: u32| shown(elem) || pinned.contains(&elem);
-        let mut drop: HashSet<u32> = self.items.iter()
-            .filter(|key| {
+        let mut drop: Vec<usize> = self.items.iter().enumerate()
+            .filter(|(_, key)| {
                 let volatile = match &key.identity {
                     HomeItemIdentity::Slot { .. } => true,
                     HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
@@ -1093,28 +1186,40 @@ impl HomeScreen {
                 // a placeholder's key is a pure function of its publication: never worth keeping
                 volatile && !shown(key.elem)
             })
-            .map(|key| key.elem)
+            .map(|(at, _)| at)
             .collect();
         let cap = key_cap(now.len());
         let kept = self.items.len() - drop.len();
         if kept > cap {
+            let dropped: HashSet<u32> = drop.iter().map(|&at| self.items[at].elem).collect();
             let held = unlive_excess(
                 self.items.iter().map(|key| key.elem),
-                |elem| live(elem) || drop.contains(&elem),
+                |elem| live(elem) || dropped.contains(&elem),
                 kept - cap,
                 EvictOrder::Elem,
             );
-            drop.extend(held);
+            drop.extend(self.items.iter().enumerate().filter(|(_, key)| held.contains(&key.elem)).map(|(at, _)| at));
         }
-        let groups_before = self.groups.len();
-        self.groups.retain(|key| !matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation));
-        if drop.is_empty() && self.groups.len() == groups_before {
-            return;
+        let stale: Vec<usize> = self.groups.iter().enumerate()
+            .filter(|(_, key)| matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation))
+            .map(|(at, _)| at).collect();
+        // The tables compact in place and the indexes follow the positions they moved: no identity
+        // is cloned or hashed again for the entries that stay.
+        // (a table shared with the memory is detached only when something goes)
+        let moved = if drop.is_empty() { None } else { Compaction::remove(Arc::make_mut(&mut self.items), drop) };
+        if let Some(moved) = moved {
+            self.item_index.retain(|_, keys| {
+                keys.by_rk.retain(|_, held| {
+                    held.retain_mut(|(_, at)| moved.follow_in_place(at));
+                    !held.is_empty()
+                });
+                keys.slots.retain(|_, at| moved.follow_in_place(at));
+                !keys.is_empty()
+            });
         }
-        if !drop.is_empty() {
-            Arc::make_mut(&mut self.items).retain(|key| !drop.contains(&key.elem));
+        if let Some(moved) = Compaction::remove(&mut self.groups, stale) {
+            self.group_index.retain(|_, at| moved.follow_in_place(at));
         }
-        self.rebuild_indexes();
     }
 
     fn identity_of(item: &PmsMovie) -> Option<(plx_plex::plex::ServerId, String)> {

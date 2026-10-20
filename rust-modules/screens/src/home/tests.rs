@@ -1421,6 +1421,8 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         elems: vec![second_elem],
         placeholders: false,
         link: None,
+        title: String::new(),
+        cards: Vec::new(),
     });
     s.elem_at.insert(second_elem, (1, 0));
     s.snap.jump(1.0);
@@ -3304,20 +3306,24 @@ fn key_index_agrees_with_a_scan_of_the_table() {
     }
 }
 
-/// What ONE sync costs when the ring moves a row on: the row entering gets its cards and the row
-/// leaving gives them up (`rows` rows, `items` cards each). Taken on the third step, after the keys
-/// the first two minted have settled, so the placeholder keys of the row that entered a step ago
-/// are the ones due to leave the table.
+/// What the two syncs of ONE press cost when the ring moves a row on: the row entering gets its cards and the row
+/// leaving gives them up (`rows` rows, `items` cards each). Taken on the second press, so the
+/// placeholder keys of the row that entered on the first are the ones due to leave the table.
 fn ring_step_cost(rows: usize, items: usize) -> SyncCost {
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, 5));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
     let mut last = SyncCost::default();
-    for step in 0..3usize {
-        plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (step, step + 5));
-        let snapshot = plx_data::pms::hubs_snapshot(&state);
+    for step in 1..3usize {
         let before = s.cost;
-        s.sync_catalog(&cx(snapshot.view(), None));
+        // The press moves the band: the row that left gives its cards up (one publication) and the
+        // read of the row that entered lands (another), each a StoreChanged for the page.
+        assert!(plx_data::pms::hold_for_test(&mut state, step, step + 5));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+        assert!(plx_data::pms::land_ring_rows_for_test(&mut state, items, &|_| 0), "step {step} of {rows} rows");
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
         last = SyncCost {
             index_inserts: s.cost.index_inserts - before.index_inserts,
             index_rebuilds: s.cost.index_rebuilds - before.index_rebuilds,
