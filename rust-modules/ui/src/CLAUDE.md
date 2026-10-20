@@ -697,7 +697,8 @@ never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for
 a move hands the title over from the departing row to the arriving one with no line over what is under
 it AS DRAWN: a grid measures to the drawn top of the tile below (its live pop and press), and the owner
 of stacked shelves hands each one the lift of the next shelf's heading (`SectionFrame::below_rise`;
-`Stack`, Home, Recommended and Detail do); `GridBands::closing` names the card a closing band's caption belongs to.
+`Stack`, Home, Recommended and Detail do; a `Stack` page keeps its shelves adjacent, the air under one its
+`StackPage::shelf_foot`, never a `Custom` gap section between two); `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and

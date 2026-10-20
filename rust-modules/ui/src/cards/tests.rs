@@ -2594,7 +2594,7 @@ mod stack {
         }
         fn reveal_with(&self, k: Msec) -> Option<Msec> { matches!(k, Msec::List | Msec::Clear).then_some(Msec::Field) }
         fn reveal_margin(&self, k: Msec) -> f32 { if k == Msec::Shelf { SHELF_MARGIN } else { crate::consts::MARGIN_Y } }
-        fn shelf_foot(&self, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
+        fn shelf_foot(&self, _cx: &Cx9<'_>, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
     }
 
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
@@ -2752,6 +2752,43 @@ mod stack {
         assert_eq!(bare_target, reveal(0.0), "the reveal of the bare block");
         assert_eq!(footed_target, reveal(22.0), "the reveal of the block with its foot");
         assert!(max(0.0) > 0.0 && reveal(22.0) <= max(22.0), "setup: the page scrolls");
+    }
+
+    /// **A caption line stops short of the heading DRAWN under it, past a shelf with nothing to
+    /// draw.** A shelf, an empty shelf and a third whose heading rises with its focused card: the
+    /// empty one takes no room, so what stands under the first shelf's caption is the third's heading
+    /// (`SectionFrame::below_rise`), and no line of the first ends below that heading's drawn top
+    /// through a Down onto the third and an Up back.
+    #[test]
+    fn a_caption_keeps_clear_of_the_next_shelf_that_draws_past_an_empty_one() {
+        let mut r = mrig(0, 6, |s| s);
+        r.page.shelf.captioned = true;
+        // the label band's air under the first shelf, as a page that stacks its shelves keeps it
+        r.page.foot = crate::consts::UNDER_LABEL_AIR;
+        r.page.more = vec![Cards::new(Vec::new(), false), Cards::new((200..206).collect(), false)];
+        r.page.revision += 1;
+        r.go(100, By::Restore);
+        r.run(60);
+        let (mut worst, mut lines) = (f32::MIN, 0);
+        for frame in 0..130 {
+            match frame {
+                0 => r.go(200, By::Dir),
+                60 => r.go(100, By::Dir),
+                _ => {}
+            }
+            r.run(1);
+            let cx = r.cx();
+            let f = DrawFrame::new(&cx, Painter::root());
+            let (first, third) = (Msec::Shelf, Msec::More(1));
+            let above = r.stack.shelf_frame(&r.page, &cx, first).expect("the first shelf");
+            let heading = r.stack.shelf_frame(&r.page, &cx, third).expect("the third shelf").y - 60.0
+                - r.stack.shelf(third).expect("the third shelf").heading_lift();
+            let drawn = r.stack.shelf(first).expect("the first shelf").caption_lines_probe(&f, &r.page.shelf, above);
+            lines += drawn.len();
+            worst = drawn.iter().fold(worst, |worst, &(_, _, bottom, _)| worst.max(bottom - heading));
+        }
+        assert!(lines > 0, "the walk saw no caption line");
+        assert!(worst <= 0.0, "a caption line of the first shelf ends {worst:.1} px below the drawn top of the third shelf's heading");
     }
 
     /// The settled scroll that shows shelf `k` of [`walk_rig`] (0 = `Shelf`, then `More(k - 1)`)
@@ -4146,11 +4183,29 @@ struct RowFrame {
 }
 
 /// The block a source puts under a card for `policy`: the lines the policy shows, and no others
-/// (the title, the details line, or both).
-fn shape_captions(src: &mut Cards, policy: crate::caption_policy::CaptionPolicy) {
+/// (the title, the details line, or both); `None` is a section that follows no policy, whose cards
+/// carry both lines.
+fn shape_captions(src: &mut Cards, policy: Option<crate::caption_policy::CaptionPolicy>) {
     src.captioned = true;
-    src.title_only = policy.details == crate::caption_policy::DetailsKind::None;
-    src.details_only = !policy.title;
+    if let Some(policy) = policy {
+        src.title_only = policy.details == crate::caption_policy::DetailsKind::None;
+        src.details_only = !policy.title;
+    }
+}
+
+const BOTH_LINES: crate::caption_policy::CaptionPolicy =
+    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::YearLength };
+const TITLE_ONLY: crate::caption_policy::CaptionPolicy =
+    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::None };
+
+/// A grid of `rows` rows of captioned cards under `policy`, focus seated on card 0 with its band open.
+fn captioned_grid(rows: usize, policy: Option<crate::caption_policy::CaptionPolicy>) -> Rig<Grid> {
+    let mut r = Rig::<Grid>::new(rows * poster_grid::COLS);
+    shape_captions(&mut r.src, policy);
+    r.sect.set_caption_policy(policy);
+    r.land_focus(100, By::Restore);
+    r.run(40);
+    r
 }
 
 /// A six-column grid under the two-line Under posters policy (a 112 px band) with focus seated on
@@ -4160,14 +4215,7 @@ fn shape_captions(src: &mut Cards, policy: crate::caption_policy::CaptionPolicy)
 /// frame `n` drew.
 fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFrame>> {
     let cols = poster_grid::COLS;
-    let mut r = Rig::<Grid>::new(rows * cols);
-    r.src.captioned = true;
-    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
-        title: true,
-        details: crate::caption_policy::DetailsKind::YearLength,
-    }));
-    r.land_focus(100, By::Restore);
-    r.run(40);
+    let mut r = captioned_grid(rows, Some(BOTH_LINES));
     let mut trace = vec![Vec::new(); rows];
     let mut sample = |r: &Rig<Grid>| {
         let cx = r.cx();
@@ -4196,34 +4244,24 @@ fn caption_trace(rows: usize, downs: &[usize], frames: usize) -> Vec<Vec<RowFram
 }
 
 /// **A caption line is never drawn where the tile below it is DRAWN.** Frame by frame through a
-/// Down, a Down and an Up on a grid, no caption line with ink (alpha > 0) reaches the top of the
-/// tile directly below it AS IT IS DRAWN (`Grid::place(.., At::Drawn)`: its live pop and press
-/// folded in), not the arriving caption while the band opens (the next row is still rising to its
-/// place under it), not the departing one while the band closes (the rising row slides up under
+/// Down, a Down and an Up on a grid under `policy`, no caption line with ink (alpha > 0) reaches the
+/// top of the tile directly below it AS IT IS DRAWN (`Grid::place(.., At::Drawn)`: its live pop and
+/// press folded in): not the arriving caption while the band opens (the next row is still rising to
+/// its place under it), not the departing one while the band closes (the rising row slides up under
 /// it), and not either while the tile below is popped: on a Down the tile under the departing
 /// caption is the newly focused card growing to its pop, up to 17 px above its cell, and on an Up
 /// the tile under the arriving caption is the released card still letting go; tiles are drawn over
-/// captions. The old fade was the band's own progress, so a line sat at its fixed offset at half
-/// strength with the next row's tiles on top of it (Library, 112 px band: 26 px of the title and
-/// details lines under the row at n=17); the next rule measured to the next row's UNPOPPED cell and
-/// still cut the departing title under the popping tile (2.5 / 7.5 / 11.8 px at frames 9 / 10 / 11).
-/// Returns the worst overlap in px, for the failure message; panics when no line was ever on screen
-/// (a walk that observes nothing proves nothing).
-fn worst_caption_overlap(policy: crate::caption_policy::CaptionPolicy, band: f32, moves: &[(usize, i32)], frames: usize) -> (f32, String) {
+/// captions. Panics with the worst overlap in px, and when no line was ever on screen (a walk that
+/// observes nothing proves nothing).
+fn assert_captions_clear_of_the_tile_below(policy: crate::caption_policy::CaptionPolicy) {
     let cols = poster_grid::COLS;
     let rows = 6;
-    let mut r = Rig::<Grid>::new(rows * cols);
-    shape_captions(&mut r.src, policy);
-    assert_eq!(crate::caption_policy::band_h(&policy), band);
-    r.sect.set_caption_policy(Some(policy));
-    r.land_focus(100, By::Restore);
-    r.run(40);
+    let mut r = captioned_grid(rows, Some(policy));
     let mut at = 0i32;
     let mut worst = (f32::MIN, String::new());
-    let mut seen = (f32::MIN, String::new());
     let mut observed = 0;
-    for frame in 0..frames {
-        if let Some(&(_, dir)) = moves.iter().find(|(f, _)| *f == frame) {
+    for frame in 0..100 {
+        if let Some(&(_, dir)) = WALK.iter().find(|(f, _)| *f == frame) {
             at += dir;
             r.land_focus(100 + (at as usize * cols) as u32, By::Dir);
         }
@@ -4235,64 +4273,41 @@ fn worst_caption_overlap(policy: crate::caption_policy::CaptionPolicy, band: f32
             if card + cols >= rows * cols {
                 continue;
             }
-            let below = Section::place(&r.sect, &cx, &r.src, r.src.elems[card + cols], At::Drawn)
-                .expect("the tile below a caption is painted").rect;
+            let below = r.place(r.src.elems[card + cols], At::Drawn).expect("the tile below a caption is painted").rect;
             let over = bottom - below.y;
-            let said = || format!("frame {frame}: the caption line of card {card} (alpha {alpha:.2}) ends {over:.1} px \
-                below the top of the tile under it (drawn at y {:.1})", below.y);
             if over > worst.0 {
-                worst = (over, said());
-            }
-            if alpha >= 0.25 && over > seen.0 {
-                seen = (over, said());
+                worst = (over, format!("frame {frame}: the caption line of card {card} (alpha {alpha:.2}) ends {over:.1} px \
+                    below the top of the tile under it (drawn at y {:.1})", below.y));
             }
         }
     }
-    assert!(observed > 0, "no caption line was ever on screen: the walk observed nothing");
-    worst.1 = format!("{} (worst at alpha >= .25: {})", worst.1, seen.1);
-    worst
+    assert!(observed > 0, "{policy:?}: no caption line was ever on screen: the walk observed nothing");
+    assert!(worst.0 <= 0.0, "{policy:?}: worst overlap {:.1} px: {}", worst.0, worst.1);
 }
 
 const WALK: [(usize, i32); 3] = [(0, 1), (30, 1), (60, -1)];
-const BOTH_LINES: crate::caption_policy::CaptionPolicy =
-    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::YearLength };
-const TITLE_ONLY: crate::caption_policy::CaptionPolicy =
-    crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::None };
 
+/// The 112 px band (title over details), the 80 px band (title alone) and the stored DEFAULT (title
+/// off, details Year · Length: one details line in an 80 px band, which is what almost every install
+/// sees).
 #[test]
-fn no_caption_line_is_drawn_where_the_tile_below_is_at_112() {
-    let (over, at) = worst_caption_overlap(BOTH_LINES, 112.0, &WALK, 100);
-    assert!(over <= 0.0, "worst overlap {over:.1} px: {at}");
+fn no_caption_line_is_drawn_where_the_tile_below_is() {
+    for policy in [BOTH_LINES, TITLE_ONLY, crate::caption_policy::CaptionPolicy::DEFAULT] {
+        assert_captions_clear_of_the_tile_below(policy);
+    }
 }
 
+/// The stored DEFAULT's one details line comes in once and stays in: the room holds its box only
+/// part-way through the move, and its alpha never falls while the card it hangs under is arriving (a
+/// Down, and an Up, where the released card under it is still letting go of its pop).
 #[test]
-fn no_caption_line_is_drawn_where_the_tile_below_is_at_80() {
-    let (over, at) = worst_caption_overlap(TITLE_ONLY, 80.0, &WALK, 100);
-    assert!(over <= 0.0, "worst overlap {over:.1} px: {at}");
-}
-
-/// The stored DEFAULT (title off, details Year · Length): one details line in an 80 px band, which
-/// is what almost every install sees. The room holds its box only part-way through the move, so the
-/// line must come in once and stay in: its alpha never falls while the card it hangs under is
-/// arriving (a Down, and an Up, where the released card under it is still letting go of its pop).
-#[test]
-fn the_default_policy_brings_its_line_in_monotonically_and_clear_of_the_tile_below() {
-    let policy = crate::caption_policy::CaptionPolicy::DEFAULT;
-    let (over, at) = worst_caption_overlap(policy, 80.0, &WALK, 100);
-    assert!(over <= 0.0, "worst overlap {over:.1} px: {at}");
-    let cols = poster_grid::COLS;
-    let mut r = Rig::<Grid>::new(6 * cols);
-    shape_captions(&mut r.src, policy);
-    r.sect.set_caption_policy(Some(policy));
-    r.land_focus(100, By::Restore);
-    r.run(40);
-    // (frame the arrival starts on, the focus it lands on, the card whose line arrives)
-    for (start, to, arriving) in [(0usize, 106u32, 6usize), (90, 100, 0)] {
+fn the_default_policy_brings_its_line_in_monotonically() {
+    let mut r = captioned_grid(6, Some(crate::caption_policy::CaptionPolicy::DEFAULT));
+    // (the focus the move lands on, the card whose line arrives)
+    for (to, arriving) in [(106u32, 6usize), (100, 0)] {
+        r.land_focus(to, By::Dir);
         let mut alphas = Vec::new();
-        for frame in 0..90 {
-            if frame == 0 {
-                r.land_focus(to, By::Dir);
-            }
+        for _ in 0..90 {
             r.run(1);
             let cx = r.cx();
             let f = DrawFrame::new(&cx, Painter::root());
@@ -4300,10 +4315,10 @@ fn the_default_policy_brings_its_line_in_monotonically_and_clear_of_the_tile_bel
                 .filter(|l| l.0 == arriving).map(|l| l.3).fold(0.0, f32::max);
             alphas.push(line);
         }
-        assert!(alphas.iter().any(|&a| a > 0.0), "move at frame {start}: the arriving line never came in: {alphas:?}");
+        assert!(alphas.iter().any(|&a| a > 0.0), "move to {to}: the arriving line never came in: {alphas:?}");
         assert!(alphas.windows(2).all(|w| w[1] >= w[0] - 0.0001),
-            "move at frame {start}: the arriving line dimmed after it came in: {alphas:?}");
-        assert!(*alphas.last().unwrap() > 0.999, "move at frame {start}: it did not settle whole: {alphas:?}");
+            "move to {to}: the arriving line dimmed after it came in: {alphas:?}");
+        assert!(*alphas.last().unwrap() > 0.999, "move to {to}: it did not settle whole: {alphas:?}");
     }
 }
 
@@ -4314,10 +4329,15 @@ struct ShelfWalk {
     under_heading: (f32, String),
     /// the same against the top of the next shelf's focused card as drawn (its pop)
     under_card: (f32, String),
-    /// caption lines (with ink) the shelf above drew over the whole walk
-    lines: usize,
     /// per frame, the alphas of the lines the shelf above drew
     alphas: Vec<Vec<f32>>,
+}
+
+impl ShelfWalk {
+    /// Caption lines (with ink) the shelf above drew over the whole walk.
+    fn lines(&self) -> usize {
+        self.alphas.iter().map(Vec::len).sum()
+    }
 }
 
 /// **Two stacked shelves, the real [`Shelf::draw`] decision, mid-move.** Shelf `A` (cards 100..) sits
@@ -4335,11 +4355,7 @@ fn shelf_walk(policy: Option<crate::caption_policy::CaptionPolicy>, rise: impl F
     b.src = Cards::new((200..206).collect(), false);
     for r in [&mut a, &mut b] {
         r.sect.set_caption_policy(policy);
-        if let Some(policy) = policy {
-            shape_captions(&mut r.src, policy);
-        } else {
-            r.src.captioned = true;
-        }
+        shape_captions(&mut r.src, policy);
     }
     let to = |a: &mut Rig<Shelf>, b: &mut Rig<Shelf>, elem: u32, by: By| {
         a.land_focus(elem, by);
@@ -4348,7 +4364,7 @@ fn shelf_walk(policy: Option<crate::caption_policy::CaptionPolicy>, rise: impl F
     to(&mut a, &mut b, 100, By::Restore);
     a.run(60);
     b.run(60);
-    let mut walk = ShelfWalk { under_heading: (f32::MIN, String::new()), under_card: (f32::MIN, String::new()), lines: 0, alphas: Vec::new() };
+    let mut walk = ShelfWalk { under_heading: (f32::MIN, String::new()), under_card: (f32::MIN, String::new()), alphas: Vec::new() };
     for frame in 0..130 {
         match frame {
             0 => to(&mut a, &mut b, 200, By::Dir),
@@ -4357,7 +4373,7 @@ fn shelf_walk(policy: Option<crate::caption_policy::CaptionPolicy>, rise: impl F
         }
         a.run(1);
         b.run(1);
-        let (y_a, lift) = (300.0, b.sect.heading_lift());
+        let (y_a, lift) = (SHELF_AT.y, b.sect.heading_lift());
         let y_b = y_a + super::ROW_PITCH_FIXED + a.sect.under_band();
         let at_a = SectionFrame { below_rise: rise(&b.sect), ..SectionFrame::new(y_a, Rect::FULL) };
         let at_b = SectionFrame::new(y_b, Rect::FULL);
@@ -4366,7 +4382,6 @@ fn shelf_walk(policy: Option<crate::caption_policy::CaptionPolicy>, rise: impl F
         let card = Shelf::place(&b.sect, &cx_b, &b.src, &200, at_b, At::Drawn).expect("B's first card").rect.y;
         let f = DrawFrame::new(&cx_a, Painter::root());
         let lines = a.sect.caption_lines_probe(&f, &a.src, at_a);
-        walk.lines += lines.len();
         walk.alphas.push(lines.iter().map(|l| l.3).collect());
         for (_, _, bottom, alpha) in lines {
             for (limit, name, worst) in [(heading, "heading", &mut walk.under_heading), (card, "focused card", &mut walk.under_card)] {
@@ -4387,14 +4402,9 @@ fn shelf_walk(policy: Option<crate::caption_policy::CaptionPolicy>, rise: impl F
 /// measured to that drawn heading (`SectionFrame::below_rise`), not to where the heading rests.
 #[test]
 fn a_shelf_caption_line_never_reaches_the_next_shelfs_heading_or_popped_card() {
-    use crate::caption_policy::{CaptionPolicy, DetailsKind};
-    for (name, policy) in [
-        ("112", CaptionPolicy { title: true, details: DetailsKind::YearLength }),
-        ("80, title", CaptionPolicy { title: true, details: DetailsKind::None }),
-        ("80, default", CaptionPolicy::DEFAULT),
-    ] {
+    for (name, policy) in [("112", BOTH_LINES), ("80, title", TITLE_ONLY), ("80, default", crate::caption_policy::CaptionPolicy::DEFAULT)] {
         let walk = shelf_walk(Some(policy), Shelf::heading_lift);
-        assert!(walk.lines > 0, "{name}: the walk saw no caption line");
+        assert!(walk.lines() > 0, "{name}: the walk saw no caption line");
         assert!(walk.under_heading.0 <= 0.0, "{name}: {}", walk.under_heading.1);
         assert!(walk.under_card.0 <= 0.0, "{name}: {}", walk.under_card.1);
     }
@@ -4404,8 +4414,7 @@ fn a_shelf_caption_line_never_reaches_the_next_shelfs_heading_or_popped_card() {
 /// guards: the walk must see a line under the lifted heading, or it measures nothing.
 #[test]
 fn a_shelf_told_nothing_about_the_heading_below_does_reach_it() {
-    let policy = crate::caption_policy::CaptionPolicy { title: true, details: crate::caption_policy::DetailsKind::YearLength };
-    let walk = shelf_walk(Some(policy), |_| 0.0);
+    let walk = shelf_walk(Some(BOTH_LINES), |_| 0.0);
     assert!(walk.under_heading.0 > 0.0, "the heading lift never took any room: {}", walk.under_heading.1);
 }
 
@@ -4434,7 +4443,7 @@ fn a_shelf_with_a_band_of_zero_draws_no_caption_line() {
 #[test]
 fn the_legacy_band_reveals_its_whole_block_and_keeps_clear_of_the_heading() {
     let walk = shelf_walk(None, Shelf::heading_lift);
-    assert!(walk.lines > 0, "the walk saw no caption line");
+    assert!(walk.lines() > 0, "the walk saw no caption line");
     assert!(walk.under_heading.0 <= 0.0, "{}", walk.under_heading.1);
     assert!(walk.under_card.0 <= 0.0, "{}", walk.under_card.1);
     let first_two = walk.alphas.iter().position(|a| a.len() == 2).expect("both lines are on screen at some frame");
@@ -4500,8 +4509,7 @@ fn a_fast_repeat_of_downs_never_cuts_a_caption() {
 /// (a line's alpha is never past its band's progress, and the room under it, less the pop of the
 /// card rising into it, takes it away as that room goes), and the arriving one is drawn only once
 /// the room under it holds the title's box (`card_row::line_reveal_for`): never before the band has
-/// opened that far, never past the band's own progress, and it DOES arrive. The old hand-over was
-/// `out = 1 - in` of the band spring (a title at half strength over the next row's tiles).
+/// opened that far, never past the band's own progress, and it DOES arrive.
 #[test]
 fn a_down_hands_the_caption_over_from_the_key_frame_and_the_arrival_waits_for_its_room() {
     let trace = caption_trace(4, &[0], 30);
@@ -4536,9 +4544,8 @@ fn a_shelf_reserves_and_reveals_the_band_its_caption_policy_asks_for() {
         r.land_focus(101, By::Dir);
         r.run(240);
         // the block the policy puts under a card: its title and/or its details line
-        let (title, details) = policy.map_or((true, true), |p| (p.title, p.details != DetailsKind::None));
-        let whole = TileLabel::from_lines([title.then(|| "t".into()), details.then(|| "d".into())])
-            .revealed(r.sect.band_h(), r.sect.band_expand(), 0.0);
+        shape_captions(&mut r.src, policy);
+        let whole = r.src.label(0).revealed(r.sect.band_h(), r.sect.band_expand(), 0.0);
         (r.sect.under_band(), r.sect.band_h(), whole.lines().iter().flatten().map(|l| l.alpha).fold(1.0, f32::min))
     };
     for (title, details, tall) in [(false, DetailsKind::None, 0.0), (false, DetailsKind::Genre, 80.0),

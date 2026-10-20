@@ -773,7 +773,7 @@ impl Grid {
         if below >= src.len() {
             return 0.0;
         }
-        (self.cell(below, bands).y - self.drawn_rect(cx, src, below, bands).y).max(0.0)
+        self.cell(below, bands).y - self.drawn_rect(cx, src, below, bands).y
     }
 
     /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
@@ -942,12 +942,13 @@ impl Grid {
             // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
             // focus reconciled to takes it up with the landing's first step.
             let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            Some(label.revealed(self.band_h(), open, self.rise_below(f.cx, src, i, bands)))
+            Some((label, open))
         } else {
             self.bands.closing()
                 .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
-                .map(|(_, _, open)| src.label(i).revealed(self.band_h(), open, self.rise_below(f.cx, src, i, bands)))
-        };
+                .map(|(_, _, open)| (src.label(i), open))
+        }
+        .map(|(label, open)| label.revealed(self.band_h(), open, self.rise_below(f.cx, src, i, bands)));
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
         if !card_row::paint_visible(p, rect, s, label.is_some()) {
             return None;

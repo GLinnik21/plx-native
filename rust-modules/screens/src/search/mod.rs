@@ -742,7 +742,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// Recents and the Clear control are part of the head's block: the page rests at its top.
     fn reveal_with(&self, k: Sec) -> Option<Sec> { matches!(k, Sec::Recents | Sec::Clear).then_some(Sec::Head) }
     fn reveal_margin(&self, _k: Sec) -> f32 { layout::CONTENT_TOP }
-    fn shelf_foot(&self, _k: Sec) -> f32 { plx_ui::consts::UNDER_LABEL_AIR }
+    fn shelf_foot(&self, _cx: &Cx<'_, H>, _k: Sec) -> f32 { plx_ui::consts::UNDER_LABEL_AIR }
     fn wide_extent(&self, _k: Sec) -> bool { false }
     /// A shown element that went away is replaced by the one now at its slot (the last of a
     /// shrunken group), else the field.

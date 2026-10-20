@@ -729,7 +729,7 @@ fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
     let pad = theme::CARD_SHADOW_BLUR + theme::CARD_SHADOW_DY + 1.0;
     let mut bounds = rect.inset(-pad);
     if labelled {
-        let label_bottom = rect.y + rect.h * 0.5 + rect.h / scale * 0.5 + UNDER_LABEL_H;
+        let label_bottom = unscaled_bottom(rect, scale) + UNDER_LABEL_H;
         bounds.h = bounds.h.max(label_bottom - bounds.y);
     }
     bounds
@@ -780,6 +780,7 @@ pub fn draw_tile(
 /// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
 /// air under the block a screen *declares*. Before this, five call sites hand-authored that number
 /// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
+#[derive(Default)]
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
@@ -833,23 +834,6 @@ pub struct LineBox {
     pub bottom: f32,
     /// how much of the line is drawn, 0..1.
     pub alpha: f32,
-}
-
-/// **Hand-written, not derived, for one field**: `reveal` defaults to `None` (every line fully on
-/// screen), where a derive could not say "whole" for a block whose band does not animate. The three
-/// text fields keep the derive's answer.
-impl Default for TileLabel {
-    fn default() -> Self {
-        TileLabel {
-            title: None,
-            caption: None,
-            glyph: false,
-            reveal: None,
-            settle_lag: 0.0,
-            shadowed: false,
-            within_tile: false,
-        }
-    }
 }
 
 impl TileLabel {
@@ -1051,10 +1035,11 @@ pub fn draw_label(
     // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
-    if label.lines().iter().flatten().all(|l| l.alpha <= 0.0) {
+    let lines = label.lines();
+    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
-    draw_label_block(p, rect, sty, label, bottom, measure);
+    draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
@@ -1175,7 +1160,7 @@ pub fn under_band_for(band_h: f32, e: f32) -> f32 {
 /// How far past the moment the room holds a line's box the line takes to come in fully, in px of
 /// room: a hand-over over a few px, so a line is neither cut in whole nor drawn over the row under
 /// it while it fades. Not a count of anything: a distance in the band's own units.
-pub const LINE_REVEAL_RAMP: f32 = 8.0;
+const LINE_REVEAL_RAMP: f32 = 8.0;
 
 /// The room under a card's bottom edge at band expansion `e`, to the DRAWN top of what stands below
 /// it: the label band and the air below it (how far down the NEXT row's tiles (a grid) or heading
@@ -1630,6 +1615,7 @@ fn draw_label_block(
     rect: Rect,
     sty: &RowStyle,
     label: &TileLabel,
+    lines: [Option<LineBox>; 2],
     bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
@@ -1682,17 +1668,12 @@ fn draw_label_block(
     // Each line is drawn where its box is and at the alpha that box earns from the band
     // ([`TileLabel::lines`], the one place the block's vertical metrics live); a line the band has
     // not made room for yet is not drawn at all.
-    let [title_line, caption_line] = label.lines();
+    let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
-        if line.alpha > 0.0 {
-            title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
-                block.as_ref(), label.shadowed, label.within_tile);
-        }
+        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
+            block.as_ref(), label.shadowed, label.within_tile);
     }
     if let (Some(s), Some(line)) = (&caption_str, caption_line) {
-        if line.alpha <= 0.0 {
-            return;
-        }
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
         let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
         // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge

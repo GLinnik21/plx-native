@@ -2281,7 +2281,7 @@ impl HomeScreen {
             y: self.grid.base_y(row) + CARD_DY,
             clip: Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM),
             // what stands under this row's caption is the next shelf's heading, as it is drawn
-            below_rise: self.grid.shelves.get(row + 1).map_or(0.0, Shelf::heading_lift),
+            below_rise: self.grid.lift(row + 1),
         }
     }
 

@@ -527,14 +527,6 @@ mod tests {
         let closing = geometry.iter().find(|b| b.row == 0).unwrap().expansion;
         assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
         assert!((opened + closing - 1.0).abs() < 0.0001);
-        // the two captions of a move hand the title over: at no step of the 112 px band is neither
-        // title on screen (the arriving one comes in as the room holds it, the departing one goes
-        // out as the room that held it is gone)
-        let title = |e: f32| card_row::TileLabel::title("t").revealed(112.0, e, 0.0).lines()[0].unwrap().alpha;
-        assert!(
-            title(opened) + title(closing) > 0.0,
-            "a title is on screen through the move: arriving {} departing {}", title(opened), title(closing)
-        );
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
@@ -545,6 +537,11 @@ mod tests {
         bands.focus(None, true);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
         assert!(bands.slots.iter().all(|s| s.row.is_none()));
+    }
+
+    /// The alpha a one-line title is drawn with under a `band` px band at expansion `e`.
+    fn title_alpha(band: f32, e: f32) -> f32 {
+        card_row::TileLabel::title("t").revealed(band, e, 0.0).lines()[0].unwrap().alpha
     }
 
     /// **A focus move always has a title on screen at the 112 px band, and dims once at the 80 px
@@ -558,8 +555,7 @@ mod tests {
     /// the row under it.
     #[test]
     fn a_focus_move_hands_the_title_over_without_a_blank_at_112_and_dips_once_at_80() {
-        let title = |band: f32, e: f32| card_row::TileLabel::title("t").revealed(band, e, 0.0).lines()[0].unwrap().alpha;
-        let shown = |band: f32, e: f32| title(band, e).max(title(band, 1.0 - e));
+        let shown = |band: f32, e: f32| title_alpha(band, e).max(title_alpha(band, 1.0 - e));
         for step in 0..=1000 {
             let e = step as f32 / 1000.0;
             assert!(shown(112.0, e) > 0.0, "112 px band: no title on screen at e {e}");

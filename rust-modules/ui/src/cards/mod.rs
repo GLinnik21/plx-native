@@ -347,7 +347,9 @@ pub struct SectionFrame {
     /// shelf's heading) is DRAWN above where the layout rests it, in px: the next shelf's
     /// `heading_lift()`. A caption line is drawn only where that thing is not
     /// (`card_row::line_reveal_for`). 0 for a shelf with nothing under it, or one whose neighbour
-    /// does not lift.
+    /// does not lift. A [`Stack`] reads it off the next section that takes room, so stacked shelves
+    /// are adjacent sections with the air under each as its [`StackPage::shelf_foot`], not a `Custom`
+    /// gap between two.
     pub below_rise: f32,
 }
 

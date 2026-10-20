@@ -170,7 +170,9 @@ smallest worked example.
   and `cards` (a section's `CardSource`, `None` while it has no content). Optional hooks: `pending`,
   `recover`, `card_has_menu`, `elem_of`, `plain_len`, `plain_elem`, `plain_step`, `focus_rect`,
   `element_rect`, `seat_override`, `reveal_margin`, `shelf_foot`, `wide_extent`, `plain_group`,
-  `reveal_with`, `draw_heading`, `custom_draw`.
+  `reveal_with`, `draw_heading`, `custom_draw`. Stacked shelves are adjacent sections and the air
+  under one is its `shelf_foot` (Search, Person), never a `Custom` gap section between two: a shelf's
+  caption stops short of the next shelf's lifted heading, which `Stack` reads off the section that follows.
 - Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
   through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
   (`focusable_via_view!(Screen, H: [Bounds], view)` for a screen generic over its host).

@@ -1032,12 +1032,7 @@ impl DetailScreen {
     fn band_open(&self, section: i32) -> f32 {
         // Cast is deliberately absent: it prints a name under every headshot, so its band is
         // occupied whether or not it holds focus (`cast::block_h`).
-        let shelf = match section {
-            3 => &self.related,
-            6 => &self.extras,
-            7 => &self.collection,
-            _ => return 0.0,
-        };
+        let Some(shelf) = self.shelf_of(section).filter(|_| section != section::SectionId::Cast.raw()) else { return 0.0 };
         // …by the band the shelf's OWN policy opens to: the Under posters setting's on the two poster
         // shelves (Related, the collection's members: 0 / 40 / 72 px), the legacy block under the
         // landscape Extras row.
@@ -1156,19 +1151,26 @@ impl DetailScreen {
         self.section_top_settled(section, d, measure) + self.band_lift(d, Some(section))
     }
 
+    /// The shelf that fills `section`, when it is one of the four (Related, Cast, Extras, the
+    /// collection).
+    fn shelf_of(&self, section: i32) -> Option<&Shelf> {
+        use section::SectionId as Id;
+        match section {
+            s if s == Id::Related.raw() => Some(&self.related),
+            s if s == Id::Cast.raw() => Some(&self.cast),
+            s if s == Id::Extras.raw() => Some(&self.extras),
+            s if s == Id::Collections.raw() => Some(&self.collection),
+            _ => None,
+        }
+    }
+
     /// How far the heading of the section drawn directly under `section` is lifted now: what a
     /// caption line of a shelf in `section` has to stop short of (`SectionFrame::below_rise`).
     fn below_rise(&self, section: i32, d: &Detail) -> f32 {
         let (sections, n) = self.sections(Some(d));
         let live = &sections[1..n];
         let next = live.iter().position(|&s| s == section).and_then(|at| live.get(at + 1));
-        match next {
-            Some(&s) if s == section::SectionId::Related.raw() => self.related.heading_lift(),
-            Some(&s) if s == section::SectionId::Cast.raw() => self.cast.heading_lift(),
-            Some(&s) if s == section::SectionId::Extras.raw() => self.extras.heading_lift(),
-            Some(&s) if s == section::SectionId::Collections.raw() => self.collection.heading_lift(),
-            _ => 0.0,
-        }
+        next.and_then(|&s| self.shelf_of(s)).map_or(0.0, Shelf::heading_lift)
     }
 
     /// Where the tiles of the shelf in `section` sit for the component: `y` their top, and what is

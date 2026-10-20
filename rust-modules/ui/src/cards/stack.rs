@@ -209,7 +209,11 @@ pub trait StackPage<H: Host> {
     }
     /// Air the page keeps under a shelf's block, counted in the block's height (the scroll reveals
     /// it with the block): a page whose shelves are stacked with the label band's air under each.
-    fn shelf_foot(&self, _k: Self::Key) -> f32 {
+    /// Shelves are adjacent sections, never a `Custom` gap between two of them: the shelf above
+    /// reads the heading of the one below as the thing under its caption
+    /// ([`SectionFrame::below_rise`]), and a gap section hides it. A page that keeps the last
+    /// shelf bare says so from `cx`, the content its sections read.
+    fn shelf_foot(&self, _cx: &Cx<'_, H>, _k: Self::Key) -> f32 {
         0.0
     }
     /// Whether a shelf's group extent spans the page's width (the default) or is the shelf's own
@@ -568,7 +572,7 @@ impl<K: Copy + Eq> Stack<K> {
     fn height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         match (&self.specs[i].kind, &self.bodies[i]) {
             (Kind::Shelf { style, heading }, Body::Shelf(s)) => {
-                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() + p.shelf_foot(self.specs[i].key) }
+                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() + p.shelf_foot(cx, self.specs[i].key) }
             }
             (Kind::Grid { .. }, Body::Grid(g)) => g.height(self.len_of(p, cx, i)),
             (Kind::Custom { height, .. }, _) => *height,
@@ -658,10 +662,11 @@ impl<K: Copy + Eq> Stack<K> {
 
     fn frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> SectionFrame {
         let heading = if let Kind::Shelf { heading, .. } = self.specs[i].kind { heading } else { 0.0 };
-        // what stands under a shelf's caption is the next section's heading when that is a shelf,
-        // drawn lifted by that shelf's own lift (`draw_heading`'s `lift`)
-        let below_rise = match (self.specs.get(i + 1).map(|next| &next.kind), self.bodies.get(i + 1)) {
-            (Some(Kind::Shelf { .. }), Some(Body::Shelf(next))) if self.len_of(p, cx, i + 1) > 0 => next.heading_lift(),
+        // what stands under a shelf's caption is the heading of the next section that takes room
+        // (an empty shelf takes none) when that is a shelf, drawn lifted by that shelf's own lift
+        // (`draw_heading`'s `lift`)
+        let below_rise = match (i + 1..self.specs.len()).find(|&j| self.height(p, cx, j) > 0.0).map(|j| &self.bodies[j]) {
+            Some(Body::Shelf(next)) => next.heading_lift(),
             _ => 0.0,
         };
         SectionFrame { below_rise, ..SectionFrame::new(self.top(p, cx, i) - self.scroll.pos + heading, self.clip) }
@@ -789,7 +794,7 @@ impl<K: Copy + Eq> Stack<K> {
                 // the band the shelf's OWN policy opens to, so a Nothing / one-line / two-line setting
                 // is the destination the scroll target is computed against
                 Body::Shelf(s) => {
-                    heading + style.h + card_row::under_band_for(s.band_h(), (n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
+                    heading + style.h + card_row::under_band_for(s.band_h(), (n == focus) as i32 as f32) + p.shelf_foot(cx, self.specs[n].key)
                 }
                 _ => self.height(p, cx, n),
             },

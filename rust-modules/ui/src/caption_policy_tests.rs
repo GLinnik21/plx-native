@@ -135,7 +135,12 @@ fn the_caption_waits_for_its_room_at_both_band_sizes() {
         let mut last = [0.0f32; 2];
         for step in 0..=200 {
             let e = step as f32 / 200.0;
-            for (k, line) in lines(e).iter().enumerate() {
+            let drawn = lines(e);
+            // the title (the first line) is on screen before the details line under it, never after
+            if let [Some(title), Some(details)] = drawn {
+                assert!(title.alpha >= details.alpha, "band {band}: the details line leads the title at {step}/200");
+            }
+            for (k, line) in drawn.iter().enumerate() {
                 let Some(line) = line else { continue };
                 assert!(line.alpha == 0.0 || card_row::room_for(band, e, 0.0) >= line.bottom,
                     "band {band}, e {e}: line {k} is drawn (alpha {}) with {} px of room under a {} px box",
@@ -144,12 +149,6 @@ fn the_caption_waits_for_its_room_at_both_band_sizes() {
                 last[k] = line.alpha;
             }
         }
-    }
-    // the title (the first line) is on screen before the details line under it, never after
-    let both = |e: f32| card_row::TileLabel::from_lines([Some("t".into()), Some("d".into())]).revealed(112.0, e, 0.0).lines();
-    for step in 0..=200 {
-        let [t, d] = both(step as f32 / 200.0);
-        assert!(t.unwrap().alpha >= d.unwrap().alpha, "the details line leads the title at {step}/200");
     }
 }
 
