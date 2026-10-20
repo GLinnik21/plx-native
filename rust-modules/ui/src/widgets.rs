@@ -5795,6 +5795,11 @@ impl TabStrip {
             foc: Capsule::new(),
         }
     }
+    /// Whether either capsule is still travelling, resizing or fading: the strip's own statement of
+    /// motion, for an owner that waits for the strip to arrive (the Detail season pill's hold hint).
+    pub fn moving(&self) -> bool {
+        [&self.sel, &self.foc].iter().any(|c| [&c.x, &c.w, &c.a].iter().any(|s| s.vel.abs() > 0.01))
+    }
     /// Step both capsules. `span(i)` resolves pill `i`'s content-space `(x, w)` and MUST be the same
     /// function the caller lays its pills out with — that is what keeps a capsule from ever landing
     /// off a pill. A negative or out-of-range index resolves to `None` (nothing to mark).

@@ -630,12 +630,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
-  overlay (it stands after 1.5 s of rest on a card, once per resting place on Home and once per run
-  on the other card screens, and for the length of an `ok` held on a card), and a film has no
+  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest, and for the length of an `ok` held on a card), and a film has no
   viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
-  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and shown on every screen
-  kind) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
+  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and both of its showings spent for the run) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
   and no card rest in the film is capped by it. `up` from the hero lands on the Home pill, one `left` short of the profile chip, so the film as walked
   no longer passes the chip; the launcher still runs, before the film boots, a prep boot of the simulator
   with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served

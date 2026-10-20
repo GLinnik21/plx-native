@@ -90,6 +90,11 @@ const COMPACT_TITLE_FADE: f32 = 200.0;
 const K_SCROLL: f32 = plx_ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
+/// The page scroll counts as in place for the season pill's hold hint when it is within this many
+/// pixels of its target: the hint stands at the bottom of the screen and need not wait for the last
+/// of the spring.
+const PILL_PAGE_PX: f32 = 24.0;
+
 pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 // The blocks packed end to end: each section starts where the one before it ends, so the chain
@@ -340,8 +345,9 @@ pub struct DetailScreen {
     /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
     /// deliberately absent from [`SHAPE`].
     spot_facts: SpotFacts,
-    /// The standing "Hold OK for options" hint over a Related or Collection card
-    /// (`plx_ui::hold_hint`, the rarer cadence of a non-Home card screen). Paint-only: not hashed,
+    /// The standing "Hold OK for options" hint over a Related or Collection card or the season
+    /// pill (`plx_ui::hold_hint`: one `HoldHint`, the surface carried per frame; once per install
+    /// per surface). Paint-only: not hashed,
     /// not in [`SHAPE`].
     hold_hint: plx_ui::hold_hint::HoldHint,
 }
@@ -582,7 +588,7 @@ impl DetailScreen {
             layout: Cell::new(None),
             layout_pinned: Cell::new(false),
             spot_facts: SpotFacts::default(),
-            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
+            hold_hint: plx_ui::hold_hint::HoldHint::new(),
         }
     }
 
@@ -3849,25 +3855,49 @@ impl DetailScreen {
         cx: &Cx<'_, H>,
         focused: Option<Located>,
     ) -> plx_ui::hold_hint::HintInput {
+        use plx_ui::hold_hint::Surface;
         let none = plx_ui::hold_hint::HintInput::default();
-        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
-            return none;
-        }
-        let (Some(key), Some(Located::Related(_) | Located::Collection(_))) = (cx.focus.current, focused) else {
+        let ok_held = cx.press.held_ms.is_some();
+        let Some(key) = cx.focus.current.filter(|k| k.entry == self.entry && self.preview_chrome >= 0.99) else {
             return none;
         };
-        if key.entry != self.entry || self.preview_chrome < 0.99 {
-            return none;
+        match focused {
+            Some(Located::Related(_) | Located::Collection(_)) => {
+                if !self.hold_hint.wants_input(ok_held) {
+                    return none;
+                }
+                let has_menu = self
+                    .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
+                    .is_some_and(crate::registry::item_has_menu);
+                if !has_menu {
+                    return none;
+                }
+                let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
+                let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
+                plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
+            }
+            // A held OK on a season tab opens the season's item menu (`PressHold`), so the pill
+            // teaches the same gesture, on its own surface and its own, shorter dwell. The dwell
+            // counts from focus LANDING on the tab: the page scroll, the tab strip's glide and the
+            // season switch the focus move queued only gate STANDING (`ready`), they do not restart
+            // the clock. The hold opens a menu only through `focused_season`, which is `None` while
+            // the season loads or has no `rk`: no promise of a hold that does nothing, so not ready
+            // there, and a hold shows no capsule either. The page need only be roughly in place
+            // (the hint stands at the bottom of the screen); the capsule glide is quick enough not
+            // to be waited for. Pinned animation clocks (documentation figures) never settle.
+            Some(Located::Season(_)) => {
+                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
+                    return none;
+                }
+                let menu = self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_some();
+                let ready = menu && (self.scroll.pos - self.scroll_target).abs() < PILL_PAGE_PX;
+                let settled = !plx_machine::motion::phase_clocks_held();
+                plx_ui::hold_hint::HintInput::new(Some(key.elem), settled, cx.press.held_ms)
+                    .surface(Surface::SeasonPill)
+                    .ready(ready)
+            }
+            _ => none,
         }
-        let has_menu = self
-            .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
-            .is_some_and(crate::registry::item_has_menu);
-        if !has_menu {
-            return none;
-        }
-        let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
-        let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
-        plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
     }
 
     fn preview_tick<H: ContentLike>(

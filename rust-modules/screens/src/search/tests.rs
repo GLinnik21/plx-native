@@ -1344,13 +1344,13 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
         deliver(&mut screen, &fixture, card, ScreenEvent::Tick(tick(at)));
     }
     assert!(!screen.stack.hint_visible(), "a hold on a collection hit opens its page, not a menu");
-    assert!(!plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "and nothing is spent");
+    assert!(!plx_ui::hold_hint::shown_this_run(), "and nothing is spent");
 }
 
 /// The hold hint (`ui::hold_hint`) on a result card: it stands after the dwell on a settled card,
 /// not on the field (not a card), not while a menu owns focus, and not a second time this run.
 #[test]
-fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
+fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     let _serial = plx_base::testlock::serial();
     plx_ui::hold_hint::reset_learned_for_test();
     plx_ui::hold_hint::reset_shown_for_test();
@@ -1368,12 +1368,12 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
     deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });
     rest(&mut screen, card, 1.2);
     assert!(!screen.stack.hint_visible(), "not before the dwell");
-    // negatives first: a stand spends the kind's latch and would make them vacuous
+    // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "never while a menu owns focus");
+    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
     let field = Some(screen.key(FIELD));
     rest(&mut screen, field, 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Search), "never on the field");
+    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the field");
     rest(&mut screen, card, 3.6);
     assert!(screen.stack.hint_visible(), "after the dwell, on a settled card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);

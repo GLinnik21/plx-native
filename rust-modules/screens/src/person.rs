@@ -504,7 +504,7 @@ impl PersonScreen {
         Self {
             page: Page::new(entry, sid, key, guid, name, thumb),
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Person).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint().home_when_unfocused(true),
             teardown_closed: false,
         }
     }
@@ -1588,9 +1588,9 @@ mod tests {
 
     /// The hold hint (`ui::hold_hint`) on a Person shelf card: it stands after the dwell on a
     /// settled card, not on the Filmography pill (not a card), not while a menu owns focus, and
-    /// not a second time on a Person page this run.
+    /// not a second time this run.
     #[test]
-    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_run() {
+    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_install() {
         let _g = plx_base::testlock::serial();
         plx_ui::hold_hint::reset_learned_for_test();
         plx_ui::hold_hint::reset_shown_for_test();
@@ -1605,11 +1605,11 @@ mod tests {
         };
         rest(&mut s, card, 1.2);
         assert!(!s.stack.hint_visible(), "not before the dwell");
-        // negatives first: a stand spends the kind's latch and would make them vacuous
+        // negatives first: a stand spends the run's latch and would make them vacuous
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never while a menu owns focus");
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never on the Filmography pill");
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the Filmography pill");
         rest(&mut s, card, 3.6);
         assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);

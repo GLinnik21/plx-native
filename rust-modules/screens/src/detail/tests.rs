@@ -168,7 +168,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         layout: std::cell::Cell::new(None),
         layout_pinned: std::cell::Cell::new(false),
         spot_facts: SpotFacts::default(),
-        hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
+        hold_hint: plx_ui::hold_hint::HoldHint::new(),
     };
     screen.sync_keys(test_store().view());
     screen
@@ -4131,9 +4131,9 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
 
 /// The hold hint (`ui::hold_hint`) on a Detail card shelf whose held OK opens an item menu
 /// (Related, Collection): it stands after the dwell on a settled card, not on the hero, not while
-/// a menu owns focus, and not a second time on a Detail page this run.
+/// a menu owns focus, and not a second time this run.
 #[test]
-fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
+fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
     plx_ui::hold_hint::reset_learned_for_test();
@@ -4159,17 +4159,138 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     let on = |elem| Some(FocusKey { entry: EntryId(7), elem });
     rest(&mut screen, on(card), 1.2);
     assert!(!screen.hold_hint.visible(), "not before the dwell");
-    // negatives first: a stand spends the kind's latch and would make them vacuous
+    // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never while a menu owns focus");
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
     rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Detail), "never on a hero control");
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never on a hero control");
     rest(&mut screen, on(card), 3.6);
     assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
     assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut screen, on(card), 4.0);
-    assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
+    assert!(!screen.hold_hint.visible(), "and not a second time this run");
+    clear();
+}
+
+/// The hold hint on a season tab (`hold_hint::Surface::SeasonPill`): a held OK there opens the
+/// season's item menu, so the pill teaches it, after the shorter pill dwell (well before the card
+/// dwell would have), once per install on its own latch (the Card latch stays unspent).
+#[test]
+fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let mut rest = |screen: &mut DetailScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            ms += 17;
+            let mut context = cx(&measure, None);
+            context.focus.current = focus;
+            context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+            let mut effects = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        }
+    };
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    rest(&mut screen, pill, 0.3);
+    assert!(!screen.hold_hint.visible(), "not before the pill dwell");
+    rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 3.0);
+    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    rest(&mut screen, pill, 1.4);
+    assert!(screen.hold_hint.visible(), "1.4 s on the pill is past its dwell and the tab capsule's arrival, short of the card's");
+    rest(&mut screen, pill, 2.0);
+    assert!(plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::SeasonPill), "a read showing taught the pill");
+    assert!(!plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::Card), "and left the card hint unspent");
+    clear();
+}
+
+/// The dwell counts from FOCUS LANDING on the pill: the page scroll still gliding, the tab strip's
+/// capsule still travelling and the season switch the focus move queued are motion that only gates
+/// standing, they do not restart the clock. Pre-fix this took the motion's whole settle plus a
+/// second dwell (about 1.5 s on the TV).
+#[test]
+fn the_pill_dwell_counts_from_focus_landing_not_from_the_motion_ending() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    // the page is mid-glide, the tab strip is travelling and a season switch is queued
+    screen.scroll_target = screen.scroll.pos + 300.0;
+    screen.tab_scroll.vel = 400.0;
+    screen.pending_season = Some(0);
+    for frame in 0..60u32 {
+        ms += 17;
+        let mut context = cx(&measure, None);
+        context.focus.current = pill;
+        context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+        let mut effects = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut sink = Effects::new(&mut effects,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+        Machine::<TestHost>::step(&mut screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        if frame == 20 {
+            assert!(!screen.hold_hint.visible(), "not before the pill dwell (0.34 s in)");
+        }
+    }
+    // 60 frames at 17 ms is 1.02 s: dwell 0.5 s plus the glide and the fade, never a second dwell
+    assert!(screen.hold_hint.visible(), "stands about one dwell after focus landed, motion notwithstanding");
+    clear();
+}
+
+/// A held OK on a season pill opens a menu only through `focused_season`, which answers `None`
+/// while the season has no `rk` (or a season fetch is in flight). The hint must not promise a hold
+/// that does nothing, and a read of it there must not mark the pill taught for good.
+#[test]
+fn the_hold_hint_waits_for_a_season_whose_hold_opens_a_menu() {
+    let sid = ServerId::UNSET;
+    let mut unresolved = detail(sid, "show");
+    unresolved.seasons[0].rk.clear();
+    let _guard = install(unresolved);
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut ms = 100;
+    let mut rest = |screen: &mut DetailScreen, focus: Option<FocusKey<u32>>, secs: f32| {
+        for _ in 0..(secs * 60.0) as u32 {
+            ms += 17;
+            let mut context = cx(&measure, None);
+            context.focus.current = focus;
+            context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
+            let mut effects = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        }
+    };
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    rest(&mut screen, pill, 4.0);
+    assert!(!screen.hold_hint.visible(), "a season with no rk has no menu to hold for");
+    assert!(!plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::SeasonPill), "so reading nothing taught nothing");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail(sid, "show")));
+    screen.sync_keys(test_store().view());
+    let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
+    let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
+    rest(&mut screen, pill, 1.4);
+    assert!(screen.hold_hint.visible(), "once the season resolves, the hint stands after its dwell");
     clear();
 }
 

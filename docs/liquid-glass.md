@@ -27,7 +27,7 @@ rest. Art grounds, a ramp knee under the region and a moving card keep the wash 
 
 **Glass was CHROME-ONLY from 2026-09-19 until DS6.** Its users are the top bar's standing track, the profile
 chip's capsule, the dev tile band and the one non-interactive standing note, the "Hold OK for
-options" capsule (`ui::hold_hint`: Home's, and on the other card screens once per screen kind per run). Popover panels — the menus, the alert panels, the person bio,
+options" capsule (`ui::hold_hint`: on the card screens and the Detail season pill, once each per install). Popover panels — the menus, the alert panels, the person bio,
 the decision alert — no longer frost a backdrop blur: they stand on `widgets::panel_ground`, the
 15×8 underlay field the modal dim already latches (`ui::underlay`), windowed to the panel's own
 screen rect, graded by `theme::underlay::PANEL_TINT` under a `PANEL_LUMA_MAX` ceiling, with the
@@ -336,7 +336,7 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 ## 7. Where it can go today
 
 **Glass: the chrome and the standing notes.** The top bar's standing track and the profile chip's capsule, the
-"Hold OK for options" capsule (`ui::hold_hint`, on Home and, once per screen kind per run, on Collection, Person, Search, Library and Detail — the track's material at a fixed weight, its own
+"Hold OK for options" capsule (`ui::hold_hint`, once per install on the card screens and once on the Detail season pill — the track's material at a fixed weight, its own
 source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), and the
 Library's scroll capsule (`ui::scroll_capsule`: the same standing container, `GlassRim::Standing` and `Material::UltraThin`, wearing the
 hold hint's fixed face; flat track fallback; drawn only while the chrome is tucked on a page whose header names two or more libraries;

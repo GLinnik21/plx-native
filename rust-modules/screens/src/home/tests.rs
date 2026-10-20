@@ -3717,6 +3717,7 @@ const HINT_TICK_MS: u32 = 16;
 /// A Home seated on the grid with `rows` shelves, nothing focused yet.
 fn hint_home(view: HubsView<'_>) -> HomeScreen {
     plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
     let mut s = screen(view);
     s.snap.jump(1.0);
     s.snap_target = 1.0;
@@ -3780,7 +3781,7 @@ fn the_hint_appears_only_after_focus_has_rested_on_a_shelf_tile() {
 }
 
 #[test]
-fn the_hint_leaves_on_its_own_and_a_focus_move_rearms_it() {
+fn the_hint_leaves_on_its_own_and_a_read_one_stays_gone_on_the_next_tile() {
     with_hint_home(|mut s, view| {
         let card = Some(first_card(&s));
         let mut ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(5.0));
@@ -3792,7 +3793,7 @@ fn the_hint_leaves_on_its_own_and_a_focus_move_rearms_it() {
         ms = hint_ticks(&mut s, view, next, None, ms, hint_secs(1.0));
         assert!(!s.hold_hint.visible(), "inside the new tile's dwell");
         hint_ticks(&mut s, view, next, None, ms, hint_secs(5.0));
-        assert!(s.hold_hint.visible(), "back after the dwell on the new tile");
+        assert!(!s.hold_hint.visible(), "read once this run: a new tile does not bring it back");
     });
 }
 
