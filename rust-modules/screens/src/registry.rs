@@ -758,6 +758,13 @@ const KEY_SLACK: usize = 256;
 /// The size a key table may reach before the oldest unlive keys go: twice `live` plus [`KEY_SLACK`].
 pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
 
+/// How many keys may leave the page before a table that drops its volatile keys (Home's placeholder
+/// slots) sweeps them. Closing the gap a key at a time moves every key behind it in the table and
+/// in the indexes that name positions, so a page that changes a few keys per publication paid for
+/// the whole table on each one; the sweep is batched instead, and what waits is a key no card can
+/// name again (a slot's identity carries its publication), at most this many of them.
+pub(crate) const KEY_PRUNE_BATCH: usize = 256;
+
 /// Which keys of a table go first when it stands over its bound.
 #[derive(Clone, Copy)]
 pub(crate) enum EvictOrder {

@@ -3328,6 +3328,7 @@ fn ring_step_cost(rows: usize, items: usize) -> SyncCost {
             index_inserts: s.cost.index_inserts - before.index_inserts,
             index_rebuilds: s.cost.index_rebuilds - before.index_rebuilds,
             elem_at_writes: s.cost.elem_at_writes - before.elem_at_writes,
+            sweeps: s.cost.sweeps - before.sweeps,
         };
         assert_indexes_agree(&s);
     }
@@ -3346,6 +3347,38 @@ fn a_ring_step_costs_the_rows_it_touches_not_the_catalog() {
     assert!(big.elem_at_writes <= 2 * items + 4, "so does the element map: {big:?}");
     assert_eq!(big.index_inserts, small.index_inserts, "and not the catalog's size: {big:?} vs {small:?}");
     assert_eq!(big.elem_at_writes, small.elem_at_writes, "{big:?} vs {small:?}");
+}
+
+/// Forty presses of a Down key through a long page: two StoreChanged each, the key table swept once
+/// per batch of keys that left the page and not once per publication.
+#[test]
+fn the_key_table_is_swept_once_per_batch_of_departed_keys() {
+    let _guard = plx_base::testlock::serial();
+    let (rows, items, presses) = (170usize, 12usize, 40usize);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, 5));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    let before = s.cost;
+    for step in 1..=presses {
+        assert!(plx_data::pms::hold_for_test(&mut state, step, step + 5));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+        assert!(plx_data::pms::land_ring_rows_for_test(&mut state, items, &|_| 0));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    }
+    let sweeps = s.cost.sweeps - before.sweeps;
+    // a press takes at most two rows' cards off the page: 2 * items keys
+    let leaving = presses * 2 * items;
+    assert!(sweeps <= leaving.div_ceil(KEY_PRUNE_BATCH) + 1, "{sweeps} sweeps in {} syncs", 2 * presses);
+    assert!(sweeps < presses, "a sweep per press is the cost this batches away");
+    // the placeholder keys that have left the page wait for the sweep, one batch at most (the
+    // stable keys of cards that left stay by their own bound, `key_cap`)
+    let waiting = s.items.iter()
+        .filter(|key| matches!(key.identity, HomeItemIdentity::Slot { .. }) && !s.elem_at.contains_key(&key.elem))
+        .count();
+    assert!(waiting <= KEY_PRUNE_BATCH + 2 * items, "{waiting} placeholder keys wait for a sweep");
+    assert_indexes_agree(&s);
 }
 
 #[test]
@@ -3459,12 +3492,14 @@ fn volatile_keys_do_not_accumulate_across_publications() {
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
-    for _ in 0..20 {
+    for _ in 0..200 {
         republish_named(&mut s, &mut state, &adapter, &["", "", ""], 4, None);
     }
-    // Only the shown publication and the one before it are kept.
-    assert!(s.items.len() <= 2 * 12, "{} keys after 20 publications", s.items.len());
-    assert!(s.groups.len() <= 3, "{} groups after 20 publications", s.groups.len());
+    // The shown publication and the one before it, and no more than one batch of keys that left
+    // the page and wait for the sweep (`KEY_PRUNE_BATCH`): the table does not grow with the
+    // number of publications, and the groups (few) go at once.
+    assert!(s.items.len() <= 2 * 12 + KEY_PRUNE_BATCH, "{} keys after 200 publications", s.items.len());
+    assert!(s.groups.len() <= 3, "{} groups after 200 publications", s.groups.len());
     assert_eq!(s.rows.len(), 3);
     assert_indexes_agree(&s);
 }
@@ -3478,7 +3513,8 @@ fn the_focused_vanished_key_survives_a_prune() {
     republish_named(&mut s, &mut state, &adapter, &[""], 4, None);
     let (focused, other) = (s.rows[0].elems[1], s.rows[0].elems[2]);
     let focus = Some(FocusKey { entry: EntryId(7), elem: focused });
-    for _ in 0..4 {
+    // enough publications for a batch of keys to have left the page, and so for a sweep to run
+    for _ in 0..KEY_PRUNE_BATCH {
         republish_named(&mut s, &mut state, &adapter, &[""], 4, focus);
     }
     assert!(s.items.iter().any(|k| k.elem == focused), "the focused key was pruned");

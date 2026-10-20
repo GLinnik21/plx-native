@@ -64,7 +64,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 }
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, KEY_PRUNE_BATCH, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -140,13 +140,15 @@ const HERO_ICON_GAP: f32 = 12.0;
 /// the primitive's name is split only so the `cards` gate does not read a shape string as a use of it.
 pub const SHAPE: &str = concat!("HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};3],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:Card", "Row{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}");
 
-/// Work a sync did, by kind: index entries inserted, whole-index rebuilds, `elem_at` writes.
+/// Work a sync did, by kind: index entries inserted, whole-index rebuilds, `elem_at` writes, and
+/// sweeps of the item key table.
 #[cfg(test)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct SyncCost {
     index_inserts: usize,
     index_rebuilds: usize,
     elem_at_writes: usize,
+    sweeps: usize,
 }
 
 #[derive(Clone)]
@@ -574,6 +576,9 @@ pub struct HomeScreen {
     /// view outgrow the band last sent (`ui_cards::HoldBand`). Derived from what is on screen; not
     /// canon.
     hold: ui_cards::HoldBand,
+    /// Keys that have left the page since the key table was last swept (`prune_keys`). Derived; not
+    /// canon.
+    since_prune: usize,
     /// What the syncs have cost, counted so the tests can pin the cost to the CHANGE and not to the
     /// catalog. Not canon.
     #[cfg(test)]
@@ -648,6 +653,7 @@ impl HomeScreen {
             restored_scroll: Vec::new(),
             restore_reveal: false,
             hold: ui_cards::HoldBand::default(),
+            since_prune: 0,
             #[cfg(test)]
             cost: SyncCost::default(),
             carousel: None,
@@ -1164,8 +1170,11 @@ impl HomeScreen {
     /// Bound the key tables. A key is only needed while its card is shown, was just shown (so a
     /// focus on a card that rotated out can recover to its row), or is the focus. Volatile keys
     /// (a `Slot` item, an item of an `Ephemeral` hub) carry their generation and can never match
-    /// again once their publication is gone, so those go at once; stable keys stay until the table
-    /// outgrows twice the shown cards plus 256, then the oldest go (elems are minted in order).
+    /// again once their publication is gone, so those go in the next sweep, which runs once
+    /// [`KEY_PRUNE_BATCH`] keys have left the page (closing the gaps moves every key behind them,
+    /// so a sync that changed a row or two does not pay for it) or the table is over its bound;
+    /// stable keys stay until the table outgrows twice the shown cards plus 256, then the oldest
+    /// go (elems are minted in order).
     /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
     /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
     /// stable and whose cards carry rating keys, under the cap, drops nothing.
@@ -1176,36 +1185,48 @@ impl HomeScreen {
     fn prune_keys(&mut self, removed: &HashSet<u32>, generation: u32, focus: Option<u32>,
         remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
-        let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
-        // shown now, or a sync ago (`removed` is what left the page this sync), or the focus
-        let shown = |elem: u32| now.contains_key(&elem) || removed.contains(&elem) || Some(elem) == focus;
-        let live = |elem: u32| shown(elem) || pinned.contains(&elem);
-        let mut drop: Vec<usize> = self.items.iter().enumerate()
-            .filter(|(_, key)| {
-                let volatile = match &key.identity {
-                    HomeItemIdentity::Slot { .. } => true,
-                    HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
-                };
-                // a placeholder's key is a pure function of its publication: never worth keeping
-                volatile && !shown(key.elem)
-            })
-            .map(|(at, _)| at)
-            .collect();
-        let cap = key_cap(now.len());
-        let kept = self.items.len() - drop.len();
-        if kept > cap {
-            let dropped: HashSet<u32> = drop.iter().map(|&at| self.items[at].elem).collect();
-            let held = unlive_excess(
-                self.items.iter().map(|key| key.elem),
-                |elem| live(elem) || dropped.contains(&elem),
-                kept - cap,
-                EvictOrder::Elem,
-            );
-            drop.extend(self.items.iter().enumerate().filter(|(_, key)| held.contains(&key.elem)).map(|(at, _)| at));
-        }
+        self.since_prune += removed.len();
         let stale: Vec<usize> = self.groups.iter().enumerate()
             .filter(|(_, key)| matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation))
             .map(|(at, _)| at).collect();
+        // The sweep of the item keys is batched (`KEY_PRUNE_BATCH`): a sync that changed a row or
+        // two only leaves a handful of keys behind, and closing their gaps moves every key after
+        // them, in the table and in the position indexes. It runs when enough have left the page,
+        // or at once when the table stands over its bound.
+        let swept = self.since_prune >= KEY_PRUNE_BATCH || self.items.len() > key_cap(now.len());
+        let mut drop: Vec<usize> = Vec::new();
+        if swept {
+            #[cfg(test)]
+            { self.cost.sweeps += 1; }
+            self.since_prune = 0;
+            let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
+            // shown now, or a sync ago (`removed` is what left the page this sync), or the focus
+            let shown = |elem: u32| now.contains_key(&elem) || removed.contains(&elem) || Some(elem) == focus;
+            let live = |elem: u32| shown(elem) || pinned.contains(&elem);
+            drop = self.items.iter().enumerate()
+                .filter(|(_, key)| {
+                    let volatile = match &key.identity {
+                        HomeItemIdentity::Slot { .. } => true,
+                        HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
+                    };
+                    // a placeholder's key is a pure function of its publication: never worth keeping
+                    volatile && !shown(key.elem)
+                })
+                .map(|(at, _)| at)
+                .collect();
+            let cap = key_cap(now.len());
+            let kept = self.items.len() - drop.len();
+            if kept > cap {
+                let dropped: HashSet<u32> = drop.iter().map(|&at| self.items[at].elem).collect();
+                let held = unlive_excess(
+                    self.items.iter().map(|key| key.elem),
+                    |elem| live(elem) || dropped.contains(&elem),
+                    kept - cap,
+                    EvictOrder::Elem,
+                );
+                drop.extend(self.items.iter().enumerate().filter(|(_, key)| held.contains(&key.elem)).map(|(at, _)| at));
+            }
+        }
         // The tables compact in place and the indexes follow the positions they moved: no identity
         // is cloned or hashed again for the entries that stay.
         // (a table shared with the memory is detached only when something goes)
@@ -2419,7 +2440,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, #[cfg(test)] cost: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, since_prune: _, #[cfg(test)] cost: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
