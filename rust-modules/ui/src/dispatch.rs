@@ -173,7 +173,15 @@ pub trait Tap<H: Host> {
     fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
     fn effect(&mut self, _f: u64, _s: &Stamped<H>) {}
     fn present(&mut self, _f: u64, _bit: bool, _why: Option<plx_machine::present::Provenance>) {}
-    /// After the frame's drains, on a frame that had events: the logical-state hash.
+    /// Whether this tap consumes the logical-state hash (`state`, `FrameReport::state_hash`). The
+    /// hash walks EVERY live instance's `LogicalState`, which for Home is the whole key table, so
+    /// an event frame pays for it in proportion to the catalog; the unarmed `NoTap` and the taps
+    /// that read nothing do not ask for it, and the frame skips it (`dhash`, DEBUG-7b: 4.7-5.3 ms
+    /// on the frame after every Home store landing). A tap that records or grades the hash
+    /// overrides this to `true`. The debug build's own §5.4 assertion hashes regardless.
+    fn wants_state(&self) -> bool { false }
+    /// After the frame's drains, on a frame that had events and a tap that `wants_state`: the
+    /// logical-state hash.
     fn state(&mut self, _f: u64, _hash: u64) {}
     /// After the drains: the engine's resolved focus for the input owner, as
     /// `(entry, index, group)`.
@@ -347,7 +355,8 @@ pub struct FrameReport {
     /// Bodies that DREW this frame, in draw order — the cold-open clock's STOP.
     pub drawn: Vec<InstanceId>,
     pub dropped_deliveries: u32,
-    /// The logical-state hash, on an event frame.
+    /// The logical-state hash, on an event frame whose tap `wants_state` (None otherwise: the hash
+    /// is O(every instance's state), so a frame nobody reads it on does not compute it).
     pub state_hash: Option<u64>,
     /// The host fold this frame (§8.3): what the page beneath the surfaces did.
     pub host_update: Option<HostUpdate>,
@@ -1238,7 +1247,7 @@ where
         }
         tap.focus(f, self.focus_record());
         let timers_fired = report.steps_pre > 0 && event_frame;
-        if event_frame || timers_fired {
+        if (event_frame || timers_fired) && tap.wants_state() {
             let h = plx_base::diag::spans::span("dhash", || self.state_hash());
             tap.state(f, h);
             report.state_hash = Some(h);

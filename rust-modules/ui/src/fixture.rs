@@ -1404,6 +1404,7 @@ fn key_name(k: Key) -> &'static str {
 }
 
 impl Tap<FixtureHost> for RecTap {
+    fn wants_state(&self) -> bool { true }
     fn tick(&mut self, f: u64, t: Tick) {
         self.w.tick(f, t);
     }
