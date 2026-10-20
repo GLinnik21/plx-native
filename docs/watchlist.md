@@ -81,8 +81,12 @@ rotates the epoch and resets the store (the catalog store re-opens under the new
 the status and the endpoint SHAPE only: no token, and no id beyond what is scrubbed.
 
 **A debug build does not write unless someone switched it on.** In a `devtriggers` build a `PUT` is
-refused and logged (`WatchlistError::Refused`) unless the loopback stand-in named by
-`/tmp/plxnative-discover` is armed (the stand-in then takes the write) or the owner's live switch is on;
+refused and logged (`WatchlistError::Refused`) unless the loopback stand-in is armed (the stand-in then
+takes the write) or the owner's live switch is on. "Armed" is `account::discover()`, the ONE Discover base
+the person page shares: `/tmp/plxnative-discover`, else the loopback `/tmp/plxnative-plextv` already
+redirects plex.tv to (the mock answers both on one listener). A dev-token boot (`plxnative-token`) with
+neither armed also has its READS of the provider refused and logged once per endpoint, the person page's
+profile and credits included, rather than reaching the real host with a server token;
 the UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
 goes out (`header::dev_blocked_text`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
 silence). Release builds write. Host tests never reach curl: they drive the request closure.

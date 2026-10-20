@@ -24,12 +24,21 @@
 //!   ANSWER ("plex.tv has never heard of them"), not a failure, and [`AccountClient::person_profile`]
 //!   maps it to a DEFAULT profile so the caller settles instead of retrying forever.
 //!
+//! **Where this host lives is not decided here.** [`discover`] (`account.rs`, beside `plex_tv()`) is the
+//! ONE base, shared with the Watchlist (`watchlist.rs`): the real provider, or in a `devtriggers`
+//! build the loopback stand-in named by `plxnative-discover` — or, with that unset, the one
+//! `plxnative-plextv` already redirects plex.tv to, since the mock answers both on one listener — and
+//! a dev-token boot (`plxnative-token`) with neither armed REFUSES these two reads, logged, instead
+//! of dialling the real provider with an identity that has no account behind it. Both routes are
+//! built by [`person_profile_url`] / [`person_credits_url`] and the gate sits in front of each
+//! request; `tests/mock_pms.py`'s Discover stand-in answers them with synthetic data.
+//!
 //! The token is optional here (the endpoint answered 200 unauthenticated in the same probe), but we
 //! send whatever the session holds anyway — an unauthenticated read is not a promise plex.tv has
 //! made, and `AccountClient` already carries the token when there is one.
 //!
 //! **The filmography, and why it took a SCREEN rather than a fetch.** `GET
-//! {DISCOVER}/library/people/{tagKey}/credits` answers 200 with `CreditGroup[]` —
+//! {discover()}/library/people/{tagKey}/credits` answers 200 with `CreditGroup[]` —
 //! `[{type,title,Credit:[{order, role, Metadata{…}}]}]`, e.g. Peter Sallis's `actor`(222) /
 //! `appeared`(21) / `other`(3). This module doc used to say it was deliberately unmodelled, and
 //! the reason it gave is still the whole design constraint rather than an objection that has been
@@ -61,24 +70,23 @@
 //! `Session::account_token` empty. That is the same wall `/tmp/plxnative-personbio` exists for, one
 //! step further along — the biography degrades to a blank line, the filmography degrades to
 //! nothing at all — and it is why `/tmp/plxnative-personcredits` had to be written.
-use super::account::AccountClient;
+use super::account::{discover, discover_read_allowed, AccountClient};
 use super::models::de_i64;
 use serde::Deserialize;
 
-const DISCOVER: &str = "https://discover.provider.plex.tv";
-
-/// `{DISCOVER}/library/people/{guid}` — the one place the profile URL is spelled.
+/// `{discover()}/library/people/{guid}` — the one place the profile URL is spelled, on the base the
+/// Watchlist shares ([`discover`]): the real provider, or the dev build's loopback stand-in.
 fn person_profile_url(guid: &str) -> String {
-    format!("{DISCOVER}/library/people/{guid}")
+    format!("{}/library/people/{guid}", discover())
 }
 
-/// `{DISCOVER}/library/people/{guid}/credits` — the one place the filmography URL is spelled.
+/// `{discover()}/library/people/{guid}/credits` — the one place the filmography URL is spelled.
 fn person_credits_url(guid: &str) -> String {
-    format!("{DISCOVER}/library/people/{guid}/credits")
+    format!("{}/library/people/{guid}/credits", discover())
 }
 
 impl AccountClient {
-    /// GET {DISCOVER}/library/people/{guid} — one person's biography record.
+    /// GET {discover()}/library/people/{guid} — one person's biography record.
     ///
     /// `guid` is the **`tagKey`** (`"5d77682aeb5d26001f1de4b0"`), never the numeric tag id (see the
     /// module docs).
@@ -88,7 +96,11 @@ impl AccountClient {
     /// 200 with an empty container, and that comes back here as a **default (all-empty) profile**,
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
-        let env: PersonEnvelope = self.get(&person_profile_url(guid))?;
+        let url = person_profile_url(guid);
+        if !discover_read_allowed(&url) {
+            return None;
+        }
+        let env: PersonEnvelope = self.get(&url)?;
         Some(
             env.media_container
                 .metadata
@@ -98,7 +110,7 @@ impl AccountClient {
         )
     }
 
-    /// GET {DISCOVER}/library/people/{guid}/credits — the person's FILMOGRAPHY, as the provider's
+    /// GET {discover()}/library/people/{guid}/credits — the person's FILMOGRAPHY, as the provider's
     /// own departments.
     ///
     /// Same `guid` rule, same `Accept` rule and the same three-way answer as
@@ -110,7 +122,11 @@ impl AccountClient {
     /// department: the provider sends every group in one body, and the screen's tabs are those
     /// groups.
     pub fn person_credits(&self, guid: &str) -> Option<Vec<CreditGroup>> {
-        let env: CreditsEnvelope = self.get(&person_credits_url(guid))?;
+        let url = person_credits_url(guid);
+        if !discover_read_allowed(&url) {
+            return None;
+        }
+        let env: CreditsEnvelope = self.get(&url)?;
         // **A body that carried NO recognized container key is a FAILURE, not an empty career** —
         // and keeping those apart is the whole reason [`CreditsContainer`]'s fields are `Option`
         // rather than `#[serde(default)]` vectors.
@@ -314,18 +330,88 @@ pub struct CreditItem {
 mod tests {
     use super::*;
 
-    /// A dev build with the Discover stand-in armed must build BOTH person routes on it. The
-    /// stand-in is armed in a private trigger root (thread-local), and the resolver is read per
-    /// call under test, so this cannot leak into `watchlist`'s real-host test.
+    /// Run `f` with the dev triggers `armed` (name, content) written in a private trigger root.
+    /// The resolver is read per call under test (`account::discover_resolved`), so this cannot
+    /// leak into `watchlist`'s real-host test or any other thread.
+    fn with_triggers<R>(armed: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+        plx_base::devtrig::with_private_triggers(|| {
+            for (name, content) in armed {
+                std::fs::write(plx_base::devtrig::path(name), content).unwrap();
+            }
+            f()
+        })
+    }
+
+    /// The reproduction: a dev build with the Discover stand-in armed must build BOTH person routes
+    /// on it, as the Watchlist already does. Both used to be spelled on the real host.
     #[test]
     fn person_urls_are_built_on_the_armed_stand_in() {
         if !plx_base::devtrig::ENABLED {
             return;
         }
-        plx_base::devtrig::with_private_triggers(|| {
-            std::fs::write(plx_base::devtrig::path("discover"), "http://127.0.0.1:41999").unwrap();
+        with_triggers(&[("discover", "http://127.0.0.1:41999")], || {
             assert_eq!(person_profile_url("abc"), "http://127.0.0.1:41999/library/people/abc");
             assert_eq!(person_credits_url("abc"), "http://127.0.0.1:41999/library/people/abc/credits");
+        });
+    }
+
+    /// A build whose plex.tv is redirected must not fall through to the real Discover host: the
+    /// person routes follow the `plextv` stand-in when no `discover` trigger is armed, and an
+    /// explicit `discover` trigger still wins.
+    #[test]
+    fn a_redirected_plex_tv_carries_the_person_routes_with_it() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        with_triggers(&[("plextv", "http://127.0.0.1:41998")], || {
+            assert_eq!(person_profile_url("abc"), "http://127.0.0.1:41998/library/people/abc");
+            assert_eq!(person_credits_url("abc"), "http://127.0.0.1:41998/library/people/abc/credits");
+        });
+        with_triggers(&[("plextv", "http://127.0.0.1:41998"), ("discover", "http://localhost:41997")], || {
+            assert_eq!(person_profile_url("abc"), "http://localhost:41997/library/people/abc");
+        });
+        // A trigger that is not a loopback is never followed, wherever it is armed.
+        with_triggers(&[("plextv", "https://evil.example"), ("discover", "http://10.0.0.5:1")], || {
+            assert_eq!(person_profile_url("abc"), format!("{}/library/people/abc", super::super::account::DISCOVER));
+        });
+    }
+
+    /// Nothing armed: the real provider, byte for byte what the inline URLs were.
+    #[test]
+    fn with_nothing_armed_the_person_urls_are_the_real_provider() {
+        with_triggers(&[], || {
+            assert_eq!(person_profile_url("5d77682aeb5d26001f1de4b0"),
+                "https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0");
+            assert_eq!(person_credits_url("5d77682aeb5d26001f1de4b0"),
+                "https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0/credits");
+        });
+    }
+
+    /// A dev-token boot (the harness identity: an injected server token, no account) with no
+    /// stand-in is REFUSED before a request exists; with a stand-in, or without the token trigger,
+    /// the read goes ahead. Asked through the gate rather than `person_profile`, which would reach
+    /// libcurl if the gate were wrong.
+    #[test]
+    fn a_dev_token_boot_never_reaches_the_real_provider() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        let url = person_profile_url("5d77682aeb5d26001f1de4b0");
+        assert!(url.starts_with("https://discover.provider.plex.tv/"), "{url}");
+        with_triggers(&[("token", "t")], || {
+            assert!(!super::super::account::discover_read_allowed(&url), "refused, no stand-in");
+        });
+        with_triggers(&[("token", "t"), ("discover", "http://127.0.0.1:41999")], || {
+            assert!(super::super::account::discover_read_allowed(&person_profile_url("x")), "stand-in armed");
+        });
+        with_triggers(&[("token", "t"), ("plextv", "http://127.0.0.1:41998")], || {
+            assert!(super::super::account::discover_read_allowed(&person_profile_url("x")), "plextv stand-in armed");
+        });
+        with_triggers(&[("token", "")], || {
+            assert!(super::super::account::discover_read_allowed(&url), "an empty token trigger is no dev-token boot");
+        });
+        with_triggers(&[], || {
+            assert!(super::super::account::discover_read_allowed(&url), "an interactive boot reads");
         });
     }
 }

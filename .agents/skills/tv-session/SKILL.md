@@ -63,7 +63,11 @@ The stored session it leaves on the install is mock-only; clear `state/` under t
 root when done.
 
 **Watchlist writes.** The same `--mock-plextv` boot arms `plxnative-discover`, so a Watchlist
-add/remove on the set goes to the mock. Without it a debug build refuses the write and the page header
+add/remove on the set goes to the mock, and so do a person page's biography and filmography reads
+(the mock's Discover stand-in answers them with synthetic data; the app's Discover also follows a bare
+`plxnative-plextv`). A `--guest --mock` boot has no loopback stand-in to arm, so it never reaches
+`discover.provider.plex.tv` either: the boot logs `discover: base=real reads=refused` and a person
+page's two reads are refused and logged (`discover: GET … refused`). Without it a debug build refuses the write and the page header
 says `Debug: watchlist write blocked`. `plxnative-watchlist-live` is the OWNER's switch that lets a
 debug build write to their real plex.tv Watchlist: **never create it, and never pass
 `--arm watchlist-live`, unless the owner asks for it in this same session** (AGENTS.md; the

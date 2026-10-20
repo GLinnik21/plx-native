@@ -375,7 +375,8 @@ pub fn facts_pending(p: &Person) -> bool {
     // **Bounded by a real ATTEMPT, not only by success.** `!p.profiled` alone is unbounded whenever
     // plex.tv cannot be reached — an offline or LAN-only television, a provider outage, or any
     // headless boot, where the injected `/tmp/plxnative-token` is a SERVER token that
-    // `discover.provider.plex.tv` answers 401. The profile mailbox then re-arms its back-off
+    // `discover.provider.plex.tv` would answer 401 (the app refuses the read instead, logged; see
+    // `plex::account::discover_read_allowed`). The profile mailbox then re-arms its back-off
     // forever, `profiled` never turns true, and `draw_header` paints five `skeleton_bar`s a frame,
     // each of which calls `idle::invalidate()` — so the whole-frame present gate never closes and
     // the page repaints at 60fps for as long as it is open, for a sweep over content that is never
@@ -981,10 +982,13 @@ fn open(
 /// **Why this trigger has to exist.** Everything below the name on this page — roles, dates,
 /// birthplace and the biography itself — comes from `discover.provider.plex.tv`, which is a
 /// different identity from the PMS. An automated boot signs in with `/tmp/plxnative-token`, a
-/// *server* token, and the provider answers that `401`; a real interactive session gets a real
-/// biography and an automated one never does. So neither `tests/run.py` nor `make sim-shot` can
-/// reach a person page with any prose on it at all, and the panel this seeds is by construction
-/// only reachable when there is MORE prose than the header shows. That is the same argument
+/// *server* token, which the real provider can only answer `401`, so the app does not ask it
+/// (`plex::account::discover_read_allowed` refuses the read and logs it; an armed Discover stand-in
+/// — `plxnative-discover`, or a `plxnative-plextv` redirect — answers with the mock's synthetic
+/// record instead); a real interactive session gets a real biography and an automated one never
+/// does. So neither `tests/run.py` nor `make sim-shot` can reach a person page with the real prose
+/// on it at all, and the panel this seeds is by construction only reachable when there is MORE
+/// prose than the header shows. That is the same argument
 /// `/tmp/plxnative-search`'s query seed makes (no harness can type) and `/tmp/plxnative-failtest`'s
 /// (no server will refuse on cue) — the screen is real, the route to it is not automatable.
 ///
@@ -1215,8 +1219,8 @@ impl PersonState {
 ///
 /// It exists for exactly [`seed_dev_profile`]'s reason and the argument is not repeated here: the
 /// credits come from `discover.provider.plex.tv`, an automated boot signs in with a *server* token,
-/// and the provider answers that `401`. So no harness and no `make sim-shot` can reach this screen
-/// with a single row on it.
+/// and the provider can only answer that `401` (so the app refuses the read, as above). So no
+/// harness and no `make sim-shot` can reach this screen with a single real row on it.
 ///
 /// **It seeds the JOIN as well as the rows**, which the biography's twin has no equivalent of and
 /// which is the whole reason this runs from [`PersonState::pump`] instead of from [`open`]: every row the page's

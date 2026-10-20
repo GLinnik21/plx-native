@@ -1183,8 +1183,10 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
         // `/tmp/plxnative-watchlist` — boot straight onto the Watchlist page (`SelectTab`, as the
-        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>`, or the
-        // page reads the real discover host; `tools/tv-session.sh --mock-plextv` arms both.
+        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>` (or a
+        // `plxnative-plextv` redirect, which Discover follows); a dev-token boot with neither armed
+        // has its Discover reads refused, logged at boot as `discover: base=real reads=refused`.
+        // `tools/tv-session.sh --mock-plextv` arms both.
         if plx_base::devtrig::flag("watchlist") {
             crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
         }

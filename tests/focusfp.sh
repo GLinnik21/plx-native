@@ -280,11 +280,12 @@ fi
 record_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:1 ck:220,960 sleep:1 ck:1850,960 sleep:1 ck:960,540" 'hubs: landed'
 # 12 Phase-7 adoption: Filmography owns its own focus scope. A library-matched credit opens Detail, BACK
 # restores the Filmography entry and the next BACK dismisses it to its Person host. `nowan`: the
-# person page's F_PROFILE/F_CREDITS mailboxes still dial discover.provider.plex.tv for real (the
-# `personcredits` seed only stands in for a landing, it does not suppress the fetch `pump` already
-# sent before the seed runs), and against the injected token that call 401s — so this flow's
-# stability otherwise depends on the internet answering that 401 promptly. `nowan` makes the name
-# refuse locally and at once, the same offline reproduction `docs/agent-reference.md` documents.
+# person page's F_PROFILE/F_CREDITS mailboxes still ASK for the provider (the `personcredits` seed
+# only stands in for a landing, it does not suppress the fetch `pump` already sent before the seed
+# runs). On this injected-token boot the app refuses both reads itself (`account::discover_read_allowed`,
+# logged `discover: GET ... refused`), so neither reaches discover.provider.plex.tv; `nowan` stays
+# because it is part of the typed initial these recordings carry (the offline policy the replays
+# were captured under), not because the name would otherwise be dialled.
 # Controlled recording instead captures that offline policy in the typed initial input and
 # produces the failed provider replies without a WAN call. Replay supplies every recorded reply
 # and admission with the mock off and resource execution denied.
