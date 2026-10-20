@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T11:39:23Z",
+ "generated": "2026-10-20T11:45:59Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -38.7,
-   "change7_pct": 29.2,
+   "change30_pct": -39.2,
+   "change7_pct": 28.1,
    "d30": 672,
-   "delta30": -260,
-   "delta7": 93,
+   "delta30": -263.5,
+   "delta7": 89.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 113,
-   "now": 412,
+   "now": 408.5,
    "prev7": 319,
    "shown": true,
    "state": "worse",
@@ -332,15 +332,15 @@
    "change30_pct": 105.1,
    "change7_pct": 7.1,
    "d30": 117,
-   "delta30": 123.0,
-   "delta7": 16.0,
+   "delta30": 123,
+   "delta7": 16,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 240.0,
+   "now": 240,
    "prev7": 224,
    "shown": true,
    "state": "flat",
@@ -353,15 +353,15 @@
    "change30_pct": 172.9,
    "change7_pct": -38.2,
    "d30": 70,
-   "delta30": 121.0,
-   "delta7": -118.0,
+   "delta30": 121,
+   "delta7": -118,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 191.0,
+   "now": 191,
    "prev7": 309,
    "shown": true,
    "state": "better",
@@ -417,14 +417,14 @@
    "change7_pct": 8.6,
    "d30": null,
    "delta30": null,
-   "delta7": 12.0,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 152.0,
+   "now": 152,
    "prev7": 140,
    "shown": true,
    "state": "flat",
@@ -502,15 +502,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 1.0,
+   "delta30": 2,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 172.8,
    "commits": [
     {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
-    {
      "pr": 854,
      "sha": "1a91d21c2",
      "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
@@ -657,6 +652,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 56.2,
@@ -670,11 +670,6 @@
    "change_pct": 71.1,
    "commits": [
     {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
-    {
      "pr": 854,
      "sha": "1a91d21c2",
      "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
@@ -718,6 +713,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 211,
@@ -731,11 +731,6 @@
    "change_pct": 43.5,
    "commits": [
     {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
-    {
      "pr": 854,
      "sha": "1a91d21c2",
      "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
@@ -779,6 +774,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 269,
@@ -792,11 +792,6 @@
    "change_pct": 39.0,
    "commits": [
     {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
-    {
      "pr": 854,
      "sha": "1a91d21c2",
      "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
@@ -840,6 +835,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 349,
@@ -853,11 +853,6 @@
    "change_pct": 36.9,
    "commits": [
     {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
-    {
      "pr": 854,
      "sha": "1a91d21c2",
      "title": "Cards and captions: late art dissolves once per frame across glass walks; gliding captions fade at both edges"
@@ -901,6 +896,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 99.7,
@@ -911,13 +911,8 @@
    "to": 136.4
   },
   {
-   "change_pct": 29.2,
+   "change_pct": 28.1,
    "commits": [
-    {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
     {
      "pr": 854,
      "sha": "1a91d21c2",
@@ -962,6 +957,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 319,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 412
+   "to": 408.5
   },
   {
    "change_pct": 24.0,
    "commits": [
-    {
-     "pr": 843,
-     "sha": "a397e151a",
-     "title": "Library: Collections redesign (header row, Collections and Recommended pages, Under posters, scroll chrome)"
-    },
     {
      "pr": 854,
      "sha": "1a91d21c2",
@@ -1023,6 +1018,11 @@
      "pr": 864,
      "sha": "1236b92eb",
      "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
    "from": 129,
