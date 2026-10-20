@@ -1289,8 +1289,9 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     }
 }
 
-/// The server refused the collections listing (HTTP 403): the answer is final for this session, so
-/// it is kept distinct from "none yet" and from a count of zero.
+/// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
+/// (credential) it was asked under, so it is kept distinct from "none yet" and from a count of
+/// zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Forbidden;
 

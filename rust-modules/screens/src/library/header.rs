@@ -7,7 +7,8 @@
 //! group are the ui's (`plx_ui::page_header`), the same ones the Collections, Recommended and
 //! Watchlist pages wear. The names are packed against the room the right cluster leaves
 //! (`PageHeader::layout`'s `left_budget`, sized from the cluster's widest case), so the names never
-//! shift when a value changes, the Collections answer (unknown, none, a count) included; the
+//! shift when a value changes, the Collections answer (unknown, none, a count of up to three digits)
+//! included; a library whose count needs a fourth digit widens its own budget once; the
 //! controls inside the cluster stand by what they draw, one gap apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
 //! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
