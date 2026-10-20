@@ -2386,6 +2386,18 @@ impl HomeScreen {
         self.rows.get(row).map(|projection| projection.elems.len())
     }
 
+    /// Every card's pop as the draw paints it, shelf by shelf (`focus` the engine's focus): what a route test
+    /// reads to say a card the focus has left is at EXACT rest (see `World::card_pops`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_card_pops(&self, focus: Option<FocusKey<u32>>) -> Vec<Vec<f32>> {
+        let at = self.focused_grid(focus);
+        self.rows.iter().enumerate().map(|(row, projection)| {
+            let col = at.filter(|&(r, _)| r == row).map(|(_, c)| c);
+            let Some(shelf) = self.grid.shelves.get(row) else { return Vec::new() };
+            (0..projection.elems.len()).map(|i| shelf.drawn_pop(i, col)).collect()
+        }).collect()
+    }
+
     /// Diagnostic view of the actual animated state: snap, retained shelf offset,
     /// shelf velocity. No second motion owner or stored telemetry state.
     #[cfg(feature = "devtriggers")]

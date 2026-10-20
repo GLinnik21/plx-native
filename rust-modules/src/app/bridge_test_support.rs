@@ -71,7 +71,7 @@ pub(super) fn tick(i: u32) -> Tick {
 /// does (after the dispatcher's frame).
 ///
 /// Returns one label per request it PERFORMED (`"library:BackToHome { kind: Movie }"`,
-/// `"content:Back"`, `"watchlist:Back"`), so a table can assert which request a key produced. A
+/// `"content:Back"`, `"watchlist:Back"`, `"home:Detail"`), so a table can assert which request a key produced. A
 /// request that is not a navigation (a menu, a play) is labelled
 /// `"unperformed ..."` and left undone: this pump does not stand in for the rest of the loop, and
 /// a test that needs one of those should say so rather than have it dropped (a shelf publication is the
@@ -87,8 +87,9 @@ pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> 
 /// by the loop's own `content::library_page_request` and the Collection/Detail pushes by
 /// `bridge::nav_push_with_return`: a test that presses OK on a poster sees the page the TV opens.
 /// It also drains the item menu's committed rows (`content::drain_item_menu_requests`, the Watchlist
-/// disc's Add/Remove among them) and performs the Watchlist page's own requests
-/// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses).
+/// disc's Add/Remove among them), performs the Watchlist page's own requests
+/// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses) and a Home shelf
+/// card's Detail (`perform_home_detail`; Home's other requests are drained and left undone).
 pub(super) struct Pump {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
@@ -162,6 +163,16 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
             _ => seen.push("unperformed content:request".into()),
         }
     }
+    // Home's requests (`content::home_requests`), under the loop's guards: the asking page holds input and Home is the
+    // route. Only a card's Detail is performed (`perform_home_detail`); the rest are drained and left undone, as they were
+    // before this arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
+    for (source, request, ret) in rig.take_home_reqs() {
+        if asker(d, source).is_none() || d.top_arg() != Some(&AppArg::Home) { continue; }
+        if let (plx_screens::registry::HomeReq::Detail { sid, rk }, Some((pump, now))) = (request, item.as_mut()) {
+            perform_home_detail(pump, *now, d, rig, sid, &rk, ret);
+            seen.push("home:Detail".into());
+        }
+    }
     for (source, request, ret) in rig.take_watchlist_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = d.nav.entry_of_instance(instance) else { continue };
@@ -183,6 +194,28 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
         });
     }
     seen
+}
+
+/// **A Home card's Detail request, performed with the loop's own opener.** `content::home_requests` hands
+/// `HomeReq::Detail` to `activate_home_item`, which finds the card in the published hubs and opens it with
+/// `input::activate_deck_card` and the page's `ReturnState`. This finds the card the same way and calls that
+/// same `activate_deck_card`, so `activate_card`'s and `open_detail`'s handling of the return state is the
+/// loop's. `from_deck` is false: a World's Home has no Continue Watching deck to press. It does NOT run
+/// `activate_home_item` itself, which takes the whole `App` this rig does not build, so a loop that dropped
+/// `ret` between `home_requests` and `activate_deck_card` is not caught by a test that uses this.
+fn perform_home_detail(pump: &mut Pump, now: u32, d: &mut Dispatcher<AppHost>, rig: &mut Bridge,
+    sid: plx_plex::plex::ServerId, rk: &str, ret: plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>) {
+    let item = {
+        let snapshot = rig.hubs_snapshot();
+        let view = snapshot.view();
+        (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
+            .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk))).map(|item| (**item).clone()))
+    }.expect("the card the request names is in the published hubs");
+    // SAFETY: the player seam is this pump's own `NoSink` session (`Pump::new`).
+    unsafe {
+        crate::app::input::activate_deck_card(&mut pump.ps, &mut pump.pa, &item, false, false,
+            plx_screens::player::input::HUD_LINGER_MS, Some(ret), d, rig, &mut pump.menu_play_await, now);
+    }
 }
 
 /// The section table's index of "Film Club" (a Movie library of the second source): the library the
@@ -387,10 +420,23 @@ impl World {
         let mut w = Self::scripted(name);
         w.bridge.stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
         plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "1", &|m| { m.kind = 0; m.guid = Some(hero); });
-        super::show_page(&mut w.d, AppArg::Home);
-        w.frames(60);
-        assert!(w.on(&AppArg::Home), "premise: Home is on top");
-        w
+        w.mount_home()
+    }
+
+    /// Home over `rows` shelves of `cols` cards each (`seed_grid_for_test`), settled, focus on the hero. The
+    /// world is the Home-disc one (a scripted plex.tv), the one Home mount the rig has with no library registry.
+    pub(super) fn home_grid(name: &str, rows: usize, cols: usize) -> World {
+        let mut w = Self::scripted(name);
+        w.bridge.stores.hubs.seed_grid_for_test(rows, cols);
+        w.mount_home()
+    }
+
+    /// Home shown over the seeded hubs and settled.
+    fn mount_home(mut self) -> World {
+        super::show_page(&mut self.d, AppArg::Home);
+        self.frames(60);
+        assert!(self.on(&AppArg::Home), "premise: Home is on top");
+        self
     }
 
     /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
@@ -539,6 +585,42 @@ impl World {
     pub(super) fn library(&self) -> &plx_screens::library::LibraryScreen {
         self.d.top_screen().and_then(|screen| screen.as_any()).and_then(|any| any.downcast_ref())
             .expect("a Library page (the grid or the Collections page) is on top")
+    }
+
+    /// **Every card's pop as the top page's draw paints it**, shelf by shelf (Home or the Recommended
+    /// page): `1.0` is a card at EXACT rest, which `ui::widgets::pop_factor` turns into `0.0` and the card
+    /// compositor into the plain program and the resting split. Anything above `1.0` on a card the
+    /// focus is not on is a card that never came to rest (`Spring::land`).
+    fn card_pops(&self) -> Vec<Vec<f32>> {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::home::HomeScreen>() { return page.probe_card_pops(self.d.focus()); }
+        if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_card_pops(self.d.focus()); }
+        panic!("the top page is neither Home nor the Recommended page");
+    }
+
+    /// **Only the focused card is off exact rest, and it is popped:** every other card's pop is exactly `1.0`
+    /// (so `ui::widgets::pop_factor` is `0.0` and it draws with the plain card program and the resting split).
+    /// Returns the focused card's `(shelf, card)`; `what` names the page in the failure message.
+    pub(super) fn sole_card_off_rest(&self, what: &str) -> (usize, usize) {
+        let off: Vec<(usize, usize, f32)> = self.card_pops().iter().enumerate()
+            .flat_map(|(shelf, cards)| cards.iter().enumerate().filter(|(_, pop)| **pop != 1.0).map(move |(card, pop)| (shelf, card, *pop)))
+            .collect();
+        assert_eq!(off.len(), 1, "{what}: only the focused card is off rest, got {off:?}");
+        let (shelf, card, pop) = off[0];
+        assert!(pop > 1.0, "{what}: the focused card is popped: {off:?}");
+        (shelf, card)
+    }
+
+    /// The server and ratingKey of the Home card holding focus (`None` while focus is elsewhere).
+    pub(super) fn home_focused_item(&self) -> Option<(plx_plex::plex::ServerId, String)> {
+        self.bridge.with_home(&self.d, |home, cx, focus| home.focused_item::<super::AppHost>(focus, cx)
+            .map(|item| (item.sid, item.rk.clone()))).expect("Home is the top page")
+    }
+
+    /// The Home card holding focus: its `(row, col)` in the grid and its ratingKey (`None` while focus is elsewhere).
+    pub(super) fn home_card(&self) -> (Option<(usize, usize)>, Option<String>) {
+        self.bridge.with_home(&self.d, |home, cx, focus| (home.grid_position::<super::AppHost>(focus, cx),
+            home.focused_item::<super::AppHost>(focus, cx).map(|item| item.rk.clone()))).expect("Home is the top page")
     }
 
     /// The scroll the page on top is travelling to (0 at its top).

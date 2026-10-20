@@ -4009,6 +4009,12 @@ mod sort_filter_vocabulary_route_tests;
 #[cfg(test)]
 #[path = "account_menu_route_tests.rs"]
 mod account_menu_route_tests;
+#[cfg(test)]
+#[path = "card_rest_route_tests.rs"]
+mod card_rest_route_tests;
+#[cfg(test)]
+#[path = "deep_shelves_route_tests.rs"]
+mod deep_shelves_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

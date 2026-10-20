@@ -15,8 +15,8 @@ use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
-use super::pool::{self, Drawn, ShrinkKey};
-use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, MAX_GRID_BANDS, STYLE};
+use super::pool::{self, Drawn, LetGoCards};
+use crate::poster_grid::{self, Card, Geom, GridBand, GridBands, GridPop, COLS, MAX_GRID_BANDS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
     Stop,
@@ -154,9 +154,8 @@ pub struct Grid {
     /// The bands as the last frame drew them, kept from the moment a focus the reader did not move
     /// settled them on another row until the landing has measured against them (`play_landing`).
     bands_was: Option<[GridBand; MAX_GRID_BANDS]>,
+    /// The focus pop and every let-go in flight, each keyed to its element (`pool.rs`).
     pop: GridPop,
-    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
-    shrink: ShrinkKey,
     seen: Seen,
     /// The element the last tick had focused (`pool::key`): what tells a landing that moved the
     /// cards from a focus that moved over them, as the shelf's.
@@ -199,7 +198,6 @@ impl Grid {
             bands: GridBands::new(),
             bands_was: None,
             pop: GridPop::new(),
-            shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
             anchor: None,
             landed: None,
@@ -285,8 +283,12 @@ impl Grid {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
                 self.focus_band(arrived.map(|i| i / self.spec.cols), deliberate);
-                if let Some(i) = arrived.filter(|_| deliberate) {
-                    self.pop.arm(i);
+                if let Some(cell) = arrived.filter(|_| deliberate) {
+                    // the element is the one the key named, whatever index it has: the card focus
+                    // left lets go as its own, and a let-go of the card named is taken up by
+                    // element, even when the cards shifted since the last tick (a landing and a key
+                    // in one frame can give the card named the cell the card left stood in)
+                    self.pop.arm(Card { cell, key: pool::key(&to.elem) });
                 }
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
@@ -308,6 +310,10 @@ impl Grid {
 
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S, fx: &mut Effects<'_, H>) {
         let focus = super::focused_index(&cx.focus, self.entry, src);
+        // the focused card and which element it is, hashed once: the pop is seated on it and the
+        // next tick's `slid` starts from it
+        let anchor = pool::anchor_of(src, focus);
+        let focus_card = anchor.map(|(cell, key)| Card { cell, key });
         self.landed = None;
         self.shift = 0.0;
         let sy0 = self.scroll.pos;
@@ -317,7 +323,7 @@ impl Grid {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
             self.slept = true;
             self.seen = Seen::Nothing;
-            self.pop = GridPop::new();
+            self.pop.reset();
             // A caption is its band's content (alpha = the band's expansion), so the band of a seat
             // nobody has lifted is shut too: it opens with the lift below, not under the fade. Shut
             // outright and not through `focus_band`, which would keep the open layout for the
@@ -327,8 +333,8 @@ impl Grid {
             // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
             // own rule; only a focus no event told the grid about wakes growing from rest, its
             // caption band opening on the spring the lift runs on, as a Down's does
-            if let (Some(i), Seen::Nothing) = (focus, self.seen) {
-                self.pop.arm(i);
+            if let (Some(i), Some(card), Seen::Nothing) = (focus, focus_card, self.seen) {
+                self.pop.arm(card);
                 self.seen = Seen::Deliberate(i);
                 self.focus_band(Some(i / self.spec.cols), true);
             }
@@ -336,13 +342,13 @@ impl Grid {
         // what the focused card was drawn at before this tick lets it go: if the landing removes
         // it, its ghost starts there
         let lifted = self.pop.cell().map(|p| (p, self.pop.pop_scale(p, &self.spec.style)));
-        self.shrink.follow(&mut self.pop, src);
-        let mut prev = self.pop.cell();
         // A landing and a focus change between the same two ticks (a key over cards that moved, a
         // restore or reconcile landing with a page): the change alone would leave the scroll where
         // the cards WERE. The card focus was on is carried to where the source now shows it first,
         // pop and scroll, and the change then starts from there (the shelf's rule, `pool::slid`).
         let slid = focus.filter(|_| self.seen.announced()).and_then(|i| pool::slid(src, self.anchor).map(|s| (i, s)));
+        pool::follow_let_gos(&mut self.pop, src, slid.map(|(_, moved)| moved));
+        let mut prev = self.pop.cell();
         // where the previously focused cell was on screen, before any band moves (a deliberate move
         // has already armed the pop on its new cell: the anchor is the cell focus left)
         let was = slid.map(|(_, (p, _))| p).or(prev).map(|p| self.cell(p, &self.bands.geometry()).y);
@@ -357,26 +363,25 @@ impl Grid {
             self.carry(p, q, was);
             prev = Some(q);
             if let Seen::Deliberate(_) = self.seen {
-                // the let-go the move armed follows its card, and the pop stays on the card the
-                // move named, by the index it has in the cards that stand now
-                if self.pop.shrinking() == Some(p) {
-                    self.pop.move_shrink(Some(q));
-                }
+                // the pop stays on the card the move named, by the index it has in the cards that
+                // stand now (the let-go the move started followed its card above: it was born with
+                // its element)
                 self.pop.relocate(i);
                 self.seen = Seen::Deliberate(i);
             }
         }
-        if let Some(i) = focus.filter(|_| awake) {
+        if let Some(card) = focus_card.filter(|_| awake) {
+            let i = card.cell;
             match (self.seen, prev) {
                 (Seen::Deliberate(a), _) if a == i => {}
                 // no FocusMoved, another index: the same element, moved by a content landing
                 (Seen::Nothing, Some(p)) if p != i => self.carry(p, i, was),
-                _ if prev != Some(i) => self.pop.adopt(i, &self.spec.style),
+                _ if prev != Some(i) => self.pop.adopt(card, &self.spec.style),
                 _ => {}
             }
         }
         self.seen = Seen::Nothing;
-        self.anchor = pool::anchor_of(src, focus);
+        self.anchor = anchor;
         if awake {
             self.play_landing(src, sy0, lifted, dt);
         } else {
@@ -389,10 +394,10 @@ impl Grid {
         // The app reconciles focus a frame after the card leaves: until it does the pop belongs to
         // no card (the ghost carries the lift), and the takeover waits for the focus.
         if self.landing.has_takeover() {
-            match focus {
-                Some(i) => {
+            match focus_card {
+                Some(card) => {
                     self.landing.take_takeover();
-                    self.pop.rise(i);
+                    self.pop.rise(card);
                 }
                 None => self.pop.vacate(),
             }
@@ -414,9 +419,8 @@ impl Grid {
         self.bands.tick(self.spec.style.k_scroll, dt);
         // the takeover's rise starts with the landing's springs, not under the menu that chose it
         if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
-            self.pop.tick(focus.filter(|_| awake), &self.spec.style, dt);
+            self.pop.tick(focus_card.filter(|_| awake), &self.spec.style, dt);
         }
-        self.shrink.note(&self.pop, src);
         if self.spec.scroll == ScrollMode::External {
             return;
         }
@@ -644,7 +648,7 @@ impl Grid {
     /// same element landing at a new index. For an owner that was not ticking while its content
     /// was replaced (a covered page).
     pub fn forget_pop(&mut self) {
-        self.pop = GridPop::new();
+        self.pop.reset();
         self.seen = Seen::Nothing;
     }
 
@@ -697,15 +701,23 @@ impl Grid {
     }
 
     /// The pop of card `i` given the engine's focus (`GridPop::scale`'s rule: a focused card the
-    /// grid was not told about is FULL, the one that lost focus lets go, the rest are at rest).
+    /// grid was not told about is FULL, the ones that lost focus let go, the rest are at rest). A
+    /// pass over many cards asks [`pool::let_go_cards`] once and calls [`pop_in`](Self::pop_in).
     fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
+        self.pop_in(pool::let_go_cards(&self.pop, src), src, i, focus)
+    }
+
+    /// [`pop`](Self::pop) with the way this frame finds the let-gos' cards already decided.
+    fn pop_in<H: Host, S: CardSource<H>>(&self, cards: LetGoCards, src: &S, i: usize, focus: Option<usize>) -> f32 {
         // a page still dissolving in lifts nothing
         let focus = focus.filter(|_| !self.dormant);
-        // the element-keyed pool: a source change no tick has seen yet is resolved by element
-        match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
-            Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
-            Some(Drawn::Rest) => return 1.0,
-            None => {}
+        // the element-aware pool: a source change no tick has seen yet is resolved by element
+        if cards == LetGoCards::ByElement {
+            match pool::let_go_drawn(&self.pop, src, i, focus == Some(i)) {
+                Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
+                Some(Drawn::Rest) => return 1.0,
+                None => {}
+            }
         }
         // The takeover is owed but the pop has no cell: the card focus reconciled to rests until the
         // landing's first step raises it, never the "not told yet" full scale (that read as the
@@ -765,10 +777,11 @@ impl Grid {
         let bands = self.bands.geometry();
         self.draw_leaving(f, p, src, &bands);
         let plan = self.draw_plan(src.len(), focus, &bands);
+        let cards = pool::let_go_cards(&self.pop, src);
         // What each card is painted with, decided once: the captions and the tiles are two passes
         // over the same decisions.
         let paints: Vec<_> = plan.into_iter().map(|(role, i)| {
-            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let focused = role == DrawRole::Focus;
             (i, s, focused, self.card_paint(f, p, src, i, s, focused, &bands))
         }).collect();
@@ -855,8 +868,9 @@ impl Grid {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
+        let cards = pool::let_go_cards(&self.pop, src);
         for i in self.window(src.len()) {
-            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let cell = super::to_local(p, self.slot(i, src.len(), &bands));
             f.stop(p, Stop {
                 key: FocusKey { entry: self.entry, elem: src.elem(i) },
@@ -987,8 +1001,9 @@ impl Grid {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let bands = self.bands.geometry();
+        let cards = pool::let_go_cards(&self.pop, src);
         self.draw_plan(src.len(), focus, &bands).into_iter().filter_map(|(role, i)| {
-            let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
+            let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let paint = self.card_paint(f, p, src, i, s, role == DrawRole::Focus, &bands)?;
             let label = paint.label?;
             (label.title.is_some() || label.caption.is_some()).then(|| (i, label.reveal * paint.p.opacity()))
@@ -1055,8 +1070,14 @@ impl Grid {
         self.landing.waiting() || self.landing.unstepped()
     }
 
+    /// Whether the card in `cell` is letting go.
+    #[cfg(test)]
+    pub(crate) fn letting_go(&self, cell: usize) -> bool {
+        self.pop.letting_go(cell)
+    }
+
     /// The scale card `focus` is drawn at now (`None`, or a grid asleep: rest): what a viewer sees
-    /// of the lift, with the let-go of the card focus left out.
+    /// of the lift, with the let-gos of the cards focus left out.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
         focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
@@ -1213,7 +1234,7 @@ impl Grid {
         self.bands.write(c);
     }
 
-    /// The focus pop's and let-go's canonical state.
+    /// The focus pop's and every let-go's canonical state.
     pub fn write_pop(&self, c: &mut Canon) {
         self.pop.write(c);
     }

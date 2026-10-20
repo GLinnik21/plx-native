@@ -145,7 +145,7 @@ pub(super) struct GridPart {
     target_layout: Layout,
     scroll_target: f32,
     /// The poster wall (`ui::cards::Grid`, [`ScrollMode::External`](plx_ui::cards::ScrollMode)):
-    /// the focused cell's pop and the previous one's let-go, the caption bands, drawing, stops,
+    /// the focused cell's pop and the let-gos of the cells it left, the caption bands, drawing, stops,
     /// placement and neighbours. The page scroll is the Library's; the grid is handed it
     /// (`Grid::set_page`) before every call. A pop starts from REST only when a deliberate move
     /// arms it; every other way a cell becomes focused is adopted at full scale, because a page
@@ -169,7 +169,7 @@ impl GridPart {
         self.snapshot = None;
     }
 
-    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),shrink:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
+    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),let_gos:[(index:u32,sp:Spring{pos:f32,vel:f32})],bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32},card:Option<u32>)]}}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement

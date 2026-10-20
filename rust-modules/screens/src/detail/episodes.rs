@@ -222,8 +222,14 @@ impl Cells {
             if i == NONE {
                 continue;
             }
-            let target = if still == Some(i) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 };
-            self.scale[s].step(target, 300.0, dt);
+            let held = still == Some(i);
+            self.scale[s].step(if held { theme::EP_CARD_FOCUS_SCALE } else { 1.0 }, 300.0, dt);
+            // A released cell comes to EXACT rest by the shared landing rule, as a shelf's released tile
+            // does (`CardRow::update`): `step` alone parks it one ulp above 1.0 for good, so it would never
+            // read as at rest ([`widgets::pop_factor`] must be exactly 0.0 there).
+            if !held {
+                self.scale[s].land(1.0, dt);
+            }
             self.lift[s].step(text == Some(i), dt);
         }
     }
@@ -393,8 +399,10 @@ fn draw_cell(
 ) {
     let x = strip_x(i);
     let still_focused = focused == Some((i, Row::Still));
-    let focused_here = still_focused || scale > 1.001;
     let pop = widgets::pop_factor(scale, theme::EP_CARD_FOCUS_SCALE);
+    // A cell is drawn at its spring's scale for as long as the spring is off rest: the pop factor is
+    // exactly 0.0 only at rest (a released cell lands there, `Cells::step`), so no threshold of its own.
+    let focused_here = still_focused || pop > 0.0;
     let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
     #[cfg(feature = "devtriggers")]
     plx_ui::card_probe::begin_card();
@@ -660,6 +668,72 @@ mod tests {
             lift.step(false, 1.0 / 60.0);
         }
         assert_eq!(cell_census(1.0, &lift), rest);
+    }
+
+    /// **A released strip cell lands exactly at rest by the shared rule** (`Spring::land`, the one
+    /// `CardRow::update` uses for a shelf's released tile). `Spring::step` alone parks a released
+    /// spring one ulp off its target forever, so without the landing the cell never reads as at rest
+    /// (a pop factor of 1e-6 instead of exactly 0.0, the focus program instead of the resting split).
+    /// The reference is the same spring stepped alone: until the landing the cell is bit-for-bit that
+    /// spring (same constants, same targets), and the landing moves it by no more than the epsilon.
+    #[test]
+    fn a_released_strip_cell_lands_exactly_at_rest_by_the_shared_rule() {
+        let dt = 1.0 / 60.0;
+        let mut cells = Cells::new();
+        let mut reference = plx_ui::Spring::at(1.0);
+        let step = |cells: &mut Cells, reference: &mut plx_ui::Spring, focused: Option<usize>| {
+            cells.step(focused, None, dt);
+            reference.step(if focused == Some(2) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 }, 300.0, dt);
+        };
+        for _ in 0..90 {
+            step(&mut cells, &mut reference, Some(2));
+        }
+        assert_eq!(cells.scale(2), reference.pos, "the focused cell is the plain spring");
+        let mut landed = false;
+        for frame in 1..=600 {
+            step(&mut cells, &mut reference, None);
+            let shown = cells.scale(2);
+            if shown == reference.pos {
+                continue;
+            }
+            let epsilon = plx_ui::LAND_REL * (1.0 + reference.pos.max(1.0));
+            assert!(
+                (shown - reference.pos).abs() <= epsilon,
+                "frame {frame}: the cell moved {} in its landing, against the epsilon {epsilon}",
+                (shown - reference.pos).abs()
+            );
+            assert_eq!(shown, 1.0, "it lands exactly at rest");
+            landed = true;
+            break;
+        }
+        assert!(landed, "the released cell never landed: it is parked at {} (target 1.0)", cells.scale(2));
+        assert_eq!(widgets::pop_factor(cells.scale(2), theme::EP_CARD_FOCUS_SCALE), 0.0);
+    }
+
+    /// The width of the still's card as `draw_cell` placed it at spring position `scale`: the widest
+    /// rect within a pop of the cell's width (the art scrim, drawn over the card's own rect).
+    fn drawn_card_width(scale: f32) -> f32 {
+        cell_census(scale, &TextLift::new())
+            .iter()
+            .map(|(_, r)| r.w)
+            .filter(|w| *w >= W * 0.99 && *w <= W * 1.2)
+            .fold(0.0, f32::max)
+    }
+
+    /// **The still is drawn at the scale its spring says, at every scale**: a released cell's card
+    /// shrinks continuously into its resting rect. The pop factor is exactly 0.0 at rest
+    /// ([`widgets::pop_factor`]), so no threshold is needed to tell a resting cell from a popped one.
+    #[test]
+    fn a_released_still_is_drawn_at_its_spring_scale_all_the_way_to_rest() {
+        let _g = plx_base::testlock::serial();
+        for scale in [1.0, 1.0004, 1.0009, 1.0011, 1.003, 1.02, theme::EP_CARD_FOCUS_SCALE] {
+            let w = drawn_card_width(scale);
+            assert!(
+                (w - W * scale).abs() < 0.001,
+                "scale {scale}: the card is drawn {w} wide, its spring says {}",
+                W * scale
+            );
+        }
     }
 
     #[test]
