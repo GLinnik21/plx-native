@@ -8261,8 +8261,10 @@ const PRE_VIDEO_AUDIO_HEADROOM: c_long = 16 * 1024 * 1024;
 /// AUs, so the demuxer reads a little beyond it rather than exactly to it.
 const LEAD_IN_MARGIN_NS: i64 = 500_000_000;
 
-/// The per-open (and per-seek) state of the video lane's pre-audio headroom. The decisions
-/// ([`before_video`](Self::before_video), [`after_audio`](Self::after_audio)) are PURE; the two
+/// The per-open (and per-seek) state of both lanes' pre-first-packet headroom: the video lane's
+/// pre-audio grant and the audio lane's pre-video one. The decisions
+/// ([`before_video`](Self::before_video), [`after_audio`](Self::after_audio),
+/// [`before_audio`](Self::before_audio), [`video_arrived`](Self::video_arrived)) are PURE; the two
 /// methods that take a lane ([`withdraw`](Self::withdraw), [`restart`](Self::restart)) only call
 /// `aq_release_headroom`.
 ///
@@ -9204,7 +9206,8 @@ pub fn demux(
                 }
 
                 let mut anchor_taken = false;
-                // The video lane's pre-audio headroom (`PreAudioHeadroom`): granted at the first
+                // Both lanes' pre-first-packet headroom (`PreAudioHeadroom`; the audio lane's mirror grant
+                // is `PRE_VIDEO_AUDIO_HEADROOM`, ended by the first video AU). The video lane's: granted at the first
                 // video push that WOULD PARK at the base cap with no audio yet, held until the
                 // engine's audio lead-in has been pushed, then released as the consumer drains.
                 // Restarted (and the lane's grant withdrawn) by every seek and at loop exit.
