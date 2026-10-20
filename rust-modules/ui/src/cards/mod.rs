@@ -1,7 +1,7 @@
 //! `plx_ui::cards` — the shared card sections (layer L1: the sections built on the L0 row and grid primitives).
 //!
 //! [`Shelf`] (one horizontal strip) and [`Grid`] (the six-column poster grid) own everything a card
-//! section does that is not the screen's content: the focus pop, the let-go of the tile that lost
+//! section does that is not the screen's content: the focus pop, the let-go of every tile that lost
 //! focus, scrolling to keep focus visible, the caption band, drawing the focused tile last, culling,
 //! hit-map stops, `Focusable` placement, paging requests and idle. A screen supplies its content
 //! through [`CardSource`] and reacts to the one [`CardEvent`] [`Shelf::on`] / [`Grid::on`] returns;
@@ -42,7 +42,8 @@
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
-//!   let-go of the one that just lost focus). A deliberate move grows from rest.
+//!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
+//!   where its own let-go is, when focus comes back to a tile still letting go).
 //!   A shelf or grid whose page is still dissolving in is [`dormant`](Shelf::dormant) /
 //!   [`Grid::dormant`]: nothing is lifted under the fade, and the first awake tick grows the focused
 //!   card from rest (a focus the engine restored meanwhile is adopted whole, as above). A grid keeps

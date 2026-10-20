@@ -8,7 +8,7 @@ use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
 use crate::poster_grid;
 use crate::screen::{At, By, Dir, DrawFrame, Placed, ScreenEvent, Step};
 use crate::widgets::Art;
-use crate::{Painter, Rect};
+use crate::{Painter, Rect, Spring};
 use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
 };
@@ -3135,6 +3135,117 @@ fn grid_pool_drops_a_let_go_pushed_beyond_the_search_window() {
     }
     r.run(1);
     assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &100), Some(1.0), "100 is out of the window: its let-go is dropped");
+}
+
+/// **A held key on a grid lets EVERY released card go on a spring of its own.** `path` is the
+/// walk of the focus, one `By::Dir` press every `period` frames (a let-go lasts ~28 frames, so a
+/// short period leaves several in flight at once). Each card is shadowed by the free-running
+/// spring it must be: grown toward `focus_scale` while focused, let go toward rest after, landed by
+/// `Spring::land`, and picked up where it is if focus comes back to it before it has landed. No
+/// frame may draw a card more than the land epsilon from that spring, which also bounds the
+/// frame-to-frame jump of a released card: a press that replaced the let-go of the card still
+/// shrinking snapped it to rest in one frame (a Library grid's 3.8-5.4 px per edge).
+fn every_released_grid_card_runs_its_own_let_go(path: &[u32], period: u32) -> usize {
+    let style = poster_grid::STYLE;
+    let dt = 16_667.0 / 1_000_000.0;
+    let mut r = settled::<Grid>(600);
+    r.land_focus(path[0], By::Restore);
+    r.run(240);
+    // (element, the spring it must be, whether it has landed)
+    let mut cards: Vec<(u32, Spring, bool)> = vec![(path[0], Spring::at(style.focus_scale), false)];
+    let mut focused = path[0];
+    let mut next = 1;
+    let mut most_in_flight = 0;
+    for frame in 0..path.len() as u32 * period + 200 {
+        if next < path.len() && frame % period == 0 {
+            focused = path[next];
+            next += 1;
+            r.land_focus(focused, By::Dir);
+            match cards.iter_mut().find(|c| c.0 == focused) {
+                // a card still letting go takes up where its let-go is
+                Some(c) if !c.2 => {}
+                Some(c) => *c = (focused, Spring::at(1.0), false),
+                None => cards.push((focused, Spring::at(1.0), false)),
+            }
+        }
+        r.run(1);
+        most_in_flight = most_in_flight.max(cards.iter().filter(|c| !c.2 && c.0 != focused).count());
+        for c in cards.iter_mut() {
+            let drawn = r.sect.scale_of(&r.cx(), &r.src, &c.0).unwrap();
+            if !c.2 {
+                c.1.step(if c.0 == focused { style.focus_scale } else { 1.0 }, style.k_scale, dt);
+                c.2 = c.0 != focused && c.1.land(1.0, dt);
+            }
+            let jump = (drawn - c.1.pos).abs();
+            let epsilon = crate::LAND_REL * (1.0 + c.1.pos.max(1.0));
+            assert!(
+                jump <= epsilon,
+                "frame {frame}: card {} is drawn at {drawn}, {jump} from the spring it runs on ({}), past the land epsilon {epsilon}: \
+                 a width step of {} px on a {} px card; the focus is on {focused}",
+                c.0, c.1.pos, jump * poster_grid::STYLE.w, poster_grid::STYLE.w,
+            );
+        }
+    }
+    assert!(cards.iter().all(|c| c.2 || c.0 == focused), "every released card landed");
+    assert!(most_in_flight >= 2.min(path.len() - 1), "the walk left several let-gos in flight at once: {most_in_flight}");
+    for c in cards.iter().filter(|c| c.0 != focused) {
+        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &c.0), Some(1.0), "card {} lands exactly at rest", c.0);
+    }
+    most_in_flight
+}
+
+/// A held Right: ten presses, three frames apart, so up to nine let-gos are in flight.
+#[test]
+fn grid_held_key_every_released_card_runs_its_own_let_go() {
+    every_released_grid_card_runs_its_own_let_go(&(100..110).collect::<Vec<_>>(), 3);
+}
+
+/// A press every frame, more let-gos in flight than any pool of a fixed few would hold: nothing is
+/// capped and no card is retired early.
+#[test]
+fn grid_held_key_a_press_every_frame_snaps_no_released_card() {
+    let most = every_released_grid_card_runs_its_own_let_go(&(100..140).collect::<Vec<_>>(), 1);
+    assert!(most > 3 * super::pool::CAP, "{most} let-gos were in flight at once");
+}
+
+/// A held Right turned into a held Left: the card focus comes back to is still letting go, and
+/// grows from where it is rather than from rest.
+#[test]
+fn grid_held_key_turned_around_picks_each_let_go_up_where_it_is() {
+    let there: Vec<u32> = (100..106).collect();
+    let back: Vec<u32> = (100..105).rev().collect();
+    every_released_grid_card_runs_its_own_let_go(&[there, back].concat(), 3);
+}
+
+/// Several let-gos in flight when cards land ahead of them: every one follows its element, none
+/// jumps, and a frame drawn before the tick has seen the landing already shows each where it went.
+#[test]
+fn grid_pool_follows_every_let_go_through_a_landing() {
+    let mut r = settled::<Grid>(600);
+    r.land_focus(100, By::Restore);
+    r.run(240);
+    for e in 101..106 {
+        r.land_focus(e, By::Dir);
+        r.run(3);
+    }
+    let flying: Vec<u32> = (100..105).collect();
+    let before: Vec<f32> = flying.iter().map(|&e| r.sect.scale_of(&r.cx(), &r.src, &e).unwrap()).collect();
+    assert!(before.iter().filter(|&&s| s > 1.01).count() >= 3, "several are still letting go: {before:?}");
+    for k in 0..poster_grid::COLS {
+        r.src.elems.insert(0, 900 + k as u32);
+    }
+    for (&e, &was) in flying.iter().zip(&before) {
+        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &e), Some(was), "{e} keeps its scale in the first frame");
+    }
+    r.run(1);
+    for (&e, &was) in flying.iter().zip(&before) {
+        let now = r.sect.scale_of(&r.cx(), &r.src, &e).unwrap();
+        assert!(now <= was && was - now < 0.03, "{e} went from {was} to {now}");
+    }
+    r.run(240);
+    for &e in &flying {
+        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &e), Some(1.0), "{e} settles at rest wherever the landing put it");
+    }
 }
 
 /// One frame of an abandoned press: the press dip and the drawn width of the pressed card and of

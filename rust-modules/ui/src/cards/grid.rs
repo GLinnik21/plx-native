@@ -15,7 +15,7 @@ use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
-use super::pool::{self, Drawn, ShrinkKey};
+use super::pool::{self, Drawn};
 use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, MAX_GRID_BANDS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
@@ -154,9 +154,8 @@ pub struct Grid {
     /// The bands as the last frame drew them, kept from the moment a focus the reader did not move
     /// settled them on another row until the landing has measured against them (`play_landing`).
     bands_was: Option<[GridBand; MAX_GRID_BANDS]>,
+    /// The focus pop and every let-go in flight, each keyed to its element (`pool.rs`).
     pop: GridPop,
-    /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
-    shrink: ShrinkKey,
     seen: Seen,
     /// The element the last tick had focused (`pool::key`): what tells a landing that moved the
     /// cards from a focus that moved over them, as the shelf's.
@@ -199,7 +198,6 @@ impl Grid {
             bands: GridBands::new(),
             bands_was: None,
             pop: GridPop::new(),
-            shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
             anchor: None,
             landed: None,
@@ -336,7 +334,7 @@ impl Grid {
         // what the focused card was drawn at before this tick lets it go: if the landing removes
         // it, its ghost starts there
         let lifted = self.pop.cell().map(|p| (p, self.pop.pop_scale(p, &self.spec.style)));
-        self.shrink.follow(&mut self.pop, src);
+        pool::follow_let_gos(&mut self.pop, src);
         let mut prev = self.pop.cell();
         // A landing and a focus change between the same two ticks (a key over cards that moved, a
         // restore or reconcile landing with a page): the change alone would leave the scroll where
@@ -359,9 +357,7 @@ impl Grid {
             if let Seen::Deliberate(_) = self.seen {
                 // the let-go the move armed follows its card, and the pop stays on the card the
                 // move named, by the index it has in the cards that stand now
-                if self.pop.shrinking() == Some(p) {
-                    self.pop.move_shrink(Some(q));
-                }
+                self.pop.move_new_let_go(p, Some(q));
                 self.pop.relocate(i);
                 self.seen = Seen::Deliberate(i);
             }
@@ -416,7 +412,7 @@ impl Grid {
         if !(self.landing.waiting() && focus.is_some() && focus == self.pop.cell()) {
             self.pop.tick(focus.filter(|_| awake), &self.spec.style, dt);
         }
-        self.shrink.note(&self.pop, src);
+        pool::note_let_gos(&mut self.pop, src);
         if self.spec.scroll == ScrollMode::External {
             return;
         }
@@ -702,7 +698,7 @@ impl Grid {
         // a page still dissolving in lifts nothing
         let focus = focus.filter(|_| !self.dormant);
         // the element-keyed pool: a source change no tick has seen yet is resolved by element
-        match self.shrink.drawn(&self.pop, src, i, focus == Some(i)) {
+        match pool::let_go_drawn(&self.pop, src, i, focus == Some(i)) {
             Some(Drawn::Cell(c)) => return self.pop.scale(c, false, &self.spec.style),
             Some(Drawn::Rest) => return 1.0,
             None => {}
@@ -1056,7 +1052,7 @@ impl Grid {
     }
 
     /// The scale card `focus` is drawn at now (`None`, or a grid asleep: rest): what a viewer sees
-    /// of the lift, with the let-go of the card focus left out.
+    /// of the lift, with the let-gos of the cards focus left out.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
         focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
@@ -1213,7 +1209,7 @@ impl Grid {
         self.bands.write(c);
     }
 
-    /// The focus pop's and let-go's canonical state.
+    /// The focus pop's and every let-go's canonical state.
     pub fn write_pop(&self, c: &mut Canon) {
         self.pop.write(c);
     }

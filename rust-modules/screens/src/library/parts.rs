@@ -145,7 +145,7 @@ pub(super) struct GridPart {
     target_layout: Layout,
     scroll_target: f32,
     /// The poster wall (`ui::cards::Grid`, [`ScrollMode::External`](plx_ui::cards::ScrollMode)):
-    /// the focused cell's pop and the previous one's let-go, the caption bands, drawing, stops,
+    /// the focused cell's pop and the let-gos of the cells it left, the caption bands, drawing, stops,
     /// placement and neighbours. The page scroll is the Library's; the grid is handed it
     /// (`Grid::set_page`) before every call. A pop starts from REST only when a deliberate move
     /// arms it; every other way a cell becomes focused is adopted at full scale, because a page
