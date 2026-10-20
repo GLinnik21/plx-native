@@ -217,6 +217,22 @@ fn shelf_run_origins_are_bit_identical_to_the_straight_sum() {
     assert_eq!(run.pitch(999), plx_ui::consts::ROW_PITCH);
 }
 
+/// **A shelf keeps the shared air under its band**: the pitch is the fixed part every shelf column is
+/// built from plus the band, so the heading of the next shelf rests where `card_row::room_for` counts
+/// it, whatever the band's size and expansion, and a landscape row is the same pitch under a shorter tile.
+#[test]
+fn shelf_pitch_keeps_the_shared_air() {
+    for band in [ui_cards::LEGACY_BAND_H, 0.0, 80.0, 112.0] {
+        for expanded in [0.0, 0.5, 1.0] {
+            let want = ui_cards::ROW_PITCH_FIXED + ui_cards::under_band_for(band, expanded);
+            assert!((shelf_pitch(false, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
+            let shorter = RowStyle::HOME.h - RowStyle::EPISODE.h;
+            assert!((shelf_pitch(true, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+        }
+    }
+    assert_eq!(shelf_pitch(false, ui_cards::LEGACY_BAND_H, 1.0), plx_ui::consts::ROW_PITCH);
+}
+
 #[test]
 fn shelf_run_window_holds_exactly_the_shelves_meeting_the_span() {
     let pitches: Vec<f32> = (0..50).map(|i| 300.0 + (i % 4) as f32 * 40.0).collect();

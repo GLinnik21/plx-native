@@ -2791,6 +2791,22 @@ mod stack {
         assert!(worst <= 0.0, "a caption line of the first shelf ends {worst:.1} px below the drawn top of the third shelf's heading");
     }
 
+    /// **The caption rule counts `UNDER_LABEL_AIR` under a shelf** (`card_row::room_for`), so a page
+    /// whose shelf keeps less than that while another shelf stands below it would have a line drawn over
+    /// that shelf's heading, and a `Stack` refuses it rather than lay it out wrong: the default
+    /// `shelf_foot` (0) is for the LAST shelf only.
+    #[test]
+    #[should_panic(expected = "UNDER_LABEL_AIR")]
+    fn a_shelf_keeping_less_air_than_the_caption_rule_counts_is_refused() {
+        let mut r = mrig(0, 6, |s| s);
+        r.page.more = vec![Cards::new((200..206).collect(), false)];
+        r.page.revision += 1;
+        r.go(100, By::Restore);
+        r.run(1);
+        let cx = r.cx();
+        let _ = r.stack.shelf_frame(&r.page, &cx, Msec::Shelf);
+    }
+
     /// The settled scroll that shows shelf `k` of [`walk_rig`] (0 = `Shelf`, then `More(k - 1)`)
     /// from scroll `cur`, worked from the fixture's geometry.
     fn walk_want(k: usize, cur: f32) -> f32 {

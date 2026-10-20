@@ -35,7 +35,7 @@ use plx_machine::present::PresentEvent;
 
 use super::{CardEvent, CardSource, Grid, GridSpec, SectionFrame, Shelf};
 use crate::card_row::{self, RowStyle};
-use crate::consts::{K_SCROLL, MARGIN_Y, SCR_H, SCR_W};
+use crate::consts::{K_SCROLL, MARGIN_Y, SCR_H, SCR_W, UNDER_LABEL_AIR};
 use crate::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
     Placed, Seat, Step, Stop,
@@ -212,7 +212,9 @@ pub trait StackPage<H: Host> {
     /// Shelves are adjacent sections, never a `Custom` gap between two of them: the shelf above
     /// reads the heading of the one below as the thing under its caption
     /// ([`SectionFrame::below_rise`]), and a gap section hides it. A page that keeps the last
-    /// shelf bare says so from `cx`, the content its sections read.
+    /// shelf bare says so from `cx`, the content its sections read: the default, 0, is for that
+    /// last shelf, because the caption rule counts [`UNDER_LABEL_AIR`] under every shelf that has another
+    /// below it (`card_row::room_for`), and a `Stack` refuses a page that keeps less there.
     fn shelf_foot(&self, _cx: &Cx<'_, H>, _k: Self::Key) -> f32 {
         0.0
     }
@@ -666,7 +668,15 @@ impl<K: Copy + Eq> Stack<K> {
         // (an empty shelf takes none) when that is a shelf, drawn lifted by that shelf's own lift
         // (`draw_heading`'s `lift`)
         let below_rise = match (i + 1..self.specs.len()).find(|&j| self.height(p, cx, j) > 0.0).map(|j| &self.bodies[j]) {
-            Some(Body::Shelf(next)) => next.heading_lift(),
+            Some(Body::Shelf(next)) => {
+                // `card_row::room_for` counts `UNDER_LABEL_AIR` under a shelf's band: a page that keeps less
+                // with a shelf below would have a caption line drawn over that heading
+                debug_assert!(
+                    p.shelf_foot(cx, self.specs[i].key) >= UNDER_LABEL_AIR,
+                    "a shelf with another shelf below it keeps at least UNDER_LABEL_AIR under it (`StackPage::shelf_foot`)"
+                );
+                next.heading_lift()
+            }
             _ => 0.0,
         };
         SectionFrame { below_rise, ..SectionFrame::new(self.top(p, cx, i) - self.scroll.pos + heading, self.clip) }
