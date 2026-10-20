@@ -31,15 +31,14 @@ impl LibraryLike for TestHost {
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> {
         cx.views.hubs
     }
-    /// The app's probe, in the one respect the header cares about: it answers only for the
-    /// directory's CURRENT section (`collections_probe::count`), and only once a test has said the
-    /// probe landed ([`land_collections`]). So for the length of a library switch, between the press
-    /// and the store moving, the answer for the library the row now names is `None`.
-    fn collections_count(cx: &Cx<'_, Self>, section: u32) -> Option<Result<u32, crate::registry::Forbidden>> {
-        let directory = cx.views.directory;
-        let current = directory.sections().get(directory.current()?)?;
-        if current.key != i64::from(section) { return None; }
-        COLLECTION_ANSWERS.with(|answers| answers.borrow().iter().find(|(key, _)| *key == section).map(|(_, answer)| *answer))
+    /// The app's probe, in the one respect the header cares about: it answers for ANY section of
+    /// the directory the probe has learned (`collections_probe::count`, which the app warms for
+    /// every section when the directory lands), and only once a test has said the probe landed
+    /// ([`land_collections`]). A section the test has not landed is the probe that has not answered
+    /// yet: `None`, whichever library the row names.
+    fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, crate::registry::Forbidden>> {
+        let key = u32::try_from(cx.views.directory.sections().get(section)?.key).ok()?;
+        COLLECTION_ANSWERS.with(|answers| answers.borrow().iter().find(|(seen, _)| *seen == key).map(|(_, answer)| *answer))
     }
 }
 thread_local! {

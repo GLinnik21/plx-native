@@ -268,7 +268,26 @@ pub(super) struct World {
 }
 
 impl Drop for World {
-    fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); }
+    fn drop(&mut self) {
+        plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
+    }
+}
+
+/// How many collections the rig's probe stands in for on every section it seeds (a server the rig
+/// has no network to ask): enough that the Library header's Collections control is on the row.
+pub(crate) const RIG_COLLECTIONS: u32 = 4;
+
+impl Bridge {
+    /// Seed the Collections probe's `answer` for every section of the directory captured now (the
+    /// probe never reaches a server under test, `collections_probe::seed_for_test`), replacing the
+    /// rig's earlier seeds: `Count(n)` puts the control on the Library header, `Count(0)` or
+    /// `Forbidden` takes it off, `Unknown` is a probe that has not answered.
+    pub(crate) fn seed_collections_for_test(&self, answer: plx_plex::plex::collections::CollectionsCount) {
+        for section in self.directory.view().sections() {
+            if let Some(sid) = section.sid { crate::app::collections_probe::seed_for_test(sid, section.key, answer); }
+        }
+    }
 }
 
 impl World {
@@ -297,6 +316,7 @@ impl World {
     fn build_shelves(name: &str, two_libraries: bool, answered: bool, shelved: bool) -> World {
         let (serial, session) = Self::lock(name);
         plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = plx_plex::plex::register_for_test("route-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
@@ -309,6 +329,7 @@ impl World {
             bridge.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(FILM_CLUB, true)]));
         }
         bridge.refresh_browse_directory();
+        bridge.seed_collections_for_test(plx_plex::plex::collections::CollectionsCount::Count(RIG_COLLECTIONS));
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
             let mut browse = bridge.stores.browse.borrow_mut();
@@ -326,6 +347,16 @@ impl World {
     /// "Film Club" beside "Movies".
     pub(super) fn movies_library(name: &str, two_libraries: bool) -> World {
         let mut w = Self::build(name, two_libraries);
+        w.open_library();
+        w
+    }
+
+    /// The Movies library whose sections' Collections probe answered `answer` (a refusal, none, or a
+    /// count other than the rig's), settled: the header the rig's server would give a library with
+    /// that answer.
+    pub(super) fn movies_library_answering(name: &str, answer: plx_plex::plex::collections::CollectionsCount) -> World {
+        let mut w = Self::build(name, false);
+        w.bridge.seed_collections_for_test(answer);
         w.open_library();
         w
     }
@@ -355,7 +386,7 @@ impl World {
     }
 
     /// The Collections page, opened with OK on the Library header's Collections control, its own
-    /// listing held LOADING (the Library under it is answered, so the control is there to press).
+    /// listing held LOADING (the Library under it is answered, and the rig's probe is seeded with a count, so the control is there to press).
     pub(super) fn collections_loading(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
         w.bridge.stores.browse.borrow_mut().hold_listing_for_test();

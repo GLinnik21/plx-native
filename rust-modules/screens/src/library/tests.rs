@@ -36,6 +36,9 @@ impl LibraryLike for HostFixture {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
+    /// The fixture's libraries all hold collections, and their probe has said so: the Collections
+    /// control is on the row only with a known count, and these tests are about a row that has it.
+    fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, crate::registry::Forbidden>> { Some(Ok(4)) }
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);

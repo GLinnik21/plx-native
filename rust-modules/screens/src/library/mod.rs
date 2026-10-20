@@ -165,12 +165,20 @@ pub struct LibraryScreen {
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
     /// The row's content swap: the Collections count cross-fading in place when a rebuilt row
-    /// changes it, the control fading out when the new library has none. Held beside the capsules
+    /// changes it, the control fading out when the same library's row loses it and in when its
+    /// count lands (or dissolving between two x when the count's digits move it). A library
+    /// SWITCH cuts instead: the control the old library had is not drawn on the new page. Held beside the capsules
     /// for the same reason (a library switch replaces the row), but unlike them it is NOT hashed
     /// into the canon: the capsules' position steers the next frame, while `collections` is no part
     /// of the screen's shape (a recording never probes), so the swap has nothing to be a function of.
     header_swap: plx_ui::page_header::HeaderSwap,
-    /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
+    /// The library (server, section key) the row in `header` was built for: a rebuild for another
+    /// library is a switch (`HeaderSwap::begin_switch`), for the same one the page's own row
+    /// changing (`HeaderSwap::begin`). A projection, not canon.
+    header_of: Option<(Option<plx_plex::plex::ServerId>, i64)>,
+    /// What the Collections control knows (`LibraryScreen::refresh_header` reads
+    /// `LibraryLike::collections_count` for the library on view each `sync`): the same library's
+    /// last count is held across a read of nothing, another library's never is.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
     /// sorts for the collections listing). A projection of `header`, read by `toolbar_elems`.
@@ -269,7 +277,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), header_of: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
@@ -1249,9 +1257,10 @@ impl LibraryScreen {
             }
             ScreenEvent::FocusMoved { from, to, by } => {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
-                // tile from rest over the frames after this. A restore or a
-                // reconcile is adopted whole by its next tick so a page returning from a Detail
-                // push lands as it was left.
+                // tile from rest over the frames after this. A restore or a reconcile announced
+                // here is adopted whole by its next tick, unless a dormant tick ran since (a page
+                // returning from a Detail push under the held image, `Tick` below), in which case
+                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat

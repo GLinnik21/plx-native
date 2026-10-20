@@ -120,6 +120,7 @@ impl Rig {
     /// Two registered servers, 120 films in the store and six shelves of three cards.
     fn new() -> Rig {
         plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
         let own = plx_plex::plex::register_for_test("regions-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = plx_plex::plex::register_for_test("regions-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
@@ -127,6 +128,7 @@ impl Rig {
         let mut bridge = Bridge::for_test(|| 0);
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         bridge.refresh_browse_directory();
+        bridge.seed_collections_for_test(plx_plex::plex::collections::CollectionsCount::Count(super::test_support::RIG_COLLECTIONS));
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
             let mut browse = bridge.stores.browse.borrow_mut();

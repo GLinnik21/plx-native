@@ -8,9 +8,10 @@ submission.
 Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against the
 integrated release candidate documented by this commit.
 
-Native eligibility is no longer the open question this file used to describe. Seller Lounge accepts
-this IPK as **File Type: Native** and asks for its native SDK version, chipset and resolution; see
-`docs/distribution.md` §2. The remaining questions are QA and submission-readiness questions.
+**Submission is not available.** LG Seller Lounge stated in writing on 2026-10-20 that its
+registration and Functional QA accept Web Type applications only and that Native Type applications
+are not eligible for submission or review (`docs/distribution.md` §2). This file is kept as a
+measured quality record against LG's checklist, not as a path to the Store.
 
 ## 1. Integrated-plan completion is not LG submission readiness
 
@@ -34,7 +35,7 @@ was type-checked and cross-built, not silently treated as the same artefact.
 
 ### #53 — factory reset, then execute the app: EXTERNAL EVIDENCE UNAVAILABLE
 
-Native Store submission is possible, but this item cannot be answered with a Developer Mode or
+Native Store submission is not available (§ above), and in any case this item cannot be answered with a Developer Mode or
 Homebrew sideload: a factory reset removes that installation route. It needs an actual
 Store-distributed build, followed by factory reset, install/restore through the supported
 distribution channel, and launch. That distribution evidence is not available yet, so this row is
