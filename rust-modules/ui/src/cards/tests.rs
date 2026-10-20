@@ -4252,3 +4252,27 @@ fn a_down_hands_the_caption_over_on_its_band_progress_from_the_key_frame() {
             "frame {t}: out {:.3} + in {:.3} is not one hand-over", out.alpha, inn.alpha);
     }
 }
+
+#[test]
+fn the_hold_band_speaks_once_per_slack_and_never_leaves_the_view_short_of_its_margin() {
+    use super::{hold_band, HoldBand, HOLD_SLACK};
+    let len = 40;
+    let mut band = HoldBand::default();
+    let mut sent = Vec::new();
+    // a walk down the whole page, one row at a time, three rows in view
+    for top in 0..len - 2 {
+        let seen = (top, top + 2);
+        if let Some(b) = band.next(seen, len) { sent.push(b); }
+        let held = sent.last().copied().expect("the first step sent a band");
+        let need = hold_band(seen, len);
+        assert!(held.0 <= need.0 && held.1 >= need.1, "row {top}: {held:?} must cover {need:?}");
+    }
+    assert!(sent.len() <= 1 + (len - 2).div_ceil(HOLD_SLACK), "one band per {HOLD_SLACK} rows: {sent:?}");
+    assert_eq!(sent.last().map(|b| b.1), Some(len - 1), "the walk reached the last row");
+    // the same rows again: nothing to say; a forgotten band is said again
+    assert_eq!(band.next((len - 3, len - 1), len), None);
+    band.forget();
+    assert!(band.next((len - 3, len - 1), len).is_some());
+    // a list that grew under the view needs rows the old band did not reach
+    assert!(band.next((len - 3, len - 1), len + 5).is_some());
+}

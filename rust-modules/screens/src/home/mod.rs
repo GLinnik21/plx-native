@@ -557,9 +557,10 @@ pub struct HomeScreen {
     ghost_cards: HashMap<u64, (u32, Arc<PmsMovie>)>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
-    /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
-    /// the range changes. Derived from what is on screen; not canon.
-    hold_sent: Option<(usize, usize)>,
+    /// The rows held in the store (`HubsCmd::Hold`): the command goes out only when the rows in
+    /// view outgrow the band last sent (`ui_cards::HoldBand`). Derived from what is on screen; not
+    /// canon.
+    hold: ui_cards::HoldBand,
     /// What the syncs have cost, counted so the tests can pin the cost to the CHANGE and not to the
     /// catalog. Not canon.
     #[cfg(test)]
@@ -633,7 +634,7 @@ impl HomeScreen {
             ghost_cards: HashMap::new(),
             restored_scroll: Vec::new(),
             restore_reveal: false,
-            hold_sent: None,
+            hold: ui_cards::HoldBand::default(),
             #[cfg(test)]
             cost: SyncCost::default(),
             carousel: None,
@@ -1405,9 +1406,7 @@ impl HomeScreen {
         // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
-            let hold = ui_cards::hold_band((lo, hi), self.rows.len());
-            if self.hold_sent != Some(hold) {
-                self.hold_sent = Some(hold);
+            if let Some(hold) = self.hold.next((lo, hi), self.rows.len()) {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
@@ -2312,7 +2311,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, #[cfg(test)] cost: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, #[cfg(test)] cost: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,

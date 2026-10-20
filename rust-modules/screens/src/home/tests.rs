@@ -4160,7 +4160,7 @@ fn the_screen_holds_the_rows_in_view_and_two_either_side_and_says_so_only_when_t
     let first = holds(&step(&mut s, snapshot.view(), None, &tick).1);
     assert_eq!(first.len(), 1, "the first tick tells the store which rows are held");
     assert_eq!(first[0].0, 0);
-    assert!(first[0].1 <= 8, "a screenful plus two: {first:?}");
+    assert!(first[0].1 <= 6 + ui_cards::HOLD_MARGIN + ui_cards::HOLD_SLACK, "a screenful plus the margin and the slack: {first:?}");
     assert!(holds(&step(&mut s, snapshot.view(), None, &tick).1).is_empty(), "an unmoved range is not sent again");
     s.grid.scroll_y.pos = 20_000.0;
     s.grid.scroll_target = 20_000.0;

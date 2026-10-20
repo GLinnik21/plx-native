@@ -137,9 +137,10 @@ pub struct RecommendedScreen {
     header_row: plx_ui::page_header::SharedRow<HeaderRow>,
     /// The standing "Hold OK for options" hint over a card. Paint-only.
     hold_hint: plx_ui::hold_hint::HoldHint,
-    /// The held range last sent to the store, with the section it was for, so the command goes out
-    /// only when it changes. Derived from what is on screen; not canon.
-    hold_sent: Option<(SectionAddress, (usize, usize))>,
+    /// The held range sent to the store and the section it was for: the command goes out only when
+    /// the rows in view outgrow the band last sent (`ui_cards::HoldBand`), or the section changes.
+    /// Derived from what is on screen; not canon.
+    hold_sent: Option<(SectionAddress, ui_cards::HoldBand)>,
     /// Rows the document draw and the stop recorder looked at, for the windowing test.
     #[cfg(test)]
     pub(super) shelf_visits: std::cell::Cell<usize>,
@@ -645,9 +646,12 @@ impl RecommendedScreen {
             .and_then(|key| focused_row(&self.shelves, key.elem, self.keys.last_place(key.elem)));
         let (mut lo, mut hi) = (seen.start, seen.end.saturating_sub(1).max(seen.start));
         if let Some(row) = focused { (lo, hi) = (lo.min(row), hi.max(row)); }
-        let hold = ui_cards::hold_band((lo, hi), self.shelves.len());
-        if self.hold_sent != Some((target, hold)) {
-            self.hold_sent = Some((target, hold));
+        let (sent_for, band) = self.hold_sent.get_or_insert((target, ui_cards::HoldBand::default()));
+        if *sent_for != target {
+            *sent_for = target;
+            band.forget();
+        }
+        if let Some(hold) = band.next((lo, hi), self.shelves.len()) {
             self.store(target, LibraryWork::HubHold { lo: hold.0, hi: hold.1 }, fx);
         }
     }
