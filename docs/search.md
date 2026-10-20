@@ -249,7 +249,10 @@ untrue about their library.
 server-side (`docs/shared-servers.md`). So the store fans out one query per `plex::server_ids` and
 merges into the shelves, which is why every `Item` carries its own `ServerId` and why a shelf heading
 can never claim an owner — the owner annotation follows FOCUS and rides the focused tile's caption,
-exactly as Continue Watching's does on Home.
+exactly as Continue Watching's does on Home. On a poster row that caption is the Under posters
+setting's (`registry/captions.rs`) and the handle is credited after its details line, so under
+Under posters → Nothing, which draws no details line, there is no annotation either; a still or a
+headshot keeps its own block and its annotation under every setting.
 
 ---
 
