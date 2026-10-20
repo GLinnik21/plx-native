@@ -1438,6 +1438,9 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         elems: vec![second_elem],
         placeholders: false,
         link: None,
+        title: String::new(),
+        cards: Vec::new(),
+        stale: false,
     });
     s.elem_at.insert(second_elem, (1, 0));
     s.snap.jump(1.0);
@@ -3324,6 +3327,118 @@ fn key_index_agrees_with_a_scan_of_the_table() {
     }
 }
 
+/// What the two syncs of ONE press cost when the ring moves a row on: the row entering gets its cards and the row
+/// leaving gives them up (`rows` rows, `items` cards each). Taken on the second press, so the
+/// placeholder keys of the row that entered on the first are the ones due to leave the table.
+fn ring_step_cost(rows: usize, items: usize) -> SyncCost {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, 5));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    let mut last = SyncCost::default();
+    for step in 1..3usize {
+        let before = s.cost;
+        // The press moves the band: the row that left gives its cards up (one publication) and the
+        // read of the row that entered lands (another), each a StoreChanged for the page.
+        assert!(plx_data::pms::hold_for_test(&mut state, step, step + 5));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+        assert!(plx_data::pms::land_ring_rows_for_test(&mut state, items, &|_| 0), "step {step} of {rows} rows");
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+        last = SyncCost {
+            index_inserts: s.cost.index_inserts - before.index_inserts,
+            index_rebuilds: s.cost.index_rebuilds - before.index_rebuilds,
+            elem_at_writes: s.cost.elem_at_writes - before.elem_at_writes,
+            sweeps: s.cost.sweeps - before.sweeps,
+        };
+        assert_indexes_agree(&s);
+    }
+    last
+}
+
+#[test]
+fn a_ring_step_costs_the_rows_it_touches_not_the_catalog() {
+    let _guard = plx_base::testlock::serial();
+    let items = 12;
+    let (big, small) = (ring_step_cost(170, items), ring_step_cost(10, items));
+    assert_eq!(big.index_rebuilds, 0, "a prune deletes in place: {big:?}");
+    assert_eq!(small.index_rebuilds, 0, "{small:?}");
+    // one row in, one row out: each re-keys its own cards and nothing else
+    assert!(big.index_inserts <= 2 * items + 4, "index insertions follow the rows that changed: {big:?}");
+    assert!(big.elem_at_writes <= 2 * items + 4, "so does the element map: {big:?}");
+    assert_eq!(big.index_inserts, small.index_inserts, "and not the catalog's size: {big:?} vs {small:?}");
+    assert_eq!(big.elem_at_writes, small.elem_at_writes, "{big:?} vs {small:?}");
+}
+
+/// Forty presses of a Down key through a long page: two StoreChanged each, the key table swept once
+/// per batch of keys that left the page and not once per publication.
+#[test]
+fn the_key_table_is_swept_once_per_batch_of_departed_keys() {
+    let _guard = plx_base::testlock::serial();
+    let (rows, items, presses) = (170usize, 12usize, 40usize);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, 5));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    let before = s.cost;
+    for step in 1..=presses {
+        assert!(plx_data::pms::hold_for_test(&mut state, step, step + 5));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+        assert!(plx_data::pms::land_ring_rows_for_test(&mut state, items, &|_| 0));
+        s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    }
+    let sweeps = s.cost.sweeps - before.sweeps;
+    // a press takes at most two rows' cards off the page: 2 * items keys
+    let leaving = presses * 2 * items;
+    assert!(sweeps <= leaving.div_ceil(KEY_PRUNE_BATCH) + 1, "{sweeps} sweeps in {} syncs", 2 * presses);
+    assert!(sweeps < presses, "a sweep per press is the cost this batches away");
+    // the placeholder keys that have left the page wait for the sweep, one batch at most (the
+    // stable keys of cards that left stay by their own bound, `key_cap`)
+    let waiting = s.items.iter()
+        .filter(|key| matches!(key.identity, HomeItemIdentity::Slot { .. }) && !s.elem_at.contains_key(&key.elem))
+        .count();
+    assert!(waiting <= KEY_PRUNE_BATCH + 2 * items, "{waiting} placeholder keys wait for a sweep");
+    assert_indexes_agree(&s);
+}
+
+#[test]
+fn scrolling_inside_the_held_band_does_not_send_the_store_a_new_band() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 60, 12);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 });
+    let mut sent = holds(&step(&mut s, snapshot.view(), None, &tick).1);
+    // Down, one row at a time: the shelves scroll by a row pitch per press.
+    let presses: usize = 12;
+    for press in 1..=presses {
+        let scroll = press as f32 * ui_cards::ROW_PITCH_FIXED;
+        s.grid.scroll_y.pos = scroll;
+        s.grid.scroll_target = scroll;
+        s.layout_grid();
+        sent.extend(holds(&step(&mut s, snapshot.view(), None, &tick).1));
+        let visible: Vec<usize> = (0..s.rows.len()).filter(|&row| {
+            let shelf = &s.grid.shelves[row];
+            let top = heading_y(shelf.base_y(), shelf.heading_lift());
+            on_axis(top, shelf.base_y() + CARD_H + shelf.under_band() - top, SCR_H, 0.0)
+        }).collect();
+        let seen = (*visible.first().unwrap(), *visible.last().unwrap());
+        let need = ui_cards::hold_band(seen, s.rows.len());
+        let band = *sent.last().expect("the first tick sent a band");
+        assert!(band.0 <= need.0 && band.1 >= need.1,
+            "after press {press} the rows in view and {} either side are held: sent {band:?}, need {need:?}", ui_cards::HOLD_MARGIN);
+    }
+    assert!(sent.len() <= 1 + presses.div_ceil(ui_cards::HOLD_SLACK + 1),
+        "{presses} one-row presses inside the band cost at most one new band per {} rows: {sent:?}",
+        ui_cards::HOLD_SLACK + 1);
+}
+
 #[test]
 fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
     let _guard = plx_base::testlock::serial();
@@ -3399,12 +3514,14 @@ fn volatile_keys_do_not_accumulate_across_publications() {
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
-    for _ in 0..20 {
+    for _ in 0..200 {
         republish_named(&mut s, &mut state, &adapter, &["", "", ""], 4, None);
     }
-    // Only the shown publication and the one before it are kept.
-    assert!(s.items.len() <= 2 * 12, "{} keys after 20 publications", s.items.len());
-    assert!(s.groups.len() <= 3, "{} groups after 20 publications", s.groups.len());
+    // The shown publication and the one before it, and no more than one batch of keys that left
+    // the page and wait for the sweep (`KEY_PRUNE_BATCH`): the table does not grow with the
+    // number of publications, and the groups (few) go at once.
+    assert!(s.items.len() <= 2 * 12 + KEY_PRUNE_BATCH, "{} keys after 200 publications", s.items.len());
+    assert!(s.groups.len() <= 3, "{} groups after 200 publications", s.groups.len());
     assert_eq!(s.rows.len(), 3);
     assert_indexes_agree(&s);
 }
@@ -3418,7 +3535,8 @@ fn the_focused_vanished_key_survives_a_prune() {
     republish_named(&mut s, &mut state, &adapter, &[""], 4, None);
     let (focused, other) = (s.rows[0].elems[1], s.rows[0].elems[2]);
     let focus = Some(FocusKey { entry: EntryId(7), elem: focused });
-    for _ in 0..4 {
+    // enough publications for a batch of keys to have left the page, and so for a sweep to run
+    for _ in 0..KEY_PRUNE_BATCH {
         republish_named(&mut s, &mut state, &adapter, &[""], 4, focus);
     }
     assert!(s.items.iter().any(|k| k.elem == focused), "the focused key was pruned");
@@ -4106,7 +4224,7 @@ fn the_screen_holds_the_rows_in_view_and_two_either_side_and_says_so_only_when_t
     let first = holds(&step(&mut s, snapshot.view(), None, &tick).1);
     assert_eq!(first.len(), 1, "the first tick tells the store which rows are held");
     assert_eq!(first[0].0, 0);
-    assert!(first[0].1 <= 8, "a screenful plus two: {first:?}");
+    assert!(first[0].1 <= 6 + ui_cards::HOLD_MARGIN + ui_cards::HOLD_SLACK, "a screenful plus the margin and the slack: {first:?}");
     assert!(holds(&step(&mut s, snapshot.view(), None, &tick).1).is_empty(), "an unmoved range is not sent again");
     s.grid.scroll_y.pos = 20_000.0;
     s.grid.scroll_target = 20_000.0;
@@ -5012,6 +5130,233 @@ fn an_evicted_home_remounted_on_the_next_episode_keeps_the_remembered_tile() {
         sid: plx_plex::plex::ServerId::UNSET, rk: "3".into() }).is_none(), "the old episode's key is retired, not re-added");
 }
 
+/// What a full projection of `view` over `s`'s key table would give, checked against what the
+/// incremental sync left: every row's elements are the keys of the cards it shows (a descriptor's
+/// are its slots), every shown card's key remembers the place it sits, and the element map is the
+/// first-wins map of the rows. A row the sync kept whole without projecting it again must agree
+/// with all three, so this is the invariant the fast path has to keep after ANY edit of the key
+/// table: a publication, a remount's restore, an adopted show.
+fn assert_matches_a_full_projection(s: &HomeScreen, view: HubsView<'_>) {
+    assert_eq!(s.rows.len(), view.hub_count(), "one projection per published row");
+    for row in 0..view.hub_count() {
+        let hub = view.hub(row).expect("a published row");
+        let identity = HomeScreen::hub_identity(view, row, hub);
+        for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate().filter(|(_, item)| !s.rows[row].placeholders && !item.rk.is_empty()) {
+            let at = s.item_slot(&identity, ItemRef::Item { sid: item.sid, rk: &item.rk }).unwrap_or_else(|| panic!("({row}, {col}) has no key"));
+            let key = &s.items[at];
+            assert_eq!((key.last_row, key.last_col), (row as u32, col as u32),
+                "the key of the card at ({row}, {col}) remembers where it sits (rk {:?})", item.rk);
+        }
+    }
+    assert_element_map_is_the_rows(s, view);
+}
+
+/// The rows hold the element of the card each shows, and the element map is the first-wins map of
+/// those (which is all a screen that publishes one hub twice can ask of it: its two rows share
+/// keys, so a key can remember only the place of the last row projected).
+fn assert_element_map_is_the_rows(s: &HomeScreen, view: HubsView<'_>) {
+    assert_eq!(s.rows.len(), view.hub_count(), "one projection per published row");
+    let mut expected: HashMap<u32, (u32, u32)> = HashMap::new();
+    for row in 0..view.hub_count() {
+        let hub = view.hub(row).expect("a published row");
+        let identity = HomeScreen::hub_identity(view, row, hub);
+        let projection = &s.rows[row];
+        assert_eq!(projection.identity, identity, "row {row} is the row the catalog publishes there");
+        assert_eq!(projection.elems.len(), hub.items.len().min(MAX_ITEMS), "row {row} has a tile per card");
+        for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
+            let item_ref = if item.rk.is_empty() {
+                ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
+            } else {
+                ItemRef::Item { sid: item.sid, rk: &item.rk }
+            };
+            let at = s.item_slot(&identity, item_ref).unwrap_or_else(|| panic!("({row}, {col}) has no key"));
+            let key = &s.items[at];
+            assert_eq!(projection.elems[col], key.elem,
+                "the tile at ({row}, {col}) holds the element of the card it shows (rk {:?})", item.rk);
+            expected.entry(key.elem).or_insert((row as u32, col as u32));
+        }
+    }
+    assert_eq!(s.elem_at, expected, "the element map is the rows' own, first row winning");
+}
+
+/// A remount's restore on the next episode coming back FIRST (Continue Watching is ordered by last
+/// viewed): the tile that held episode 3 in column 2 now holds 31 in column 0, and the key table
+/// the restore leaves must say so, not just hand the old element to the new card while the row
+/// still lists the elements the fresh page minted.
+#[test]
+fn an_evicted_home_remounted_on_a_next_episode_that_comes_first_moves_the_tile_with_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let memory = memory_of(&s);
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    plx_data::pms::promote_test_item(&mut state, "31");
+    let back = remount(&state, memory);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    assert_eq!(card_rk(&state, 0), "31", "premise: the next episode is first");
+    assert_eq!(back.rows[0].elems[0], before[2], "episode 31 is on the element that held episode 3");
+    assert_matches_a_full_projection(&back, snapshot.view());
+    assert_indexes_agree(&back);
+}
+
+/// xorshift64*: a repeatable stream for the histories below (a seed names a failure).
+struct History(u64);
+
+impl History {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as usize % n
+    }
+}
+
+/// One random change to the catalog the server publishes: the first (Continue Watching) shelf gains,
+/// loses, reorders or replaces a card, the next episode of a show arrives under another rating key,
+/// every shelf reorders its cards, or a plain republication with no change at all.
+fn publish_something(state: &mut plx_data::pms::PmsState, rng: &mut History, fresh: &mut u32, log: &mut Vec<String>) {
+    let shelf = plx_data::pms::hubs_snapshot(state);
+    let cards: Vec<(String, String)> = shelf.view().hub(0).expect("a first row").items.iter()
+        .map(|card| (card.rk.clone(), card.show_rk.clone())).collect();
+    let at = rng.below(cards.len());
+    *fresh += 1;
+    let new_rk = format!("n{fresh}");
+    match rng.below(8) {
+        0 => {
+            log.push(format!("the next episode of {} arrives as {new_rk} in place", cards[at].0));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk;
+                items[at] = Arc::new(card);
+            });
+        }
+        1 => {
+            log.push(format!("{new_rk} arrives first as the next episode of {}", cards[at].0));
+            let (new_rk, show) = (new_rk.clone(), cards[at].1.clone());
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk;
+                card.show_rk = show;
+                items.remove(at);
+                items.insert(0, Arc::new(card));
+            });
+        }
+        2 => {
+            log.push(format!("{} moves to the front", cards[at].0));
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| { let card = items.remove(at); items.insert(0, card); });
+        }
+        3 if cards.len() > 2 => {
+            log.push(format!("{} leaves", cards[at].0));
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| { items.remove(at); });
+        }
+        4 if cards.len() < MAX_ITEMS => {
+            log.push(format!("{new_rk} joins at {at}"));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_first_shelf_for_test(state, move |items| {
+                let mut card = (*items[at]).clone();
+                card.rk = new_rk.clone();
+                card.show_rk = format!("show{new_rk}");
+                items.insert(at, Arc::new(card));
+            });
+        }
+        5 => {
+            log.push("every shelf reorders".into());
+            plx_data::pms::rotate_test_shelves_right(state);
+        }
+        6 => {
+            log.push(format!("{} is answered again under {new_rk} on every shelf", cards[at].0));
+            let new_rk = new_rk.clone();
+            plx_data::pms::edit_test_item(state, &cards[at].0, &move |card| card.rk = new_rk.clone());
+        }
+        _ => {
+            log.push("republished unchanged".into());
+            plx_data::pms::edit_first_shelf_for_test(state, |_| {});
+        }
+    }
+}
+
+/// The incremental sync is a PROJECTION, not a history: after any run of publications, evictions
+/// (the page remounted on the current catalog and handed its memory), in-place restores and
+/// reorders, the rows, the element map and every shown card's remembered place are what a full
+/// projection over the same key table gives. A row kept whole, a row inheriting a finished
+/// episode's element, a restore swapping elements between keys: each is a way for the fast path to
+/// leave a row that disagrees with the table, which `an_evicted_home_remounted_on_a_next_episode_that_comes_first_…`
+/// was the one example of.
+#[test]
+fn the_incremental_sync_equals_a_full_projection_over_random_histories() {
+    let _guard = plx_base::testlock::serial();
+    for seed in 1..=150u64 {
+        let mut rng = History(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 6, &[
+            ("home.continue", "", "Continue Watching"), ("home.movies.recent", "/hubs/recent", "Recent"),
+            ("home.movies.genre", "/hubs/genre", "Genre"),
+        ]);
+        for rk in 1..=6 {
+            plx_data::pms::edit_test_item(&mut state, &rk.to_string(), &|card| { card.kind = 3; card.show_rk = format!("show{}", card.rk); });
+        }
+        let mut s = screen(plx_data::pms::hubs_snapshot(&state).view());
+        let (mut fresh, mut log) = (0u32, Vec::new());
+        for step in 0..24 {
+            let op = rng.below(5);
+            if op == 0 {
+                // evicted while the catalog moves on, then mounted on the current one and restored
+                let memory = memory_of(&s);
+                for _ in 0..rng.below(3) { publish_something(&mut state, &mut rng, &mut fresh, &mut log); }
+                log.push("the page is remounted from its memory".into());
+                s = remount(&state, memory);
+            } else if op == 1 {
+                log.push("the page restores its own memory".into());
+                let memory = memory_of(&s);
+                s.restore(&memory);
+                s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+            } else {
+                publish_something(&mut state, &mut rng, &mut fresh, &mut log);
+                s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+            }
+            let snapshot = plx_data::pms::hubs_snapshot(&state);
+            let history = || format!("seed {seed}, step {step}: {:?}", log);
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_matches_a_full_projection(&s, snapshot.view());
+                assert_indexes_agree(&s);
+            }));
+            if let Err(failure) = checked {
+                eprintln!("{}", history());
+                std::panic::resume_unwind(failure);
+            }
+        }
+    }
+}
+
+/// A publication can carry one hub twice (the store does not dedupe `(hubIdentifier, key)`): the two
+/// rows share their keys, and the element map keeps the first row's place for a shared element. When
+/// the FIRST of the two changes and the second is kept whole, the element a card of the first row
+/// left behind is still the second row's, so the map must keep it (it would be swept as gone while
+/// on screen).
+#[test]
+fn a_hub_published_twice_keeps_its_second_rows_elements_when_the_first_row_changes() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 4,
+        &[("x.twice", "/hubs/twice", "Twice"), ("x.once", "/hubs/once", "Once"), ("x.twice", "/hubs/twice", "Twice")]);
+    let first = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(first.view());
+    assert_element_map_is_the_rows(&s, first.view());
+    // the first row loses its first card; the second keeps all four
+    plx_data::pms::edit_first_shelf_for_test(&mut state, |items| { items.remove(0); });
+    let after = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(after.view(), None));
+    assert_eq!(s.rows[0].elems.len(), 3, "premise: the first row changed");
+    assert_eq!(s.rows[2].elems.len(), 4, "premise: the second row is the one it was");
+    assert_element_map_is_the_rows(&s, after.view());
+    for (col, &elem) in s.rows[2].elems.iter().enumerate() {
+        assert!(s.elem_at.contains_key(&elem), "the second row's card {col} is still on the page");
+    }
+}
+
 #[test]
 fn an_evicted_home_remounted_after_a_card_left_recovers_its_cursor_without_a_collision() {
     let _guard = plx_base::testlock::serial();
@@ -5285,4 +5630,81 @@ fn home_opens_its_focused_shelf_band_by_the_policys_band_h() {
         assert_eq!(plx_ui::caption_policy::band_h(&policy), tall, "premise: title {title}, details {details:?}");
         assert_eq!(opened, ui_cards::band_open_for(tall), "title {title}, details {details:?}: the row below is carried down by the band");
     }
+}
+
+/// **A caption's inputs are not in the projection, so a row the sync keeps whole cannot show a stale
+/// one.** The incremental sync keeps a row while the cards it was projected from are the very same
+/// cards (`Arc::ptr_eq`), and the caption is worded at the draw (`HomeCards::label`) from the card
+/// the published row holds NOW and from the Under posters setting. So the two inputs of a caption
+/// reach the drawn block by the two routes this pins: a FACT of a card (its title, genre, ...) that
+/// changes is a new card, which projects its own row again and no other, and the block it words is
+/// the new fact's; the SETTING changes nothing in the projection (no publication, no sync) and the
+/// block, and the band the shelf reserves for it, follow it on the next layout.
+#[test]
+fn a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+    use crate::registry::captions::TEST_UNDER_POSTERS;
+    let _guard = plx_base::testlock::serial();
+    let (rows, items) = (4usize, 5usize);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, rows - 1));
+    let setting = |title, details| TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+    // The block the shelf draws under card `col` of `row`, as the card source words it.
+    let block = |s: &HomeScreen, state: &plx_data::pms::PmsState, row: usize, col: usize| {
+        let snapshot = plx_data::pms::hubs_snapshot(state);
+        let label = ui_cards::CardSource::<TestHost>::label(&s.cards(snapshot.view(), row), col);
+        let text = |line: &Option<std::ffi::CString>| line.as_ref().map(|line| line.to_string_lossy().into_owned());
+        [text(&label.title), text(&label.caption)]
+    };
+
+    setting(true, Details::Genre);
+    let first = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(first.view());
+    drop(first);
+    let (row, col) = (1usize, 2usize);
+    assert_eq!(band_h(), 112.0, "premise: Title on over a details line is the tall band");
+    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h()));
+    let untouched = [(0, 0), (2, 3), (3, 4)].map(|(r, c)| (r, c, block(&s, &state, r, c)));
+    let before = block(&s, &state, row, col);
+
+    // The server answers row 1 again with card 2's facts changed: a new card, the same rating key.
+    let rk = format!("0-{row}-{col}");
+    plx_data::pms::edit_test_item(&mut state, &rk, &|m| {
+        m.title = "Heat".into();
+        m.genre = Some("Crime".into());
+        m.video_resolution = Some("4k".into());
+    });
+    let cost = s.cost;
+    let after = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(after.view(), None));
+    assert_eq!(s.cost.elem_at_writes - cost.elem_at_writes, items,
+        "only the row whose card changed was projected again, and the others were kept whole");
+    assert_matches_a_full_projection(&s, after.view());
+    drop(after);
+    assert_ne!(block(&s, &state, row, col), before, "premise: the fact is a caption input");
+    assert_eq!(block(&s, &state, row, col), [Some("Heat".to_owned()), Some("Crime".to_owned())],
+        "the block words the card the store publishes now");
+    for (r, c, was) in untouched {
+        assert_eq!(block(&s, &state, r, c), was, "({r}, {c}) is a card nobody changed");
+    }
+
+    // The setting changes: no publication reaches the page, so no sync runs and no row is projected.
+    let cost = s.cost;
+    setting(false, Details::Video);
+    s.layout_grid();
+    assert_eq!(s.cost.elem_at_writes, cost.elem_at_writes, "a setting is not a publication");
+    let video = block(&s, &state, row, col);
+    assert_eq!(video[0], None, "Title off draws no title line");
+    assert_eq!(video[1].as_deref(), Some("4K"), "the Video details line reads the card's own resolution");
+    assert_eq!(band_h(), 80.0, "premise: one line is an 80 px band, the two lines it was were 112");
+    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h()), "every shelf reserves the new setting's band");
+
+    // Nothing in it is a stale projection: a page remounted on the very same catalog words the same block.
+    let remounted = {
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
+        screen(snapshot.view())
+    };
+    assert_eq!(block(&remounted, &state, row, col), video);
+    TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }

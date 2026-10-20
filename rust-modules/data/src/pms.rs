@@ -34,16 +34,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub mod record;
 pub mod initial;
 
-/// Rows of Home (and of a Library section's Recommended page) that hold cards at once: the rows in view plus a margin. Every other row keeps its
-/// descriptor (identity, title, key, total, window offset, ledger, the count of cards it last
-/// showed) and publishes that many placeholder slots, so every row stays reachable and nothing is
-/// left off.
-///
-/// Bound on held cards: `HOLD_ROWS` x [`MAX_SHELF_ITEMS`] = 16 x 24 = 384, plus the merged
-/// Continue Watching row (one window of the deck, at most [`MAX_SHELF_ITEMS`]) and at most
-/// [`HERO_MAX`] retained heroes, however many rows the servers offer. Descriptors are a few hundred
-/// bytes each; they are the directory.
-pub(crate) const HOLD_ROWS: usize = 16;
+/// The rows a paged store keeps cards for, and the cut applied to what a screen asks: defined in
+/// `plx_base::hold`, because `ui::cards::HoldBand` applies the very same cut to know what the
+/// store kept (the store and `ui` cannot name each other).
+pub(crate) use plx_base::hold::{clamp_hold, HOLD_ROWS};
 
 /// Cards one shelf holds at once: the size of a WINDOW over the row's listing, which the grid can
 /// address (the owned Home's `MAX_ITEMS` is this constant). It is not a limit on the row: past it
@@ -1323,19 +1317,10 @@ fn carry_descriptors(old: &SourceBuild, new: &mut SourceBuild) {
     }
 }
 
-/// The held range as the store keeps it: at most [`HOLD_ROWS`] rows, centred on what the screen
-/// asked for when it asked for more.
-pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
-    let hi = hi.max(lo);
-    if hi - lo < HOLD_ROWS { return (lo, hi); }
-    let lo = ((lo + hi) / 2).saturating_sub(HOLD_ROWS / 2);
-    (lo, lo + HOLD_ROWS - 1)
-}
-
 /// The shelves that publish a row, in catalog order after the deck: `(source, shelf)` indices.
 /// The single definition of that order, shared by the merge's output and the ring.
 fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, usize)> {
-    let mut order = Vec::new();
+    let mut order = Vec::with_capacity(srcs.iter().filter_map(|source| source.last.as_ref()).map(|build| build.shelves.len()).sum());
     for (i, source) in srcs.iter().enumerate() {
         let Some(build) = &source.last else { continue };
         for (j, shelf) in build.shelves.iter().enumerate() {
@@ -1355,12 +1340,13 @@ fn give_up_cards(shelf: &mut Shelf) -> bool {
 }
 
 /// Gives the cards of every row outside the held range up to its descriptor. `hubs` is the merge
-/// that was just built from `srcs`; returns whether any row changed.
-fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> bool {
+/// that was just built from `srcs`; returns the rows that changed as `(row, source)`, `row` being
+/// the index into that merge's `hubs` and `source` the index into `srcs`.
+fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> Vec<(usize, usize)> {
     let order = published_order(srcs, pins);
     let deck = hubs.len().saturating_sub(order.len());
     let (lo, hi) = clamp_hold(hold);
-    let mut changed = false;
+    let mut released = Vec::new();
     for (k, &(i, j)) in order.iter().enumerate() {
         let row = k + deck;
         if (lo..=hi).contains(&row) { continue; }
@@ -1370,29 +1356,47 @@ fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow]
         shelf.shown = hubs[row].len;
         shelf.items = Vec::new();
         shelf.positions = Vec::new();
-        changed = true;
+        released.push((row, i));
     }
-    changed
+    released
 }
 
 /// [`merge_with_scope`] with the ring applied: rows outside the held range give their cards up and
-/// the catalog is built again from descriptors. The hero pool is the full merge's (it is built from
-/// the rows a refresh brought, before they were released); its cards are kept in the catalog.
+/// the catalog shows them as descriptors. The hero pool is the full merge's (it is built from the
+/// rows a refresh brought, before they were released); its cards are kept in the catalog.
+///
+/// A row that gives its cards up publishes as many placeholders as it showed (`Shelf::shown` is set
+/// to its length), so releasing it changes nothing about the catalog's shape: the same rows, the
+/// same starts and lengths, only the cards in its slice. The merge that was just built is therefore
+/// PATCHED for those rows, not built a second time from every source (every press of a Down key
+/// moves the band and used to pay for two whole merges here; `merge_held_equals_a_merge_of_the_settled_ring`
+/// pins that the patch is the merge it replaces).
 fn merge_held(srcs: &mut [Src], scope: &BrowseScope, hold: (usize, usize)) -> (HubBuild, bool) {
     let mut build = merge_with_scope(srcs, scope);
-    let changed = settle_ring(srcs, &scope.pins, &build.1, hold);
-    if changed {
-        let full = std::mem::replace(&mut build, merge_with_scope(srcs, scope));
-        keep_heroes(&full.0, &full.2, &mut build);
+    let released = settle_ring(srcs, &scope.pins, &build.1, hold);
+    if released.is_empty() { return (build, false); }
+    // the pool's cards, before the slices they sit in are overwritten
+    let pool: Vec<(Arc<PmsMovie>, String, usize)> = build.2.iter()
+        .map(|hero| (Arc::clone(&build.0[hero.idx]), hero.source.clone(), hero.idx)).collect();
+    let mut slots: Vec<Option<Arc<PmsMovie>>> = vec![None; srcs.len()];
+    for (row, i) in released {
+        let hub = &build.1[row];
+        let slot = slots[i].get_or_insert_with(|| placeholder_slot(srcs[i].sid));
+        for card in &mut build.0[hub.start..hub.start + hub.len] { *card = Arc::clone(slot); }
     }
-    (build, changed)
+    place_heroes(pool, &mut build);
+    (build, true)
 }
 
 /// The rows to read again: held, a descriptor, not stalled. Per source, in catalog order.
-fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], deck: usize, hold: (usize, usize)) -> Vec<Vec<(String, String)>> {
+/// `published_rows` is the published catalog's row count, which with the shelves' own order says how
+/// many deck rows lead it.
+fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], published_rows: usize, hold: (usize, usize)) -> Vec<Vec<(String, String)>> {
     let (lo, hi) = clamp_hold(hold);
+    let order = published_order(srcs, pins);
+    let deck = published_rows.saturating_sub(order.len());
     let mut wanted = vec![Vec::new(); srcs.len()];
-    for (k, (i, j)) in published_order(srcs, pins).into_iter().enumerate() {
+    for (k, (i, j)) in order.into_iter().enumerate() {
         if !(lo..=hi).contains(&(k + deck)) { continue; }
         let Some(shelf) = srcs[i].last.as_ref().and_then(|build| build.shelves.get(j)) else { continue };
         if shelf.released() && !srcs[i].stalled.iter().any(|(id, key)| shelf.is(id, key)) {
@@ -1409,8 +1413,7 @@ fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], deck: usize, hol
 fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
-    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut ask = false;
     for (source, want) in srcs.iter_mut().zip(&wanted) {
@@ -1626,7 +1629,15 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
 /// rows that entered it without cards are read at their windows.
 fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo: usize, hi: usize,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
-    if state.hold == (lo, hi) { return Default::default(); }
+    if !apply_hold(state, scope, lo, hi) { return Default::default(); }
+    pump_reloads(state, adapter, scope, launch)
+}
+
+/// The store's half of a hold that moved, before any read is asked for: the band is kept, rows
+/// outside it give their cards up and the catalog is published without them. False when the band
+/// is the one held already.
+fn apply_hold(state: &mut PmsState, scope: &BrowseScope, lo: usize, hi: usize) -> bool {
+    if state.hold == (lo, hi) { return false; }
     state.hold = (lo, hi);
     for source in &mut state.srcs { source.stalled.clear(); }
     let mut srcs = std::mem::take(&mut state.srcs);
@@ -1636,7 +1647,7 @@ fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo:
         preserve_heroes(state, &mut build);
         commit(state, build);
     }
-    pump_reloads(state, adapter, scope, launch)
+    true
 }
 
 // Scrolling an old Recently Added page must not change the banner's current selection.
@@ -1648,12 +1659,21 @@ fn preserve_heroes(state: &PmsState, build: &mut HubBuild) {
 /// Makes `heroes` (slots into `items`) the pool of `build`, adding to its catalog the cards it does
 /// not hold.
 fn keep_heroes(items: &[Arc<PmsMovie>], heroes: &[HeroSlot], build: &mut HubBuild) {
+    place_heroes(heroes.iter().map(|hero| (Arc::clone(&items[hero.idx]), hero.source.clone(), hero.idx)).collect(), build);
+}
+
+/// [`keep_heroes`] for a pool already lifted out of its catalog as `(card, source handle, the
+/// slot it held)`. A card still at the slot it held (the catalog's shape did not move, which is
+/// every call but a refresh that reordered rows) is found there without a scan; any other is looked
+/// for by identity, and appended when the catalog no longer holds it.
+fn place_heroes(pool: Vec<(Arc<PmsMovie>, String, usize)>, build: &mut HubBuild) {
     build.2.clear();
-    for hero in heroes {
-        let item = &items[hero.idx];
-        let idx = build.0.iter().position(|row| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk)))
-            .unwrap_or_else(|| { build.0.push(Arc::clone(item)); build.0.len() - 1 });
-        build.2.push(HeroSlot { idx, source: hero.source.clone() });
+    for (item, source, held) in pool {
+        let same = |row: &Arc<PmsMovie>| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk));
+        let idx = build.0.get(held).filter(|row| same(row)).map(|_| held)
+            .or_else(|| build.0.iter().position(|row| same(row)))
+            .unwrap_or_else(|| { build.0.push(Arc::clone(&item)); build.0.len() - 1 });
+        build.2.push(HeroSlot { idx, source });
     }
 }
 
@@ -1964,45 +1984,40 @@ fn live_sources(srcs: &[Src]) -> Vec<(&str, &SourceBuild)> {
         .collect()
 }
 
-/// What each live source's shelves publish: every pinned card they hold, at most
-/// [`MAX_SHELF_ITEMS`] per shelf. A shelf that gave its cards up to the ring holds none and
-/// publishes placeholder slots instead (see [`Shelf::released`]).
-fn publishable_shelves<'a>(
-    live: &[(&str, &'a SourceBuild)],
-    pins: &[(ServerId, i64, bool)],
-) -> Vec<Vec<Vec<&'a Arc<PmsMovie>>>> {
-    live.iter()
-        .map(|(_, b)| {
-            b.shelves
-                .iter()
-                .map(|sh| {
-                    sh.items
-                        .iter()
-                        .filter(|m| item_pinned(pins, m))
-                        .take(MAX_SHELF_ITEMS)
-                        .collect()
-                })
-                .collect()
-        })
-        .collect()
+/// What a shelf publishes: every pinned card it holds, at most [`MAX_SHELF_ITEMS`]. A shelf that
+/// gave its cards up to the ring holds none and publishes placeholder slots instead (see
+/// [`Shelf::released`]).
+fn publishable<'a>(sh: &'a Shelf, pins: &'a [(ServerId, i64, bool)]) -> impl Iterator<Item = &'a Arc<PmsMovie>> {
+    sh.items.iter().filter(move |m| item_pinned(pins, m)).take(MAX_SHELF_ITEMS)
+}
+
+/// The card every released row of `sid`'s source publishes `shown` times: no rating key, and the
+/// server, so the row keeps its identity.
+fn placeholder_slot(sid: ServerId) -> Arc<PmsMovie> {
+    Arc::new(PmsMovie { sid, ..PmsMovie::default() })
 }
 
 /// Approximate resident bytes of a catalog: each card's struct plus the heap its strings own.
 /// Counted per catalog entry, so a card two shelves share is counted twice — a ceiling on what the
 /// catalog holds, which is the side a memory bound wants to err on.
 fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
-    cat.iter()
-        .map(|m| {
-            std::mem::size_of::<PmsMovie>()
+    let mut total = 0;
+    let mut run = cat.iter().peekable();
+    // a released row is one placeholder Arc repeated `shown` times: size it once for the run
+    while let Some(m) = run.next() {
+        let mut copies = 1;
+        while run.next_if(|next| Arc::ptr_eq(next, m)).is_some() { copies += 1; }
+        total += copies
+            * (std::mem::size_of::<PmsMovie>()
                 + [
                     &m.title, &m.rating, &m.part, &m.thumb, &m.still, &m.art, &m.summary, &m.rk,
                     &m.vcodec, &m.acodec, &m.show_rk, &m.show_title, &m.aired,
                 ]
                 .iter()
                 .map(|s| s.capacity())
-                .sum::<usize>()
-        })
-        .sum()
+                .sum::<usize>());
+    }
+    total
 }
 
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
@@ -2062,23 +2077,31 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     // cards publishes them (pin-filtered first, so an unpinned library's whole shelf disappears
     // rather than becoming an empty heading); a shelf that gave them up to the ring publishes as
     // many placeholder slots as it last showed, which carry its server so the row keeps its identity.
-    let publishable = publishable_shelves(&live, pins);
     let sids: Vec<ServerId> = srcs.iter().filter(|s| s.last.is_some()).map(|s| s.sid).collect();
+    // the catalog is built in one pass of known size: no regrowth of three tables of thousands
+    let (rows, cards) = live.iter().flat_map(|(_, b)| b.shelves.iter())
+        .fold((0, 0), |(rows, cards), sh| (rows + 1, cards + if sh.released() { sh.shown } else { sh.items.len().min(MAX_SHELF_ITEMS) }));
+    new_hubs.reserve(rows);
+    new_cat.reserve(cards);
+    row_handle.reserve(cards);
 
     for (i, (handle, b)) in live.iter().enumerate() {
-        for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
+        // one placeholder, shared by every released row of the source
+        let mut slot: Option<Arc<PmsMovie>> = None;
+        for sh in &b.shelves {
             let start = new_cat.len();
             if sh.released() {
-                let slot = Arc::new(PmsMovie { sid: sids[i], ..PmsMovie::default() });
+                let slot = slot.get_or_insert_with(|| placeholder_slot(sids[i]));
                 for _ in 0..sh.shown {
-                    new_cat.push(Arc::clone(&slot));
+                    new_cat.push(Arc::clone(slot));
                     row_handle.push(handle);
                 }
             } else {
-                if items.is_empty() {
+                let mut cards = publishable(sh, pins);
+                let Some(first) = cards.next() else {
                     continue;
-                }
-                for m in items {
+                };
+                for m in std::iter::once(first).chain(cards) {
                     new_cat.push(Arc::clone(m));
                     row_handle.push(handle);
                 }
@@ -2213,7 +2236,10 @@ struct Src {
     /// so the tick asks again; nothing is dropped.
     deferred: bool,
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
-    /// screen's hold moves.
+    /// screen's hold moves. A screen's `HoldBand` sends a band once per about three rows of
+    /// movement (its slack, `ui::cards::HOLD_SLACK`), not once per row, so a failed row is
+    /// retried about once per three rows the view travels. That is the cadence the retry has;
+    /// a failed row does not ask again on every press.
     stalled: Vec<(String, String)>,
     /// The publish order of view-state edits (`stores::Stores` shares one across the stores), and
     /// where the read now in flight for this source was issued in it: its landing describes the
@@ -3641,6 +3667,53 @@ pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
     commit(state, build);
 }
 
+/// Test hook: the store's half of `HubsCmd::Hold` (the band moves, the rows that left it give their
+/// cards up, the catalog is published), without the reads for the rows that entered it; land those
+/// with [`land_kept_rows_for_test`]. Returns whether the band moved.
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_for_test(state: &mut PmsState, lo: usize, hi: usize) -> bool {
+    plx_base::testlock::assert_held("the pms hub catalog (hold_for_test)");
+    apply_hold(state, &BrowseScope::standalone(), lo, hi)
+}
+
+/// Test hook: the answer a server would give every held descriptor of a [`seed_ring_for_test`]
+/// fixture (its rows page, so they come back from their listing, not through `RowState::kept`):
+/// `items` cards, keyed as the fixture keys them, landed as a reload lands. Returns whether a row
+/// landed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_ring_rows_for_test(state: &mut PmsState, items: usize, salt: &dyn Fn(usize) -> usize) -> bool {
+    plx_base::testlock::assert_held("the pms hub catalog (land_ring_rows_for_test)");
+    let scope = BrowseScope::standalone();
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let mut landed = false;
+    for (source, want) in srcs.iter_mut().zip(wanted) {
+        for (id, key) in want {
+            let Some(row) = key.rsplit('/').next().and_then(|row| row.parse::<usize>().ok()) else { continue };
+            let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, &id, &key)).cloned() else { continue };
+            let cards = (0..items).map(|c| Arc::new(PmsMovie {
+                sid: source.sid,
+                rk: format!("{}-{row}-{c}", salt(row)),
+                art: format!("/art/{}", c + 1),
+                ..PmsMovie::default()
+            })).collect();
+            let page = PageQuery { id, key, start: shelf.offset, before: false, hidden: Vec::new(), reload: true };
+            let build = SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+                items: cards, positions: (0..items).collect(), shown: 0, ..shelf }] };
+            landed |= land_reload(source, &page, build);
+        }
+    }
+    if landed {
+        let (mut build, _) = merge_held(&mut srcs, &scope, state.hold);
+        state.srcs = srcs;
+        preserve_heroes(state, &mut build);
+        commit(state, build);
+    } else {
+        state.srcs = srcs;
+    }
+    landed
+}
+
 /// Test hook: the answer a server would give every held row that waits for the cards it showed
 /// (`RowState::kept`), landed as a reload lands. A fixture seeded without a server has no one to
 /// answer those reads, so a row the ring released would stay placeholders for good; a real Home
@@ -3649,8 +3722,7 @@ pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
 pub fn land_kept_rows_for_test(state: &mut PmsState) -> bool {
     plx_base::testlock::assert_held("the pms hub catalog (land_kept_rows_for_test)");
     let scope = BrowseScope::standalone();
-    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
-    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut landed = false;
     for (source, want) in srcs.iter_mut().zip(wanted) {

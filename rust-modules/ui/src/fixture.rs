@@ -1455,8 +1455,8 @@ impl Tap<FixtureHost> for RecTap {
         let why = why.map(|p| format!("{p:?}"));
         self.w.present(f, bit, why.as_deref());
     }
-    fn state(&mut self, f: u64, hash: u64) {
-        self.w.state(f, hash);
+    fn state(&mut self, f: u64, hash: &mut dyn FnMut() -> u64) {
+        self.w.state(f, hash());
     }
     fn focus(&mut self, f: u64, focus: Option<(u32, u32, Option<u32>)>) {
         self.w.focus(f, focus);

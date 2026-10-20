@@ -4299,3 +4299,113 @@ fn a_grid_taken_off_the_policy_keeps_the_legacy_band() {
     assert_eq!(r.sect.caption_policy(), None);
     assert_eq!(r.sect.band_h(), crate::card_row::LEGACY_BAND_H);
 }
+
+#[test]
+fn the_hold_band_speaks_once_per_slack_and_never_leaves_the_view_short_of_its_margin() {
+    use super::{hold_band, HoldBand, HOLD_SLACK};
+    let len = 40;
+    let mut band = HoldBand::default();
+    let mut sent = Vec::new();
+    // a walk down the whole page, one row at a time, three rows in view
+    for top in 0..len - 2 {
+        let seen = (top, top + 2);
+        if let Some(b) = band.next(seen, len) { sent.push(b); }
+        let held = sent.last().copied().expect("the first step sent a band");
+        let need = hold_band(seen, len);
+        assert!(held.0 <= need.0 && held.1 >= need.1, "row {top}: {held:?} must cover {need:?}");
+    }
+    // the band reaches HOLD_MARGIN + HOLD_SLACK past the view and is sent again once the view needs
+    // more than the margin of it: one band per HOLD_SLACK + 1 rows
+    assert!(sent.len() <= (len - 2).div_ceil(HOLD_SLACK + 1), "one band per {} rows: {sent:?}", HOLD_SLACK + 1);
+    assert_eq!(sent.last().map(|b| b.1), Some(len - 1), "the walk reached the last row");
+    // the same rows again: nothing to say; a forgotten band is said again
+    assert_eq!(band.next((len - 3, len - 1), len), None);
+    band.forget();
+    assert!(band.next((len - 3, len - 1), len).is_some());
+    // a list that grew under the view needs rows the old band did not reach
+    assert!(band.next((len - 3, len - 1), len + 5).is_some());
+}
+
+/// A store as a screen sees it: it keeps the band it was last sent as the shared cut leaves it.
+#[derive(Default)]
+struct KeptByTheStore {
+    held: Option<(usize, usize)>,
+    sends: usize,
+}
+
+impl KeptByTheStore {
+    /// One frame of a screen: tell the band what is in view and send what it answers.
+    fn frame(&mut self, band: &mut super::HoldBand, seen: (usize, usize), len: usize) {
+        if let Some(sent) = band.next(seen, len) {
+            self.held = Some(plx_base::hold::clamp_hold(sent));
+            self.sends += 1;
+        }
+    }
+
+    fn covers(&self, (lo, hi): (usize, usize)) -> bool {
+        self.held.is_some_and(|(held_lo, held_hi)| held_lo <= lo && held_hi >= hi)
+    }
+}
+
+/// The Recommended page's BACK to the top from rows 20..23 of a 40-row page: the focused row 0 is
+/// folded into the rows in view (`seen = (0, 23)`), a span no store keeps, and the view then glides
+/// up. Whatever the store dropped of rows 0..4 on the first frame has to be asked for again as the
+/// span shortens, so that when the glide arrives (and on every frame the rows in view and their
+/// margin fit the store at all) they are held. Judged against the band it asked for, the band called
+/// rows 0..4 covered, said nothing more, and the top of the page stayed placeholders.
+#[test]
+fn a_back_to_the_top_from_deep_in_the_page_gets_the_top_rows_held_by_the_time_it_arrives() {
+    use super::{hold_band, HoldBand};
+    let len = 40;
+    let (mut band, mut store) = (HoldBand::default(), KeptByTheStore::default());
+    for top in 18..=22 {
+        store.frame(&mut band, (top, top + 3), len);
+        assert!(store.covers(hold_band((top, top + 3), len)), "standing at row {top}");
+    }
+    // BACK: focus seats on row 0; the view glides from row 20 to the top, a row a frame
+    let mut fitting_frames = 0;
+    for top in (0..=20).rev() {
+        let seen = (0, top + 3);
+        store.frame(&mut band, seen, len);
+        let need = hold_band(seen, len);
+        if need.1 - need.0 < plx_base::hold::HOLD_ROWS {
+            fitting_frames += 1;
+            assert!(store.covers(need), "view at row {top}: the store kept {:?}, the view needs {need:?}", store.held);
+        }
+    }
+    assert!(fitting_frames > 5, "premise: the glide has frames the store can hold the view on ({fitting_frames})");
+    assert!(store.covers(hold_band((0, 3), len)), "the glide arrived on rows the store kept {:?}", store.held);
+    // at rest there is nothing more to say
+    let sends = store.sends;
+    for _ in 0..10 { store.frame(&mut band, (0, 3), len); }
+    assert_eq!(store.sends, sends, "a rested view does not resend");
+}
+
+/// A span no band could hold: the first send is all the store can do, and the same view on the
+/// following frames sends nothing, not the same cut every frame.
+#[test]
+fn a_view_too_tall_for_the_store_is_not_sent_the_same_cut_again() {
+    use super::HoldBand;
+    let len = 60;
+    let (mut band, mut store) = (HoldBand::default(), KeptByTheStore::default());
+    for _ in 0..20 { store.frame(&mut band, (0, 30), len); }
+    assert_eq!(store.sends, 1, "one band, kept as far as the store can");
+    assert_eq!(store.held.map(|(lo, hi)| hi - lo + 1), Some(plx_base::hold::HOLD_ROWS));
+    // a taller view that the store would keep the same way is still not sent again
+    for _ in 0..20 { store.frame(&mut band, (0, 31), len); }
+    assert_eq!(store.sends, 1, "the same cut, once");
+    // one that moves the cut is
+    store.frame(&mut band, (10, 50), len);
+    assert_eq!(store.sends, 2);
+}
+
+/// The rule the hold band relies on, stated against the constants: the rows in view plus the margin
+/// and slack each side fit what the store keeps (also a compile-time assertion beside the constants).
+#[test]
+fn the_rows_in_view_and_their_hold_reach_fit_the_rows_the_store_keeps() {
+    use super::{HOLD_MARGIN, HOLD_SLACK, ROWS_IN_VIEW_MAX};
+    assert!(ROWS_IN_VIEW_MAX + 2 * (HOLD_MARGIN + HOLD_SLACK) <= plx_base::hold::HOLD_ROWS);
+    // and the premise of ROWS_IN_VIEW_MAX: the fixed pitch of a row, whole rows that fit, plus two cut
+    let pitch = crate::card_row::ROW_PITCH_FIXED;
+    assert!(ROWS_IN_VIEW_MAX as f32 * pitch >= crate::consts::SCR_H + pitch, "{ROWS_IN_VIEW_MAX} rows of {pitch}px");
+}

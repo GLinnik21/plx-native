@@ -108,13 +108,93 @@ mod tests;
 #[cfg(test)]
 mod warm_tests;
 
-/// Rows a screen's store holds cards for beyond the ones in view, each side.
+/// Rows a screen's store holds cards for beyond the ones in view, each side: the least a screen
+/// may be left with. [`HoldBand`] asks for [`HOLD_SLACK`] more each side when it speaks.
 pub const HOLD_MARGIN: usize = 2;
 
+/// Rows a [`HoldBand`] asks for beyond the [`HOLD_MARGIN`] each time it sends a band, so a press
+/// that scrolls a row does not cost the store a new band: it is sent again only once the rows in
+/// view have used the slack up. The margin is never smaller than [`HOLD_MARGIN`]; the slack is
+/// where the hysteresis lives (not a cap: any row is reachable, the band follows the view).
+pub const HOLD_SLACK: usize = 2;
+
+/// The most rows of one shelf column that are on screen at once, partly or whole: the whole rows
+/// that fit the panel at the fixed pitch (the focused row's under-label band only adds to it) and
+/// the two the edges cut. Geometry, not a list bound: it sizes the rule below.
+pub const ROWS_IN_VIEW_MAX: usize = (crate::consts::SCR_H / ROW_PITCH_FIXED) as usize + 2;
+
+// The rule a band relies on: the rows in view plus the margin and slack each side fit in the rows
+// a store keeps ([`plx_base::hold::HOLD_ROWS`]). Past it the store keeps LESS than the band asks
+// for, and "the rows in view always have [`HOLD_MARGIN`] held beyond them" stops being true.
+// (A view that is taller for a moment, a glide whose focused row is far from the rows on screen,
+// is the case [`HoldBand`] handles by tracking what the store kept.)
+const _: () = assert!(
+    ROWS_IN_VIEW_MAX + 2 * (HOLD_MARGIN + HOLD_SLACK) <= plx_base::hold::HOLD_ROWS,
+    "the rows in view plus the hold margin and slack each side must fit the rows the store keeps"
+);
+
 /// The rows `seen` (the first and last row in view, the focused row folded in) widen to once the
-/// [`HOLD_MARGIN`] is added each side, clamped to the `len` rows there are (`len` is at least 1).
+/// [`HOLD_MARGIN`] is added each side, clamped to the `len` rows there are (`len` is at least 1):
+/// the band a screen must always have held, whatever it last sent.
 pub fn hold_band((lo, hi): (usize, usize), len: usize) -> (usize, usize) {
     (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(len - 1))
+}
+
+/// The hold band a screen sends its store (`HubsCmd::Hold`, `LibraryWork::HubHold`), with
+/// hysteresis. The store gives the cards of every row outside the band up and reads the ones that
+/// enter it again, so a band that follows the view row by row costs a release, a rebuild of the
+/// catalog and a read per press. This one speaks only when the rows the store KEPT of the band it
+/// last sent no longer cover [`hold_band`] of the rows in view, and then asks for [`HOLD_SLACK`]
+/// rows more each side, so a walk down a long page sends one band per [`HOLD_SLACK`] rows. The rows
+/// in view have [`HOLD_MARGIN`] held beyond them whenever they fit the store's bound (the rule
+/// asserted above); the slack is on top of that, which is what keeps this from being a cap: the
+/// band moves with the view and every row stays reachable.
+///
+/// **What the store kept, not what was asked.** A store keeps at most [`plx_base::hold::HOLD_ROWS`]
+/// rows of a band, cut by [`plx_base::hold::clamp_hold`] (the very function the store applies, so
+/// there is one cut for every caller). Coverage is judged against that cut: a screen whose focus is
+/// far from the rows on screen (BACK to the top while the view glides up from row 20, the focused
+/// row folded into `seen`) asks for more rows than are kept, the store keeps the middle of them,
+/// and the rows beyond stay released. Judged against the ask, the band would call them covered and
+/// say nothing more; judged against the cut, it asks again as the glide shortens the span until the
+/// rows in view are held. It is not asked again for a band the store would keep exactly as it keeps
+/// the one it has (a span too tall for any band), which would flood the store with the same cut.
+///
+/// **What a band costs the store.** A walk down a page sends one band per `HOLD_SLACK + 1` rows (the
+/// band reaches `HOLD_MARGIN + HOLD_SLACK` past the view and is sent again once the view uses up
+/// the slack). The store takes a changed band as its signal to ask again for rows whose reload
+/// failed (`stalled`), so a failed row is retried about once per three rows of movement, not once
+/// per row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HoldBand {
+    /// The rows the store keeps of the band last sent: `clamp_hold(sent)`.
+    kept: Option<(usize, usize)>,
+}
+
+impl HoldBand {
+    /// The band to send for the rows `seen` of a page of `len` rows (`len` is at least 1), or
+    /// `None` when the rows the store kept of the one last sent still cover them and their margin
+    /// (or when no band could make it keep more than it does).
+    pub fn next(&mut self, seen: (usize, usize), len: usize) -> Option<(usize, usize)> {
+        let need = hold_band(seen, len);
+        if self.kept.is_some_and(|(lo, hi)| lo <= need.0 && hi >= need.1) {
+            return None;
+        }
+        let reach = HOLD_MARGIN + HOLD_SLACK;
+        let band = (seen.0.saturating_sub(reach), (seen.1 + reach).min(len - 1));
+        let kept = plx_base::hold::clamp_hold(band);
+        if self.kept == Some(kept) {
+            return None;
+        }
+        self.kept = Some(kept);
+        Some(band)
+    }
+
+    /// Forget what was sent: the next [`next`](Self::next) sends (a different list, or a store
+    /// that has not been told).
+    pub fn forget(&mut self) {
+        self.kept = None;
+    }
 }
 
 /// The one recovery position every card screen uses when the focused card is gone from its

@@ -47,7 +47,7 @@ fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
     }
 }
 use super::transition::PageDip;
-use crate::dispatch::{Dispatcher, NoTap};
+use crate::dispatch::{Dispatcher, NoTap, Tap};
 use crate::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig, QUIESCENCE_PAGE};
 use plx_machine::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
 
@@ -1338,6 +1338,13 @@ fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
     );
 }
 
+/// A tap that grades the logical-state hash (the recorder's, the fixture's) asks for it by calling
+/// the thunk it is offered.
+struct Hashing;
+impl Tap<FixtureHost> for Hashing {
+    fn state(&mut self, _f: u64, hash: &mut dyn FnMut() -> u64) { hash(); }
+}
+
 /// §5.4: a presenting frame's prepare pass leaves the logical-state hash where it was. The
 /// dispatcher asserts it on every presenting frame of a debug build; this is the named test.
 #[test]
@@ -1345,10 +1352,20 @@ fn prepare_does_not_change_the_logical_state_hash() {
     let (mut d, mut rig, _) = booted();
     // an event frame that presents: `r.state_hash` is taken after the drains and BEFORE prepare
     // and draw; the hash after the frame must be the same number
-    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut Hashing);
     assert!(r.presented, "the key invalidated");
-    let pre_prepare = r.state_hash.expect("an event frame hashes");
+    let pre_prepare = r.state_hash.expect("an event frame hashes for a tap that wants it");
     assert_eq!(d.state_hash(), pre_prepare);
+}
+
+/// DEBUG-7b: the hash walks every live instance's state (Home's whole key table), so an event
+/// frame whose tap reads nothing (production's `NoTap`) does not compute it.
+#[test]
+fn an_unread_logical_state_hash_is_not_computed() {
+    let (mut d, mut rig, _) = booted();
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    assert!(r.presented, "the key invalidated: an event frame");
+    assert_eq!(r.state_hash, None, "no tap wants the hash, so the frame does not pay for it");
 }
 
 /// The dip lifted off `ui::nav`: over a `PageDip` the op applies at the FLOOR, several frames

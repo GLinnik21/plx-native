@@ -173,8 +173,16 @@ pub trait Tap<H: Host> {
     fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
     fn effect(&mut self, _f: u64, _s: &Stamped<H>) {}
     fn present(&mut self, _f: u64, _bit: bool, _why: Option<plx_machine::present::Provenance>) {}
-    /// After the frame's drains, on a frame that had events: the logical-state hash.
-    fn state(&mut self, _f: u64, _hash: u64) {}
+    /// On an event frame (a frame with input, or whose timers fired): the logical-state hash, offered
+    /// as a thunk. `hash()` walks EVERY live instance's `LogicalState`, which for Home is the whole
+    /// key table, so an event frame pays for it in proportion to the catalog (`dhash`, DEBUG-7b:
+    /// 4.7-5.3 ms on the frame after every Home store landing). A tap that records or grades the
+    /// hash calls `hash()` and uses what it returns; every other tap, `NoTap` among them, leaves
+    /// the default, which never calls it, and the frame skips the walk. Asking and receiving are
+    /// ONE method on purpose: a tap that read the hash with a separate opt-in could implement the
+    /// reader and forget the opt-in, and the recorder would silently write nothing. The debug
+    /// build's own §5.4 assertion hashes regardless.
+    fn state(&mut self, _f: u64, _hash: &mut dyn FnMut() -> u64) {}
     /// After the drains: the engine's resolved focus for the input owner, as
     /// `(entry, index, group)`.
     fn focus(&mut self, _f: u64, _focus: Option<(u32, u32, Option<u32>)>) {}
@@ -347,7 +355,8 @@ pub struct FrameReport {
     /// Bodies that DREW this frame, in draw order — the cold-open clock's STOP.
     pub drawn: Vec<InstanceId>,
     pub dropped_deliveries: u32,
-    /// The logical-state hash, on an event frame.
+    /// The logical-state hash, on an event frame whose tap asked for it (called the `Tap::state` thunk; None otherwise: the hash
+    /// is O(every instance's state), so a frame nobody reads it on does not compute it).
     pub state_hash: Option<u64>,
     /// The host fold this frame (§8.3): what the page beneath the surfaces did.
     pub host_update: Option<HostUpdate>,
@@ -1239,9 +1248,11 @@ where
         tap.focus(f, self.focus_record());
         let timers_fired = report.steps_pre > 0 && event_frame;
         if event_frame || timers_fired {
-            let h = plx_base::diag::spans::span("dhash", || self.state_hash());
-            tap.state(f, h);
-            report.state_hash = Some(h);
+            let mut hashed = None;
+            tap.state(f, &mut || {
+                *hashed.get_or_insert_with(|| plx_base::diag::spans::span("dhash", || self.state_hash()))
+            });
+            report.state_hash = hashed;
         }
 
         // carry accounting: nothing is ever dropped from this queue
