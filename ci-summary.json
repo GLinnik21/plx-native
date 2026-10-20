@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T18:42:23Z",
+ "generated": "2026-10-20T18:45:43Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -111,14 +111,14 @@
    "change7_pct": 27.0,
    "d30": 671.5,
    "delta30": -267.5,
-   "delta7": 86.0,
+   "delta7": 86,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 122,
+   "n_now": 123,
    "n_prev": 111,
-   "now": 404.0,
+   "now": 404,
    "prev7": 318,
    "shown": true,
    "state": "worse",
@@ -338,9 +338,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 96,
-   "now": 242,
+   "now": 242.0,
    "prev7": 218.0,
    "shown": true,
    "state": "flat",
@@ -359,9 +359,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 96,
-   "now": 191,
+   "now": 191.0,
    "prev7": 296.5,
    "shown": true,
    "state": "better",
@@ -422,9 +422,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 96,
-   "now": 150,
+   "now": 150.0,
    "prev7": 137.5,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 96,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -657,6 +652,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 65.2,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -718,6 +713,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 211,
@@ -731,11 +731,6 @@
    "change_pct": 40.6,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -779,6 +774,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 271,
@@ -792,11 +792,6 @@
    "change_pct": 40.6,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -840,6 +835,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 344.0,
@@ -853,11 +853,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -901,6 +896,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 103.0,
@@ -914,11 +914,6 @@
    "change_pct": 27.0,
    "commits": [
     {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
-    {
      "pr": 861,
      "sha": "3882f6ebe",
      "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
@@ -962,6 +957,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 318,
@@ -969,16 +969,11 @@
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 404.0
+   "to": 404
   },
   {
    "change_pct": 26.7,
    "commits": [
-    {
-     "pr": 860,
-     "sha": "8629ca7b8",
-     "title": "Library: a key on a deep Recommended page no longer costs a late frame, and library-shelves-deep can pass"
-    },
     {
      "pr": 861,
      "sha": "3882f6ebe",
@@ -1023,6 +1018,11 @@
      "pr": 875,
      "sha": "5d74e0ff1",
      "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
     }
    ],
    "from": 129,
