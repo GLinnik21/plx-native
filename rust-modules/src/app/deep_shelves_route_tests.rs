@@ -1,6 +1,6 @@
 //! **Deep pages under a key** (#858, #860, #861): the Library's Recommended page keeps its place when a
-//! publication arrives, a deep Home walked with a held Down reaches every row while the store is
-//! told the band far less often than the rows pass, and a Home card's Detail returns onto that card at rest.
+//! publication arrives, a deep Home walked with a held Down reaches every row on a card that has landed,
+//! and a Home card's Detail returns onto that card at rest.
 
 use super::*;
 use super::test_support::World;
@@ -58,6 +58,10 @@ fn seat(probe: &str) -> [&str; 4] {
     ["row=", "col=", "sid=", "rk="].map(|key| probe.split_whitespace().find(|t| t.starts_with(key)).unwrap_or(""))
 }
 
+/// Is the card of this seat a published one? Its `rk=` field is neither absent (`rk=-`, no card) nor
+/// empty (`rk=`, a placeholder slot with no read behind it).
+fn published(seat: &[&str; 4]) -> bool { !matches!(seat[3], "" | "rk=" | "rk=-") }
+
 /// **A deep Recommended page returns from Detail onto the card it left, with every shelf in view
 /// published** (#860). Forty shelves, the store holding sixteen of them: Down walks the focus past the
 /// band the page first held (shelves 0..15), so the rows around it are the ones the page asked for on
@@ -86,6 +90,7 @@ fn a_deep_recommended_page_returns_from_detail_onto_the_same_card_with_its_shelv
     land_and_step(&mut w, 30);
     let before = content_probe(&w.d, &w.bridge);
     assert!(before.contains(" region=shelf row=24 col=1 "), "premise: shelf 24, card 1: {before}");
+    assert!(published(&seat(&before)), "premise: the card it will leave is a published one: {before}");
 
     let performed = w.press(Key::Ok);
     assert!(performed.iter().any(|p| p.starts_with("library:Detail")), "OK on the card opens its Detail: {performed:?}");
@@ -98,7 +103,7 @@ fn a_deep_recommended_page_returns_from_detail_onto_the_same_card_with_its_shelv
     let after = content_probe(&w.d, &w.bridge);
     let (was, now) = (seat(&before), seat(&after));
     assert_eq!(now, was, "BACK lands on the card it left\nbefore: {before}\nafter:  {after}");
-    assert!(!now[3].is_empty() && now[3] != "rk=-", "the card is a published one: {after}");
+    assert!(published(&now), "the card is a published one: {after}");
     let (released, (lo, hi)) = w.bridge.stores.browse.borrow().released_rows_for_test(0);
     for row in 23..=25 {
         assert!(lo <= row && row <= hi, "shelf {row}, in view, is inside the band the store holds ({lo}..={hi})");
@@ -107,9 +112,12 @@ fn a_deep_recommended_page_returns_from_detail_onto_the_same_card_with_its_shelv
 }
 
 /// **Home -> a card's Detail -> BACK lands on the card it left, and every released card is at exact
-/// rest** (#858's remount path and #861's rest together). The OK raises the request the loop reads
-/// (`HomeReq::Detail`, with the page's `ReturnState`): the World's pump does not perform Home requests, so the push
-/// is the loop's own `open_detail`, over a Detail record installed before the mount as `detail_with_disc` does.
+/// rest** (#858's remount path and #861's rest together). The OK raises `HomeReq::Detail` with the page's
+/// `ReturnState`, and the World's pump performs it the way the loop does for a shelf card
+/// (`perform_home_detail`: the loop's own `activate_deck_card`, so `activate_card` and `open_detail` carry the
+/// return state). What this does NOT cover: `content::home_requests`' own arm and `activate_home_item` take the
+/// whole `App`, which the World does not build, so a loop that dropped the `ReturnState` between them and
+/// `activate_deck_card` passes this test.
 #[test]
 fn home_back_from_detail_lands_on_the_card_it_left_at_rest() {
     let mut w = World::home_grid("route-home-return", 5, 8);
@@ -120,14 +128,13 @@ fn home_back_from_detail_lands_on_the_card_it_left_at_rest() {
     assert_eq!(at, Some((2, 4)), "premise: the walk ended on shelf 2, card 4");
     w.sole_card_off_rest("premise: before Detail");
 
-    w.press(Key::Ok);
-    let (sid, detail_rk, ret) = w.bridge.take_home_reqs().into_iter()
-        .find_map(|(_, request, ret)| match request { HomeReq::Detail { sid, rk } => Some((sid, rk, ret)), _ => None })
-        .expect("OK on a shelf card asks for its Detail");
-    assert_eq!(Some(&detail_rk), rk.as_ref(), "the request names the card that was focused");
+    // The Detail record is installed before the press, as `detail_with_disc` does it.
+    let (sid, detail_rk) = w.home_focused_item().expect("premise: a card holds focus");
+    assert_eq!(Some(&detail_rk), rk.as_ref(), "premise: the focused card is the one the walk reached");
     plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid, rk: detail_rk.clone(), kind: "movie".into(), ..Default::default() }));
-    super::open_detail(&mut w.d, &mut w.bridge, sid, &detail_rk, None, Some(ret));
+    let performed = w.press(Key::Ok);
+    assert!(performed.iter().any(|p| p == "home:Detail"), "OK on a shelf card asks for its Detail: {performed:?}");
     w.frames(60);
     assert!(w.on(&AppArg::Content(ContentArg::Detail { sid, rk: detail_rk })), "premise: Detail is on top of Home");
 

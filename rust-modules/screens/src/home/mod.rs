@@ -2393,7 +2393,7 @@ impl HomeScreen {
         let at = self.focused_grid(focus);
         self.rows.iter().enumerate().map(|(row, projection)| {
             let col = at.filter(|&(r, _)| r == row).map(|(_, c)| c);
-            let shelf = &self.grid.shelves[row];
+            let Some(shelf) = self.grid.shelves.get(row) else { return Vec::new() };
             (0..projection.elems.len()).map(|i| shelf.drawn_pop(i, col)).collect()
         }).collect()
     }

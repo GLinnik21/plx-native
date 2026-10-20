@@ -33,6 +33,9 @@ fn a_home_shelf_walked_with_a_held_key_leaves_every_released_card_at_exact_rest(
 #[test]
 fn a_recommended_shelf_walked_with_a_held_key_leaves_every_released_card_at_exact_rest() {
     let mut w = World::recommended("route-rest-recommended");
+    // the world's shelves hold three cards; a walk that leaves several behind (as Home's does) needs wider ones
+    w.bridge.stores.browse.borrow_mut().seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 12);
+    w.frames(60);
     w.sole_card_off_rest("premise: the page arrives in its first card, the only one popped");
-    walk_right_then_rest(&mut w, 2, "Recommended");
+    walk_right_then_rest(&mut w, 8, "Recommended");
 }
