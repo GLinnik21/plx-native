@@ -310,6 +310,15 @@ class CaptionEdgeCases(unittest.TestCase):
         for key in ("duration", "Genre"):
             self.assertNotIn(key, bare)
 
+    def test_the_edge_items_head_the_a_to_z_listings(self):
+        pms = MockPms(self.lib())
+        movies = get(pms, "/library/sections/1/all?sort=titleSort")["Metadata"]
+        self.assertEqual([m["ratingKey"] for m in movies[:2]],
+                         [str(CAPTION_EDGE_RK_BASE), str(CAPTION_EDGE_RK_BASE + 1)])
+        shows = get(pms, "/library/sections/2/all?sort=titleSort")["Metadata"]
+        self.assertEqual({s["ratingKey"] for s in shows[:2]},
+                         {str(CAPTION_EDGE_RK_BASE + 2), str(CAPTION_EDGE_RK_BASE + 9)})
+
     def test_a_show_has_no_year_and_no_seasons(self):
         show = self.lib().items[CAPTION_EDGE_RK_BASE + 2]
         self.assertEqual((show["type"], show["childCount"]), ("show", 0))

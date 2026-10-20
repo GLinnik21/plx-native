@@ -525,7 +525,8 @@ class Library:
           year or length (the word "Episode"), in season 0 and season 1;
         - collections whose face cannot set the whole name: one with members (the baked fan), one
           without (the neutral tile), each named by several words, so a caption carries the name.
-        All titles stay in the closed alphabet (`sname`)."""
+        The four top-level items sort first (`titleSort` leads with "0"). All titles stay in the
+        closed alphabet (`sname`)."""
         rng = random.Random(CAPTION_EDGE_RK_BASE)
         part = CAPTION_EDGE_PART_ID_BASE
 
@@ -549,6 +550,9 @@ class Library:
         show_rk = CAPTION_EDGE_RK_BASE + 9
         show = self._show(rng, show_rk)
         self.items[show_rk] = show
+        # They head every A-Z listing, so a sim reaches them without walking the library.
+        for rk in (CAPTION_EDGE_RK_BASE, CAPTION_EDGE_RK_BASE + 1, CAPTION_EDGE_RK_BASE + 2, show_rk):
+            self.items[rk]["titleSort"] = "0" + self.items[rk]["titleSort"]
         for n in (0, 1):
             srk = 982000 + 10 + n
             season = self._season(rng, srk, show, n)
