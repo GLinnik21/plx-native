@@ -329,6 +329,7 @@ pub struct CreditItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::account::{probe_gets, REAL_DISCOVER};
 
     /// Run `f` with the dev triggers `armed` (name, content) written in a private trigger root.
     /// The resolver is read per call under test (`account::discover_resolved`), so this cannot
@@ -372,7 +373,7 @@ mod tests {
         });
         // A trigger that is not a loopback is never followed, wherever it is armed.
         with_triggers(&[("plextv", "https://evil.example"), ("discover", "http://10.0.0.5:1")], || {
-            assert_eq!(person_profile_url("abc"), format!("{}/library/people/abc", super::super::account::DISCOVER));
+            assert_eq!(person_profile_url("abc"), format!("{}/library/people/abc", REAL_DISCOVER));
         });
     }
 
@@ -385,6 +386,33 @@ mod tests {
             assert_eq!(person_credits_url("5d77682aeb5d26001f1de4b0"),
                 "https://discover.provider.plex.tv/library/people/5d77682aeb5d26001f1de4b0/credits");
         });
+    }
+
+    /// **The ACTUAL request path.** `person_profile` / `person_credits` hand the transport
+    /// (`AccountClient::get`) a URL; asked through the public methods, with the transport replaced
+    /// by a recorder that opens no socket ([`probe_gets`], so it can dial nothing whatever the code
+    /// under test builds), that URL must sit on the stand-in. Spelling the real host in either
+    /// method again turns this red, which the URL-helper tests above cannot do.
+    #[test]
+    fn the_person_reads_hand_the_transport_a_url_on_the_armed_stand_in() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        let client = AccountClient::new("synthetic-client", None);
+        let read = |armed: &[(&str, &str)]| {
+            with_triggers(armed, || probe_gets(|| (client.person_profile("abc"), client.person_credits("abc"))).1)
+        };
+        for (armed, base) in [
+            (vec![("discover", "http://127.0.0.1:41999")], "http://127.0.0.1:41999"),
+            (vec![("plextv", "http://127.0.0.1:41998")], "http://127.0.0.1:41998"),
+            (vec![("plextv", "http://127.0.0.1:41998"), ("discover", "http://localhost:41997")], "http://localhost:41997"),
+        ] {
+            assert_eq!(read(&armed),
+                [format!("{base}/library/people/abc"), format!("{base}/library/people/abc/credits")], "{armed:?}");
+        }
+        let real = REAL_DISCOVER;
+        assert_eq!(read(&[]), [format!("{real}/library/people/abc"), format!("{real}/library/people/abc/credits")],
+            "nothing armed: the real provider, and only then");
     }
 
     /// A dev-token boot (the harness identity: an injected server token, no account) with no

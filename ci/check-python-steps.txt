@@ -247,7 +247,8 @@ python3 ci/test_check_dump_consumers.py
 python3 ci/check-dump-consumers.py
 # The Plex request registry (ci/plex-requests.ini, rust-modules/plex/src/plex/): every request the plex
 # layer can make is a section that says what it is, its reason and its evidence, and a paged site reaches
-# paged_path or PageReq. This is what stops a new request from landing without a paging decision. Pure
+# paged_path or PageReq. This is what stops a new request from landing without a paging decision. It also keeps
+# the Discover host at its one definition (account.rs), so no request skips the harness's stand-in. Pure
 # lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_plex_requests.py
 python3 ci/check-plex-requests.py

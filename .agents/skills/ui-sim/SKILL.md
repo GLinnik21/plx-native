@@ -166,8 +166,11 @@ sim-clean SIM_DIR=…` resets a root.
 ### A simulator run against `tests/mock_pms.py` must arm the Discover stand-in
 
 A person page reads its biography and filmography from the plex.tv metadata provider, not from the
-PMS. The mock serves those two reads (`GET /library/people/{tagKey}` and `.../credits`, synthetic data)
-on the same listener as everything else, but the app only asks it when told where Discover lives:
+PMS. The mock serves those two reads (`GET /library/people/{tagKey}` and `.../credits`) on the same
+listener as everything else, but the app only asks it when told where Discover lives. A
+`plxnative-token` boot has no account token, so the biography arrives (synthetic prose, or just the
+name for a demo-library actor) while the credits answer `401` exactly as the real provider does and
+the Filmography stays empty unless `plxnative-personcredits` seeds it:
 
 ```sh
 echo "http://127.0.0.1:$MOCK_PORT" > $SIM_DIR/plxnative-discover     # the mock's own port
@@ -180,7 +183,8 @@ Discover too.) A `plxnative-token` boot with neither armed does NOT fall through
 reads=refused` at boot). **Before opening a person page, read the boot line**: `discover:
 base=stand-in reads=open` (or `base=real reads=refused`) means nothing reaches the real provider;
 `base=real reads=open` means a stored or interactive session that WILL, so do not open the page.
-`tools/screenshots.py`, `tools/site_video.py` and `tools/watchlist_captures.py` arm both triggers.
+`tools/screenshots.py`, `tools/site_video.py` and `tools/watchlist_captures.py` arm both triggers and
+fail the run unless the boot logged `discover: base=stand-in` (`mock_pms.discover_stand_in_problem`).
 
 ## Drive it, then screenshot
 

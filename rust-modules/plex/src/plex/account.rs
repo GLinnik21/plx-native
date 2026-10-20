@@ -68,8 +68,14 @@ fn loopback_http(v: &str) -> bool {
 }
 /// The Discover metadata provider's real host — the biography and filmography of a person
 /// (`discover.rs`) and the plex.tv Watchlist (`watchlist.rs`). It is spelled HERE, once, beside
-/// [`plex_tv`], because "where Discover lives" is one question with one answer: [`discover`].
-pub(super) const DISCOVER: &str = "https://discover.provider.plex.tv";
+/// [`plex_tv`], because "where Discover lives" is one question with one answer: [`discover`]. It is
+/// private on purpose: a request built on it would skip the stand-in, and `make check`
+/// (`ci/check-plex-requests.py`) fails on the host spelled anywhere else in request code.
+const DISCOVER: &str = "https://discover.provider.plex.tv";
+
+/// A host test compares against the real provider without spelling the host a second time.
+#[cfg(test)]
+pub(super) const REAL_DISCOVER: &str = DISCOVER;
 
 /// Which rule decided the Discover base ([`discover`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,24 +174,27 @@ pub(super) fn stand_in_armed() -> bool {
 /// The dev-build failsafe for READS, [`watchlist`](super::watchlist)'s `permit_write` for the other
 /// verb: a `devtriggers` build driven by a dev-token boot must not dial the real provider unless a
 /// stand-in is armed. That boot signs in as an injected server token with no plex.tv account, so
-/// the provider can only answer it 401 (the credits) or an anonymous profile — never the data the
-/// page is for — while a flow that depended on that answer depended on the internet. Release
+/// the credits answer 401 without a token (measured) and the profile is read anonymously (what
+/// that carries for a real tagKey is not determined) — never a signed-in person's data — while a
+/// flow that depended on either answer depended on the internet. Release
 /// builds and interactive boots (a stored session, no `plxnative-token`) always read.
 fn permit_read(devtriggers_build: bool, token_boot: bool, armed: bool) -> bool {
     !(devtriggers_build && token_boot && !armed)
 }
 
 /// Gate one READ of the provider before it is built into a request: `true` = go ahead; `false` =
-/// refuse, and a line (endpoint SHAPE only, never the id) says so the FIRST time each shape is
-/// refused: the person page re-asks every couple of seconds, and a boot that cannot be answered
+/// refuse, and a line (the endpoint SHAPE, which folds real ids; a synthetic id from the mock
+/// survives it) says so the FIRST time each shape is refused: the person page re-asks every couple of seconds, and a boot that cannot be answered
 /// does not need the same line for as long as the page is open. The caller sends nothing.
 pub(super) fn discover_read_allowed(url: &str) -> bool {
     let resolved = discover_resolved();
     if permit_read(cfg!(feature = "devtriggers"), resolved.token_boot, resolved.source != DiscoverSource::Real) {
         return true;
     }
-    // The shapes fold ids and drop the query, so this holds one entry per ENDPOINT the app can
-    // read (a handful), not per request.
+    // The shapes fold REAL ids (all-digit or all-hex segments of 8 or more characters, so a
+    // 24-hex tagKey folds) and drop the query: one entry per endpoint for a real boot. The mock's
+    // synthetic tagKeys (`s%08x`, `demo-person-N`) do not fold, so a mock boot adds an entry per
+    // person opened: synthetic ids, bounded by the people the run opens.
     static TOLD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let shape = endpoint_shape(url);
     let first = {
@@ -347,6 +356,23 @@ impl AudioPreferencesCache {
 }
 static AUDIO_PREFERENCES_CACHE: AudioPreferencesCache = AudioPreferencesCache::new();
 
+#[cfg(test)]
+thread_local! {
+    static GET_PROBE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the account GET transport replaced by a recorder: every URL [`AccountClient::get`]
+/// is asked for is collected, answered as a refused connection, and never sent. A test through the
+/// public methods (`person_profile`, `person_credits`) therefore sees exactly what the request
+/// path would put on the wire, and cannot reach a real host whatever the code under test builds.
+#[cfg(test)]
+pub(super) fn probe_gets<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    GET_PROBE.with(|p| *p.borrow_mut() = Some(Vec::new()));
+    let out = f();
+    let seen = GET_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default();
+    (out, seen)
+}
+
 /// Identity + optional account token for plex.tv calls. `client_id` is the stable per-device
 /// `X-Plex-Client-Identifier` (persisted across launches — plex.tv keys the authorized-device list
 /// and the pin↔device binding on it). `token` is the account token, absent during the login handshake
@@ -438,6 +464,12 @@ impl AccountClient {
     }
 
     fn get_raw(&self, url: &str) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+        // The test seam on the REQUEST PATH ([`probe_gets`]): the URL every `get` hands the
+        // transport is recorded, and no socket is opened.
+        #[cfg(test)]
+        if GET_PROBE.with(|p| p.borrow_mut().as_mut().map(|seen| seen.push(url.to_owned())).is_some()) {
+            return plx_net::net::test_response_failure(7, 0, 0, false);
+        }
         let resp = plx_net::net::request_evidence(url, &self.headers(), "GET", None,
             plx_net::net::API, false, None, None);
         note_response_contact(url, &resp);

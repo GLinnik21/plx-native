@@ -469,7 +469,7 @@ impl AccountClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::account::DISCOVER;
+    use super::super::account::REAL_DISCOVER as DISCOVER;
 
     const HEX: &str = "5d776824999c4a001f9a1b2c";
     const HEX2: &str = "5d776824999c4a001f9a1b2d";
@@ -798,6 +798,36 @@ mod tests {
             std::fs::write(plx_base::devtrig::path("plextv"), "http://127.0.0.1:41998").unwrap();
             assert_eq!(discover(), "http://127.0.0.1:41998");
             assert!(stand_in_armed());
+        });
+    }
+
+    /// **Every request site** of the Watchlist builds its URL on the shared base: with the stand-in
+    /// armed, the request each public method hands the transport sits on it. Spelling the real host
+    /// (or any other base) in one of them turns this red; the tests above compare against
+    /// `discover()` itself, which cannot see that.
+    #[test]
+    fn every_watchlist_request_site_is_built_on_the_armed_stand_in() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        const BASE: &str = "http://127.0.0.1:41999";
+        let page = || ok(&list_body(&[], 0));
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("discover"), BASE).unwrap();
+            let sites: Vec<(&str, Vec<WatchRequest>)> = vec![
+                ("watchlist_page", run(vec![page()], |c, t| { let _ = c.watchlist_page(0, 100, None, t); }).1),
+                ("watchlist_released", run(vec![page(), page(), page()], |c, t| { let _ = c.watchlist_released(t); }).1),
+                ("user_state", run(vec![status(200)], |c, t| { let _ = c.user_state(HEX, t); }).1),
+                ("catalog_item", run(vec![status(200)], |c, t| { let _ = c.catalog_item(HEX, t); }).1),
+                ("watchlist_add", run(vec![status(200)], |c, t| { let _ = c.watchlist_add(HEX, t); }).1),
+                ("watchlist_remove", run(vec![status(200)], |c, t| { let _ = c.watchlist_remove(HEX, t); }).1),
+            ];
+            for (site, seen) in sites {
+                assert!(!seen.is_empty(), "{site} made no request");
+                for r in &seen {
+                    assert!(r.url.starts_with(&format!("{BASE}/")), "{site}: {}", r.url);
+                }
+            }
         });
     }
 

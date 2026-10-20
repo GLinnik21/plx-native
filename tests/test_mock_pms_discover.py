@@ -11,7 +11,7 @@ import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from mock_pms import DiscoverFixture, Library, MockPms  # noqa: E402
+from mock_pms import DiscoverFixture, Library, MockPms, discover_stand_in_problem  # noqa: E402
 
 LIST = "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1&sort=watchlistedAt:desc"
 
@@ -254,6 +254,29 @@ class DiscoverMock(unittest.TestCase):
         self.assertEqual(jcall(pms, "GET", f"/library/people/{who['tagKey']}/credits?X-Plex-Token=t"),
                          json.loads(data)["MediaContainer"], "a token in the query is a token")
         self.assertEqual(pms.handle("GET", "/library/people/not-a-person/credits", b"", {"X-Plex-Token": "t"})[0], 200)
+
+    def test_a_real_actors_record_invents_no_fact_about_them(self):
+        # The demo library's actors carry real names (`demo-person-N`): their record is the name and
+        # the synthetic departments, with no birth date, place or biography made up for them.
+        pms = make()
+        pms.lib.people[9999] = {"id": 9999, "tag": "Some Real Actor", "tagKey": "demo-person-9"}
+        record = jcall(pms, "GET", "/library/people/demo-person-9")["Metadata"][0]
+        self.assertEqual(record["title"], "Some Real Actor")
+        for invented in ("summary", "bornAt", "birthPlace", "knownFor"):
+            self.assertNotIn(invented, record)
+        # A synthetic person (`s%08x`) still gets the plainly-labelled synthetic record.
+        who, _ = self._credited(pms)
+        synthetic = jcall(pms, "GET", f"/library/people/{who['tagKey']}")["Metadata"][0]
+        self.assertIn("synthetic person", synthetic["summary"])
+
+    def test_a_harness_requires_the_stand_in_boot_line(self):
+        # The line `account::announce_discover` writes; a harness that boots against this mock fails
+        # the run unless it reads `base=stand-in`, and fails closed on a log with no line at all.
+        self.assertIsNone(discover_stand_in_problem("[0.1] boot\n[0.2] discover: base=stand-in\n"))
+        self.assertIn("base=real", discover_stand_in_problem("[0.2] discover: base=real\n"))
+        self.assertIn("no `discover: base=` line", discover_stand_in_problem("[0.1] boot\n"))
+        self.assertIn("base=real", discover_stand_in_problem(
+            "discover: base=stand-in\ndiscover: base=real\n"), "any real line fails the run")
 
     def test_the_pms_people_media_route_is_not_the_stand_ins(self):
         pms = make()

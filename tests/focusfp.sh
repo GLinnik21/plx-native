@@ -282,10 +282,12 @@ record_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:
 # restores the Filmography entry and the next BACK dismisses it to its Person host. `nowan`: the
 # person page's F_PROFILE/F_CREDITS mailboxes still ASK for the provider (the `personcredits` seed
 # only stands in for a landing, it does not suppress the fetch `pump` already sent before the seed
-# runs). On this injected-token boot the app refuses both reads itself (`account::discover_read_allowed`,
-# logged `discover: GET ... refused`), so neither reaches discover.provider.plex.tv; `nowan` stays
-# because it is part of the typed initial these recordings carry (the offline policy the replays
-# were captured under), not because the name would otherwise be dialled.
+# runs). In the graded modes (`--rec` / `--replay`) the boot is CONTROLLED: `person.rs` lands `None` on
+# a tape without calling the provider at all (and the `--rec` boot has no `plxnative-token`). Only the
+# live smoke run reaches the app's own refusal of a dev-token boot's Discover read
+# (`account::discover_read_allowed`, logged `discover: GET ... refused`), so it never dials
+# discover.provider.plex.tv either; `nowan` is part of the typed initial these recordings carry (the
+# offline policy the replays were captured under).
 # Controlled recording instead captures that offline policy in the typed initial input and
 # produces the failed provider replies without a WAN call. Replay supplies every recorded reply
 # and admission with the mock off and resource execution denied.

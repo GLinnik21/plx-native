@@ -1792,12 +1792,37 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 
 # ---------------------------------------------------------------- Discover -----------------
 
+# The boot line `account::announce_discover` writes (a `devtriggers` build): which Discover this boot's
+# person-page and Watchlist reads reach. A harness that boots the app against this mock arms the
+# stand-in (`plxnative-discover`, or `plxnative-plextv`, which Discover follows) and requires this
+# line before it drives anything: a boot whose line says `base=real` would read
+# `discover.provider.plex.tv`, which no mock run may do.
+DISCOVER_STAND_IN_LINE = "discover: base=stand-in"
+
+
+def discover_stand_in_problem(log_text):
+    """`None` when the event log shows every Discover base this boot resolved is the loopback
+    stand-in; otherwise the reason a run against this mock must stop. Fails closed: a log with no
+    `discover: base=` line at all (a release build, a boot that never got that far) is a refusal, as is
+    any line that says `base=real`."""
+    lines = [ln.strip() for ln in log_text.splitlines() if "discover: base=" in ln]
+    if not lines:
+        return ("the boot logged no `discover: base=` line: the app is not a devtriggers build or never "
+                "reached boot, so nothing proves its Discover reads reach the mock")
+    real = [ln for ln in lines if DISCOVER_STAND_IN_LINE not in ln]
+    if real:
+        return (f"Discover is not the mock's stand-in (`{real[0]}`): arm plxnative-discover (or "
+                f"plxnative-plextv) at the mock before booting, or the boot reads discover.provider.plex.tv")
+    return None
+
+
 class DiscoverFixture:
     """The plex.tv Watchlist's Discover service, in memory (docs/watchlist-plan.md W45, §1.3-§1.4).
 
     The same listener answers it as the PMS: the app's `discover()` base is the loopback stand-in
     named by `/tmp/plxnative-discover` (`http://127.0.0.1:<port>`), and the paths cannot collide
-    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`).
+    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`,
+    and the person routes `/library/people/<tagKey>[/credits]`: the PMS's own is `/library/people/<id>/media`).
     Wire shapes are the plan's INPUT 2 live probe: list items carry NO `watchlistedAt`; `userState`
     answers an ARRAY and carries `watchlistedAt` only while the item is on the list; add/remove
     answer `{"MediaContainer":{"size":0}}`; a page Size over 100 answers 400.
@@ -1809,7 +1834,7 @@ class DiscoverFixture:
     which the app's Discover follows) never needs `discover.provider.plex.tv` for a person page.
     `/library/people/{id}/media` is the PMS's own route and falls through to it.
 
-    Synthetic data only. 16 catalog titles, 14 of them on the list at the start (newest first):
+    Synthetic data only (a `demo-person-N` key carries a real actor's NAME and nothing else about them). 16 catalog titles, 14 of them on the list at the start (newest first):
 
       * 1-6   released, held by this mock PMS (guid matches a library item)      -> Available
       * 7     NOT released (future date), held by this mock PMS                   -> ComingSoonMatched
@@ -2000,17 +2025,21 @@ class DiscoverFixture:
         function of the person's `tagKey`, so a capture taken today and one taken next month match."""
         if who is None:
             return self._container(totalSize=0)  # an unknown person is an ANSWER: 200, no Metadata
-        h = int(hashlib.md5(who["tagKey"].encode()).hexdigest(), 16)
-        record = {
-            "title": who["tag"],
-            "summary": (f"{who['tag']} is a synthetic person of the mock Discover provider.\n\n"
-                        "Every word of this biography is invented by tests/mock_pms.py so that the person "
-                        "page has prose to lay out without asking plex.tv for any."),
-            "bornAt": "%04d-%02d-%02d" % (1950 + h % 50, 1 + h // 50 % 12, 1 + h // 600 % 28),
-            "birthPlace": "Mock Harbour",
-            "knownFor": "Acting",
-            "CreditType": [{"type": kind, "title": title} for kind, title, _ in self._departments(who, lib)],
-        }
+        record = {"title": who["tag"], "CreditType": [{"type": kind, "title": title}
+                                                        for kind, title, _ in self._departments(who, lib)]}
+        if not who["tagKey"].startswith("demo-person-"):
+            h = int(hashlib.md5(who["tagKey"].encode()).hexdigest(), 16)
+            record.update({
+                "summary": (f"{who['tag']} is a synthetic person of the mock Discover provider.\n\n"
+                            "Every word of this biography is invented by tests/mock_pms.py so that the person "
+                            "page has prose to lay out without asking plex.tv for any."),
+                "bornAt": "%04d-%02d-%02d" % (1950 + h % 50, 1 + h // 50 % 12, 1 + h // 600 % 28),
+                "birthPlace": "Mock Harbour",
+                "knownFor": "Acting",
+            })
+        # A `demo-person-N` key is a REAL person's name (the demo library's actors, which the site
+        # captures show): the record carries the name and the departments the synthetic library credits
+        # them in and nothing else, so no birth date, place or biography is invented about them.
         return self._container(size=1, totalSize=1, Metadata=[record])
 
     def _person_credits(self, who, lib):
