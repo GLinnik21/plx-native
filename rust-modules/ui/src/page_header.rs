@@ -7,8 +7,10 @@
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
 //! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant
 //! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
-//! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster is sized ONCE from its widest case
-//! (`widest`), so it never moves when a value changes; the left group gets what is left.
+//! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster's BUDGET is sized ONCE from its widest
+//! case (`widest`), so the room the left group may use never changes when a value changes; the
+//! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (a read-out: at least
+//! [`READOUT_GAP`]), right-anchored at [`TEXT_X1`].
 //!
 //! **A breadcrumb is a configuration of the row, not a second widget.** With
 //! [`PageHeaderSpec::crumb`] set, the left side is the root link (focusable, no plate of its own),
@@ -97,11 +99,14 @@ pub struct HeaderItem {
     /// the next item.
     pub readout: bool,
     /// A control whose value is a count that comes and goes ("Collections · 4"): the widest value it
-    /// ever wears, measured once. The control is PLACED for that width whatever it holds now, with
-    /// the label at the slot's leading edge, so the label never moves when the count lands, changes
-    /// or is not known yet; the plate hugs the text actually drawn. Its value, and its being on the
-    /// row at all, ride the row's [`HeaderSwap`]: a changed count cross-fades in place, a control the
-    /// next row does not have fades out where it stood, instead of being cut.
+    /// ever wears, measured once. The slot sizes the cluster's BUDGET (`cluster_w`, `left_budget`:
+    /// the room the library names may use does not change with the count); it is no air inside the
+    /// row, where the control is placed by the text it DRAWS, one [`GAP`] from its neighbour, and the
+    /// plate hugs that text. Its value, and its being on the row at all, ride the row's
+    /// [`HeaderSwap`]: a changed count cross-fades in place, a control the next row does not have
+    /// fades out where it stood, one it did not have fades in, and one whose label stands at another
+    /// x (a count of another digit count) leaves at the old x and arrives at the new, instead of
+    /// being cut.
     pub value_slot: Option<String>,
 }
 
@@ -174,9 +179,10 @@ fn text_w(s: &str, measure: &dyn Measure) -> f32 {
     CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
 }
 
-/// The room an item takes in the row: its drawn run, or for a control with a [`HeaderItem::value_slot`]
-/// the label and the separator and the slot (the count it holds may be wider than the slot, never
-/// narrower, so the room never changes while the count is a few digits).
+/// The room an item is BUDGETED in the row: its drawn run, or for a control with a
+/// [`HeaderItem::value_slot`] the label and the separator and the slot (the count it holds may be
+/// wider than the slot, never narrower, so the budget never changes while the count is a few
+/// digits). It sizes `cluster_w` and `left_budget`; the items are placed by [`ink_w`].
 fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
     let w = |s: &str| text_w(s, measure);
     let value = match (&item.value_slot, &item.value) {
@@ -188,7 +194,7 @@ fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
 }
 
 /// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
-/// and its plate are this wide.
+/// and its plate are this wide, and the next item stands one gap past it.
 fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
     if item.value_slot.is_none() { return run_w(item, measure); }
     let w = |s: &str| text_w(s, measure);
@@ -204,9 +210,17 @@ fn gap_after(item: &HeaderItem) -> f32 {
 }
 
 /// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
-/// read-out).
+/// read-out), each item as wide as it is BUDGETED ([`run_w`]: a slot's full width).
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     let runs: f32 = items.iter().map(|i| run_w(i, measure)).sum();
+    let gaps: f32 = items.windows(2).map(|w| gap_after(&w[0])).sum();
+    runs + gaps
+}
+
+/// [`cluster_width`] with each item as wide as it DRAWS ([`ink_w`]): the width the live cluster
+/// stands in.
+fn drawn_cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
+    let runs: f32 = items.iter().map(|i| ink_w(i, measure)).sum();
     let gaps: f32 = items.windows(2).map(|w| gap_after(&w[0])).sum();
     runs + gaps
 }
@@ -252,16 +266,19 @@ impl PageHeader {
             place(slot, x, w, focusable);
             if left.get(n + 1).is_some() { x += w + GAP; }
         }
-        // The right cluster keeps its measured width; its items sit flush to the right edge, each
-        // placed for the room it takes (`run_w`) and drawn as wide as its text (`ink_w`). The
-        // read-out leads the cluster at its measured left edge, so a control after it that comes
-        // or goes (or changes its count) moves nothing of it.
-        let live = cluster_width(&self.spec.right, measure);
+        // The right cluster's items sit flush to the right edge, each placed by the text it DRAWS
+        // (`ink_w`) and one `gap_after` from the next: a slot is budget (`cluster_w`, above), never
+        // air between two items, so every gap of the row is the same whatever a count holds. The
+        // cluster is right-anchored, so the items after a control whose count changes stand still;
+        // the control's own label moves by the digits' width (`HeaderSwap` dissolves that). The
+        // read-out leads the cluster at its measured left edge, so a control after it that comes or
+        // goes (or changes its count) moves nothing of it.
+        let live = drawn_cluster_width(&self.spec.right, measure);
         let mut rx = x1 - live;
         for (i, it) in self.spec.right.iter().enumerate() {
-            let w = run_w(it, measure);
+            let w = ink_w(it, measure);
             let at = if it.readout && i == 0 { cluster_x0.min(rx) } else { rx };
-            place(Slot::Right(i), at, ink_w(it, measure), it.focusable);
+            place(Slot::Right(i), at, w, it.focusable);
             if self.spec.right.get(i + 1).is_some() { rx += w + gap_after(it); }
         }
         HeaderLayout {
@@ -352,14 +369,14 @@ impl PageHeader {
         for (index, r) in layout.items.iter().enumerate() {
             if lifted == Some(index) { continue; }
             let mut face = self.face(r.slot);
-            if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i); }
+            if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i, r.text.x); }
             // Inked by what is under each pixel: a label a capsule's arc is crossing wears the
             // capsule's ink on its side of the arc and the resting one on the other.
             paint_inked(p, &self.ink(capsules, r, &face, ground), |focus, selected| {
                 self.draw_face_at(p, r.text, &face, (0.0, 0.0), (focus, selected));
             });
         }
-        for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right) {
+        for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right, layout) {
             let face = Face { fade: Some(FaceFade { face: opacity, from_value: None, value_in: 1.0 }), ..Self::face_of(item) };
             self.draw_face_at(p, Rect::new(text_x, layout.top(), text_w, HEIGHT), &face, (0.0, 0.0), (0.0, 0.0));
         }
@@ -577,10 +594,12 @@ struct Carried {
 /// **The header row's content swap**: when a rebuilt row changes a control that has a
 /// [`HeaderItem::value_slot`], the reader sees the change as a dissolve and not a cut. The label
 /// stays where it is drawn and the value beside it cross-fades in place, old number to new; a
-/// control the new row does not have fades out where it stood; one it did not have fades in. All on
-/// [`Xfade`], the one content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`]
-/// smoothstepped), so no page keeps a timer of its own. Nothing glides: the slot already keeps the
-/// label still.
+/// control the new row does not have fades out where it stood; one it did not have fades in. A
+/// control whose label stands at another x on the new row (a count of another digit count moves it
+/// by the digits' width, [`PageHeader::layout`] placing it by what it draws) does both: the old face
+/// leaves at the old x while the new one arrives at the new x. All on [`Xfade`], the one
+/// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
+/// a timer of its own. Nothing glides: a label is never drawn between its two places.
 ///
 /// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
 /// replaced whole on every rebuild, and the swap must outlive the row it began on. It is
@@ -589,19 +608,27 @@ struct Carried {
 /// two of them is paint.
 pub struct HeaderSwap {
     clock: Xfade,
-    /// The slotted controls of the row before the swap; empty at rest.
+    /// The slotted controls of the row before the swap (none when that row had none, a control
+    /// then only arrives); empty at rest.
     from: Vec<Carried>,
+    /// A swap was begun and its clock has not run out.
+    running: bool,
 }
+
+/// Two x positions this close are one place: a count of another digit count moves its label by a
+/// digit or more, a count of the same width in a proportional font by a fraction of a pixel, which
+/// the eye reads as the same spot (the value then cross-fades in place).
+const SAME_X: f32 = 0.5;
 
 impl Default for HeaderSwap {
     fn default() -> Self { Self::new() }
 }
 
 impl HeaderSwap {
-    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new() } }
+    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new(), running: false } }
 
     /// Is a swap on screen?
-    pub fn is_active(&self) -> bool { !self.from.is_empty() && self.clock.is_swapping() }
+    pub fn is_active(&self) -> bool { self.running && self.clock.is_swapping() }
 
     /// The row `old` is being replaced by `new`: start a swap when a slotted control changed (its
     /// value, or its being there at all). A row that changes nothing a swap carries starts nothing
@@ -621,18 +648,20 @@ impl HeaderSwap {
             && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value));
         if same { return; }
         self.from = before;
+        self.running = true;
         self.clock.arrive();
     }
 
     /// Stop at once, the row as it is.
     pub fn end(&mut self) {
         self.from.clear();
+        self.running = false;
         self.clock = Xfade::new();
     }
 
     /// One frame of the swap's clock: **decoration, not layout** ([`plx_machine::idle::decorative`]).
     pub fn step(&mut self, dt: f32) {
-        if self.from.is_empty() { return; }
+        if !self.running { return; }
         plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
         if !self.clock.is_swapping() { self.end(); }
     }
@@ -640,8 +669,16 @@ impl HeaderSwap {
     /// How far the swap has run, 0 (the old row) to 1 (the new one), eased.
     fn progress(&self) -> f32 { self.clock.alpha() }
 
-    /// How the item `right[index]` is painted now; `None` when the swap has nothing to say about it.
-    fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize) -> Option<FaceFade<'a>> {
+    /// Has the carried control `before` MOVED to `item` standing at `x`: its value changed and its
+    /// label stands at another x? Then its old face leaves at the old x and the new one arrives at
+    /// `x` (there is no place between them to cross-fade in).
+    fn moved(before: &Carried, item: &HeaderItem, x: f32) -> bool {
+        before.item.value != item.value && (before.x - x).abs() >= SAME_X
+    }
+
+    /// How the item `right[index]`, whose text stands at `x`, is painted now; `None` when the swap
+    /// has nothing to say about it.
+    fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize, x: f32) -> Option<FaceFade<'a>> {
         if !self.is_active() { return None; }
         let item = right.get(index).filter(|item| item.value_slot.is_some())?;
         let a = self.progress();
@@ -649,17 +686,23 @@ impl HeaderSwap {
             return Some(FaceFade { face: a, from_value: None, value_in: 1.0 });
         };
         if before.item.value == item.value { return None; }
+        if Self::moved(before, item, x) { return Some(FaceFade { face: a, from_value: None, value_in: 1.0 }); }
         let from_value = before.item.value.as_deref().map(|value| (value, 1.0 - a));
         Some(FaceFade { face: 1.0, from_value, value_in: if item.value.is_some() { a } else { 0.0 } })
     }
 
-    /// The slotted controls the new row (`right`) does not have: each with where its text stood and
-    /// its opacity now, falling.
-    fn leaving<'a>(&'a self, right: &'a [HeaderItem]) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
+    /// The faces of the row before that leave: a slotted control the new row (`right`, placed as
+    /// `layout`) does not have, and one it has at another x with another value. Each with where its
+    /// text stood and its opacity now, falling.
+    fn leaving<'a>(&'a self, right: &'a [HeaderItem], layout: &'a HeaderLayout) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
         let active = self.is_active();
         let opacity = 1.0 - self.progress();
-        self.from.iter().filter(move |c| active && !right.iter().any(|item| item.label == c.item.label))
-            .map(move |c| (&c.item, c.x, c.w, opacity))
+        self.from.iter().filter(move |c| active && {
+            let now = right.iter().enumerate().find(|(_, item)| item.label == c.item.label);
+            now.map_or(true, |(i, item)| {
+                layout.items.iter().find(|r| r.slot == Slot::Right(i)).is_some_and(|r| Self::moved(c, item, r.text.x))
+            })
+        }).map(move |c| (&c.item, c.x, c.w, opacity))
     }
 }
 
