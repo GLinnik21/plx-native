@@ -92,8 +92,8 @@ pub enum HeroCtl {
     /// the − face of that same toggle — worn once the item IS watched
     MarkUnwatched,
     /// the bookmark disc — present only for an item with a Watchlist-takeable guid, then always
-    /// SECOND (right after Play/Resume); a circle that never unfurls, it names itself with a caption
-    /// under it while focused (`hero_layout::draw_name`)
+    /// SECOND (right after Play/Resume); a circle that never unfurls and carries no name, focused or
+    /// not: an icon-only control is its glyph and its focus fill
     Watchlist,
 }
 
@@ -308,8 +308,8 @@ pub fn watch_names_show(d: &Detail) -> bool {
 }
 
 /// A disc's slot (`[restart, trailer, watch]`) and the verb it unfurls to — `None` for the two PILLS
-/// and for the bookmark disc, which has no verb to unfurl (it is captioned while focused instead,
-/// `hero_layout::draw_name`).
+/// and for the bookmark disc, which has no verb to unfurl and wears no name: it is its glyph and its
+/// focus fill.
 pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
         (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
@@ -387,7 +387,7 @@ pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect 
             HeroCtl::Play => cw.pill,
             HeroCtl::Alt => cw.alt,
             HeroCtl::Restart => cw.disc[0],
-            // no verb to unfurl (its focused name is a caption): a circle at every instant
+            // no verb to unfurl: a circle at every instant
             HeroCtl::Watchlist => CD,
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],

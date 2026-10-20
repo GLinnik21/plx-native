@@ -797,9 +797,6 @@ pub(super) struct Drawn {
 }
 
 impl Drawn {
-    /// Was `text` drawn, exactly as one run?
-    pub(super) fn says(&self, text: &str) -> bool { self.words.iter().any(|(words, _)| words == text) }
-
     /// **The lines of the focused tile's label block this frame drew**, top to bottom, with no list of
     /// words to look for: every run `card_row::draw_label_block` drew, whatever its ink
     /// (`plx_ui::draw_census::label_lines`), so a line the setting turned off, or one nothing asked

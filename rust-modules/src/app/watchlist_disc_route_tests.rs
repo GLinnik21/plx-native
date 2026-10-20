@@ -194,34 +194,64 @@ fn the_sort_and_filter_menu_reorders_narrows_and_resets_the_grid_by_keys() {
     assert_eq!(w.elem(), Some(PILL_ELEM), "with focus back on the pill");
 }
 
-/// **An icon-only hero control names itself while it holds focus** (design review S25), on the Home
-/// hero and on a movie's Detail hero: Right from Play reaches the bookmark disc and the page DRAWS
-/// the disc's name ("Add to Watchlist"), OK flips the face and the name with it ("On Watchlist"), and
-/// Left back to Play takes the name away. Read off the frame the product draws, so a caption that is
-/// built but not drawn, or drawn for the wrong face, is red here.
+/// **A focused icon-only hero control is its glyph and its focus fill, and nothing else** (owner,
+/// 2026-10-20: "I don't want these labels"): no word of any control's name is drawn, and nothing at
+/// all is drawn in the band under the hero's control row, on the Home hero with the bookmark disc
+/// focused, on the Home hero with Info focused, and on a movie's Detail hero with the bookmark disc
+/// focused (on either face of the disc). Read off the frame the product draws once every spring has
+/// run to rest.
 #[test]
-fn the_focused_bookmark_disc_names_itself_on_the_home_hero_and_the_detail_hero() {
-    use plx_platform::i18n::msg::{watchlist_action_add, watchlist_action_on_list};
-    // One world at a time (the serial lock is not re-entrant): each is built when its turn comes.
-    let pages: [(&str, fn() -> World); 2] = [
-        ("home", || World::home_with_disc("r14-caption-home", HEX)),
-        ("detail", || World::detail_with_disc("r14-caption-detail", HEX)),
+fn a_focused_icon_only_hero_control_draws_no_name_on_the_home_hero_and_the_detail_hero() {
+    use plx_platform::i18n::msg::{
+        browse_menu_go_episode, browse_menu_go_movie, browse_menu_go_season, browse_menu_go_show,
+        watchlist_action_add, watchlist_action_on_list,
+    };
+    let names = [
+        watchlist_action_add(), watchlist_action_on_list(), browse_menu_go_movie(),
+        browse_menu_go_show(), browse_menu_go_season(), browse_menu_go_episode(),
     ];
-    for (page, mount) in pages {
+    // Every word the frame draws, sorted: what the page says with the Play control focused (no
+    // name belongs to it) is what every other focus must leave exactly as it is.
+    let said = |w: &mut World| {
+        let mut said: Vec<String> = w.drawn().words.into_iter().map(|(text, _)| text).collect();
+        said.sort();
+        said
+    };
+    // One world at a time (the serial lock is not re-entrant): each is built when its turn comes.
+    // `flip`: the focus is the bookmark disc, so OK on it turns its face and the other face is read too.
+    let cases: [(&str, fn() -> World, &[Key], bool); 3] = [
+        ("home, bookmark disc", || World::home_with_disc("r14-nameless-home-disc", HEX), &[Key::Right], true),
+        ("home, Info", || World::home_with_disc("r14-nameless-home-info", HEX), &[Key::Right, Key::Right], false),
+        ("detail, bookmark disc", || World::detail_with_disc("r14-nameless-detail-disc", HEX), &[Key::Right], true),
+    ];
+    let mut problems = Vec::new();
+    for (case, mount, keys, flip) in cases {
         let mut w = mount();
-        w.frames(40);
-        assert!(!w.drawn().says(watchlist_action_add()), "{page}: premise: the focused Play control draws no disc name");
-        w.press(Key::Right);
-        let (add, on_list) = (watchlist_action_add(), watchlist_action_on_list());
-        let drawn = w.drawn();
-        assert!(drawn.says(add) && !drawn.says(on_list), "{page}: the focused disc names the action its outline offers; drew {:?}", drawn.words.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>());
-        w.press(Key::Ok);
-        let drawn = w.drawn();
-        assert!(drawn.says(on_list) && !drawn.says(add), "{page}: the filled face names the state it reports");
-        w.press(Key::Left);
-        let drawn = w.drawn();
-        assert!(!drawn.says(add) && !drawn.says(on_list), "{page}: focus off the disc takes its name away");
+        w.frames(60);
+        let at_play = said(&mut w);
+        let play = w.drawn().words.into_iter().find(|(text, _)| text == plx_appkit::hero_layout::play_text(false))
+            .unwrap_or_else(|| panic!("{case}: premise: the Play pill draws its label; drew {at_play:?}")).1;
+        let focus_at_play = w.elem();
+        for key in keys { w.press(*key); }
+        for face in 0..(if flip { 2 } else { 1 }) {
+            if face == 1 { w.press(Key::Ok); }
+            w.frames(90);
+            assert_ne!(w.elem(), focus_at_play, "{case}: premise: focus left Play for the icon-only control");
+            let drawn = w.drawn();
+            let named: Vec<_> = drawn.words.iter().filter(|(text, _)| names.iter().any(|name| text.contains(name))).collect();
+            if !named.is_empty() { problems.push(format!("{case}, face {face}: a control's name is drawn: {named:?}")); }
+            // The band under the control row, as far down as a caption of the old kind stood: from
+            // the Play label's line to the bottom of the `CD`-tall row (centred on it) and a caption
+            // below that.
+            let row_bottom = play.y + play.h * 0.5 + plx_appkit::hero_layout::CD * 0.5;
+            let band = play.y + play.h..row_bottom + plx_ui::theme::space::XS + 2.0 * plx_ui::theme::size::CAPTION as f32;
+            let in_band: Vec<_> = drawn.words.iter().filter(|(_, at)| band.contains(&at.y)).collect();
+            if !in_band.is_empty() { problems.push(format!("{case}, face {face}: text stands under the control row: {in_band:?}")); }
+            let now = said(&mut w);
+            if now != at_play { problems.push(format!("{case}, face {face}: focus on the icon-only control changes what the page says: {at_play:?} -> {now:?}")); }
+        }
     }
+    assert!(problems.is_empty(), "{problems:#?}");
 }
 
 /// **Sort & Filter lifts its opener** (design review S12), on the Watchlist as on the Library: OK on

@@ -2203,20 +2203,6 @@ impl HomeScreen {
             .palette(palette)
             .scale(pop(1))
             .draw(env, p);
-        // The two icon-only controls name themselves while focused (the shared rule, `hero_layout::draw_name`).
-        // They share ONE caption slot, so they trade it through the shared swap rule
-        // (`hero_layout::draw_names`): the bookmark disc's two names ride its flip, and focus moving
-        // between the disc and Info hands the slot over instead of overlapping the two.
-        if live {
-            use plx_appkit::hero_layout::NameWant;
-            let mut wants = Vec::with_capacity(3);
-            if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
-                let focus = fill(2);
-                wants.extend(plx_appkit::watchlist_disc::names(self.disc.progress(hex)).map(|(name, flip)| NameWant { ctl: rect, name, want: focus * flip }));
-            }
-            wants.push(NameWant { ctl: info, name: plx_appkit::hero_layout::info_name(hero.kind), want: fill(1) });
-            plx_appkit::hero_layout::draw_names(p, &wants, measure);
-        }
         plx_ui::icons::draw(p, Icon::Chevron, mark, theme::TEXT_SECONDARY);
     }
 

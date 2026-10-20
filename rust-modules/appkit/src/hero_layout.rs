@@ -16,9 +16,8 @@ use std::ffi::CStr;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::Measure;
-use plx_ui::text_view::TextView;
 use plx_ui::widgets::CircleButton;
-use plx_ui::{theme, Painter, Rect};
+use plx_ui::{theme, Rect};
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
@@ -79,73 +78,6 @@ pub fn play_text(resumes: bool) -> &'static str {
         plx_platform::i18n::msg::browse_detail_resume()
     } else {
         plx_platform::i18n::msg::browse_detail_play()
-    }
-}
-
-/// The gap between a hero control's lower edge and the name it wears while focused.
-const NAME_GAP: f32 = theme::space::XS;
-
-/// **The name an icon-only hero control wears while it holds focus**, one rule for the Home hero
-/// and the Detail hero (design review S25). A disc that carries a verb of its own (Detail's Play
-/// from Start, Trailer and Mark as watched) UNFURLS it; the controls that carry none (the bookmark
-/// disc on both pages and Home's Info) are named by this caption instead, so no focused control in
-/// the row is ever a bare glyph. It is drawn under the control, centred on it and kept inside the
-/// page margin, at the control's own focus spring (`t`, 0..1) so it arrives with the fill.
-pub fn draw_name(p: Painter, ctl: Rect, name: &str, t: f32, measure: &dyn Measure) {
-    if t <= 0.01 || name.is_empty() {
-        return;
-    }
-    let w = measure.width_str(name, theme::size::CAPTION, false).ceil() + 2.0;
-    let x = (ctl.x + ctl.w * 0.5 - w * 0.5).max(plx_ui::consts::MARGIN_X);
-    TextView::new(name, theme::size::CAPTION, theme::TEXT_PRIMARY)
-        .max_lines(1)
-        .draw(p.alpha(t), Rect::new(x, ctl.y + ctl.h + NAME_GAP, w, 0.0));
-}
-
-/// One name that wants the hero row's caption slot: the control it hangs under, the words, and how
-/// much it is wanted, 0 (not at all) to 1 (the slot is entirely its).
-#[derive(Clone, Copy, Debug)]
-pub struct NameWant<'a> {
-    pub ctl: Rect,
-    pub name: &'a str,
-    pub want: f32,
-}
-
-/// **The one label-swap rule: two strings in one slot never share a frame.** The slot is the caption
-/// band under the hero row; `want` is how much a string is wanted there and `rival` the strongest
-/// want among the others. The string shows what it wants OVER its rival: the old one is out by the
-/// time the new one is half wanted, and the new one arrives only in the second half, so when two
-/// strings trade the slot (wants `1 - s` and `s` along a swap `s`) the outgoing one fades over the
-/// first 50% (`1 - 2s`) and the incoming one over the last 50% (`2s - 1`). Alone (`rival` 0) it is
-/// `want` itself, so a name still arrives with the fill that asks for it. At most one string of a
-/// slot has any reveal on any frame: a string revealed needs `want > rival`, which no rival of it
-/// can say back.
-///
-/// The S6 count digits are NOT a swap in a slot: they cross-fade in place on purpose, and this rule
-/// is not theirs.
-pub fn name_reveal(want: f32, rival: f32) -> f32 {
-    (want - rival).clamp(0.0, 1.0)
-}
-
-/// Draw the names contesting one caption slot ([`name_reveal`] decides each one's alpha) under
-/// their controls. Every hero page draws its captions through this, whether the strings that trade
-/// the slot are two controls' names (Home's disc and Info, focus moving between them) or one
-/// control's two faces (the bookmark disc's Add and On-list names, the flip between them).
-pub fn draw_names(p: Painter, wants: &[NameWant<'_>], measure: &dyn Measure) {
-    for (k, w) in wants.iter().enumerate() {
-        let rival = wants.iter().enumerate().filter(|&(j, _)| j != k).fold(0.0f32, |m, (_, o)| m.max(o.want));
-        draw_name(p, w.ctl, w.name, name_reveal(w.want, rival), measure);
-    }
-}
-
-/// The Info control's name: the page it opens, said in the card menu's own "Go to ..." words (a
-/// show's page, a season's, an episode's, else the movie's).
-pub fn info_name(kind: i32) -> &'static str {
-    match kind {
-        1 => plx_platform::i18n::msg::browse_menu_go_show(),
-        2 => plx_platform::i18n::msg::browse_menu_go_season(),
-        3 => plx_platform::i18n::msg::browse_menu_go_episode(),
-        _ => plx_platform::i18n::msg::browse_menu_go_movie(),
     }
 }
 
