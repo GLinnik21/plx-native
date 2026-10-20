@@ -50,7 +50,9 @@ Scene fields (tests/manifest.json, `fps_scenes`):
                                 the same walk over the Library: sized from the seated section's
                                 `libhubs: section N landed M shelves` line, a second Down per
                                 linked shelf, `extra_rows` more to reach the grid, and a
-                                `focus route=... region=grid` fingerprint required in the window
+                                `focus route=... region=<fingerprint_region>` fingerprint required in
+                                the window (a region the scene's page prints: tests/test_harness.py
+                                reads the words from the page's `probe_viewport`)
   "walk": {"row_down": 1, "cards": 96, "key_gap_s": 0.33, ...}
                                 a ROW walk (#567, `home-recent-paging`): after Home lands, press Down
                                 `row_down` times to reach a named row (the `plxnative-grid` trigger
@@ -466,7 +468,8 @@ def walk_downs(scene, shelves):
     """The Down presses a walk of `scene` makes for `shelves` landed shelves (before the
     `max_rows` cap `walk_plan` applies). Home: one per row. Library (`walk.landed: "library"`):
     one per shelf, a SECOND for each linked shelf (its heading is a stop of its own, then its
-    row), and `extra_rows` more to cross the toolbar into the grid. A `walk.reach` surface (the
+    row), and `extra_rows` more (the Library page's toolbar, to reach its grid; the Recommended
+    page seats its first shelf on arrival and needs none). A `walk.reach` surface (the
     Library page, which mounts no shelves and logs no landing) has a fixed plan: its one "row"
     plus `extra_rows` Downs from the page header into the grid."""
     w = scene["walk"]

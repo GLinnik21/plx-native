@@ -736,3 +736,26 @@ fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_sp
     assert_eq!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
         "the first hubs are committed while the press springs, so the page leaves its spinner");
 }
+
+// ---- the focus fingerprint the Recommended page prints ---------------------------------------------
+
+/// The one `focus route=library` grammar (`region= row= col=`) both Library pages answer, which the
+/// fps scenes read: #843 let the Recommended page answer the empty line, so `library-shelves-deep`
+/// waited for a `region=grid` the page never printed and failed on every run.
+#[test]
+fn the_recommended_page_prints_the_librarys_fingerprint_on_a_shelf_card() {
+    let mut w = World::recommended("rec-fingerprint");
+    let probe = |w: &World| content_probe(&w.d, &w.bridge);
+    let on_a_card = probe(&w);
+    assert!(on_a_card.contains(" region=shelf row=0 col=0 "), "the page seats its first shelf card: {on_a_card}");
+    assert!(on_a_card.contains(" card=1 menu=0 "), "a published card is focused: {on_a_card}");
+    assert!(on_a_card.contains(" sid=") && !on_a_card.contains(" rk=-"), "it names the card's server and ratingKey: {on_a_card}");
+    w.press(Key::Down);
+    let lower = probe(&w);
+    assert!(lower.contains(" region=shelf row=1 col="), "Down moves the fingerprint to the next shelf: {lower}");
+    w.press(Key::Up);
+    w.press(Key::Up);
+    let crumb = probe(&w);
+    assert!(crumb.contains(" region=crumb row=-1 col=-1 ") && crumb.contains(" card=0 "),
+        "the crumb row is a region of its own: {crumb}");
+}
