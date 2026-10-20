@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T18:45:43Z",
+ "generated": "2026-10-20T18:47:00Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,39 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 65.2,
+   "change7_pct": 61.6,
    "d30": null,
    "delta30": null,
-   "delta7": 137.5,
+   "delta7": 130,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 99,
-   "now": 348.5,
+   "now": 341,
    "prev7": 211,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 40.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": 110.0,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 106,
-   "n_prev": 99,
-   "now": 381.0,
-   "prev7": 271,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -87,6 +66,27 @@
   },
   {
    "change30_pct": null,
+   "change7_pct": 40.2,
+   "d30": null,
+   "delta30": null,
+   "delta7": 109,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 107,
+   "n_prev": 99,
+   "now": 380,
+   "prev7": 271,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
    "change7_pct": 36.6,
    "d30": null,
    "delta30": null,
@@ -104,6 +104,27 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 27.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 35,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 107,
+   "n_prev": 99,
+   "now": 164,
+   "prev7": 129,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -125,27 +146,6 @@
    "state30": "better",
    "threshold_abs": 60.0,
    "threshold_pct": 15.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 26.7,
-   "d30": null,
-   "delta30": null,
-   "delta7": 34.5,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 106,
-   "n_prev": 99,
-   "now": 163.5,
-   "prev7": 129,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -245,18 +245,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 90.6,
-   "change7_pct": 11.9,
+   "change30_pct": 90.8,
+   "change7_pct": 12.1,
    "d30": 1114.5,
-   "delta30": 1009.5,
-   "delta7": 226.0,
+   "delta30": 1012.5,
+   "delta7": 229,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 75,
-   "now": 2124.0,
+   "now": 2127,
    "prev7": 1898,
    "shown": true,
    "state": "flat",
@@ -290,15 +290,15 @@
    "change30_pct": 33.9,
    "change7_pct": 2.3,
    "d30": 233,
-   "delta30": 79.0,
-   "delta7": 7.0,
+   "delta30": 79,
+   "delta7": 7,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 99,
-   "now": 312.0,
+   "now": 312,
    "prev7": 305,
    "shown": true,
    "state": "flat",
@@ -317,9 +317,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 43,
+   "n_now": 44,
    "n_prev": 0,
-   "now": 311,
+   "now": 311.5,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 2.6,
+   "change7_pct": 1.7,
    "d30": null,
    "delta30": null,
-   "delta7": 4.5,
+   "delta7": 3,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 99,
-   "now": 177.5,
+   "now": 176,
    "prev7": 173,
    "shown": true,
    "state": "flat",
@@ -396,14 +396,14 @@
    "change7_pct": 14.8,
    "d30": null,
    "delta30": null,
-   "delta7": 21.0,
+   "delta7": 21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 99,
-   "now": 163.0,
+   "now": 163,
    "prev7": 142,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 43,
+   "n_now": 44,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -565,15 +565,15 @@
    "change30_pct": -99.6,
    "change7_pct": -25.0,
    "d30": 675,
-   "delta30": -672.0,
-   "delta7": -1.0,
+   "delta30": -672,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 99,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -667,7 +667,7 @@
    "to": 127.3
   },
   {
-   "change_pct": 65.2,
+   "change_pct": 61.6,
    "commits": [
     {
      "pr": 861,
@@ -725,68 +725,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-20",
    "threshold_pct": 20.0,
-   "to": 348.5
-  },
-  {
-   "change_pct": 40.6,
-   "commits": [
-    {
-     "pr": 861,
-     "sha": "3882f6ebe",
-     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
-    },
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
-     "pr": 859,
-     "sha": "1fbab7089",
-     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
-    },
-    {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
-     "pr": 872,
-     "sha": "a06719da3",
-     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
-    },
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    }
-   ],
-   "from": 271,
-   "id": "ci|host unit tests (default features)",
-   "label": "CI: host unit tests (default features)",
-   "since": "2026-10-20",
-   "threshold_pct": 20.0,
-   "to": 381.0
+   "to": 341
   },
   {
    "change_pct": 40.6,
@@ -850,6 +789,67 @@
    "to": 483.5
   },
   {
+   "change_pct": 40.2,
+   "commits": [
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
+    },
+    {
+     "pr": 863,
+     "sha": "d6ec840c1",
+     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
+    },
+    {
+     "pr": 864,
+     "sha": "1236b92eb",
+     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
+    },
+    {
+     "pr": 859,
+     "sha": "1fbab7089",
+     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
+    },
+    {
+     "pr": 871,
+     "sha": "a9dcfe67d",
+     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
+    },
+    {
+     "pr": 875,
+     "sha": "5d74e0ff1",
+     "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
+    }
+   ],
+   "from": 271,
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "since": "2026-10-20",
+   "threshold_pct": 20.0,
+   "to": 380
+  },
+  {
    "change_pct": 36.6,
    "commits": [
     {
@@ -911,6 +911,67 @@
    "to": 140.7
   },
   {
+   "change_pct": 27.1,
+   "commits": [
+    {
+     "pr": 861,
+     "sha": "3882f6ebe",
+     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
+    },
+    {
+     "pr": 863,
+     "sha": "d6ec840c1",
+     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
+    },
+    {
+     "pr": 864,
+     "sha": "1236b92eb",
+     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
+    },
+    {
+     "pr": 866,
+     "sha": "69db933db",
+     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
+    },
+    {
+     "pr": 859,
+     "sha": "1fbab7089",
+     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
+    },
+    {
+     "pr": 871,
+     "sha": "a9dcfe67d",
+     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
+    },
+    {
+     "pr": 875,
+     "sha": "5d74e0ff1",
+     "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
+    }
+   ],
+   "from": 129,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-19",
+   "threshold_pct": 20.0,
+   "to": 164
+  },
+  {
    "change_pct": 27.0,
    "commits": [
     {
@@ -970,67 +1031,6 @@
    "since": "2026-10-20",
    "threshold_pct": 15.0,
    "to": 404
-  },
-  {
-   "change_pct": 26.7,
-   "commits": [
-    {
-     "pr": 861,
-     "sha": "3882f6ebe",
-     "title": "Cards: a released card lands at rest, and a resting card's interior skips the card math - held paging 52 -> 59 fps on th"
-    },
-    {
-     "pr": 863,
-     "sha": "d6ec840c1",
-     "title": "drawmask: card parts (interior, ring, focus) for the TV, and --save-logs keeps the profiler counters"
-    },
-    {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
-     "pr": 859,
-     "sha": "1fbab7089",
-     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
-    },
-    {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
-     "pr": 872,
-     "sha": "a06719da3",
-     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
-    },
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    }
-   ],
-   "from": 129,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-19",
-   "threshold_pct": 20.0,
-   "to": 163.5
   }
  ],
  "schema": 2,
@@ -1045,25 +1045,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 381.0
+   "now": 380
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 348.5
+   "now": 341
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 312.0
+   "now": 312
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 311
+   "now": 311.5
   }
  ],
  "slowest_local": [
