@@ -563,6 +563,14 @@ impl World {
         panic!("the top page is neither Home nor the Recommended page");
     }
 
+    /// The cards [`Self::card_pops`] draws off exact rest, as `(shelf, card, pop)`: the focused card (popped)
+    /// and any card that never came to rest.
+    pub(super) fn cards_off_rest(&self) -> Vec<(usize, usize, f32)> {
+        self.card_pops().iter().enumerate()
+            .flat_map(|(shelf, cards)| cards.iter().enumerate().filter(|(_, pop)| **pop != 1.0).map(move |(card, pop)| (shelf, card, *pop)))
+            .collect()
+    }
+
     /// The scroll the page on top is travelling to (0 at its top).
     pub(super) fn scroll_target(&self) -> f32 {
         let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");

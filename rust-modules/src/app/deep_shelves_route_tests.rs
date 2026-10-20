@@ -1,6 +1,6 @@
-//! **Deep pages under a key** (#858, #860): the Library's Recommended page keeps its place when a
-//! publication arrives, and a deep Home walked with a held Down reaches every row while the store is
-//! told the band far less often than the rows pass.
+//! **Deep pages under a key** (#858, #860, #861): the Library's Recommended page keeps its place when a
+//! publication arrives, a deep Home walked with a held Down reaches every row while the store is
+//! told the band far less often than the rows pass, and a Home card's Detail returns onto that card at rest.
 
 use super::*;
 use super::test_support::World;
@@ -24,6 +24,12 @@ fn a_publication_that_adds_a_shelf_leaves_the_focused_card_where_it_is_and_the_n
     assert!(last.contains(" region=shelf row=6 "), "the seventh shelf the publication added is reachable by Down: {last}");
 }
 
+/// The Home card holding focus: its `(row, col)` in the grid and its ratingKey (`None` while focus is elsewhere).
+fn home_card(w: &World) -> (Option<(usize, usize)>, Option<String>) {
+    w.bridge.with_home(&w.d, |home, cx, focus| (home.grid_position::<AppHost>(focus, cx),
+        home.focused_item::<AppHost>(focus, cx).map(|item| item.rk.clone()))).expect("Home is the top page")
+}
+
 /// **A held Down through a deep Home reaches every row in order, on a card that has landed.** The
 /// screen tells the store which rows it wants held only when the rows in view near the edge of the
 /// band it last sent (`ui::cards::HoldBand`: margin 2, slack 2), so a band that hugged the view would
@@ -38,10 +44,9 @@ fn a_held_down_through_a_deep_home_reaches_every_row_in_order_on_a_card_that_has
     for row in 0..ROWS {
         w.bridge.stores.hubs.land_kept_rows_for_test();
         w.tap(Key::Down, 3);
-        let (at, landed) = w.bridge.with_home(&w.d, |home, cx, focus| (home.grid_position::<AppHost>(focus, cx),
-            home.focused_item::<AppHost>(focus, cx).is_some_and(|item| !item.rk.is_empty()))).unwrap();
+        let (at, rk) = home_card(&w);
         assert_eq!(at, Some((row, 0)), "Down {row} lands on the next shelf's first card");
-        assert!(landed, "the card Down {row} lands on has landed: a placeholder behind the key is a band that hugged the view");
+        assert!(rk.is_some_and(|rk| !rk.is_empty()), "the card Down {row} lands on has landed: a placeholder behind the key is a band that hugged the view");
     }
 }
 
@@ -104,5 +109,48 @@ fn a_deep_recommended_page_returns_from_detail_onto_the_same_card_with_its_shelv
     for row in 23..=25 {
         assert!(lo <= row && row <= hi, "shelf {row}, in view, is inside the band the store holds ({lo}..={hi})");
         assert!(!released.contains(&row), "shelf {row}, in view, is published, not a placeholder row: released {released:?}");
+    }
+}
+
+/// **Home -> a card's Detail -> BACK lands on the card it left, and every released card is at exact
+/// rest** (#858's remount path and #861's rest together). A walk three shelves down and four cards in,
+/// OK on the card, BACK: the focus is on the same row, column and ratingKey, only that card is off rest
+/// (popped), and each card the walk released draws with the plain program (`pop_factor == 0.0`). The OK
+/// raises the request the loop reads (`HomeReq::Detail`, with the page's `ReturnState`), and the push is
+/// the loop's own `open_detail`, over a Detail record installed before the mount as `detail_with_disc` does.
+#[test]
+fn home_back_from_detail_lands_on_the_card_it_left_at_rest() {
+    let mut w = World::home_grid("route-home-return", 5, 8);
+    for _ in 0..3 { w.tap(Key::Down, 2); }
+    for _ in 0..4 { w.tap(Key::Right, 2); }
+    w.frames(60);
+    let (at, rk) = home_card(&w);
+    assert_eq!(at, Some((2, 4)), "premise: the walk ended on shelf 2, card 4");
+    assert_eq!(w.cards_off_rest().len(), 1, "premise: only the focused card is off rest before Detail");
+
+    w.tap(Key::Ok, 28);
+    let (sid, detail_rk, ret) = w.bridge.take_home_reqs().into_iter()
+        .find_map(|(_, request, ret)| match request { HomeReq::Detail { sid, rk } => Some((sid, rk, ret)), _ => None })
+        .expect("OK on a shelf card asks for its Detail");
+    assert_eq!(Some(&detail_rk), rk.as_ref(), "the request names the card that was focused");
+    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        sid, rk: detail_rk.clone(), kind: "movie".into(), ..Default::default() }));
+    super::open_detail(&mut w.d, &mut w.bridge, sid, &detail_rk, None, Some(ret));
+    w.frames(60);
+    assert!(w.on(&AppArg::Content(ContentArg::Detail { sid, rk: detail_rk })), "premise: Detail is on top of Home");
+
+    let performed = w.press(Key::Back);
+    assert!(performed.iter().any(|p| p == "content:Back"), "BACK leaves Detail: {performed:?}");
+    w.frames(60);
+    assert!(w.on(&AppArg::Home), "Home is on top again");
+    assert_eq!(home_card(&w), (at, rk), "BACK lands on the card it left");
+    let off = w.cards_off_rest();
+    assert_eq!(off.len(), 1, "only the focused card is off rest after the return, got {off:?}");
+    assert!(off[0].2 > 1.0, "and it is popped: {off:?}");
+    let pops = w.card_pops();
+    for (shelf, cards) in pops.iter().enumerate() {
+        for (card, pop) in cards.iter().enumerate().filter(|(card, _)| (shelf, *card) != (off[0].0, off[0].1)) {
+            assert_eq!(plx_ui::widgets::pop_factor(*pop, 1.09), 0.0, "card ({shelf}, {card}) draws with the focus program after the return (pop {pop})");
+        }
     }
 }

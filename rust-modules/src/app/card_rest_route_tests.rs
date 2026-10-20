@@ -13,13 +13,6 @@
 use super::*;
 use super::test_support::World;
 
-/// Every card's pop that is not exactly 1.0, as `(shelf, card, pop)`.
-fn off_rest(w: &World) -> Vec<(usize, usize, f32)> {
-    w.card_pops().iter().enumerate()
-        .flat_map(|(shelf, cards)| cards.iter().enumerate().filter(|(_, pop)| **pop != 1.0).map(move |(card, pop)| (shelf, card, *pop)))
-        .collect()
-}
-
 /// After a walk of `steps` cards to the right, only the focused card is off rest, and it is popped;
 /// the cards the walk released draw with the plain program (`pop_factor == 0.0`).
 fn walk_right_then_rest(w: &mut World, steps: usize, what: &str) {
@@ -27,7 +20,7 @@ fn walk_right_then_rest(w: &mut World, steps: usize, what: &str) {
     let peak = 1.09;
     for _ in 0..steps { w.tap(Key::Right, 2); }
     w.frames(120);
-    let off = off_rest(w);
+    let off = w.cards_off_rest();
     assert_eq!(off.len(), 1, "{what}: after {steps} cards of a held walk only the focused card is off rest, got {off:?}");
     assert!(off[0].2 > 1.0, "{what}: the focused card is popped: {off:?}");
     let pops = w.card_pops();
@@ -43,13 +36,13 @@ fn walk_right_then_rest(w: &mut World, steps: usize, what: &str) {
 fn a_home_shelf_walked_with_a_held_key_leaves_every_released_card_at_exact_rest() {
     let mut w = World::home_grid("route-rest-home", 3, 12);
     w.press(Key::Down);
-    assert_eq!(off_rest(&w).len(), 1, "premise: the first shelf's first card holds focus and is the only one popped");
+    assert_eq!(w.cards_off_rest().len(), 1, "premise: the first shelf's first card holds focus and is the only one popped");
     walk_right_then_rest(&mut w, 8, "Home");
 }
 
 #[test]
 fn a_recommended_shelf_walked_with_a_held_key_leaves_every_released_card_at_exact_rest() {
     let mut w = World::recommended("route-rest-recommended");
-    assert_eq!(off_rest(&w).len(), 1, "premise: the page arrives in its first card, the only one popped");
+    assert_eq!(w.cards_off_rest().len(), 1, "premise: the page arrives in its first card, the only one popped");
     walk_right_then_rest(&mut w, 2, "Recommended");
 }
