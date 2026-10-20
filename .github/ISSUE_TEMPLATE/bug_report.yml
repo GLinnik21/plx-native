@@ -2,6 +2,10 @@ name: Bug report
 description: Something in PlxNative does not work, for example playback fails, the app closes or sign-in breaks.
 labels: ["bug", "user-report"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for something that is **broken**. If PlxNative works on your TV, please [tell me in Discussions](https://github.com/GLinnik21/plx-native/discussions/new?category=compatibility) instead; those reports feed the [compatibility list](https://github.com/GLinnik21/plx-native/blob/main/docs/compatibility.md).
   - type: input
     id: tv-model
     attributes:
