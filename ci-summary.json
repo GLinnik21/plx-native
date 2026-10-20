@@ -1,20 +1,20 @@
 {
- "generated": "2026-10-20T11:47:51Z",
+ "generated": "2026-10-20T12:34:57Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 172.8,
+   "change7_pct": 124.3,
    "d30": null,
    "delta30": null,
-   "delta7": 97.2,
+   "delta7": 70.6,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 153.4,
-   "prev7": 56.2,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 127.3,
+   "prev7": 56.8,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": -28.6,
-   "change7_pct": 39.0,
+   "change7_pct": 39.8,
    "d30": 679,
-   "delta30": -194,
-   "delta7": 136,
+   "delta30": -194.0,
+   "delta7": 138.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 275,
-   "n_prev": 213,
-   "now": 485,
-   "prev7": 349,
+   "n_now": 276,
+   "n_prev": 211,
+   "now": 485.0,
+   "prev7": 347,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -87,18 +87,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 36.9,
+   "change7_pct": 36.6,
    "d30": null,
    "delta30": null,
-   "delta7": 36.8,
+   "delta7": 37.7,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 8,
-   "n_prev": 6,
-   "now": 136.4,
-   "prev7": 99.7,
+   "n_now": 7,
+   "n_prev": 7,
+   "now": 140.7,
+   "prev7": 103.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -150,18 +150,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.2,
+   "change7_pct": -0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 2.0,
+   "delta7": -0.0,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 8,
-   "n_prev": 6,
-   "now": 23.4,
-   "prev7": 21.4,
+   "n_now": 7,
+   "n_prev": 7,
+   "now": 21.7,
+   "prev7": 21.7,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -171,18 +171,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 18.0,
+   "change7_pct": 10.2,
    "d30": null,
    "delta30": null,
-   "delta7": 7.1,
+   "delta7": 4.2,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 8,
-   "n_prev": 6,
-   "now": 46.7,
-   "prev7": 39.5,
+   "n_now": 7,
+   "n_prev": 7,
+   "now": 45.6,
+   "prev7": 41.3,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -192,18 +192,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.1,
+   "change7_pct": 10.2,
    "d30": null,
    "delta30": null,
-   "delta7": 5.4,
+   "delta7": 4.7,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 8,
-   "n_prev": 6,
-   "now": 49.9,
-   "prev7": 44.5,
+   "n_now": 7,
+   "n_prev": 7,
+   "now": 50.7,
+   "prev7": 46.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -213,30 +213,30 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 23.6,
+   "change7_pct": 23.1,
    "d30": null,
    "delta30": null,
-   "delta7": 241.9,
+   "delta7": 237.9,
    "group": "local",
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 7,
-   "n_prev": 3,
-   "now": 1268.5,
+   "n_now": 6,
+   "n_prev": 4,
+   "now": 1267.7,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1267.0
+     "now": 1266.5
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 973.0
+     "now": 987.0
     }
    ],
-   "prev7": 1026.6,
+   "prev7": 1029.8,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -435,19 +435,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 23.6,
+   "change7_pct": 23.1,
    "d30": null,
    "delta30": null,
-   "delta7": 242.0,
+   "delta7": 238.0,
    "group": "local",
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 7,
-   "n_prev": 3,
-   "now": 1267.0,
+   "n_now": 6,
+   "n_prev": 4,
+   "now": 1266.5,
    "parent": "bench.check",
-   "prev7": 1025.0,
+   "prev7": 1028.5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -457,19 +457,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.4,
+   "change7_pct": 11.6,
    "d30": null,
    "delta30": null,
-   "delta7": 107.0,
+   "delta7": 102.5,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 7,
-   "n_prev": 3,
-   "now": 973.0,
+   "n_now": 6,
+   "n_prev": 4,
+   "now": 987.0,
    "parent": "bench.check",
-   "prev7": 866.0,
+   "prev7": 884.5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -584,7 +584,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 45.3,
+   "change7_pct": 32.2,
    "d30": null,
    "delta30": null,
    "delta7": 0.2,
@@ -592,10 +592,10 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 8,
-   "n_prev": 6,
+   "n_now": 7,
+   "n_prev": 7,
    "now": 0.8,
-   "prev7": 0.5,
+   "prev7": 0.6,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -606,7 +606,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 172.8,
+   "change_pct": 124.3,
    "commits": [
     {
      "pr": 854,
@@ -659,12 +659,12 @@
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
-   "from": 56.2,
+   "from": 56.8,
    "id": "bench.tests",
    "label": "Unit suite",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 153.4
+   "to": 127.3
   },
   {
    "change_pct": 70.4,
@@ -789,7 +789,7 @@
    "to": 384.0
   },
   {
-   "change_pct": 39.0,
+   "change_pct": 39.8,
    "commits": [
     {
      "pr": 854,
@@ -842,15 +842,15 @@
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
-   "from": 349,
+   "from": 347,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-20",
    "threshold_pct": 25.0,
-   "to": 485
+   "to": 485.0
   },
   {
-   "change_pct": 36.9,
+   "change_pct": 36.6,
    "commits": [
     {
      "pr": 854,
@@ -903,12 +903,12 @@
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
     }
    ],
-   "from": 99.7,
+   "from": 103.0,
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 136.4
+   "to": 140.7
   },
   {
    "change_pct": 28.1,
@@ -1071,31 +1071,31 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1268.5
-  },
-  {
-   "group": "local",
-   "id": "bench.tests",
-   "label": "Unit suite",
-   "now": 153.4
+   "now": 1267.7
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 136.4
+   "now": 140.7
+  },
+  {
+   "group": "local",
+   "id": "bench.tests",
+   "label": "Unit suite",
+   "now": 127.3
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 49.9
+   "now": 50.7
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 46.7
+   "now": 45.6
   }
  ],
  "thresholds": {
