@@ -19,10 +19,9 @@
 //!    work this app cannot remove.
 //!
 //! 3. **How is a card DRAWN?** The same armed ledger also books every `Class::Card` draw by the
-//!    path the compositor took ([`CardPath`]): split into pieces, whole through the focus program,
-//!    whole on a reduced-resolution source pass, whole for want of an interior, whole for a radius
-//!    too small to cut, or whole because the split is switched off. [`note_card_path`] books the
-//!    quad's visible area once per path and the window line prints them as `cardpath`. The class
+//!    path the compositor took ([`CardPath`]: split into pieces, or whole and why).
+//!    [`note_card_path`] books the quad's visible area once per path and the window line prints
+//!    them as `cardpath`. The class
 //!    ledger above counts logical composites and cannot see this (a split card is one composite and
 //!    five GL draws); this can, and it is how a stalled spring that kept every visited card on the
 //!    focus program was found. `/tmp/plxnative-nocardsplit` ([`set_card_split`]) switches the split
@@ -302,25 +301,15 @@ mod imp {
         log(&flush_window());
     }
 
-    /// Close the window: the line for the frames since the last one, and every cell back to zero.
+    /// Close the window: the `OVERDRAW` line for the frames since the last one, and every cell back
+    /// to zero. Each class prints `name=px/draws` and each card path `name=px/draws` after
+    /// `cardpath`, all per frame.
     pub(super) fn flush_window() -> String {
         let n = FRAMES.with(|f| f.replace(0));
         let px: [f64; NCLASS] = PX.with(|f| std::array::from_fn(|i| f[i].replace(0.0)));
         let draws: [u32; NCLASS] = DRAWS.with(|f| std::array::from_fn(|i| f[i].replace(0)));
         let path_px: [f64; NPATH] = PATH_PX.with(|f| std::array::from_fn(|i| f[i].replace(0.0)));
         let path_draws: [u32; NPATH] = PATH_DRAWS.with(|f| std::array::from_fn(|i| f[i].replace(0)));
-        window_line(n, &px, &draws, &path_px, &path_draws)
-    }
-
-    /// The `OVERDRAW` line for a window of `n` frames. Each class prints `name=px/draws` and each
-    /// card path `name=px/draws` after `cardpath`, all per frame.
-    pub(super) fn window_line(
-        n: u32,
-        px: &[f64; NCLASS],
-        draws: &[u32; NCLASS],
-        path_px: &[f64; NPATH],
-        path_draws: &[u32; NPATH],
-    ) -> String {
         let frames = n.max(1) as f64;
         let screen = (SCR_W * SCR_H) as f64;
         // `blur` writes reduced-resolution targets, so it is NOT part of the panel's overdraw

@@ -1633,9 +1633,7 @@ pub(crate) unsafe fn construct(
     // global FRAG_QUADS_RAST cannot say. `plxnative-drawmask=<classes>` REFUSES every draw of
     // the named classes, so a whole-frame `frame.ui` A/B against the unmasked control prices
     // that class as the frame sees it; `all` draws nothing and is therefore the compositor
-    // floor. A masked leg is a broken picture on purpose. `plxnative-nocardsplit` is the
-    // control leg of the resting-card split's own A/B: it draws every card whole again, on the
-    // same binary, so a split-on and a split-off leg can be interleaved.
+    // floor. A masked leg is a broken picture on purpose.
     if !controlled {
         crate::dev::scenarios::arm_overdraw();
         crate::dev::scenarios::arm_drawmask();

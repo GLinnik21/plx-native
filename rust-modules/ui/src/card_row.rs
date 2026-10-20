@@ -13,7 +13,7 @@
 use crate::consts::*;
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
-use crate::widgets::{card, Art};
+use crate::widgets::{card, pop_factor, Art};
 use crate::{Painter, Rect, Spring};
 use std::os::raw::c_char;
 
@@ -148,15 +148,6 @@ impl RowStyle {
         circular: true,
         right_reserve: 0.0,
     };
-    /// The pop scalar `f` the card compositor is handed for a tile drawn at scale `s`:
-    /// `(s - 1) / (focus_scale - 1)`, mapping scale ∈ [1, focus_scale] to [0, 1]. It is what ramps
-    /// the shadow and the perimeter sheen in, and `f > 0` is what sends a card to the heavier focus
-    /// program ([`plx_gfx::gfx::wants_focus_program`]) and out of the resting card split, so a tile at
-    /// rest must yield EXACTLY `0.0` (the pop springs land there: [`Spring::land`]).
-    #[inline]
-    pub(crate) fn pop_factor(&self, s: f32) -> f32 {
-        ((s - 1.0) / (self.focus_scale - 1.0)).clamp(0.0, 1.0)
-    }
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop.
     #[inline]
@@ -284,13 +275,10 @@ impl CardRow {
             }
         }
         // the shared overflow spring pops only while focus is actually out past the array
-        let ot = if focused.is_some_and(|f| f >= MAX_ROW_ITEMS) {
-            sty.focus_scale
-        } else {
-            1.0
-        };
+        let past = focused.is_some_and(|f| f >= MAX_ROW_ITEMS);
+        let ot = if past { sty.focus_scale } else { 1.0 };
         self.overflow.step(ot, sty.k_scale, dt);
-        if ot == 1.0 {
+        if !past {
             self.overflow.land(1.0, dt);
         }
         if let Some(fc) = focused {
@@ -769,7 +757,7 @@ pub fn draw_tile(
     // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
     // shadow via `f`.
-    let f = sty.pop_factor(s);
+    let f = pop_factor(s, sty.focus_scale);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
     card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
@@ -914,7 +902,7 @@ impl TileLabel {
 ///
 /// **`s` IS THE SCALE `rect` WAS BUILT FROM — pop AND press, not the pop alone.** It is not a
 /// second, decorative knob: this function divides by it twice, and both readings are wrong the
-/// moment the two disagree. `f = RowStyle::pop_factor(s)` is the drop-shadow and perimeter sheen, so
+/// moment the two disagree. `f = pop_factor(s, focus_scale)` is the drop-shadow and perimeter sheen, so
 /// a press that reaches the rect but not `s` leaves the tile wearing a full focus shadow while it
 /// shrinks — the click reads as a jitter instead of the tile pressing INTO the page. And `ty`
 /// anchors the label block to the UNSCALED card bottom as `rect.h / s`, which is the resting
@@ -979,7 +967,7 @@ pub fn draw_focused_tile_led(
     let rad = sty.tile_radius(rect, s);
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
     // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
-    let f = sty.pop_factor(s);
+    let f = pop_factor(s, sty.focus_scale);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
     crate::widgets::card_named_led(p, rect.scaled(1.0 / s), art, None, rad, true, s, f, led);
@@ -1920,7 +1908,7 @@ mod tests {
     /// (`draw_tile`), the shadow lift `Painter::tex_carded` derives from it, and whether that sends the
     /// card to the focus program (and out of the resting split) rather than the plain one.
     fn card_path(sty: &RowStyle, scale: f32) -> (f32, bool) {
-        let f = sty.pop_factor(scale);
+        let f = pop_factor(scale, sty.focus_scale);
         let (_, _, _, off_l) = crate::card_shadow_params(sty.h, f, theme::CARD_SHADOW[3]);
         let dy = f.clamp(0.0, 1.0) * off_l;
         (f, plx_gfx::gfx::wants_focus_program(f, dy))

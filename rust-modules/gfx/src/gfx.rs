@@ -327,15 +327,12 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// edge instead of poking over the video / buttons (`Painter` otherwise has no clip). Rect is
 /// clamped to the canvas so a negative edge can't underflow the unsigned scissor box.
 ///
-/// **A scissor is NOT in logical coordinates.** Everything else reaches GL through `u_screen`,
-/// which the shaders divide by — so the viewport transform scales the whole authored canvas to
-/// whatever the drawable is, for free. `glScissor` bypasses all of that: it takes bottom-left
-/// *window pixels*. So it needs both the Y flip and the logical→physical scale, which is 1.0 unless
-/// a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for
-/// one) (`surface::scale`) and would otherwise clip the wrong band of the screen. [`target_map`] is
-/// the one mapping, and [`win_x`] / [`win_y`] the one edge rounding, for every scissor this file
-/// sets: [`clip_set`]'s, and the pieces of a split card ([`draw_tex_core_in`]).
-///
+/// **This is the one drawing call that is NOT in logical coordinates.** Everything else reaches GL
+/// through `u_screen`, which the shaders divide by — so the viewport transform scales the whole
+/// authored canvas to whatever the drawable is, for free. `glScissor` bypasses all of that: it
+/// takes bottom-left *window pixels*. So it needs both the Y flip and the logical→physical scale,
+/// which is 1.0 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one) (`surface::scale`) and would otherwise clip the
+/// wrong band of the screen.
 /// Where authored coordinates land in the CURRENTLY BOUND target, as the same `(vx, vy, scale)`
 /// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.
 ///
@@ -2711,6 +2708,10 @@ fn draw_tex_core_in(
             return;
         };
         let plan = card_plan(&boxes, LIVE_SCISSOR);
+        // A card wholly outside the clip the caller holds shades nothing: leave the scissor alone.
+        if plan.pieces.iter().all(Option::is_none) {
+            return;
+        }
         glEnable(GL_SCISSOR_TEST);
         for piece in plan.pieces.iter().flatten() {
             // The ring first, under the real `u_card` the uniforms above carry; the interior is the
