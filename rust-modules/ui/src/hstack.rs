@@ -2,7 +2,7 @@
 //! `UIStackView` spaces them: ONE gap between neighbours, a per-item override for the odd one
 //! (`setCustomSpacing`), and the run anchored by its leading edge, its trailing edge or its centre.
 //! It is the answer to "what is the gap between these" that a header row, a crumb and a name packer
-//! each used to work out for themselves with `x += w + GAP`, and so drifted apart.
+//! each used to work out for themselves with `x += w + GAP`, and so could drift.
 //!
 //! **It measures nothing, owns nothing and draws nothing.** A caller hands it widths:
 //!
@@ -27,16 +27,15 @@
 //! **Presence is explicit, not read off the width.** An item is either present or [`Item::absent`].
 //! An absent item takes no room and no gap, so hiding a control never leaves a double gap where it
 //! stood. A present item of width 0 is still present: it keeps its gap on both sides. The reason is
-//! the Detail hero's control row (`appkit::hero_layout::row_rect`), which puts a gap after EVERY
-//! control whatever its width, and whose discs unfurl by widening a circle (`CircleButton::cap_w`
-//! starts from the disc's own diameter, never from 0). A rule of "width <= 0 means absent" would pop
-//! the gap in the frame a width crosses 0; here the caller says which it means, so that row can be
-//! moved onto the stack without a pixel moving.
+//! the Detail hero's control row (`appkit::hero_layout::row_rect`), which gaps every control
+//! whatever its width, so presence is the caller's call: the stack never reads it off a width.
 //!
 //! An absent item that carries a [`Item::slot`] still counts in [`HStack::budget_w`], at its budget
-//! and with the gap after it, as if it were there: a control that is not on the row now but may
-//! land (Collections while its count is unknown, or when the library has none) reserves its room so
-//! the names do not repack when it comes or goes. `width` and `placed` skip it, budget and gap both.
+//! and as if it were there: a control that is not on the row now but may land can reserve its room,
+//! so what its neighbour may use does not change when it comes or goes. (The page header does not
+//! use this today: it reserves Collections' room through `widest`, the widest-case cluster
+//! `PageHeader::new` measures, and `Item::absent` has no caller yet.) `width` and `placed` skip it,
+//! budget and gap both.
 
 /// One item in the run: how wide it draws, whether it is there, what it may reserve and the gap
 /// after it if that differs from the stack's. Built from the width the caller measured.
@@ -96,7 +95,7 @@ pub enum Align {
 
 /// Where one present item stands: the span it DRAWS.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placed {
+pub struct Span {
     /// Its index in the slice the stack was built from (absent items leave gaps in the numbering).
     pub i: usize,
     /// Its leading edge.
@@ -171,7 +170,7 @@ impl<'a> HStack<'a> {
     /// **THE placement**: every present item, in order, with the span it draws. One pass, no
     /// allocation; absent items are skipped. Draw, focus and hit-test read this, so they cannot
     /// disagree. An item's slot is not read: it never changes where anything stands.
-    pub fn placed(&self) -> impl Iterator<Item = Placed> + 'a {
+    pub fn placed(&self) -> impl Iterator<Item = Span> + 'a {
         let items: &'a [Item] = self.items;
         let gap = self.gap;
         let mut x = self.start();
@@ -184,7 +183,7 @@ impl<'a> HStack<'a> {
                 x += by;
             }
             advance = Some(item.w + item.after.unwrap_or(gap));
-            Some(Placed { i, x, w: item.w })
+            Some(Span { i, x, w: item.w })
         })
     }
 
@@ -208,7 +207,7 @@ mod tests {
 
     /// The air between each neighbouring pair of placed items.
     fn gaps(stack: &HStack<'_>) -> Vec<f32> {
-        let placed: Vec<Placed> = stack.placed().collect();
+        let placed: Vec<Span> = stack.placed().collect();
         placed.windows(2).map(|pair| pair[1].x - (pair[0].x + pair[0].w)).collect()
     }
 
@@ -226,7 +225,7 @@ mod tests {
             let stack = HStack::new(&items, GAP, align);
             assert_eq!(stack.width(), sum);
             assert_eq!(gaps(&stack), [GAP; 3], "{align:?}");
-            let placed: Vec<Placed> = stack.placed().collect();
+            let placed: Vec<Span> = stack.placed().collect();
             let (first, last) = (placed[0], placed[3]);
             match align {
                 Align::Leading(x) => assert_eq!(first.x, x),
@@ -267,7 +266,10 @@ mod tests {
         assert_eq!(HStack::new(&[], GAP, Align::Centre(100.0)).placed().count(), 0);
     }
 
-    /// An absent item's own `after` is not read either: it is not there to be followed by a gap.
+    /// An absent item's own `after` is not read by `width` or `placed`: it is not there to be
+    /// followed by a gap. (Nor by `budget_w` while it carries no slot, as here; a SLOTTED absent item
+    /// counts in `budget_w` as if it were there, so its `after` is read there when a counted item
+    /// follows.)
     #[test]
     fn an_absent_item_leaves_its_neighbours_gap_alone() {
         let items = [Item::new(10.0).after(7.0), Item::absent().after(900.0), Item::new(30.0)];
@@ -307,10 +309,10 @@ mod tests {
         assert_eq!(stack.budget_w() - stack.width(), 35.0);
     }
 
-    /// **An absent item that has a slot still reserves its room**: its budget AND the gap after it,
-    /// in `budget_w` only. `width` and `placed` skip both. (#875: a library with no collections yet
-    /// reserves "Collections · 999" and its gap, so the names never repack between Unknown, Hidden
-    /// and a count.)
+    /// **An absent item that has a slot can still reserve its room**: its budget AND the gaps around
+    /// it, in `budget_w` only. `width` and `placed` skip both. (The page header does not use this
+    /// today: it reserves Collections' room through `PageHeader::new`'s `widest`. This is what a row
+    /// whose control comes and goes could lean on instead.)
     #[test]
     fn an_absent_budgeted_item_counts_its_budget_and_gap_in_the_budget_only() {
         let there = [Item::new(70.0).slot(70.0), Item::new(300.0).slot(310.0), Item::new(90.0)];
@@ -340,23 +342,25 @@ mod tests {
         }
     }
 
-    /// `span(i)` is the placed span of item `i`, for every item, and nothing past the end.
+    /// `span(i)` has no span for an absent item or an index past the end (it is `placed()`'s own
+    /// span for every present one, by definition).
     #[test]
-    fn span_is_the_placed_span() {
+    fn span_is_none_for_an_absent_item_and_past_the_end() {
         let mut items = run(&[10.0, 20.0, 30.0, 40.0]);
         items[2] = Item::absent();
         for align in [Align::Leading(5.0), Align::Trailing(500.0), Align::Centre(250.0)] {
             let stack = HStack::new(&items, GAP, align);
-            for placed in stack.placed() {
-                assert_eq!(stack.span(placed.i), Some((placed.x, placed.w)));
-            }
             assert_eq!(stack.span(2), None);
             assert_eq!(stack.span(items.len()), None);
         }
     }
 
-    /// The widths are summed before the gaps, in item order: the float a header row's sum of runs
-    /// plus sum of gaps has always given, so moving a row onto the stack moves no digit.
+    /// The widths are summed before the gaps, in item order: the float a header row's "sum of runs
+    /// plus sum of gaps" gives. That is bit-identical to a hand sum only when the hand sum also adds
+    /// runs before gaps, or when every measure answers whole or half pixels, where float addition is
+    /// exact in any order (all the product measures do today: `TTF_SizeUTF8` ints, `unmeasured_width`
+    /// bytes * size * 0.5, the replay tables, `Fixed` 8 * len). The two sites whose order changed
+    /// onto the stack, `pack_names`' `with_more` and the crumb's root, are fine for that reason.
     #[test]
     fn width_adds_the_runs_first_and_the_gaps_second() {
         let widths = [123.40625, 0.1, 77.7, 3.3, 1e-3];

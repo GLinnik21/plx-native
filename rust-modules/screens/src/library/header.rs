@@ -16,8 +16,9 @@ use plx_ui::hstack::{self, Align, HStack};
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
 
 /// The width the names `picks` (then, with `more_w`, the "+N" after them) stand in, one
-/// [`page_header::GAP`] apart: the ui's own [`HStack::width`] of the run the header lays out, so what
-/// is packed here and where `PageHeader::layout` places the names cannot drift apart.
+/// [`page_header::GAP`] apart: the ui's own [`HStack::width`]. `PageHeader::layout` places the names
+/// with the same stack and the same gap, so what is packed here and where the names stand share the
+/// gap rule (not one construction: this takes measured widths, the layout takes spec items).
 fn names_w(widths: &[f32], picks: &[usize], more_w: Option<f32>) -> f32 {
     let names: Vec<hstack::Item> = picks.iter().map(|&i| widths[i]).chain(more_w).map(hstack::Item::new).collect();
     HStack::new(&names, page_header::GAP, Align::Leading(0.0)).width()

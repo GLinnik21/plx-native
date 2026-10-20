@@ -83,7 +83,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
      (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
      (`width`) and budgets (`budget_w`); it never measures, so a replay gains no `Width` key, and a
-     slot sizes the budget, never the air. Never write `x += w + GAP` for a second row.
+     slot sizes the budget, never the air. Never write `x += w + GAP` for a new row.
    - **Springs**: `Spring` (`lib.rs`) stepped at the shared stiffness (`consts::K_SCALE`,
      `K_SCROLL`, `K_SNAP`; `popover::K_APPEAR`), not a new constant or a hand-made easing.
 

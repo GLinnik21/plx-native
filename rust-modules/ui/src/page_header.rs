@@ -210,8 +210,8 @@ const FOLD_SIZE: f32 = 22.0;
 
 /// One right-cluster item as the stack sees it: it DRAWS [`ink_w`], a [`HeaderItem::value_slot`] is
 /// its [`Item::slot`] (budget [`run_w`], never air), and a read-out stands [`READOUT_GAP`] from the
-/// control after it instead of [`GAP`]. The one place a header item becomes a stack item, so the
-/// cluster's budget ([`cluster_width`]) and its placement ([`PageHeader::layout`]) read one thing.
+/// control after it instead of [`GAP`]. The one place a right-cluster item becomes a stack item, so
+/// the cluster's budget ([`cluster_width`]) and its placement ([`PageHeader::layout`]) read one thing.
 fn stack_item(item: &HeaderItem, measure: &dyn Measure) -> Item {
     let drawn = Item::new(ink_w(item, measure));
     let drawn = if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn };
@@ -230,13 +230,16 @@ pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     HStack::new(&cluster_items(items, measure), GAP, Align::Leading(0.0)).budget_w()
 }
 
-/// **The readout pin** (the one place the row departs from an equal gap). A read-out leads the right
-/// cluster and stands at the cluster's measured left edge (`cluster_x0`, from the widest case), not
-/// one gap before the control after it: a control after it that comes or goes (or changes its count)
-/// then moves nothing of it, and the gap after it is [`READOUT_GAP`] plus however much narrower the
-/// live cluster is than its budget. The items after it are placed as if it stood at its unpinned
-/// place, so only the read-out moves. Set this `false` and the read-out stands one equal
-/// [`READOUT_GAP`] before the control after it, like every other gap of the row: nothing else changes.
+/// **The readout pin.** A read-out leads the right cluster and stands at the cluster's measured left
+/// edge (`cluster_x0`, from the widest case), not one gap before the control after it, so a control
+/// after it that comes, goes or changes its count (or a new Sort value) moves nothing of it; the gap
+/// after it is [`READOUT_GAP`] plus however much narrower the live cluster is than its budget. The
+/// items after it are placed as if it stood at its unpinned place, so only the read-out moves. Set
+/// this `false` and the read-out stands exactly [`READOUT_GAP`] (64) before the control after it
+/// (the row's other gaps are [`GAP`], 58), and moves with every change of the live cluster's width;
+/// [`HeaderSwap`] carries only slotted controls, so it cuts to its new x rather than dissolving. No
+/// other item moves and the budget is unchanged. One equal [`GAP`] there also needs `stack_item`'s
+/// `.after(READOUT_GAP)` removed.
 const READOUT_PINNED: bool = true;
 
 impl PageHeader {
