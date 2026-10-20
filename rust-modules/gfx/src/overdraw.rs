@@ -217,9 +217,11 @@ mod imp {
         }
     }
 
-    /// Arm the mask from a trigger body: class names separated by anything non-alphanumeric, or
-    /// `all`. An unknown name is reported rather than silently ignored — a leg that measured the
-    /// control twice reads exactly like "this class costs nothing".
+    /// Arm the mask from a trigger body: class names (`card`) and card part names (`card.ring`)
+    /// separated by anything that is neither alphanumeric nor a dot, or `all`. A dot joins a word,
+    /// so a part name is one name and `card.` or `ring` alone is an unknown one. An unknown name is
+    /// reported rather than silently ignored — a leg that measured the control twice reads exactly
+    /// like "this class costs nothing".
     pub fn set_mask(spec: &str) {
         let mut mask = 0u32;
         let mut bad: Vec<&str> = Vec::new();

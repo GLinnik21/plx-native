@@ -2648,8 +2648,10 @@ fn draw_tex_core(
 /// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]): the interior piece of
 /// every split card, the four ring pieces of every split card, or every card drawn whole through the
 /// focus program ([`card_plan`], [`card_whole_refused`]). Both ledgers book the card BEFORE the
-/// part is refused, and the uniforms are uploaded either way, so the leg differs from its control
-/// by the refused draws and nothing else.
+/// part is refused, and the program, the texture and the card's uniforms are set either way, so the
+/// leg differs from its control by the refused draws and the few GL calls that only they need: the
+/// plain `u_card` upload of a refused interior, and, when no piece is left (`card.interior` with
+/// `card.ring`), the scissor enable and the restore of the clip the caller held.
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core_in(
     class: Class,

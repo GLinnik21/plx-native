@@ -484,16 +484,21 @@ boot log says so (`OVERDRAW drawmask: unknown class [...]; valid names: ...`); t
 before trusting a leg. `card` refuses the whole class, so it takes every part with it and the parts
 are not asked; `all` is every class.
 
-A part leg changes GPU work and nothing else. Both ledgers (the class ledger and the card-path
-ledger above) book a card BEFORE its part is refused, and the shader's uniforms are uploaded either
-way, so a part leg's `OVERDRAW` window line reads like its control's (the same `card=P/D`, the same
-`split` and `focus` rows) and the CPU does the same bookkeeping in every leg; a leg that books fewer
-draws than its control would price its own bookkeeping along with the draw. A card that is whole for
-another reason (`clip`, `nointerior`, `plain`, `off`) belongs to no part: only `card` removes it.
+A part leg changes the card's draw calls and next to nothing else. Both ledgers (the class ledger
+and the card-path ledger above) book a card BEFORE its part is refused, and the program, the texture
+and the card's uniforms are set either way, so a part leg's `OVERDRAW` window line reads like its
+control's (the same `card=P/D`, the same `split` and `focus` rows) and the CPU does the same
+bookkeeping in every leg; a leg that books fewer draws than its control would price its own
+bookkeeping along with the draw. The GL calls that differ are the ones only a refused draw needs:
+`card.interior` skips the interior's own `u_card` upload, and `card.interior,card.ring` together,
+with no piece left to draw, skip the scissor enable and the restore of the clip the caller held.
+A card that is whole for another reason (`clip`, `nointerior`, `plain`, `off`) belongs to no part:
+only `card` removes it.
 
-*The TV recipe.* Scene `home-recent-paging-held` (held Right, mock PMS, `--mock`), on one deployed
-binary, one harness run per leg, each run under its own TV lease (`tv-lock` skill), panel on and
-muted, the legs interleaved `none card.interior card.ring card.focus card` and repeated at least
+*The TV recipe.* Scene `home-recent-paging-held` (held Right, mock PMS, `--mock`), on one binary
+deployed with `make ARM_PROFILE=release deploy` (the harness refuses a `tvdev` binary: a timing run
+must be the shipped build), one harness run per leg, each run under its own TV lease (`tv-lock`
+skill), the legs interleaved `none card.interior card.ring card.focus card` and repeated at least
 three times so a slow drift lands on every leg:
 
 ```sh
@@ -505,20 +510,20 @@ tools/tv-lock.sh with --why "card attribution" -- ./tests/run.py --fps --mock \
 
 `<leg>` is `card`, `card.interior`, `card.ring` or `card.focus`; the control leg leaves the
 `plxnative-drawmask` argument out. `plxnative-drawmask` is in `dev::DIAG`, so every leg boots to the
-same screen. The harness's `fps=` is not a pacing number in these runs (a profiler is armed). The
-numbers are the `frame.ui` samples in `plxnative-hwcnt.jsonl` and the `OVERDRAW` lines in the event
-log `--save-logs` writes (`DIR/<leg>/fps-home-recent-paging-held.log`); read each leg's
-`OVERDRAW drawmask=0x... skipping:` line first.
+same screen. The panel and the sound are the harness's, not this recipe's: `--fps --mock` blanks the
+panel and mutes the sound through `tools/tv-session.sh` before the run and the panel again before
+every scene, and stops if it cannot, so every leg is a panel-off, muted run and the legs differ in
+nothing else. The harness's `fps=` is not a pacing number in these runs (a profiler is armed).
 
-**The harness does not keep the JSONL.** Every scene's trigger wipe, and the harness's teardown when
-it exits, delete every `plxnative-*` file in the install's runtime root, `plxnative-hwcnt.jsonl`
-included, and `--save-logs` saves only the event log. `--graphics-profile` does keep the file, but
-its HWCNT leg arms nothing except `plxnative-hwcnt`, so it cannot carry a `drawmask`. The file has
-to be copied off the set after the scene's app run and BEFORE the harness exits. `make fetch-profile`
-is the repo's copy step (to `pkg/plxnative-hwcnt.jsonl`), but run after `tests/run.py` has returned
-it finds nothing. The legs that first measured this wrapped `tests/run.py` in-process and read
-`$(make -s print-rundir)/plxnative-hwcnt.jsonl` over `tools/tv-ssh` as soon as the scene's `make run`
-returned. A leg with no JSONL is not a leg.
+`--save-logs` keeps the two files a leg is read from, in `DIR/<leg>/`: the event log
+`fps-home-recent-paging-held.log` (the `OVERDRAW` lines) and the GPU counters
+`fps-home-recent-paging-held.plxnative-hwcnt.jsonl` (the `frame.ui` samples), copied off the set
+after the scene's app run, before the next scene's trigger wipe and the harness's teardown delete
+them (`plxnative-gputime.jsonl` is kept too when the set holds one; `tests/run.py`,
+`save_profiler_files`). It does so for any FPS scene that arms `plxnative-hwcnt`, by
+`--extra-trigger` or otherwise. Read each leg's `OVERDRAW drawmask=0x... skipping:` line first. A leg
+whose run prints `profiler: plxnative-hwcnt was armed but the set holds no ...` has no counters and
+is not a leg: run it again.
 
 *Reading the deltas.* `tools/analyze-hwcnt.py <leg>.jsonl --phase frame.ui --discard 60` prints each
 leg's mean, p50, p95 and max per frame for `GPU_ACTIVE`, `ARITH_WORDS`, `TEX_WORDS` and the L2
@@ -537,7 +542,10 @@ inside the repeats' spread is not a finding.
   one or two cards a key put there is springs that have not landed, and this delta prices them.
 - The three need not add up to `card`: `card - interior - ring - focus` is the cards drawn whole for
   another reason (the other `cardpath` rows, with their pixels) plus whatever the parts do not
-  share. `GPU_ACTIVE` is an OR across concurrently busy units, so overlapping work is not additive;
+  share. They can also add up to MORE than `card` on a scene with episode stills: under `card` a
+  still falls back to a separate scrim pass, while under the part legs it stays fused with its
+  card (last bullet), so interior + ring can exceed `card`. `GPU_ACTIVE` is an OR across
+  concurrently busy units, so overlapping work is not additive;
   trust `ARITH_WORDS`, `TEX_WORDS` and L2 reads for what a part removed, and `GPU_ACTIVE` for what
   the frame got back.
 - A refused part leaves the destination as it was, so a delta is the most a rewrite of that part

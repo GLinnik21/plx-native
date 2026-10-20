@@ -7485,7 +7485,7 @@ class FpsMock(unittest.TestCase):
         self.assertIn("refusing to run", str(cm.exception))
 
     # --- run_fps_scene: the identity gate and the walk window grade the right thing ------
-    def _run_scene(self, scene, log, walker):
+    def _run_scene(self, scene, log, walker, *, cfg=None, extra_triggers=(), patches=(), out=None):
         class P:
             stdout, stderr = "\n".join(log), ""
 
@@ -7500,16 +7500,89 @@ class FpsMock(unittest.TestCase):
             def join(self, timeout=None):
                 pass
 
-        cfg = {"tv": "tv.invalid", "inject_token": True, "mock": {"host": "h", "port": 1}}
-        with mock.patch.object(run, "make", return_value=P), \
-                mock.patch.object(run, "apply_triggers"), \
-                mock.patch.object(run, "require_install"), \
-                mock.patch.object(run, "save_case_log"), \
-                mock.patch.object(run, "RUNDIR", "/r"), \
-                mock.patch.object(run, "EVENTLOG", "/r/e.log"), \
-                mock.patch.object(run.mock_fps, "KeyWalk", FakeWalk), \
-                contextlib.redirect_stdout(io.StringIO()):
-            return run.run_fps_scene(scene, cfg, "tok")
+        cfg = {"tv": "tv.invalid", "inject_token": True, "mock": {"host": "h", "port": 1}, **(cfg or {})}
+        with contextlib.ExitStack() as stack:
+            for patch in (mock.patch.object(run, "make", return_value=P),
+                          mock.patch.object(run, "apply_triggers"),
+                          mock.patch.object(run, "require_install"),
+                          mock.patch.object(run, "save_case_log"),
+                          mock.patch.object(run, "RUNDIR", "/r"),
+                          mock.patch.object(run, "EVENTLOG", "/r/e.log"),
+                          mock.patch.object(run.mock_fps, "KeyWalk", FakeWalk),
+                          contextlib.redirect_stdout(out or io.StringIO()),
+                          *patches):  # `patches` come last, so they win over the defaults above
+                stack.enter_context(patch)
+            return run.run_fps_scene(scene, cfg, "tok", extra_triggers=extra_triggers)
+
+    # --- --save-logs keeps the GPU counters, which the harness otherwise wipes ----------
+    # `plxnative-hwcnt.jsonl` lives in the runtime root that every scene's trigger wipe and the
+    # harness's teardown empty, and `save_case_log` keeps only the event log: a card-attribution leg
+    # (`--extra-trigger plxnative-hwcnt=frame.ui`) used to lose the one file that holds its answer.
+    def _run_saving(self, tmp, *, armed=True, save=True, on_tv=None):
+        """`library-switch` through the real `run_fps_scene` with a fake television: returns the
+        harness's ordered dealings with it (`wipe`, `run`, `pull <file>`), what it printed, and the
+        `--save-logs` directory's files."""
+        events, tv_files, out = [], dict(on_tv or {}), io.StringIO()
+
+        class Done:
+            stdout = "\n".join([self.SYN] + [self._library_beat(n) for n in self.SWITCH_SERIES["H3"]])
+            stderr = ""
+
+        def make(args, **kw):
+            events.append(args[0])
+            return Done
+
+        def ssh(tv, cmd, timeout=30):
+            name = cmd.split("/r/", 1)[1].split()[0]
+            events.append(f"pull {name}")
+            return mock.Mock(stdout=tv_files.get(name, ""), returncode=0)
+
+        ok, detail = self._run_scene(
+            copy.deepcopy(self.scenes["library-switch"]), [], {},
+            cfg={"save_logs": os.path.join(tmp, "legs") if save else None},
+            extra_triggers=(("plxnative-hwcnt", "frame.ui"),) if armed else (),
+            patches=(mock.patch.object(run, "make", side_effect=make),
+                     mock.patch.object(run, "apply_triggers", side_effect=lambda *a, **k: events.append("wipe")),
+                     mock.patch.object(run, "ssh", side_effect=ssh)),
+            out=out)
+        self.assertTrue(ok, detail)
+        legs = os.path.join(tmp, "legs")
+        return events, out.getvalue(), sorted(os.listdir(legs)) if os.path.isdir(legs) else []
+
+    def test_save_logs_keeps_the_hwcnt_jsonl_between_the_app_run_and_the_next_wipe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events, out, kept = self._run_saving(tmp, on_tv={"plxnative-hwcnt.jsonl": '{"phase":"frame.ui"}\n'})
+            self.assertEqual(events, ["kill", "wipe", "run", "pull plxnative-hwcnt.jsonl", "pull plxnative-gputime.jsonl"])
+            self.assertEqual(kept, ["fps-library-switch.plxnative-hwcnt.jsonl"])
+            with open(os.path.join(tmp, "legs", kept[0])) as fh:
+                self.assertEqual(fh.read(), '{"phase":"frame.ui"}\n')
+            self.assertIn("kept fps-library-switch.plxnative-hwcnt.jsonl", out)
+
+    def test_save_logs_keeps_the_gputime_jsonl_beside_it_when_the_set_has_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, kept = self._run_saving(tmp, on_tv={"plxnative-hwcnt.jsonl": "h\n", "plxnative-gputime.jsonl": "g\n"})
+            self.assertEqual(kept, ["fps-library-switch.plxnative-gputime.jsonl", "fps-library-switch.plxnative-hwcnt.jsonl"])
+
+    def test_save_logs_says_so_when_an_armed_leg_left_no_counters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, out, kept = self._run_saving(tmp)
+            self.assertEqual(kept, [])
+            self.assertIn("plxnative-hwcnt was armed but the set holds no plxnative-hwcnt.jsonl", out)
+
+    def test_save_logs_leaves_the_set_alone_unless_hwcnt_is_armed_and_logs_are_wanted(self):
+        on_tv = {"plxnative-hwcnt.jsonl": "h\n"}
+        with tempfile.TemporaryDirectory() as tmp:
+            events, out, kept = self._run_saving(tmp, armed=False, on_tv=on_tv)
+            self.assertEqual((events, kept, "profiler" in out), (["kill", "wipe", "run"], [], False))
+        with tempfile.TemporaryDirectory() as tmp:
+            events, out, kept = self._run_saving(tmp, save=False, on_tv=on_tv)
+            self.assertEqual((events, kept, "profiler" in out), (["kill", "wipe", "run"], [], False))
+
+    def test_the_graphics_profile_pulls_through_the_same_helper(self):
+        # one pull, not two: the profile's HWCNT leg and --save-logs read the file the same way
+        src = inspect.getsource(run.run_graphics_profile)
+        self.assertIn('pull_runtime_file(cfg["tv"], "plxnative-hwcnt.jsonl")', src)
+        self.assertNotIn("cat {RUNDIR}", src)
 
     def _deep_scene(self):
         s = copy.deepcopy(self.scenes["home-grid-deep"])
