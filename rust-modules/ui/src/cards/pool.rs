@@ -62,6 +62,11 @@ pub(crate) fn key<E: Hash>(e: &E) -> u64 {
     h.finish()
 }
 
+/// Whether the element whose [`key`] is `k` stands in `cell` of `src`.
+fn stands_at<H: Host, S: CardSource<H>>(src: &S, cell: usize, k: u64) -> bool {
+    cell < src.len() && key(&src.elem(cell)) == k
+}
+
 /// The first of the cells that have their own spring (`0..MAX_ROW_ITEMS`, within the source)
 /// showing the element whose [`key`] is `k`.
 fn find<H: Host, S: CardSource<H>>(src: &S, k: u64) -> Option<usize> {
@@ -80,11 +85,11 @@ pub(crate) fn find_nearest<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize
 /// how far the element went, never with the size of the source, so a Library of thousands pays for
 /// the shift of a landing and no more.
 pub(crate) fn find_nearest_within<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize, reach: usize) -> Option<usize> {
-    let n = src.len();
-    let is = |j: usize| j < n && key(&src.elem(j)) == k;
-    (0..n.max(at.saturating_add(1)))
+    (0..src.len().max(at.saturating_add(1)))
         .take(reach.saturating_add(1))
-        .find_map(|d| [at.checked_sub(d), at.checked_add(d).filter(|_| d > 0)].into_iter().flatten().find(|&j| is(j)))
+        .find_map(|d| {
+            [at.checked_sub(d), at.checked_add(d).filter(|_| d > 0)].into_iter().flatten().find(|&j| stands_at::<H, S>(src, j, k))
+        })
 }
 
 /// The element a section had focused at the end of its tick and the cell it stood in: what
@@ -99,7 +104,7 @@ pub(crate) fn anchor_of<H: Host, S: CardSource<H>>(src: &S, focus: Option<usize>
 /// that changes in the same tick as the cards move.
 pub(crate) fn slid<H: Host, S: CardSource<H>>(src: &S, anchor: Option<(usize, u64)>) -> Option<(usize, usize)> {
     let (p, k) = anchor?;
-    if p < src.len() && key(&src.elem(p)) == k {
+    if stands_at::<H, S>(src, p, k) {
         return None;
     }
     find_nearest::<H, S>(src, k, p).map(|q| (p, q))
@@ -143,14 +148,14 @@ impl RowPool {
         let mut m = 0;
         for e in 0..self.n {
             let at = self.at[e];
-            if at < src.len() && key(&src.elem(at)) == self.key[e] {
+            if stands_at::<H, S>(src, at, self.key[e]) {
                 continue;
             }
             let sp = row.cell_spring(at).unwrap_or(crate::Spring::at(1.0));
             moved[m] = (e, find::<H, S>(src, self.key[e]), sp);
             m += 1;
         }
-        let beyond = |k: u64| focus.is_some_and(|f| f < src.len() && key(&src.elem(f)) == k);
+        let beyond = |k: u64| focus.is_some_and(|f| stands_at::<H, S>(src, f, k));
         let mut carried = false;
         for &(e, to, _) in &moved[..m] {
             if to.is_none() && beyond(self.key[e]) {
@@ -234,12 +239,23 @@ impl RowPool {
         if self.n == 0 || i >= src.len() {
             return None;
         }
-        let k = key(&src.elem(i));
-        if let Some(e) = (0..self.n).find(|&e| self.key[e] == k) {
-            return (self.at[e] != i).then_some(Drawn::Cell(self.at[e]));
-        }
-        (!focused && self.at[..self.n].contains(&i)).then_some(Drawn::Rest)
+        drawn_among((0..self.n).map(|e| (self.at[e], self.key[e])), i, key(&src.elem(i)), focused)
     }
+}
+
+/// The one rule a draw between a source change and the next tick follows, for a pool that holds
+/// `(cell, key)` pairs: card `i`, whose element's key is `k`, is drawn with the spring of the cell
+/// its element was held in, at rest when it stands where a held element no longer is, `None` when
+/// nothing moved (the rule by position applies).
+fn drawn_among(held: impl Iterator<Item = (usize, u64)>, i: usize, k: u64, focused: bool) -> Option<Drawn> {
+    let mut held_here = false;
+    for (at, held_key) in held {
+        if held_key == k {
+            return (at != i).then_some(Drawn::Cell(at));
+        }
+        held_here |= at == i;
+    }
+    (held_here && !focused).then_some(Drawn::Rest)
 }
 
 /// Before the tick: every let-go follows its element to the cell the source shows it in (nearest
@@ -281,7 +297,7 @@ pub(crate) enum LetGoCards {
 /// over the cards (the draw, the stops), not once per card: it hashes one element per let-go in
 /// flight, and none for a grid with none.
 pub(crate) fn let_go_cards<H: Host, S: CardSource<H>>(pop: &crate::poster_grid::GridPop, src: &S) -> LetGoCards {
-    if pop.let_gos().all(|c| c.cell < src.len() && key(&src.elem(c.cell)) == c.key) {
+    if pop.let_gos().all(|c| stands_at::<H, S>(src, c.cell, c.key)) {
         LetGoCards::ByCell
     } else {
         LetGoCards::ByElement
@@ -295,14 +311,5 @@ pub(crate) fn let_go_drawn<H: Host, S: CardSource<H>>(pop: &crate::poster_grid::
     if focused || i >= src.len() {
         return None;
     }
-    let k = key(&src.elem(i));
-    let mut held_here = false;
-    for c in pop.let_gos() {
-        if c.key == k {
-            return (c.cell != i).then_some(Drawn::Cell(c.cell));
-        }
-        held_here |= c.cell == i;
-    }
-    // a let-go stood in this cell and its element is no longer here
-    held_here.then_some(Drawn::Rest)
+    drawn_among(pop.let_gos().map(|c| (c.cell, c.key)), i, key(&src.elem(i)), false)
 }

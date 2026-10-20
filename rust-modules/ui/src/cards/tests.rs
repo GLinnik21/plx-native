@@ -3185,7 +3185,7 @@ fn every_released_grid_card_runs_its_own_let_go(path: &[u32], period: u32) -> (u
         r.run(1);
         most_in_flight = most_in_flight.max(cards.iter().filter(|c| !c.2 && c.0 != focused).count());
         for c in cards.iter_mut() {
-            let drawn = r.sect.scale_of(&r.cx(), &r.src, &c.0).unwrap();
+            let drawn = r.scale(c.0).unwrap();
             if !c.2 {
                 c.1.step(if c.0 == focused { style.focus_scale } else { 1.0 }, style.k_scale, dt);
                 c.2 = c.0 != focused && c.1.land(1.0, dt);
@@ -3206,7 +3206,7 @@ fn every_released_grid_card_runs_its_own_let_go(path: &[u32], period: u32) -> (u
     assert!(cards.iter().all(|c| c.2 || c.0 == focused), "every released card landed");
     assert!(most_in_flight >= 2.min(path.len() - 1), "the walk left several let-gos in flight at once: {most_in_flight}");
     for c in cards.iter().filter(|c| c.0 != focused) {
-        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &c.0), Some(1.0), "card {} lands exactly at rest", c.0);
+        assert_eq!(r.scale(c.0), Some(1.0), "card {} lands exactly at rest", c.0);
     }
     (most_in_flight, life)
 }
@@ -3248,17 +3248,17 @@ fn grid_pool_follows_every_let_go_through_a_landing() {
         r.run(3);
     }
     let flying: Vec<u32> = (100..105).collect();
-    let before: Vec<f32> = flying.iter().map(|&e| r.sect.scale_of(&r.cx(), &r.src, &e).unwrap()).collect();
+    let before: Vec<f32> = flying.iter().map(|&e| r.scale(e).unwrap()).collect();
     assert!(before.iter().filter(|&&s| s > 1.01).count() >= 3, "several are still letting go: {before:?}");
     for k in 0..poster_grid::COLS {
         r.src.elems.insert(0, 900 + k as u32);
     }
     for (&e, &was) in flying.iter().zip(&before) {
-        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &e), Some(was), "{e} keeps its scale in the first frame");
+        assert_eq!(r.scale(e), Some(was), "{e} keeps its scale in the first frame");
     }
     r.run(1);
     for (&e, &was) in flying.iter().zip(&before) {
-        let now = r.sect.scale_of(&r.cx(), &r.src, &e).unwrap();
+        let now = r.scale(e).unwrap();
         assert!(now <= was && was - now < 0.03, "{e} went from {was} to {now}");
         // the tick moved the let-go to the cell its element stands in now: the draw reads cells
         let at = r.src.index_of(&e).unwrap();
@@ -3266,7 +3266,7 @@ fn grid_pool_follows_every_let_go_through_a_landing() {
     }
     r.run(240);
     for &e in &flying {
-        assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &e), Some(1.0), "{e} settles at rest wherever the landing put it");
+        assert_eq!(r.scale(e), Some(1.0), "{e} settles at rest wherever the landing put it");
     }
 }
 
@@ -3282,7 +3282,7 @@ fn a_press_over_cards_that_shifted_lets_the_card_it_left_go(shift: impl FnOnce(&
     let mut r = settled::<Grid>(600);
     r.land_focus(from, By::Restore);
     r.run(240);
-    let full = r.sect.scale_of(&r.cx(), &r.src, &from).unwrap();
+    let full = r.scale(from).unwrap();
     assert!((full - style.focus_scale).abs() < 1e-3, "{from} is popped whole at {full}");
     let was = r.src.index_of(&from).unwrap();
     shift(&mut r.src.elems);
@@ -3291,7 +3291,7 @@ fn a_press_over_cards_that_shifted_lets_the_card_it_left_go(shift: impl FnOnce(&
     r.land_focus(to, By::Dir);
     let near = |a: f32, b: f32| (a - b).abs() <= 1e-4;
     let (mut let_go, mut grow) = (Spring::at(full), Spring::at(1.0));
-    let drawn = |r: &Rig<Grid>, e: u32| r.sect.scale_of(&r.cx(), &r.src, &e).unwrap();
+    let drawn = |r: &Rig<Grid>, e: u32| r.scale(e).unwrap();
     for frame in 0..=1u32 {
         if frame == 1 {
             r.run(1);
