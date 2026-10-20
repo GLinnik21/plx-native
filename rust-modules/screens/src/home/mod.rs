@@ -140,6 +140,15 @@ const HERO_ICON_GAP: f32 = 12.0;
 /// the primitive's name is split only so the `cards` gate does not read a shape string as a use of it.
 pub const SHAPE: &str = concat!("HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};3],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:Card", "Row{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}");
 
+/// Work a sync did, by kind: index entries inserted, whole-index rebuilds, `elem_at` writes.
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct SyncCost {
+    index_inserts: usize,
+    index_rebuilds: usize,
+    elem_at_writes: usize,
+}
+
 #[derive(Clone)]
 struct HubProjection {
     identity: HomeHubIdentity,
@@ -551,6 +560,10 @@ pub struct HomeScreen {
     /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
     /// the range changes. Derived from what is on screen; not canon.
     hold_sent: Option<(usize, usize)>,
+    /// What the syncs have cost, counted so the tests can pin the cost to the CHANGE and not to the
+    /// catalog. Not canon.
+    #[cfg(test)]
+    cost: SyncCost,
 
     /// Selected hero ITEM identity. It is data, not focus.
     carousel: Option<(plx_plex::plex::ServerId, String)>,
@@ -621,6 +634,8 @@ impl HomeScreen {
             restored_scroll: Vec::new(),
             restore_reveal: false,
             hold_sent: None,
+            #[cfg(test)]
+            cost: SyncCost::default(),
             carousel: None,
             carousel_anchor: None,
             outgoing: None,
@@ -713,6 +728,8 @@ impl HomeScreen {
     }
 
     fn push_group(&mut self, key: HomeGroupKey) {
+        #[cfg(test)]
+        { self.cost.index_inserts += 1; }
         Self::index_group(&mut self.group_index, &key, self.groups.len());
         self.groups.push(key);
     }
@@ -757,6 +774,8 @@ impl HomeScreen {
     }
 
     fn push_item(&mut self, key: HomeItemKey) {
+        #[cfg(test)]
+        { self.cost.index_inserts += 1; }
         Self::index_item(&mut self.item_index, &key, self.items.len());
         Arc::make_mut(&mut self.items).push(key);
     }
@@ -778,6 +797,8 @@ impl HomeScreen {
 
     /// Both indexes from the tables, after a prune compacted them.
     fn rebuild_indexes(&mut self) {
+        #[cfg(test)]
+        { self.cost.index_rebuilds += 1; self.cost.index_inserts += self.items.len() + self.groups.len(); }
         self.item_index.clear();
         self.group_index.clear();
         for (at, key) in self.items.iter().enumerate() {
@@ -903,6 +924,8 @@ impl HomeScreen {
         for (row, hub) in rows.iter().enumerate() {
             for (col, &elem) in hub.elems.iter().enumerate() {
                 // First row wins, as the scan this replaces did.
+                #[cfg(test)]
+                { self.cost.elem_at_writes += 1; }
                 self.elem_at.entry(elem).or_insert((row as u32, col as u32));
             }
         }
@@ -2289,7 +2312,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, #[cfg(test)] cost: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,

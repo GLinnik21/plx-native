@@ -3304,6 +3304,80 @@ fn key_index_agrees_with_a_scan_of_the_table() {
     }
 }
 
+/// What ONE sync costs when the ring moves a row on: the row entering gets its cards and the row
+/// leaving gives them up (`rows` rows, `items` cards each). Taken on the third step, after the keys
+/// the first two minted have settled, so the placeholder keys of the row that entered a step ago
+/// are the ones due to leave the table.
+fn ring_step_cost(rows: usize, items: usize) -> SyncCost {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    let mut last = SyncCost::default();
+    for step in 0..3usize {
+        plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (step, step + 5));
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
+        let before = s.cost;
+        s.sync_catalog(&cx(snapshot.view(), None));
+        last = SyncCost {
+            index_inserts: s.cost.index_inserts - before.index_inserts,
+            index_rebuilds: s.cost.index_rebuilds - before.index_rebuilds,
+            elem_at_writes: s.cost.elem_at_writes - before.elem_at_writes,
+        };
+        assert_indexes_agree(&s);
+    }
+    last
+}
+
+#[test]
+fn a_ring_step_costs_the_rows_it_touches_not_the_catalog() {
+    let _guard = plx_base::testlock::serial();
+    let items = 12;
+    let (big, small) = (ring_step_cost(170, items), ring_step_cost(10, items));
+    assert_eq!(big.index_rebuilds, 0, "a prune deletes in place: {big:?}");
+    assert_eq!(small.index_rebuilds, 0, "{small:?}");
+    // one row in, one row out: each re-keys its own cards and nothing else
+    assert!(big.index_inserts <= 2 * items + 4, "index insertions follow the rows that changed: {big:?}");
+    assert!(big.elem_at_writes <= 2 * items + 4, "so does the element map: {big:?}");
+    assert_eq!(big.index_inserts, small.index_inserts, "and not the catalog's size: {big:?} vs {small:?}");
+    assert_eq!(big.elem_at_writes, small.elem_at_writes, "{big:?} vs {small:?}");
+}
+
+#[test]
+fn scrolling_inside_the_held_band_does_not_send_the_store_a_new_band() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 60, 12);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 });
+    let mut sent = holds(&step(&mut s, snapshot.view(), None, &tick).1);
+    // Down, one row at a time: the shelves scroll by a row pitch per press.
+    let presses: usize = 12;
+    for press in 1..=presses {
+        let scroll = press as f32 * ui_cards::ROW_PITCH_FIXED;
+        s.grid.scroll_y.pos = scroll;
+        s.grid.scroll_target = scroll;
+        s.layout_grid();
+        sent.extend(holds(&step(&mut s, snapshot.view(), None, &tick).1));
+        let visible: Vec<usize> = (0..s.rows.len()).filter(|&row| {
+            let shelf = &s.grid.shelves[row];
+            let top = heading_y(shelf.base_y(), shelf.heading_lift());
+            on_axis(top, shelf.base_y() + CARD_H + shelf.under_band() - top, SCR_H, 0.0)
+        }).collect();
+        let seen = (*visible.first().unwrap(), *visible.last().unwrap());
+        let need = ui_cards::hold_band(seen, s.rows.len());
+        let band = *sent.last().expect("the first tick sent a band");
+        assert!(band.0 <= need.0 && band.1 >= need.1,
+            "after press {press} the rows in view and {} either side are held: sent {band:?}, need {need:?}", ui_cards::HOLD_MARGIN);
+    }
+    assert!(sent.len() <= 1 + presses.div_ceil(2),
+        "{presses} one-row presses inside the band cost at most one new band per two rows: {sent:?}");
+}
+
 #[test]
 fn stops_are_recorded_only_for_rows_on_screen_or_focused() {
     let _guard = plx_base::testlock::serial();
