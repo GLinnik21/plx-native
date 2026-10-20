@@ -294,3 +294,42 @@ fn a_poster_shelf_tile_of_any_kind_never_leaves_a_turned_on_line_empty() {
         assert_eq!(caption(&mut w), Vec::<String>::new(), "{}: Title Off with Nothing shows nothing", tile.name);
     }
 }
+
+// ── An item the server left untitled is still a card ────────────────────────────────────────────
+
+/// Home as one server's own `/hubs` answer builds it: the hubs go through the refresh's projection
+/// (`seed_hubs_response_for_test`), so a row the projection drops is not on the page, which the
+/// hand-built `edit_test_item` tiles above can never show.
+fn home_from_hubs(name: &str, hubs: &str) -> World {
+    let mut w = World::home_with_disc(name, [7; 12]);
+    let body = format!(r#"{{"MediaContainer":{{"Hub":{hubs}}}}}"#);
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).expect("a /hubs answer").media_container;
+    w.bridge.stores.hubs.seed_hubs_response_for_test(&mc);
+    w.frames(60);
+    w
+}
+
+/// **"Recently Added Seasons" draws a season the server gave no title** (the mock's
+/// `--caption-edge-cases` season 0). The projection used to drop any row with an empty `title`, so
+/// the season was not on Home at all and came back the moment it was titled; now it is the shelf's
+/// second poster and its caption says "Specials" itself, and the Title switch names its show.
+#[test]
+fn an_untitled_season_is_drawn_in_homes_recently_added_seasons() {
+    let hubs = r#"[
+      {"type":"movie","hubIdentifier":"home.movies.recent","title":"Recently Added","key":"/hubs/home/recentlyAdded",
+       "Metadata":[{"ratingKey":"1","type":"movie","title":"Heat","year":1995,"thumb":"/t/1","art":"/a/1"}]},
+      {"type":"season","hubIdentifier":"mock.seasons","title":"Recently Added Seasons","key":"/hubs/mock/seasons",
+       "Metadata":[{"ratingKey":"20","type":"season","title":"Season 1","index":1,"parentTitle":"The Office","thumb":"/t/20"},
+                   {"ratingKey":"21","type":"season","title":"","index":0,"parentTitle":"The Office","thumb":"/t/21"}]}]"#;
+    let mut w = home_from_hubs("untitled-season-home", hubs);
+    let _cell = Cell::default();
+    w.press(Key::Down);
+    w.press(Key::Down);
+    w.frames(60);
+    assert_eq!(caption(&mut w), ["Season 1"], "premise: the focus is on the Seasons shelf's first poster");
+    w.press(Key::Right);
+    w.frames(60);
+    assert_eq!(caption(&mut w), ["Specials"], "the untitled season is the shelf's second poster, worded by its identity");
+    set(&mut w, true, Details::Genre);
+    assert_eq!(caption(&mut w), ["The Office", "Specials"], "Title On names its show over its identity line");
+}

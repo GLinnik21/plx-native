@@ -1711,11 +1711,20 @@ fn project(
     out
 }
 
-/// A card a shelf can show: a type the product lists, with a title and a poster.
-fn shelf_card(it: &plx_plex::plex::Metadata, sid: ServerId) -> Option<PmsMovie> {
+/// **A card a hub row can show: a type the product lists, with a poster.** The ONE rule every place
+/// a hub row becomes a card reads (Home's shelves, the Library's Recommended shelves and the sliding
+/// window's two reads), so they cannot disagree about which item is a card.
+///
+/// **A title is not on the list.** A real PMS can send an empty `title` (a season 0 nobody named),
+/// and an item the server left unnamed is still an item a household can open: a caption names a
+/// tile by what it IS when the server gave it nothing else (`caption_policy::identity_line`: a
+/// season "Specials" or "Season N", an episode its address or "Episode", a movie "Movie"). Dropping
+/// the row for want of a title made an untitled season vanish from "Recently Added Seasons" and
+/// reappear the moment it was titled.
+pub(crate) fn shelf_card(it: &plx_plex::plex::Metadata, sid: ServerId) -> Option<PmsMovie> {
     if !listable(&it.kind) { return None; }
     let m = parse_item(it, sid);
-    (!m.title.is_empty() && !m.thumb.is_empty()).then_some(m)
+    (!m.thumb.is_empty()).then_some(m)
 }
 
 /// The Continue Watching deck of `out`, from the dedicated hub.
@@ -3848,6 +3857,26 @@ pub fn seed_deck_home_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, 
     });
     let mut srcs = vec![source];
     settle_deck(&mut srcs, true);
+    let build = merge_with_scope(&srcs, &BrowseScope::standalone());
+    state.srcs = srcs;
+    commit(state, build);
+}
+
+/// Test hook: Home as ONE server's `/hubs` answer makes it, projected the way the refresh projects it
+/// (`Projection`: `listable`, `shelf_card`, the hub order) and then committed, so a test sees what a
+/// household would, and not what a hand-built row would. `seed_deck_home_for_test` and the rest build
+/// their rows by hand and so can never observe a row the projection drops.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_hubs_response_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, mc: &plx_plex::plex::MediaContainer) {
+    plx_base::testlock::assert_held("the pms hub catalog (seed_hubs_response_for_test)");
+    seed_with_scope_for_test(state, adapter, ServerId::UNSET, 0, HubState::Ready, &BrowseScope::standalone());
+    let mut projection = Projection::new(ServerId::UNSET, None);
+    projection.take(&mc.hub);
+    let mut source = Src::new(ServerId::UNSET, String::new());
+    source.state = HubState::Ready;
+    source.ledger = state.ledger.clone();
+    source.last = Some(projection.finish());
+    let srcs = vec![source];
     let build = merge_with_scope(&srcs, &BrowseScope::standalone());
     state.srcs = srcs;
     commit(state, build);

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use plx_plex::plex::{MediaContainer, Metadata, PageReq, ServerId};
 
-use crate::pms::{clean, listable, parse_item, PmsMovie, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
+use crate::pms::{clean, shelf_card, PmsMovie, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
 
 /// A card with the listing position it was read from.
 pub type Row = (usize, Arc<PmsMovie>);
@@ -160,10 +160,8 @@ pub fn fetch_window(sid: ServerId, ask: &Ask, current: Option<(&[Row], PageInfo)
             let position = start + i;
             if !ask.before { end = position + 1; }
             if !(keep_from..keep_to).contains(&position) { continue; }
-            if !listable(&item.kind) { continue; }
-            let item = parse_item(item, sid);
-            if item.title.is_empty() || item.thumb.is_empty() || ask.hidden.contains(&item.sec)
-                || rows.iter().chain(&fresh).any(|(_, row)| row.rk == item.rk) { continue; }
+            let Some(item) = shelf_card(item, sid) else { continue };
+            if ask.hidden.contains(&item.sec) || rows.iter().chain(&fresh).any(|(_, row)| row.rk == item.rk) { continue; }
             if ask.before { fresh.push((position, Arc::new(item))); }
             else {
                 rows.push((position, Arc::new(item)));
@@ -456,9 +454,7 @@ enum Fetched {
 
 /// One card of a listing row, or `None` when the shelf does not show it.
 pub(crate) fn card(sid: ServerId, item: &Metadata, hidden: &[i64]) -> Option<Arc<PmsMovie>> {
-    if !listable(&item.kind) { return None; }
-    let item = parse_item(item, sid);
-    (!item.title.is_empty() && !item.thumb.is_empty() && !hidden.contains(&item.sec)).then(|| Arc::new(item))
+    shelf_card(item, sid).filter(|item| !hidden.contains(&item.sec)).map(Arc::new)
 }
 
 /// The cards for `keys`, in the order of `keys`: from a response already in hand, else one batch
