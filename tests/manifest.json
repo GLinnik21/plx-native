@@ -1718,7 +1718,7 @@
       "warmup_s": 5,
       "fps_ceiling": 5,
       "worst_ceiling_ms": 40,
-      "comment": "The biography sheet (plxnative-bio) over the person page. Same gates as about-panel and page-panel. It was the app's only DYNAMIC_BACKDROP glass, re-sourcing its blur every changed present, until 2026-09-19: like every panel it now stands on the latched underlay field (`widgets::panel_ground`), so a ceiling that fails here and holds for the other two is this sheet's own foreground (the paged prose, the rail, the feather), not a refresh cadence. It needs plxnative-personbio to have any prose at all on a headless boot: the bio comes from plex.tv, which answers an injected server token 401. NOT YET MEASURED on the television; the ceilings are page-panel's, inherited rather than baselined.",
+      "comment": "The biography sheet (plxnative-bio) over the person page. Same gates as about-panel and page-panel. It was the app's only DYNAMIC_BACKDROP glass, re-sourcing its blur every changed present, until 2026-09-19: like every panel it now stands on the latched underlay field (`widgets::panel_ground`), so a ceiling that fails here and holds for the other two is this sheet's own foreground (the paged prose, the rail, the feather), not a refresh cadence. It needs plxnative-personbio to have any prose at all on a headless boot: the bio comes from the Discover provider, and a dev-token boot with no stand-in armed has the app refuse that read itself (a standing decision, so such a boot shows no biography). NOT YET MEASURED on the television; the ceilings are page-panel's, inherited rather than baselined.",
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailsec": 1,

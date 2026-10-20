@@ -1518,6 +1518,15 @@ def sim_env(runtime, out_dir, fifo, frames, preroll, allow_absent, max_hold_ms, 
 SIGN_IN_DONE = "hubs: landed"  # the log line after which the sign-in's session is on disk
 
 
+def require_discover_stand_in(events):
+    """Fail the render unless the boot's own event log says Discover is the mock's stand-in."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    import mock_pms
+    problem = mock_pms.discover_stand_in_problem(events.read_text(errors="replace") if events.exists() else "")
+    if problem:
+        raise Failure(problem)
+
+
 def sign_in_demo_profile(sim_bin, runtime, port, say=print, timeout=90, base=None):
     """Sign the simulator in to the mock's Demo account BEFORE the film boots, through the app's own QR
     sign-in (the mock links its demo code on the second poll). The film boots on `plxnative-token`,
@@ -1545,6 +1554,7 @@ def sign_in_demo_profile(sim_bin, runtime, port, say=print, timeout=90, base=Non
         else:
             raise Failure(f"the demo sign-in did not finish within {timeout}s (see {runtime / 'prep.out'})")
         time.sleep(1.5)  # the session's last revision is written a moment after the hubs land
+        require_discover_stand_in(events)  # before the film boots
     finally:
         sim.kill()
         sim.wait()
@@ -1956,6 +1966,7 @@ def run_render(sim_bin, out_dir, ffmpeg, frames, preroll=DEFAULT_PREROLL, hero=N
             if plan["loop"]:
                 storyboard["loop"] = loop_metrics(ffmpeg, out_dir / "master.mkv", frames)
         events = runtime / "plxnative-events.log"
+        require_discover_stand_in(events)  # the film's own boot, not only the sign-in's
         facts = film_facts(pms, hero, json.loads(pathlib.Path(CATALOG).read_text()),
                            events.read_text(errors="replace") if events.exists() else "",
                            hero_ok=hero_report_passes())

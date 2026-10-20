@@ -224,7 +224,14 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   `/tmp/plxnative-personbio` exists for one step further along — the biography degrades to a blank
   line, the filmography to nothing at all — and it is why `/tmp/plxnative-personcredits` had to be
   written. Reaching either with real data needs a signed-in account (`make sim` with a real
-  session, or the debug install with `--no-token`).
+  session, or the debug install with `--no-token`). A `devtriggers` build does not even ask on such
+  a boot, by decision (fail closed; the cost is accepted): with no Discover stand-in armed
+  (`plxnative-discover`, or a `plxnative-plextv` redirect that Discover follows) the person store
+  settles both reads as an empty answer without spawning a worker, `AccountClient::person_profile` /
+  `person_credits` refuse the same read if anything else calls them, and `discover: GET … refused` is
+  logged once. Such a boot shows no biography and no filmography credits; with a stand-in armed,
+  `tests/mock_pms.py` answers both routes with synthetic data (the credits 401 without a token there
+  too).
 - **The person's titles:** `GET /library/people/{personId}/media` → `Metadata[]`, everything the
   person appears in **across EVERY library section in one request** (person 161 → 3 items;
   person 6059 → 6). This is the right call for a person page; `?actor=<id>` below is the right

@@ -39,7 +39,8 @@ const PLEX_TV: &str = "https://plex.tv";
 /// (`tests/mock_pms.py --catalog`) answers the sign-in pin and serves its QR there, so no
 /// documentation figure ever shows a live code minted by the real service. Anything that is not
 /// plain `http://` to `127.0.0.1`/`localhost` is refused and logged: this trigger must never be
-/// able to point the account API, and the token it carries, at another host. Read once.
+/// able to point the account API, and the token it carries, at another host. Read once. A redirected
+/// plex.tv also moves Discover ([`discover`]): the mock answers both.
 pub fn plex_tv() -> &'static str {
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BASE.get_or_init(|| match plx_base::devtrig::read("plextv") {
@@ -58,13 +59,186 @@ pub fn plex_tv() -> &'static str {
 }
 
 /// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
-pub(super) fn loopback_http(v: &str) -> bool {
+fn loopback_http(v: &str) -> bool {
     let port = v
         .strip_prefix("http://127.0.0.1:")
         .or_else(|| v.strip_prefix("http://localhost:"))
         .map(|rest| rest.strip_suffix('/').unwrap_or(rest));
     port.is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
 }
+/// The Discover metadata provider's real host — the biography and filmography of a person
+/// (`discover.rs`) and the plex.tv Watchlist (`watchlist.rs`). It is spelled HERE, once, beside
+/// [`plex_tv`], because "where Discover lives" is one question with one answer: [`discover`]. It is
+/// private on purpose: a request built on it would skip the stand-in, and `make check`
+/// (`ci/check-plex-requests.py`) fails on the host spelled anywhere else in request code.
+const DISCOVER: &str = "https://discover.provider.plex.tv";
+
+/// A host test compares against the real provider without spelling the host a second time.
+#[cfg(test)]
+pub(super) const REAL_DISCOVER: &str = DISCOVER;
+
+/// Which rule decided the Discover base ([`discover`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiscoverSource {
+    /// Nothing is armed (or every armed trigger was refused): the real service.
+    Real,
+    /// `/tmp/plxnative-discover` named a loopback stand-in.
+    Trigger,
+    /// No usable `discover` trigger, but `plxnative-plextv` redirects plex.tv to a loopback:
+    /// `tests/mock_pms.py` answers plex.tv and Discover on ONE listener, so a redirected plex.tv
+    /// carries its Discover with it and never falls through to the real host.
+    FollowsPlexTv,
+}
+
+/// What [`discover`] resolved to, with the facts the read gate ([`discover_read_allowed`]) needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoverBase {
+    base: String,
+    source: DiscoverSource,
+    /// A dev-token boot (`plxnative-token` non-empty): the identity is an injected SERVER token
+    /// and no plex.tv account is seated (`ActivateDevBootstrap` never seats), so a read of the
+    /// real provider could never speak for anyone. See [`permit_read`].
+    token_boot: bool,
+}
+
+/// The pure resolution: the `discover` trigger if it is a loopback, else the `plextv` trigger if it
+/// is, else the real host. A value that is not plain `http://` to `127.0.0.1`/`localhost` is never
+/// followed (the trigger must not be able to point the account token at another host). Trailing
+/// `/` is dropped so a path can be appended.
+fn resolve_discover(discover: Option<&str>, plextv: Option<&str>, token_boot: bool) -> DiscoverBase {
+    let stand_in = |v: &str, source| DiscoverBase { base: v.trim_end_matches('/').to_string(), source, token_boot };
+    if let Some(v) = discover.filter(|v| loopback_http(v)) {
+        return stand_in(v, DiscoverSource::Trigger);
+    }
+    if let Some(v) = plextv.filter(|v| loopback_http(v)) {
+        return stand_in(v, DiscoverSource::FollowsPlexTv);
+    }
+    DiscoverBase { base: DISCOVER.to_string(), source: DiscoverSource::Real, token_boot }
+}
+
+/// [`resolve_discover`] over the live triggers (`None` at compile time without `devtriggers`).
+fn read_discover() -> DiscoverBase {
+    resolve_discover(
+        plx_base::devtrig::read("discover").as_deref(),
+        plx_base::devtrig::read("plextv").as_deref(),
+        plx_base::devtrig::read("token").is_some_and(|t| !t.is_empty()),
+    )
+}
+
+/// Read once and logged once: what the process resolved, for the first request and for the boot
+/// announcement ([`announce_discover`]). Every statement naming a trigger carries its own gate so
+/// a release binary holds no `plxnative-` literal (`ci/check-package.py`).
+#[cfg(not(any(test, feature = "test-support")))]
+fn discover_resolved() -> DiscoverBase {
+    static BASE: std::sync::OnceLock<DiscoverBase> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let resolved = read_discover();
+        #[cfg(feature = "devtriggers")]
+        {
+            if plx_base::devtrig::read("discover").is_some_and(|v| !loopback_http(&v)) {
+                plx_base::eventlog::log("BADTRIGGER discover: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            }
+            match resolved.source {
+                DiscoverSource::Trigger => plx_base::eventlog::log("discover: replaced by a loopback stand-in (/tmp/plxnative-discover)"),
+                DiscoverSource::FollowsPlexTv => plx_base::eventlog::log("discover: follows the plex.tv loopback stand-in (/tmp/plxnative-plextv)"),
+                DiscoverSource::Real => {}
+            }
+        }
+        resolved
+    })
+    .clone()
+}
+
+/// A host test arms the stand-in in a thread-local private trigger root
+/// (`devtrig::with_private_triggers`), so a process-wide latch would hand whichever test ran first
+/// its answer for all of them; under test the triggers are read on every call instead.
+#[cfg(any(test, feature = "test-support"))]
+fn discover_resolved() -> DiscoverBase {
+    read_discover()
+}
+
+/// The Discover provider's base URL: [`DISCOVER`], or, in a dev build only, a loopback stand-in —
+/// the `/tmp/plxnative-discover` trigger, else the one `plxnative-plextv` already redirects plex.tv
+/// to ([`DiscoverSource::FollowsPlexTv`]). **The one copy**: the person profile and credits
+/// (`discover.rs`) and the Watchlist (`watchlist.rs`) both build their URLs on it, so a stand-in
+/// armed for one serves the other and neither can reach the real host behind the other's back.
+pub fn discover() -> String {
+    discover_resolved().base
+}
+
+/// Is a Discover stand-in in force (the base is not the real service)?
+pub(super) fn stand_in_armed() -> bool {
+    discover_resolved().source != DiscoverSource::Real
+}
+
+/// The dev-build failsafe for READS, [`watchlist`](super::watchlist)'s `permit_write` for the other
+/// verb: a `devtriggers` build driven by a dev-token boot must not dial the real provider unless a
+/// stand-in is armed. Release builds and interactive boots (a stored session, no `plxnative-token`)
+/// always read.
+///
+/// **The decision, and its cost.** This fails CLOSED, by decision, and it is not to be narrowed or
+/// dropped: that boot signs in as an injected server token with no plex.tv account, so a request
+/// could only speak for nobody. The credits answer `401` without a token (measured); what the
+/// profile read would carry for a real tagKey, anonymously, is not determined, and the refusal gives
+/// that up on purpose rather than depend on it. **The consequence:** a dev-token boot with neither
+/// stand-in armed (`tools/tv-session.sh up --guest`, `--guest --mock`, `tests/run.py --mock`, and
+/// the real-PMS `--guest` scenes) shows no person biography and no filmography credits; the person
+/// page settles as for a person the provider has never heard of. To see them, arm the stand-in
+/// (`plxnative-discover`, or a loopback `plxnative-plextv`): `tests/mock_pms.py` answers with
+/// synthetic data.
+///
+/// **A refusal is terminal.** It cannot change during the process (the trigger files and the
+/// dev-token boot are read once), so the person store asks [`super::discover::person_profile_refused`] /
+/// [`super::discover::person_credits_refused`] before it spawns a worker and settles its page on a refusal;
+/// the Watchlist and catalog land it once as `WatchlistError::Refused` and have no timer that asks
+/// again.
+fn permit_read(devtriggers_build: bool, token_boot: bool, armed: bool) -> bool {
+    !(devtriggers_build && token_boot && !armed)
+}
+
+/// Gate one READ of the provider before it is built into a request: `true` = go ahead; `false` =
+/// refuse ([`permit_read`] states the decision and what it costs), and a line says so the FIRST time
+/// each endpoint shape is refused, so a refused boot does not repeat itself in the event log. The
+/// caller sends nothing.
+pub(super) fn discover_read_allowed(url: &str) -> bool {
+    let resolved = discover_resolved();
+    if permit_read(cfg!(feature = "devtriggers"), resolved.token_boot, resolved.source != DiscoverSource::Real) {
+        return true;
+    }
+    // The shapes fold REAL ids (all-digit or all-hex segments of 8 or more characters, so a
+    // 24-hex tagKey folds) and drop the query: one entry per endpoint for a real boot. The mock's
+    // synthetic tagKeys (`s%08x`, `demo-person-N`) do not fold, so a mock boot adds an entry per
+    // person opened: synthetic ids, bounded by the people the run opens.
+    static TOLD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let shape = endpoint_shape(url);
+    let first = {
+        let mut told = TOLD.lock().unwrap_or_else(|e| e.into_inner());
+        let first = !told.contains(&shape);
+        if first {
+            told.push(shape.clone());
+        }
+        first
+    };
+    if first {
+        plx_base::eventlog::log(&format!(
+            "discover: GET {shape} refused (dev-token boot and no Discover stand-in armed)"));
+    }
+    false
+}
+
+/// BOOT: resolve the base now and log which Discover is in force, so an event log says BEFORE any
+/// request whether a dev build could reach the real provider. Silent in a release build.
+pub fn announce_discover() {
+    let resolved = discover_resolved();
+    #[cfg(feature = "devtriggers")]
+    plx_base::eventlog::log(&format!(
+        "discover: base={} reads={}",
+        if resolved.source == DiscoverSource::Real { "real" } else { "stand-in" },
+        if permit_read(true, resolved.token_boot, resolved.source != DiscoverSource::Real) { "open" } else { "refused" }));
+    #[cfg(not(feature = "devtriggers"))]
+    let _ = resolved;
+}
+
 const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
 const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
 const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60);
@@ -196,6 +370,23 @@ impl AudioPreferencesCache {
 }
 static AUDIO_PREFERENCES_CACHE: AudioPreferencesCache = AudioPreferencesCache::new();
 
+#[cfg(test)]
+thread_local! {
+    static GET_PROBE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the account GET transport replaced by a recorder: every URL [`AccountClient::get`]
+/// is asked for is collected, answered as a refused connection, and never sent. A test through the
+/// public methods (`person_profile`, `person_credits`) therefore sees exactly what the request
+/// path would put on the wire, and cannot reach a real host whatever the code under test builds.
+#[cfg(test)]
+pub(super) fn probe_gets<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    GET_PROBE.with(|p| *p.borrow_mut() = Some(Vec::new()));
+    let out = f();
+    let seen = GET_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default();
+    (out, seen)
+}
+
 /// Identity + optional account token for plex.tv calls. `client_id` is the stable per-device
 /// `X-Plex-Client-Identifier` (persisted across launches — plex.tv keys the authorized-device list
 /// and the pin↔device binding on it). `token` is the account token, absent during the login handshake
@@ -287,6 +478,12 @@ impl AccountClient {
     }
 
     fn get_raw(&self, url: &str) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+        // The test seam on the REQUEST PATH ([`probe_gets`]): the URL every `get` hands the
+        // transport is recorded, and no socket is opened.
+        #[cfg(test)]
+        if GET_PROBE.with(|p| p.borrow_mut().as_mut().map(|seen| seen.push(url.to_owned())).is_some()) {
+            return plx_net::net::test_response_failure(7, 0, 0, false);
+        }
         let resp = plx_net::net::request_evidence(url, &self.headers(), "GET", None,
             plx_net::net::API, false, None, None);
         note_response_contact(url, &resp);
@@ -1442,7 +1639,35 @@ pub struct HomeUser {
 #[cfg(test)]
 mod tests {
     use super::{endpoint_shape, pin_is_gone, AccountClient, Pin, Resource};
+    use super::{permit_read, resolve_discover, DiscoverSource, DISCOVER};
     use std::time::Duration;
+
+    #[test]
+    fn discover_resolves_trigger_then_plex_tv_then_the_real_host() {
+        let real = resolve_discover(None, None, false);
+        assert_eq!((real.base.as_str(), real.source), (DISCOVER, DiscoverSource::Real));
+        let own = resolve_discover(Some("http://127.0.0.1:9/"), Some("http://127.0.0.1:8"), false);
+        assert_eq!((own.base.as_str(), own.source), ("http://127.0.0.1:9", DiscoverSource::Trigger));
+        let follows = resolve_discover(None, Some("http://localhost:8/"), false);
+        assert_eq!((follows.base.as_str(), follows.source), ("http://localhost:8", DiscoverSource::FollowsPlexTv));
+        // A refused `discover` value falls to the plex.tv redirect, never to a foreign host.
+        let bad = resolve_discover(Some("http://evil.example:9"), Some("http://127.0.0.1:8"), false);
+        assert_eq!((bad.base.as_str(), bad.source), ("http://127.0.0.1:8", DiscoverSource::FollowsPlexTv));
+        for hostile in ["https://127.0.0.1:9", "http://127.0.0.1", "http://127.0.0.1:123456", "http://10.0.0.5:9"] {
+            let r = resolve_discover(Some(hostile), Some(hostile), false);
+            assert_eq!((r.base.as_str(), r.source), (DISCOVER, DiscoverSource::Real), "{hostile}");
+        }
+        assert!(resolve_discover(None, None, true).token_boot);
+    }
+
+    #[test]
+    fn only_a_dev_token_boot_without_a_stand_in_is_refused_a_read() {
+        // (devtriggers build, dev-token boot, stand-in armed) -> allowed
+        assert!(!permit_read(true, true, false), "the harness identity cannot speak to the real provider");
+        assert!(permit_read(true, true, true), "the stand-in answers it");
+        assert!(permit_read(true, false, false), "an interactive dev build reads the real provider");
+        assert!(permit_read(false, true, false), "a release build never has the trigger, and always reads");
+    }
 
     fn audio_user(id: i64, uuid: &str) -> super::super::session::UserRef {
         super::super::session::UserRef { id, uuid: uuid.into(), token: "profile-token".into(),

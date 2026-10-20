@@ -163,6 +163,34 @@ make sim-macos-shot SIM_DIR=$SIM_DIR
 Stale triggers change which screen you boot to, silently — same trap as on the device. `make
 sim-clean SIM_DIR=…` resets a root.
 
+### A simulator run against `tests/mock_pms.py` must arm the Discover stand-in
+
+A person page reads its biography and filmography from the plex.tv metadata provider, not from the
+PMS. The mock serves those two reads (`GET /library/people/{tagKey}` and `.../credits`) on the same
+listener as everything else, but the app only asks it when told where Discover lives:
+
+```sh
+echo "http://127.0.0.1:$MOCK_PORT" > $SIM_DIR/plxnative-discover     # the mock's own port
+```
+
+(`plxnative-plextv=http://127.0.0.1:$MOCK_PORT`, which the QR sign-in flow needs anyway, is followed by
+Discover too.) A `plxnative-token` boot has no account token, so with the stand-in armed the biography
+arrives (synthetic prose, or just the name for a demo-library actor) while the credits answer `401`
+exactly as the real provider does, and the Filmography stays empty unless `plxnative-personcredits`
+seeds it.
+
+**Decision: a `plxnative-token` boot with neither stand-in armed does NOT fall through to
+`discover.provider.plex.tv`; the app refuses both person reads locally and does not ask again.** The
+cost is accepted: such a boot (`--guest`, `--guest --mock`, `tests/run.py --mock`, a real-PMS
+`--guest` scene) shows no biography and no filmography credits, and the page settles as it does for a
+person the provider has never heard of. To see them, arm the stand-in. The event log says so once
+(`discover: GET discover.provider.plex.tv/library/people/{id} refused`, and `discover: base=real
+reads=refused` at boot). **Before opening a person page, read the boot line**: `discover:
+base=stand-in reads=open` (or `base=real reads=refused`) means nothing reaches the real provider;
+`base=real reads=open` means a stored or interactive session that WILL, so do not open the page.
+`tools/screenshots.py`, `tools/site_video.py` and `tools/watchlist_captures.py` arm both triggers and
+fail the run unless the boot logged `discover: base=stand-in` (`mock_pms.discover_stand_in_problem`).
+
 ## Drive it, then screenshot
 
 Run it in the background, write tokens to the FIFO, ask for a shot:

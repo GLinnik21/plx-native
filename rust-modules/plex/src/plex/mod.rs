@@ -83,7 +83,8 @@ pub mod pins;
 
 // The plex.tv METADATA PROVIDER (`discover.provider.plex.tv`) — a third service, but one that
 // shares the account API's transport + identity headers exactly, so it only adds an
-// `impl AccountClient` block (same pattern as the PMS op files above).
+// `impl AccountClient` block (same pattern as the PMS op files above). Its host is
+// `account::discover()`, the one base the Watchlist shares.
 pub mod discover;
 
 // The plex.tv Watchlist (discover provider): `impl AccountClient`, contract frozen in watchlist.rs.

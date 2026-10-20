@@ -1099,6 +1099,9 @@ pub(super) mod tests {
         pages: AtomicUsize,
         /// Pages starting at or after this offset fail.
         fail_pages_from: AtomicU32,
+        /// ...and fail as a READ the dev-token gate refused (`WatchlistError::Refused`) rather than
+        /// as a transport error.
+        fail_refused: AtomicBool,
         /// Copy preference per server (0 current, 1 owned, 2 share); absent = 2.
         ranks: Mutex<HashMap<ServerId, u8>>,
         /// Page starts requested, in order.
@@ -1142,6 +1145,7 @@ pub(super) mod tests {
                 found: Mutex::new(Vec::new()),
                 pages: AtomicUsize::new(0),
                 fail_pages_from: AtomicU32::new(u32::MAX),
+                fail_refused: AtomicBool::new(false),
                 ranks: Mutex::new(HashMap::new()),
                 starts: Mutex::new(Vec::new()),
                 dropped: AtomicU32::new(0),
@@ -1186,7 +1190,11 @@ pub(super) mod tests {
                 return Err(WatchlistError::NotModified);
             }
             if start >= self.fail_pages_from.load(Ordering::SeqCst) {
-                return Err(WatchlistError::Transport);
+                return Err(if self.fail_refused.load(Ordering::SeqCst) {
+                    WatchlistError::Refused
+                } else {
+                    WatchlistError::Transport
+                });
             }
             let all = self.items.lock().unwrap();
             self.starts.lock().unwrap().push(start);
@@ -1516,6 +1524,26 @@ pub(super) mod tests {
             s.pump();
         }
         assert_eq!(s.view().status(), Status::Ready, "then it goes");
+    }
+
+    /// A READ the dev-token gate refused (`WatchlistError::Refused`, `plex::account::permit_read`) cannot
+    /// succeed later in this process, and nothing re-asks it: `list_wanted` is cleared when the worker
+    /// spawns and only a mount or a reread sets it again. It lands once as the unavailable read-out,
+    /// never as an empty list, and ten simulated seconds of frames make no second request.
+    #[test]
+    fn a_refused_list_read_is_asked_once_and_is_not_retried_on_a_timer() {
+        let mock = three();
+        mock.fail_pages_from.store(0, Ordering::SeqCst);
+        mock.fail_refused.store(true, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().status(), Status::Failed(Failure::Other), "unavailable, not an empty list");
+        assert_eq!(s.view().len(), 0);
+        for _ in 0..(10 * 60) {
+            s.pump();
+        }
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 1, "a refused read is not asked again");
+        assert_eq!(s.view().status(), Status::Failed(Failure::Other));
     }
 
     #[test]

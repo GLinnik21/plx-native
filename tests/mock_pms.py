@@ -1792,17 +1792,49 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 
 # ---------------------------------------------------------------- Discover -----------------
 
+# The boot line `account::announce_discover` writes (a `devtriggers` build): which Discover this boot's
+# person-page and Watchlist reads reach. A harness that boots the app against this mock arms the
+# stand-in (`plxnative-discover`, or `plxnative-plextv`, which Discover follows) and requires this
+# line before it drives anything: a boot whose line says `base=real` would read
+# `discover.provider.plex.tv`, which no mock run may do.
+DISCOVER_STAND_IN_LINE = "discover: base=stand-in"
+
+
+def discover_stand_in_problem(log_text):
+    """`None` when the event log shows every Discover base this boot resolved is the loopback
+    stand-in; otherwise the reason a run against this mock must stop. Fails closed: a log with no
+    `discover: base=` line at all (a release build, a boot that never got that far) is a refusal, as is
+    any line that says `base=real`."""
+    lines = [ln.strip() for ln in log_text.splitlines() if "discover: base=" in ln]
+    if not lines:
+        return ("the boot logged no `discover: base=` line: the app is not a devtriggers build or never "
+                "reached boot, so nothing proves its Discover reads reach the mock")
+    real = [ln for ln in lines if DISCOVER_STAND_IN_LINE not in ln]
+    if real:
+        return (f"Discover is not the mock's stand-in (`{real[0]}`): arm plxnative-discover (or "
+                f"plxnative-plextv) at the mock before booting, or the boot reads discover.provider.plex.tv")
+    return None
+
+
 class DiscoverFixture:
     """The plex.tv Watchlist's Discover service, in memory (docs/watchlist-plan.md W45, §1.3-§1.4).
 
     The same listener answers it as the PMS: the app's `discover()` base is the loopback stand-in
     named by `/tmp/plxnative-discover` (`http://127.0.0.1:<port>`), and the paths cannot collide
-    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`).
+    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`,
+    and the person routes `/library/people/<tagKey>[/credits]`: the PMS's own is `/library/people/<id>/media`).
     Wire shapes are the plan's INPUT 2 live probe: list items carry NO `watchlistedAt`; `userState`
     answers an ARRAY and carries `watchlistedAt` only while the item is on the list; add/remove
     answer `{"MediaContainer":{"size":0}}`; a page Size over 100 answers 400.
 
-    Synthetic data only. 16 catalog titles, 14 of them on the list at the start (newest first):
+    The same stand-in also answers the person page's two provider reads, `GET /library/people/
+    {tagKey}` (the biography record: 200 and unauthenticated, an unknown person is a 200 with no
+    `Metadata`) and `GET /library/people/{tagKey}/credits` (the filmography: 401 without a token, as
+    the real provider answers it), so a boot that arms `plxnative-discover` (or `plxnative-plextv`,
+    which the app's Discover follows) never needs `discover.provider.plex.tv` for a person page.
+    `/library/people/{id}/media` is the PMS's own route and falls through to it.
+
+    Synthetic data only (a `demo-person-N` key carries a real actor's NAME and nothing else about them). 16 catalog titles, 14 of them on the list at the start (newest first):
 
       * 1-6   released, held by this mock PMS (guid matches a library item)      -> Available
       * 7     NOT released (future date), held by this mock PMS                   -> ComingSoonMatched
@@ -1953,6 +1985,15 @@ class DiscoverFixture:
                 elif segs[1] == "removeFromWatchlist":
                     self.order = [(h, t) for h, t in self.order if h != hx]
             return j(self._container())
+        if (segs[:2] == ["library", "people"] and (len(segs) == 3 or (len(segs) == 4 and segs[3] == "credits"))):
+            if method != "GET":
+                return j({"error": "method not allowed"}, 405)
+            who = next((t for t in lib.people.values() if t.get("tagKey") == urllib.parse.unquote(segs[2])), None)
+            if len(segs) == 3:
+                return j(self._person_profile(who, lib))
+            if not (headers.get("X-Plex-Token") or q.get("X-Plex-Token")):
+                return j({"error": "Unauthorized", "message": "You must provide a token!"}, 401)
+            return j(self._person_credits(who, lib))
         if p == "/library/all" and method == "GET" and "guid" in q:
             # The PMS half: which of these guids does this server hold? (`find_by_guids`)
             if self.guid_lookup_fails or self.pms_fails:
@@ -1963,6 +2004,70 @@ class DiscoverFixture:
                     if it.get("guid") in want and (kind is None or it.get("type") == kind)]
             return j({"MediaContainer": {"size": len(rows), "Metadata": rows}})
         return None
+
+    DEPARTMENTS = (("Role", "actor", "Actor"), ("Director", "director", "Director"),
+                   ("Writer", "writer", "Writer"))
+
+    def _departments(self, who, lib):
+        """`[(type, title, [(role, library item)])]` for a person: the departments the synthetic
+        library credits them in, most credits first, then the department's own order."""
+        out = []
+        for tag_field, kind, title in self.DEPARTMENTS:
+            rows = [(next((t.get("role", "") for t in it.get(tag_field, []) if t["id"] == who["id"]), ""), it)
+                    for it in sorted(lib.items.values(), key=lambda it: int(it["ratingKey"]))
+                    if it["type"] in ("movie", "show") and any(t["id"] == who["id"] for t in it.get(tag_field, []))]
+            if rows:
+                out.append((kind, title, rows))
+        return sorted(out, key=lambda d: -len(d[2]))
+
+    def _person_profile(self, who, lib):
+        """The provider's biography record for one person (`discover.rs::PersonProfile`). Pure
+        function of the person's `tagKey`, so a capture taken today and one taken next month match."""
+        if who is None:
+            return self._container(totalSize=0)  # an unknown person is an ANSWER: 200, no Metadata
+        record = {"title": who["tag"], "CreditType": [{"type": kind, "title": title}
+                                                        for kind, title, _ in self._departments(who, lib)]}
+        if not who["tagKey"].startswith("demo-person-"):
+            h = int(hashlib.md5(who["tagKey"].encode()).hexdigest(), 16)
+            record.update({
+                "summary": (f"{who['tag']} is a synthetic person of the mock Discover provider.\n\n"
+                            "Every word of this biography is invented by tests/mock_pms.py so that the person "
+                            "page has prose to lay out without asking plex.tv for any."),
+                "bornAt": "%04d-%02d-%02d" % (1950 + h % 50, 1 + h // 50 % 12, 1 + h // 600 % 28),
+                "birthPlace": "Mock Harbour",
+                "knownFor": "Acting",
+            })
+        # A `demo-person-N` key is a REAL person's name (the demo library's actors, which the site
+        # captures show): the record carries the name and the departments the synthetic library credits
+        # them in and nothing else, so no birth date, place or biography is invented about them.
+        return self._container(size=1, totalSize=1, Metadata=[record])
+
+    def _person_credits(self, who, lib):
+        """`MediaContainer.CreditGroup[]` for one person (`discover.rs::CreditGroup`): one group per
+        department, each `Credit` `{order, role, Metadata}` with NO guid on the item and its catalog id
+        as `ratingKey`. A library title that carries a Discover guid gives the tail of it, so the
+        filmography's availability join has something to hold; the rest are catalog-only rows."""
+        if who is None:
+            return self._container(CreditGroup=[])
+        h = int(hashlib.md5(who["tagKey"].encode()).hexdigest(), 16)
+        catalog_only = [c for c in self.catalog if not c["held"]]
+        groups = []
+        for n, (kind, title, rows) in enumerate(self._departments(who, lib)):
+            credits = []
+            for order, (role, it) in enumerate(rows, start=1):
+                guid = it.get("guid") or ""
+                tail = guid.rsplit("/", 1)[-1] if re.fullmatch(r"plex://(movie|show)/[0-9a-f]{24}", guid) else \
+                    hashlib.md5(f"credit-{it['ratingKey']}".encode()).hexdigest()[:24]
+                credits.append({"order": order, "role": role, "Metadata": {
+                    "ratingKey": tail, "type": it["type"], "title": it["title"], "year": it.get("year", 0)}})
+            if n == 0 and catalog_only:
+                # Titles no server holds: the rows that draw no chevron.
+                for extra in range(2):
+                    c = catalog_only[(h + extra) % len(catalog_only)]
+                    credits.append({"order": len(credits) + 1, "role": "", "Metadata": {
+                        "ratingKey": c["hex"], "type": c["kind"], "title": c["title"], "year": c["year"]}})
+            groups.append({"type": kind, "title": title, "Credit": credits})
+        return self._container(CreditGroup=groups)
 
     LIST_MODES = ("default", "empty", "movies_only", "first_movie_off")
 
