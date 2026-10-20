@@ -47,8 +47,9 @@
 //!   [`Grid::dormant`]: nothing is lifted under the fade, and the first awake tick grows the focused
 //!   card from rest (a focus the engine restored meanwhile is adopted whole, as above). A grid keeps
 //!   its caption bands shut meanwhile and the waking tick opens the focused row's on the lift's own
-//!   frames: a caption is its band's content (alpha = the band's expansion), so it never stands at
-//!   full strength under a tile that has not lifted. An owner seating its page's ARRIVAL later (a
+//!   frames: a caption is its band's content (a line is drawn only as the band opens and the room
+//!   holds it, `card_row::line_reveal_for`), so it never stands at full strength under a tile that
+//!   has not lifted. An owner seating its page's ARRIVAL later (a
 //!   listing that answered after the dissolve lands its first poster) says so with
 //!   [`Grid::arrive`], and that one `FocusMoved` grows from rest like a deliberate move, band and all.
 //! - **One frame convention.** A [`SectionFrame`]'s `y` is screen space; the painter handed to

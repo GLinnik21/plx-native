@@ -320,7 +320,7 @@ impl Grid {
             self.slept = true;
             self.seen = Seen::Nothing;
             self.pop = GridPop::new();
-            // A caption is its band's content (alpha = the band's expansion), so the band of a seat
+            // A caption is its band's content (its lines are drawn only as the band opens), so the band of a seat
             // nobody has lifted is shut too: it opens with the lift below, not under the fade. Shut
             // outright and not through `focus_band`, which would keep the open layout for the
             // landing to measure from, and a landing is not what wakes.
@@ -891,7 +891,7 @@ impl Grid {
     /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
     /// and the host test that reads the captions ([`caption_probe`](Self::caption_probe)) cannot
     /// disagree about what is on screen: the cell it fills, the painter it is drawn with (an arriving
-    /// card's fade applied) and the caption block under it with its alpha in `reveal`. `None` when
+    /// card's fade applied) and the caption block under it with the band it hangs in in `reveal`. `None` when
     /// the card is not painted at all: not loaded, lifted into a menu, or culled.
     #[allow(clippy::too_many_arguments)]
     fn card_paint<H: Host, S: CardSource<H>>(
@@ -912,7 +912,9 @@ impl Grid {
         }
         // The caption a card carries: the focused card's, at its band's progress; or, on a card the
         // focus has left, the caption its row's band is still closing on, at that band's progress.
-        // Either way the alpha is the band's own, so the caption goes with the gap.
+        // Either way each line is revealed by the band's own progress and the room it has made
+        // (`card_row::line_reveal_for`), so the caption goes with the gap and never stands over
+        // the row under it.
         let label = if focused {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
@@ -981,7 +983,8 @@ impl Grid {
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
     }
 
-    /// Test support: the captions [`draw`](Self::draw) puts on screen now, `(card index, alpha)`,
+    /// Test support: the captions [`draw`](Self::draw) puts on screen now, `(card index, alpha of its
+    /// most visible line)`,
     /// read from the same decision the draw paints (`card_paint`: loaded, lifted, culled, arriving
     /// fade and all), so a caption that is cut or late on screen is cut or late here.
     #[cfg(any(test, feature = "test-support"))]
