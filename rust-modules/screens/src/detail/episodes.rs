@@ -449,7 +449,7 @@ fn draw_cell(
     let (date_y, summary_y, content_h_with_pad) = meta_layout(ep, measure);
     let text_x = x + PLATTER_PAD;
     let labels = |p: Painter| {
-        if let Ok(kicker) = CString::new(plx_platform::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
+        if let Ok(kicker) = CString::new(plx_ui::fmt::episode_card_kicker(ep.index)) {
             p.text(
                 kicker.as_ptr(),
                 text_x,
@@ -630,6 +630,36 @@ mod tests {
         plx_ui::draw_census::capture(|| {
             draw_cell(Painter::recording(), &d, 0, &ep, None, scale, lift, kicker_cap_top(), &measure)
         })
+    }
+
+    /// **The words one episode's card drew** (the kicker over its title, its title, its date).
+    fn card_words(ep: &Episode) -> Vec<String> {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let d = Detail::default();
+        plx_ui::draw_census::capture_text(|| {
+            draw_cell(Painter::recording(), &d, 0, ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+        })
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+    }
+
+    /// **A card for an episode the server did not number never reads "EPISODE 0"**: its kicker is the
+    /// kind word instead (its date, when it has one, is already the card's own bottom row, so the
+    /// kicker does not say it twice), and a numbered episode keeps "EPISODE N".
+    #[test]
+    fn a_numberless_episode_card_never_reads_episode_zero() {
+        let _g = plx_base::testlock::serial();
+        let kind = plx_platform::i18n::msg::browse_kind_episode().to_uppercase();
+        let dated = Episode { title: "Pilot".into(), aired: "2016-04-21".into(), ..Default::default() };
+        let words = card_words(&dated);
+        assert!(!words.iter().any(|w| w.contains("EPISODE 0") || w.contains('0') && w.to_uppercase().contains("EPISODE")), "{words:?}");
+        assert!(words.contains(&kind), "the kicker says {kind:?}: {words:?}");
+        assert!(words.contains(&plx_ui::fmt::pretty_date("2016-04-21", 0)), "the date row is still there: {words:?}");
+        let undated = Episode { title: "Pilot".into(), ..Default::default() };
+        assert!(card_words(&undated).contains(&kind), "an episode with no number and no date says what it is");
+        let numbered = Episode { index: 3, title: "Pilot".into(), ..Default::default() };
+        assert!(card_words(&numbered).contains(&plx_platform::i18n::msg::browse_detail_episode_number(3)), "a numbered one keeps EPISODE N");
     }
 
     fn settled_lift(focused: bool) -> TextLift {

@@ -209,6 +209,26 @@ pub fn episode_address_in(cx: &LocaleContext, season: i64, index: i64) -> String
     parts.join(" \u{b7} ")
 }
 
+/// **What a season is called**, the ONE rule every surface that names a season reads (its caption
+/// under a poster, its tab on Detail): the title the server gave it ("Season 6", "Specials"), else
+/// "Season N" from the catalog, else "Specials" for the season numbered 0 that the server gave no
+/// title (a specials folder). A number that is not positive is no number, so it is never printed
+/// as one ("Season 0").
+pub fn season_identity(number: i64, own: &str) -> String {
+    season_identity_in(plx_platform::i18n::current(), number, own)
+}
+
+/// [`season_identity`] in `cx`'s language, for the formatters that carry a locale.
+pub fn season_identity_in(cx: &LocaleContext, number: i64, own: &str) -> String {
+    if !own.is_empty() {
+        own.to_string()
+    } else if number > 0 {
+        msg::browse_detail_season_number_in(cx, number)
+    } else {
+        msg::browse_detail_specials_in(cx).to_string()
+    }
+}
+
 /// A collection's size in the noun of what it holds — `"6 films"`, `"3 shows"`, else `"12 items"` —
 /// from the collection's PMS `subtype` (a movie collection holds films, a show collection shows;
 /// anything else, or none known yet, is items). ONE formatter for the Collection page's meta line,
@@ -244,8 +264,44 @@ pub fn item_count(n: i64) -> String {
     collection_count(None, n)
 }
 
+/// An episode's ordinal inside a sentence, `"S2, E3"`, **from the parts the server numbered**: with
+/// no season `"E3"`, with no episode number `"S2"`, and with neither the empty string, which a
+/// caller leaves out ([`episode_kicker`], [`episode_context`]). A number that is not positive is no
+/// number (the server sent none, or numbered the specials 0), so it is never printed as one:
+/// "S1, E0" is not an address. [`episode_address_in`] is the same rule for the printed mark.
 pub fn episode_ordinal(season: i64, index: i64) -> String {
-    plx_platform::i18n::msg::core_episode_ordinal(index, season)
+    use plx_platform::i18n::msg;
+    match (season > 0, index > 0) {
+        (true, true) => msg::core_episode_ordinal(index, season),
+        (false, true) => msg::core_episode(index),
+        (true, false) => msg::core_season(season),
+        (false, false) => String::new(),
+    }
+}
+
+/// The non-empty `parts` joined with `sep`; none, none.
+fn join_present(parts: &[&str], sep: &str) -> String {
+    parts.iter().copied().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(sep)
+}
+
+/// A line naming an episode and its show, `"Show  ·  S2, E3"` (the route's pre-roll context): the
+/// show, then the [`episode_ordinal`] when the episode has one. ONE formatter for the Detail page's
+/// play and the app's own playback request, which each spelled it by hand.
+pub fn episode_context(show: &str, season: i64, index: i64) -> String {
+    join_present(&[show, &episode_ordinal(season, index)], "  \u{b7}  ")
+}
+
+/// **The kicker over an episode card on Detail**, `"EPISODE 3"`: the card's own number, and for an
+/// episode the server did not number the KIND WORD in the same capitals ("EPISODE"), never "EPISODE
+/// 0". The aired date is the card's bottom row already, so the kicker does not say it again (the
+/// identity chain every other surface falls back on is address, then date, then kind word; the date
+/// rung is this card's own row).
+pub fn episode_card_kicker(index: i64) -> String {
+    if index > 0 {
+        plx_platform::i18n::msg::browse_detail_episode_number(index)
+    } else {
+        plx_platform::i18n::msg::browse_kind_episode().to_uppercase()
+    }
 }
 
 /// The source attribution — `"Shared by friend"` — or `None` when there is nobody to credit.
@@ -276,7 +332,7 @@ pub fn shared_by(handle: &str) -> Option<String> {
 /// they read identically to the first. It was three separate literals before, with nothing keeping
 /// them in step.
 pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
-    format!("{} \u{b7} {title}", episode_ordinal(season, index))
+    join_present(&[&episode_ordinal(season, index), title], " \u{b7} ")
 }
 
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
@@ -321,7 +377,41 @@ pub fn resolution(res: &str, width: i64, height: i64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collection_count, collection_count_in, collection_noun, resolution};
+    use super::{
+        collection_count, collection_count_in, collection_noun, episode_card_kicker, episode_context, episode_kicker,
+        episode_ordinal, resolution, season_identity_in,
+    };
+
+    /// **An episode the server did not number never prints a zero address**, in any language: the
+    /// ordinal says the parts it has ("S1, E3", "E3", "S1") and nothing when it has none, and the
+    /// lines built on it (the kicker over a title, the "show · address" context line, the Detail
+    /// card's kicker) leave the empty part out rather than print "S1, E0" or a trailing dot.
+    #[test]
+    fn an_unnumbered_episode_never_prints_a_zero_address() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        for language in SHIPPED {
+            let _g = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            assert_eq!(episode_ordinal(1, 3), plx_platform::i18n::msg::core_episode_ordinal(3, 1), "{tag}");
+            for (season, index) in [(1, 0), (0, 3), (0, 0), (-1, -1), (2, -1)] {
+                let ordinal = episode_ordinal(season, index);
+                assert!(!ordinal.contains('0') && !ordinal.contains("-1"), "{tag}: ({season}, {index}) read {ordinal:?}");
+            }
+            assert_eq!(episode_ordinal(0, 0), "", "{tag}");
+            assert_eq!(episode_ordinal(0, 3), plx_platform::i18n::msg::core_episode(3), "{tag}: no season, the episode alone");
+            assert_eq!(episode_ordinal(2, 0), plx_platform::i18n::msg::core_season(2), "{tag}: no episode, the season alone");
+            assert_eq!(episode_kicker(1, 0, "Pilot"), format!("{} \u{b7} Pilot", episode_ordinal(1, 0)), "{tag}");
+            assert_eq!(episode_kicker(0, 0, "Pilot"), "Pilot", "{tag}: nothing numbered leaves the title alone");
+            assert_eq!(episode_kicker(0, 0, ""), "", "{tag}");
+            assert_eq!(episode_context("Show", 0, 0), "Show", "{tag}: no trailing dot");
+            assert_eq!(episode_context("Show", 1, 3), format!("Show  \u{b7}  {}", episode_ordinal(1, 3)), "{tag}");
+            let kicker = episode_card_kicker(0);
+            assert!(!kicker.contains('0') && !kicker.is_empty(), "{tag}: the card's kicker without a number is {kicker:?}");
+            assert_eq!(kicker, plx_platform::i18n::msg::browse_kind_episode().to_uppercase(), "{tag}: the kind word");
+            assert_eq!(episode_card_kicker(3), plx_platform::i18n::msg::browse_detail_episode_number(3), "{tag}");
+            assert_eq!(season_identity_in(plx_platform::i18n::current(), 0, ""), plx_platform::i18n::msg::browse_detail_specials(), "{tag}");
+        }
+    }
 
     /// **The collection page's heading uses the noun its count uses** (design review N-g), in every
     /// shipped language: "Films" over "6 films", "Shows" over "3 shows", "Items" over "12 items".

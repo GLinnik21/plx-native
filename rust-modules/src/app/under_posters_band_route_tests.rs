@@ -263,3 +263,45 @@ fn the_filmography_opens_the_band_its_setting_asks_for() {
     focus_first_poster(&mut w, "Filmography");
     grade_shelf_bands(&mut w, "Filmography", msg::browse_kind_movies(), msg::browse_kind_shows());
 }
+
+// ── Detail names what the server did not: a season 0 and an episode with no number ───────────────
+
+/// **Detail's season tab and episode card use the same identity rule the captions do.** A show whose
+/// season 0 the server gave no title reads "Specials" on its tab (the caption under the same
+/// season's poster says it), never "Season 0"; and the card of an episode it did not number reads
+/// the kind word in place of "EPISODE 0", beside the cards that keep "EPISODE N".
+#[test]
+fn detail_names_an_untitled_season_zero_and_an_unnumbered_episode_by_their_identity() {
+    use plx_data::metadata::{Detail, Episode, EpisodeList, Season};
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let mut episodes = EpisodeList::with_total(2);
+    episodes.set_page(0, vec![
+        Episode { rk: "e1".into(), index: 1, season: 0, title: "Numbered".into(), dur_ms: 60_000, ..Default::default() },
+        Episode { rk: "e2".into(), index: 0, season: 0, title: "Unnumbered".into(), aired: "2016-04-21".into(), dur_ms: 60_000, ..Default::default() },
+    ]);
+    let detail = Detail {
+        sid, rk: "movie".into(), kind: "show".into(), is_show: true, title: "The Office".into(),
+        seasons: vec![
+            Season { rk: "s0".into(), index: 0, title: String::new(), leaf_count: 2, viewed_leaf_count: 0 },
+            Season { rk: "s1".into(), index: 1, title: "Season 1".into(), leaf_count: 1, viewed_leaf_count: 0 },
+        ],
+        cur_season: 0,
+        episodes,
+        ..Default::default()
+    };
+    let mut w = World::detail_page("detail-identity", detail);
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        w.frames(30);
+        seen.extend(w.drawn().words.into_iter().map(|(text, _)| text));
+        w.press(super::Key::Down);
+    }
+    let kind = plx_platform::i18n::msg::browse_kind_episode().to_uppercase();
+    let has = |text: &str| seen.iter().any(|seen| seen == text);
+    assert!(has("Specials"), "the untitled season 0's tab reads its identity: {seen:?}");
+    assert!(!has("Season 0"), "never Season 0: {seen:?}");
+    assert!(has("Season 1"), "a titled season keeps its title: {seen:?}");
+    assert!(has("EPISODE 1"), "a numbered episode keeps EPISODE N: {seen:?}");
+    assert!(has(&kind), "the unnumbered episode's card says {kind:?}: {seen:?}");
+    assert!(!has("EPISODE 0"), "never EPISODE 0: {seen:?}");
+}

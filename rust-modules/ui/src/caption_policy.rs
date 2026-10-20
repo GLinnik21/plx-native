@@ -281,13 +281,7 @@ fn identity_line(f: &CaptionFacts, cx: &LocaleContext) -> Option<String> {
             // The art prints "SEASON 3": the line names the show, or nothing (never the number twice).
             return f.show.clone().filter(|show| !show.is_empty());
         }
-        return Some(if !own.is_empty() {
-            own.clone()
-        } else if *number > 0 {
-            msg::browse_detail_season_number_in(cx, i64::from(*number))
-        } else {
-            msg::browse_detail_specials_in(cx).to_string()
-        });
+        return Some(crate::fmt::season_identity_in(cx, i64::from(*number), own));
     }
     if let Some(line) = episode_line(f, cx) {
         return Some(line);
