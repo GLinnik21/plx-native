@@ -119,7 +119,9 @@ fn shelf_offset(col: usize, n: usize) -> f32 {
     scroll_into_view(0.0, col, n, s.w, s.gap, plx_ui::consts::SCR_W - 2.0 * s.margin_x)
 }
 
-/// Warm Home shelf 0 at its deepest card (at most column 11), go up to the hero, and dive back.
+/// Warm Home shelf 0 at its deepest card (at most column 11), go up to the hero, and dive back. The
+/// shelf holds that offset through all of it and the dive does not scale it, so the cards move by the
+/// page's vertical travel alone; the offset is there for the grader to hold the shelf spring still.
 fn dive_plan(cards: usize) -> Result<Vec<Stage>, Unfit> {
     let col = DIVE_COL.min(cards.saturating_sub(1));
     if cards == 0 || shelf_offset(col, cards) < DIVE_MIN_OFFSET_PX {
