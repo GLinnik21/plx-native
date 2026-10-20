@@ -176,7 +176,9 @@ pub struct LibraryScreen {
     /// library is a switch (`HeaderSwap::begin_switch`), for the same one the page's own row
     /// changing (`HeaderSwap::begin`). A projection, not canon.
     header_of: Option<(Option<plx_plex::plex::ServerId>, i64)>,
-    /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
+    /// What the Collections control knows (`LibraryScreen::refresh_header` reads
+    /// `LibraryLike::collections_count` for the library on view each `sync`): the same library's
+    /// last count is held across a read of nothing, another library's never is.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
     /// sorts for the collections listing). A projection of `header`, read by `toolbar_elems`.

@@ -239,8 +239,9 @@ fn the_header_cluster_leaves_the_names_room_in_every_shipped_language() {
 /// names pack into (design review, judgment 2: a four-digit reserve is too much room taken from
 /// the names). A count that needs more digits widens ONLY its own library's widest case. The
 /// reserve is the cluster's BUDGET, not air in the row (`every_gap_of_the_right_cluster_...`): a
-/// library whose count is not known yet still reserves it (its control will land), one known to
-/// have none does not, so the names do not repack when the answer arrives. (Rewritten from
+/// library whose count is not known yet still reserves it (its control will land), and so does one
+/// known to have none (a cold cache reads Unknown for a round trip and then Hidden, and the names
+/// must not repack between the two: `the_names_do_not_repack_when_the_answer_arrives`). (Rewritten from
 /// `the_collections_count_slot_reserves_three_digits_...`, which also pinned the reserve as the
 /// width the LIVE item was placed for.)
 #[test]
@@ -259,13 +260,92 @@ fn the_collections_widest_case_reserves_three_digits_and_a_longer_count_widens_o
         (CollectionsControl::Unknown, false, true),
         (CollectionsControl::Count(7), true, true),
         (CollectionsControl::Count(999), true, true),
-        (CollectionsControl::Hidden, false, false),
+        (CollectionsControl::Hidden, false, true),
     ] {
         page.collections = count;
         assert_eq!(slots(&page), (on_row.then(|| three.clone()).flatten(), in_budget.then(|| three.clone()).flatten()), "{count:?}");
     }
     page.collections = CollectionsControl::Count(1_284);
     assert_eq!(slots(&page), (Some("1,284".into()), Some("1,284".into())), "four digits widen this library's widest case");
+}
+
+/// **The names are packed against a budget that does not depend on the Collections answer**: a
+/// library on a cold cache reads Unknown for one round trip and then Hidden (none, or a 403) or a
+/// count, and the names, the "+N" and the room they were packed into stay exactly as they were
+/// (the flash the owner reported, one level down: the control was never drawn, yet the names
+/// repacked under the reader). Pinned on the budget itself, which any width of the names could
+/// hide, and on the packing with a directory long enough to fold.
+#[test]
+fn the_names_do_not_repack_when_the_answer_arrives() {
+    let _guard = plx_base::testlock::serial();
+    let packed = |answers: &[(u32, Result<u32, crate::registry::Forbidden>)]| {
+        knows_collections(answers);
+        let (_, page, _) = grid_page(12);
+        let row = page.header.row().unwrap();
+        (row.layout.left_budget, page.libraries.clone(), page.folded.clone())
+    };
+    let unknown = packed(&[]);
+    assert!(unknown.1.iter().any(|(elem, _)| *elem == MORE), "premise: twelve libraries fold into +N");
+    for (what, answers) in [
+        ("none", vec![(1, Ok(0))]),
+        ("a refusal", vec![(1, Err(crate::registry::Forbidden))]),
+        ("a count", vec![(1, Ok(7))]),
+        ("a three-digit count", vec![(1, Ok(999))]),
+    ] {
+        let after = packed(&answers);
+        assert_eq!(after.0, unknown.0, "{what}: the room the names are packed into moved");
+        assert_eq!(after.1, unknown.1, "{what}: the names that fit changed");
+        assert_eq!(after.2, unknown.2, "{what}: the +N list changed");
+    }
+    // The same page, the answer landing under it: the names it holds do not change.
+    knows_collections(&[]);
+    let (fixture, mut page, engine) = grid_page(12);
+    let (shown, folded) = (page.libraries.clone(), page.folded.clone());
+    land_collections(1, Ok(0));
+    page.sync(&fixture.cx(&engine));
+    assert_eq!((&page.libraries, &page.folded), (&shown, &folded), "a library with none repacked its names");
+    land_collections(1, Ok(7));
+    page.sync(&fixture.cx(&engine));
+    assert_eq!((&page.libraries, &page.folded), (&shown, &folded), "a library with a count repacked its names");
+    knows_collections(&[]);
+}
+
+/// **A count the page knew for THIS library does not leave the row because the probe read nothing
+/// again** (a server slot re-pointed at a new client: the cache misses for a round trip). The
+/// control and its focus stop stay, and focus on it does not jump to the leftmost library name
+/// (`reconcile` seats a key nothing places on the row's first stop). The answer that follows
+/// replaces it, 0 or a refusal included. Another library never inherits it
+/// (`a_switch_never_draws_the_count_of_the_library_it_left_as_the_new_ones`).
+#[test]
+fn a_known_count_stays_on_the_row_while_the_same_library_reads_unknown() {
+    let _guard = plx_base::testlock::serial();
+    knows_collections(&[(1, Ok(4))]);
+    let (fixture, mut page, mut engine) = grid_page(2);
+    assert_eq!(page.collections, CollectionsControl::Count(4), "premise: the count is known");
+    let key = page.key(COLLECTIONS);
+    engine.set(OWNER, key, Some(LIBRARY_GROUP), By::Dir);
+    let mut ms = 0;
+    for _ in 0..10 { ms += 16; fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 })); }
+    assert_eq!(at(&engine), COLLECTIONS, "premise: focus is on the control");
+    // The cache misses: the same library reads nothing for a while.
+    knows_collections(&[]);
+    for _ in 0..30 {
+        ms += 16;
+        fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        assert_eq!(page.collections, CollectionsControl::Count(4), "the known count left the row");
+        assert!(page.toolbar_elems().contains(&COLLECTIONS), "its focus stop left the row");
+        let seen = <LibraryScreen as Focusable<TestHost>>::reconcile(&page, page.key(COLLECTIONS), &fixture.cx(&engine));
+        assert_eq!(seen.elem, COLLECTIONS, "focus on the control is seated elsewhere");
+        let built = page.header.row().unwrap().page.spec().right.iter()
+            .find(|item| item.label == plx_platform::i18n::msg::library_header_collections()).map(|item| item.value.clone());
+        assert_eq!(built, Some(Some("4".to_string())), "the built row dropped the control");
+    }
+    // The answer that follows is the truth, whatever it says.
+    land_collections(1, Ok(0));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: ms + 16, dt_us: 16_667 }));
+    assert_eq!(page.collections, CollectionsControl::Hidden);
+    assert!(!page.toolbar_elems().contains(&COLLECTIONS));
+    knows_collections(&[]);
 }
 
 /// The "+N" stays on the row wherever focus sits: only the right cluster is fixed-width, and the

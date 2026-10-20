@@ -754,6 +754,36 @@ fn a_switch_cuts_the_control_only_one_row_has_and_dissolves_the_one_both_have() 
     assert!(swap_runs(&row_without_the_slotted_control(), &swap).iter().any(|(text, ..)| text == "Collections"));
 }
 
+/// **A switch ends a fade of the row it leaves, whatever the switch itself carries** (`begin_switch`
+/// while a `begin` is still running): the same library's count changed (4 to 7, fading), and the
+/// press on another library arrives before the clock ran out. The new library's row has no slotted
+/// control, so the switch changes nothing a swap would carry and used to return early with the
+/// running fade still holding the OLD library's face: `leaving()` then drew it, fading out, on the
+/// page of a library that has none. The fade is the left library's and ends with the switch.
+#[test]
+fn a_switch_arriving_during_a_fade_ends_it_and_draws_nothing_of_the_library_left() {
+    let _g = plx_base::testlock::serial();
+    let (before, after) = (row_with(Some("4")), row_with(Some("7")));
+    let other = row_without_the_slotted_control();
+    let mut swap = HeaderSwap::new();
+    swap.begin(&before, &after);
+    for _ in 0..3 { swap.step(1.0 / 60.0); }
+    assert!(swap.is_active(), "premise: the count's fade is running");
+    swap.begin_switch(&after, &other);
+    assert!(!swap.is_active(), "the switch ends the left library's fade");
+    let runs = swap_runs(&other, &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "Collections" && text != "4" && text != "7"),
+        "no frame of the new page draws the control of the library left: {runs:?}");
+    // And the same when the new library has the control with the same count: the fade between two
+    // numbers of the library left is not the new page's to show.
+    let mut swap = HeaderSwap::new();
+    swap.begin(&before, &after);
+    for _ in 0..3 { swap.step(1.0 / 60.0); }
+    swap.begin_switch(&after, &row_with(Some("7")));
+    let runs = swap_runs(&row_with(Some("7")), &swap);
+    assert!(!swap.is_active() && runs.iter().all(|(text, ..)| text != "4"), "the old number is not drawn: {runs:?}");
+}
+
 /// **A label a capsule's shape crosses is painted once per ink region, each in its own ink**: the
 /// part under the white focus capsule in the dark accent ink and the rest in the resting white,
 /// split along the capsule's drawn shape (the regions are `TabStrip::pill_ink`'s, the per-fragment

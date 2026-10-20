@@ -662,7 +662,9 @@ impl HeaderSwap {
     /// drawn on it, not even fading (a Collections control on a library with none, for a few
     /// frames, reads as that library having collections). A control both rows have still
     /// dissolves: its number cross-fades in place, or leaves and arrives at each x when the
-    /// number's width moves its label.
+    /// number's width moves its label. A fade of the row being left that is still running ends
+    /// with the switch, whether or not the switch itself carries a swap: its faces are the left
+    /// library's.
     pub fn begin_switch(&mut self, old: &HeaderRow, new: &HeaderRow) {
         self.begin_with(old, new, Edge::Cut);
     }
@@ -682,7 +684,12 @@ impl HeaderSwap {
                 && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value)),
             Edge::Cut => after.iter().all(|a| before.iter().find(|b| b.item.label == a.item.label).is_none_or(|b| b.item.value == a.item.value)),
         };
-        if same { return; }
+        if same {
+            // A switch is a different page: a Fade of the row it leaves must not outlive it (its
+            // `leaving()` faces are the left library's, not the new page's).
+            if edge == Edge::Cut { self.end(); }
+            return;
+        }
         self.from = before;
         self.running = true;
         self.edge = edge;

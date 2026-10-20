@@ -7,8 +7,8 @@
 //! group are the ui's (`plx_ui::page_header`), the same ones the Collections, Recommended and
 //! Watchlist pages wear. The names are packed against the room the right cluster leaves
 //! (`PageHeader::layout`'s `left_budget`, sized from the cluster's widest case), so the names never
-//! shift when a value changes; the controls inside the cluster stand by what they draw, one gap
-//! apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
+//! shift when a value changes, the Collections answer (unknown, none, a count) included; the
+//! controls inside the cluster stand by what they draw, one gap apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
 //! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
@@ -124,9 +124,10 @@ impl LibraryScreen {
         // count the cluster's BUDGET allows for (THREE digits; a library whose count needs more
         // widens only its own slot, here and in the widest case). It is no air inside the row: the
         // control is placed by the text it draws, so the gap to "Recommended" is the row's one gap
-        // whatever the count is. A library whose answer is still to come reserves the budget (its
-        // control will most likely land), so the names do not repack when it does; one known to
-        // have none reserves nothing.
+        // whatever the count is. The budget reserves it for EVERY answer, a library with none
+        // included: a cold cache reads Unknown for a round trip and then Hidden, and the names
+        // must not repack between the two (the room they pack into is measured once and never
+        // moves).
         let slot_of = |count: u32| Some(locale.number(i64::from(count.max(999))));
         let control = |value, slot| HeaderItem { value, value_slot: slot, ..item(msg::library_header_collections()) };
         match self.collections {
@@ -136,11 +137,10 @@ impl LibraryScreen {
                     ..control(Some(locale.number(i64::from(count))), slot.clone()) });
                 widest.push(control(slot.clone(), slot));
             }
-            CollectionsControl::Unknown => {
+            CollectionsControl::Unknown | CollectionsControl::Hidden => {
                 let slot = slot_of(0);
                 widest.push(control(slot.clone(), slot));
             }
-            CollectionsControl::Hidden => {}
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
             ..item(msg::library_header_recommended()) });
@@ -195,17 +195,26 @@ impl LibraryScreen {
     /// through the row's [`HeaderSwap`] (the probe is warmed for every library when the directory
     /// lands, so it is usually known before the switch is drawn, and the control is then in the
     /// new row's first frame). The control the library left is not drawn on the new one at all,
-    /// not even fading out ([`HeaderSwap::begin_switch`]).
+    /// not even fading out ([`HeaderSwap::begin_switch`]). The one thing carried is this SAME
+    /// library's own last count across a read of nothing (see below), never another's.
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
-        self.collections = self.view_section(cx)
-            .map_or(CollectionsControl::Unknown, |index| CollectionsControl::of(H::collections_count(cx, index)));
+        let view = self.view_section(cx);
+        let of = view.and_then(|index| H::directory(cx).sections().get(index)).map(|section| (section.sid, section.key));
+        let read = view.map_or(CollectionsControl::Unknown, |index| CollectionsControl::of(H::collections_count(cx, index)));
+        // The probe reading nothing AGAIN for the library the row already names (its server was
+        // re-pointed at a new client, so the cache missed for a round trip) is not news: the count
+        // the row has stays, with its focus stop, until an answer replaces it. Across a switch it
+        // never does (`of` is another library's), so a count is only ever one this library gave.
+        self.collections = match (read, self.collections) {
+            (CollectionsControl::Unknown, held @ CollectionsControl::Count(_)) if of == self.header_of => held,
+            (read, _) => read,
+        };
         self.note_unfiltered(cx);
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);
         if self.header.is_current(key) { return; }
         let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
-        let of = self.view_section(cx).and_then(|index| H::directory(cx).sections().get(index)).map(|section| (section.sid, section.key));
         if let Some(old) = self.header.row() {
             // The same library's row changing fades what comes and goes; a row for ANOTHER library
             // is the new page's own, and shows nothing of the one left (see `HeaderSwap::begin_switch`).

@@ -15,7 +15,8 @@ pub(super) const CRUMB_ROOT: u32 = 11;
 /// **"Collections" is on the row only with its count** (the #843 spec: it always shows its count),
 /// so only [`Self::Count`] puts it there. A bare "Collections" would be drawn for a library that has
 /// none, for the frames until its probe answers, and then withdrawn: the flash this enum's two
-/// other states prevent.
+/// other states prevent. The count the row holds is kept while the SAME library's probe reads
+/// nothing again (`LibraryScreen::refresh_header`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum CollectionsControl {
     /// Not probed yet (or the probe learned nothing): the control is NOT on the row, though its
@@ -24,7 +25,9 @@ pub(super) enum CollectionsControl {
     #[default]
     Unknown,
     Count(u32),
-    /// The probe found none, or the server refused it (HTTP 403): the control is not on the row.
+    /// The probe found none, or the server refused it (HTTP 403): the control is not on the row,
+    /// though its room in the cluster's budget is kept, as for [`Self::Unknown`], so the names do
+    /// not repack when one of the two turns into the other.
     Hidden,
 }
 
