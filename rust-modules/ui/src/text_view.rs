@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_int;
-use std::ptr::addr_of_mut;
 use std::rc::Rc;
 
 // Wrapping is pixel-measured (text_width per word), which is far too slow to redo every frame for
@@ -38,7 +37,11 @@ struct Wrapped {
     widths: Vec<f32>,
     truncated: bool,
 }
-static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
+// A `thread_local!`: the memo holds `Rc`s, which are `!Send` by design, and only the render thread
+// wraps text.
+thread_local! {
+    static WRAP_CACHE: std::cell::RefCell<HashMap<u64, Rc<Wrapped>>> = std::cell::RefCell::new(HashMap::new());
+}
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static FORBID_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -54,15 +57,18 @@ impl Drop for ForbidLive {
 }
 
 fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
-    let cache = unsafe { (*addr_of_mut!(WRAP_CACHE)).get_or_insert_with(HashMap::new) };
-    if let Some(v) = cache.get(&key) {
-        return Rc::clone(v);
+    if let Some(v) = WRAP_CACHE.with(|cache| cache.borrow().get(&key).map(Rc::clone)) {
+        return v;
     }
-    if cache.len() > 512 {
-        cache.clear(); // crude cap — plenty for a page's worth of blocks across a few items
-    }
+    // No borrow is held while `compute` runs: it may wrap other text through this same memo.
     let v = Rc::new(compute());
-    cache.insert(key, Rc::clone(&v));
+    WRAP_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() > 512 {
+            cache.clear(); // crude cap — plenty for a page's worth of blocks across a few items
+        }
+        cache.insert(key, Rc::clone(&v));
+    });
     v
 }
 

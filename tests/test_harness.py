@@ -6201,7 +6201,7 @@ impl PersonOwnerGateFixture {
         "nav.txt": 0,
         "sibling-migration.txt": 0,
         "statics-migration.txt": 0,
-        "statics.txt": 17,
+        "statics.txt": 2,  # the two data/search/recents.rs persistence-seam statics; every ui/ render cache is a thread_local!
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,

@@ -7150,13 +7150,17 @@ latched_flag!(
 /// Width/material policy only. Source eligibility belongs to the layer walk.
 
 // Pure glyph-metric memo keyed by the full captured vocabulary: generation, label count and every
-// label byte. A PERMANENT entry in `ci/allow/statics.txt`, not an ownership path: every caller
-// supplies Bridge-owned `TabLabels`, and a key mismatch deterministically replaces the memo. Like
-// `text_view.rs`'s `WRAP_CACHE`, it is never read as logical state.
+// label byte. Every caller supplies Bridge-owned `TabLabels`, and a key mismatch deterministically
+// replaces the memo, so it is never read as logical state. A `thread_local!` render cache (the
+// form `ci/check-statics.sh` names, `nav.rs`'s precedent): the render thread is the only one that
+// paints, and a process-wide `static mut` here let two host tests with different vocabularies free
+// each other's `CString`s.
 /// The memo's key is the generation AND the captured faces; `CString`s are kept beside them because
 /// paint hands `TabPill` a raw pointer into them.
 type TabMetrics = (u32, Vec<TabFace>, Vec<std::ffi::CString>, Vec<f32>);
-static mut TAB_CACHE: Option<TabMetrics> = None;
+thread_local! {
+    static TAB_CACHE: std::cell::RefCell<Option<TabMetrics>> = const { std::cell::RefCell::new(None) };
+}
 
 /// What one pill of the shared strip shows: a captured word, or a mark. The strip never reads the
 /// application's vocabulary to decide which pill is the mark — the application says so per pill.
@@ -7234,30 +7238,33 @@ fn tab_cache_matches(cache: &TabMetrics, data: TabLabels<'_>) -> bool {
 /// differently.
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
-/// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
-/// `*const c_char`. Scoping it here makes that impossible to write by accident — so do NOT call
-/// this again from inside `f`.
+/// rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
+/// `*const c_char`. Scoping it here makes that impossible to write by accident. The rebuild takes
+/// the cell's exclusive borrow and releases it BEFORE `f` runs (which holds a shared one), so a
+/// nested call with the same key is harmless and a nested call with another key panics on the
+/// `RefCell` instead of freeing memory a caller still points into; no caller nests either way.
 fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CString], &[f32]) -> R) -> R {
-    use std::ptr::addr_of_mut;
-    let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
-    if cache.as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
-        // measure bold (the widest state) so pill widths don't change with focus; pill =
-        // label + the season tabs' ±18 padding
-        //
-        // The `Measure`-threaded twin is `tab_widths`, used while `ChromeSnapshot` publishes input
-        // geometry. Paint receives the same captured labels but no `Measure` capability, so these
-        // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
-        // identical glyph widths on both paths.
-        use plx_machine::machine::Measure as _;
-        let measure = LegacyMeasure;
-        // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
-        // stays the pill count, which is what the draw and the hit test both walk.
-        let (words, widths) = tab_metrics_from(data.faces,
-            |l| measure.width(l, theme::size::BODY, true));
-        *cache = Some((data.generation, data.faces.to_vec(), words, widths));
-    }
-    let (_, faces, words, widths) = cache.as_ref().unwrap();
-    f(faces, words, widths)
+    TAB_CACHE.with(|cell| {
+        if cell.borrow().as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
+            // measure bold (the widest state) so pill widths don't change with focus; pill =
+            // label + the season tabs' ±18 padding
+            //
+            // The `Measure`-threaded twin is `tab_widths`, used while `ChromeSnapshot` publishes input
+            // geometry. Paint receives the same captured labels but no `Measure` capability, so these
+            // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
+            // identical glyph widths on both paths.
+            use plx_machine::machine::Measure as _;
+            let measure = LegacyMeasure;
+            // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
+            // stays the pill count, which is what the draw and the hit test both walk.
+            let (words, widths) = tab_metrics_from(data.faces,
+                |l| measure.width(l, theme::size::BODY, true));
+            *cell.borrow_mut() = Some((data.generation, data.faces.to_vec(), words, widths));
+        }
+        let cache = cell.borrow();
+        let (_, faces, words, widths) = cache.as_ref().unwrap();
+        f(faces, words, widths)
+    })
 }
 
 /// Content width of the whole pill strip: the pills plus the air between them.

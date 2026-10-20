@@ -26,8 +26,8 @@
 //! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
 use crate::{Painter, Rect};
+use std::cell::RefCell;
 use std::os::raw::c_uint;
-use std::ptr::addr_of_mut;
 
 // `Debug` so a host test can name the glyph it expected: `widgets`' play-indicator table grades
 // an Option<Icon> per cell and an assertion that cannot print the two sides is one nobody reads.
@@ -344,12 +344,18 @@ fn src(id: Icon) -> &'static str {
 
 // (icon, px) → GL texture. The UI is fixed 1080p so only a handful of (icon,size) pairs ever
 // appear; a flat Vec is plenty. Rasterize+upload once, then reuse.
+//
+// A `thread_local!`, because the texture names it holds belong to the GL context of the thread that
+// uploaded them: the render thread, the only one that draws. (The entries have no destructor, so
+// nothing runs GL at thread exit; the textures live for the process, as `CACHE` never evicts.)
 struct Entry {
     id: Icon,
     px: i32,
     tex: c_uint,
 }
-static mut CACHE: Vec<Entry> = Vec::new();
+thread_local! {
+    static CACHE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+}
 
 // Antialias the way text does — rasterise the vector at the *exact* draw size and keep nanosvg's own
 // coverage-AA edge (SS = 1: no supersample). The old path rasterised SS× larger and let GL minify it
@@ -381,32 +387,33 @@ pub fn icon_raster_px(px: i32) -> i32 {
 }
 
 fn tex_for(id: Icon, px: i32) -> c_uint {
-    unsafe {
-        let cache = &mut *addr_of_mut!(CACHE);
-        // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
-        // land on the same `icon_raster_px` result rasterize identically, so they share one
-        // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
-        // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
-        // the raw `px`, a caller sweeping through distinct oversized values still minted one
-        // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
-        let raster_px = icon_raster_px(px);
-        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == raster_px) {
-            return e.tex;
-        }
-        // `render_scale` is the simulator's supersampling (1 on a television): the mask is
-        // rasterised at physical size and still drawn into the same logical rect.
-        let target = raster_px * plx_base::surface::render_scale();
-        let hi = target * SS;
-        let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
-            Some(rgba) => {
-                let small = downsample_alpha(&rgba, hi, SS);
-                upload(target, &small)
-            }
-            None => 0,
-        };
-        cache.push(Entry { id, px: raster_px, tex });
-        tex
+    // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
+    // land on the same `icon_raster_px` result rasterize identically, so they share one
+    // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
+    // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
+    // the raw `px`, a caller sweeping through distinct oversized values still minted one
+    // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
+    let raster_px = icon_raster_px(px);
+    // The cell is borrowed only for the lookup and, below, for the push: the rasteriser and the
+    // upload run with no borrow held, so nothing they call can meet one.
+    if let Some(tex) = CACHE.with(|cache| {
+        cache.borrow().iter().find(|e| e.id == id && e.px == raster_px).map(|e| e.tex)
+    }) {
+        return tex;
     }
+    // `render_scale` is the simulator's supersampling (1 on a television): the mask is
+    // rasterised at physical size and still drawn into the same logical rect.
+    let target = raster_px * plx_base::surface::render_scale();
+    let hi = target * SS;
+    let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
+        Some(rgba) => {
+            let small = downsample_alpha(&rgba, hi, SS);
+            upload(target, &small)
+        }
+        None => 0,
+    };
+    CACHE.with(|cache| cache.borrow_mut().push(Entry { id, px: raster_px, tex }));
+    tex
 }
 
 /// Upload a rasterized mask, or — in a HOST TEST — do not.
