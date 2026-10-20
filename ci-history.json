@@ -1,4 +1,4 @@
-{"updated":"2026-10-20T18:40:23Z",
+{"updated":"2026-10-20T18:41:59Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3180,7 +3180,8 @@
 {"id":39465704461,"at":"2026-10-20T17:23:48Z","sha":"a06719da3","title":"Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image","pr":872,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":141,"Linux simulator build + launch":265,"Windows launcher syntax":17,"macOS simulator build + launch":201}},
 {"id":39467407092,"at":"2026-10-20T17:35:25Z","sha":"3061a6d89","title":"Merge remote-tracking branch 'origin/main' into fix/600-early-audio","pr":874,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":267,"Windows launcher syntax":18}},
 {"id":39467684386,"at":"2026-10-20T17:37:22Z","sha":"9e46b7c01","title":"Merge remote-tracking branch 'origin/main' into crx-lib-header","pr":875,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":272,"macOS tests against bundled FFmpeg and ASS":92,"macOS simulator build + launch":160,"Windows launcher syntax":21}},
-{"id":39469649861,"at":"2026-10-20T17:51:08Z","sha":"5d74e0ff1","title":"Library header: one gap between the controls, and Collections only with a known count","pr":875,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"Windows launcher syntax":19,"Linux simulator build + launch":311,"macOS simulator build + launch":178}}
+{"id":39469649861,"at":"2026-10-20T17:51:08Z","sha":"5d74e0ff1","title":"Library header: one gap between the controls, and Collections only with a known count","pr":875,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"Windows launcher syntax":19,"Linux simulator build + launch":311,"macOS simulator build + launch":178}},
+{"id":39475662716,"at":"2026-10-20T18:32:39Z","sha":"f37208c17","title":"Hold hint: the adopters' tests say once per install","pr":876,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":227,"macOS tests against bundled FFmpeg and ASS":164,"Windows launcher syntax":20,"macOS simulator build + launch":194}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
