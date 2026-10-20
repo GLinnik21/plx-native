@@ -244,7 +244,7 @@ pub trait StackPage<H: Host> {
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
     /// The Under posters policy shelf or grid section `k` opens its focused caption band by (0 / 80 /
-    /// 112 px, `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 92 px): a
+    /// 112 px, `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 114 px): a
     /// section whose tiles are not posters (a landscape still row, a headshot row) keeps it. The
     /// stack hands it to the section every frame, so a setting changed elsewhere reaches a standing page.
     fn caption_policy(&self, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {

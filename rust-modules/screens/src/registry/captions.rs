@@ -74,11 +74,12 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
 }
 
 /// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
-/// posters policy, in its own legacy band (92 px, [`plx_ui::cards::LEGACY_BAND_H`]), under every
-/// setting: the episode's own title (its address when it has none, or when it only repeats the
-/// show's name) over one fact, the time it has left on the Continue Watching deck (`is_continue`),
-/// else its release date. The Library's Episodes listing and the Recommended page's landscape rows
-/// read this ONE builder; a line the row has nothing for is absent, never drawn empty.
+/// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
+/// block and its air), under every setting: the episode's own title (its address when it has none,
+/// or when it only repeats the show's name) over one fact, the time it has left on the Continue
+/// Watching deck (`is_continue`), else its release date. The Library's Episodes listing and the
+/// Recommended page's landscape rows read this ONE builder; a line the row has nothing for is
+/// absent, never drawn empty.
 pub fn still_label(item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let name = if item.title.is_empty() || item.title == item.show_title {
         plx_ui::fmt::episode_address(i64::from(item.season_index), i64::from(item.ep_index))

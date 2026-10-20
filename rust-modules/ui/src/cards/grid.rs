@@ -178,7 +178,7 @@ pub struct Grid {
     /// The animated landing of inserted and removed cards (`landing.rs`); off unless the spec asks.
     landing: Landing,
     /// What the focused caption band shows (the Library's Under posters setting); `None` keeps the
-    /// legacy 92 px band every grid without the setting opens to.
+    /// legacy 114 px band every grid without the setting opens to.
     caption_policy: Option<crate::caption_policy::CaptionPolicy>,
     /// The page is still dissolving in ([`dormant`](Grid::dormant)): no card is lifted yet.
     dormant: bool,

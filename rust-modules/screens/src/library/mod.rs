@@ -443,8 +443,8 @@ impl LibraryScreen {
     /// The caption policy the grid reserves its band for: the Under posters setting for every
     /// listing of POSTERS (the Collections page included), and `None`, the legacy band, for the
     /// Episodes listing, whose landscape stills are not on the policy like every other landscape
-    /// surface (`registry::captions::still_label` words their block, 92 px, which the policy's 80 /
-    /// 40 px gap would run under the next row).
+    /// surface (`registry::captions::still_label` words their 92 px block in the 114 px legacy band,
+    /// which the policy's 80 / 40 px gap would run under the next row).
     fn grid_policy(&self) -> Option<plx_ui::caption_policy::CaptionPolicy> {
         (self.listed != plx_data::browse::LibraryType::Episodes).then(parts::caption_policy)
     }
