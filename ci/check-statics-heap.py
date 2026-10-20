@@ -11,19 +11,25 @@ cache, which `ci/check-statics.sh` already names for `ui/` and `screens/`; this 
 refusal to every crate, so the next `static mut ELIDE_CACHE: Option<HashMap<..>>` fails the gate
 instead of a stranger's test run.
 
-What counts as heap. The declared type, with every named type it mentions followed into its own
-definition anywhere in the tree (`struct`/`enum`/`union`/`type`, resolved by simple name, all
-same-named definitions unioned, so the answer is conservative), mentions one of `HEAP`. That is
-what makes `Option<KeyMemo>` (a struct holding nested `HashMap`s) and `GroundProbe<N>` (a struct
-holding `Option<Vec<u8>>`) visible where a regex over the declaration line sees nothing. Plain
-`Copy` data stays out: GL object names and uniform locations (`c_uint`/`c_int`), function
-pointers, `[c_int; 4]`, raw FFI handles (`*mut c_void`, `[*mut TtfFont; N]`), flags, counters.
-A type name the script can neither find nor recognise as std plain data is reported as heap (an
-unresolvable type is not evidence of absence), with the reason in the third column.
+What counts as heap. The declared type, with every name it mentions followed into its own
+definition anywhere in the tree (`struct`/`enum`/`union`/`type`, resolved by simple name whatever
+its spelling and whether or not a std type shares it, all same-named definitions unioned, so the
+answer is conservative), mentions one of `HEAP`. That is what makes `Option<KeyMemo>` (a struct
+holding nested `HashMap`s) and `GroundProbe<N>` (a struct holding `Option<Vec<u8>>`) visible where
+a regex over the declaration line sees nothing. Plain `Copy` data stays out: GL object names and
+uniform locations (`c_uint`/`c_int`), function pointers (the signature of a `fn(..) -> ..` is not
+read: a pointer owns nothing), `[c_int; 4]`, raw FFI handles (`*mut c_void`, `[*mut TtfFont; N]`),
+flags, counters. A pointer or reference to a heap type IS reported, so a human decides who frees
+it. A CamelCase name the script can neither find in the tree nor recognise as std plain data is
+reported as heap (an unresolvable type is not evidence of absence), with the reason in the third
+column; so is a static declared by a `macro_rules!` (`static mut $name`), whose type is not yet
+text.
 
 Scope. Every `.rs` file under a `rust-modules/<crate>` directory, tests included, never a
 `rust-modules/target*` build tree. Comments and string literals are blanked first
-(`module_graph.blank`), the same lexer the layering gates read Rust with.
+(`module_graph.blank`), the same lexer the layering gates read Rust with. A `static mut` is found
+wherever it is written (after an attribute on the same line, on a one-line fn body, with its name
+on the next line); `&'static mut T` is a reference type, not a declaration.
 
 Usage: `ci/check-statics-heap.py [REPO_ROOT]` (default: the checkout this file lives in).
 """
@@ -40,17 +46,18 @@ HEAP = frozenset("""
     String CString OsString PathBuf Box Rc Arc Weak Cow
 """.split())
 
-# CamelCase names that are plain data or zero-sized wrappers, so naming one decides nothing.
-# (The `c_*` FFI scalars and the primitives are lower-case and never looked at.)
+# CamelCase names that are plain data or zero-sized wrappers, so naming one decides nothing UNLESS
+# the tree defines a type of that name (`screens`' own `struct Cell` holds a `String`), which wins.
+# (The `c_*` FFI scalars and the primitives are lower-case and never unresolved.)
 PLAIN = frozenset("""
     Option Result Self Cell UnsafeCell MaybeUninit PhantomData NonNull Duration Instant
     AtomicBool AtomicI8 AtomicI16 AtomicI32 AtomicI64 AtomicIsize AtomicU8 AtomicU16 AtomicU32
     AtomicU64 AtomicUsize AtomicPtr Ordering
 """.split())
 
-DECL = re.compile(
-    r'^[ \t]*(?:pub(?:\([^)\n]*\))?[ \t]+)?static[ \t]+mut[ \t]+([A-Za-z_][A-Za-z_0-9]*)[ \t]*:',
-    re.M)
+# `(?<!')` keeps `&'static mut T` (a reference type, dozens in the tree) out; `\$` admits the name of
+# a static a `macro_rules!` declares.
+DECL = re.compile(r"(?<!')\bstatic\s+mut\s+(?:r#)?(\$?[A-Za-z_][A-Za-z_0-9]*)\s*:")
 DEF = re.compile(r'\b(?:struct|enum|union|type)[ \t\n]+([A-Za-z_][A-Za-z_0-9]*)')
 IDENT = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
 
@@ -83,39 +90,71 @@ def declared_type(text, at):
 
 
 def definition_body(text, at):
-    """The text of an item from just after its name: through the balanced `{..}` of a braced item,
-    through `(..)` and the closing `;` of a tuple struct, to the `;` of an alias or unit struct."""
-    i, n = at, len(text)
-    while i < n and text[i] not in '{(;':
-        i += 1
-    if i >= n:
-        return text[at:]
-    if text[i] == ';':
-        return text[at:i]
-    depth = 0
+    """The text of an item from just after its name, to the end of its braced body or the first `;`
+    outside any bracket (a tuple struct's `(..);`, an alias's `= ..;`, a unit struct's `;`)."""
+    depth, i, n = 0, at, len(text)
     while i < n:
-        if text[i] in '{([':
+        c = text[i]
+        if c == '-' and text[i + 1:i + 2] == '>':
+            i += 2
+            continue
+        if c in '<([{':
             depth += 1
-        elif text[i] in '})]':
+        elif c == '}':
             depth -= 1
-            if depth == 0:
+            if depth <= 0:
                 i += 1
                 break
+        elif c in '>)]':
+            depth = max(depth - 1, 0)
+        elif c == ';' and depth <= 0:
+            break
         i += 1
-    if text[at:i].rstrip().endswith(')') or text[i:i + 1] == ';':
-        j = text.find(';', i)
-        if j >= 0 and not text[i:j].strip():
-            i = j
     return text[at:i]
 
 
-def type_names(fragment):
-    """The type-looking names in a Rust type fragment: CamelCase identifiers. Lower-case words are
-    primitives, `c_*` scalars or path segments; SCREAMING_CASE words are const-generic arguments
-    and array lengths; a single capital is a generic parameter. None of those is a type to look up."""
-    for word in IDENT.findall(fragment):
-        if word[0].isupper() and any(ch.islower() for ch in word):
-            yield word
+FN_PTR = re.compile(r'\bfn\s*\(')
+
+
+def drop_fn_types(fragment):
+    """`fragment` without any `fn(..) -> ..` pointer type: a pointer owns nothing, so neither its
+    parameters nor its return type say what the static holds."""
+    out, i = [], 0
+    while True:
+        m = FN_PTR.search(fragment, i)
+        if not m:
+            out.append(fragment[i:])
+            return ''.join(out)
+        out.append(fragment[i:m.start()])
+        j, depth = m.end(), 1
+        while j < len(fragment) and depth:
+            depth += (fragment[j] == '(') - (fragment[j] == ')')
+            j += 1
+        rest = fragment[j:].lstrip()
+        if rest.startswith('->'):
+            j = len(fragment) - len(rest) + 2
+            depth = 0
+            while j < len(fragment):
+                c = fragment[j]
+                if c == '-' and fragment[j + 1:j + 2] == '>':
+                    j += 2
+                    continue
+                if c in '<([':
+                    depth += 1
+                elif c in '>)]':
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0 and c in ',;=':
+                    break
+                j += 1
+        i = j
+
+
+def looks_like_a_type(word):
+    """A CamelCase word. Lower-case words are primitives, `c_*` scalars or path segments; SCREAMING
+    words are consts and const-generic arguments; a single capital is a generic parameter."""
+    return word[0].isupper() and any(ch.islower() for ch in word)
 
 
 def scan(root):
@@ -132,18 +171,19 @@ def scan(root):
 
 
 def owner(type_text, defs):
-    """(owns_heap, why): follow every named type in `type_text` through `defs`."""
+    """(owns_heap, why): follow every name in `type_text` through `defs`."""
     seen, todo = set(), [type_text]
     while todo:
-        for name in type_names(todo.pop()):
+        for name in IDENT.findall(drop_fn_types(todo.pop())):
             if name in HEAP:
                 return True, f'owns `{name}`'
-            if name in seen or name in PLAIN:
+            if name in seen:
                 continue
             seen.add(name)
-            if name not in defs:
+            if name in defs:
+                todo.extend(defs[name])
+            elif name not in PLAIN and looks_like_a_type(name):
                 return True, f'names `{name}`, which is defined nowhere in the tree'
-            todo.extend(defs[name])
     return False, ''
 
 
@@ -151,7 +191,10 @@ def heap_statics(root):
     decls, defs = scan(root)
     found = {}
     for rel, name, type_text in decls:
-        heap, why = owner(type_text, defs)
+        if name.startswith('$'):
+            heap, why = True, 'is declared through a macro, so its type is not read'
+        else:
+            heap, why = owner(type_text, defs)
         if heap:
             found[(rel, name)] = (' '.join(type_text.split()), why)
     return found

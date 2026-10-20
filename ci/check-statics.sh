@@ -75,7 +75,8 @@ matches() {
 
 echo "== check-statics =="
 all=$(matches)   # once: under pipefail a piped grep -q fails on the early close
-heap=$(python3 -I "$(dirname "$0")/check-statics-heap.py")   # path<TAB>NAME<TAB>type — why
+# path<TAB>NAME<TAB>type — why. A crashed detector must be red, not an empty list the loop below calls ok.
+heap=$(python3 -I ci/check-statics-heap.py) || fail "ci/check-statics-heap.py failed — the heap rule below read nothing"
 heap_keys=$(cut -f1,2 <<<"$heap")
 perm=ci/allow/statics.txt
 migr=ci/allow/statics-migration.txt

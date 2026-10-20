@@ -293,36 +293,28 @@ fn a_stale_pill_index_clamps_instead_of_panicking() {
 #[test]
 fn every_thread_reads_its_own_tab_labels_back_from_the_memo() {
     use plx_machine::machine::Measure as _;
-    const THREADS: usize = 4;
     const ROUNDS: usize = 3000;
-    let gate = std::sync::Barrier::new(THREADS);
-    std::thread::scope(|scope| {
-        for t in 0..THREADS {
-            let gate = &gate;
-            scope.spawn(move || {
-                // Two vocabularies per thread, different from every other thread's in length,
-                // wording and generation, so no two threads ever agree on the memo's key.
-                let vocab = |k: usize| -> Vec<TabFace> {
-                    let mut faces: Vec<TabFace> = (0..2 + t + k)
-                        .map(|i| TabFace::Label(format!("thread {t} vocab {k} word {i}")))
-                        .collect();
-                    faces.push(TabFace::Icon(crate::icons::Icon::Search));
-                    faces
-                };
-                let vocabs = [vocab(0), vocab(1)];
-                let expect: Vec<(Vec<std::ffi::CString>, Vec<f32>)> = vocabs.iter()
-                    .map(|faces| tab_metrics_from(faces, |l| LegacyMeasure.width(l, theme::size::BODY, true)))
-                    .collect();
-                gate.wait();
-                for round in 0..ROUNDS {
-                    let k = round % 2;
-                    let labels = TabLabels { generation: (t * 2 + k) as u32 + 1, faces: &vocabs[k] };
-                    with_tab_metrics_for(labels, |faces, words, widths| {
-                        assert_eq!(faces, vocabs[k].as_slice(), "thread {t} round {round}: another thread's faces");
-                        assert_eq!(words, expect[k].0.as_slice(), "thread {t} round {round}: another thread's words");
-                        assert_eq!(widths, expect[k].1.as_slice(), "thread {t} round {round}: another thread's widths");
-                    });
-                }
+    plx_base::testrace::race(4, |t| {
+        // Two vocabularies per thread, different from every other thread's in length,
+        // wording and generation, so no two threads ever agree on the memo's key.
+        let vocab = |k: usize| -> Vec<TabFace> {
+            let mut faces: Vec<TabFace> = (0..2 + t + k)
+                .map(|i| TabFace::Label(format!("thread {t} vocab {k} word {i}")))
+                .collect();
+            faces.push(TabFace::Icon(crate::icons::Icon::Search));
+            faces
+        };
+        let vocabs = [vocab(0), vocab(1)];
+        let expect: Vec<(Vec<std::ffi::CString>, Vec<f32>)> = vocabs.iter()
+            .map(|faces| tab_metrics_from(faces, |l| LegacyMeasure.width(l, theme::size::BODY, true)))
+            .collect();
+        for round in 0..ROUNDS {
+            let k = round % 2;
+            let labels = TabLabels { generation: (t * 2 + k) as u32 + 1, faces: &vocabs[k] };
+            with_tab_metrics_for(labels, |faces, words, widths| {
+                assert_eq!(faces, vocabs[k].as_slice(), "round {round}: another thread's faces");
+                assert_eq!(words, expect[k].0.as_slice(), "round {round}: another thread's words");
+                assert_eq!(widths, expect[k].1.as_slice(), "round {round}: another thread's widths");
             });
         }
     });

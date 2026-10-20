@@ -332,7 +332,7 @@ pub(crate) fn adopt() {
 /// began. Returning owned data (rather than lending a static) keeps the caller free to hold it
 /// across a frame.
 pub(crate) fn drain() -> Vec<String> {
-    PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()))
+    PENDING.take()
 }
 
 /// How many commits are waiting for [`drain`]. Diagnostic only — the screen drains rather than
@@ -786,31 +786,23 @@ mod tests {
     /// pushes and trims and `start`/`drain` clear, so one process-wide queue lets two threads free
     /// each other's `String`s: the shape that aborted `plx_ui`'s tests in libmalloc (2026-10-20).
     /// `cargo test` runs tests on parallel threads, so each thread must see only the commits it
-    /// queued itself. Both threads overflow the bound, which trims (frees) the oldest commit on
+    /// queued itself. Every thread overflows the bound, which trims (frees) the oldest commit on
     /// every push.
     #[test]
     fn every_thread_drains_only_the_commits_it_queued() {
-        const THREADS: usize = 4;
-        let start = std::sync::Barrier::new(THREADS);
-        std::thread::scope(|scope| {
-            for t in 0..THREADS {
-                let start = &start;
-                scope.spawn(move || {
-                    start.wait();
-                    for round in 0..40 {
-                        for i in 0..MAX_PENDING + 20 {
-                            on_event(&ev_with(TEXT_OFF, format!("t{t}r{round}i{i}").as_bytes()));
-                        }
-                        let got = drain();
-                        assert_eq!(got.len(), MAX_PENDING, "thread {t} round {round}");
-                        let own = format!("t{t}r{round}i");
-                        assert!(
-                            got.iter().all(|s| s.starts_with(&own)),
-                            "thread {t} drained a commit another thread queued"
-                        );
-                        assert!(drain().is_empty());
-                    }
-                });
+        plx_base::testrace::race(4, |t| {
+            for round in 0..40 {
+                for i in 0..MAX_PENDING + 20 {
+                    on_event(&ev_with(TEXT_OFF, format!("t{t}r{round}i{i}").as_bytes()));
+                }
+                let got = drain();
+                assert_eq!(got.len(), MAX_PENDING, "round {round}");
+                let own = format!("t{t}r{round}i");
+                assert!(
+                    got.iter().all(|s| s.starts_with(&own)),
+                    "round {round}: drained a commit another thread queued"
+                );
+                assert!(drain().is_empty());
             }
         });
     }

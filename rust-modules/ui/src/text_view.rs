@@ -40,7 +40,7 @@ struct Wrapped {
 // A `thread_local!`: the memo holds `Rc`s, which are `!Send` by design, and only the render thread
 // wraps text.
 thread_local! {
-    static WRAP_CACHE: std::cell::RefCell<HashMap<u64, Rc<Wrapped>>> = std::cell::RefCell::new(HashMap::new());
+    static WRAP_CACHE: std::cell::RefCell<HashMap<u64, Rc<Wrapped>>> = std::cell::RefCell::default();
 }
 
 #[cfg(any(test, feature = "test-support"))]

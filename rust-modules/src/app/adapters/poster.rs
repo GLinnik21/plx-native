@@ -582,7 +582,7 @@ thread_local! {
 /// would break in a way nothing in this module would explain. Reset it explicitly instead.
 #[cfg(test)]
 fn reset_key_memo() {
-    KEY_MEMO.with(|memo| *memo.borrow_mut() = KeyMemo::default());
+    KEY_MEMO.set(KeyMemo::default());
 }
 
 /// Does a poster that is RESIDENT for `sid` before `change` still answer a draw after it? Seeds
@@ -2159,39 +2159,21 @@ mod tests {
     /// bucket is cleared (freed) on the next insert, so one process-wide memo lets two threads free
     /// each other's keys: the class that aborted `plx_ui`'s tests in libmalloc (2026-10-20). Six
     /// threads build keys for disjoint paths in ONE request box, far past `MEMO_CAP`, so every
-    /// thread clears its bucket again and again; each key must come back carrying its own path. The
-    /// workers are detached and waited for with a deadline, because a corrupted table can spin.
+    /// thread clears its bucket again and again; each key must come back carrying its own path.
     #[test]
     fn every_thread_builds_its_keys_through_its_own_memo() {
-        const THREADS: usize = 6;
         const ROUNDS: usize = 3 * MEMO_CAP;
         let (_fresh, sid, _tok) = one_server();
-        let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
-        let (done, finished) = std::sync::mpsc::channel();
-        for t in 0..THREADS {
-            let (start, done) = (std::sync::Arc::clone(&start), done.clone());
-            std::thread::spawn(move || {
-                start.wait();
-                let outcome = std::panic::catch_unwind(|| {
-                    for i in 0..ROUNDS {
-                        let path = format!("/library/metadata/{t}{i}/thumb/1");
-                        let want = path.replace('/', "%2F");
-                        let first = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
-                        assert!(first.contains(&want), "thread {t} round {i}: {first}");
-                        let again = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
-                        assert_eq!(first.to_string(), again.to_string(), "thread {t} round {i}: a hit differs");
-                    }
-                });
-                let _ = done.send((t, outcome.is_ok()));
-            });
-        }
-        drop(done);
-        for _ in 0..THREADS {
-            let (t, ok) = finished
-                .recv_timeout(std::time::Duration::from_secs(60))
-                .expect("a worker never finished: the key memo is shared between threads and corrupted");
-            assert!(ok, "thread {t} was served another thread's key");
-        }
+        plx_base::testrace::race(6, move |t| {
+            for i in 0..ROUNDS {
+                let path = format!("/library/metadata/{t}{i}/thumb/1");
+                let want = path.replace('/', "%2F");
+                let first = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
+                assert!(first.contains(&want), "round {i}: {first}");
+                let again = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
+                assert_eq!(first, again, "round {i}: a hit differs");
+            }
+        });
     }
 
     /// Build a key through the real [`built_key`] — the same call `lookup` makes for a draw —

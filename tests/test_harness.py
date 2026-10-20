@@ -6183,6 +6183,27 @@ impl PersonOwnerGateFixture {
             for n in ("CACHE", "QUEUE", "MEMO", "PROBE", "ALIASED", "SPLIT", "ARRAY")
         } | {("rust-modules/src/b.rs", "SCRATCH"), ("rust-modules/src/c.rs", "UNKNOWN")})
 
+    def test_heap_static_gate_finds_the_other_spellings_of_the_same_static(self):
+        """Each of these slipped past a first version of the gate: a tree type that reuses a std name
+        (`screens` has its own `struct Cell` holding a `String`), an acronym alias, a declaration
+        that shares its line with an attribute or a fn body, one whose name is on the next line, and
+        one a `macro_rules!` writes."""
+        found = self._heap_statics({
+            "screens/src/a.rs": (
+                "struct Cell { thumb: String }\n"
+                "static mut SHADOW: Option<Cell> = None;\n"
+                "type LRU = Vec<u8>;\n"
+                "static mut ACRONYM: LRU = Vec::new();\n"
+                "#[allow(static_mut_refs)] static mut ATTR: Vec<u8> = Vec::new();\n"
+                "fn f() { static mut LOCAL: Vec<u8> = Vec::new(); }\n"
+                "pub static mut\n    NEXT: Vec<u8> = Vec::new();\n"
+                "macro_rules! cache { ($n:ident) => { static mut $n: u32 = 0; } }\n"),
+        })
+        self.assertEqual(found, {
+            ("rust-modules/screens/src/a.rs", n)
+            for n in ("SHADOW", "ACRONYM", "ATTR", "LOCAL", "NEXT", "$n")
+        })
+
     def test_heap_static_gate_leaves_plain_data_statics_alone(self):
         """GL object names, uniform locations, function pointers, raw FFI handles, flags and
         counters free nothing when written, so they are not the bug class and are not listed."""
@@ -6197,6 +6218,10 @@ impl PersonOwnerGateFixture {
                 "static mut FLAG: bool = false;\n"
                 "static mut STAMP: Option<std::time::Instant> = None;\n"
                 "type FnQuery = unsafe extern \"C\" fn(*mut c_void) -> Vec2;\n"
+                "static mut CALLBACK: Option<fn(&str) -> String> = None;\n"
+                "static mut NAMER: Option<Namer> = None;\n"
+                "type Namer = fn(Vec<u8>, usize) -> String;\n"
+                "fn take(v: &'static mut Vec<u8>) -> &'static mut Vec<u8> { v }\n"
                 "struct Uniforms { rect: c_int, tint: c_int }\n"
                 "pub struct Fence { sync: usize }\n"
                 "// static mut NOTE: Vec<u8> = Vec::new();\n"

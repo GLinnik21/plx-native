@@ -33,3 +33,5 @@ pub mod testlock; // one lock for every test that touches a process-global
 pub mod testnet; // the one accept for a loopback test server whose listener is nonblocking
 #[cfg(any(test, feature = "test-support"))]
 pub mod testscratch; // per-process scratch directories a test binary removes when it exits
+#[cfg(any(test, feature = "test-support"))]
+pub mod testrace; // N threads released by one barrier, joined with a deadline: the shared-state race test

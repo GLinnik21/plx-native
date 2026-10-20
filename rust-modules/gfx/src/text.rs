@@ -923,13 +923,9 @@ static mut FONTS_EMOJI: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT
 /// A `OnceLock` per link and not a `thread_local!`: the cmap is a pure function of a file, so one
 /// load serves every thread (a per-thread table would read the 44k-codepoint cmap once per thread
 /// for nothing), and `get_or_init` runs the load exactly once even when two threads ask for the
-/// same link first, which the old `COV_TRIED` flag plus a plain write did not guarantee.
-static COV: [std::sync::OnceLock<Option<plx_base::fontcov::Coverage>>; 4] = [
-    std::sync::OnceLock::new(),
-    std::sync::OnceLock::new(),
-    std::sync::OnceLock::new(),
-    std::sync::OnceLock::new(),
-];
+/// same link first.
+static COV: [std::sync::OnceLock<Option<plx_base::fontcov::Coverage>>; 4] =
+    [const { std::sync::OnceLock::new() }; 4];
 
 /// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
 /// through it, so the two can never disagree about which file a link is.
@@ -1034,7 +1030,7 @@ struct Runs {
 /// The ASCII shortcut is the reason an English library pays nothing at all for this feature: it
 /// returns before any coverage is loaded, so `appfont-cjk.ttf`'s cmap is never even opened.
 fn split_runs(s: &str) -> Option<Runs> {
-    split_runs_with(s, |link, cp| link_covers(link, cp))
+    split_runs_with(s, link_covers)
 }
 
 /// [`split_runs`] with the coverage oracle passed in — the pure half, so the host suite can drive
@@ -2058,46 +2054,25 @@ pub fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> S
 #[cfg(test)]
 mod elide_memo_tests {
     use super::*;
-    use std::sync::{mpsc, Arc, Barrier};
-    use std::time::Duration;
 
     /// Eight threads elide disjoint strings, far past the memo's 512-entry cap so every thread
     /// clears it again and again while the others insert. With one process-wide memo that is a
     /// data race on a `HashMap` that frees `String`s the other threads are cloning: an abort in
     /// libmalloc, a wrong string, or a corrupted table that spins forever (the unfixed code did
-    /// exactly that, at 320% CPU for 13 minutes). So the workers are detached and the test waits
-    /// for them with a deadline rather than joining; a memo per thread is eight private loops that
-    /// finish in well under a second.
+    /// exactly that, at 320% CPU for 13 minutes, which is why `race` waits with a deadline).
     #[test]
     fn every_thread_elides_through_its_own_memo() {
-        const THREADS: usize = 8;
         const ROUNDS: usize = 4000;
-        let start = Arc::new(Barrier::new(THREADS));
-        let (done, finished) = mpsc::channel();
-        for t in 0..THREADS {
-            let (start, done) = (Arc::clone(&start), done.clone());
-            std::thread::spawn(move || {
-                start.wait();
-                let size = 20 + (t % 3) as c_int;
-                let outcome = std::panic::catch_unwind(|| {
-                    for i in 0..ROUNDS {
-                        let text = format!("thread {t} row {i} a title long enough to be cut short");
-                        let budget = 40.0 + (i % 7) as f32 * 8.0;
-                        let got = elide(&text, budget, size, 0, i % 2 == 0);
-                        let want = elide_compute(&text, budget, size, 0, i % 2 == 0);
-                        assert_eq!(got, want, "thread {t} round {i}");
-                    }
-                });
-                let _ = done.send((t, outcome.is_ok()));
-            });
-        }
-        drop(done);
-        for _ in 0..THREADS {
-            let (t, ok) = finished
-                .recv_timeout(Duration::from_secs(60))
-                .expect("a worker never finished: the elide memo is shared between threads and corrupted");
-            assert!(ok, "thread {t} read another thread's elided string");
-        }
+        plx_base::testrace::race(8, |t| {
+            let size = 20 + (t % 3) as c_int;
+            for i in 0..ROUNDS {
+                let text = format!("thread {t} row {i} a title long enough to be cut short");
+                let budget = 40.0 + (i % 7) as f32 * 8.0;
+                let got = elide(&text, budget, size, 0, i % 2 == 0);
+                let want = elide_compute(&text, budget, size, 0, i % 2 == 0);
+                assert_eq!(got, want, "round {i}: another thread's elided string");
+            }
+        });
     }
 }
 
