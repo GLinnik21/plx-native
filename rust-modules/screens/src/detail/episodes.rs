@@ -222,12 +222,12 @@ impl Cells {
             if i == NONE {
                 continue;
             }
-            let target = if still == Some(i) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 };
-            self.scale[s].step(target, 300.0, dt);
+            let held = still == Some(i);
+            self.scale[s].step(if held { theme::EP_CARD_FOCUS_SCALE } else { 1.0 }, 300.0, dt);
             // A released cell comes to EXACT rest by the shared landing rule, as a shelf's released tile
             // does (`CardRow::update`): `step` alone parks it one ulp above 1.0 for good, so it would never
             // read as at rest ([`widgets::pop_factor`] must be exactly 0.0 there).
-            if still != Some(i) {
+            if !held {
                 self.scale[s].land(1.0, dt);
             }
             self.lift[s].step(text == Some(i), dt);
@@ -400,10 +400,8 @@ fn draw_cell(
     let x = strip_x(i);
     let still_focused = focused == Some((i, Row::Still));
     let pop = widgets::pop_factor(scale, theme::EP_CARD_FOCUS_SCALE);
-    // A cell is drawn at its spring's scale for as long as the spring is off rest. The pop factor is
-    // exactly 0.0 only at rest (a released cell lands there, `Cells::step`), so no threshold of its own
-    // is needed: the old `scale > 1.001` drew the resting rect and treatment from there down, a ~0.6 px
-    // wide / ~2.5 % pop-factor step while the spring was still falling.
+    // A cell is drawn at its spring's scale for as long as the spring is off rest: the pop factor is
+    // exactly 0.0 only at rest (a released cell lands there, `Cells::step`), so no threshold of its own.
     let focused_here = still_focused || pop > 0.0;
     let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
     #[cfg(feature = "devtriggers")]
@@ -723,9 +721,7 @@ mod tests {
     }
 
     /// **The still is drawn at the scale its spring says, at every scale**: a released cell's card
-    /// shrinks continuously into its resting rect. A `scale > 1.001` gate drew it at the unscaled
-    /// rect (with the resting treatment) from there down, a ~0.6 px wide / ~2.5 % pop-factor step
-    /// while the spring was still falling; the pop factor is exactly 0.0 at rest
+    /// shrinks continuously into its resting rect. The pop factor is exactly 0.0 at rest
     /// ([`widgets::pop_factor`]), so no threshold is needed to tell a resting cell from a popped one.
     #[test]
     fn a_released_still_is_drawn_at_its_spring_scale_all_the_way_to_rest() {

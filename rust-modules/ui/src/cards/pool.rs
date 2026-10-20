@@ -14,12 +14,9 @@
 //! cards whose spring is off rest are held (an entry settles out), and a lookup hashes at most
 //! [`MAX_ROW_ITEMS`] elements, only when a held element is no longer where it was.
 //!
-//! A Grid's is the let-gos of its [`GridPop`](crate::poster_grid::GridPop), which keeps ONE for every
-//! card still letting go (a held key presses faster than a let-go lasts, and none is replaced), each
-//! born with the element it was released from. Not a fixed array: a Library has thousands of cards,
-//! so the springs are sparse (only a card off rest holds one, a settled grid none), they are not
-//! indexed by cell, and their number is not capped, since each lands within ~30 frames of its
-//! release. What the thousands of cards still cannot cost is a scan: a tick hashes ONE element per
+//! A Grid's is the let-gos of its [`GridPop`](crate::poster_grid::GridPop): one per card still
+//! letting go, each born with the element it was released from, sparse and uncapped (see there). What
+//! the thousands of cards of a Library still cannot cost is a scan: a tick hashes ONE element per
 //! let-go in flight, and only a let-go whose element is no longer in its cell searches, nearest
 //! cell first and no further than [`SEARCH`] from where it was ([`follow_let_gos`]).
 //!
@@ -48,8 +45,7 @@ pub(crate) enum Drawn {
 }
 
 /// Moving springs a Shelf's [`RowPool`] holds at once: the focused card, the one shrinking, and a
-/// few let-gos of a fast key repeat still on their way to rest (the rest fall back to per-position
-/// until an entry frees: the shelf's cells keep their own springs either way).
+/// few let-gos of a fast key repeat still on their way to rest.
 pub(crate) const CAP: usize = 8;
 
 /// How far from a grid let-go's previous cell its element is looked for: the source of a
@@ -88,7 +84,7 @@ pub(crate) fn find_nearest_within<H: Host, S: CardSource<H>>(src: &S, k: u64, at
     let is = |j: usize| j < n && key(&src.elem(j)) == k;
     (0..n.max(at.saturating_add(1)))
         .take(reach.saturating_add(1))
-        .find_map(|d| [at.checked_sub(d), at.checked_add(d)].into_iter().flatten().find(|&j| is(j)))
+        .find_map(|d| [at.checked_sub(d), at.checked_add(d).filter(|_| d > 0)].into_iter().flatten().find(|&j| is(j)))
 }
 
 /// The element a section had focused at the end of its tick and the cell it stood in: what
@@ -271,7 +267,7 @@ pub(crate) fn follow_let_gos<H: Host, S: CardSource<H>>(
 }
 
 /// How a frame finds the card each of a [`GridPop`](crate::poster_grid::GridPop)'s let-gos belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LetGoCards {
     /// Every let-go's element stands in the cell the last tick left its let-go in, so a card is the
     /// let-go of its cell, if it has one: no card is hashed.
@@ -299,12 +295,9 @@ pub(crate) fn let_go_drawn<H: Host, S: CardSource<H>>(pop: &crate::poster_grid::
     if focused || i >= src.len() {
         return None;
     }
-    let mut cards = pop.let_gos().peekable();
-    // nothing letting go: no card is hashed
-    cards.peek()?;
     let k = key(&src.elem(i));
     let mut held_here = false;
-    for c in cards {
+    for c in pop.let_gos() {
         if c.key == k {
             return (c.cell != i).then_some(Drawn::Cell(c.cell));
         }
