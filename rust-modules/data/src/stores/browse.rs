@@ -394,6 +394,13 @@ impl BrowseStore {
         crate::browse::section_hubs::land_held_rows_for_owner_test(&mut self.state, section);
     }
 
+    /// One row of `section` takes a fresh window of `count` cards through the store's own landing
+    /// (`section_hubs::land_row`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn land_row_for_test(&mut self, section: usize, row: usize, count: usize) -> bool {
+        crate::browse::section_hubs::land_row_for_owner_test(&mut self.state, section, row, count)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_paging_for_test(&mut self, section: usize, total: usize) {
         crate::browse::section_hubs::seed_paging_for_owner_test(&mut self.state, section, total);
@@ -534,8 +541,8 @@ pub enum LibraryWork {
     /// its hub identifier and key. `seen` is the revision of the hub view the ask was computed
     /// from (`HubsView::revision`): a frame captures its views before its landings are delivered,
     /// so the ask can come from a window the store has since replaced, and such an ask is refused
-    /// (the publication it missed rebuilds the shelves and re-arms the row, which asks again from
-    /// the window that stands if the ask is still due).
+    /// (the publication it missed re-arms every row of the page, changed or not, and the row asks
+    /// again on its next tick from the window that stands if the ask is still due).
     HubPage {
         id: String,
         key: String,

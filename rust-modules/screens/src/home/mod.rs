@@ -65,7 +65,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, KEY_PRUNE_BATCH, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
-    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
+    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory, RowDiff, RowSeats,
 };
 
 const HERO_GROUP: GroupId = GroupId(0);
@@ -904,25 +904,20 @@ impl HomeScreen {
             return;
         }
         let mut rows = Vec::with_capacity(view.hub_count());
-        let old_rows = std::mem::take(&mut self.rows);
-        let old_len = old_rows.len();
-        let mut taken: Vec<Option<HubProjection>> = old_rows.into_iter().map(Some).collect();
         // Where a row was, by identity: at the same position first (the ring changes a row's
-        // cards, not its place), and by a map of the rows not yet claimed, built the first time
-        // that misses.
-        let mut by_identity: Option<HashMap<HomeHubIdentity, usize>> = None;
-        // Per new row: the old row it is (kept or projected again), and whether it was kept whole.
-        let mut matched: Vec<Option<usize>> = Vec::with_capacity(view.hub_count());
-        let mut reprojected: Vec<usize> = Vec::new();
+        // cards, not its place), then by the map of the old rows. The matching is the registry's,
+        // shared with the Library's Recommended page.
+        let mut seats: RowSeats<HubProjection, HomeHubIdentity> =
+            RowSeats::new(std::mem::take(&mut self.rows), view.hub_count());
         for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
             let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
             let same_place = hub.identity.is_some()
-                && taken.get(row).and_then(Option::as_ref).is_some_and(|old| old.identity.borrowed() == hub.identity);
+                && seats.at(row).is_some_and(|old| old.identity.borrowed() == hub.identity);
             // A descriptor that is still a descriptor of the same size keeps the slots it has: its
             // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
             // A row of cards keeps them while they are the same cards.
-            if same_place && taken[row].as_ref().is_some_and(|old|
+            if same_place && seats.at(row).is_some_and(|old|
                 !old.stale && old.placeholders == placeholders && old.title == hub.title
                     && if placeholders {
                         old.elems.len() == hub.items.len()
@@ -930,26 +925,18 @@ impl HomeScreen {
                         old.cards.len() == hub.items.len().min(MAX_ITEMS)
                             && old.cards.iter().zip(hub.items).all(|(a, b)| Arc::ptr_eq(a, b))
                     }) {
-                rows.push(taken[row].take().expect("checked above"));
-                matched.push(Some(row));
+                rows.push(seats.keep(row));
                 continue;
             }
             let identity = Self::hub_identity(view, row, hub);
-            let old_index = if same_place {
-                Some(row)
-            } else if hub.identity.is_some() {
-                by_identity.get_or_insert_with(|| taken.iter().enumerate()
-                    .filter_map(|(at, old)| Some((old.as_ref()?.identity.clone(), at))).collect())
-                    .get(&identity).copied().filter(|&at| taken[at].is_some())
-            } else {
-                None
-            };
+            let old_index = seats.locate(row, same_place, hub.identity.is_some().then_some(&identity),
+                |old| old.identity.clone());
             let group = self.group_for(&identity);
             if identity == HomeHubIdentity::ContinueWatching && !placeholders {
-                let old = old_index.and_then(|at| taken[at].as_ref());
+                let old = old_index.and_then(|at| seats.at(at));
                 self.rebind_shows(&identity, hub.items, hub.offset, old);
             }
-            let reused = placeholders.then(|| old_index.and_then(|at| taken[at].as_ref()))
+            let reused = placeholders.then(|| old_index.and_then(|at| seats.at(at)))
                 .flatten().filter(|old| !old.stale && old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
             let elems = match reused {
                 Some(elems) => elems,
@@ -975,8 +962,7 @@ impl HomeScreen {
                         sid, id, key, hub.title, hub.items.first().map_or(0, |item| item.sec)),
                 _ => None,
             };
-            reprojected.push(row);
-            matched.push(old_index);
+            seats.rebuilt(old_index);
             rows.push(HubProjection {
                 identity,
                 group,
@@ -988,12 +974,10 @@ impl HomeScreen {
                 stale: false,
             });
         }
-        // The old rows that were not kept whole, by position, for the element map.
-        let left: Vec<(usize, HubProjection)> = taken.into_iter().enumerate()
-            .filter_map(|(at, old)| Some((at, old?))).collect();
-        // Every row is the old row at its own position: nothing moved, so the shelves stand and
-        // the element map is patched for the rows projected again.
-        let same_rows = old_len == rows.len() && matched.iter().enumerate().all(|(row, from)| *from == Some(row));
+        // `unclaimed` is the old rows that were not kept whole, by position, for the element map.
+        // `same_rows`: every row is the old row at its own position, so nothing moved, the shelves
+        // stand and the element map is patched for the rows projected again.
+        let RowDiff { same_rows, matched, rebuilt: reprojected, unclaimed: left } = seats.finish();
         if !same_rows {
             let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
             self.grid.shelves = Vec::with_capacity(rows.len());

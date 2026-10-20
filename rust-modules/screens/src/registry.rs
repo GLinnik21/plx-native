@@ -28,6 +28,7 @@ pub use crate::family::SettingsPage;
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside
 /// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
 pub use crate::settings::caption_policy_of;
+use std::collections::HashMap;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -693,7 +694,7 @@ impl CardKeys {
     /// rather than a scan of every key per card.
     pub fn intern_all<'a>(&mut self,
         cards: impl Iterator<Item = (plx_plex::plex::ServerId, &'a str)>, page: &str) -> Vec<u32> {
-        let mut known: std::collections::HashMap<(plx_plex::plex::ServerId, String), u32> =
+        let mut known: HashMap<(plx_plex::plex::ServerId, String), u32> =
             self.keys.iter().map(|k| ((k.sid, k.rk.clone()), k.elem)).collect();
         cards.map(|(sid, rk)| {
             if let Some(&elem) = known.get(&(sid, rk.to_string())) { return elem; }
@@ -758,13 +759,17 @@ const KEY_SLACK: usize = 256;
 /// The size a key table may reach before the oldest unlive keys go: twice `live` plus [`KEY_SLACK`].
 pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
 
-/// How many keys may leave the page before a table that drops its volatile keys (Home's placeholder
-/// slots) sweeps them. Closing the gap a key at a time moves every key behind it in the table and
-/// in the indexes that name positions, so a page that changes a few keys per publication paid for
-/// the whole table on each one; the sweep is batched instead, and what waits is a key no card can
-/// name again (a slot's identity carries its publication). The sweep runs in the sync that finds
-/// the batch full, and keeps what that very sync took off the page (a focus on a card that rotated
-/// out recovers to its row), so what waits is the batch plus the departures of one or two syncs.
+/// How many keys may leave the page before a table that drops its keys sweeps them: Home's
+/// placeholder slots, and the Recommended page's item and slot keys (`RecommendedScreen::rebuild`,
+/// off `KeyRegistry::count`). Closing the gap a key at a time moves every key behind it in the
+/// table and in the indexes that name positions, so a page that changes a few keys per publication
+/// paid for the whole table on each one; the sweep is batched instead. What waits on Home is a key
+/// no card can name again (a slot's identity carries its publication); on the Recommended page it
+/// can be a card key that a later publication names again (a hub that returns), which is minted
+/// afresh if the sweep took it first, so the sweep is a bound on the table, not on what can be
+/// reached. The sweep runs in the sync that finds the batch full, and keeps what that very sync took
+/// off the page (a focus on a card that rotated out recovers to its row), so what waits is the batch
+/// plus the departures of one or two syncs.
 pub(crate) const KEY_PRUNE_BATCH: usize = 256;
 
 /// Which keys of a table go first when it stands over its bound.
@@ -2720,6 +2725,83 @@ impl Compaction {
     /// the entry is gone.
     pub(crate) fn follow_in_place(&self, at: &mut usize) -> bool {
         self.follow(*at).map(|now| *at = now).is_some()
+    }
+}
+
+/// The rows a page was built from, claimed one at a time by the rows of the next publication: the
+/// matching half of a catalog sync, which Home and the Library's Recommended page share, so the
+/// cost of a sync follows what CHANGED and not what the catalog holds (a landing on one of 170 rows
+/// builds that row and keeps the other 169).
+///
+/// A row is looked for at the position it stood at first (a ring move or a landing changes a row's
+/// cards, not its place), and by a map of the old rows, built the first time that misses. A row
+/// KEPT whole is taken out of its slot (`Vec<Option<R>>::take`, never `Vec::remove`: closing the
+/// gap moves every row behind it, ~13 MB for 170 rows of a 920-byte `Row`); a row built again
+/// leaves the old one standing for the caller to read from (or [`take`](Self::take) from) and for
+/// [`RowDiff::unclaimed`].
+pub(crate) struct RowSeats<R, K> {
+    old: Vec<Option<R>>,
+    by_identity: Option<HashMap<K, usize>>,
+    /// Per new row: the old position it came from (kept whole or built again).
+    matched: Vec<Option<usize>>,
+    /// The new rows built anew.
+    rebuilt: Vec<usize>,
+}
+
+/// What [`RowSeats::finish`] leaves of a sync's matching.
+pub(crate) struct RowDiff<R> {
+    /// Every new row is the old row at its own position: nothing moved.
+    pub(crate) same_rows: bool,
+    /// Per new row, the old position it came from (kept or built again).
+    pub(crate) matched: Vec<Option<usize>>,
+    /// The new rows built anew, ascending.
+    pub(crate) rebuilt: Vec<usize>,
+    /// The old rows that were neither kept whole nor taken, by their old position, ascending.
+    pub(crate) unclaimed: Vec<(usize, R)>,
+}
+
+impl<R, K: std::hash::Hash + Eq> RowSeats<R, K> {
+    pub(crate) fn new(old: Vec<R>, rows: usize) -> Self {
+        Self { old: old.into_iter().map(Some).collect(), by_identity: None,
+            matched: Vec::with_capacity(rows), rebuilt: Vec::new() }
+    }
+
+    /// The old row at `position`, if it was not kept by an earlier new row.
+    pub(crate) fn at(&self, position: usize) -> Option<&R> { self.old.get(position)?.as_ref() }
+
+    /// The next new row IS the old row at `position`, kept whole.
+    pub(crate) fn keep(&mut self, position: usize) -> R {
+        self.matched.push(Some(position));
+        self.old[position].take().expect("a kept row was standing")
+    }
+
+    /// Where the old row for the new row at `position` stands: there, when it is the same row
+    /// (`same_place`), else the old row `key` names that was not kept (`None` for a row with no
+    /// identity, which is matched by position alone). `key_of` names an old row, for the map.
+    pub(crate) fn locate(&mut self, position: usize, same_place: bool, key: Option<&K>, key_of: impl Fn(&R) -> K) -> Option<usize> {
+        if same_place { return Some(position); }
+        let key = key?;
+        let old = &self.old;
+        self.by_identity
+            .get_or_insert_with(|| old.iter().enumerate().filter_map(|(at, row)| Some((key_of(row.as_ref()?), at))).collect())
+            .get(key).copied().filter(|&at| old[at].is_some())
+    }
+
+    /// Take the old row at `at` out of its slot, for a new row that moves what it owns out of it
+    /// (the Recommended page's card section). A row taken is no longer [`RowDiff::unclaimed`].
+    pub(crate) fn take(&mut self, at: usize) -> Option<R> { self.old.get_mut(at)?.take() }
+
+    /// The next new row is built anew, from the old row at `from` when it has one.
+    pub(crate) fn rebuilt(&mut self, from: Option<usize>) {
+        self.rebuilt.push(self.matched.len());
+        self.matched.push(from);
+    }
+
+    /// The sync is over: every new row was matched, kept or built again.
+    pub(crate) fn finish(self) -> RowDiff<R> {
+        let same_rows = self.old.len() == self.matched.len() && self.matched.iter().enumerate().all(|(row, from)| *from == Some(row));
+        let unclaimed = self.old.into_iter().enumerate().filter_map(|(at, old)| Some((at, old?))).collect();
+        RowDiff { same_rows, matched: self.matched, rebuilt: self.rebuilt, unclaimed }
     }
 }
 

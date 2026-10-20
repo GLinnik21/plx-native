@@ -24,6 +24,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+use plx_data::browse::section_hubs::Shelf as HubShelf;
 use plx_data::browse::SecKind;
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -48,8 +49,9 @@ use plx_ui::{on_axis, Env, Rect, Spring, View};
 use super::identity::{KeyRegion, KeyRegistry};
 use super::row_group;
 use crate::registry::{
-    tile_facts, AppFx, AppMsg, ContentArg, ContentReq, LibraryCmd, LibraryIdentity, LibraryLike,
-    LibraryMemory, LibraryReq, LibrarySectionIdentity, LibraryViewport, PageMemory,
+    key_cap, tile_facts, AppFx, AppMsg, ContentArg, ContentReq, LibraryCmd, LibraryIdentity, LibraryLike,
+    LibraryMemory, LibraryReq, LibrarySectionIdentity, LibraryViewport, PageMemory, RowSeats,
+    KEY_PRUNE_BATCH,
 };
 
 /// Where the page's title stands: the same top the library's header row has.
@@ -84,10 +86,68 @@ pub(super) struct Row {
     pub(super) elems: Vec<u32>,
     pub(super) landscape: bool,
     pub(super) cards: ui_cards::Shelf,
+    /// What the row's keys were registered from, to tell a publication that changed the row from
+    /// one that did not ([`Basis`]). Derived; not canon.
+    basis: Basis,
 }
 
 impl Row {
     fn heading_elem(&self) -> Option<u32> { self.heading.map(|(_, elem)| elem) }
+
+    /// Is this the row `shelf` publishes: the same hub, drawn the same way?
+    fn is(&self, shelf: &HubShelf) -> bool { self.id == shelf.id && self.landscape == shelf.landscape }
+}
+
+/// **What a row's keys were registered from**, kept so a publication can be told from the last by
+/// what the row holds, not by how many rows the page has. A row's keys are a function of its hub's
+/// id, its length (`Shelf::slots`: the window, or the placeholders of a row the store gave up), the
+/// identity of each card, whether it has a linked heading, and, for a placeholder, the query of the
+/// listing it was minted under. A row whose basis is the publication's is the row the publication
+/// would build, so it is kept as it stands: no key is registered, no identity cloned or hashed.
+///
+/// Compared whole, not by the store's `Shelf::epoch`: the epoch moves when a page LANDS, but a row
+/// given up to placeholders (`settle_from`) keeps it, and a fresh parse of a list carries epoch 0
+/// for a row nobody had walked, so neither tells a changed row from a kept one. What does is the
+/// row itself, and only the rows the store holds cards for (the hold band, 16 at most) have cards
+/// to compare.
+#[derive(Clone, Debug, Default)]
+struct Basis {
+    landscape: bool,
+    linked: bool,
+    slots: usize,
+    /// Any col keyed as a placeholder: the keys then carry `query`.
+    slot_form: bool,
+    query: u32,
+    /// The window's cards, each as the identity its key was minted from (an empty `rk` is a
+    /// placeholder). Empty for a row the store gave its cards up to.
+    items: Vec<(plx_plex::plex::ServerId, String)>,
+}
+
+impl Basis {
+    fn of(shelf: &HubShelf, query: u32) -> Self {
+        Self {
+            landscape: shelf.landscape, linked: shelf.link.is_some(), slots: shelf.slots(),
+            slot_form: shelf.items.is_empty() || shelf.items.iter().any(|item| item.rk.is_empty()),
+            query,
+            items: shelf.items.iter().map(|item| (item.sid, item.rk.clone())).collect(),
+        }
+    }
+
+    fn matches(&self, shelf: &HubShelf, query: u32) -> bool {
+        self.landscape == shelf.landscape && self.linked == shelf.link.is_some() && self.slots == shelf.slots()
+            && (!self.slot_form || self.query == query)
+            && self.items.len() == shelf.items.len()
+            && self.items.iter().zip(&shelf.items).all(|((sid, rk), item)| item.sid == *sid && item.rk == *rk)
+    }
+}
+
+/// Does every hub of this publication appear once? A hub twice shares its keys between its rows
+/// (the store does not dedupe `(hubIdentifier, key)`), and a build that keeps one of them and
+/// registers the other would leave the shared group remembering the wrong row: that publication is
+/// built whole.
+fn ids_distinct(shelves: &[HubShelf]) -> bool {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(shelves.len());
+    shelves.iter().all(|shelf| seen.insert(shelf.id.as_str()))
 }
 
 /// What the page is showing.
@@ -137,6 +197,9 @@ pub struct RecommendedScreen {
     header_row: plx_ui::page_header::SharedRow<HeaderRow>,
     /// The standing "Hold OK for options" hint over a card. Paint-only.
     hold_hint: plx_ui::hold_hint::HoldHint,
+    /// The page was remounted over a memory (`restore`): its keys are the memory's, so no row can
+    /// be taken to hold keys the registry has. The next build registers every row again.
+    rows_stale: bool,
     /// The held range sent to the store and the section it was for: the command goes out only when
     /// the rows in view outgrow the band last sent (`ui_cards::HoldBand`), or the section changes.
     /// Derived from what is on screen; not canon.
@@ -276,7 +339,7 @@ impl RecommendedScreen {
             header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(),
             header_row: plx_ui::page_header::SharedRow::new(),
             hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
-            hold_sent: None,
+            hold_sent: None, rows_stale: false,
             #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
         }
     }
@@ -303,6 +366,7 @@ impl RecommendedScreen {
         self.scroll.jump(memory.scroll);
         self.scroll_target = memory.scroll;
         self.initial = false;
+        self.rows_stale = true;
     }
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
@@ -347,7 +411,7 @@ impl RecommendedScreen {
         if let Some(current) = directory.current() { self.kind = directory.sections()[current].kind; }
         let hubs = H::section_hubs(cx);
         let publication = hubs.id().zip(hubs.revision());
-        if self.shelf_publication != publication {
+        if self.shelf_publication != publication || self.rows_stale {
             self.rebuild(cx, identity.as_ref(), epoch);
             self.shelf_publication = publication;
         }
@@ -358,51 +422,110 @@ impl RecommendedScreen {
 
     /// Build the rows from the store's publication: keys, groups, linked headings and card
     /// sections, keeping the card section (scroll, pop, ledgers) of a row that survives.
+    ///
+    /// **The cost follows the change, not the page.** The store publishes once per landing, which on
+    /// a long page walked quickly is one per key press, and a row whose [`Basis`] is the
+    /// publication's is kept as it stands (the matching is the registry's [`RowSeats`], Home's
+    /// too): a landing on one of 170 rows registers that row's slots and no other's. A row that
+    /// moved (a hub inserted above it) is kept and only seated again, its group and heading, whose
+    /// keys remember the row's index. The keys a changed row gave up are not swept one publication
+    /// at a time (closing the gap of a key moves every key behind it, in the table and in both
+    /// indexes) but when the region stands a batch over its bound.
     fn rebuild<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, identity: Option<&LibrarySectionIdentity>, epoch: Option<u32>) {
-        let hubs = H::section_hubs(cx);
-        let mut old = std::mem::take(&mut self.shelves);
-        let previous: HashSet<u32> = old.iter().flat_map(|row| row.elems.iter().copied()).collect();
+        let shelves = H::section_hubs(cx).shelves();
+        let query = self.query.unwrap_or(0);
+        let incremental = !std::mem::take(&mut self.rows_stale) && ids_distinct(shelves);
+        let before = self.cards_held();
+        let mut seats: RowSeats<Row, (String, bool)> = RowSeats::new(std::mem::take(&mut self.shelves), shelves.len());
+        // What changed rows gave up: the previous publication's keys that this one may not hold.
+        let mut departed: Vec<u32> = Vec::new();
+        let mut rows: Vec<Row> = Vec::with_capacity(shelves.len());
         if let Some(section) = identity {
-            for (index, shelf) in hubs.shelves().iter().enumerate() {
-                let group = GroupId(self.keys.register(
-                    LibraryIdentity::Control { section: section.clone(), kind: "shelf-group".into(), key: shelf.id.clone() },
-                    GroupId(0), index));
-                // A row the store gave its cards up to is its card count in placeholder slots, so it
-                // keeps its length, its scroll and its focusability.
-                let elems = (0..shelf.slots()).map(|col| {
-                    let identity = match shelf.items.get(col).filter(|item| !item.rk.is_empty()) {
-                        Some(item) => LibraryIdentity::Shelf { section: section.clone(), hub: shelf.id.clone(), sid: item.sid, rk: item.rk.clone() },
-                        None => LibraryIdentity::ShelfSlot { section: section.clone(), hub: shelf.id.clone(), publication: self.query.unwrap_or(0), slot: col as u32 },
-                    };
-                    self.keys.register(identity, group, col)
-                }).collect();
-                let mut cards = old.iter().position(|row| row.id == shelf.id && row.landscape == shelf.landscape)
-                    .map(|i| old.remove(i).cards).unwrap_or_else(|| {
-                        let mut cards = hub_cards(self.entry, shelf.landscape);
-                        let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && view.section == *section)
-                            .and_then(|view| view.shelves.iter().find(|(id, _)| *id == shelf.id));
-                        if let Some((_, x)) = saved { cards.restore_scroll(*x, shelf.slots()); }
-                        cards
-                    });
-                let heading = shelf.link.as_ref().map(|_| {
-                    let control = |kind: &str| LibraryIdentity::Control {
-                        section: section.clone(), kind: kind.into(), key: shelf.id.clone() };
-                    let heading_group = GroupId(self.keys.register(control("shelf-heading-group"), GroupId(0), index));
-                    let elem = self.keys.register(control("shelf-heading"), heading_group, 0);
-                    (heading_group, elem)
-                });
-                // A page that landed (or a refresh) answers the ask the row's latch was holding.
-                cards.reset_page_requests();
-                self.shelves.push(Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, cards });
+            for (index, shelf) in shelves.iter().enumerate() {
+                let same_place = seats.at(index).is_some_and(|old| old.is(shelf));
+                let looked = (!same_place).then(|| (shelf.id.clone(), shelf.landscape));
+                let from = seats.locate(index, same_place, looked.as_ref(), |old| (old.id.clone(), old.landscape));
+                if let Some(at) = from.filter(|&at| incremental && seats.at(at).is_some_and(|old| old.basis.matches(shelf, query))) {
+                    let mut row = seats.keep(at);
+                    if at != index { self.reseat_row(&mut row, section, shelf, index); }
+                    rows.push(row);
+                    continue;
+                }
+                seats.rebuilt(from);
+                let cards = from.and_then(|at| seats.take(at)).map(|old| { departed.extend(old.elems); old.cards });
+                rows.push(self.build_row(section, shelf, index, epoch, query, cards));
             }
         }
+        for (_, old) in seats.finish().unclaimed { departed.extend(old.elems); }
+        self.shelves = rows;
+        // A publication answers an ask a row's latch may be holding, kept row or built: the store
+        // refuses an ask computed from a window the publication replaced, and nothing else would
+        // send it again before the ladder's next rung. A row's own landing is seen by its card
+        // section (`observe_landing`); for a kept row this landing is another row's.
+        for row in &mut self.shelves { row.cards.reset_page_requests(); }
         // Rotating refetches mint a key per new item: keep the current rows, the previous
         // publication's (a focus on one recovers through it) and the focus; above twice that
-        // plus 256 the oldest others go.
-        let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
-        let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        let cap = crate::registry::key_cap(current.len() + previous.len());
-        self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
+        // plus 256, and a batch more, the oldest others go.
+        let live = self.cards_held();
+        let cap = key_cap(live + before);
+        if self.keys.count(KeyRegion::Shelf) > cap + KEY_PRUNE_BATCH {
+            let mut keep: HashSet<u32> = HashSet::with_capacity(live + departed.len() + 1);
+            keep.extend(self.shelves.iter().flat_map(|row| row.elems.iter().copied()));
+            keep.extend(departed);
+            keep.extend(cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem));
+            self.keys.prune(KeyRegion::Shelf, cap, |elem| keep.contains(&elem));
+        }
+    }
+
+    /// How many card keys the rows hold between them.
+    fn cards_held(&self) -> usize { self.shelves.iter().map(|row| row.elems.len()).sum() }
+
+    /// The row for `shelf` at `index`: its group, its keys and its linked heading registered, over
+    /// the card section of the row it was (`cards`) or a new one at the scroll the page last left it.
+    fn build_row(&mut self, section: &LibrarySectionIdentity, shelf: &HubShelf, index: usize, epoch: Option<u32>,
+        query: u32, cards: Option<ui_cards::Shelf>) -> Row {
+        let group = self.seat_group(section, shelf, index);
+        // A row the store gave its cards up to is its card count in placeholder slots, so it
+        // keeps its length, its scroll and its focusability.
+        let elems = (0..shelf.slots()).map(|col| {
+            let identity = match shelf.items.get(col).filter(|item| !item.rk.is_empty()) {
+                Some(item) => LibraryIdentity::Shelf { section: section.clone(), hub: shelf.id.clone(), sid: item.sid, rk: item.rk.clone() },
+                None => LibraryIdentity::ShelfSlot { section: section.clone(), hub: shelf.id.clone(), publication: query, slot: col as u32 },
+            };
+            self.keys.register(identity, group, col)
+        }).collect();
+        let cards = cards.unwrap_or_else(|| {
+            let mut cards = hub_cards(self.entry, shelf.landscape);
+            let saved = self.viewports.iter().find(|view| Some(view.epoch) == epoch && view.section == *section)
+                .and_then(|view| view.shelves.iter().find(|(id, _)| *id == shelf.id));
+            if let Some((_, x)) = saved { cards.restore_scroll(*x, shelf.slots()); }
+            cards
+        });
+        let heading = self.seat_heading(section, shelf, index);
+        Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, cards, basis: Basis::of(shelf, query) }
+    }
+
+    /// A kept row that stands at another index now: its group and heading keys remember the index
+    /// (`KeyRegistry::last_place`), and nothing else about it moved.
+    fn reseat_row(&mut self, row: &mut Row, section: &LibrarySectionIdentity, shelf: &HubShelf, index: usize) {
+        row.group = self.seat_group(section, shelf, index);
+        row.heading = self.seat_heading(section, shelf, index);
+    }
+
+    fn seat_group(&mut self, section: &LibrarySectionIdentity, shelf: &HubShelf, index: usize) -> GroupId {
+        GroupId(self.keys.register(
+            LibraryIdentity::Control { section: section.clone(), kind: "shelf-group".into(), key: shelf.id.clone() },
+            GroupId(0), index))
+    }
+
+    fn seat_heading(&mut self, section: &LibrarySectionIdentity, shelf: &HubShelf, index: usize) -> Option<(GroupId, u32)> {
+        shelf.link.as_ref().map(|_| {
+            let control = |kind: &str| LibraryIdentity::Control {
+                section: section.clone(), kind: kind.into(), key: shelf.id.clone() };
+            let group = GroupId(self.keys.register(control("shelf-heading-group"), GroupId(0), index));
+            let elem = self.keys.register(control("shelf-heading"), group, 0);
+            (group, elem)
+        })
     }
 
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
@@ -1152,7 +1275,8 @@ impl LogicalState for RecommendedScreen {
         for viewport in &self.viewports { viewport.write(c); }
         c.seq(self.shelves.len());
         for row in &self.shelves {
-            let Row { id, group, heading, elems, landscape, cards } = row;
+            // `basis` is what the keys were registered from: derived from the publication, not canon.
+            let Row { id, group, heading, elems, landscape, cards, basis: _ } = row;
             c.str(id).u32(group.0);
             c.option(*heading, |c, (group, elem)| { c.u32(group.0).u32(elem); });
             c.bool(*landscape).seq(elems.len());
@@ -1249,3 +1373,6 @@ mod shelf_action_tests;
 #[cfg(test)]
 #[path = "shelf_paging_tests.rs"]
 mod shelf_paging_tests;
+#[cfg(test)]
+#[path = "recommended_sync_tests.rs"]
+mod recommended_sync_tests;

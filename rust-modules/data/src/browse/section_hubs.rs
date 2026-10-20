@@ -342,8 +342,9 @@ impl SecHubs {
     /// The page asks to move row `id`'s window; refused when the row cannot move that way.
     fn want_page(&mut self, seen: u64, id: &str, key: &str, before: bool) -> bool {
         // The asker read a window that a landing has since replaced: where its focus stood in the
-        // old one says nothing about the new one. The landing's publication rebuilds the shelves,
-        // which re-arms the row to ask again from the window that stands.
+        // old one says nothing about the new one. The landing's publication reaches the page, which
+        // re-arms every row it holds (the rows the publication changed and the ones it left as they
+        // stood), so a row whose edge is still wanted asks again from the window that stands.
         if seen != self.revision { return false; }
         let Some(shelf) = self.committed.iter().find(|shelf| shelf.is(id, key)) else { return false };
         if !plx_plex::plex::is_pageable_hub_key(key) || shelf.released()
@@ -1059,6 +1060,25 @@ pub fn land_held_rows_for_owner_test(state: &mut super::BrowseState, sec: usize)
         shelf.shown = 0;
     }
     st.hubs.revised();
+}
+
+/// A read of row `row` of section `sec` lands through [`SecHubs::land_row`], the real landing: the
+/// row's window becomes `count` cards with ratingKeys no earlier window had (`{id}-e{epoch}-{i}`),
+/// its epoch moves, and the revision with it. What a page the reader walked to, or a held row read
+/// again, does to ONE row of a long page. False when the row cannot take it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_row_for_owner_test(state: &mut super::BrowseState, sec: usize, row: usize, count: usize) -> bool {
+    let Some(st) = state.state_mut(sec) else { return false };
+    let Some(current) = st.hubs.committed.get(row) else { return false };
+    let ask = RowAsk { id: current.id.clone(), key: current.key.clone(), before: false, reload: current.released() };
+    let epoch = current.epoch;
+    let next = Shelf {
+        id: current.id.clone(), key: current.key.clone(), title: current.title.clone(), landscape: current.landscape,
+        items: (0..count).map(|index| PmsMovie { rk: format!("{}-e{epoch}-{index}", current.id), ..Default::default() }).collect(),
+        positions: (0..count).collect(), end: count, total: count,
+        ..Default::default()
+    };
+    st.hubs.land_row(&ask, Some(next))
 }
 
 /// Make a seeded section's pageable rows the first window of a listing of `total` cards, as a hub

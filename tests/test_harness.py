@@ -7013,7 +7013,9 @@ class FpsMock(unittest.TestCase):
         self.assertTrue(deep["mock"]["only"])
         self.assertEqual((deep["mock"]["section_hubs"], deep["mock"]["section_hubs_linked"]), (170, 40))
         self.assertEqual(deep["walk"]["landed"], "library")
-        self.assertEqual(deep["walk"]["extra_rows"], 6)
+        # the Recommended page seats its first shelf on arrival and has no toolbar to cross
+        self.assertEqual(deep["walk"]["extra_rows"], 0)
+        self.assertEqual(deep["walk"]["fingerprint_region"], "shelf")
         for t in ("plxnative-library", "plxnative-framedrop", "plxnative-focus"):
             self.assertIn(t, deep["triggers"])
         self.assertNotIn("plxnative-libosc", deep["triggers"])  # the walk is the stimulus
@@ -7021,6 +7023,52 @@ class FpsMock(unittest.TestCase):
         # room for every shelf at its worst: all of them, a second stop per linked one, the extras
         self.assertGreaterEqual(deep["walk"]["max_rows"], 170 + 40 + deep["walk"]["extra_rows"])
         self.assertEqual((deep["loop_floor"], deep["fps_floor"]), (50, 30))
+
+    # Words a page's `probe_viewport` prints that are not somewhere a walk goes: no focus at all
+    # (`none`), focus on something the page does not classify (`library`) and the retry button of a
+    # listing that failed (`status`). A scene that waits for one of them waits for the page to be
+    # broken or empty, so the check below does not count them as regions a scene may name.
+    _NOT_A_WALK_TARGET = frozenset({"none", "library", "status"})
+
+    @classmethod
+    def _regions_printed_by(cls, *path):
+        """The `region=` words a walk can reach on the page at `path`: the string literals of its
+        `probe_viewport`, the one function the focus fingerprint's `region=` comes from, less the
+        words that are not somewhere a walk goes (`_NOT_A_WALK_TARGET`)."""
+        with open(os.path.join(REPO_ROOT, *path), encoding="utf-8") as fh:
+            body = re.search(r"pub fn probe_viewport\b.*?\n    \}\n", fh.read(), re.S)
+        return set(re.findall(r'"([a-z]+)"', body.group(0))) - cls._NOT_A_WALK_TARGET if body else set()
+
+    def test_a_scene_grades_a_fingerprint_region_its_page_actually_prints(self):
+        """A scene's `walk.fingerprint_region` / `walk.reach.region` is a promise that the page prints
+        that `focus route=... region=...` word. #843 gave `library-shelves-deep` the Recommended
+        page (`plxnative-libtype: recommended`) and left it waiting for the Library page's
+        `region=grid`, which that page never printed (its probe line was empty), so the scene
+        failed on every run and nothing said why. Both pages answer one fingerprint grammar, so the
+        words each can print are read from the page's own `probe_viewport`."""
+        library = self._regions_printed_by("rust-modules", "screens", "src", "library", "mod.rs")
+        recommended = self._regions_printed_by("rust-modules", "screens", "src", "library", "recommended.rs")
+        self.assertIn("grid", library)
+        self.assertIn("shelf", recommended)
+        self.assertNotIn("grid", recommended, "the Recommended page mounts no grid")
+        self.assertNotIn("shelf", library, "the Library page mounts no shelves")
+        checked = 0
+        for name, scene in sorted(self.scenes.items()):
+            walk = scene.get("walk") or {}
+            wanted = {w for w in (walk.get("fingerprint_region"), (walk.get("reach") or {}).get("region")) if w}
+            if not wanted:
+                continue
+            with self.subTest(scene=name):
+                self.assertEqual(scene["route"], "library",
+                                 "teach this test which page prints the regions of the scene's route")
+                recommended_page = scene.get("triggers", {}).get("plxnative-libtype") == "recommended"
+                printed = recommended if recommended_page else library
+                for word in wanted:
+                    self.assertIn(word, printed,
+                                  f"{name} waits for `region={word}`, which its "
+                                  f"{'Recommended' if recommended_page else 'Library'} page never prints")
+                checked += 1
+        self.assertGreaterEqual(checked, 7, "the scenes that declare a region were not found")
 
     # --- the expected key count --------------------------------------------------------
     def test_walk_downs_for_home_is_one_per_landed_row(self):
@@ -7031,10 +7079,10 @@ class FpsMock(unittest.TestCase):
         deep = self.scenes["library-shelves-deep"]
         # a 12-shelf landing (CW + Recently Added + 10 padding hubs): 10 * 40 // 168 = 2 linked
         self.assertEqual(self.mf.linked_landed(deep, 12), 2)
-        self.assertEqual(self.mf.walk_downs(deep, 12), 12 + 2 + 6)
-        # a fully landed 170 carries every linked shelf: 170 + 40 + 6
+        self.assertEqual(self.mf.walk_downs(deep, 12), 12 + 2)
+        # a fully landed 170 carries every linked shelf: 170 + 40
         self.assertEqual(self.mf.linked_landed(deep, 170), 40)
-        self.assertEqual(self.mf.walk_downs(deep, 170), 170 + 40 + 6)
+        self.assertEqual(self.mf.walk_downs(deep, 170), 170 + 40)
         self.assertEqual(self.mf.linked_landed(deep, 500), 40)
         self.assertEqual(self.mf.linked_landed(deep, 1), 0)
         plain = {"walk": {"landed": "library", "extra_rows": 2}, "mock": {"section_hubs": 50}}
@@ -7220,8 +7268,8 @@ class FpsMock(unittest.TestCase):
     def _shelf_fp(row):
         return f"focus route=library pill=-1 card=1 menu=0 region=shelf row={row} col=0 viewport_x=0.000"
 
-    # a walk that reached the deepest shelf ON SCREEN (row 169 of 170), then crossed into the grid
-    DEEP_TAIL = [_shelf_fp.__func__(3), _shelf_fp.__func__(169), GRID_FP]
+    # a walk that reached the deepest shelf ON SCREEN (row 169 of 170): the Recommended page has no grid
+    DEEP_TAIL = [_shelf_fp.__func__(3), _shelf_fp.__func__(169)]
 
     def _library_walk(self, tail, sent=None, landed=170):
         deep = self.scenes["library-shelves-deep"]
@@ -7260,30 +7308,29 @@ class FpsMock(unittest.TestCase):
         self.assertIn("170 shelf(s) landed", detail)
 
     def test_grade_walk_prelude_needs_the_deep_shelf_on_screen(self):
-        # the store published 170 and the grid was reached, but the screen only built 12 rows
-        deep, _, lines, w = self._library_walk([self._shelf_fp(11), self.GRID_FP])
+        # the store published 170, but the screen only built 12 rows
+        deep, _, lines, w = self._library_walk([self._shelf_fp(11)])
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
         self.assertIn("region=shelf row=11", fail)
         self.assertIn("minimum row 149", fail)
         self.assertIn("SCREEN", fail)
-        # no shelf fingerprint at all
+        # no shelf fingerprint at all: the walk never carried focus onto a shelf
         deep, _, lines, w = self._library_walk([self.GRID_FP])
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
         self.assertIn("region=shelf", fail)
-        self.assertIn("SCREEN", fail)
         # the deepest of several counts, wherever it falls in the window
-        deep, _, lines, w = self._library_walk([self._shelf_fp(169), self._shelf_fp(4), self.GRID_FP])
+        deep, _, lines, w = self._library_walk([self._shelf_fp(169), self._shelf_fp(4)])
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
         self.assertIsNone(fail, fail)
         # row min_landed - 1 is enough, one less is not
-        deep, _, lines, w = self._library_walk([self._shelf_fp(149), self.GRID_FP])
+        deep, _, lines, w = self._library_walk([self._shelf_fp(149)])
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
         self.assertIsNone(fail, fail)
-        deep, _, lines, w = self._library_walk([self._shelf_fp(148), self.GRID_FP])
+        deep, _, lines, w = self._library_walk([self._shelf_fp(148)])
         fail, _, _ = run.grade_walk_prelude(deep, lines, w)
         self.assertIn("region=shelf row=148", fail)
-        # without min_landed a library walk needs no shelf fingerprint
-        deep, _, lines, w = self._library_walk([self.GRID_FP])
+        # without min_landed a library walk needs no particular shelf, only the region
+        deep, _, lines, w = self._library_walk([self._shelf_fp(4)])
         plain = dict(deep, walk={k: v for k, v in deep["walk"].items() if k != "min_landed"})
         fail, _, _ = run.grade_walk_prelude(plain, lines, w)
         self.assertIsNone(fail, fail)
@@ -7293,12 +7340,13 @@ class FpsMock(unittest.TestCase):
         self.assertEqual(self.mf.deepest_shelf_row(
             [self._shelf_fp(3), self._shelf_fp(169), self._shelf_fp(40)], "library"), 169)
 
-    def test_grade_walk_prelude_needs_a_grid_fingerprint_at_the_turn(self):
-        for tail in ([], ["focus route=library pill=-1 card=1 menu=0 region=shelf row=3 col=0"],
-                     ["focus route=home region=grid row=0 col=0"]):
+    def test_grade_walk_prelude_needs_the_scenes_region_fingerprint(self):
+        # the Recommended page's walk is graded on its shelves; the grid (the Library page's region)
+        # and another route's shelf do not stand in for them
+        for tail in ([], [self.GRID_FP], ["focus route=home region=shelf row=9 col=0"]):
             deep, _, lines, w = self._library_walk(tail)
             fail, _, _ = run.grade_walk_prelude(deep, lines, w)
-            self.assertIn("region=grid", fail)
+            self.assertIn("region=shelf", fail)
 
     def test_walk_plan_is_down_then_up_and_only_those_keys(self):
         plan = self.mf.walk_plan(21, {"max_rows": 170})
