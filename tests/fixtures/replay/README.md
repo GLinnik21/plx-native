@@ -457,3 +457,19 @@ recorded afresh on the merged, committed tree (`tests/focusfp.sh --rec --only 1,
 was replaced: the manifests (anchor flag included) already equal the new recorder's header.
 `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and every
 difference counter at zero.
+
+The Under posters captions moved what Home draws without moving the shape: Home's poster shelves word
+their focused caption through the one caption policy, so under the default setting (Title Off,
+Year · Length) the focused poster's caption measures "1992 · 1h 40m" where Home's old caption
+measured the year alone ("1992") and two synthetic title names. Only `1-boot-home-chip-grid`
+moved (`plxnative-rec check` refused the fresh recording for one 13-character string; the replay of
+the committed one refused a measurement table miss from frame 304); `6-settings-family` and
+`12-filmography-detail-return` replayed `verdict=SAME` on the new tree. The owner decided the
+alphabet's answer (2026-10-20): ONE general pattern, `[0-9]{4} · ([0-9]+h )?[0-9]+m`, not the one
+literal (sourced in `_sources.year_length_caption`: `year_length`, `fmt::duration_minutes_in`,
+`core.duration_hours` / `core.duration_minutes`, and `tests/mock_pms.py` `_base` / `_movie`, which draw
+the year and the length). The fresh recording (`tests/focusfp.sh --rec --only 1`) passed
+`plxnative-rec check` with that pattern and nothing else added, and only
+`1-boot-home-chip-grid/rec-0000.jsonl` was replaced: the manifest (anchor flag included) already
+equals the new recorder's header, so it stands byte for byte. `make check-replay` replays all three
+with `verdict=SAME` in Targets and Resolve and every difference counter at zero.

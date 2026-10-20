@@ -17,6 +17,7 @@
     "subtitle_preferences": "rust-modules/plex/src/plex/session.rs: SubtitleTone::White serializes as white and is the captured default in every synthetic session.",
     "session_persistence": "rust-modules/plex/src/plex/session.rs: SaveAuthority::Routine (also PublicOnly, FreshReauthentication — already covered/unused in controlled recordings); rust-modules/plex/src/plex/session/async_persistence.rs: PersistencePurpose::Background; rust-modules/src/auth/owner.rs: CommitAdmission::RegistryOnly. These serialize into every controlled session commit/plan once a store owns its own persistence (cleanup/ownership), so a synthetic recording now always carries them.",
     "related_hub_key": "rust-modules/plex/src/plex/hubs.rs is_pageable_hub_key: the Related hub of a Detail page is paged through its own key, /library/metadata/{digits}/similar (tests/mock_pms.py serves it); a recorded Detail page names it in its page request.",
+    "year_length_caption": "The year · length caption Home's poster shelves draw under the default Under posters setting (ui/src/caption_policy.rs year_length: the year, then ui/src/fmt.rs duration_minutes_in, locales/en/core.json core.duration_hours \"{hours}h {minutes}m\" and core.duration_minutes \"{minutes}m\", joined by a middle dot): tests/mock_pms.py _base draws the year as 1990 + rng.randrange(35) (four digits) and _movie the length as (80 + rng.randrange(80)) * 60_000 ms. Owner decision 2026-10-20: a general year · length pattern, not the one literal.",
     "hold_hint": "ui/src/hold_hint.rs measures the three runs of Home's \"Hold OK for options\" capsule when a recorded Home rests on a shelf tile: locales/en/widgets.json widgets.hint.hold_options (pre and post words, split at the key placeholder) and KEY (the OK cap).",
     "watchlist_fixture_guids": "tests/mock_pms.py DiscoverFixture.bind: the first movies/shows of the library take the Watchlist fixture's guids (`plex://<kind>/<hex>`, hex = `5d7768` + the title's index + 16 md5 digits of `watchlist-fixture-<index>`), so a PMS item's guid and the Media matches of Detail carry these 14 strings. Listed literally, one per held fixture title; a general 24-hex pattern would admit a household's real Plex guids and is not permitted."
   },
@@ -31,6 +32,7 @@
     "s[0-9a-f]{8}( s[0-9a-f]{8}){1,23}(…)?",
     "s[0-9a-f]{8}, s[0-9a-f]{8}(, s[0-9a-f]{8})*,?",
     "s[0-9a-f]{8} · [0-9]+m left",
+    "[0-9]{4} · ([0-9]+h )?[0-9]+m",
     "Character [0-9]+ · s[0-9a-f]{8}",
     "(Actor|Appeared|Director|Producer|Composer|Cinematographer|Writer|Other) · [0-9]+",
     "/library/metadata/[0-9]+/(thumb|art)/1",
