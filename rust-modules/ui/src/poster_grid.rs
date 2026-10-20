@@ -739,6 +739,34 @@ mod tests {
         assert!((3..=6).all(|c| pop.scale(c, false, &style) == 1.0), "exactly at rest");
     }
 
+    /// **A let-go is born with the element its card is.** The pop knows which element it is on, even
+    /// when the cards changed since it was armed: a press names the new card by element, so the
+    /// card it leaves lets go as itself and the card it names takes up ITS let-go, whatever cell
+    /// the other stood in. A card re-keyed in its cell (a placeholder whose content landed) keeps
+    /// the pop's spring and lets go under its new key.
+    #[test]
+    fn a_let_go_is_born_with_its_element_and_a_pick_up_is_by_element() {
+        let style = STYLE;
+        let dt = 1.0 / 60.0;
+        let mut pop = GridPop::new();
+        pop.tick(Some(Card { cell: 5, key: 50 }), &style, dt);
+        // the cards shifted: the element 60 now stands in the cell 5 the pop was armed in
+        pop.arm(Card { cell: 5, key: 60 });
+        let gone: Vec<_> = pop.let_gos().collect();
+        assert_eq!(gone, [Card { cell: 5, key: 50 }], "the card left lets go as ITSELF, not as the cell's new content");
+        assert_eq!(pop.pop.spring.pos, 1.0, "and the card named grows from rest, not from the let-go in its cell");
+        // 60 lets go, then focus comes back to 50 while it is letting go: 50's spring, by element
+        pop.arm(Card { cell: 6, key: 70 });
+        let was = pop.let_gos().find(|c| c.key == 50).map(|_| pop.scale(5, false, &style)).unwrap();
+        pop.arm(Card { cell: 4, key: 50 });
+        assert_eq!(pop.pop.spring.pos, was, "50 takes up its own spring");
+        assert_eq!(pop.let_gos().map(|c| c.key).collect::<Vec<_>>(), [60, 70], "and nothing else's");
+        // re-keyed in its cell: the pop carries on and lets go under the new key
+        pop.tick(Some(Card { cell: 4, key: 51 }), &style, dt);
+        pop.arm(Card { cell: 9, key: 90 });
+        assert!(pop.let_gos().any(|c| c == Card { cell: 4, key: 51 }), "the released card is the one now standing in the cell");
+    }
+
     /// The canon is the pop's cell and spring, then a (cell, spring) slot per let-go in flight, oldest
     /// release first; a grid with none writes the one empty slot. Pinned from literals, not from
     /// the fields the writer reads, so a reordered, dropped or doubled field fails here; the replay
