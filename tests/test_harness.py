@@ -6138,6 +6138,75 @@ impl PersonOwnerGateFixture {
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def _heap_statics(self, files):
+        """`{(path, NAME)}` that `ci/check-statics-heap.py` reports over a scratch checkout holding
+        `files` ({path under rust-modules/: Rust source}), plus a `target-fast` build tree full of
+        heap statics that must never be read."""
+        with tempfile.TemporaryDirectory() as root:
+            files = dict(files)
+            files["target-fast/debug/build/dep/out.rs"] = "static mut BUILD_TREE: Vec<u8> = Vec::new();\n"
+            for rel, source in files.items():
+                path = os.path.join(root, "rust-modules", rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(source)
+            r = subprocess.run([sys.executable, "-I", os.path.join(self.ROOT, "ci", "check-statics-heap.py"), root],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return {tuple(line.split("\t")[:2]) for line in r.stdout.splitlines() if line}
+
+    def test_heap_static_gate_refuses_a_static_mut_that_owns_heap_in_any_crate(self):
+        """The class behind `TAB_CACHE` (`plx_ui`'s test abort, 2026-10-20): a `static mut` that owns
+        heap and is replaced frees memory another thread is using. The gate reads the TYPE, so it
+        sees the heap through a struct the declaration only names (`KeyMemo`, `GroundProbe`), a
+        type alias, a multi-line declaration and a qualified path, in any crate, tests included."""
+        found = self._heap_statics({
+            "gfx/src/a.rs": (
+                "static mut CACHE: Option<HashMap<u64, String>> = None;\n"
+                "pub(crate) static mut QUEUE: Vec<String> = Vec::new();\n"
+                "static mut MEMO: Option<Memo> = None;\n"
+                "static mut PROBE: Probe<4> = Probe::new();\n"
+                "static mut ALIASED: Names = Names::new();\n"
+                "static mut SPLIT: Option<\n    plx_base::Holder,\n> = None;\n"
+                "static mut ARRAY: [Option<Memo>; 4] = [None, None, None, None];\n"
+                "struct Memo { map: HashMap<u32, Vec<u8>> }\n"
+                "struct Probe<const N: usize> { ready: Option<Vec<u8>> }\n"
+                "type Names = Vec<String>;\n"),
+            "src/b.rs": (
+                "mod tests {\n    static mut SCRATCH: Box<u32> = Box::new(0);\n}\n"
+                "pub struct Holder(Vec<u8>);\n"),
+            "src/c.rs": "static mut UNKNOWN: Option<Nowhere> = None;\n",
+        })
+        self.assertEqual(found, {
+            ("rust-modules/gfx/src/a.rs", n)
+            for n in ("CACHE", "QUEUE", "MEMO", "PROBE", "ALIASED", "SPLIT", "ARRAY")
+        } | {("rust-modules/src/b.rs", "SCRATCH"), ("rust-modules/src/c.rs", "UNKNOWN")})
+
+    def test_heap_static_gate_leaves_plain_data_statics_alone(self):
+        """GL object names, uniform locations, function pointers, raw FFI handles, flags and
+        counters free nothing when written, so they are not the bug class and are not listed."""
+        found = self._heap_statics({
+            "gfx/src/a.rs": (
+                "static mut PROG: c_uint = 0;\n"
+                "static mut LOC: [c_int; 4] = [0; 4];\n"
+                "static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];\n"
+                "static mut HOOK: Option<FnQuery> = None;\n"
+                "static mut IMAGE: Option<(c_uint, Uniforms, c_int)> = None;\n"
+                "static mut FENCE: Option<crate::egl::fence::Fence> = None;\n"
+                "static mut FLAG: bool = false;\n"
+                "static mut STAMP: Option<std::time::Instant> = None;\n"
+                "type FnQuery = unsafe extern \"C\" fn(*mut c_void) -> Vec2;\n"
+                "struct Uniforms { rect: c_int, tint: c_int }\n"
+                "pub struct Fence { sync: usize }\n"
+                "// static mut NOTE: Vec<u8> = Vec::new();\n"
+                "const DOC: &str = \"static mut TEXT: Vec<u8> = Vec::new();\";\n"
+                "thread_local! { static CACHE: RefCell<HashMap<u64, String>> = Default::default(); }\n"
+                "static LOCKED: Mutex<Vec<String>> = Mutex::new(Vec::new());\n"
+                "struct Vec2(f32, f32);\n"
+                "pub enum TtfFont {}\n"),
+        })
+        self.assertEqual(found, set())
+
     def test_every_allowlist_declares_its_own_count(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
         seen = 0

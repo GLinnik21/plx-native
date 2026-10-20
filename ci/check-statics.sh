@@ -23,6 +23,17 @@
 # render caches and test doubles), which would surface on the order of 80 unrelated hits in one
 # gate change. That widening is deliberately out of scope here — see the PR discussion — and
 # must not be resolved by mass-allowlisting.
+#
+# One rule is TREE-WIDE (every crate under rust-modules, `ci/check-statics-heap.py`): a `static
+# mut` whose TYPE OWNS HEAP (a Vec, HashMap, String, Box, Rc or CString, directly or through a
+# struct it names) is refused unless ci/allow/statics.txt lists it by path and NAME with a reason.
+# Such a static is replaced, cleared or inserted into, and that frees memory, so two threads that
+# do it to the one static free each other's data; `cargo test` runs tests on parallel threads, so
+# the bug is a random crash in a stranger's run (`plx_ui`'s TAB_CACHE, 2026-10-20). A frame-loop
+# cache is a `thread_local!`; a heap static that is genuinely process-wide earns a named entry
+# that says which single thread owns it or what serialises it. Plain Copy statics (GL object
+# names and uniform locations, function pointers, raw FFI handles, flags, counters) stay outside
+# the rule: they free nothing when written.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
@@ -63,6 +74,8 @@ matches() {
 
 echo "== check-statics =="
 all=$(matches)   # once: under pipefail a piped grep -q fails on the early close
+heap=$(python3 -I "$(dirname "$0")/check-statics-heap.py")   # path<TAB>NAME<TAB>type — why
+heap_keys=$(cut -f1,2 <<<"$heap")
 perm=ci/allow/statics.txt
 migr=ci/allow/statics-migration.txt
 bad=0; n_perm=0; n_migr=0
@@ -75,12 +88,25 @@ done <<<"$all"
 if [ "$bad" -eq 0 ]; then ok "statics: $n_perm named render cache(s), $n_migr in legacy modules awaiting their phase"
 else fail "statics: $bad static mut(s) outside ci/allow/statics.txt and ci/allow/statics-migration.txt"; fi
 
+# the tree-wide heap rule: a heap-owning `static mut` outside the gated directories (those were
+# judged above) must be named in the permanent list.
+bad=0; n_heap=0
+while IFS=$'\t' read -r path name why; do
+  [ -z "$path" ] && continue
+  grep -qE "^${path}	${name}$" <<<"$all" && continue
+  if grep -qE "^${path}	${name}:" "$perm"; then n_heap=$((n_heap+1))
+  else echo "    $path: static mut $name — $why"; bad=$((bad+1)); fi
+done <<<"$heap"
+if [ "$bad" -eq 0 ]; then ok "heap-owning static mut outside the gated directories: $n_heap named in ci/allow/statics.txt, none unlisted"
+else fail "statics: $bad heap-owning static mut(s) not in ci/allow/statics.txt — make it a thread_local! (a frame-loop cache) or name it there with the thread that owns it"; fi
+
 # stale entries: an allowlisted static or file that no longer exists must leave the list.
+known=$(printf '%s\n%s\n' "$all" "$heap_keys")
 stale=0
 while IFS=$'\t' read -r path rest; do
   [ -z "$path" ] && continue
   name="${rest%%:*}"
-  grep -qE "^${path}	${name}$" <<<"$all" || { echo "    stale: $path $name"; stale=$((stale+1)); }
+  grep -qE "^${path}	${name}$" <<<"$known" || { echo "    stale: $path $name"; stale=$((stale+1)); }
 done < <(grep -v '^#' "$perm")
 while IFS=$'\t' read -r path rest; do
   [ -z "$path" ] && continue
