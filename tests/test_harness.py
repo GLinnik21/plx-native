@@ -7024,13 +7024,20 @@ class FpsMock(unittest.TestCase):
         self.assertGreaterEqual(deep["walk"]["max_rows"], 170 + 40 + deep["walk"]["extra_rows"])
         self.assertEqual((deep["loop_floor"], deep["fps_floor"]), (50, 30))
 
-    @staticmethod
-    def _regions_printed_by(*path):
-        """The `region=` words the page at `path` can print: the string literals of its
-        `probe_viewport`, the one function the focus fingerprint's `region=` comes from."""
+    # Words a page's `probe_viewport` prints that are not somewhere a walk goes: no focus at all
+    # (`none`), focus on something the page does not classify (`library`) and the retry button of a
+    # listing that failed (`status`). A scene that waits for one of them waits for the page to be
+    # broken or empty, so the check below does not count them as regions a scene may name.
+    _NOT_A_WALK_TARGET = frozenset({"none", "library", "status"})
+
+    @classmethod
+    def _regions_printed_by(cls, *path):
+        """The `region=` words a walk can reach on the page at `path`: the string literals of its
+        `probe_viewport`, the one function the focus fingerprint's `region=` comes from, less the
+        words that are not somewhere a walk goes (`_NOT_A_WALK_TARGET`)."""
         with open(os.path.join(REPO_ROOT, *path), encoding="utf-8") as fh:
             body = re.search(r"pub fn probe_viewport\b.*?\n    \}\n", fh.read(), re.S)
-        return set(re.findall(r'"([a-z]+)"', body.group(0))) if body else set()
+        return set(re.findall(r'"([a-z]+)"', body.group(0))) - cls._NOT_A_WALK_TARGET if body else set()
 
     def test_a_scene_grades_a_fingerprint_region_its_page_actually_prints(self):
         """A scene's `walk.fingerprint_region` / `walk.reach.region` is a promise that the page prints
@@ -7045,6 +7052,8 @@ class FpsMock(unittest.TestCase):
         self.assertIn("shelf", recommended)
         self.assertNotIn("grid", recommended, "the Recommended page mounts no grid")
         self.assertNotIn("shelf", library, "the Library page mounts no shelves")
+        for word in self._NOT_A_WALK_TARGET:
+            self.assertNotIn(word, library | recommended, f"`region={word}` is not a region a scene walks into")
         checked = 0
         for name, scene in sorted(self.scenes.items()):
             walk = scene.get("walk") or {}

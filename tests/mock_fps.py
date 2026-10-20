@@ -46,10 +46,13 @@ Scene fields (tests/manifest.json, `fps_scenes`):
   "walk": {"key_gap_s": 0.33, "max_rows": 170, ...}
                                 after the Home shelves land, press Down once per landed row at
                                 that pace and then Up back, and grade the heartbeats of THAT window
-  "walk": {"landed": "library", "extra_rows": 6, "fingerprint_region": "grid", ...}
-                                the same walk over the Library: sized from the seated section's
+  "walk": {"landed": "library", "extra_rows": 0, "fingerprint_region": "shelf", ...}
+                                the same walk over the Library's Recommended page (the Library page
+                                mounts no shelves): sized from the seated section's
                                 `libhubs: section N landed M shelves` line, a second Down per
-                                linked shelf, `extra_rows` more to reach the grid, and a
+                                linked shelf, `extra_rows` more (0: the page seats its first shelf on
+                                arrival and has no toolbar to cross; the burst walks over the Library's
+                                grid use 2, to cross its header), and a
                                 `focus route=... region=<fingerprint_region>` fingerprint required in
                                 the window (a region the scene's page prints: tests/test_harness.py
                                 reads the words from the page's `probe_viewport`)

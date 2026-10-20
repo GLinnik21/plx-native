@@ -2473,9 +2473,10 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         return out;
     }
     if page.arg.is_library_family() {
-        // The Library page is a `LibraryScreen` and the Recommended page a `RecommendedScreen`;
-        // they answer ONE grammar (`region= row= col=` ...), so a scene that walks either reads the
-        // same fingerprint. Any other page of the family (Collections) answers the empty line.
+        // The Library page and the Collections page are `LibraryScreen`s and the Recommended page a
+        // `RecommendedScreen`; they answer ONE grammar (`region= row= col=` ...), so a scene that
+        // walks any of them reads the same fingerprint. Only an instance that holds neither (the
+        // page is not mounted yet) answers the empty line.
         let screen = page.inst.as_ref().and_then(|i| i.screen.as_any());
         let library = screen.and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>());
         let recommended = screen.and_then(|s| s.downcast_ref::<plx_screens::library::RecommendedScreen>());
