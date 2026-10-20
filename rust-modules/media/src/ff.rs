@@ -8224,47 +8224,56 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// consumer's drain down to the base rather than dropping under the lane's occupancy.
 const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
 
-/// **The mirror image of [`PRE_AUDIO_VIDEO_HEADROOM`]: how far the AUDIO lane may run ahead of the
-/// first video packet** (issue #600). A Matroska file whose muxer stores its audio blocks ahead of
-/// the video (the reported film: ~48 s of 768 kbit/s E-AC-3, 4.6 MB, before the first video block,
-/// whose timestamp is still 0) fills the audio lane (`player::engine`'s `AQ_AUDIO_BYTES`, 1 MiB,
-/// ~11 s of that audio) before the first video packet is even read. The demuxer parked in
-/// `aq_push` on the full audio lane, nothing drains audio before the pipeline has video to start
-/// its clock on, and the first video block was never read: a start that buffered forever
-/// (`feed a#1..4` in the log, no `ff: AU#0`).
+/// **How far the AUDIO lane may run past its soft cap while the video lane is starved** (issue
+/// #600): the mirror image of [`PRE_AUDIO_VIDEO_HEADROOM`], and unlike it a standing rule rather
+/// than a one-shot grant.
 ///
-/// So from the first audio push that WOULD PARK at the base cap while no video AU has been read in
-/// this open or seek, the audio lane's cap is its base cap PLUS this much: **1 MiB + 16 MiB =
-/// 17 MiB (~17.8 MB) in total.** Lazy for the reason the video grant is: a file that interleaves
-/// normally never fills 1 MiB of audio before its first video packet and never sees it. The bound
-/// is a bound, not a measurement of what a file needs: 16 MiB holds ~2.7 min of the 768 kbit/s
-/// E-AC-3 of the reported film, ~3.5 min of 640 kbit/s AC-3, ~1.4 min of a 1.5 Mbit/s DTS core
-/// and ~22 s of a 6 Mbit/s E-AC-3 (the top of the codec's range), while a file whose video never
-/// comes cannot grow the lane without limit on a RAM-tight 32-bit set. Audio is the cheap lane per
-/// second, which is why this is smaller than the video grant.
+/// A Matroska file whose muxer stored its audio ahead of its video (the reported film: ~48 s of
+/// 768 kbit/s E-AC-3, 4.6 MB, before the first video block, whose timestamp is still 0) fills the
+/// audio lane (`player::engine`'s `AQ_AUDIO_BYTES`, 1 MiB, ~10.9 s of that audio) before the first
+/// video packet is read. The demuxer parked in `aq_push` on it, nothing drains audio before the
+/// pipeline has video to start its clock on, and the first video block was never read: a start that
+/// buffered forever (`feed a#1..4` in the log, no `ff: AU#0`).
 ///
-/// **Exhausting it fails the open**, exactly as the video grant does ([`PreAudioHeadroom::before_audio`],
-/// [`AudioGate::Fail`]): the lane is full, no video has been read and the consumer has popped nothing
-/// since the grant, so parking would be a spinner nobody can leave. A lane the consumer IS draining
-/// is not that hang: the grant is released and the lane parks like any full lane.
+/// That skew does not end at the first video block. A muxer that wrote audio 48 s ahead keeps it
+/// for the whole file, so the audio lane has to hold ~the whole skew (3.7 MB at 640 kbit/s) for the
+/// whole film, and the demuxer must never park on it while the consumer is short of VIDEO: before
+/// Play the clock needs `PRIME_VIDEO_MAX_NS` of it, afterwards the pump refills the video lane to
+/// its feed-ahead target (`MAX_FEED_AHEAD_NS`). So every audio push past the 1 MiB soft cap is
+/// admitted, up to this hard ceiling, **while the video lane holds less than `MAX_FEED_AHEAD_NS`
+/// of media** ([`audio_push_gate`], `aq::PushGate`), and parks (timed, see `PushGate`) otherwise.
+/// Nothing is granted or latched: the soft cap is back as soon as the video lane is stocked or the
+/// audio lane drains under it, so an ordinary file (which never has 1 MiB of audio queued while its
+/// video is starved) never sees any of this. For a skewed file the consequence is a read-ahead
+/// that is just in time: the video lane is held at about the pump's own feed-ahead target instead
+/// of filling to its 10 MiB cap.
 ///
-/// **The grant is released at the first video AU** ([`PreAudioHeadroom::video_arrived`]), with
-/// `aq_release_headroom`: the cap follows the consumer's drain down to the base, never under what the
-/// lane holds, so the next audio push parks like any full lane until the clock has started and the
-/// consumer pops. It never outlives its epoch otherwise: a seek and the end of the read loop
-/// withdraw it too. No timed re-check is needed in `aq_push`: the push is gated on `aq_would_park`
-/// before it is made, so the demuxer never reaches an untimed wait under a grant it can see spent.
-const PRE_VIDEO_AUDIO_HEADROOM: c_long = 16 * 1024 * 1024;
+/// **The ceiling is base + this = 1 MiB + 16 MiB = 17 MiB.** It is a bound, not a measurement of
+/// what a file needs: 16 MiB holds ~2.9 min of the reported film's 768 kbit/s E-AC-3, ~3.5 min of
+/// 640 kbit/s AC-3, ~1.4 min of a 1.5 Mbit/s DTS core and ~22 s of a 6 Mbit/s E-AC-3 (the top of
+/// the codec's range), while a file whose video never comes cannot grow the lane without limit on
+/// a RAM-tight 32-bit set. Audio is the cheap lane per second, which is why it is smaller than the
+/// video grant.
+///
+/// **At the ceiling the stream fails** (`demux_io_failed`, the same surface as the late-audio
+/// failure: Auto Original falls back to HLS, which the server remuxes with the audio in step; the
+/// failure read-out otherwise) when the consumer provably cannot have started: the video read in
+/// this open or seek spans less than `PRIME_VIDEO_MAX_NS`, so neither of the engine's prime arms is
+/// satisfiable ([`PreAudioHeadroom::video_reach_ns`]). That test deliberately does not use the
+/// audio lane's pops: the engine pops audio before any video exists (`feed_audio_lane` feeds until
+/// the pipeline answers BufferFull), so a pop proves nothing about a clock that has not started.
+/// Once the video read spans the prime depth the clock may be running and the audio lane is
+/// draining at real time, so a ceiling reached then (an audio-only stretch, a sparse video track) is
+/// an ordinary full-lane park, not a failure.
+const AUDIO_AHEAD_HEADROOM: c_long = 16 * 1024 * 1024;
 
 /// Audio pushed past the engine's lead-in before the video lane's headroom is released: the lead-in
 /// is measured from the AU the engine ACCEPTS, in its own timeline, and the lane is pushed in whole
 /// AUs, so the demuxer reads a little beyond it rather than exactly to it.
 const LEAD_IN_MARGIN_NS: i64 = 500_000_000;
 
-/// The per-open (and per-seek) state of both lanes' pre-first-packet headroom: the video lane's
-/// pre-audio grant and the audio lane's pre-video one. The decisions
-/// ([`before_video`](Self::before_video), [`after_audio`](Self::after_audio),
-/// [`before_audio`](Self::before_audio), [`video_arrived`](Self::video_arrived)) are PURE; the two
+/// The per-open (and per-seek) state of the video lane's pre-audio headroom. The decisions
+/// ([`before_video`](Self::before_video), [`after_audio`](Self::after_audio)) are PURE; the two
 /// methods that take a lane ([`withdraw`](Self::withdraw), [`restart`](Self::restart)) only call
 /// `aq_release_headroom`.
 ///
@@ -8274,21 +8283,27 @@ const LEAD_IN_MARGIN_NS: i64 = 500_000_000;
 /// counter then, the evidence for "the consumer is draining". `first_audio_ns` is the pts of the
 /// first audio AU pushed since the open or seek. `released` latches once the grant has been given
 /// back, whichever way. Every field restarts on a seek ([`restart`](Self::restart)).
-///
-/// The AUDIO lane has the mirror-image state ([`PRE_VIDEO_AUDIO_HEADROOM`]): `video_seen` latches at
-/// the first video AU of the open or seek, `audio_granted` at the first audio push that WOULD PARK
-/// at the base cap before it, `audio_released` once that grant has been given back, and
-/// `pops_at_audio_grant` is the audio lane's pop counter then.
 #[derive(Default, Debug)]
 struct PreAudioHeadroom {
     granted: bool,
     released: bool,
     first_audio_ns: Option<i64>,
     pops_at_grant: u64,
-    video_seen: bool,
-    audio_granted: bool,
-    audio_released: bool,
-    pops_at_audio_grant: u64,
+    /// The first and the latest video AU pts pushed since the open or seek: how much video the
+    /// consumer has been given ([`video_reach_ns`](Self::video_reach_ns)).
+    video_first_ns: Option<i64>,
+    video_last_ns: i64,
+}
+
+/// The admission rule for an audio push past the audio lane's soft cap: see
+/// [`AUDIO_AHEAD_HEADROOM`]. `video_reach_ns` is [`PreAudioHeadroom::video_reach_ns`].
+fn audio_push_gate(video_lane: *mut AuQueue, video_reach_ns: i64) -> crate::aq::PushGate {
+    crate::aq::PushGate {
+        other: video_lane,
+        starved_below_ns: crate::player::engine::MAX_FEED_AHEAD_NS,
+        headroom: AUDIO_AHEAD_HEADROOM,
+        fail_at_ceiling: video_reach_ns < crate::player::engine::PRIME_VIDEO_MAX_NS,
+    }
 }
 
 /// What the video push about to be made means for the lane's headroom.
@@ -8302,20 +8317,6 @@ enum VideoStep {
     /// (`aq_release_headroom`) and push, parking like any full lane.
     Release,
     /// Full, no audio, and nothing popped since the grant: parking is a spinner nobody can leave.
-    Fail,
-}
-
-/// What the audio push about to be made means for the audio lane's headroom.
-#[derive(Debug, PartialEq, Eq)]
-enum AudioGate {
-    /// Push as usual.
-    Proceed,
-    /// Raise the lane's cap by this much, then push: the base cap is full and no video has come.
-    Grant(c_long),
-    /// The consumer is draining a lane that is full under the grant: give the grant back
-    /// (`aq_release_headroom`) and push, parking like any full lane.
-    Release,
-    /// Full, no video, and nothing popped since the grant: parking is a spinner nobody can leave.
     Fail,
 }
 
@@ -8348,35 +8349,15 @@ impl PreAudioHeadroom {
         }
     }
 
-    /// An audio AU is about to be pushed. `would_park` is whether the push would park at the cap now
-    /// in force on the audio lane (`aq_would_park`), `pops` that lane's pop counter (`aq_pops`).
-    /// The mirror of [`before_video`](Self::before_video): once a video AU has been read the
-    /// ordinary backpressure applies.
-    fn before_audio(&mut self, would_park: bool, pops: u64) -> AudioGate {
-        if self.video_seen || self.audio_released || !would_park {
-            return AudioGate::Proceed;
-        }
-        if !self.audio_granted {
-            self.audio_granted = true;
-            self.pops_at_audio_grant = pops;
-            return AudioGate::Grant(PRE_VIDEO_AUDIO_HEADROOM);
-        }
-        // The grant stands and the push would park: the cap it gave is spent.
-        if pops != self.pops_at_audio_grant {
-            self.audio_released = true;
-            AudioGate::Release
-        } else {
-            AudioGate::Fail
-        }
+    /// A video AU at `pts_ns` was pushed since the open or seek.
+    fn video_pushed(&mut self, pts_ns: i64) {
+        self.video_first_ns.get_or_insert(pts_ns);
+        self.video_last_ns = self.video_last_ns.max(pts_ns);
     }
 
-    /// A video AU has been read since the open or seek. Returns whether an audio grant stands and
-    /// the caller must give it back (`aq_release_headroom` on the audio lane).
-    fn video_arrived(&mut self) -> bool {
-        self.video_seen = true;
-        let release = self.audio_granted && !self.audio_released;
-        self.audio_released |= release;
-        release
+    /// How much video the consumer has been given since the open or seek (0 before the first AU).
+    fn video_reach_ns(&self) -> i64 {
+        self.video_first_ns.map_or(0, |f| (self.video_last_ns - f).max(0))
     }
 
     /// An audio AU at `pts_ns` was pushed since the open or seek.
@@ -8393,21 +8374,17 @@ impl PreAudioHeadroom {
     /// Give the lane's grant back if one stands: an exit from the granted state that no audio push
     /// or draining consumer reached (a seek, the end of the file, a stop, audio whose timestamps
     /// never span the lead-in). The cap follows the consumer down to the base.
-    fn withdraw(&mut self, video_lane: *mut AuQueue, audio_lane: *mut AuQueue) {
+    fn withdraw(&mut self, video_lane: *mut AuQueue) {
         if self.granted && !self.released {
             crate::aq::aq_release_headroom(video_lane);
             self.released = true;
-        }
-        if self.audio_granted && !self.audio_released {
-            crate::aq::aq_release_headroom(audio_lane);
-            self.audio_released = true;
         }
     }
 
     /// A seek starts a new epoch: whatever grant the last one left standing goes back, and every
     /// field starts over (the next video push that would park grants afresh).
-    fn restart(&mut self, video_lane: *mut AuQueue, audio_lane: *mut AuQueue) {
-        self.withdraw(video_lane, audio_lane);
+    fn restart(&mut self, video_lane: *mut AuQueue) {
+        self.withdraw(video_lane);
         *self = PreAudioHeadroom::default();
     }
 }
@@ -8427,6 +8404,41 @@ mod pre_audio_headroom_tests {
     const LEAD: i64 = crate::player::engine::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
 
     const GRANT: VideoStep = VideoStep::Grant(PRE_AUDIO_VIDEO_HEADROOM);
+
+    /// The audio gate fails at its ceiling only while the video read since the open or seek is
+    /// shorter than the engine's prime, restarts with a seek, and always asks for the video
+    /// lane to be starved below the pump's own feed-ahead target.
+    #[test]
+    fn the_audio_gate_follows_how_much_video_the_consumer_has_been_given() {
+        let prime = crate::player::engine::PRIME_VIDEO_MAX_NS;
+        let mut h = PreAudioHeadroom::default();
+        assert_eq!(h.video_reach_ns(), 0);
+        let lane = std::ptr::null_mut();
+        assert!(audio_push_gate(lane, h.video_reach_ns()).fail_at_ceiling, "no video yet: the clock cannot start");
+        h.video_pushed(1_000);
+        h.video_pushed(1_000 + prime - 1);
+        assert!(audio_push_gate(lane, h.video_reach_ns()).fail_at_ceiling, "just under the prime depth");
+        h.video_pushed(1_000 + prime);
+        let g = audio_push_gate(lane, h.video_reach_ns());
+        assert!(!g.fail_at_ceiling, "the prime depth has been read: the clock may be running");
+        assert_eq!(g.starved_below_ns, crate::player::engine::MAX_FEED_AHEAD_NS);
+        assert_eq!(g.headroom, AUDIO_AHEAD_HEADROOM);
+        h.restart(std::ptr::null_mut());
+        assert_eq!(h.video_reach_ns(), 0, "a seek starts the count over");
+    }
+
+    /// The audio bound's geometry: the ceiling is base plus headroom, the reported film's 48 s of
+    /// 768 kbit/s fits with room, the top of the codec's range does not run unbounded.
+    #[test]
+    fn the_audio_ceiling_holds_the_reported_film_and_not_everything() {
+        let cap = crate::player::aq_caps().1 + AUDIO_AHEAD_HEADROOM as i64;
+        assert_eq!(cap, 17 * 1024 * 1024);
+        let bytes = |kbit: f64, secs: f64| (kbit * 1e3 / 8.0 * secs) as i64;
+        assert!(bytes(768.0, 48.0) < cap, "issue #600's 48 s lead");
+        assert!(bytes(768.0, 48.0) > crate::player::aq_caps().1, "and the base cap alone cannot hold it");
+        assert!(bytes(768.0, 180.0) > AUDIO_AHEAD_HEADROOM as i64 && bytes(768.0, 170.0) < AUDIO_AHEAD_HEADROOM as i64, "16 MiB is ~2.9 min of 768 kbit/s");
+        assert!(bytes(6_000.0, 60.0) > cap, "a bound, not a promise");
+    }
 
     /// The grant is LAZY and made once: only at a video push that would park at the base cap with an
     /// audio lane being fed and no audio read. A push that fits (an ordinary file: video a few
@@ -8539,7 +8551,7 @@ mod pre_audio_headroom_tests {
         let VideoStep::Grant(extra) = h.before_video(true, true, 0) else { panic!("grant") };
         crate::aq::aq_set_headroom(qp, extra);
         assert_eq!(crate::aq::aq_cap(qp), 100 + extra as i64);
-        h.restart(qp, std::ptr::null_mut());
+        h.restart(qp);
         assert_eq!(crate::aq::aq_cap(qp), 100, "the lane is back at its base cap after the seek reset");
         assert_eq!(h.before_video(false, true, 0), VideoStep::Proceed, "and the state started over");
         assert!(!h.granted && !h.released && h.first_audio_ns.is_none());
@@ -8560,68 +8572,12 @@ mod pre_audio_headroom_tests {
             assert_eq!(crate::aq::aq_push(qp, au.as_ptr(), au.len() as c_int, 0, 1, 1), 0);
         }
         let mut h = PreAudioHeadroom { granted: true, ..Default::default() };
-        h.restart(qp, std::ptr::null_mut());
+        h.restart(qp);
         assert_eq!(crate::aq::aq_cap(qp), 500, "never under the lane's occupancy");
         // Never granted: no touch.
         crate::aq::aq_set_headroom(qp, 1_000);
-        PreAudioHeadroom::default().restart(qp, std::ptr::null_mut());
+        PreAudioHeadroom::default().restart(qp);
         assert_eq!(crate::aq::aq_cap(qp), 1_100, "nothing granted by this state, nothing withdrawn");
-    }
-
-    /// The audio lane's mirror grant is LAZY and made once: only at an audio push that would park at
-    /// the base cap before any video AU. A push that fits, or any push after the first video AU,
-    /// never gets one; the first video AU gives a standing grant back, once.
-    #[test]
-    fn the_audio_grant_is_made_once_and_ends_at_the_first_video_au() {
-        let grant = AudioGate::Grant(PRE_VIDEO_AUDIO_HEADROOM);
-        let mut h = PreAudioHeadroom::default();
-        assert_eq!(h.before_audio(false, 0), AudioGate::Proceed, "room left: no grant");
-        assert!(!h.video_arrived(), "nothing granted, nothing to give back");
-        assert_eq!(h.before_audio(true, 0), AudioGate::Proceed, "video came first: ordinary backpressure");
-
-        let mut h = PreAudioHeadroom::default();
-        assert_eq!(h.before_audio(true, 0), grant);
-        assert_eq!(h.before_audio(false, 0), AudioGate::Proceed, "the grant gave room");
-        assert!(h.video_arrived(), "the first video AU gives the grant back");
-        assert!(!h.video_arrived(), "once");
-        assert_eq!(h.before_audio(true, 0), AudioGate::Proceed, "after the video, the lane parks like any");
-    }
-
-    /// Spent with nothing popped is the hang: fail. Spent with the consumer draining is not: release
-    /// and park like any full lane.
-    #[test]
-    fn a_spent_audio_grant_fails_unless_the_consumer_is_draining() {
-        let mut h = PreAudioHeadroom::default();
-        assert_eq!(h.before_audio(true, 7), AudioGate::Grant(PRE_VIDEO_AUDIO_HEADROOM));
-        assert_eq!(h.before_audio(true, 7), AudioGate::Fail);
-        let mut h = PreAudioHeadroom::default();
-        let _ = h.before_audio(true, 7);
-        assert_eq!(h.before_audio(true, 9), AudioGate::Release);
-        assert_eq!(h.before_audio(true, 9), AudioGate::Proceed, "released for good");
-    }
-
-    /// A seek restarts both lanes' state and withdraws a standing audio grant through the drain.
-    #[test]
-    fn restart_withdraws_a_standing_audio_grant() {
-        let mut q = crate::aq::aq_new(100);
-        let qp = &mut *q as *mut AuQueue;
-        crate::aq::aq_set_headroom(qp, 1_000);
-        let mut h = PreAudioHeadroom { audio_granted: true, video_seen: false, ..Default::default() };
-        h.restart(std::ptr::null_mut(), qp);
-        assert_eq!(crate::aq::aq_cap(qp), 100, "back at the base cap");
-        assert!(!h.audio_granted && !h.video_seen, "and the state started over");
-    }
-
-    /// The audio bound's geometry: the cap is base plus headroom, the reported film's 48 s of
-    /// 768 kbit/s fits with room, the top of the codec's range does not run unbounded.
-    #[test]
-    fn the_audio_bound_holds_the_reported_film_and_not_everything() {
-        let cap = crate::player::aq_caps().1 + PRE_VIDEO_AUDIO_HEADROOM as i64;
-        assert_eq!(cap, 17 * 1024 * 1024);
-        let bytes = |kbit: f64, secs: f64| (kbit * 1e3 / 8.0 * secs) as i64;
-        assert!(bytes(768.0, 48.0) < cap, "issue #600's 48 s lead");
-        assert!(bytes(768.0, 48.0) > crate::player::aq_caps().1, "and the base cap alone cannot hold it");
-        assert!(bytes(6_000.0, 60.0) > cap, "a bound, not a promise");
     }
 
     /// The geometry the constants claim, pinned: the cap is the base plus the headroom, an 11 s delay
@@ -9206,8 +9162,7 @@ pub fn demux(
                 }
 
                 let mut anchor_taken = false;
-                // Both lanes' pre-first-packet headroom (`PreAudioHeadroom`; the audio lane's mirror grant
-                // is `PRE_VIDEO_AUDIO_HEADROOM`, ended by the first video AU). The video lane's: granted at the first
+                // The video lane's pre-audio headroom (`PreAudioHeadroom`): granted at the first
                 // video push that WOULD PARK at the base cap with no audio yet, held until the
                 // engine's audio lead-in has been pushed, then released as the consumer drains.
                 // Restarted (and the lane's grant withdrawn) by every seek and at loop exit.
@@ -9270,7 +9225,7 @@ pub fn demux(
                             seek_ns / 1_000_000_000,
                             seek_began.elapsed().as_millis()
                         ));
-                        headroom.restart(aq_p, aqa_p);
+                        headroom.restart(aq_p);
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);
@@ -9336,17 +9291,6 @@ pub fn demux(
                                 head
                             ));
                         }
-                        if headroom.video_arrived() {
-                            // The first video AU of the open or seek: the audio lane's pre-video
-                            // grant (`PRE_VIDEO_AUDIO_HEADROOM`) has done its job. The cap follows
-                            // the consumer's drain down, never under what the lane holds.
-                            crate::aq::aq_release_headroom(aqa_p);
-                            crate::player::log(&format!(
-                                "ff: first video at {}ms; audio headroom released with {} bytes queued ahead of it",
-                                pts / 1_000_000,
-                                crate::aq::aq_bytes(aqa_p)
-                            ));
-                        }
                         match headroom.before_video(
                             ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
                             crate::aq::aq_would_park(aq_p),
@@ -9398,6 +9342,7 @@ pub fn demux(
                         }
                         PUSHED_ANY.store(true, Ordering::Relaxed);
                         SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
+                        headroom.video_pushed(pts);
                     } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                         let ast = *streams.add(ai as usize);
                         let pts = pts_ns(pkt, ast);
@@ -9406,50 +9351,23 @@ pub fn demux(
                             // audio lane feeds a late-starting track's first AU on this mark.
                             SHARED.first_audio_pts.store(pts, Ordering::Release);
                         }
-                        match headroom.before_audio(crate::aq::aq_would_park(aqa_p), crate::aq::aq_pops(aqa_p)) {
-                            AudioGate::Proceed => {}
-                            AudioGate::Grant(extra) => crate::aq::aq_set_headroom(aqa_p, extra),
-                            AudioGate::Release => {
-                                // The audio lane is full under the grant but the consumer is draining
-                                // it: not the hang the grant is bounded for. Park like any full lane.
-                                crate::aq::aq_release_headroom(aqa_p);
-                                crate::player::log(&format!(
-                                    "ff: audio headroom released with {} bytes queued: the lane is draining and no video has come",
-                                    crate::aq::aq_bytes(aqa_p)
-                                ));
-                            }
-                            AudioGate::Fail => {
-                                // The grant is spent, no video AU has been read and nothing has been
-                                // popped since it was given: the pipeline cannot start its clock
-                                // without video, so parking here is a spinner nobody can leave. Fail
-                                // the open the way the video side does, so the route recovers (Auto
-                                // Original -> HLS, which the server remuxes with the audio in step) or
-                                // the failure read-out shows.
-                                crate::player::log(&format!(
-                                    "ff: no video AU after {} bytes of audio queued (cap {} = base + the {} byte pre-video audio headroom); failing the open",
-                                    crate::aq::aq_bytes(aqa_p),
-                                    crate::aq::aq_cap(aqa_p),
-                                    PRE_VIDEO_AUDIO_HEADROOM
-                                ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
-                                SHARED.demux_io_failed.store(true, Ordering::Release);
-                                av_packet_unref(pkt);
-                                break;
-                            }
-                        }
+                        // The audio lane runs past its soft cap while the video lane is starved
+                        // ([`AUDIO_AHEAD_HEADROOM`]); the gate is what makes that decision, here.
+                        let gate = audio_push_gate(aq_p, headroom.video_reach_ns());
                         let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
                             // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
                             let plen = (*pkt).size as usize;
                             let mut framed = Vec::with_capacity(7 + plen);
                             framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
                             framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_gated(
                                 aqa_p,
                                 framed.as_ptr(),
                                 framed.len() as c_int,
                                 pts,
                                 1,
                                 2,
+                                gate,
                                 || state.drain_wire(),
                             )
                         } else if dts_audio {
@@ -9461,23 +9379,40 @@ pub fn demux(
                                 av_packet_unref(pkt);
                                 break;
                             };
-                            crate::aq::aq_push_with_drain(
-                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2,
+                            crate::aq::aq_push_gated(
+                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2, gate,
                                 || state.drain_wire(),
                             )
                         } else {
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_gated(
                                 aqa_p,
                                 (*pkt).data,
                                 (*pkt).size,
                                 pts,
                                 1,
                                 2,
+                                gate,
                                 || state.drain_wire(),
                             )
                             // AUDIO lane
                         };
                         av_packet_unref(pkt);
+                        if pushed == crate::aq::PUSH_CEILING {
+                            // The audio lane is at its ceiling, the video lane is starved and the
+                            // video read so far cannot prime the clock: parking would be a spinner
+                            // nobody can leave. Fail the way the video side does, so the route
+                            // recovers (Auto Original -> HLS) or the failure read-out shows.
+                            crate::player::log(&format!(
+                                "ff: no usable video after {} bytes of audio queued (ceiling {} = base + the {} byte audio headroom; {} ms of video read); failing the stream",
+                                crate::aq::aq_bytes(aqa_p),
+                                crate::aq::aq_cap(aqa_p) + AUDIO_AHEAD_HEADROOM,
+                                AUDIO_AHEAD_HEADROOM,
+                                headroom.video_reach_ns() / 1_000_000
+                            ));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.demux_io_failed.store(true, Ordering::Release);
+                            break;
+                        }
                         if pushed != 0 {
                             break;
                         }
@@ -9624,8 +9559,8 @@ pub fn demux(
                     }
                 }
 
-                // Whatever way the read loop ended, neither lane keeps a standing grant.
-                headroom.withdraw(aq_p, aqa_p);
+                // Whatever way the read loop ended, the video lane does not keep a standing grant.
+                headroom.withdraw(aq_p);
 
                 // cleanup this stream (we own pb, so close_input won't free the AVIO)
                 sub_tracks.close(); // reopened fresh on the next outer pass

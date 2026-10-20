@@ -3,7 +3,12 @@
 BEFORE the first video block (file order), as issue #600's muxer did. Presentation timestamps
 are untouched: the first video block is still ts=0, it is just stored after LEAD_S of audio.
 
-usage: mkv_audio_lead.py IN.mkv OUT.mkv LEAD_S
+usage: mkv_audio_lead.py IN.mkv OUT.mkv LEAD_S [skew]
+
+With the optional `skew` mode the lead is CONSTANT for the whole file instead of a prefix: every
+audio block is written next to the video block LEAD_S earlier (audio at pts t sits beside video at
+pts t-LEAD_S), so after the audio-only prefix the two interleave with the audio still LEAD_S ahead
+for the rest of the file. That is the layout a muxer keeps once it has started writing audio early.
 Drops SeekHead/Cues/Tags (they would point at the old offsets); the Segment is written with an
 unknown size, as a live muxer would. Only SimpleBlock and BlockGroup cluster children are kept.
 """
@@ -43,7 +48,7 @@ def block_track_rel(b, q):  # q = start of Block payload
     rel = struct.unpack(">h", b[r:r+2])[0]
     return tr, r, rel
 
-def main(src, dst, lead_s):
+def main(src, dst, lead_s, skew=False):
     b = open(src, "rb").read()
     out = bytearray()
     blocks = []  # (abs_ts, track, raw element bytes, offset of rel ts within raw)
@@ -80,6 +85,11 @@ def main(src, dst, lead_s):
     is_a = lambda t: tracks_types.get(t) == AUDIO
     phase1 = [x for x in blocks if is_a(x[1]) and x[0] < lead_ms]
     phase2 = [x for x in blocks if not (is_a(x[1]) and x[0] < lead_ms)]
+    if skew:
+        # File order by (pts - lead for audio, pts for video); the sort is stable so equal keys
+        # keep their original relative order. One list, no separate prefix phase.
+        phase1 = []
+        phase2 = sorted(blocks, key=lambda x: x[0] - (lead_ms if is_a(x[1]) else 0))
     def emit(group):
         cts = min(x[0] for x in group)
         body = elem(TIMESTAMP, cts.to_bytes(4, "big"))
@@ -89,7 +99,10 @@ def main(src, dst, lead_s):
     for seq in (phase1, phase2):
         group = []
         for x in seq:
-            if group and (len(group) >= 64 or max(abs(x[0] - g[0]) for g in group[:1]) > 2000):
+            # A cluster's block timestamps are int16 offsets from its own, so audio and video that
+            # are `lead` apart can never share one: a cluster holds one track class at a time.
+            if group and (len(group) >= 64 or max(abs(x[0] - g[0]) for g in group[:1]) > 2000
+                          or is_a(x[1]) != is_a(group[0][1])):
                 emit(group); group = []
             group.append(x)
         if group: emit(group)
@@ -97,4 +110,4 @@ def main(src, dst, lead_s):
     print(f"blocks={len(blocks)} audio-first={len(phase1)} ({sum(len(x[2]) for x in phase1)} B) then {len(phase2)}; tracks={tracks_types}")
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2], float(sys.argv[3]))
+    main(sys.argv[1], sys.argv[2], float(sys.argv[3]), len(sys.argv) > 4 and sys.argv[4] == "skew")
