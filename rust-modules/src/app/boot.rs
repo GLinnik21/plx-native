@@ -1457,8 +1457,17 @@ pub(crate) unsafe fn construct(
     if plx_base::devtrig::flag("hintoff") {
         plx_ui::hold_hint::teach_all_for_dev();
     }
+    // dev: /tmp/plxnative-hintfresh — this run starts with the hold hint untaught, though the install
+    // was taught: the seed below is skipped, so the hint can be looked at again. Nothing on disk is
+    // un-written; a read showing then writes taught again (an idempotent write).
     // The hold hint offers itself once per INSTALL: seed what an earlier run taught, before frame one.
-    super::hint_taught::seed(session.hold_hint_taught());
+    #[cfg(feature = "devtriggers")]
+    let hint_fresh = plx_base::devtrig::flag("hintfresh");
+    #[cfg(not(feature = "devtriggers"))]
+    let hint_fresh = false;
+    if !hint_fresh {
+        super::hint_taught::seed(session.hold_hint_taught());
+    }
     #[cfg(not(test))]
     plx_platform::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
