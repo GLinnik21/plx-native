@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-20T12:47:28Z",
+ "generated": "2026-10-20T12:56:04Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -27,15 +27,15 @@
    "change7_pct": 69.7,
    "d30": null,
    "delta30": null,
-   "delta7": 147.0,
+   "delta7": 147,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 358,
-   "prev7": 211.0,
+   "prev7": 211,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -45,18 +45,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 41.7,
+   "change7_pct": 41.5,
    "d30": null,
    "delta30": null,
-   "delta7": 112.5,
+   "delta7": 112,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 382,
-   "prev7": 269.5,
+   "prev7": 270,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -107,19 +107,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.7,
+   "change30_pct": -39.8,
    "change7_pct": 27.2,
    "d30": 672,
-   "delta30": -267,
+   "delta30": -267.5,
    "delta7": 86.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 121,
-   "n_prev": 112,
-   "now": 405,
-   "prev7": 318.5,
+   "n_now": 122,
+   "n_prev": 111,
+   "now": 404.5,
+   "prev7": 318,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -132,15 +132,15 @@
    "change7_pct": 25.6,
    "d30": null,
    "delta30": null,
-   "delta7": 33.0,
+   "delta7": 33,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 162,
-   "prev7": 129.0,
+   "prev7": 129,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -246,18 +246,18 @@
   },
   {
    "change30_pct": 93.8,
-   "change7_pct": 13.7,
+   "change7_pct": 13.9,
    "d30": 1115,
    "delta30": 1046,
-   "delta7": 260.0,
+   "delta7": 263,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 93,
-   "n_prev": 76,
+   "n_prev": 75,
    "now": 2161,
-   "prev7": 1901.0,
+   "prev7": 1898,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -291,15 +291,15 @@
    "change7_pct": 3.6,
    "d30": 232,
    "delta30": 83,
-   "delta7": 11.0,
+   "delta7": 11,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 315,
-   "prev7": 304.0,
+   "prev7": 304,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -330,18 +330,18 @@
   },
   {
    "change30_pct": 105.1,
-   "change7_pct": 7.4,
+   "change7_pct": 7.6,
    "d30": 117,
-   "delta30": 123.0,
-   "delta7": 16.5,
+   "delta30": 123,
+   "delta7": 17,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
-   "n_prev": 100,
-   "now": 240.0,
-   "prev7": 223.5,
+   "n_now": 117,
+   "n_prev": 99,
+   "now": 240,
+   "prev7": 223,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -350,19 +350,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 173.6,
-   "change7_pct": -37.7,
+   "change30_pct": 172.9,
+   "change7_pct": -37.6,
    "d30": 70,
-   "delta30": 121.5,
-   "delta7": -116.0,
+   "delta30": 121,
+   "delta7": -115,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
-   "n_prev": 100,
-   "now": 191.5,
-   "prev7": 307.5,
+   "n_now": 117,
+   "n_prev": 99,
+   "now": 191,
+   "prev7": 306,
    "shown": true,
    "state": "better",
    "state30": "worse",
@@ -375,15 +375,15 @@
    "change7_pct": 4.7,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 8,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 180,
-   "prev7": 172.0,
+   "prev7": 172,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -396,15 +396,15 @@
    "change7_pct": 14.9,
    "d30": null,
    "delta30": null,
-   "delta7": 21.0,
+   "delta7": 21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 162,
-   "prev7": 141.0,
+   "prev7": 141,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -417,15 +417,15 @@
    "change7_pct": 8.6,
    "d30": null,
    "delta30": null,
-   "delta7": 12.0,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
-   "n_prev": 100,
-   "now": 152.0,
-   "prev7": 140.0,
+   "n_now": 117,
+   "n_prev": 99,
+   "now": 152,
+   "prev7": 140,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -502,16 +502,16 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 1.0,
+   "delta30": 2,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
-   "n_prev": 100,
-   "now": 18.0,
-   "prev7": 17.0,
+   "n_now": 117,
+   "n_prev": 99,
+   "now": 18,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -566,15 +566,15 @@
    "change7_pct": -25.0,
    "d30": 677,
    "delta30": -674,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 105,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 3,
-   "prev7": 4.0,
+   "prev7": 4,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -657,6 +652,11 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 69.7,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -718,9 +713,14 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
-   "from": 211.0,
+   "from": 211,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-20",
@@ -728,13 +728,8 @@
    "to": 358
   },
   {
-   "change_pct": 41.7,
+   "change_pct": 41.5,
    "commits": [
-    {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
     {
      "pr": 856,
      "sha": "dc08c3614",
@@ -779,9 +774,14 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
-   "from": 269.5,
+   "from": 270,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-20",
@@ -792,11 +792,6 @@
    "change_pct": 40.2,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -840,6 +835,11 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
    "from": 346.0,
@@ -853,11 +853,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -901,6 +896,11 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
    "from": 103.0,
@@ -914,11 +914,6 @@
    "change_pct": 27.2,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -962,24 +957,24 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
-   "from": 318.5,
+   "from": 318,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-10-20",
    "threshold_pct": 15.0,
-   "to": 405
+   "to": 404.5
   },
   {
    "change_pct": 25.6,
    "commits": [
     {
-     "pr": 855,
-     "sha": "366dfe93c",
-     "title": "Frame dump: slow pages film their loading frames; fps:library-switch stops flipping on its own cycle's phase"
-    },
-    {
      "pr": 856,
      "sha": "dc08c3614",
      "title": "Collection: closing a menu over the page no longer blanks every poster"
@@ -1023,9 +1018,14 @@
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
+    },
+    {
+     "pr": 867,
+     "sha": "fd25378a9",
+     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
     }
    ],
-   "from": 129.0,
+   "from": 129,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
