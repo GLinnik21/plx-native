@@ -1,5 +1,5 @@
 //! Watchlist rows, the guid-to-server match table and the six tile states (plan §1.5, §1.9).
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ListingFacts, ServerId};
 use std::collections::HashMap;
 
 /// A watchlist title's kind. Collections and other kinds never become rows.
@@ -58,9 +58,11 @@ impl ServerMatch {
 
 /// What one server answered for one guid, so "absent" (answered, not held) stays apart from
 /// "silent" (no answer yet).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Asked {
-    Held(ServerMatch),
+    /// The server holds the title: the copy a press opens, and what the lookup's row says of it for
+    /// a caption (genre, video, ratings, length, counts).
+    Held(ServerMatch, ListingFacts),
     Absent,
 }
 
@@ -107,7 +109,7 @@ pub enum TileState {
 /// Membership in flight (the intent ledger) is NOT a tile state: the ledger flips the row set.
 pub fn tile_state(row: &WatchRow, table: &MatchTable, reach: &dyn Reach) -> TileState {
     let answers: &[(ServerId, Asked)] = table.by_guid.get(&row.guid).map_or(&[], |v| v.as_slice());
-    let held = || answers.iter().filter(|(_, a)| matches!(a, Asked::Held(_)));
+    let held = || answers.iter().filter(|(_, a)| matches!(a, Asked::Held(..)));
     if held().any(|(sid, _)| reach.reachable(*sid)) {
         return if row.released { TileState::Available } else { TileState::ComingSoonMatched };
     }
@@ -169,7 +171,7 @@ mod tests {
     }
 
     fn held(s: ServerId) -> (ServerId, Asked) {
-        (s, Asked::Held(ServerMatch::new(s, 7)))
+        (s, Asked::Held(ServerMatch::new(s, 7), ListingFacts::default()))
     }
 
     fn table(r: &WatchRow, v: Vec<(ServerId, Asked)>) -> MatchTable {

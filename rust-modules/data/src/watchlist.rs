@@ -344,11 +344,14 @@ pub fn match_on(io: &dyn WatchlistIo, sid: ServerId, rows: &[(String, Kind)]) ->
                     (true, Some(rating_key)) => out.push((
                         g.clone(),
                         sid,
-                        Asked::Held(ServerMatch {
-                            server_id: sid,
-                            rating_key,
-                            blur: hit.and_then(|m| m.blur).map(quantize_blur),
-                        }),
+                        Asked::Held(
+                            ServerMatch {
+                                server_id: sid,
+                                rating_key,
+                                blur: hit.and_then(|m| m.blur).map(quantize_blur),
+                            },
+                            hit.map(|m| m.facts.clone()).unwrap_or_default(),
+                        ),
                     )),
                     (true, None) => {} // a key we cannot use: neither held nor absent
                     (false, _) => out.push((g.clone(), sid, Asked::Absent)),

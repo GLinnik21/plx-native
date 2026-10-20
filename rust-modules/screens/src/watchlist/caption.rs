@@ -4,7 +4,9 @@
 //! ([`policy`]): the Title switch (default Off) opens the title line, the Details picker the second,
 //! and the band is 0 / 80 / 112 px tall by what it will show (`Stack::caption_policy`); the lines are
 //! built by the one builder the poster screens share ([`crate::registry::captions::label`]). A Watchlist row
-//! carries a title, a year and a kind, so Genre, Video and Age rating have nothing to say for it.
+//! carries a title, a year and a kind; the rest of what a caption words (genre, video, age rating and
+//! score, length, season and episode counts) is the MATCHED COPY's, as the guid lookup's row said it
+//! ([`ListingFacts`]), so a playable title reads like any poster and one with no copy falls to its year.
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
 //! one: with Details set to Nothing the sentence is dropped with the details line (and the band is not opened when the Title switch is Off).
 //!
@@ -16,6 +18,7 @@
 //! phrase every page uses for it ("Coming 12 Mar", `fmt::coming_on`).
 use plx_data::watchlist::model::{Kind, TileState, WatchRow};
 use plx_platform::i18n::{msg, MonthWidth};
+use plx_plex::plex::ListingFacts;
 use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy};
 use plx_ui::cards::TileLabel;
 use plx_ui::fmt;
@@ -45,13 +48,24 @@ pub fn state_sentence(state: TileState, release: Option<&str>) -> Option<String>
 pub fn policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// The focused tile's label under `policy`: `[title, details]` as the setting words them, the
-/// details line being the state sentence when the title has one.
-pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy) -> TileLabel {
+/// details line being the state sentence when the title has one. `copy` is what the matched copy's
+/// lookup row says of the title (default: no copy, or a row that said nothing).
+pub fn label(row: &WatchRow, state: TileState, policy: &CaptionPolicy, copy: &ListingFacts) -> TileLabel {
     let facts = CaptionFacts {
         title: Some(row.title.clone()),
         year: row.year,
         is_show: row.kind == Kind::Show,
         is_movie: row.kind == Kind::Movie,
+        // The matched copy's own facts, as the lookup row said them: the row carries none of these.
+        duration_min: copy.duration_ms.and_then(|ms| u32::try_from(ms / 60_000).ok()),
+        genre: copy.genre.clone(),
+        video_resolution: copy.video_resolution.clone(),
+        hdr: copy.hdr,
+        content_rating: copy.content_rating.clone(),
+        audience_rating: copy.audience_rating,
+        leaf_count: copy.leaf_count,
+        viewed_leaf_count: copy.viewed_leaf_count,
+        season_count: copy.season_count,
         ..Default::default()
     };
     crate::registry::captions::label(policy, &facts, state_sentence(state, row.release.as_deref()), false)

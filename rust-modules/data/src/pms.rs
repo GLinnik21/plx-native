@@ -412,21 +412,16 @@ pub(crate) fn clean(s: &str) -> String {
 /// `false` rather than a zero a reader could mistake for a value.
 fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
     let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());
-    let count = |n: i64| (n > 0).then(|| n.min(i64::from(u32::MAX)) as u32);
     m.subtype = some(&it.subtype);
     m.smart = m.kind == KIND_COLLECTION && it.smart;
-    m.genre = it.genre.first().and_then(|g| some(&g.tag));
-    let media = it.media.first();
-    m.video_resolution = media.and_then(|x| some(&x.video_resolution));
-    m.hdr = media
-        .into_iter()
-        .flat_map(|x| x.part.iter())
-        .flat_map(|p| p.stream.iter())
-        .any(|s| s.stream_type == 1 && s.is_hdr());
-    m.audience_rating = (it.audience_rating > 0.0).then_some(it.audience_rating as f32);
-    // A leaf count of 0 is "none sent" (a collection, a movie), not an empty show.
-    m.leaf_count = count(it.leaf_count);
-    m.viewed_leaf_count = if m.leaf_count.is_some() { Some(it.viewed_leaf_count.clamp(0, i64::from(u32::MAX)) as u32) } else { None };
+    // The wire half is `Metadata::listing_facts`, the one rule the Watchlist's matched copies read too.
+    let facts = it.listing_facts();
+    m.genre = facts.genre;
+    m.video_resolution = facts.video_resolution;
+    m.hdr = facts.hdr;
+    m.audience_rating = facts.audience_rating;
+    m.leaf_count = facts.leaf_count;
+    m.viewed_leaf_count = facts.viewed_leaf_count;
     m.added_at = (it.added_at > 0).then_some(it.added_at);
 }
 

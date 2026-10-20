@@ -494,7 +494,56 @@ pub fn resolve_catalog_hex(known: Option<[u8; 12]>, fetch: impl FnOnce() -> Opti
     known.or_else(|| fetch().and_then(|g| catalog_hex_of_guid(&g)))
 }
 
+/// **What a listing row says of the title it is, for a caption**, lifted off the wire once
+/// ([`Metadata::listing_facts`]) with unknown left `None` / `false` rather than a zero a reader could
+/// mistake for a value. The catalog row (`data::pms::parse_item`) takes its caption facts from it,
+/// and so does the Watchlist's guid lookup ([`GuidMatch::facts`](super::GuidMatch)), so a matched
+/// copy is described by the same rule on a poster shelf and on the Watchlist.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ListingFacts {
+    /// The FIRST genre tag.
+    pub genre: Option<String>,
+    /// `Media[0]`'s resolution class (`"4k"`, `"1080"`).
+    pub video_resolution: Option<String>,
+    /// A video stream of `Media[0]` is HDR ([`Stream::is_hdr`]).
+    pub hdr: bool,
+    pub content_rating: Option<String>,
+    /// 0..10.
+    pub audience_rating: Option<f32>,
+    pub duration_ms: Option<i64>,
+    /// A show's or season's episode count (`0` is "none sent", not an empty show).
+    pub leaf_count: Option<u32>,
+    /// With `leaf_count`: the episodes watched.
+    pub viewed_leaf_count: Option<u32>,
+    /// A show's season count (`childCount`, which a movie, episode or season does not send).
+    pub season_count: Option<u32>,
+}
+
 impl Metadata {
+    /// The caption facts of this item ([`ListingFacts`]).
+    pub fn listing_facts(&self) -> ListingFacts {
+        let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());
+        let count = |n: i64| (n > 0).then(|| n.min(i64::from(u32::MAX)) as u32);
+        let media = self.media.first();
+        let leaf_count = count(self.leaf_count);
+        ListingFacts {
+            genre: self.genre.first().and_then(|g| some(&g.tag)),
+            video_resolution: media.and_then(|x| some(&x.video_resolution)),
+            hdr: media
+                .into_iter()
+                .flat_map(|x| x.part.iter())
+                .flat_map(|p| p.stream.iter())
+                .any(|s| s.stream_type == 1 && s.is_hdr()),
+            content_rating: some(&self.content_rating),
+            audience_rating: (self.audience_rating > 0.0).then_some(self.audience_rating as f32),
+            duration_ms: (self.duration > 0).then_some(self.duration),
+            leaf_count,
+            viewed_leaf_count: leaf_count
+                .map(|_| self.viewed_leaf_count.clamp(0, i64::from(u32::MAX)) as u32),
+            season_count: if self.kind == "show" { count(self.child_count) } else { None },
+        }
+    }
+
     /// This item's own catalog id (movie or show), decoded once.
     pub fn guid_hex(&self) -> Option<[u8; 12]> {
         catalog_hex_of_guid(&self.guid)
@@ -1177,6 +1226,34 @@ mod tests {
         assert_eq!(mc.metadata[0].show_guid_hex(), Some(BYTES));
         assert_eq!(mc.metadata[1].guid_hex(), Some(BYTES));
         assert_eq!(mc.metadata[1].show_guid_hex(), None, "a movie has no show");
+    }
+
+    fn listing(json: &str) -> super::ListingFacts {
+        let json = format!(r#"{{"MediaContainer":{{"Metadata":[{json}]}}}}"#);
+        serde_json::from_slice::<Envelope>(json.as_bytes()).expect("parse").media_container.metadata[0].listing_facts()
+    }
+
+    /// **A listing row's caption facts** are lifted once: the first genre, `Media[0]`'s resolution,
+    /// HDR from a video stream, the content rating and the audience score, the length, and a show's
+    /// season and episode counts. Unknown stays `None` (never a zero a reader could mistake).
+    #[test]
+    fn a_listing_row_says_its_genre_video_ratings_length_and_counts() {
+        let movie = listing(r#"{"type":"movie","ratingKey":"1","contentRating":"PG-13","audienceRating":7.8,"duration":6000000,
+            "Genre":[{"tag":"Drama"},{"tag":"Crime"}],
+            "Media":[{"videoResolution":"4k","Part":[{"Stream":[{"streamType":1,"colorTrc":"smpte2084"}]}]}]}"#);
+        assert_eq!(movie, super::ListingFacts {
+            genre: Some("Drama".into()),
+            video_resolution: Some("4k".into()),
+            hdr: true,
+            content_rating: Some("PG-13".into()),
+            audience_rating: Some(7.8),
+            duration_ms: Some(6_000_000),
+            ..Default::default()
+        });
+        let show = listing(r#"{"type":"show","ratingKey":"2","childCount":3,"leafCount":30,"viewedLeafCount":12}"#);
+        assert_eq!((show.season_count, show.leaf_count, show.viewed_leaf_count), (Some(3), Some(30), Some(12)));
+        let bare = listing(r#"{"type":"movie","ratingKey":"3","childCount":4}"#);
+        assert_eq!(bare, super::ListingFacts::default(), "nothing sent: nothing known (a movie has no seasons)");
     }
 
     #[test]

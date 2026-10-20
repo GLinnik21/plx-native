@@ -1,7 +1,7 @@
 //! Library operations (impl Client): sections, section items (`section_items_query`), metadata,
 //! children (`children`, `children_paged`), related (`related`) — plus the two part-level playback ops (stream selection, direct-play target).
 use super::client::{urlenc_str, Client, QueryBuilder, StreamUrl};
-use super::models::{MediaContainer, Metadata};
+use super::models::{ListingFacts, MediaContainer, Metadata};
 use super::paging::{paged_path, PageReq};
 use super::params::{SectionQuery, StreamSelection};
 
@@ -26,6 +26,9 @@ pub struct GuidMatch {
     pub library_section_id: Option<i64>,
     /// The row's `UltraBlurColors` corners (`UltraBlurColors::corners`) when the server sent them.
     pub blur: Option<[[f32; 3]; 4]>,
+    /// What the row says of the title for a caption (genre, video, ratings, length, counts): the
+    /// Watchlist words a matched tile with them, as every poster does.
+    pub facts: ListingFacts,
 }
 
 /// Why `find_by_guids` could not answer.
@@ -121,6 +124,7 @@ impl Client {
                     && !found.iter().any(|m| m.guid == item.guid)
                 {
                     found.push(GuidMatch {
+                        facts: item.listing_facts(),
                         blur: item.ultra_blur_colors.and_then(|c| c.corners()),
                         library_section_id: (item.library_section_id != 0).then_some(item.library_section_id),
                         guid: item.guid,

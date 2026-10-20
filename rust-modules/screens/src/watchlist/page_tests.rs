@@ -28,7 +28,7 @@ const UNPLAYABLE: [TileState; 5] = [
 
 /// The details line the default Under posters policy words for `row` (empty: no line).
 fn default_caption(row: &plx_data::watchlist::model::WatchRow, state: TileState) -> String {
-    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT)
+    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT, &Default::default())
         .caption.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
