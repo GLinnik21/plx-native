@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T21:56:36Z",
+ "generated": "2026-10-21T22:03:53Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -108,18 +108,18 @@
   },
   {
    "change30_pct": -31.7,
-   "change7_pct": 15.6,
+   "change7_pct": 15.2,
    "d30": 683.5,
    "delta30": -217.0,
-   "delta7": 63.0,
+   "delta7": 61.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 254,
-   "n_prev": 214,
+   "n_prev": 213,
    "now": 466.5,
-   "prev7": 403.5,
+   "prev7": 405,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -137,9 +137,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 113,
+   "n_now": 114,
    "n_prev": 110,
-   "now": 342,
+   "now": 342.0,
    "prev7": 325.5,
    "shown": true,
    "state": "flat",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.5,
-   "change7_pct": 16.4,
+   "change30_pct": 94.9,
+   "change7_pct": 16.6,
    "d30": 128.0,
-   "delta30": 121.0,
-   "delta7": 35,
+   "delta30": 121.5,
+   "delta7": 35.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 93,
-   "now": 249,
+   "now": 249.5,
    "prev7": 214,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 179.4,
-   "change7_pct": 1.5,
+   "change30_pct": 178.0,
+   "change7_pct": 1.0,
    "d30": 70.5,
-   "delta30": 126.5,
-   "delta7": 3,
+   "delta30": 125.5,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 93,
-   "now": 197,
+   "now": 196.0,
    "prev7": 194,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 6.4,
+   "change7_pct": 6.1,
    "d30": null,
    "delta30": null,
-   "delta7": 9,
+   "delta7": 8.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 93,
-   "now": 149,
+   "now": 148.5,
    "prev7": 140,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 5.9,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 93,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
      "pr": 890,
      "sha": "f353f6d93",
      "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
@@ -657,6 +652,11 @@
      "pr": 904,
      "sha": "9141edd1c",
      "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
      "pr": 890,
      "sha": "f353f6d93",
      "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
@@ -718,6 +713,11 @@
      "pr": 904,
      "sha": "9141edd1c",
      "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
     }
    ],
    "from": 133.0,
@@ -731,11 +731,6 @@
    "change_pct": 29.8,
    "commits": [
     {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
      "pr": 890,
      "sha": "f353f6d93",
      "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
@@ -779,6 +774,11 @@
      "pr": 904,
      "sha": "9141edd1c",
      "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
     }
    ],
    "from": 216.5,
@@ -792,11 +792,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
      "pr": 890,
      "sha": "f353f6d93",
      "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
@@ -840,6 +835,11 @@
      "pr": 904,
      "sha": "9141edd1c",
      "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
     }
    ],
    "from": 46.5,
@@ -853,11 +853,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
      "pr": 890,
      "sha": "f353f6d93",
      "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
@@ -901,6 +896,11 @@
      "pr": 904,
      "sha": "9141edd1c",
      "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
     }
    ],
    "from": 108.7,
@@ -941,7 +941,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 249
+   "now": 249.5
   }
  ],
  "slowest_local": [
