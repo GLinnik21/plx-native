@@ -39,8 +39,8 @@
 //!
 //! **A row that must fit its room sheds items by priority** ([`Item::priority`], [`HStack::fit`],
 //! [`HStack::kept`]): the lowest priority goes first, the last of equals first, an item with no
-//! priority never goes. It drops whole items and measures nothing; the survivors stand exactly where
-//! the full run would have put them.
+//! priority never goes. It drops whole items and measures nothing; a dropped item is absent, so the
+//! survivors close up around it, re-anchored by [`Align`]. It is for short rows (at most 64 items).
 
 /// One item in the run: how wide it draws, whether it is there, what it may reserve and the gap
 /// after it if that differs from the stack's. Built from the width the caller measured.
@@ -248,8 +248,13 @@ impl<'a> HStack<'a> {
     /// at or below 0 drops everything droppable.
     ///
     /// It measures nothing: the widths are the ones the caller gave. Read the result back with
-    /// [`Self::kept`], which places the survivors exactly as the full run would have.
+    /// [`Self::kept`]: a dropped item is absent, so the survivors close up around it, re-anchored by
+    /// [`Align`].
+    ///
+    /// **For short rows only (at most 64 items):** the result is a 64-bit set, and an item past the
+    /// 64th is neither considered for dropping nor ever dropped.
     pub fn fit(&self, room: f32) -> Kept {
+        debug_assert!(self.items.len() <= u64::BITS as usize, "fit is for short rows (<= 64 items)");
         let mut kept = self.kept;
         loop {
             if (HStack { kept, ..*self }).width() <= room {
@@ -475,7 +480,7 @@ mod tests {
     }
 
     /// An item with no priority is never dropped; an exact fit is kept; a room at or below zero
-    /// drops everything droppable; the survivors stand where the full run would put them.
+    /// drops everything droppable.
     #[test]
     fn fit_never_drops_an_unprioritised_item_and_keeps_an_exact_fit() {
         let items = [Item::new(100.0), Item::new(50.0).priority(1)];

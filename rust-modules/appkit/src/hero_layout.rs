@@ -20,6 +20,10 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
+/// How many controls the hero row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
+/// watch face. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 6;
+
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
 
@@ -99,11 +103,18 @@ pub struct HeroWidths {
 /// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
 /// unreachable and was not carried over: an empty slice yields a zero-width control at the margin.
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
-    // One extra, zero-wide item stands in for "past the end": the stack puts it one gap after the
-    // last control, exactly where the old accumulation left `x`.
-    let items: Vec<Item> = widths.iter().copied().chain([0.0]).map(Item::new).collect();
-    let stack = HStack::new(&items, CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
-    let at = i.min(widths.len());
+    debug_assert!(widths.len() <= MAX_CTLS);
+    let n = widths.len().min(MAX_CTLS);
+    // Fixed storage: this runs ~10-16 times a frame on Detail, so it allocates nothing. One extra,
+    // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
+    // the last control, exactly where the old accumulation left `x`.
+    let mut items = [Item::absent(); MAX_CTLS + 1];
+    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
+        *slot = Item::new(*w);
+    }
+    items[n] = Item::new(0.0);
+    let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
+    let at = i.min(n);
     let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
     let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
     Rect::new(x, y, w, CD)

@@ -1938,6 +1938,100 @@ pub fn dotted_run(
     bx - x
 }
 
+/// How many parts one MEASURED dotted run ([`dotted_run_measured`]) can hold: the storage size of
+/// its stack, not a limit on any list (its callers pass the meta line's genres, year and duration).
+pub const DOTTED_MAX_PARTS: usize = 6;
+/// Cells of such a run: a dot before every part, the first included when the run leads with one.
+const DOTTED_CELLS: usize = 2 * DOTTED_MAX_PARTS;
+
+/// A dotted run's cells as one [`crate::hstack`] run: parts with the dot between each pair (and one
+/// before the first for a run that continues another), all `pad` apart.
+struct DottedCells {
+    items: [crate::hstack::Item; DOTTED_CELLS],
+    /// The part index a cell shows; `None` is a dot.
+    part: [Option<usize>; DOTTED_CELLS],
+    n: usize,
+}
+
+impl DottedCells {
+    fn new<S: AsRef<CStr>>(
+        measure: &dyn plx_machine::machine::Measure,
+        parts: &[S],
+        sz: c_int,
+        bold: c_int,
+        lead_dot: bool,
+    ) -> Self {
+        use crate::hstack::Item;
+        debug_assert!(parts.len() <= DOTTED_MAX_PARTS);
+        let mut cells = Self { items: [Item::absent(); DOTTED_CELLS], part: [None; DOTTED_CELLS], n: 0 };
+        // The dot is measured only when one will be drawn: a lone part asks for no extra width.
+        let live = parts.iter().filter(|s| !s.as_ref().to_bytes().is_empty()).count();
+        let dot_w = if live > 1 || (lead_dot && live > 0) { measure.width(c"\u{b7}", sz, false) } else { 0.0 };
+        for (i, part) in parts.iter().take(DOTTED_MAX_PARTS).enumerate() {
+            let part = part.as_ref();
+            if part.to_bytes().is_empty() {
+                continue;
+            }
+            if cells.n > 0 || lead_dot {
+                cells.items[cells.n] = Item::new(dot_w);
+                cells.n += 1;
+            }
+            cells.items[cells.n] = Item::new(measure.width(part, sz, bold != 0));
+            cells.part[cells.n] = Some(i);
+            cells.n += 1;
+        }
+        cells
+    }
+
+    fn stack(&self, pad: f32, x: f32) -> crate::hstack::HStack<'_> {
+        crate::hstack::HStack::new(&self.items[..self.n], pad, crate::hstack::Align::Leading(x))
+    }
+}
+
+/// [`dotted_run_measured`]'s width, without drawing: what a caller fitting the run into a row needs.
+pub fn dotted_run_measured_w<S: AsRef<CStr>>(
+    measure: &dyn plx_machine::machine::Measure,
+    parts: &[S],
+    sz: c_int,
+    bold: c_int,
+    lead_dot: bool,
+    pad: f32,
+) -> f32 {
+    DottedCells::new(measure, parts, sz, bold, lead_dot).stack(pad, 0.0).width()
+}
+
+/// [`dotted_run`] for a caller that has to know the run's width BEFORE it draws (a row that fits
+/// its chips into a room): the same spacing (`pad` each side of the dot, `pad` between a dot and a
+/// part), a `bold` weight for the parts (the dot is always regular, in the separator ink), and
+/// `lead_dot` for a run that continues the one before it. The cells stand where the shared
+/// [`crate::hstack::HStack`] puts them, from `measure`d widths; it returns the width it drew.
+pub fn dotted_run_measured<S: AsRef<CStr>>(
+    p: Painter,
+    measure: &dyn plx_machine::machine::Measure,
+    parts: &[S],
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: [f32; 4],
+    bold: c_int,
+    lead_dot: bool,
+    pad: f32,
+) -> f32 {
+    let cells = DottedCells::new(measure, parts, sz, bold, lead_dot);
+    let stack = cells.stack(pad, x);
+    for cell in stack.placed() {
+        match cells.part[cell.i] {
+            Some(i) => {
+                p.text(parts[i].as_ref().as_ptr(), cell.x, y, sz, col, 0, bold);
+            }
+            None => {
+                p.text(c"\u{b7}".as_ptr(), cell.x, y, sz, theme::TEXT_SEPARATOR, 0, 0);
+            }
+        }
+    }
+    stack.width()
+}
+
 // ---- Scroll rail: how far through a paged viewport you are --------------------------------------
 
 /// The rail's bar width, and the corner that makes it a pill. A **6px** bar is the design's, and the

@@ -16,7 +16,9 @@ use plx_ui::screen::{
 };
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
-use plx_ui::widgets::{badge, badge_w, resolve_tex_wh_on, BadgeStyle};
+use plx_ui::widgets::{
+    badge, badge_w, dotted_run_measured, dotted_run_measured_w, resolve_tex_wh_on, BadgeStyle,
+};
 use plx_ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -272,7 +274,7 @@ impl InfoPanelState {
         );
         // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
         // title/synopsis layout below, rather than inside its own draw block further down — see
-        // [`chip_items`]'s doc for issue #26 itself; the reason this part specifically has to happen
+        // [`ChipRow`]'s doc for issue #26 itself; the reason this part specifically has to happen
         // before `span` is a second, smaller bug the same fix could otherwise reintroduce. `span` folds
         // in a fixed `gap_tags + tag_h` for this row whenever it might have anything to say
         // (`has_tags`), which used to be exactly right because the row always drew SOMETHING once
@@ -293,7 +295,8 @@ impl InfoPanelState {
         // `has_tags` is the cheap pre-filter (a handful of comparisons, no allocation) that skips this
         // entirely for the common "nothing at all to report" case; once it's true the row still might
         // fit zero chips (see above), which is exactly what `n` then says.
-        let (chips, items, kept, n): (Vec<Chip>, Vec<Item>, Kept, usize) = if has_tags {
+        let mut chips = ChipRow::new();
+        let (kept, n) = if has_tags {
             let mut meta = Vec::new();
             if let Some(x) = d {
                 for g in x.genres.iter().take(2) {
@@ -307,27 +310,13 @@ impl InfoPanelState {
                 meta.push(plx_ui::fmt::duration(dur_ms));
             }
             // The item's own facts are ONE text run, its parts a dot apart exactly as the Detail
-            // page's identity line spaces them (`widgets::dotted_run`: `space::SM` each side of the
-            // dot), and the badges follow at the same `SM` / `XS` the identity line gives its
-            // badges. Nothing about the spacing is baked into a string.
-            //
-            // pure measurement — no draw — so every candidate's width is known before any of them
-            // touches the screen
-            let text_w = |s: &str, bold: c_int| -> f32 {
-                measure.width_str(s, theme::size::CAPTION, bold != 0)
-            };
+            // page's identity line spaces them (`widgets::dotted_run_measured`: `space::SM` each side
+            // of the dot), and the badges follow at the same `SM` / `XS` the identity line gives its
+            // badges. Nothing about the spacing is baked into a string. Every candidate's width is
+            // known before any of them touches the screen.
             let has_meta = !meta.is_empty();
-            // The dot is measured only when a dot will be drawn (a lone part has none), so a row
-            // without one asks for no extra width.
-            let dot_w = if meta.len() > 1 || (has_meta && now_fact.is_some()) {
-                text_w(DOT, 0)
-            } else {
-                0.0
-            };
-
-            let mut chips: Vec<Chip> = Vec::with_capacity(7);
             if has_meta {
-                chips.push(Chip::run(meta, false, 1, white, dot_w, &text_w));
+                chips.push(Chip::run(&meta, false, 1, white, measure));
             }
             // …then the live playback fact, in its own quieter ink. It is a separate run rather than
             // one more entry joined into `meta` because it is a different KIND of statement — a fact
@@ -343,16 +332,15 @@ impl InfoPanelState {
             // It continues the meta run, so it leads with a dot when there is a meta run. Whether it is
             // needed depends only on whether the meta line EXISTS, which is known right here — not on
             // whether the meta line ends up FITTING. By construction a chip only draws once every
-            // higher-priority chip already fit (see [`chip_items`]'s tail-first drop), so by the time
+            // higher-priority chip already fit (see [`ChipRow`]'s tail-first drop), so by the time
             // this fact chip is actually on screen those two questions have the same answer.
             if let Some(fact) = now_fact.as_ref() {
                 chips.push(Chip::run(
-                    vec![fact.clone()],
+                    std::slice::from_ref(fact),
                     has_meta,
                     0,
                     theme::TEXT_TERTIARY,
-                    dot_w,
-                    &text_w,
+                    measure,
                 ));
             }
             // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
@@ -372,13 +360,11 @@ impl InfoPanelState {
                 chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_ad().to_string(), measure));
             }
 
-            let items = chip_items(&chips);
-            let row = chip_row(&items, tx);
+            let row = chips.row(tx);
             let kept = row.fit(tw);
-            let n = row.kept(kept).placed().count();
-            (chips, items, kept, n)
+            (kept, row.kept(kept).placed().count())
         } else {
-            (Vec::new(), Vec::new(), Kept::ALL, 0)
+            (Kept::ALL, 0)
         };
 
         // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
@@ -442,12 +428,12 @@ impl InfoPanelState {
         // chips are hidden outright rather than faded: each one is a discrete fact (a word, a bordered
         // badge), and a badge sliced in half by a fade band reads as a rendering bug, not as "there was
         // more" — a clean drop keeps every chip that IS shown fully legible, which a fade cannot
-        // promise once it crosses a border. [`chip_items`] + `HStack::fit` is the pure packer that turns the
+        // promise once it crosses a border. [`ChipRow`] + `HStack::fit` is the pure packer that turns the
         // measured candidates into a cut, so the maths is pinned by a host test with no font involved.
         if n > 0 {
             ty += gap_tags;
             let my = ty + tag_h * 0.5; // vertical centre of the tag row
-            draw_chip_row(p, &chips, chip_row(&items, tx).kept(kept), my, measure);
+            draw_chip_row(p, &chips, chips.row(tx).kept(kept), my, measure);
         }
     }
 }
@@ -721,11 +707,7 @@ pub fn playback_now(
     })
 }
 
-/// The separator between the parts of a text run: the same middle dot the Detail page's identity
-/// line draws (`widgets::dotted_run`), regular weight, in the separator ink.
-const DOT: &str = "\u{b7}";
-
-/// One candidate on the metadata/badge row — see [`chip_items`] for why `draw` measures every chip
+/// One candidate on the metadata/badge row — see [`ChipRow`] for why `draw` measures every chip
 /// before drawing any of them, rather than drawing straight through and letting the row run under
 /// the action-button column (issue #26).
 struct Chip {
@@ -740,45 +722,29 @@ struct Chip {
 }
 
 enum ChipKind {
-    /// A text run (the meta line, or the live playback fact): its cells, one [`Item`] per cell for
-    /// the run's own [`HStack`], and its bold flag and ink, since the two runs on this row are
-    /// inked differently (see the call site).
-    Run { cells: Vec<Cell>, items: Vec<Item>, bold: c_int, col: [f32; 4] },
+    /// A text run (the meta line, or the live playback fact): its parts only, since the dots
+    /// between them and the air around them belong to `widgets::dotted_run_measured` at draw time;
+    /// `lead_dot` continues the run before it, and the two runs on this row are inked differently
+    /// (see the call site).
+    Run { parts: Vec<CString>, lead_dot: bool, bold: c_int, col: [f32; 4] },
     /// An outlined capability badge ([`meta_badge`]) saying this.
     Badge(String),
 }
 
-/// One piece of a text run: a part, or the dot between two.
-struct Cell {
-    text: String,
-    dot: bool,
-}
-
 impl Chip {
     /// A text run of `parts`, a dot between each pair and, with `lead_dot`, one before the first (a
-    /// run that continues the one before it). Spaced exactly like Detail's identity line: the
-    /// parts and dots are ONE [`HStack`] run `space::SM` apart. `text_w` measures a part at the
-    /// row's size; `dot_w` is the dot's width (only read when a dot is drawn).
+    /// run that continues the one before it). Spaced exactly like Detail's identity line, by the
+    /// same dotted-run idiom (`space::SM` every side of the dot), and measured by it.
     fn run(
-        parts: Vec<String>,
+        parts: &[String],
         lead_dot: bool,
         bold: c_int,
         col: [f32; 4],
-        dot_w: f32,
-        text_w: &dyn Fn(&str, c_int) -> f32,
+        measure: &dyn plx_machine::machine::Measure,
     ) -> Self {
-        let mut cells = Vec::with_capacity(2 * parts.len());
-        let mut items = Vec::with_capacity(2 * parts.len());
-        for (i, part) in parts.into_iter().enumerate() {
-            if i > 0 || lead_dot {
-                cells.push(Cell { text: DOT.to_string(), dot: true });
-                items.push(Item::new(dot_w));
-            }
-            items.push(Item::new(text_w(&part, bold)));
-            cells.push(Cell { text: part, dot: false });
-        }
-        let w = HStack::new(&items, theme::space::SM, Align::Leading(0.0)).width();
-        Self { kind: ChipKind::Run { cells, items, bold, col }, w }
+        let parts: Vec<CString> = parts.iter().filter_map(|s| CString::new(s.as_str()).ok()).collect();
+        let w = dotted_run_measured_w(measure, &parts, theme::size::CAPTION, bold, lead_dot, theme::space::SM);
+        Self { kind: ChipKind::Run { parts, lead_dot, bold, col }, w }
     }
 
     /// An outlined badge saying `label`, as wide as [`badge_w`] says.
@@ -794,15 +760,20 @@ impl Chip {
 /// tail.
 const CHIP_PRIORITY: u8 = 1;
 
-/// **The chip row as an [`Item`] per chip, in priority order** — the input of `HStack::fit` (issue
-/// #26). Host-testable on purpose: no `Painter`, no `plx_gfx::text::text_width` (that needs a live
-/// SDL2_ttf font the host test binary never loads; see `text.rs::text_width`'s own doc on why
-/// measurement is the "impure half"). `draw` measures every candidate chip FIRST — meta text
-/// (genres/year/duration), then the live playback fact, then the rating/audio/CC/SDH/AD badges, in
-/// that fixed priority order (see the call site for why that order) — and builds the row from those
-/// widths.
+/// The most chips the row can hold: one per kind it can show — the item's meta run, the live
+/// playback fact, the rating, the premium-audio tag, CC, SDH and AD.
+const MAX_CHIPS: usize = 7;
+
+/// **The chip row: every candidate chip and its [`Item`], in priority order** — the input of
+/// `HStack::fit` (issue #26). Fixed storage, because the card draws ~60 times a second and a row
+/// of at most [`MAX_CHIPS`] kinds needs no heap of its own. Host-testable on purpose: no `Painter`,
+/// no `plx_gfx::text::text_width` (that needs a live SDL2_ttf font the host test binary never loads;
+/// see `text.rs::text_width`'s own doc on why measurement is the "impure half"). `draw` measures
+/// every candidate chip FIRST — meta text (genres/year/duration), then the live playback fact, then
+/// the rating/audio/CC/SDH/AD badges, in that fixed priority order (see the call site for why that
+/// order) — and builds the row from those widths.
 ///
-/// The spacing is Detail's identity line's: chips stand `space::SM` apart ([`chip_row`]), a badge
+/// The spacing is Detail's identity line's: chips stand `space::SM` apart ([`ChipRow::row`]), a badge
 /// leaves `space::XS` before the next badge (so a text run → first badge is `SM`, badge → badge
 /// `XS`).
 ///
@@ -814,44 +785,65 @@ const CHIP_PRIORITY: u8 = 1;
 /// room is `draw`'s `tw`: the action-button column's left edge minus this panel's own text-column
 /// gutter, the same right edge the title and synopsis above this row already respect. That is the
 /// actual fix for #26 — the CTA disappearing under a long chip list.
-fn chip_items(chips: &[Chip]) -> Vec<Item> {
-    chips
-        .iter()
-        .map(|chip| {
-            let item = Item::new(chip.w).priority(CHIP_PRIORITY);
-            match chip.kind {
-                ChipKind::Badge(_) => item.after(theme::space::XS),
-                ChipKind::Run { .. } => item,
-            }
-        })
-        .collect()
+struct ChipRow {
+    chips: [Option<Chip>; MAX_CHIPS],
+    items: [Item; MAX_CHIPS],
+    n: usize,
 }
 
-/// The chip row as one run from the text column's left edge `tx`, `space::SM` between neighbours.
-fn chip_row(items: &[Item], tx: f32) -> HStack<'_> {
-    HStack::new(items, theme::space::SM, Align::Leading(tx))
+impl ChipRow {
+    fn new() -> Self {
+        Self { chips: [const { None }; MAX_CHIPS], items: [Item::absent(); MAX_CHIPS], n: 0 }
+    }
+
+    /// Append the next-lowest-priority chip.
+    fn push(&mut self, chip: Chip) {
+        debug_assert!(self.n < MAX_CHIPS, "one chip per kind");
+        if self.n == MAX_CHIPS {
+            return;
+        }
+        let item = Item::new(chip.w).priority(CHIP_PRIORITY);
+        self.items[self.n] = match chip.kind {
+            ChipKind::Badge(_) => item.after(theme::space::XS),
+            ChipKind::Run { .. } => item,
+        };
+        self.chips[self.n] = Some(chip);
+        self.n += 1;
+    }
+
+    /// The chips as one run from the text column's left edge `tx`, `space::SM` between neighbours.
+    fn row(&self, tx: f32) -> HStack<'_> {
+        HStack::new(&self.items[..self.n], theme::space::SM, Align::Leading(tx))
+    }
 }
 
-/// Draw the chips `row` places (its survivors), centred on `my`: each text run as its cells (parts
-/// in the run's ink, dots in the separator ink), each badge through [`meta_badge`].
+/// Draw the chips `row` places (its survivors), centred on `my`: each text run through the shared
+/// dotted-run idiom (parts in the run's ink, dots in the separator ink), each badge through
+/// [`meta_badge`].
 fn draw_chip_row(
     p: Painter,
-    chips: &[Chip],
+    chips: &ChipRow,
     row: HStack<'_>,
     my: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
     for placed in row.placed() {
-        match &chips[placed.i].kind {
-            ChipKind::Run { cells, items, bold, col } => {
+        let Some(chip) = chips.chips[placed.i].as_ref() else { continue };
+        match &chip.kind {
+            ChipKind::Run { parts, lead_dot, bold, col } => {
                 let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, *bold, my);
-                let run = HStack::new(items, theme::space::SM, Align::Leading(placed.x));
-                for cell in run.placed() {
-                    let c = &cells[cell.i];
-                    let Ok(cs) = CString::new(c.text.as_str()) else { continue };
-                    let (ink, weight) = if c.dot { (theme::TEXT_SEPARATOR, 0) } else { (*col, *bold) };
-                    p.text(cs.as_ptr(), cell.x, y, theme::size::CAPTION, ink, 0, weight);
-                }
+                dotted_run_measured(
+                    p,
+                    measure,
+                    parts,
+                    placed.x,
+                    y,
+                    theme::size::CAPTION,
+                    *col,
+                    *bold,
+                    *lead_dot,
+                    theme::space::SM,
+                );
             }
             ChipKind::Badge(label) => {
                 meta_badge(p, placed.x, my, label, measure);
@@ -862,22 +854,31 @@ fn draw_chip_row(
 
 #[cfg(test)]
 mod tests {
-    use super::{chip_items, chip_row, draw_chip_row, playback_now, Chip, ChipKind, DOT};
+    use super::{draw_chip_row, playback_now, Chip, ChipKind, ChipRow};
     use plx_ui::fixture::FixtureMeasure;
     use plx_ui::theme::space;
 
     /// A text chip / badge chip of a given width, to grade the row's spacing and cut without a font.
     fn text(w: f32) -> Chip {
-        Chip { kind: ChipKind::Run { cells: vec![], items: vec![], bold: 0, col: plx_ui::theme::TEXT_PRIMARY }, w }
+        Chip { kind: ChipKind::Run { parts: vec![], lead_dot: false, bold: 0, col: plx_ui::theme::TEXT_PRIMARY }, w }
     }
     fn badge(w: f32) -> Chip {
         Chip { kind: ChipKind::Badge(String::new()), w }
     }
 
+    /// The row of `chips`, in priority order.
+    fn row_of(chips: impl IntoIterator<Item = Chip>) -> ChipRow {
+        let mut row = ChipRow::new();
+        for chip in chips {
+            row.push(chip);
+        }
+        row
+    }
+
     /// How many of `chips` the row keeps in `room` px (what `draw` computes as `n`).
-    fn kept_in(chips: &[Chip], room: f32) -> usize {
-        let items = chip_items(chips);
-        let row = chip_row(&items, 0.0);
+    fn kept_in(chips: impl IntoIterator<Item = Chip>, room: f32) -> usize {
+        let chips = row_of(chips);
+        let row = chips.row(0.0);
         row.kept(row.fit(room)).placed().count()
     }
 
@@ -886,9 +887,8 @@ mod tests {
     /// no raw 18 / 12), and a run → run is `SM` too (the fact run carries its own leading dot).
     #[test]
     fn the_rows_gaps_are_the_identity_lines_tokens() {
-        let chips = [text(100.0), text(50.0), badge(60.0), badge(70.0), badge(80.0)];
-        let items = chip_items(&chips);
-        let spans: Vec<_> = chip_row(&items, 462.0).placed().collect();
+        let chips = row_of([text(100.0), text(50.0), badge(60.0), badge(70.0), badge(80.0)]);
+        let spans: Vec<_> = chips.row(462.0).placed().collect();
         let gap = |i: usize| spans[i + 1].x - (spans[i].x + spans[i].w);
         assert_eq!(spans[0].x, 462.0);
         assert_eq!([gap(0), gap(1), gap(2), gap(3)], [space::SM, space::SM, space::XS, space::XS]);
@@ -913,7 +913,7 @@ mod tests {
 
         // in this row's fixed priority order — meta, fact, rating, audio, CC, SDH, AD — mirroring
         // real measured widths at `size::CAPTION`.
-        let chips = [
+        let chips = row_of([
             text(480.0),  // "Action · Adventure · 2019 · 1h 32m"
             text(300.0),  // "· Converting · HEVC"
             badge(90.0),  // rating badge
@@ -921,12 +921,11 @@ mod tests {
             badge(60.0),  // CC
             badge(74.0),  // SDH
             badge(60.0),  // AD
-        ];
-        let items = chip_items(&chips);
-        let all = chip_row(&items, text_x);
+        ]);
+        let all = chips.row(text_x);
         assert!(all.width() > avail_w, "this list must not all fit in {avail_w}px — that is the bug being reproduced");
         let row = all.kept(all.fit(avail_w));
-        assert!(row.placed().count() < chips.len());
+        assert!(row.placed().count() < 7);
         let end = row.placed().last().map_or(text_x, |s| s.x + s.w);
         assert!(end - text_x <= avail_w, "drawn chips must never reach the action column");
     }
@@ -939,30 +938,29 @@ mod tests {
         let chips = [text(50.0), text(60.0), text(10.0)];
         // room 100: chip 0 (50) fits, chip 1 needs SM + 60 more (126 total, too much) — stop.
         // chip 2 alone would fit in the remaining 50px, but it is never reached.
-        assert_eq!(kept_in(&chips, 100.0), 1);
+        assert_eq!(kept_in(chips, 100.0), 1);
     }
 
     /// A single chip wider than the whole lane draws nothing rather than spilling past the room —
     /// there is no partial chip.
     #[test]
     fn a_single_oversized_chip_is_dropped_whole() {
-        assert_eq!(kept_in(&[text(2000.0)], 964.0), 0);
+        assert_eq!(kept_in([text(2000.0)], 964.0), 0);
     }
 
     /// Exact-fit boundary: a chip that lands EXACTLY on the room is kept, not dropped.
     #[test]
     fn an_exact_fit_is_kept() {
-        let chips = [text(100.0), text(50.0)];
-        assert_eq!(kept_in(&chips, 150.0 + space::SM), 2);
-        assert_eq!(kept_in(&chips, 150.0 + space::SM - 1.0), 1);
+        assert_eq!(kept_in([text(100.0), text(50.0)], 150.0 + space::SM), 2);
+        assert_eq!(kept_in([text(100.0), text(50.0)], 150.0 + space::SM - 1.0), 1);
     }
 
     /// No candidates, or no room at all — both are 0, not a panic.
     #[test]
     fn empty_or_zero_width_is_zero_chips() {
-        assert_eq!(kept_in(&[], 964.0), 0);
-        assert_eq!(kept_in(&[text(10.0)], 0.0), 0);
-        assert_eq!(kept_in(&[text(10.0)], -5.0), 0);
+        assert_eq!(kept_in([], 964.0), 0);
+        assert_eq!(kept_in([text(10.0)], 0.0), 0);
+        assert_eq!(kept_in([text(10.0)], -5.0), 0);
     }
 
     /// **Q3: the info card's metadata line is spaced exactly like Detail's identity line** — read off
@@ -977,19 +975,17 @@ mod tests {
         let m = FixtureMeasure;
         let sz = plx_ui::theme::size::CAPTION;
         let w = |s: &str, bold: i32| m.width_str(s, sz, bold != 0);
-        let dot_w = w(DOT, 0);
-        let text_w = |s: &str, bold: i32| w(s, bold);
         let ink = plx_ui::theme::TEXT_PRIMARY;
-        let meta = Chip::run(vec!["Action".into(), "2019".into(), "1h 32m".into()], false, 1, ink, dot_w, &text_w);
-        let fact = Chip::run(vec!["Direct Play".into()], true, 0, plx_ui::theme::TEXT_TERTIARY, dot_w, &text_w);
-        let chips = [meta, fact, Chip::badge("PG-13".into(), &m), Chip::badge("CC".into(), &m)];
-        let items = chip_items(&chips);
-        let row = chip_row(&items, 462.0);
+        let meta = Chip::run(&["Action".into(), "2019".into(), "1h 32m".into()], false, 1, ink, &m);
+        let fact = Chip::run(&["Direct Play".into()], true, 0, plx_ui::theme::TEXT_TERTIARY, &m);
+        let chips = row_of([meta, fact, Chip::badge("PG-13".into(), &m), Chip::badge("CC".into(), &m)]);
+        let row = chips.row(462.0);
         let draw = || draw_chip_row(plx_ui::Painter::recording(), &chips, row, 600.0, &m);
         let runs = plx_ui::draw_census::capture_runs(draw);
         let rrects: Vec<_> = plx_ui::draw_census::capture(draw).into_iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| r).collect();
         let texts: Vec<_> = runs.iter().map(|r| (r.text.clone(), r.at.x, r.bold, r.ink)).collect();
         let words: Vec<&str> = texts.iter().map(|(t, ..)| t.as_str()).collect();
+        const DOT: &str = "\u{b7}";
         assert_eq!(words, ["Action", DOT, "2019", DOT, "1h 32m", DOT, "Direct Play", "PG-13", "CC"]);
         // each text run begins one SM after the advance of the one before it, in the row's one pad
         for pair in texts[..7].windows(2) {
@@ -1017,18 +1013,19 @@ mod tests {
     /// of it leads with none — no stray separator at the head of the row.
     #[test]
     fn a_lone_part_or_a_fact_without_a_meta_run_draws_no_dot() {
+        use plx_machine::machine::Measure as _;
         let m = FixtureMeasure;
-        let text_w = |s: &str, _: i32| s.len() as f32 * 7.0;
+        let sz = plx_ui::theme::size::CAPTION;
         let ink = plx_ui::theme::TEXT_PRIMARY;
-        let lone = Chip::run(vec!["2019".into()], false, 1, ink, 0.0, &text_w);
-        assert_eq!(lone.w, 28.0, "one part: its width, no dot, no gap");
-        let chips = [lone, Chip::run(vec!["Direct Play".into()], false, 0, ink, 0.0, &text_w)];
-        let items = chip_items(&chips);
+        let lone = Chip::run(&["2019".into()], false, 1, ink, &m);
+        assert_eq!(lone.w, m.width_str("2019", sz, true), "one part: its width, no dot, no gap");
+        let chips = row_of([lone, Chip::run(&["Direct Play".into()], false, 0, ink, &m)]);
         let runs = plx_ui::draw_census::capture_runs(|| {
-            draw_chip_row(plx_ui::Painter::recording(), &chips, chip_row(&items, 0.0), 0.0, &m);
+            draw_chip_row(plx_ui::Painter::recording(), &chips, chips.row(0.0), 0.0, &m);
         });
         assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["2019", "Direct Play"]);
-        assert!((runs[1].at.x - (runs[0].at.x + 28.0) - space::SM).abs() < 0.5, "two runs stand one SM apart");
+        let first = m.width_str("2019", sz, true);
+        assert!((runs[1].at.x - (runs[0].at.x + first) - space::SM).abs() < 0.5, "two runs stand one SM apart");
     }
 
     /// One slot-free fit case through the drawn row: dropping the tail removes its runs from the
@@ -1036,9 +1033,8 @@ mod tests {
     #[test]
     fn a_dropped_chip_is_not_painted() {
         let m = FixtureMeasure;
-        let chips = [text(100.0), Chip::badge("CC".into(), &m)];
-        let items = chip_items(&chips);
-        let all = chip_row(&items, 0.0);
+        let chips = row_of([text(100.0), Chip::badge("CC".into(), &m)]);
+        let all = chips.row(0.0);
         let row = all.kept(all.fit(100.0));
         let log = plx_ui::draw_census::capture(|| draw_chip_row(plx_ui::Painter::recording(), &chips, row, 0.0, &m));
         assert!(log.iter().all(|(tag, _)| *tag != 2), "the badge was dropped, so no rrect is drawn");
