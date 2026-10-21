@@ -1132,7 +1132,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // it. Nothing is stranded by going to the television's Home — the question is
         // neither answered nor dismissed, and selecting the tile again comes back to it.
         if tree_owns_key {
-            app.inputs.push(super::bridge::key_input(sym, wcode, state, tree_tick, plx_machine::machine::Source::Sdl));
+            // Ingress has already recognized this as FRESH, even if the driver stamped repeat.
+            // Carry that decision to delivery; true repeats returned through the earlier arm.
+            app.inputs.push(super::bridge::key_input(sym, wcode, state & !0x100, tree_tick, plx_machine::machine::Source::Sdl));
             return;
         }
         // `Route::Login | Route::Profiles` is deliberately absent here (phase 6, mirroring
@@ -4106,6 +4108,29 @@ mod lifecycle_regression_tests {
                     vec![plx_screens::registry::PlayerReq::Exit]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn player_sdl_fresh_back_with_driver_repeat_stamp_hides_once() {
+        let _serial = plx_base::testlock::serial();
+        let _paused = TransportPaused::set(false);
+        for (sym, wcode) in [(0, 482), (0, 461), (27, 0)] {
+            let mut app = player_sdl_app();
+            // The keyboard can eat a release: a different sym is still recorded as down when
+            // the driver marks the FIRST Back as repeat. Ingress already recognizes it as fresh.
+            player_sdl(&mut app, encode_key(plx_ui::consts::SDLK_DOWN, 0, true), 900);
+            assert!(dispatch_player_sdl(&mut app, 916).is_empty());
+            player_sdl(&mut app, encode_key_repeat(sym, wcode), 1_000);
+            assert!(dispatch_player_sdl(&mut app, 1_016).is_empty());
+            assert!(super::super::bridge::player(&app.pages).unwrap().hud.dismissed,
+                "an ingress-fresh Back must hide the visible HUD even with the driver repeat bit");
+            player_sdl(&mut app, encode_key_repeat(sym, wcode), 1_200);
+            player_sdl(&mut app, encode_key(sym, wcode, false), 1_220);
+            assert!(dispatch_player_sdl(&mut app, 1_236).is_empty(), "the held gesture cannot exit");
+            player_sdl(&mut app, encode_key(sym, wcode, true), 1_300);
+            assert_eq!(dispatch_player_sdl(&mut app, 1_316),
+                vec![plx_screens::registry::PlayerReq::Exit]);
         }
     }
 
