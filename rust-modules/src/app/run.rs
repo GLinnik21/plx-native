@@ -37,7 +37,7 @@
 //! `hero_osc_tick`, `search_osc_tick`, …) and the replay-after-EOS check in `playback_tick` moved
 //! the same way; see `dev::scenarios`'s own module doc for the full inventory.
 use super::*;
-
+use plx_base::task::watchdog::{LoopPhase, LoopPhases};
 /// One lazy product frame-tail hash path for recording and replay grading alike.
 pub(super) fn recorder_end_frame(
     rec: &mut super::recorder::Recplay,
@@ -107,9 +107,10 @@ pub(crate) unsafe fn run(app: &mut App) {
     let watchdog = plx_base::task::watchdog::LoopWatch::start();
     let mut clock_notice = super::clock_notice::ClockNotice::new();
     let mut hint_taught = super::hint_taught::HintTaught::new();
+    let mut phases = LoopPhases::new(); // names the phase a hang lands in (watchdog::LoopPhase)
     while app.running {
         watchdog.advance();
-        let _frame_scope = plx_base::task::FrameScope::enter();
+        phases.enter(LoopPhase::FrameBegin); let _frame_scope = plx_base::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(super::window_activity::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
@@ -137,7 +138,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
         // below consumes them exactly as it consumed the originals.
-        if let Some(t) = app.rec.replay_tick() {
+        phases.enter(LoopPhase::EventIngest); if let Some(t) = app.rec.replay_tick() {
             clock::set_replay(t.ms);
             for v in app.rec.replay_inputs() {
                 replay_inject(app, fr, &v);
@@ -180,7 +181,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // The `results` phase is four steps (scenarios, playback pump, clock/press, result
         // landing); three of them carry their own FRAMEDROP spans (`scen`, `pump`, `land`), so a
         // slow `results=` names which held the frame.
-        let scenarios_ok = plx_base::diag::spans::span("scen", || {
+        phases.enter(LoopPhase::DevScenarios); let scenarios_ok = plx_base::diag::spans::span("scen", || {
             if app.boot_initial.is_some() {
                 crate::dev::scenarios::controlled_each_frame(app, fr)
             } else {
@@ -192,16 +193,16 @@ pub(crate) unsafe fn run(app: &mut App) {
             let _ = plx_base::diag::spans::take();
             continue;
         }
-        plx_base::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
-        clock_and_press(app, fr);
-        plx_base::diag::spans::span("land", || unsafe { land_results(app, fr) });
+        phases.enter(LoopPhase::PlaybackPump); plx_base::diag::spans::span("pump", || unsafe { playback_tick(app, fr) });
+        phases.enter(LoopPhase::FrameClock); clock_and_press(app, fr);
+        phases.enter(LoopPhase::LandResults); plx_base::diag::spans::span("land", || unsafe { land_results(app, fr) });
         app.instr.mark(plx_base::diag::heartbeat::Phase::Results); // results
         // **Was the player the page on top going INTO this frame?** The container's own commit
         // may take it off during `bridge::frame_with_tap` below, and the detail page it uncovers
         // has to be told to reveal the episode that played. This used to be a disagreement between
         // the tree and the loop's route mirror ("the tree still says player, the route already
         // says home"); with one authority it is an EDGE, read either side of the frame.
-        let was_player = super::bridge::player(&app.pages).is_some();
+        phases.enter(LoopPhase::PlayerSync); let was_player = super::bridge::player(&app.pages).is_some();
         // **Publish the playback session into the tree** (spec §2.3) before the dispatcher's frame
         // and the draw that follows it, so every owned screen in one frame reads one consistent
         // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
@@ -218,7 +219,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
-        let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
+        phases.enter(LoopPhase::DispatcherFrame); let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
             Ok(results) => results,
             Err(reason) => {
                 plx_base::eventlog::log(&format!("replay: REFUSED — {reason}"));
@@ -280,25 +281,25 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the wash's own dissolve is in it, and the function itself is gone now — every wash
         // dithers on every frame.)
         fr.underlay_moving |= tree_report.underlay_moving;
-        if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
+        phases.enter(LoopPhase::ContentRequests); if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
         content_requests(app, fr);
         crate::dev::scenarios::advance_content_boot(app, fr);
         loop_requests(app);
         app.instr.mark(plx_base::diag::heartbeat::Phase::NavCommit); // navcommit
-        update(app, fr);
+        phases.enter(LoopPhase::Update); update(app, fr);
         app.rec.content_results();
         app.instr.mark(plx_base::diag::heartbeat::Phase::TickDrain); // tick_drain
-        plx_platform::tv::window::frame_probe_prepare_begin();
+        phases.enter(LoopPhase::PrepareWindow); plx_platform::tv::window::frame_probe_prepare_begin();
         prepare_window(app, fr);
         plx_platform::tv::window::frame_probe_prepare_end();
-        present_and_swap(
+        phases.enter(LoopPhase::PresentAndSwap); present_and_swap(
             app,
             fr,
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             wslg_frame_budget,
         );
         if fr.present { watchdog.presented(); }
-        report(app, fr);
+        phases.enter(LoopPhase::FrameReport); report(app, fr);
         heartbeat(app, fr);
     }
 }
