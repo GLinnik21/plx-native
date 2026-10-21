@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T20:52:55Z",
+ "generated": "2026-10-21T20:55:30Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -108,18 +108,18 @@
   },
   {
    "change30_pct": -30.8,
-   "change7_pct": 19.5,
+   "change7_pct": 18.2,
    "d30": 681,
    "delta30": -209.5,
-   "delta7": 77.0,
+   "delta7": 72.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 256,
-   "n_prev": 216,
+   "n_prev": 215,
    "now": 471.5,
-   "prev7": 394.5,
+   "prev7": 399,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -128,18 +128,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -49.5,
-   "change7_pct": 6.9,
+   "change30_pct": -49.6,
+   "change7_pct": 6.7,
    "d30": 679.0,
-   "delta30": -336.0,
-   "delta7": 22,
+   "delta30": -336.5,
+   "delta7": 21.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 111,
-   "now": 343,
+   "now": 342.5,
    "prev7": 321,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": 14.8,
    "d30": 128.0,
    "delta30": 120.0,
-   "delta7": 32,
+   "delta7": 32.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 93,
-   "now": 248,
+   "now": 248.0,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 179.4,
-   "change7_pct": 1.5,
+   "change30_pct": 180.9,
+   "change7_pct": 2.1,
    "d30": 70.5,
-   "delta30": 126.5,
-   "delta7": 3,
+   "delta30": 127.5,
+   "delta7": 4.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 93,
-   "now": 197,
+   "now": 198.0,
    "prev7": 194,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.0,
+   "change7_pct": 8.4,
    "d30": null,
    "delta30": null,
-   "delta7": 11,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 93,
-   "now": 148,
+   "now": 148.5,
    "prev7": 137,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 5.9,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 93,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
@@ -657,6 +652,11 @@
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 31.5,
    "commits": [
     {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
@@ -718,6 +713,11 @@
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
     }
    ],
    "from": 216,
@@ -731,11 +731,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
@@ -779,6 +774,11 @@
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
     }
    ],
    "from": 46.5,
@@ -792,11 +792,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
@@ -840,6 +835,11 @@
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
     }
    ],
    "from": 132,
@@ -853,11 +853,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
@@ -901,6 +896,11 @@
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
     }
    ],
    "from": 108.7,
@@ -941,7 +941,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 248
+   "now": 248.0
   }
  ],
  "slowest_local": [
