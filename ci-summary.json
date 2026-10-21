@@ -1,20 +1,20 @@
 {
- "generated": "2026-10-21T09:58:49Z",
+ "generated": "2026-10-21T10:12:05Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 126.7,
+   "change7_pct": 121.4,
    "d30": null,
    "delta30": null,
-   "delta7": 71.9,
+   "delta7": 69.8,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 7,
-   "now": 128.7,
-   "prev7": 56.8,
+   "n_now": 5,
+   "n_prev": 8,
+   "now": 127.3,
+   "prev7": 57.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -24,18 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 39.6,
+   "change7_pct": 40.0,
    "d30": null,
    "delta30": null,
-   "delta7": 84,
+   "delta7": 85.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 296,
-   "prev7": 212,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 297.5,
+   "prev7": 212.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -44,39 +44,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 36.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": 37.7,
-   "group": "local",
-   "id": "bench.leaf",
-   "kind": "local",
-   "label": "Rebuild after editing plx_base",
-   "n_now": 8,
-   "n_prev": 7,
-   "now": 140.7,
-   "prev7": 103.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": -29.1,
-   "change7_pct": 35.4,
-   "d30": 682.0,
-   "delta30": -198.5,
-   "delta7": 126.5,
+   "change30_pct": -29.2,
+   "change7_pct": 35.0,
+   "d30": 681,
+   "delta30": -199,
+   "delta7": 125.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 266,
+   "n_now": 267,
    "n_prev": 220,
-   "now": 483.5,
+   "now": 482,
    "prev7": 357.0,
    "shown": true,
    "state": "worse",
@@ -87,18 +66,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 32.0,
+   "change7_pct": 31.2,
    "d30": null,
    "delta30": null,
-   "delta7": 87,
+   "delta7": 85.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 359,
-   "prev7": 272,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 357.5,
+   "prev7": 272.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -108,18 +87,60 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 27.9,
+   "change7_pct": 29.5,
    "d30": null,
    "delta30": null,
-   "delta7": 36,
+   "delta7": 13.7,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 60.2,
+   "prev7": 46.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 29.4,
+   "d30": null,
+   "delta30": null,
+   "delta7": 32.0,
+   "group": "local",
+   "id": "bench.leaf",
+   "kind": "local",
+   "label": "Rebuild after editing plx_base",
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 140.7,
+   "prev7": 108.7,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 28.3,
+   "d30": null,
+   "delta30": null,
+   "delta7": 36.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 165,
-   "prev7": 129,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 165.5,
+   "prev7": 129.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -128,19 +149,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -45.3,
-   "change7_pct": 15.7,
+   "change30_pct": -45.5,
+   "change7_pct": 15.2,
    "d30": 675,
-   "delta30": -306,
-   "delta7": 50,
+   "delta30": -307.0,
+   "delta7": 48.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 123,
-   "n_prev": 113,
-   "now": 369,
-   "prev7": 319,
+   "n_now": 122,
+   "n_prev": 114,
+   "now": 368.0,
+   "prev7": 319.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -150,18 +171,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.9,
+   "change7_pct": -2.9,
    "d30": null,
    "delta30": null,
-   "delta7": 1.7,
+   "delta7": -0.6,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 8,
-   "n_prev": 7,
-   "now": 23.4,
-   "prev7": 21.7,
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 21.7,
+   "prev7": 22.3,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -171,18 +192,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.9,
+   "change7_pct": 9.7,
    "d30": null,
    "delta30": null,
-   "delta7": 5.3,
+   "delta7": 4.0,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 8,
-   "n_prev": 7,
-   "now": 46.7,
-   "prev7": 41.3,
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 45.6,
+   "prev7": 41.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -192,51 +213,30 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 20.5,
+   "change7_pct": 8.1,
    "d30": null,
    "delta30": null,
-   "delta7": 9.4,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 8,
-   "n_prev": 7,
-   "now": 55.5,
-   "prev7": 46.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 23.1,
-   "d30": null,
-   "delta30": null,
-   "delta7": 237.9,
+   "delta7": 83.5,
    "group": "local",
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 6,
-   "n_prev": 4,
-   "now": 1267.7,
+   "n_now": 5,
+   "n_prev": 5,
+   "now": 1116.6,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1266.5
+     "now": 1116.0
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 987.0
+     "now": 973.0
     }
    ],
-   "prev7": 1029.8,
+   "prev7": 1033.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -245,19 +245,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 88.1,
-   "change7_pct": 11.2,
+   "change30_pct": 88.4,
+   "change7_pct": 11.3,
    "d30": 1125.5,
-   "delta30": 991.5,
-   "delta7": 213.0,
+   "delta30": 995.5,
+   "delta7": 216.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 94,
-   "n_prev": 77,
-   "now": 2117.0,
-   "prev7": 1904,
+   "n_now": 93,
+   "n_prev": 78,
+   "now": 2121,
+   "prev7": 1905.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -308,19 +308,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.3,
-   "change7_pct": 0.0,
+   "change30_pct": 31.9,
+   "change7_pct": -0.5,
    "d30": 232.0,
-   "delta30": 75.0,
-   "delta7": 0,
+   "delta30": 74.0,
+   "delta7": -1.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 307,
-   "prev7": 307,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 306.0,
+   "prev7": 307.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,19 +329,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.4,
-   "change7_pct": 11.9,
+   "change30_pct": 94.8,
+   "change7_pct": 12.2,
    "d30": 125.5,
-   "delta30": 118.5,
-   "delta7": 26.0,
+   "delta30": 119.0,
+   "delta7": 26.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 117,
-   "n_prev": 98,
-   "now": 244,
-   "prev7": 218.0,
+   "n_now": 116,
+   "n_prev": 99,
+   "now": 244.5,
+   "prev7": 218,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -351,18 +351,18 @@
   },
   {
    "change30_pct": 170.9,
-   "change7_pct": -31.4,
+   "change7_pct": -30.5,
    "d30": 70.5,
    "delta30": 120.5,
-   "delta7": -87.5,
+   "delta7": -84.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 117,
-   "n_prev": 98,
-   "now": 191,
-   "prev7": 278.5,
+   "n_now": 116,
+   "n_prev": 99,
+   "now": 191.0,
+   "prev7": 275,
    "shown": true,
    "state": "better",
    "state30": "worse",
@@ -375,15 +375,15 @@
    "change7_pct": -0.6,
    "d30": null,
    "delta30": null,
-   "delta7": -1,
+   "delta7": -1.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 173,
-   "prev7": 174,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 173.0,
+   "prev7": 174.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -393,18 +393,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.7,
+   "change7_pct": 14.6,
    "d30": null,
    "delta30": null,
-   "delta7": 21,
+   "delta7": 21.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 164,
-   "prev7": 143,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 164.5,
+   "prev7": 143.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -414,18 +414,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.5,
+   "change7_pct": 11.9,
    "d30": null,
    "delta30": null,
-   "delta7": 15.5,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 117,
-   "n_prev": 98,
-   "now": 150,
-   "prev7": 134.5,
+   "n_now": 116,
+   "n_prev": 99,
+   "now": 150.0,
+   "prev7": 134,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -435,19 +435,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 23.1,
+   "change7_pct": 8.1,
    "d30": null,
    "delta30": null,
-   "delta7": 238.0,
+   "delta7": 84.0,
    "group": "local",
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 6,
-   "n_prev": 4,
-   "now": 1266.5,
+   "n_now": 5,
+   "n_prev": 5,
+   "now": 1116.0,
    "parent": "bench.check",
-   "prev7": 1028.5,
+   "prev7": 1032.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -457,19 +457,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.6,
+   "change7_pct": 7.8,
    "d30": null,
    "delta30": null,
-   "delta7": 102.5,
+   "delta7": 70.0,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 6,
-   "n_prev": 4,
-   "now": 987.0,
+   "n_now": 5,
+   "n_prev": 5,
+   "now": 973.0,
    "parent": "bench.check",
-   "prev7": 884.5,
+   "prev7": 903.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -508,10 +508,10 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 117,
-   "n_prev": 98,
-   "now": 18,
-   "prev7": 17.0,
+   "n_now": 116,
+   "n_prev": 99,
+   "now": 18.0,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -566,15 +566,15 @@
    "change7_pct": -25.0,
    "d30": 677.0,
    "delta30": -674.0,
-   "delta7": -1,
+   "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 107,
-   "n_prev": 101,
-   "now": 3,
-   "prev7": 4,
+   "n_now": 106,
+   "n_prev": 102,
+   "now": 3.0,
+   "prev7": 4.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -584,7 +584,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 23.7,
+   "change7_pct": 8.8,
    "d30": null,
    "delta30": null,
    "delta7": 0.1,
@@ -592,8 +592,8 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 8,
-   "n_prev": 7,
+   "n_now": 7,
+   "n_prev": 8,
    "now": 0.7,
    "prev7": 0.6,
    "shown": false,
@@ -606,7 +606,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 126.7,
+   "change_pct": 121.4,
    "commits": [
     {
      "pr": 871,
@@ -659,15 +659,15 @@
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
-   "from": 56.8,
+   "from": 57.5,
    "id": "bench.tests",
    "label": "Unit suite",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 128.7
+   "to": 127.3
   },
   {
-   "change_pct": 39.6,
+   "change_pct": 40.0,
    "commits": [
     {
      "pr": 871,
@@ -720,76 +720,15 @@
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
-   "from": 212,
+   "from": 212.5,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 296
+   "to": 297.5
   },
   {
-   "change_pct": 36.6,
-   "commits": [
-    {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
-     "pr": 872,
-     "sha": "a06719da3",
-     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
-    },
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    }
-   ],
-   "from": 103.0,
-   "id": "bench.leaf",
-   "label": "Rebuild after editing plx_base",
-   "since": "2026-10-19",
-   "threshold_pct": 25.0,
-   "to": 140.7
-  },
-  {
-   "change_pct": 35.4,
+   "change_pct": 35.0,
    "commits": [
     {
      "pr": 871,
@@ -847,10 +786,10 @@
    "label": "PR CI wait",
    "since": "2026-10-21",
    "threshold_pct": 25.0,
-   "to": 483.5
+   "to": 482
   },
   {
-   "change_pct": 32.0,
+   "change_pct": 31.2,
    "commits": [
     {
      "pr": 871,
@@ -903,15 +842,15 @@
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
-   "from": 272,
+   "from": 272.5,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 359
+   "to": 357.5
   },
   {
-   "change_pct": 27.9,
+   "change_pct": 29.5,
    "commits": [
     {
      "pr": 871,
@@ -964,12 +903,134 @@
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
-   "from": 129,
+   "from": 46.5,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-10-19",
+   "threshold_pct": 25.0,
+   "to": 60.2
+  },
+  {
+   "change_pct": 29.4,
+   "commits": [
+    {
+     "pr": 871,
+     "sha": "a9dcfe67d",
+     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
+    },
+    {
+     "pr": 875,
+     "sha": "5d74e0ff1",
+     "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
+    },
+    {
+     "pr": 877,
+     "sha": "659cca7a1",
+     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
+    },
+    {
+     "pr": 888,
+     "sha": "623715b3d",
+     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    }
+   ],
+   "from": 108.7,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-10-19",
+   "threshold_pct": 25.0,
+   "to": 140.7
+  },
+  {
+   "change_pct": 28.3,
+   "commits": [
+    {
+     "pr": 871,
+     "sha": "a9dcfe67d",
+     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
+    },
+    {
+     "pr": 872,
+     "sha": "a06719da3",
+     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
+    },
+    {
+     "pr": 875,
+     "sha": "5d74e0ff1",
+     "title": "Library header: one gap between the controls, and Collections only with a known count"
+    },
+    {
+     "pr": 876,
+     "sha": "cc31d5489",
+     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
+    },
+    {
+     "pr": 877,
+     "sha": "659cca7a1",
+     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
+    },
+    {
+     "pr": 888,
+     "sha": "623715b3d",
+     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    }
+   ],
+   "from": 129.0,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 165
+   "to": 165.5
   }
  ],
  "schema": 2,
@@ -984,7 +1045,7 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 359
+   "now": 357.5
   },
   {
    "group": "ci",
@@ -996,13 +1057,13 @@
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 307
+   "now": 306.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 296
+   "now": 297.5
   }
  ],
  "slowest_local": [
@@ -1010,7 +1071,7 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1267.7
+   "now": 1116.6
   },
   {
    "group": "local",
@@ -1022,19 +1083,19 @@
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 128.7
+   "now": 127.3
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 55.5
+   "now": 60.2
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 46.7
+   "now": 45.6
   }
  ],
  "thresholds": {
