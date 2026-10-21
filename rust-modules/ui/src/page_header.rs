@@ -9,8 +9,8 @@
 //! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster's BUDGET is sized ONCE from its widest
 //! case (`widest`), so the room the left group may use never changes when a value changes; the
-//! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (a read-out: at least
-//! [`READOUT_GAP`]), right-anchored at [`TEXT_X1`]. Both groups are [`HStack`]s ([`crate::hstack`]):
+//! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (the filter
+//! read-out too, so it moves with the live cluster's width), right-anchored at [`TEXT_X1`]. Both groups are [`HStack`]s ([`crate::hstack`]):
 //! the stack places the left names and the cluster, and `width` / `budget_w` are the sums the packing
 //! and the budget read, so no `x += w + GAP` of the row's own can disagree with them.
 //!
@@ -70,10 +70,6 @@ pub const GRID_TOP: f32 = TOP + BLOCK_H;
 /// is one number, and every placement and every packing uses it. The breadcrumb's chevron takes the
 /// same air on each side ([`breadcrumb::AIR`]).
 pub const GAP: f32 = 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM;
-/// The least text-edge to text-edge gap between a read-out and the control after it (the gap the
-/// cluster is sized with). The read-out is anchored at the cluster's measured left edge, so the gap
-/// grows by however much narrower the live cluster is than its widest case.
-pub const READOUT_GAP: f32 = 64.0;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
 
@@ -98,8 +94,8 @@ pub struct HeaderItem {
     pub focusable: bool,
     /// Drawn quieter (an owner handle, an unavailable control).
     pub dimmed: bool,
-    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and at least [`READOUT_GAP`] before
-    /// the next item.
+    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`], no stop, one [`GAP`] before the next
+    /// item like any other (it moves with the live cluster's width).
     pub readout: bool,
     /// A control whose value is a count that comes and goes ("Collections · 4"): the widest value it
     /// ever wears, measured once. The slot sizes the cluster's BUDGET (`cluster_w`, `left_budget`:
@@ -209,13 +205,11 @@ const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
 
 /// One right-cluster item as the stack sees it: it DRAWS [`ink_w`], a [`HeaderItem::value_slot`] is
-/// its [`Item::slot`] (budget [`run_w`], never air), and a read-out stands [`READOUT_GAP`] from the
-/// control after it instead of [`GAP`]. The one place a right-cluster item becomes a stack item, so
+/// its [`Item::slot`] (budget [`run_w`], never air). The one place a right-cluster item becomes a stack item, so
 /// the cluster's budget ([`cluster_width`]) and its placement ([`PageHeader::layout`]) read one thing.
 fn stack_item(item: &HeaderItem, measure: &dyn Measure) -> Item {
     let drawn = Item::new(ink_w(item, measure));
-    let drawn = if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn };
-    if item.readout { drawn.after(READOUT_GAP) } else { drawn }
+    if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn }
 }
 
 /// The right cluster as stack items, in order.
@@ -223,24 +217,11 @@ fn cluster_items(items: &[HeaderItem], measure: &dyn Measure) -> Vec<Item> {
     items.iter().map(|item| stack_item(item, measure)).collect()
 }
 
-/// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
-/// read-out), each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
+/// Width of a cluster of items laid out with [`GAP`] between them, each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
 /// [`HStack::budget_w`].
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     HStack::new(&cluster_items(items, measure), GAP, Align::Leading(0.0)).budget_w()
 }
-
-/// **The readout pin.** A read-out leads the right cluster and stands at the cluster's measured left
-/// edge (`cluster_x0`, from the widest case), not one gap before the control after it, so a control
-/// after it that comes, goes or changes its count (or a new Sort value) moves nothing of it; the gap
-/// after it is [`READOUT_GAP`] plus however much narrower the live cluster is than its budget. The
-/// items after it are placed as if it stood at its unpinned place, so only the read-out moves. Set
-/// this `false` and the read-out stands exactly [`READOUT_GAP`] (64) before the control after it
-/// (the row's other gaps are [`GAP`], 58), and moves with every change of the live cluster's width;
-/// [`HeaderSwap`] carries only slotted controls, so it cuts to its new x rather than dissolving. No
-/// other item moves and the budget is unchanged. One equal [`GAP`] there also needs `stack_item`'s
-/// `.after(READOUT_GAP)` removed.
-const READOUT_PINNED: bool = true;
 
 impl PageHeader {
     /// `widest` is the right cluster in its widest case (every value at its longest): it sizes the
@@ -290,13 +271,11 @@ impl PageHeader {
         // above), never air between two items, so every gap of the row is the same whatever a count
         // holds. The cluster is right-anchored, so the items after a control whose count changes
         // stand still; the control's own label moves by the digits' width (`HeaderSwap` dissolves
-        // that). The read-out leads the cluster at its measured left edge (`READOUT_PINNED`), so a
-        // control after it that comes or goes (or changes its count) moves nothing of it.
+        // that). The read-out is the cluster's leading item and stands one gap before the next like any
+        // other, so it moves with the live cluster's width.
         let cluster = cluster_items(&self.spec.right, measure);
         for span in HStack::new(&cluster, GAP, Align::Trailing(x1)).placed() {
-            let it = &self.spec.right[span.i];
-            let at = if READOUT_PINNED && it.readout && span.i == 0 { cluster_x0.min(span.x) } else { span.x };
-            place(Slot::Right(span.i), at, span.w, it.focusable);
+            place(Slot::Right(span.i), span.x, span.w, self.spec.right[span.i].focusable);
         }
         HeaderLayout {
             items,
@@ -610,6 +589,26 @@ struct Carried {
     w: f32,
 }
 
+impl Carried {
+    /// Does the new row's `item` stand for this carried one? A slotted control is known by its
+    /// label; the row's read-out (there is one) by being the read-out, since its text IS what
+    /// changes ("24 of 27" to "8 of 27" is the same read-out saying another thing).
+    fn is(&self, item: &HeaderItem) -> bool {
+        if self.item.readout || item.readout { self.item.readout && item.readout } else { self.item.label == item.label }
+    }
+
+    /// Does `item`, standing at `x`, read differently from this carried one? A slotted control by
+    /// its value; a read-out by its text or by where it stands (it is unpinned, so it moves with
+    /// the cluster: Collections arriving, a count's digit count, the Sort value), because it has
+    /// no value to cross-fade and a move is a dissolve at each x, not a cut.
+    fn differs(&self, item: &HeaderItem, x: f32) -> bool {
+        if self.item.readout { self.item.label != item.label || (self.x - x).abs() >= SAME_X } else { self.item.value != item.value }
+    }
+}
+
+/// Does the header swap carry `item`: a slotted control, or the filter read-out?
+fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readout }
+
 /// **The header row's content swap**: when a rebuilt row changes a control that has a
 /// [`HeaderItem::value_slot`], the reader sees the change as a dissolve and not a cut. The label
 /// stays where it is drawn and the value beside it cross-fades in place, old number to new; a
@@ -617,7 +616,10 @@ struct Carried {
 /// control whose label stands at another x on the new row (a count of another digit count moves it
 /// by the digits' width, [`PageHeader::layout`] placing it by what it draws) does both: the old face
 /// leaves at the old x while the new one arrives at the new x. That is the SAME page's row changing
-/// ([`Self::begin`]); a switch to another library's row ([`Self::begin_switch`]) shows only what the
+/// ([`Self::begin`]). The filter read-out rides the same swap: it is unpinned (one gap before the
+/// next item), so it stands at another x when Collections arrives or leaves, its count changes digit
+/// count or the Sort value changes, and it says another thing as the filter narrows; each is that
+/// leave-and-arrive, never a cut. A switch to another library's row ([`Self::begin_switch`]) shows only what the
 /// new library has: a control the old one had is not drawn on it, even fading. All on [`Xfade`], the one
 /// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
 /// a timer of its own. Nothing glides: a label is never drawn between its two places.
@@ -629,8 +631,8 @@ struct Carried {
 /// two of them is paint.
 pub struct HeaderSwap {
     clock: Xfade,
-    /// The slotted controls of the row before the swap (none when that row had none, a control
-    /// then only arrives); empty at rest.
+    /// The slotted controls and the read-out of the row before the swap (none when that row had
+    /// none, a control then only arrives); empty at rest.
     from: Vec<Carried>,
     /// A swap was begun and its clock has not run out.
     running: bool,
@@ -687,7 +689,7 @@ impl HeaderSwap {
     fn begin_with(&mut self, old: &HeaderRow, new: &HeaderRow, edge: Edge) {
         if old.page.spec().crumb.is_some() || new.page.spec().crumb.is_some() { return self.end(); }
         let carry = |row: &HeaderRow| -> Vec<Carried> {
-            row.page.spec().right.iter().enumerate().filter(|(_, item)| item.value_slot.is_some()).filter_map(|(i, item)| {
+            row.page.spec().right.iter().enumerate().filter(|(_, item)| carried(item)).filter_map(|(i, item)| {
                 let at = row.layout.items.iter().find(|r| r.slot == Slot::Right(i))?;
                 Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w })
             }).collect()
@@ -696,8 +698,8 @@ impl HeaderSwap {
         let after = carry(new);
         let same = match edge {
             Edge::Fade => before.len() == after.len()
-                && before.iter().all(|b| after.iter().any(|a| a.item.label == b.item.label && a.item.value == b.item.value)),
-            Edge::Cut => after.iter().all(|a| before.iter().find(|b| b.item.label == a.item.label).is_none_or(|b| b.item.value == a.item.value)),
+                && before.iter().all(|b| after.iter().any(|a| b.is(&a.item) && !b.differs(&a.item, a.x))),
+            Edge::Cut => after.iter().all(|a| before.iter().find(|b| b.is(&a.item)).is_none_or(|b| !b.differs(&a.item, a.x))),
         };
         if same {
             // A switch is a different page: a Fade of the row it leaves must not outlive it (its
@@ -728,10 +730,13 @@ impl HeaderSwap {
     /// How far the swap has run, 0 (the old row) to 1 (the new one), eased.
     fn progress(&self) -> f32 { self.clock.alpha() }
 
-    /// Has the carried control `before` MOVED to `item` standing at `x`: its value changed and its
-    /// label stands at another x? Then its old face leaves at the old x and the new one arrives at
-    /// `x` (there is no place between them to cross-fade in).
+    /// Has the carried control `before` MOVED to `item` standing at `x`: it reads differently and
+    /// stands at another x? Then its old face leaves at the old x and the new one arrives at `x`
+    /// (there is no place between them to cross-fade in). A read-out that only says another thing
+    /// at the same x is no move either, but it has no value to cross-fade, so it too is a leave
+    /// and an arrival, both at that x.
     fn moved(before: &Carried, item: &HeaderItem, x: f32) -> bool {
+        if before.item.readout { return before.differs(item, x); }
         before.item.value != item.value && (before.x - x).abs() >= SAME_X
     }
 
@@ -739,12 +744,12 @@ impl HeaderSwap {
     /// has nothing to say about it.
     fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize, x: f32) -> Option<FaceFade<'a>> {
         if !self.is_active() { return None; }
-        let item = right.get(index).filter(|item| item.value_slot.is_some())?;
+        let item = right.get(index).filter(|item| carried(item))?;
         let a = self.progress();
-        let Some(before) = self.from.iter().find(|c| c.item.label == item.label) else {
+        let Some(before) = self.from.iter().find(|c| c.is(item)) else {
             return (self.edge == Edge::Fade).then_some(FaceFade { face: a, from_value: None, value_in: 1.0 });
         };
-        if before.item.value == item.value { return None; }
+        if !before.differs(item, x) { return None; }
         if Self::moved(before, item, x) { return Some(FaceFade { face: a, from_value: None, value_in: 1.0 }); }
         let from_value = before.item.value.as_deref().map(|value| (value, 1.0 - a));
         Some(FaceFade { face: 1.0, from_value, value_in: if item.value.is_some() { a } else { 0.0 } })
@@ -758,7 +763,7 @@ impl HeaderSwap {
         let opacity = 1.0 - self.progress();
         let edge = self.edge;
         self.from.iter().filter(move |c| active && {
-            let now = right.iter().enumerate().find(|(_, item)| item.label == c.item.label);
+            let now = right.iter().enumerate().find(|(_, item)| c.is(item));
             now.map_or(edge == Edge::Fade, |(i, item)| {
                 layout.items.iter().find(|r| r.slot == Slot::Right(i)).is_some_and(|r| Self::moved(c, item, r.text.x))
             })

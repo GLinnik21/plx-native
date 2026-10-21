@@ -92,7 +92,7 @@ fn the_collections_control_is_on_the_row_only_with_a_known_count_for_this_librar
 /// budget the names pack into.)
 #[test]
 fn every_gap_of_the_right_cluster_is_one_gap_whatever_the_collections_count_is() {
-    use plx_ui::page_header::{Slot, GAP, READOUT_GAP};
+    use plx_ui::page_header::{Slot, GAP};
     let _guard = plx_base::testlock::serial();
     for answer in [Ok(4), Ok(6), Ok(123), Ok(1_234), Ok(0)] {
         knows_collections(&[(1, answer)]);
@@ -103,8 +103,7 @@ fn every_gap_of_the_right_cluster_is_one_gap_whatever_the_collections_count_is()
         assert_eq!(cluster.len(), if answer == Ok(0) { 2 } else { 3 }, "{answer:?}: the controls on the row");
         for pair in cluster.windows(2) {
             let gap = pair[1].0.text.x - (pair[0].0.text.x + pair[0].0.text.w);
-            let want = if pair[0].1.readout { READOUT_GAP } else { GAP };
-            assert!((gap - want).abs() < 0.01, "{answer:?}: {} -> {} is {gap} apart, not {want}", pair[0].1.label, pair[1].1.label);
+            assert!((gap - GAP).abs() < 0.01, "{answer:?}: {} -> {} is {gap} apart, not {GAP}", pair[0].1.label, pair[1].1.label);
         }
         let last = cluster.last().unwrap().0.text;
         assert!((last.x + last.w - plx_ui::page_header::TEXT_X1).abs() < 0.01, "{answer:?}: the cluster ends at the right text edge");

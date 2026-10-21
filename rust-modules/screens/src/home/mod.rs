@@ -129,7 +129,7 @@ const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
 const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
-const HERO_CTRL_GAP: f32 = plx_ui::widgets::CTRL_GAP;
+const HERO_CTRL_GAP: f32 = plx_ui::widgets::CONTROL_GAP;
 const HERO_PAGER_D: f32 = HERO_CTRL_D * plx_ui::widgets::DISC_ICON_RATIO;
 const HERO_PAGER_BEARING: f32 =
     HERO_PAGER_D * plx_ui::icons::ink_x(plx_ui::icons::Icon::Chevron).0;

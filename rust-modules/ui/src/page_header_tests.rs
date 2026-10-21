@@ -150,15 +150,14 @@ fn values_are_regular_weight_white_and_labels_are_65_percent() {
 }
 
 #[test]
-fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
+fn the_filtered_readout_is_half_white_and_one_gap_left_of_collections() {
     let _g = plx_base::testlock::serial();
     let mut spec = header("Title").spec().clone();
     spec.right.insert(0, HeaderItem { readout: true, ..item("24 of 27", None) });
     let h = PageHeader::new(spec, &[], &Fixed);
     let l = h.layout(1920.0, &Fixed);
     let (readout, collections) = (l.items[3].text, l.items[4].text);
-    assert_eq!(collections.x - (readout.x + readout.w), READOUT_GAP);
-    assert_eq!(READOUT_GAP, 64.0);
+    assert_eq!(collections.x - (readout.x + readout.w), GAP, "a read-out stands the row's one gap before the control after it");
     let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, None));
     let run = runs.iter().find(|r| r.text == "24 of 27").unwrap();
     assert_eq!(run.ink, theme::COUNT_FILTERED_INK);
@@ -549,9 +548,9 @@ fn a_slotted_control_is_placed_by_what_it_draws_so_the_row_has_one_gap() {
     assert!(x(1) > x(2), "and so on up to the widest the slot holds");
 }
 
-/// **A read-out keeps its own gap, and a slotted control after it keeps the row's**: the read-out
-/// is anchored at the cluster's measured left edge (below), at least [`READOUT_GAP`] before the
-/// control; the control's ink stands one [`GAP`] from the item after it, count or no count.
+/// **A read-out and a slotted control after it both keep the row's one gap**: the read-out stands
+/// one [`GAP`] before the control, and the control's ink one [`GAP`] from the item after it, count
+/// or no count.
 #[test]
 fn a_slotted_control_after_a_readout_still_stands_one_gap_before_the_next_item() {
     for value in ["4", "12", "9,999"] {
@@ -559,25 +558,26 @@ fn a_slotted_control_after_a_readout_still_stands_one_gap_before_the_next_item()
         let l = PageHeader::new(spec, &widest, &Fixed).layout(1920.0, &Fixed);
         let (readout, collections, recommended) = (l.items[0].text, l.items[1].text, l.items[2].text);
         assert_eq!(recommended.x - (collections.x + collections.w), GAP, "count {value}: one gap after the ink");
-        assert!(collections.x - (readout.x + readout.w) >= READOUT_GAP, "count {value}: the read-out is at least {READOUT_GAP} px clear");
+        assert_eq!(collections.x - (readout.x + readout.w), GAP, "count {value}: the read-out is one gap clear");
     }
 }
 
-/// **The read-out stands at the cluster's measured left edge**, not wherever the control after it
-/// puts it: it does not move when the Collections control comes, goes or is unknown.
+/// **The read-out is unpinned**: it stands one [`GAP`] before the control after it, so it moves with
+/// the live cluster's width (the cluster is right-anchored, the read-out is its leading item) and
+/// the control after it keeps its place when the read-out's own text changes.
 #[test]
-fn the_readout_stands_at_the_clusters_measured_left_edge() {
+fn the_readout_stands_one_gap_before_the_live_cluster_and_moves_with_it() {
     let (with, widest) = slotted(Some("4"), true);
     let held = PageHeader::new(with, &widest, &Fixed).layout(1920.0, &Fixed);
-    let edge = TEXT_X1 - held.cluster_w;
-    assert_eq!(held.items[0].text.x, edge, "the read-out leads the cluster at its left edge");
+    let gap_of = |l: &HeaderLayout| l.items[1].text.x - (l.items[0].text.x + l.items[0].text.w);
+    assert_eq!(gap_of(&held), GAP);
+    assert!(held.items[0].text.x > TEXT_X1 - held.cluster_w, "narrower than the budget: the read-out is NOT at the budget's edge");
     let (mut without, _) = slotted(None, true);
     without.right.remove(1);
     let gone = PageHeader::new(without, &widest, &Fixed).layout(1920.0, &Fixed);
-    assert_eq!(gone.items[0].text.x, edge, "and stays there when the control is gone");
-    let (unknown, _) = slotted(None, true);
-    let bare = PageHeader::new(unknown, &widest, &Fixed).layout(1920.0, &Fixed);
-    assert_eq!(bare.items[0].text.x, edge, "or its count is not known yet");
+    assert_eq!(gone.items[1].text.x - (gone.items[0].text.x + gone.items[0].text.w), GAP, "still one gap when the control is gone");
+    assert!(gone.items[0].text.x > held.items[0].text.x, "the shorter cluster leaves the read-out further right");
+    assert_eq!(gone.cluster_w, held.cluster_w, "the budget is unchanged");
 }
 
 /// Every text run of `row` drawn at swap `swap`, as `(text, x, alpha)`.
@@ -690,6 +690,72 @@ fn a_control_the_row_before_lacked_fades_in_where_it_stands() {
     assert!(alphas.windows(2).all(|pair| pair[1] >= pair[0]), "rising: {alphas:?}");
     assert!((alphas.last().unwrap() - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "to fully there: {alphas:?}");
     assert!(!swap.is_active(), "and the swap ends on the new row alone");
+}
+
+/// A row whose read-out says `text`, with the Collections control holding `collections` (none:
+/// the control is not on the row).
+fn row_with_readout(text: &str, collections: Option<&str>) -> HeaderRow {
+    let (mut spec, widest) = slotted(collections, true);
+    spec.right[0].label = text.into();
+    if collections.is_none() { spec.right.remove(1); }
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[])
+}
+
+/// **The read-out rides the content swap** (the owner dislikes an un-animated jump): the unpinned
+/// filter read-out stands one gap before the cluster's next item, so it moves when Collections
+/// arrives or leaves, when its count changes digit count, and when its own text changes. Each is a
+/// leave-and-arrive at the two xs on the swap clock (the same dissolve a slotted control that moves
+/// plays), never a cut: opacities sum to the read-out's resting one on every frame.
+#[test]
+fn a_readout_that_moves_or_changes_dissolves_at_each_x() {
+    let _g = plx_base::testlock::serial();
+    let rest = theme::COUNT_FILTERED_INK[3];
+    // Collections arrives (the read-out moves left), then leaves, then the text changes in place.
+    for (old, new) in [
+        (row_with_readout("24 of 27", None), row_with_readout("24 of 27", Some("4"))),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("24 of 27", None)),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("8 of 27", Some("4"))),
+    ] {
+        let (old_text, new_text) = (old.page.spec().right[0].label.clone(), new.page.spec().right[0].label.clone());
+        let (old_x, new_x) = (old.layout.items[0].text.x, new.layout.items[0].text.x);
+        let mut swap = HeaderSwap::new();
+        swap.begin(&old, &new);
+        assert!(swap.is_active(), "{old_text} to {new_text}: the swap runs although no slotted value changed");
+        let mut dissolving = 0;
+        for _ in 0..30 {
+            let runs = swap_runs(&new, &swap);
+            let at = |text: &str, x: f32| runs.iter().find(|(t, rx, _)| t == text && *rx == x).map(|(_, _, alpha)| *alpha);
+            if let (Some(out), Some(arriving)) = (at(&old_text, old_x), at(&new_text, new_x)) {
+                assert!((out + arriving - rest).abs() < 1e-4, "the two faces' opacities sum to the resting one: {out} {arriving}");
+                if out > 0.01 && arriving > 0.01 { dissolving += 1; }
+            }
+            swap.step(1.0 / 60.0);
+        }
+        assert!(dissolving >= 6, "{old_text} to {new_text}: several frames of dissolve, not a cut: {dissolving}");
+        assert!(!swap.is_active());
+        let runs = swap_runs(&new, &swap);
+        assert_eq!(runs.iter().filter(|(t, ..)| *t == new_text).count(), 1, "the new face stands alone: {runs:?}");
+        assert!(runs.iter().find(|(t, ..)| *t == new_text).is_some_and(|r| r.1 == new_x && (r.2 - rest).abs() < 1e-4));
+        assert!(old_text == new_text || runs.iter().all(|(t, ..)| *t != old_text));
+    }
+}
+
+/// A read-out both libraries have dissolves on a switch like a control both rows have; one only the
+/// new library has is simply there, and one only the old library had is not drawn (`Edge::Cut`).
+#[test]
+fn a_switch_cuts_a_readout_only_one_row_has() {
+    let _g = plx_base::testlock::serial();
+    let with = row_with_readout("24 of 27", Some("4"));
+    let without = row_with(Some("4"));
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&with, &without);
+    assert!(swap_runs(&without, &swap).iter().all(|(t, ..)| t != "24 of 27"), "the library left's read-out is not drawn");
+    swap.begin_switch(&without, &with);
+    let runs = swap_runs(&with, &swap);
+    let readout = runs.iter().find(|(t, ..)| t == "24 of 27").expect("the read-out is on the row");
+    assert!((readout.2 - theme::COUNT_FILTERED_INK[3]).abs() < 1e-4, "and not fading in: {readout:?}");
 }
 
 /// **A control the next row does not have fades out where it stood** (a library with no
@@ -823,8 +889,8 @@ fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
 /// half a pixel: in the left names, between the last name and the "+N", and across the right
 /// cluster. Collections wears "4" in a "9,999" slot (and `widest` holds "9,999"), so the live
 /// cluster is narrower than its budget: the slot is not air (the air after the drawn "4" is [`GAP`],
-/// whatever the slot holds, #875), and the read-out, pinned at the budget's left edge, stands
-/// [`READOUT_GAP`] plus that slack before Collections.
+/// whatever the slot holds, #875), and the read-out stands one [`GAP`] before Collections like the
+/// rest.
 #[test]
 fn the_drawn_runs_of_a_library_header_stand_one_gap_apart() {
     let _g = plx_base::testlock::serial();
@@ -861,17 +927,15 @@ fn the_drawn_runs_of_a_library_header_stand_one_gap_apart() {
         extent("Recommended", None, false),
         extent("Sort & Filter", Some("Title"), true),
     ];
-    // The live cluster as drawn with the read-out [`READOUT_GAP`] before Collections, less than the
-    // budget by the slack the read-out's pin adds to the gap after it.
-    let live_w = (cluster[0].1 - cluster[0].0) + READOUT_GAP + (cluster[3].1 - cluster[1].0);
+    let live_w = cluster[3].1 - cluster[0].0;
     let slack = layout.cluster_w - live_w;
     let air = |row: &[(f32, f32)]| row.windows(2).map(|pair| pair[1].0 - pair[0].1).collect::<Vec<f32>>();
     for (gap, want, who) in air(&left).into_iter().zip([GAP; 2]).map(|(gap, want)| (gap, want, "names"))
-        .chain(air(&cluster).into_iter().zip([READOUT_GAP + slack, GAP, GAP]).map(|(gap, want)| (gap, want, "cluster")))
+        .chain(air(&cluster).into_iter().zip([GAP; 3]).map(|(gap, want)| (gap, want, "cluster")))
     {
         assert!((gap - want).abs() <= 0.5, "{who}: {gap} px drawn between neighbours, the layout says {want}");
     }
-    assert!(slack > 20.0, "the fixture leaves the budget well clear of the live cluster, or the pin is not seen: {slack} px");
+    assert!(slack > 20.0, "the fixture leaves the budget well clear of the live cluster, or the slot is not seen: {slack} px");
     assert!((cluster[3].1 - TEXT_X1).abs() <= 0.5, "the cluster ends at the right text edge, drawn: {}", cluster[3].1);
     assert!((left[0].0 - TEXT_X0).abs() <= 0.5, "the names start at the left text edge");
 }
