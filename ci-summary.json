@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T10:13:13Z",
+ "generated": "2026-10-21T10:22:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -149,18 +149,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -45.5,
-   "change7_pct": 15.2,
-   "d30": 675,
-   "delta30": -307.0,
-   "delta7": 48.5,
+   "change30_pct": -45.7,
+   "change7_pct": 14.9,
+   "d30": 676.0,
+   "delta30": -309.0,
+   "delta7": 47.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 122,
+   "n_now": 123,
    "n_prev": 114,
-   "now": 368.0,
+   "now": 367,
    "prev7": 319.5,
    "shown": true,
    "state": "flat",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 88.4,
+   "change30_pct": 87.4,
    "change7_pct": 11.3,
-   "d30": 1125.5,
-   "delta30": 995.5,
+   "d30": 1132,
+   "delta30": 989,
    "delta7": 216.0,
    "group": "ci",
    "id": "minutes",
@@ -310,7 +310,7 @@
   {
    "change30_pct": 31.9,
    "change7_pct": -0.5,
-   "d30": 232.0,
+   "d30": 232,
    "delta30": 74.0,
    "delta7": -1.5,
    "group": "ci",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.8,
-   "change7_pct": 12.2,
-   "d30": 125.5,
-   "delta30": 119.0,
-   "delta7": 26.5,
+   "change30_pct": 93.7,
+   "change7_pct": 11.9,
+   "d30": 126,
+   "delta30": 118,
+   "delta7": 26,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 244.5,
+   "now": 244,
    "prev7": 218,
    "shown": true,
    "state": "flat",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 170.9,
+   "change30_pct": 169.0,
    "change7_pct": -30.5,
-   "d30": 70.5,
-   "delta30": 120.5,
-   "delta7": -84.0,
+   "d30": 71,
+   "delta30": 120,
+   "delta7": -84,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 191.0,
+   "now": 191,
    "prev7": 275,
    "shown": true,
    "state": "better",
@@ -417,14 +417,14 @@
    "change7_pct": 11.9,
    "d30": null,
    "delta30": null,
-   "delta7": 16.0,
+   "delta7": 16,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 150.0,
+   "now": 150,
    "prev7": 134,
    "shown": true,
    "state": "flat",
@@ -499,18 +499,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 9.1,
+   "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16.5,
-   "delta30": 1.5,
-   "delta7": 1.0,
+   "d30": 16,
+   "delta30": 2,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -564,7 +564,7 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 677.0,
+   "d30": 677,
    "delta30": -674.0,
    "delta7": -1.0,
    "group": "ci",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -657,6 +652,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 40.0,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -718,6 +713,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 212.5,
@@ -731,11 +731,6 @@
    "change_pct": 35.0,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -779,6 +774,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 357.0,
@@ -792,11 +792,6 @@
    "change_pct": 31.2,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -840,6 +835,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 272.5,
@@ -853,11 +853,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -901,6 +896,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 46.5,
@@ -914,11 +914,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -962,6 +957,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 108.7,
@@ -975,11 +975,6 @@
    "change_pct": 28.3,
    "commits": [
     {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
      "pr": 872,
      "sha": "a06719da3",
      "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
@@ -1023,6 +1018,11 @@
      "pr": 889,
      "sha": "b6c5ad0cb",
      "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
     }
    ],
    "from": 129.0,
