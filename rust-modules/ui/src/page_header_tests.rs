@@ -939,3 +939,24 @@ fn the_drawn_runs_of_a_library_header_stand_one_gap_apart() {
     assert!((cluster[3].1 - TEXT_X1).abs() <= 0.5, "the cluster ends at the right text edge, drawn: {}", cluster[3].1);
     assert!((left[0].0 - TEXT_X0).abs() <= 0.5, "the names start at the left text edge");
 }
+
+/// The fold glyph stands `FOLD_GAP` past the end of the value the face wears, and the item's run
+/// (`run_w`) ends `FOLD_SIZE` after that: the draw and the width read one fold item.
+#[test]
+fn the_fold_glyph_stands_fold_gap_past_the_value() {
+    let _g = plx_base::testlock::serial();
+    // The census paints with `LegacyMeasure`, so the row is laid out with it too: draw advances
+    // and layout widths are then the same numbers, as on the device.
+    let m = crate::widgets::LegacyMeasure;
+    let sort_item = HeaderItem { fold_glyph: true, ..item("Sort", Some("Date added")) };
+    let page = PageHeader::new(
+        PageHeaderSpec { right: vec![sort_item.clone()], ..Default::default() }, &[sort_item], &m);
+    let layout = page.layout(1920.0, &m);
+    let sort = layout.items.last().unwrap();
+    let runs = crate::draw_census::capture_runs(|| page.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    let value = runs.iter().filter(|r| r.at.x >= sort.text.x).max_by(|a, b| a.at.x.total_cmp(&b.at.x)).expect("Sort's value is drawn");
+    assert_eq!(value.text, "Date added");
+    // The glyph (not in the census) stands FOLD_GAP past the value and the item's width ends
+    // FOLD_SIZE on, so the painted value's end plus the fold item is the item's text edge.
+    assert_eq!(value.at.x + value.at.w + FOLD_GAP + FOLD_SIZE, sort.text.x + sort.text.w);
+}
