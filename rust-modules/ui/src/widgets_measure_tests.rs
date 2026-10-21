@@ -529,3 +529,16 @@ fn a_dotted_run_measures_parts_dots_and_pads_for_any_number_of_parts() {
     let many = ["a"; 9];
     assert_eq!(run.width(&m, &many), 9.0 * w("a") + 8.0 * (dot + 2.0 * pad));
 }
+
+/// Q6: a pill's trailing accessory is placed by INK, so the gap the eye reads between the label
+/// and the chevron is `BTN_ICON_GAP`, for every accessory the bearing table knows.
+#[test]
+fn a_trailing_accessory_stands_one_icon_gap_from_the_label_by_ink() {
+    for icon in [crate::icons::Icon::ChevronDown, crate::icons::Icon::ChevronUp, crate::icons::Icon::Chevron] {
+        let box_w = 28.0 * BTN_ICON_RATIO;
+        let label_end = 400.0;
+        let bx = btn_trailing_box_x(icon, label_end, box_w, BTN_ICON_GAP);
+        let ink_left = bx + crate::icons::ink_x(icon).0 * box_w;
+        assert!((ink_left - (label_end + BTN_ICON_GAP)).abs() < 0.01, "{icon:?}: ink starts at {ink_left}");
+    }
+}

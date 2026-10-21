@@ -7,13 +7,10 @@ use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};
 use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
 
 const CARET_W: f32 = 5.0;
 const CARET_GAP: f32 = 8.0;
 const GHOST_GAP: f32 = theme::size::BODY as f32;
-const COUNT_GAP: f32 = theme::space::SM;
-const SOURCE_PAD: f32 = theme::space::XS;
 
 #[derive(Default)]
 pub(super) struct Resources {
@@ -157,31 +154,20 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
         }
         let slot = layout::ordinal(row.kind) as usize;
         let title = &screen.render.titles[slot];
-        let cap = f.cx.measure.cap_h(theme::size::HEADLINE);
         let source = if screen.owner_row == Some(i) && screen.owner_alpha.pos > OWNER_FLOOR {
             screen.render.owner.as_c_str()
         } else {
             c""
         };
-        heading_flow(
+        plx_ui::cards::draw_heading_c(
+            p,
             title,
             &screen.render.counts[slot],
             source,
-            |run, dx, size, bold, ink, faded| {
-                let mut label = Label::new(run.as_ptr(), size, ink).v(VAlign::Baseline);
-                if bold != 0 {
-                    label = label.bold();
-                }
-                label.draw(
-                    if faded {
-                        p.alpha(screen.owner_alpha.pos.clamp(0.0, 1.0))
-                    } else {
-                        p
-                    },
-                    Rect::new(MARGIN_X + dx, top - shelf.heading_lift(), 0.0, cap),
-                );
-                f.cx.measure.width(run, size, bold != 0)
-            },
+            MARGIN_X,
+            top - shelf.heading_lift(),
+            screen.owner_alpha.pos,
+            f.cx.measure,
         );
         if let Some(src) = screen.row_cards(H::search(f.cx), i) {
             shelf.draw(f, p, &src, frame);
@@ -523,34 +509,6 @@ fn header_of(state: EmptyState) -> &'static CStr {
 
 fn no_results_line(q: &str) -> String {
     plx_platform::i18n::msg::browse_search_no_results(q)
-}
-
-fn heading_flow(
-    title: &CStr,
-    count: &CStr,
-    source: &CStr,
-    mut run: impl FnMut(&CStr, f32, c_int, c_int, [f32; 4], bool) -> f32,
-) -> f32 {
-    let mut dx = run(
-        title,
-        0.0,
-        theme::size::HEADLINE,
-        1,
-        theme::TEXT_HEADING,
-        false,
-    );
-    if !count.is_empty() {
-        dx += COUNT_GAP;
-        dx += run(count, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, false);
-    }
-    if source.is_empty() {
-        return dx;
-    }
-    dx += SOURCE_PAD;
-    dx += run(c"·", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
-    dx += SOURCE_PAD;
-    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, true);
-    dx
 }
 
 fn source_label(source: &ScopeSource) -> String {
@@ -1127,39 +1085,42 @@ mod tests {
 
     #[test]
     fn the_heading_states_its_count_and_annotates_only_a_borrowed_source() {
+        use plx_ui::cards::{heading_parts, HeadingPart, HEADING_SOURCE_PAD};
+        use std::os::raw::c_int;
         let w = |s: &str, sz: c_int| s.chars().count() as f32 * sz as f32 * 0.5;
-        type Run = (String, f32, c_int, c_int, [f32; 4], bool);
+        type Run = (String, f32, c_int, c_int, [f32; 4], HeadingPart);
         let runs = |title: &str, count: &str, source: &str| {
             let (t, c, s) = (cs(title), cs(count), cs(source));
             let mut out: Vec<Run> = Vec::new();
-            heading_flow(&t, &c, &s, |run, dx, size, bold, ink, faded| {
+            heading_parts(&*t, &*c, &*s, |run, dx, size, bold, ink, part| {
                 let text = run.to_str().unwrap_or_default().to_string();
-                out.push((text.clone(), dx, size, bold, ink, faded));
+                out.push((text.clone(), dx, size, bold, ink, part));
                 w(&text, size)
             });
             out
         };
+        // the count is a quiet note behind a dot, at the gap every heading's note keeps
         let bare = runs("Movies", "12 results", "");
-        assert_eq!(bare.len(), 2);
+        assert_eq!(bare.len(), 3);
         assert_eq!((bare[0].2, bare[0].3), (theme::size::HEADLINE, 1));
         assert_eq!(bare[0].4, theme::TEXT_HEADING);
-        assert_eq!((bare[1].2, bare[1].3), (theme::size::BODY, 0));
-        assert_eq!(bare[1].4, theme::TEXT_TERTIARY);
-        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + COUNT_GAP);
+        assert_eq!(bare[1].0, "·");
+        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + HEADING_SOURCE_PAD);
+        assert_eq!(bare[1].4, theme::TEXT_SEPARATOR);
+        assert_eq!((bare[2].2, bare[2].3, bare[2].4), (theme::size::BODY, 0, theme::TEXT_TERTIARY));
+        assert_eq!(bare[2].1, bare[1].1 + w("·", theme::size::BODY) + HEADING_SOURCE_PAD);
+        assert_eq!(bare[2].5, HeadingPart::Count);
         let shared = runs("Movies", "12 results", "friend");
-        assert_eq!(shared.len(), 4);
-        assert_eq!(shared[..2], bare[..2]);
-        assert_eq!(shared[2].0, "·");
-        assert_eq!(shared[2].4, theme::TEXT_SEPARATOR);
+        assert_eq!(shared.len(), 5);
+        assert_eq!(shared[..3], bare[..3]);
+        assert_eq!(shared[3].0, "·");
         assert_eq!(
-            shared[2].1,
-            bare[1].1 + w("12 results", theme::size::BODY) + SOURCE_PAD
+            shared[3].1,
+            bare[2].1 + w("12 results", theme::size::BODY) + HEADING_SOURCE_PAD
         );
-        assert_eq!(shared[3].0, "friend");
-        assert_eq!(shared[3].4, theme::TEXT_TERTIARY);
-        assert_eq!((shared[3].2, shared[3].3), (theme::size::BODY, 0));
-        assert!(shared[2].5 && shared[3].5);
-        assert!(!shared[0].5 && !shared[1].5);
+        assert_eq!(shared[4].0, "friend");
+        assert_eq!(shared[4].4, theme::TEXT_TERTIARY);
+        assert!(shared[3].5 == HeadingPart::Source && shared[4].5 == HeadingPart::Source);
         assert_eq!(runs("Collections", "", "").len(), 1);
     }
 

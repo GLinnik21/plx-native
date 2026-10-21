@@ -551,19 +551,30 @@ enum Bit {
 const FACTS_BITS: usize = 8;
 
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
+    match plx_media::route::playback_preview(d) {
+        Some(preview) => play_mode_bits_for(preview, d.hdr, item_subscription(d), after),
+        None => ([Bit::Air(0.0); FACTS_BITS], 0),
+    }
+}
+
+/// [`play_mode_bits`] once the item's route has been read: the line's play-mode clause, behind a
+/// separator of its own when something already stands in front of it (`after`).
+fn play_mode_bits_for(
+    preview: plx_media::route::Preview,
+    hdr: bool,
+    subscription: plx_plex::plex::serverinfo::Subscription,
+    after: bool,
+) -> ([Bit; FACTS_BITS], usize) {
     let mut bits = [Bit::Air(0.0); FACTS_BITS];
     let mut n = 0;
-    let Some(preview) = plx_media::route::playback_preview(d) else {
-        return (bits, 0);
-    };
     let mut push = |bit: Bit| {
         bits[n] = bit;
         n += 1;
     };
     if after {
-        push(Bit::Sep(theme::space::MD));
+        push(Bit::Sep(FACTS_SEP_PAD));
     }
-    match play_note(preview, d.hdr, item_subscription(d)) {
+    match play_note(preview, hdr, subscription) {
         PlayNote::Quiet => push(Bit::Word(
             match preview {
                 plx_media::route::Preview::DirectPlay => plx_platform::i18n::msg::browse_detail_direct_play_c(),
@@ -1170,6 +1181,28 @@ mod tests {
             },
         );
         assert_eq!(events.into_inner().last(), Some(&Event::Mode));
+    }
+
+    /// Q2: the dot before the play-mode clause is padded like every other dot on the line
+    /// (`FACTS_SEP_PAD`), where it used to carry a wider pad of its own.
+    #[test]
+    fn the_dot_before_the_play_mode_clause_pads_like_every_other_dot() {
+        use plx_media::route::Preview;
+        use plx_plex::plex::serverinfo::Subscription;
+        for preview in [Preview::DirectPlay, Preview::Converts] {
+            let (bits, n) = play_mode_bits_for(preview, false, Subscription::No, true);
+            let Bit::Sep(gap) = bits[0] else { panic!("the clause opens on its dot") };
+            assert!(n > 1);
+            assert_eq!(gap, FACTS_SEP_PAD);
+            // and the clause's own dot (Pass-less converting item) is the same pad
+            for bit in &bits[1..n] {
+                if let Bit::Sep(inner) = bit {
+                    assert_eq!(*inner, FACTS_SEP_PAD);
+                }
+            }
+            let (bare, _) = play_mode_bits_for(preview, false, Subscription::No, false);
+            assert!(!matches!(bare[0], Bit::Sep(_)), "nothing before it, no dot");
+        }
     }
 
     #[test]

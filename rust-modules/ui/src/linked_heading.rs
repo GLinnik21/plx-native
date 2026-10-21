@@ -51,8 +51,8 @@ pub struct LinkedMeasure {
     /// A bounded `Heading`'s elided runs, kept so the draw reuses the measure's elision. Empty for
     /// every other heading, whose flow draws straight from the strings at no elision cost.
     runs: Vec<Run>,
-    /// A `Heading`'s annotation as drawn: its member count, its source, or "N · source".
-    note: String,
+    /// A `Heading`'s member count as drawn ("" when it has none); its source is `count`.
+    total: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,13 +106,9 @@ impl<'a> LinkedHeading<'a> {
         self
     }
 
-    /// A `Heading`'s annotation: the count, the source, or both, count first.
-    fn note(&self) -> String {
-        match (self.total, self.count.is_empty()) {
-            (0, _) => self.count.to_owned(),
-            (n, true) => n.to_string(),
-            (n, false) => format!("{n} \u{b7} {}", self.count),
-        }
+    /// A `Heading`'s member count as the text `card_row::heading_parts` flows after the title.
+    fn total_text(&self) -> String {
+        if self.total == 0 { String::new() } else { self.total.to_string() }
     }
 
     fn text_room(&self) -> f32 {
@@ -121,7 +117,7 @@ impl<'a> LinkedHeading<'a> {
 
     pub fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
         let mut runs = Vec::new();
-        let note = if self.presentation == Presentation::Heading { self.note() } else { String::new() };
+        let total = if self.presentation == Presentation::Heading { self.total_text() } else { String::new() };
         let run_w = match self.presentation {
             Presentation::Entry => {
                 let mut w = measure.width_str(self.title, theme::size::LABEL, true);
@@ -137,7 +133,8 @@ impl<'a> LinkedHeading<'a> {
                 let keep = self.max_w.is_finite();
                 card_row::bounded_heading_flow(
                     self.title,
-                    &note,
+                    &total,
+                    self.count,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -151,7 +148,7 @@ impl<'a> LinkedHeading<'a> {
         };
         LinkedMeasure {
             runs,
-            note,
+            total,
             run_w,
             face_w: 2.0 * SIDE_PAD + run_w + CHEVRON_GAP + CHEVRON_SIZE
                 - CHEVRON_BEARING_L
@@ -285,7 +282,8 @@ impl<'a> LinkedHeading<'a> {
                 let cap_y = y;
                 card_row::bounded_heading_flow(
                     self.title,
-                    &m.note,
+                    &m.total,
+                    self.count,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -552,12 +550,13 @@ mod tests {
         let measure = FixtureMeasure;
         let plain = LinkedHeading::heading("Saga", "").measure(&measure);
         let counted = LinkedHeading::heading("Saga", "").total(12);
-        assert_eq!(counted.measure(&measure).note, "12");
+        assert_eq!(counted.measure(&measure).total, "12");
         assert!(counted.measure(&measure).run_w > plain.run_w);
-        assert_eq!(LinkedHeading::heading("Saga", "friend").total(12).measure(&measure).note,
-            "12 \u{b7} friend");
-        assert_eq!(LinkedHeading::heading("Saga", "friend").measure(&measure).note, "friend");
-        assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).note, "");
+        // the count and the source are two notes of the one idiom, each behind its own dot
+        let both = LinkedHeading::heading("Saga", "friend").total(12);
+        let notes = card_row::heading_parts("Saga", &both.total_text(), "friend", |_, _, _, _, _, _| 1.0);
+        assert_eq!(notes, 1.0 + 2.0 * (2.0 * card_row::HEADING_SOURCE_PAD + 2.0));
+        assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).total, "");
     }
 
     #[test]

@@ -119,7 +119,6 @@ const LIFE_GAP: f32 = theme::space::MD;
 // the bio highlight sits `--space-md` below the dates line) — and the box itself pads the prose by
 // `HL_PAD_Y` on every side, so the cap-to-prose gap this measures to has to carry both.
 const BIO_GAP: f32 = theme::space::MD + HL_PAD_Y;
-const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const fn text_w_const(d: f32) -> f32 {
     SCR_W - MARGIN_X - (MARGIN_X + d + BAND_GAP)
 }
@@ -1007,33 +1006,16 @@ impl Page {
     /// Shelf `kind`'s heading and count, drawn in the shelf block's own space (`lift` is how far
     /// the focused tile makes it rise); the tiles are the stack's.
     fn draw_shelf_heading(&self, p: Painter, kind: usize, lift: f32, measure: &dyn plx_machine::machine::Measure) {
-        let hy = -lift;
-        Label::new(
-            shelf_title()[kind].as_ptr(),
-            theme::size::HEADLINE,
-            theme::TEXT_HEADING,
-        )
-        .bold()
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
-        if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = measure.width(shelf_title()[kind], theme::size::HEADLINE, true);
-            Label::new(
-                self.shelf_count_c[kind].as_ptr(),
-                theme::size::CAPTION,
-                theme::TEXT_TERTIARY,
-            )
-            .v(VAlign::Baseline)
-            .draw(
-                p,
-                Rect::new(
-                    MARGIN_X + tw + SHELF_COUNT_GAP,
-                    hy,
-                    0.0,
-                    measure.cap_h(theme::size::HEADLINE),
-                ),
-            );
-        }
+        plx_ui::cards::draw_heading_c(
+            p,
+            shelf_title()[kind],
+            &self.shelf_count_c[kind],
+            c"",
+            MARGIN_X,
+            -lift,
+            1.0,
+            measure,
+        );
     }
 
     /// The skeleton / empty read-out where the first shelf would be, `y` being that shelf's top.

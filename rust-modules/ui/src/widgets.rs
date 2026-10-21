@@ -8298,6 +8298,10 @@ pub struct Button {
 /// the two drift.
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
+/// Where a trailing accessory's BOX stands so its INK is `gap` after the label ends at `label_end`.
+pub(crate) fn btn_trailing_box_x(icon: crate::icons::Icon, label_end: f32, box_w: f32, gap: f32) -> f32 {
+    label_end + gap - crate::icons::ink_x(icon).0 * box_w
+}
 /// Total horizontal air a pill carries around its icon+label run.
 pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
@@ -8578,7 +8582,11 @@ impl View for Button {
         }
         p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
         if let Some(acc) = self.trailing {
-            let ax = gl + isz + gap + tw + agap;
+            // placed by INK: the gap the eye reads between the label and the mark is `BTN_ICON_GAP`,
+            // not that gap plus the empty margin the asset leaves inside its box. The run's width
+            // (and so `pill_w_*`, which `hero_layout::pill_w` mirrors) is unchanged: the box stands
+            // `ink_x` bearing left, inside the room it already had.
+            let ax = btn_trailing_box_x(acc, gl + isz + gap + tw, asz, agap);
             crate::icons::draw(
                 p,
                 acc,
