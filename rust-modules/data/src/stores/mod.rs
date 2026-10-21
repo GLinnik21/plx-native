@@ -71,6 +71,7 @@ pub mod notify_map;
 pub mod person;
 pub mod collection;
 pub(crate) mod deck;
+pub(crate) mod deck_group;
 pub mod page_cache;
 pub mod paging;
 pub mod search;
