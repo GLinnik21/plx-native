@@ -10379,9 +10379,12 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
 /// The route half of [`commit_audio_selection`]: which way the pick reloads, and what it displaces.
 fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
-        crate::player::log(&format!("playback_policy: Force Direct Play refused audio codec {}", audio.codec));
+        let friendly = plx_data::metadata::friendly_codec(&audio.codec);
+        crate::player::log(&format!(
+            "playback_policy: Force Direct Play refused audio codec {} ({friendly})", audio.codec
+        ));
         ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion {
-            codec: plx_data::metadata::friendly_codec(&audio.codec),
+            codec: friendly,
         }));
         return false;
     }

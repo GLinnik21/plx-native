@@ -2012,19 +2012,22 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0))))
         && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
+        let mut refused_raw = String::new();
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
             else if !streamable { Some(ForcedFailure::Container) }
             else if !video_dp { Some(ForcedFailure::Video) }
             else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
-                let refused = refused_audio_codec(tracks, acodec, audio_prefs, env.audio_sid);
-                Some(ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(&refused) })
+                refused_raw = refused_audio_codec(tracks, acodec, audio_prefs, env.audio_sid);
+                Some(ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(&refused_raw) })
             } else if !rk.is_empty() && !directplay { Some(ForcedFailure::Unauthorized) }
             else { None };
         if let Some(failure) = failure {
-            // The field-report line: the raw PMS spelling beside the verdict, so a report that
-            // only says "this audio format" still names the codec.
+            // The field-report line: the raw PMS spelling and the name the read-out shows, so a
+            // report can tell `dca` from `dts` and still names the codec.
             if let ForcedFailure::Audio { codec } = &failure {
-                crate::player::log(&format!("playback_policy: Force Direct Play refused audio codec {codec}"));
+                crate::player::log(&format!(
+                    "playback_policy: Force Direct Play refused audio codec {refused_raw} ({codec})"
+                ));
             }
             plan.verdict = Some(PlayVerdict::Forced(failure));
             log_memory(false);
