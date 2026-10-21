@@ -306,6 +306,13 @@ PLEX_DIRECT_HASH = "0123456789abcdef0123456789abcdef"
 
 # ---------------------------------------------------------------- the closed alphabet -------
 
+def pms_audio_codec(name):
+    """PMS's spelling of an audio codec: FFmpeg and the fixtures say `dts`, PMS says `dca` (every
+    DTS entry in its shipped profiles does). The mock speaks PMS's vocabulary so the synthetic
+    tier cannot hide a spelling gap the way an echoed `dts` once did."""
+    return {"dts": "dca"}.get(name, name)
+
+
 def sname(rng):
     """One name from the closed alphabet: `s` + 8 lowercase hex digits."""
     return "s%08x" % rng.getrandbits(32)
@@ -643,6 +650,8 @@ class Library:
         disp = stream.get("disposition") or {}
         lang = tags.get("language", "")
         codec = stream.get("codec_name", "")
+        if kind == 2:
+            codec = pms_audio_codec(codec)
         out = {
             "id": sid, "streamType": kind, "codec": codec,
             "index": int(stream.get("index", 0)),
@@ -872,7 +881,7 @@ class Library:
                  "width": 1920, "height": 1080, "displayTitle": "1080p (H.264)"}
         if video_extra:
             video.update(video_extra)
-        audio = {"id": part * 10 + 2, "streamType": 2, "codec": acodec, "index": 1,
+        audio = {"id": part * 10 + 2, "streamType": 2, "codec": pms_audio_codec(acodec), "index": 1,
                  "channels": channels, "language": "en", "languageCode": "eng",
                  "displayTitle": audio_display, "selected": True}
         self._maybe_loudness(audio)
@@ -892,7 +901,7 @@ class Library:
             })
         return [{
             "id": rk, "duration": duration, "bitrate": 8000, "width": 1920, "height": 1080,
-            "aspectRatio": 1.78, "audioChannels": channels, "audioCodec": acodec,
+            "aspectRatio": 1.78, "audioChannels": channels, "audioCodec": pms_audio_codec(acodec),
             "videoCodec": "h264", "videoResolution": "1080", "container": "mkv",
             "videoFrameRate": "24p", "videoProfile": "high",
             "Part": [{

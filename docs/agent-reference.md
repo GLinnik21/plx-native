@@ -1994,7 +1994,11 @@ sharing — so it is the only tier a stranger can run, and it is what separates 
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
 the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
 software set with the device table and per-codec channel ceilings; DTS requires a measured
-DTS row and feeds only the DTS core when an HD extension is present. The implemented Load
+DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
+`devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
+the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
+Direct Play admits DTS only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
+but skips the channel ceiling. The implemented Load
 strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same

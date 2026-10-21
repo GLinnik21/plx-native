@@ -970,7 +970,7 @@ Byte-range serving works, so seek-by-range is available to the player.
 |---|---|---|
 | `container` | `mkv`, `mp4` | demuxer support check |
 | `videoCodec` | `h264`, `hevc` | webOS decoder check |
-| `audioCodec` | `ac3`, `eac3`, `aac` | audio passthrough/decode check |
+| `audioCodec` | `ac3`, `eac3`, `aac`, `dca` | audio passthrough/decode check. PMS spells DTS `dca` (every DTS entry in its shipped profiles does), the pipeline and the device table say `dts`: `devcaps::audio_codec_id` is the one canonicaliser, and the client profile names it `dca` too |
 | `width` / `height` | 1920/858, 3840/1920 | ≤ panel/decoder max (4K HEVC ok on most webOS) |
 | `bitrate` | 16248 (kbps) | LAN is fine; cap for Wi-Fi profiles |
 | `videoResolution` | `1080`, `4k` | coarse version picker among multiple `Media[]` |

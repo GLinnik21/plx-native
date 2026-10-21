@@ -39,6 +39,7 @@
 //! before this module. Misreading the table must degrade to yesterday's behavior, not invent a
 //! weaker television: the issue-#22 lesson cuts both ways, and a client that suddenly transcodes
 //! everything on a healthy 4K panel is as wrong as one that direct-plays HEVC to a SoC without it.
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 pub mod dv;
@@ -136,20 +137,41 @@ impl Caps {
         }
     }
 
-    /// Membership test on [`Caps::audio`] — `codec` already lowercase (PMS codec ids are).
+    /// Membership test on [`Caps::audio`]. `codec` is any spelling of the name
+    /// ([`audio_codec_id`]): PMS says `dca` where the table and the pipeline say `dts`.
     pub fn audio_has(&self, codec: &str) -> bool {
-        self.audio.split(',').any(|c| c == codec)
+        let id = audio_codec_id(codec);
+        self.audio.split(',').any(|c| c == id)
     }
 
     /// Local counterpart of the profile's codec-scoped audio.channels limitations.
     pub fn audio_supports(&self, codec: &str, channels: i64) -> bool {
-        if !self.audio_has(codec) {
+        let id = audio_codec_id(codec);
+        if !self.audio_has(&id) {
             return false;
         }
-        match self.audio_channels.get(codec) {
-            Some(&limit) => (channels > 0 || codec != "dts") && channels <= i64::from(limit),
-            None => codec != "dts",
+        match self.audio_channels.get(id.as_ref()) {
+            Some(&limit) => (channels > 0 || id != "dts") && channels <= i64::from(limit),
+            None => id != "dts",
         }
+    }
+
+    /// Force Direct Play's audio gate: the pipeline's feed formats ([`DP_AUDIO_CODECS`]), with
+    /// no channel ceiling. DTS additionally needs the evidence Auto asks for
+    /// ([`Caps::forced_admits_dts`]). The planner and the forced profile both read this.
+    pub fn forced_feeds_audio(&self, codec: &str) -> bool {
+        let id = audio_codec_id(codec);
+        if id == "dts" {
+            return self.forced_admits_dts();
+        }
+        DP_AUDIO_CODECS.split(',').any(|c| c == id)
+    }
+
+    /// The Forced-mode DTS rule, one predicate so the owner can flip it: the table has a DTS
+    /// row with a stated channel count (an absent decoder would hang the Load like #584 instead
+    /// of refusing). The channel ceiling itself is not applied.
+    pub fn forced_admits_dts(&self) -> bool {
+        self.audio_channels.contains_key("dts")
     }
 
     /// The transcode-target chain's HEAD — the codec the profile asks PMS to ENCODE when a
@@ -189,6 +211,21 @@ static MEASURED: OnceLock<bool> = OnceLock::new();
 /// boot calls it first, so that path exists for host tests, not the TV.
 pub fn caps() -> &'static Caps {
     CAPS.get_or_init(Caps::assumed)
+}
+
+/// The one canonical spelling of an AUDIO codec name, for every comparison between vocabularies:
+/// lowercase, PMS's `dca` is the pipeline's `dts`, and `ec-3` is `eac3`. Applied at membership
+/// ([`Caps::audio_has`]) and at the Load payload; inbound data stays raw (track memory compares
+/// the raw string).
+pub fn audio_codec_id(codec: &str) -> Cow<'_, str> {
+    if codec.bytes().any(|b| b.is_ascii_uppercase()) {
+        return Cow::Owned(audio_codec_id(&codec.to_ascii_lowercase()).into_owned());
+    }
+    match codec {
+        "dca" => Cow::Borrowed("dts"),
+        "ec-3" => Cow::Borrowed("eac3"),
+        _ => Cow::Borrowed(codec),
+    }
 }
 
 /// One codec name, canonicalized: the table writes `"H.264"`, `"H.265"`, `"HEVC"`, `"EAC3"`;
@@ -539,6 +576,39 @@ mod tests {
         // FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
         // DP_AUDIO_CODECS's own order, not the table's.
         assert_eq!(c.audio, "aac,ac3,eac3,dts");
+    }
+
+    /// PMS names DTS `dca` (every DTS entry in the profiles shipped with PMS spells it so); the
+    /// pipeline and the device table say `dts`. Both spellings must reach the same answer.
+    #[test]
+    fn pms_spelling_dca_is_dts_for_membership_and_channel_bounds() {
+        let caps = parse(REAL).unwrap();
+        assert!(caps.audio_supports("dca", 6));
+        assert!(!caps.audio_supports("dca", 8));
+        assert!(!caps.audio_supports("dca", 0));
+        assert!(caps.audio_supports("DCA", 6), "case folds too");
+        assert!(caps.audio_supports("ec-3", 8), "ec-3 is eac3");
+        assert!(!Caps::assumed().audio_has("dca"));
+        assert_eq!(audio_codec_id("DCA"), "dts");
+        assert_eq!(audio_codec_id("AC3"), "ac3");
+    }
+
+    /// Forced mode admits DTS only on table evidence (a DTS row with channels), but skips the
+    /// channel ceiling: 7.1 DTS-HD MA is refused in Auto and admitted in Forced.
+    #[test]
+    fn forced_dts_needs_a_table_row_but_no_channel_ceiling() {
+        let caps = parse(REAL).unwrap();
+        assert!(caps.forced_feeds_audio("dca"));
+        assert!(caps.forced_feeds_audio("dts"));
+        assert!(!caps.audio_supports("dca", 8));
+        assert!(!Caps::assumed().forced_feeds_audio("dca"));
+        assert!(!Caps::assumed().forced_feeds_audio("dts"));
+        let no_row = parse(&REAL.replace("DTS", "WMA")).unwrap();
+        assert!(!no_row.forced_feeds_audio("dca"));
+        for c in ["aac", "ac3", "eac3", "EAC3"] {
+            assert!(Caps::assumed().forced_feeds_audio(c), "{c}");
+        }
+        assert!(!Caps::assumed().forced_feeds_audio("truehd"));
     }
 
     #[test]

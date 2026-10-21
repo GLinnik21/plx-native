@@ -2942,10 +2942,18 @@ pub(super) fn pick_dp_audio_pref(
 }
 
 pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
+    audio_direct_plays_with(plx_platform::devcaps::caps(), mode, codec, channels)
+}
+
+/// [`audio_direct_plays`] over an explicit capability snapshot. Auto and Forced both go through
+/// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
+pub(super) fn audio_direct_plays_with(
+    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+) -> bool {
     if mode == DirectPlayMode::Forced {
-        plx_plex::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
+        caps.forced_feeds_audio(codec)
     } else {
-        plx_plex::plex::is_dp_audio_track(codec, channels)
+        caps.audio_supports(codec, channels)
     }
 }
 
