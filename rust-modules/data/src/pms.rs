@@ -828,6 +828,7 @@ fn edit_item_with_scope(
         // what a quiet read brought is the server from before this edit; it must carry the edit
         // when it lands, and it is not what the person sees, so it never decides `hit`
         if let Some(b) = s.staged.as_mut() { apply_edit(b, at, edit); }
+        s.feed_copies(); // a removed card, a marked one
     }
     if !hit {
         return false; // the item is on no shelf (a Library-grid or Related item): nothing to redraw
@@ -1150,6 +1151,7 @@ fn take_lanes(srcs: &mut [Src]) -> (Vec<usize>, Vec<deck::Lane>) {
 fn put_lanes(srcs: &mut [Src], idx: &[usize], lanes: Vec<deck::Lane>) {
     for (&i, lane) in idx.iter().zip(lanes) {
         if let Some(build) = srcs[i].last.as_mut() { build.lane = lane; }
+        srcs[i].feed_copies();
     }
 }
 
@@ -1227,6 +1229,7 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
 fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
     last.lane = build.lane;
+    source.feed_copies();
     true
 }
 
@@ -1584,12 +1587,14 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
     // The trial refits the deck of every source (`settle_deck`); what waits must leave every lane as
     // it was, the sources that staged nothing included.
     let lanes: Vec<Option<deck::Lane>> = srcs.iter().map(|s| s.last.as_ref().map(|b| b.lane.clone())).collect();
+    let copies: Vec<_> = srcs.iter().map(|s| s.copies.clone()).collect();
     // swap the staged answers in; `olds` is what goes back if the commit waits
     let mut olds: Vec<(usize, Option<SourceBuild>)> = Vec::new();
     for (i, s) in srcs.iter_mut().enumerate() {
         let Some(mut new) = s.staged.take() else { continue };
         if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut new); }
         olds.push((i, s.last.replace(new)));
+        s.copies.clear(); // a fresh answer, as `landed_ok` takes one
     }
     settle_deck(&mut srcs, true);
     let candidate = merge_with_scope(&srcs, scope);
@@ -1612,6 +1617,7 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
         for (s, lane) in srcs.iter_mut().zip(lanes) {
             if let (Some(build), Some(lane)) = (s.last.as_mut(), lane) { build.lane = lane; }
         }
+        for (s, held) in srcs.iter_mut().zip(copies) { s.copies = held; }
         state.srcs = srcs;
         state.publish_memo = Some(key);
         return;
@@ -2251,6 +2257,9 @@ struct Src {
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
     last: Option<SourceBuild>,
+    /// The show each deck row of this server belongs to, remembered past the lane's trim
+    /// (`stores::deck_group`). Facts only: the pick is made by the merge from these.
+    copies: crate::stores::deck_group::Held,
     /// What a QUIET read ([`HubsCmd::RefetchSourceQuiet`](crate::stores::hubs::HubsCmd)) brought,
     /// held back from `last` until [`HubsCmd::Publish`](crate::stores::hubs::HubsCmd) lets it land.
     staged: Option<SourceBuild>,
@@ -2318,6 +2327,22 @@ impl Src {
         Some(request)
     }
 
+    /// Takes the deck rows the source holds into [`Src::copies`]. Called wherever rows enter a lane
+    /// or leave the deck (a landing, a settle, an edit), never from the merge.
+    fn feed_copies(&mut self) {
+        match self.last.as_ref() {
+            Some(build) => self.copies.feed(&build.lane, &build.cw),
+            None => self.copies.clear(),
+        }
+    }
+
+    /// Whether this source's copy may win a show: it answered, its client is present and its deck
+    /// read is not failing. (Plex Web merges only the servers that answered this load.)
+    #[allow(dead_code)] // RED-RUN
+    fn deck_eligible(&self) -> bool {
+        self.last.is_some() && self.state == HubState::Ready && self.client.is_some() && self.retry_n == 0
+    }
+
     fn new(sid: ServerId, handle: String) -> Src {
         let client = plx_plex::plex::client_for(sid);
         Src {
@@ -2338,6 +2363,7 @@ impl Src {
             ledger: Default::default(),
             stamp: 0,
             last: None,
+            copies: Default::default(),
             staged: None,
             quiet: false,
             quiet_owed: false,
@@ -2637,7 +2663,7 @@ impl BrowseScope {
 /// library the section table has not enumerated yet, both pass. The pin is a decision about
 /// libraries we know about, and the alternative — hiding what we cannot classify — empties Home on
 /// the frame it boots, which is the same mistake [`feeds_home`] documents one level up.
-fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
+pub(crate) fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
     if m.sec == 0 {
         return true; // the server said nothing about this row's library
     }
@@ -2857,6 +2883,8 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     let mut b = b;
     if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
     s.last = Some(b);
+    s.copies.clear(); // a fresh answer: what was remembered deeper than its preview may be gone
+    s.feed_copies();
     s.staged = None; // this answer is newer than anything a quiet read held
     s.quiet_owed = false;
     s.state = HubState::Ready;
