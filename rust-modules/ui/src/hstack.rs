@@ -372,6 +372,12 @@ impl Flow {
         Some(Span { i, x, w: item.w, box_x: x - item.lead })
     }
 
+    /// Where the next present item will stand: the pen after the gap (the leading `x` while none is
+    /// placed). A caller that places items only while they fit its room asks it before it commits.
+    pub fn next_x(&self) -> f32 {
+        self.x + self.advance.unwrap_or(0.0)
+    }
+
     /// The trailing edge of the last present item (the leading `x` while none is): where the run ends.
     pub const fn end(&self) -> f32 {
         self.edge
@@ -655,5 +661,33 @@ mod tests {
             assert_eq!(slice.fit(300.0), by_width.fit(300.0));
         }
         assert_eq!(HStack::widths(&[], GAP, Align::Leading(0.0)).width(), 0.0);
+    }
+
+    /// **A `Flow` is the leading-anchored stack, one item at a time**: it places exactly where
+    /// [`HStack::placed`] does (which is built on it), skips an absent item without a gap, honours
+    /// an item's own gap, hands `place` the x before the item exists, and reports the pen.
+    #[test]
+    fn a_flow_places_one_item_at_a_time_where_the_stack_would() {
+        let items = [Item::new(30.0), Item::absent(), Item::new(20.0).after(7.0), Item::new(10.0)];
+        let stack = HStack::new(&items, GAP, Align::Leading(100.0));
+        let mut flow = Flow::new(100.0, GAP);
+        assert_eq!(flow.next_x(), 100.0);
+        let spans: Vec<Span> = items.iter().filter_map(|&item| flow.push(item)).collect();
+        assert_eq!(spans.iter().map(|s| (s.x, s.w)).collect::<Vec<_>>(), at(&stack).iter().map(|&(_, x, w)| (x, w)).collect::<Vec<_>>());
+        assert_eq!(flow.end(), 100.0 + stack.width());
+        assert_eq!(flow.next_x(), flow.end() + GAP);
+        // `place` is told the x before it has the item
+        let mut flow = Flow::new(0.0, GAP);
+        flow.place(|x| Item::new(x + 40.0));
+        let mut told = None;
+        flow.place(|x| {
+            told = Some(x);
+            Item::new(5.0)
+        });
+        assert_eq!(told, Some(40.0 + GAP));
+        // an absent item takes no room, no gap
+        let mut flow = Flow::new(0.0, GAP);
+        flow.push(Item::absent());
+        assert_eq!((flow.next_x(), flow.end()), (0.0, 0.0));
     }
 }

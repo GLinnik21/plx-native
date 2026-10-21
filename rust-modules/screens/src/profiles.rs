@@ -95,6 +95,7 @@ use plx_session::auth::{self, Phase};
 use plx_ui::cards::AvatarRow;
 use plx_ui::frame::Budget;
 use plx_ui::geom;
+use plx_ui::hstack::{Align, HStack};
 use plx_ui::icons;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
@@ -146,6 +147,8 @@ const PAD_GRID_H: f32 = PAD_ROWS as f32 * PAD_KEY + (PAD_ROWS - 1) as f32 * PAD_
 const PAD_GRID_W: f32 = PAD_COLS as f32 * PAD_KEY + (PAD_COLS - 1) as f32 * PAD_KGAP;
 const PAD_TITLE_GRID: f32 = 152.0; // title draw-y → keypad top (the unit's overall pacing)
 const PAD_DOT: f32 = 18.0; // entry-dot diameter
+/// The air between neighbouring PIN entry dots.
+const PIN_DOT_GAP: f32 = 34.0;
 const PIN_ERR_S: f32 = 1.4; // wrong-PIN red-flash duration (s)
 const PIN_ERR_HALF_S: f32 = 0.175; // …and one half-cycle of it, so the window is four full blinks
 
@@ -1251,23 +1254,22 @@ impl ProfilesScreen {
                 .draw(&Env::inert(), p);
         } else {
             let flash = pin_flash(self.pad.error_s);
-            let dgap = 34.0f32;
-            let dw = PIN_LEN as f32 * PAD_DOT + (PIN_LEN as f32 - 1.0) * dgap;
-            let mut dx = SCR_W as f32 * 0.5 - dw * 0.5;
-            for i in 0..PIN_LEN {
+            let dot_widths = [PAD_DOT; PIN_LEN];
+            let dots = HStack::widths(&dot_widths, PIN_DOT_GAP, Align::Centre(SCR_W as f32 * 0.5));
+            for span in dots.placed() {
+                let i = span.i;
                 let filled = i < self.pad.entry.len();
                 let col = match flash {
                     Some(lit) => theme::with_a(theme::DANGER, if lit { 1.0 } else { 0.16 }),
                     None => theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 }),
                 };
                 p.rect(
-                    Rect::new(dx, dots_y, PAD_DOT, PAD_DOT),
+                    Rect::new(span.x, dots_y, PAD_DOT, PAD_DOT),
                     PAD_DOT * 0.5,
                     col,
                     col,
                     0.0,
                 );
-                dx += PAD_DOT + dgap;
             }
         }
         for (r, row) in KEYS.iter().enumerate() {

@@ -2641,4 +2641,21 @@ mod tests {
         assert!(FIRST_HEADER_CAP_OFFSET >= TOP_FADE_H);
         assert!(TOP_PAD + ROW_INK_PAD >= TOP_FADE_H);
     }
+
+    /// A row's badges stand `BADGE_GAP` apart edge to edge, and the run's width is the last chip's
+    /// trailing edge: the one layout the width, the elision budget and the paint all read.
+    #[test]
+    fn a_rows_badge_run_stands_one_gap_apart() {
+        let badges = [Badge::Forced, Badge::Sdh, Badge::Ad];
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let spans: Vec<Span> = badge_spans(&badges, 40.0, m).map(|(_, s)| s).collect();
+        assert_eq!(spans.len(), 3);
+        for pair in spans.windows(2) {
+            assert!((pair[1].x - (pair[0].x + pair[0].w) - BADGE_GAP).abs() < 0.01);
+        }
+        assert_eq!(spans[0].x, 40.0);
+        let last = spans[2];
+        assert!((badge_run_w(&badges, m) - (last.x + last.w - 40.0)).abs() < 0.01);
+        assert_eq!(badge_run_w(&[], m), 0.0);
+    }
 }

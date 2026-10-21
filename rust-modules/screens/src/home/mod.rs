@@ -20,6 +20,7 @@ use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::cards::{CardSource, SectionFrame, Shelf};
 use plx_ui::consts::*;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
 use plx_ui::hold_hint::{HintInput, HoldHint};
@@ -3475,14 +3476,20 @@ struct HeroRects {
 }
 
 fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
-    let play = Rect::new(MARGIN_X, HERO_ROW_Y, hero_pill_w(measure, label), HERO_CTRL_D);
-    let mut x = play.x + play.w + HERO_CTRL_GAP;
-    let disc = disc_hex(item).map(|_| {
-        let r = Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D);
-        x += HERO_CTRL_D + HERO_CTRL_GAP;
-        r
-    });
-    HeroRects { play, disc, info: Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D) }
+    // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
+    let has_disc = disc_hex(item).is_some();
+    let items = [
+        Item::new(hero_pill_w(measure, label)),
+        if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
+        Item::new(HERO_CTRL_D),
+    ];
+    let row = HStack::new(&items, HERO_CTRL_GAP, Align::Leading(MARGIN_X));
+    let at = |i: usize| row.span(i).map(|(x, w)| Rect::new(x, HERO_ROW_Y, w, HERO_CTRL_D));
+    HeroRects {
+        play: at(0).unwrap_or_default(),
+        disc: at(1),
+        info: at(2).unwrap_or_default(),
+    }
 }
 
 fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {

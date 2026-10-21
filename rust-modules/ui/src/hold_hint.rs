@@ -1387,6 +1387,22 @@ mod tests {
         assert!((lay.width - sum).abs() < 1e-3);
     }
 
+    /// The three runs stand one `RUN_GAP` apart (none before closing punctuation), and an empty
+    /// run is absent: no room and no gap, so the cap leads a sentence that has no words before it.
+    #[test]
+    fn the_runs_stand_one_gap_apart_and_an_empty_run_leaves_no_gap() {
+        let m = &FixtureMeasure;
+        let words = Layout::resolve(m, "Hold \u{fffc} for options");
+        assert_eq!(words.cap_x, words.pre_w + RUN_GAP);
+        assert_eq!(words.post_x, words.cap_x + words.cap_w + RUN_GAP);
+        let tight = Layout::resolve(m, "Hold \u{fffc}, to open the menu");
+        assert_eq!(tight.post_x, tight.cap_x + tight.cap_w, "none before closing punctuation");
+        let lead = Layout::resolve(m, "\u{fffc} for options");
+        assert_eq!((lead.cap_x, lead.post_x), (0.0, lead.cap_w + RUN_GAP), "no pre run: no leading gap");
+        let alone = Layout::resolve(m, "\u{fffc}");
+        assert_eq!(alone.width, 2.0 * PAD_X + alone.cap_w);
+    }
+
     /// **The capsule's layout is resolved once, not once per visible frame**, and again when the
     /// language changes (the sentence is the catalog's, so a new language is a new layout).
     #[test]

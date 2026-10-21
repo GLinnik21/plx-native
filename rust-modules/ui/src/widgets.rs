@@ -8878,6 +8878,8 @@ const RATING_CAPTION_GAP: f32 = 12.0;
 /// Score → the next glyph in the SAME group (Rotten Tomatoes' critic → audience). Wider than
 /// [`RATING_GAP`] so the two pairs read as two readings rather than one run of four things.
 const RATING_PAIR_GAP: f32 = 14.0;
+/// One provider's group → the next provider's, on a row of groups (the Detail hero's ratings line).
+pub const RATING_GROUP_GAP: f32 = 32.0;
 
 /// One colour layer of a rating mark — a mask and the tint it is painted in. Marks are two-tone
 /// (body + calyx), and the rasterizer renders a MASK, so a mark is a slice rather than one icon.
@@ -9078,3 +9080,56 @@ mod hero_scrim_tests;
 #[cfg(test)]
 #[path = "widgets_art_crop_tests.rs"]
 mod art_crop_tests;
+
+#[cfg(test)]
+#[test]
+fn a_painted_rating_group_keeps_each_token_gap_between_its_runs() {
+    let _serial = plx_base::testlock::serial();
+    let m = LegacyMeasure;
+    let mark: &[MarkLayer] = &[(crate::icons::Icon::Check, theme::TEXT_PRIMARY)];
+    let cells = [
+        RatingCell { mark, value: "88%", suffix: "" },
+        RatingCell { mark: &[], value: "8.1", suffix: "/10" },
+    ];
+    let mut icons = Vec::new();
+    let mut runs = crate::draw_census::capture_runs(|| {
+        icons = crate::draw_census::capture_icons(|| {
+            rating_group(Painter::recording(), 64.0, 100.0, "Provider", &cells, &m);
+        });
+    });
+    runs.retain(|r| !r.text.is_empty());
+    runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+    let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts, ["Provider", "88%", "8.1", "/10"]);
+    let gap = |a: &crate::draw_census::Run, b: &crate::draw_census::Run| b.at.x - (a.at.x + a.at.w);
+    assert!((icons[0].1.x - (runs[0].at.x + runs[0].at.w) - RATING_CAPTION_GAP).abs() < 0.5, "caption -> mark");
+    assert!((runs[1].at.x - (icons[0].1.x + icons[0].1.w) - RATING_GAP).abs() < 0.5, "mark -> score");
+    assert!((gap(&runs[1], &runs[2]) - RATING_PAIR_GAP).abs() < 0.5, "score -> next pair");
+    assert!(gap(&runs[2], &runs[3]).abs() < 0.5, "score -> its suffix is one run");
+    let w = rating_group_w("Provider", &cells, &m);
+    assert!((runs[3].at.x + runs[3].at.w - 64.0 - w).abs() < 0.5, "the extent is the last run's trailing edge");
+}
+
+#[cfg(test)]
+#[test]
+fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
+    let _serial = plx_base::testlock::serial();
+    let m = LegacyMeasure;
+    let card = Rect::new(100.0, 100.0, 300.0, 170.0);
+    let mut icons = Vec::new();
+    let runs = crate::draw_census::capture_runs(|| {
+        icons = crate::draw_census::capture_icons(|| {
+            still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", true, false, &m);
+        });
+    });
+    let sub = runs.iter().find(|r| r.text == "S1 E2").expect("the sub line");
+    let (icon, boxr) = icons[0];
+    let (l, r) = crate::icons::ink_x(icon);
+    assert!(((boxr.x + l * boxr.w) - (card.x + STILL_LINE_INSET)).abs() < 0.01, "the ink, not the box, stands at the inset");
+    assert!((sub.at.x - (boxr.x + r * boxr.w) - STILL_LINE_GAP).abs() < 0.5, "ink -> sub line is the token");
+    // no glyph, no gap: the sub line stands at the inset
+    let bare = crate::draw_census::capture_runs(|| {
+        still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, false, &m);
+    });
+    assert_eq!(bare.iter().find(|r| r.text == "S1 E2").unwrap().at.x, card.x + STILL_LINE_INSET);
+}

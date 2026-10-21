@@ -25,6 +25,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
 use plx_data::metadata::{Detail, Episode, Extra};
+use plx_ui::hstack::{Flow, Item, Span};
 use plx_ui::label::HAlign;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_view::TextView;
@@ -546,8 +547,10 @@ fn converts_on_server_c() -> &'static CStr { plx_platform::i18n::msg::browse_det
 #[derive(Clone, Copy)]
 enum Bit {
     Word(&'static CStr, [f32; 4], c_int),
-    Sep(f32),
+    /// The separator dot, `FACTS_SEP_PAD` from the run on each side (the flow's own gap).
+    Sep,
     Glyph,
+    /// The gap after the bit before it, in place of the flow's own (`Item::after`).
     Air(f32),
     Capsule,
 }
@@ -576,7 +579,7 @@ fn play_mode_bits_for(
         n += 1;
     };
     if after {
-        push(Bit::Sep(FACTS_SEP_PAD));
+        push(Bit::Sep);
     }
     match play_note(preview, hdr, subscription) {
         PlayNote::Quiet => push(Bit::Word(
@@ -593,7 +596,7 @@ fn play_mode_bits_for(
         )),
         PlayNote::Soft => {
             push(Bit::Word(converts_on_server_c(), plx_ui::detail_layout::FACTS_INK, 0));
-            push(Bit::Sep(FACTS_SEP_PAD));
+            push(Bit::Sep);
             push(Bit::Word(
                 plx_platform::i18n::msg::browse_detail_hardware_needs_c(),
                 theme::TEXT_SECONDARY,
@@ -606,7 +609,7 @@ fn play_mode_bits_for(
             push(Bit::Glyph);
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
-            push(Bit::Sep(FACTS_SEP_PAD));
+            push(Bit::Sep);
             push(Bit::Word(plx_platform::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);
@@ -615,19 +618,43 @@ fn play_mode_bits_for(
     (bits, n)
 }
 
-fn bit_w(bit: Bit, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    match bit {
-        Bit::Word(text, _, bold) => measure.width(text, theme::size::CAPTION, bold != 0),
-        Bit::Sep(gap) => 2.0 * gap + measure.width(c"\u{b7}", theme::size::CAPTION, false),
-        Bit::Glyph => FACTS_GLYPH_D,
-        Bit::Air(gap) => gap,
-        Bit::Capsule => plx_ui::widgets::pass_capsule_w(measure),
+/// **The play-mode clause's one layout**, from `x`: each bit with the span it draws, as a [`Flow`]
+/// whose own gap is `FACTS_SEP_PAD` (word, dot, word) and in which an [`Bit::Air`] is the previous
+/// bit's [`Item::after`]. A clause that opens with its dot stands that dot `FACTS_SEP_PAD` after
+/// `x`, the end of the run in front, which a zero-width item for that run provides. Returns the
+/// width, `x` to the last bit's trailing edge.
+fn bits_flow(
+    bits: &[Bit],
+    x: f32,
+    measure: &dyn plx_machine::machine::Measure,
+    mut each: impl FnMut(Bit, Span),
+) -> f32 {
+    let mut flow = Flow::new(x, FACTS_SEP_PAD);
+    if matches!(bits.first(), Some(Bit::Sep)) {
+        flow.push(Item::new(0.0));
     }
+    for (i, bit) in bits.iter().enumerate() {
+        let w = match *bit {
+            Bit::Word(text, _, bold) => measure.width(text, theme::size::CAPTION, bold != 0),
+            Bit::Sep => measure.width(c"\u{b7}", theme::size::CAPTION, false),
+            Bit::Glyph => FACTS_GLYPH_D,
+            Bit::Capsule => plx_ui::widgets::pass_capsule_w(measure),
+            Bit::Air(_) => continue,
+        };
+        let item = match bits.get(i + 1) {
+            Some(Bit::Air(gap)) => Item::new(w).after(*gap),
+            _ => Item::new(w),
+        };
+        if let Some(span) = flow.push(item) {
+            each(*bit, span);
+        }
+    }
+    flow.end() - x
 }
 
 fn play_mode_w(d: &Detail, after: bool, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (bits, n) = play_mode_bits(d, after);
-    bits[..n].iter().copied().map(|b| bit_w(b, measure)).sum()
+    bits_flow(&bits[..n], 0.0, measure, |_, _| {})
 }
 
 fn draw_play_mode(
@@ -646,38 +673,24 @@ fn draw_play_mode(
 fn paint_bits(p: Painter, bits: &[Bit], x: f32, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = y + (top + baseline) * 0.5;
-    let mut bx = x;
-    for bit in bits {
-        match *bit {
-            Bit::Word(text, color, bold) => {
-                bx += p.text(text.as_ptr(), bx, y, theme::size::CAPTION, color, 0, bold);
-            }
-            Bit::Sep(gap) => {
-                p.text(
-                    c"\u{b7}".as_ptr(),
-                    bx + gap,
-                    y,
-                    theme::size::CAPTION,
-                    theme::TEXT_SEPARATOR,
-                    0,
-                    0,
-                );
-                bx += bit_w(*bit, measure);
-            }
-            Bit::Glyph => {
-                plx_ui::icons::draw(
-                    p,
-                    plx_ui::icons::Icon::Alert,
-                    Rect::new(bx, cy - FACTS_GLYPH_D * 0.5, FACTS_GLYPH_D, FACTS_GLYPH_D),
-                    theme::TEXT_SECONDARY,
-                );
-                bx += FACTS_GLYPH_D;
-            }
-            Bit::Air(gap) => bx += gap,
-            Bit::Capsule => bx += plx_ui::widgets::pass_capsule(p, bx, cy, false, measure),
+    bits_flow(bits, x, measure, |bit, span| match bit {
+        Bit::Word(text, color, bold) => {
+            p.text(text.as_ptr(), span.x, y, theme::size::CAPTION, color, 0, bold);
         }
-    }
-    bx - x
+        Bit::Sep => {
+            p.text(c"\u{b7}".as_ptr(), span.x, y, theme::size::CAPTION, theme::TEXT_SEPARATOR, 0, 0);
+        }
+        Bit::Glyph => plx_ui::icons::draw(
+            p,
+            plx_ui::icons::Icon::Alert,
+            Rect::new(span.x, cy - FACTS_GLYPH_D * 0.5, FACTS_GLYPH_D, FACTS_GLYPH_D),
+            theme::TEXT_SECONDARY,
+        ),
+        Bit::Capsule => {
+            plx_ui::widgets::pass_capsule(p, span.x, cy, false, measure);
+        }
+        Bit::Air(_) => {}
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -715,34 +728,33 @@ fn facts_flow(
     mut run: impl FnMut(&str, f32, c_int, [f32; 4]) -> f32,
     mode: impl FnOnce(f32, bool) -> f32,
 ) -> f32 {
-    fn separator(run: &mut impl FnMut(&str, f32, c_int, [f32; 4]) -> f32, dx: f32) -> f32 {
-        2.0 * FACTS_SEP_PAD
-            + run(
-                "\u{b7}",
-                dx + FACTS_SEP_PAD,
-                theme::size::CAPTION,
-                theme::TEXT_SEPARATOR,
-            )
-    }
-    let mut dx = 0.0;
+    // The date, the extent and the dots between them are one `Flow` whose gap is the dot's pad; the
+    // play-mode clause carries its own leading dot (`mode` is told whether something precedes it),
+    // so the credit's flow starts at the clause's end with a zero-width item standing for it.
+    let dot = |run: &mut dyn FnMut(&str, f32, c_int, [f32; 4]) -> f32, x: f32| {
+        Item::new(run("\u{b7}", x, theme::size::CAPTION, theme::TEXT_SEPARATOR))
+    };
+    let mut flow = Flow::new(0.0, FACTS_SEP_PAD);
     let mut any = false;
     for part in parts.iter().filter(|part| !part.is_empty()) {
         if any {
-            dx += separator(&mut run, dx);
+            flow.place(|x| dot(&mut run, x));
         }
-        dx += run(part, dx, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK);
+        flow.place(|x| Item::new(run(part, x, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK)));
         any = true;
     }
-    let mode_w = mode(dx, any);
-    dx += mode_w;
+    // the clause abuts the run before it: it stands its own dot `FACTS_SEP_PAD` out
+    let mode_w = mode(flow.end(), any);
     any |= mode_w > 0.0;
+    let mut flow = Flow::new(flow.end() + mode_w, FACTS_SEP_PAD);
     if !credit.is_empty() {
         if any {
-            dx += separator(&mut run, dx);
+            flow.push(Item::new(0.0)); // the run in front (the last run or the clause)
+            flow.place(|x| dot(&mut run, x));
         }
-        dx += run(credit, dx, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK);
+        flow.place(|x| Item::new(run(credit, x, theme::size::CAPTION, plx_ui::detail_layout::FACTS_INK)));
     }
-    dx
+    flow.end()
 }
 
 pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {

@@ -34,6 +34,7 @@ use plx_plex::plex::ServerId;
 use plx_data::stores::metadata::MetadataCmd;
 use plx_data::stores::viewstate::ViewStateCmd;
 use plx_data::stores::{StoreCmd, StoreId};
+use plx_ui::hstack::{Flow, Item};
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{SectionFrame, Shelf};
 use plx_ui::frame::Budget;
@@ -2875,31 +2876,25 @@ impl DetailScreen {
         if !d.rating.is_empty() {
             parts.push(&d.rating);
         }
-        let mut x = plx_ui::consts::MARGIN_X
-            + plx_ui::widgets::dotted_run(
-                p,
-                &parts,
-                plx_ui::consts::MARGIN_X,
-                y,
-                theme::size::BODY,
-                theme::TEXT_SECONDARY,
-                theme::space::SM,
-            );
-        if x > plx_ui::consts::MARGIN_X {
-            x += theme::space::SM;
-        }
+        // One flow: the dotted run, then the resolution badge and the chips, `XS` apart; the run
+        // keeps `SM` from the first badge (an empty run is absent: no room and no gap).
+        let run_w = plx_ui::widgets::dotted_run(
+            p,
+            &parts,
+            plx_ui::consts::MARGIN_X,
+            y,
+            theme::size::BODY,
+            theme::TEXT_SECONDARY,
+            theme::space::SM,
+        );
+        let mut flow = Flow::new(plx_ui::consts::MARGIN_X, theme::space::XS);
+        flow.push(if run_w > 0.0 { Item::new(run_w).after(theme::space::SM) } else { Item::absent() });
         let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
         let cy = y + (top + base) * 0.5;
         if let Some(res) = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
-            x += plx_ui::widgets::badge(
-                p,
-                x,
-                cy,
-                &res,
-                None,
-                plx_ui::widgets::BadgeStyle::Filled,
-                measure,
-            ) + theme::space::XS;
+            flow.place(|x| {
+                Item::new(plx_ui::widgets::badge(p, x, cy, &res, None, plx_ui::widgets::BadgeStyle::Filled, measure))
+            });
         }
         for (present, label) in [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
@@ -2907,8 +2902,7 @@ impl DetailScreen {
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ] {
             if present {
-                x += plx_ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)
-                    + theme::space::XS;
+                flow.place(|x| Item::new(plx_ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
             }
         }
     }
@@ -2922,7 +2916,11 @@ impl DetailScreen {
     ) {
         let (top, base) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
         let cy = y + (top + base) * 0.5;
-        let mut x = plx_ui::consts::MARGIN_X;
+        // The groups are measured lazily, one at a time, and the row stops at the first that does
+        // not fit: a later, smaller group never jumps the queue, and no group past the break is
+        // ever measured (a replay holds only the widths the recording asked for), so this does not
+        // go through `HStack::fit`, which needs every width up front.
+        let mut flow = Flow::new(plx_ui::consts::MARGIN_X, plx_ui::widgets::RATING_GROUP_GAP);
         let mut i = 0;
         while i < d.ratings.len() {
             let provider = d.ratings[i].art.provider();
@@ -2941,10 +2939,10 @@ impl DetailScreen {
                 })
                 .collect();
             let width = plx_ui::widgets::rating_group_w(provider, &cells, measure);
-            if x + width > plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X {
+            if flow.next_x() + width > plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X {
                 break;
             }
-            x += plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure) + 32.0;
+            flow.place(|x| Item::new(plx_ui::widgets::rating_group(p, x, cy, provider, &cells, measure)));
             i = end;
         }
     }
