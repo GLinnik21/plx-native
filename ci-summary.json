@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T11:56:11Z",
+ "generated": "2026-10-21T12:04:17Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -149,18 +149,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.8,
-   "change7_pct": 13.0,
-   "d30": 677,
-   "delta30": -316.5,
-   "delta7": 41.5,
+   "change30_pct": -46.7,
+   "change7_pct": 12.9,
+   "d30": 676.0,
+   "delta30": -316.0,
+   "delta7": 41,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 124,
+   "n_now": 125,
    "n_prev": 113,
-   "now": 360.5,
+   "now": 360,
    "prev7": 319,
    "shown": true,
    "state": "flat",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 87.0,
+   "change30_pct": 88.1,
    "change7_pct": 11.4,
-   "d30": 1132,
-   "delta30": 985.0,
+   "d30": 1125.5,
+   "delta30": 991.5,
    "delta7": 216.0,
    "group": "ci",
    "id": "minutes",
@@ -308,10 +308,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 14.2,
+   "change30_pct": 13.9,
    "change7_pct": -13.8,
-   "d30": 232.5,
-   "delta30": 33.0,
+   "d30": 233,
+   "delta30": 32.5,
    "delta7": -42.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.0,
-   "change7_pct": 12.4,
-   "d30": 126,
-   "delta30": 118.5,
-   "delta7": 27.0,
+   "change30_pct": 93.7,
+   "change7_pct": 12.2,
+   "d30": 126.0,
+   "delta30": 118.0,
+   "delta7": 26.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 98,
-   "now": 244.5,
+   "now": 244,
    "prev7": 217.5,
    "shown": true,
    "state": "flat",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 169.0,
+   "change30_pct": 170.9,
    "change7_pct": -30.0,
-   "d30": 71,
-   "delta30": 120.0,
+   "d30": 70.5,
+   "delta30": 120.5,
    "delta7": -82.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 98,
-   "now": 191.0,
+   "now": 191,
    "prev7": 273.0,
    "shown": true,
    "state": "better",
@@ -414,17 +414,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.6,
+   "change7_pct": 11.9,
    "d30": null,
    "delta30": null,
-   "delta7": 15.5,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 98,
-   "now": 149.5,
+   "now": 150,
    "prev7": 134.0,
    "shown": true,
    "state": "flat",
@@ -501,16 +501,16 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
+   "d30": 16.0,
    "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 98,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 679.0,
-   "delta30": -676.0,
+   "d30": 677,
+   "delta30": -674.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -657,6 +652,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 36.8,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -718,6 +713,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 212,
@@ -731,11 +731,6 @@
    "change_pct": 33.8,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -779,6 +774,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 357.0,
@@ -792,11 +792,6 @@
    "change_pct": 30.2,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -840,6 +835,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 273,
@@ -853,11 +853,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -901,6 +896,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 46.5,
@@ -914,11 +914,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -962,6 +957,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 108.7,
@@ -975,11 +975,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
      "pr": 877,
      "sha": "659cca7a1",
      "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
@@ -1023,6 +1018,11 @@
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
     }
    ],
    "from": 129,
