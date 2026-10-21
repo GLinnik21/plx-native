@@ -4483,7 +4483,7 @@ fn a_hole_in_view_draws_a_skeleton_and_fills_on_landing_without_moving_the_focus
         let (_, frame) = plx_ui::placeholder::capture_declared(|| {
             let meta = test_store().view();
             let d = screen.detail(meta).unwrap();
-            episodes::draw(plx_ui::Painter::root(), d, 0.0, screen.episode_scroll.pos, None, |_| 1.0, |_| Default::default(), &measure, meta);
+            episodes::draw(plx_ui::Painter::root(), d, 0.0, screen.episode_scroll.pos, None, |_| 1.0, |_| 1.0, |_| false, |_| Default::default(), &measure, meta);
         });
         frame.of(plx_ui::placeholder::Reason::CardSkeleton)
     };
@@ -5192,4 +5192,74 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
     let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
+}
+
+/// **The held episode still is drawn ONCE while its hold menu is up.** The page pass (a frame
+/// carrying `lifted`, like a card section's) leaves the whole cell out - still AND label-block
+/// platter - and says so (`popover::lift_owns`); the opener lift (`redraw_focused`, a frame with no
+/// `lifted`) is the cell's only copy, at the press's own dip. Before, the page drew it at the
+/// undipped pop under the lift's dipped copy (two sizes of one still), and drew its platter too
+/// (two stacked plates while the menu was up, one the moment the lift stood down: a colour snap).
+#[test]
+fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lift() {
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=3).map(|i| episode(&format!("e{i}"), i)).collect();
+    let _guard = install(show);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = FocusKey { entry: EntryId(7), elem: episode_key(&screen, 0, episodes::Row::Still).unwrap() };
+    for _ in 0..120 {
+        screen.episode_cells.step(Some(0), None, 1.0 / 60.0);
+    }
+    const DIP: f32 = 0.918;
+    let mut context = cx(&measure, Some(key.elem));
+    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key) };
+
+    let mut census = |lifted: Option<FocusKey<u32>>, lift: bool| {
+        plx_ui::popover::set_lift_owns(false);
+        plx_ui::draw_census::capture(|| {
+            let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
+            f.lifted = lifted;
+            if lift {
+                screen.redraw_focused::<TestHost>(&mut f, Some(key));
+            } else {
+                plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
+            }
+        })
+    };
+    // The first cell, as a census reads it: its still is the one tag-21 art quad over the strip, its
+    // label plate the one tag-2 rounded rect as wide as a cell.
+    let stills = |v: &[(u64, plx_ui::Rect)]| -> Vec<plx_ui::Rect> {
+        v.iter().filter(|(t, r)| *t == 21 && r.x < 540.0 && r.y > 900.0).map(|(_, r)| *r).collect()
+    };
+    let plates = |v: &[(u64, plx_ui::Rect)]| -> Vec<plx_ui::Rect> {
+        v.iter().filter(|(t, r)| *t == 2 && (r.w - episodes::W).abs() < 8.0 && r.x < 540.0 && r.y > 900.0 && r.h < 200.0).map(|(_, r)| *r).collect()
+    };
+
+    // the menu is up: the page pass leaves the whole cell out and says so...
+    let page_lifted = census(Some(key), false);
+    assert!(plx_ui::popover::lift_owns(), "the page pass said the lift owns the cell");
+    assert_eq!((stills(&page_lifted).len(), plates(&page_lifted).len()), (0, 0), "the page pass drew {page_lifted:?}");
+    // ...and the lift (a frame with no `lifted`) is its only copy: one still, one plate.
+    let lift = census(None, true);
+    assert_eq!((stills(&lift).len(), plates(&lift).len()), (1, 1), "the lift drew {lift:?}");
+
+    // the press is in: the page's own copy dips exactly as the lift's does (one size of one still)
+    let page_pressed = census(None, false);
+    let (page_still, lift_still) = (stills(&page_pressed), stills(&lift));
+    assert_eq!(page_still.len(), 1);
+    let (a, b) = (page_still[0], lift_still[0]);
+    assert!(
+        (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01 && (a.w - b.w).abs() < 0.01 && (a.h - b.h).abs() < 0.01,
+        "page still {a:?} vs lift still {b:?}"
+    );
+    assert!(a.w < episodes::W * theme::EP_CARD_FOCUS_SCALE - 1.0, "the still is dipped: {a:?}");
+
+    // across the frame the lift stands down (`lifted` clears) there is one plate before and after
+    let before = plates(&page_lifted).len() + plates(&lift).len();
+    let after = plates(&page_pressed).len();
+    assert_eq!((before, after), (1, 1), "plates before / after the lift stands down");
+    assert_eq!(plates(&lift), plates(&page_pressed), "...and it is the same plate");
+    clear();
 }

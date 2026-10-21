@@ -420,11 +420,7 @@ pub(crate) fn lifted_out<H: Host, S: CardSource<H>>(
     src: &S,
     i: usize,
 ) -> bool {
-    let out = f.lifted.is_some_and(|k| k.entry == entry && k.elem == src.elem(i));
-    if out {
-        crate::popover::set_lift_owns(true);
-    }
-    out
+    f.leaves_out(entry, src.elem(i))
 }
 
 /// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`, and
