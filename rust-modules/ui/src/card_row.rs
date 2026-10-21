@@ -1826,7 +1826,7 @@ pub const CREDIT_ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space:
 
 /// Where a credit label's role line starts below its name line's cap top — the name's cap height
 /// and a gap. One number for the label in every state, so the two baselines never move.
-fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
+pub fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
     measure.cap_h(theme::size::LABEL) + theme::space::XS
 }
 

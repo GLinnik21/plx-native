@@ -8,7 +8,7 @@ use std::ffi::CString;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
-use plx_ui::hstack::Item;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
 use plx_ui::vstack::{Anchor, VStack};
@@ -108,6 +108,19 @@ pub fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
     Rect::new(strip_x(i) - scroll, top, W, H)
 }
 
+/// **The label block's one stack**, title / summary / date row: an empty summary, or neither air
+/// date nor rating chip (one row paints both), is ABSENT, not a zero-high row, so there is one `MD`
+/// between the blocks that are there and none after the last (the date sits one gap under the
+/// title when there is no summary, and a title-only platter ends at the title). `meta_layout` reads
+/// it at the heights the episode measured, [`reserved_text_h`] at the tallest it can have.
+fn meta_items(title_h: f32, summary_h: Option<f32>, has_row: bool) -> [Item; 3] {
+    [
+        Item::new(title_h),
+        summary_h.map_or(Item::absent(), Item::new),
+        if has_row { Item::new(theme::size::MICRO as f32) } else { Item::absent() },
+    ]
+}
+
 pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) -> (f32, f32, f32) {
     let title_h = TextView::new(&ep.title, theme::size::BODY, theme::TEXT_PRIMARY)
         .bold()
@@ -125,17 +138,12 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(TEXT_W)
     };
-    // An empty summary, or neither air date nor rating chip (one row paints both), is ABSENT, not a zero-high row: one `MD` between the blocks that
-    // are there, none after the last (the date sits one gap under the title when there is no
-    // summary, and a title-only platter ends at the title).
-    let items = [
-        Item::new(title_h),
-        if ep.summary.is_empty() { Item::absent() } else { Item::new(summary_h) },
-        if ep.aired.is_empty() && ep.rating.is_empty() { Item::absent() } else { Item::new(theme::size::MICRO as f32) },
-    ];
+    let items = meta_items(title_h, (!ep.summary.is_empty()).then_some(summary_h), !(ep.aired.is_empty() && ep.rating.is_empty()));
     let stack = VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY));
-    // Where a summary WOULD stand (unread when there is none: the draw skips an empty one).
-    let (summary_y, _) = stack.span(1).unwrap_or((TITLE_DY + title_h + theme::space::MD, 0.0));
+    // Where a summary WOULD stand (unread when there is none: the draw skips an empty one): the
+    // same stack with a zero-high summary present.
+    let probe = meta_items(title_h, Some(0.0), false);
+    let (summary_y, _) = stack.span(1).or_else(|| VStack::new(&probe, theme::space::MD, Anchor::Top(TITLE_DY)).span(1)).unwrap_or((TITLE_DY, 0.0));
     let bottom = TITLE_DY + stack.height();
     let date_y = stack.span(2).map_or(summary_y + summary_h, |(y, _)| y);
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
@@ -155,8 +163,8 @@ pub fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn pl
 /// date row. A season longer than a page reserves this for its whole life, so a page landing never
 /// changes the strip's height under the viewer.
 fn reserved_text_h() -> f32 {
-    TITLE_DY + 2.0 * TITLE_LEAD + theme::space::MD + SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD
-        + theme::space::MD + theme::size::MICRO as f32 + META_BOTTOM_PAD
+    let items = meta_items(2.0 * TITLE_LEAD, Some(SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD), true);
+    TITLE_DY + VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY)).height() + META_BOTTOM_PAD
 }
 
 pub fn block_h(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -496,9 +504,12 @@ fn draw_cell(
             );
             if !ep.rating.is_empty() {
                 let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::MICRO, 0);
+                // The date run, one SM, then the chip: the chip's left edge is the marker's x.
+                let run = [Item::new(width), Item::new(0.0)];
+                let chip_x = HStack::new(&run, theme::space::SM, Align::Leading(text_x)).span(1).map_or(text_x, |(x, _)| x);
                 plx_ui::widgets::keyline_chip(
                     p,
-                    text_x + width + theme::space::SM,
+                    chip_x,
                     text_top + date_y + (top + baseline) * 0.5,
                     &ep.rating,
                     theme::EP_META_INK,
@@ -833,5 +844,27 @@ mod tests {
         });
         let chip = runs.iter().find(|r| r.text == "TV-14").expect("the rating chip is drawn");
         assert!(chip.at.y + theme::size::MICRO as f32 <= platter_bottom + 0.5, "chip run at {} + MICRO past platter bottom {platter_bottom}", chip.at.y);
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+
+    /// The reserved label block is the meta stack at its tallest, to the bit.
+    #[test]
+    fn the_reserved_block_is_the_meta_stack_at_its_tallest() {
+        let md = theme::space::MD;
+        let old = TITLE_DY + 2.0 * TITLE_LEAD + md + SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD + md + theme::size::MICRO as f32 + META_BOTTOM_PAD;
+        assert_eq!(reserved_text_h(), old);
+    }
+
+    /// With an empty summary the fallback `summary_y` is where a summary would stand: one MD under the title.
+    #[test]
+    fn a_missing_summary_would_stand_one_md_under_the_title() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), aired: "2020-01-01".into(), ..Default::default() };
+        let none = Episode { summary: String::new(), ..full.clone() };
+        assert_eq!(meta_layout(&none, &measure).1, TITLE_DY + (meta_layout(&full, &measure).1 - TITLE_DY - theme::space::MD) + theme::space::MD);
     }
 }

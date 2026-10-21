@@ -45,7 +45,8 @@ use plx_data::person::Person;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::label::{Label, VAlign};
 use plx_ui::theme;
-use plx_ui::vstack::AlertHead;
+use plx_ui::hstack::Item;
+use plx_ui::vstack::{AlertHead, Anchor, VStack};
 use plx_ui::widgets;
 use plx_ui::prose_scroll::{self, paging, ProseScroll};
 use plx_ui::{Painter, Rect};
@@ -171,9 +172,9 @@ impl PersonBioScreen {
         let scroll = self.scroll.offset(max_scroll);
 
         // the two hairlines that bracket the reading block
-        let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
-        rule(view.y - theme::space::MD - 1.0);
-        rule(view.y + view.h + theme::space::MD);
+        let frame = frame();
+        widgets::hairline(p, c.x, frame.top_rule, c.w);
+        widgets::hairline(p, c.x, frame.bottom_rule, c.w);
 
         draw_bio(p, person, view, scroll, max_scroll);
         prose_scroll::draw_rail(p, view, c.x + c.w, self.scroll.page, pages);
@@ -390,11 +391,35 @@ fn text_w() -> f32 {
 /// header line that grows (a person with no roles, a very long name) shortens the reading window
 /// instead of pushing the footer off the sheet.
 fn viewport() -> Rect {
-    let c = content_rect();
-    let top = c.y + head_h() + theme::space::MD + 1.0 + theme::space::MD;
-    let bottom = c.y + c.h - foot_h() - theme::space::MD - 1.0 - theme::space::MD;
-    Rect::new(c.x, top, text_w(), (bottom - top).max(0.0))
+    let (c, f) = (content_rect(), frame());
+    Rect::new(c.x, f.view_top, text_w(), (f.view_bottom - f.view_top).max(0.0))
 }
+
+/// The y's the reading block is framed by: the two one-pixel rules and the viewport between them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Frame {
+    top_rule: f32,
+    view_top: f32,
+    view_bottom: f32,
+    bottom_rule: f32,
+}
+
+/// **The two stacks the viewport and the drawn rules both read**: from the content box's top, the
+/// head, `MD`, a rule, `MD`, the viewport's top; from its bottom, the footer, `MD`, a rule, `MD`,
+/// the viewport's bottom. Whatever the head and footer leave is the viewport, so the rules the draw
+/// strokes and the rect the clip cuts to cannot be summed apart.
+fn frame() -> Frame {
+    let c = content_rect();
+    let top = [Item::new(head_h()), Item::new(RULE_H), Item::new(0.0)];
+    let top = VStack::new(&top, theme::space::MD, Anchor::Top(c.y));
+    let bottom = [Item::new(0.0), Item::new(RULE_H), Item::new(foot_h())];
+    let bottom = VStack::new(&bottom, theme::space::MD, Anchor::Bottom(c.y + c.h));
+    let at = |s: VStack, i| s.span(i).map_or(0.0, |(y, _)| y);
+    Frame { top_rule: at(top, 1), view_top: at(top, 2), view_bottom: at(bottom, 0), bottom_rule: at(bottom, 1) }
+}
+
+/// A hairline's height.
+const RULE_H: f32 = 1.0;
 
 /// The header block's height: eyebrow, name, identity line, on the ALERT FAMILY's head ladder
 /// ([`theme::alert`]) — the same four numbers §1B spends, because §1C spells the same three runs.
@@ -972,5 +997,24 @@ mod tests {
         assert_eq!(sub.y - (h.title.y + h.title.h), theme::alert::GAP_TITLE_SUB);
         assert_eq!(head(0.0).h, head_h());
         assert!((h.h - (sub.y + sub.h - 200.0)).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    /// The frame is the old hand sums, to the bit: the rules stand `MD` off the head and the footer,
+    /// and the viewport takes what is left.
+    #[test]
+    fn the_frame_stands_the_rules_md_off_the_head_and_foot() {
+        let (c, f) = (content_rect(), frame());
+        let md = theme::space::MD;
+        assert_eq!(f.top_rule, c.y + head_h() + md);
+        assert_eq!(f.view_top, c.y + head_h() + md + 1.0 + md);
+        assert_eq!(f.view_bottom, c.y + c.h - foot_h() - md - 1.0 - md);
+        assert_eq!(f.bottom_rule, f.view_bottom + md);
+        let v = viewport();
+        assert_eq!((v.y, v.y + v.h), (f.view_top, f.view_bottom));
     }
 }
