@@ -120,6 +120,23 @@ pub struct Layout {
     pub scroll_max: f32,
 }
 
+/// Where the button row stands in [`panel_items`].
+const PANEL_BUTTONS: usize = 3;
+
+/// **The panel's one vertical run**, read both for its fixed height (`layout_with`'s `fixed_h`, with
+/// a viewport of 0) and for where the answer row stands: the top pad, the text viewport,
+/// [`QUESTION_GAP`], the button row, the bottom pad. The pads and the gap are items of height, so
+/// the stack's own gap is 0.
+fn panel_items(viewport_h: f32) -> [HItem; 5] {
+    [
+        HItem::new(PAD_TOP),
+        HItem::new(viewport_h),
+        HItem::new(QUESTION_GAP),
+        HItem::new(StatusOverlay::CTRL_H),
+        HItem::new(PAD_BOTTOM),
+    ]
+}
+
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
 /// its question and nothing more, and the arithmetic is written so that case stays byte-identical
 /// to the layout that existed before a body was possible when the question fits the safe frame.
@@ -139,12 +156,12 @@ pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
     let stack = VStack::new(&text, BODY_GAP, Anchor::Top(0.0));
     let body_off = stack.span(1).map_or(0.0, |(y, _)| y);
     let text_h = if body_h > 0.0 { stack.height() } else { question_h };
-    let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
+    let fixed_h = VStack::new(&panel_items(0.0), 0.0, Anchor::Top(0.0)).height();
     let overflow = text_h + fixed_h > SAFE.h;
     let viewport_h = text_h.min(SAFE.h - fixed_h);
     let h = fixed_h + viewport_h;
     let panel = Rect::new((Rect::FULL.w - PANEL_W) * 0.5, (Rect::FULL.h - h) * 0.5, PANEL_W, h);
-    let by = panel.y + PAD_TOP + viewport_h + QUESTION_GAP;
+    let by = VStack::new(&panel_items(viewport_h), 0.0, Anchor::Top(panel.y)).span(PANEL_BUTTONS).expect("present").0;
     let (cancel, destructive) = if answers == Answers::One {
         let lone = [HItem::new(BUTTON_W)];
         let at = HStack::new(&lone, BUTTON_GAP, StackAlign::Centre(panel.cx())).span(0).expect("present").0;
