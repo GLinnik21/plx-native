@@ -86,6 +86,7 @@
 use crate::consts::SAFE;
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::icons::{self, Icon};
+use crate::vstack::{Anchor, VSpan, VStack};
 use plx_machine::machine::Measure;
 use crate::text_view::TextView;
 use crate::underlay::{FrameLatch, Grade, Role, UnderlayField};
@@ -931,11 +932,27 @@ impl RouteLayout {
     /// grade it. The first version of this test compared `RouteLayout::screen().content.y` with
     /// its own `l.content.y` — a value against itself, which cannot fail.
     pub fn narrative_top(self, has_crumb: bool) -> f32 {
-        if has_crumb {
-            self.narrative.y + CRUMB_RISE
-        } else {
-            self.narrative.y
-        }
+        self.narrative_flow(has_crumb, 0.0).title.y
+    }
+
+    /// **The narrative column's vertical flow, stated once**: the crumb band ([`CRUMB_BAND`], absent
+    /// without a crumb), the title [`theme::space::SM`] under it (so the title stands
+    /// [`CRUMB_RISE`] below the column's top), and the copy [`theme::space::MD`] under the title.
+    /// `title_h` is the title's measured height (the title's own top does not depend on it).
+    /// [`Self::draw_narrative`] and [`Self::narrative_copy_frame`] both read these spans.
+    fn narrative_flow(self, has_crumb: bool, title_h: f32) -> NarrativeFlow {
+        let items = [
+            if has_crumb { HItem::new(CRUMB_BAND) } else { HItem::absent() },
+            HItem::new(title_h).before(theme::space::SM),
+            HItem::new(0.0),
+        ];
+        let stack = VStack::new(&items, theme::space::MD, Anchor::Top(self.narrative.y));
+        let mut spans = stack.placed();
+        let crumb = if has_crumb { spans.next() } else { None };
+        let (Some(title), Some(copy)) = (spans.next(), spans.next()) else {
+            unreachable!("the title and the copy anchor are always present")
+        };
+        NarrativeFlow { crumb, title, copy_top: copy.y }
     }
 
     /// The available prose region after the complete title and before the actual action group.
@@ -943,7 +960,7 @@ impl RouteLayout {
     pub fn narrative_copy_frame(self, has_crumb: bool, title: &str,
         actions_top: f32, measure: &dyn Measure) -> Rect {
         let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
-        let top = self.narrative_top(has_crumb) + title_h + theme::space::MD;
+        let top = self.narrative_flow(has_crumb, title_h).copy_top;
         Rect::new(self.narrative.x, top, self.narrative.w,
             (actions_top - theme::space::MD - top).max(0.0))
     }
@@ -988,16 +1005,15 @@ impl RouteLayout {
         copy_size: std::os::raw::c_int,
         measure: &dyn Measure,
     ) -> f32 {
-        let top = self.narrative_top(back_to.is_some());
-        if let Some(back_to) = back_to {
-            self.draw_crumb(p, self.narrative.y, back_to, measure);
-        }
-
         let title = Self::narrative_title(title);
         let title_h = title.measure_h(self.narrative.w);
-        title.draw(p, Rect::new(self.narrative.x, top, self.narrative.w, title_h));
+        let flow = self.narrative_flow(back_to.is_some(), title_h);
+        if let (Some(back_to), Some(crumb)) = (back_to, flow.crumb) {
+            self.draw_crumb(p, crumb.y, back_to, measure);
+        }
+        title.draw(p, Rect::new(self.narrative.x, flow.title.y, self.narrative.w, flow.title.h));
 
-        let copy_top = top + title_h + theme::space::MD;
+        let copy_top = flow.copy_top;
         let copy_bottom = self.action.y - theme::space::XL;
         let copy_h = TextView::new(copy, copy_size, theme::TEXT_READING)
             .leading(copy_size as f32 + theme::space::XS)
@@ -1013,6 +1029,14 @@ impl RouteLayout {
             );
         copy_top + copy_h
     }
+}
+
+/// Where [`RouteLayout::narrative_flow`] stands the narrative column's blocks.
+#[derive(Clone, Copy)]
+struct NarrativeFlow {
+    crumb: Option<VSpan>,
+    title: VSpan,
+    copy_top: f32,
 }
 
 /// **When a route ground reads its host**: on the frame that captured the host (nothing presents
@@ -1747,4 +1771,18 @@ mod tests {
         }
     }
 
+    /// The narrative flow: crumb band, SM, title, MD, copy; an absent crumb takes no room.
+    #[test]
+    fn the_narrative_flow_is_one_ladder_with_an_absent_crumb() {
+        let l = RouteLayout::screen();
+        let with = l.narrative_flow(true, 90.0);
+        let crumb = with.crumb.expect("crumb");
+        assert!((crumb.y - l.narrative.y).abs() < 0.01 && crumb.h == CRUMB_BAND);
+        assert!((with.title.y - (crumb.y + CRUMB_BAND + theme::space::SM)).abs() < 0.01);
+        assert!((with.copy_top - (with.title.y + 90.0 + theme::space::MD)).abs() < 0.01);
+        let bare = l.narrative_flow(false, 90.0);
+        assert!(bare.crumb.is_none());
+        assert!((bare.title.y - l.narrative.y).abs() < 0.01);
+        assert!((bare.copy_top - (l.narrative.y + 90.0 + theme::space::MD)).abs() < 0.01);
+    }
 }

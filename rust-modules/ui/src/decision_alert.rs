@@ -54,6 +54,7 @@ use std::borrow::Cow;
 
 use crate::consts::{K_SCROLL, SAFE};
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
+use crate::vstack::{Anchor, VFlow, VStack};
 use plx_machine::machine::Measure;
 use crate::popover::Popover;
 use crate::text_view::TextView;
@@ -130,8 +131,13 @@ pub fn layout(question_h: f32, body_h: f32) -> Layout {
 /// panel and the destructive rect is the zero-width point at the row's centre — nothing draws
 /// there and nothing registers it.
 pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
-    let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
-    let text_h = question_h + body_block;
+    // The text block is ONE stack: the question, then the body BODY_GAP under it (absent, so no gap,
+    // for an alert that asks its question alone). The body rect stands where a present body would.
+    let text = [HItem::new(question_h), if body_h > 0.0 { HItem::new(body_h).before(BODY_GAP) } else { HItem::absent() }];
+    let text_h = VStack::new(&text, BODY_GAP, Anchor::Top(0.0)).height();
+    let body_off = VStack::new(&[HItem::new(question_h), HItem::new(body_h)], BODY_GAP, Anchor::Top(0.0))
+        .span(1)
+        .map_or(0.0, |(y, _)| y);
     let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
     let overflow = text_h + fixed_h > SAFE.h;
     let viewport_h = text_h.min(SAFE.h - fixed_h);
@@ -150,7 +156,7 @@ pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
     Layout {
         panel,
         question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, question_h),
-        body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + question_h + BODY_GAP, BODY_W, body_h),
+        body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + body_off, BODY_W, body_h),
         cancel,
         destructive,
         text_viewport: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, viewport_h),
@@ -418,12 +424,13 @@ impl DecisionAlert {
             if l.scroll_max > 0.0 { p.clip(l.text_viewport); }
             let text_painter = p.translate(0.0, -scroll);
             Self::question_view(self.question).with_measure(measure).draw(text_painter, l.question);
-            let mut y = l.body.y;
+            let mut paras = VFlow::new(l.body.y, PARA_GAP);
             for para in &self.body {
                 let view = Self::body_view(para).with_measure(measure);
                 let h = view.measure_h(BODY_W);
-                view.draw(text_painter, Rect::new(l.body.x, y, l.body.w, h));
-                y += h + PARA_GAP;
+                if let Some(at) = paras.push(HItem::new(h)) {
+                    view.draw(text_painter, Rect::new(l.body.x, at.y, l.body.w, at.h));
+                }
             }
             if l.scroll_max > 0.0 {
                 p.clip_clear();
@@ -458,10 +465,7 @@ impl DecisionAlert {
 /// The body block's height from each paragraph's measured height: stacked [`PARA_GAP`] apart, and
 /// 0.0 — the no-body geometry — when there are none.
 fn body_h(heights: &[f32]) -> f32 {
-    if heights.is_empty() {
-        return 0.0;
-    }
-    heights.iter().sum::<f32>() + PARA_GAP * (heights.len() - 1) as f32
+    VStack::heights(heights, PARA_GAP, Anchor::Top(0.0)).height()
 }
 
 #[cfg(test)]
@@ -710,5 +714,16 @@ mod tests {
         assert_eq!(body_h(&[]), 0.0);
         assert_eq!(body_h(&[30.0]), 30.0);
         assert_eq!(body_h(&[30.0, 60.0]), 90.0 + PARA_GAP);
+    }
+
+    /// The body rect stands BODY_GAP under the question, and an alert with no body keeps the rect
+    /// where a body would start while taking no room.
+    #[test]
+    fn the_body_stands_one_gap_under_the_question_and_an_absent_body_takes_no_room() {
+        let with = layout(40.0, 90.0);
+        assert!((with.body.y - (with.question.y + 40.0 + BODY_GAP)).abs() < 0.01);
+        let plain = layout(40.0, 0.0);
+        assert!((plain.body.y - (plain.question.y + 40.0 + BODY_GAP)).abs() < 0.01);
+        assert!((with.panel.h - plain.panel.h - (BODY_GAP + 90.0)).abs() < 0.01);
     }
 }
