@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T09:58:08Z",
+ "generated": "2026-10-21T09:58:49Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 40.3,
+   "change7_pct": 39.6,
    "d30": null,
    "delta30": null,
-   "delta7": 85.5,
+   "delta7": 84,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 297.5,
+   "now": 296,
    "prev7": 212,
    "shown": true,
    "state": "worse",
@@ -87,17 +87,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 32.2,
+   "change7_pct": 32.0,
    "d30": null,
    "delta30": null,
-   "delta7": 87.5,
+   "delta7": 87,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 359.5,
+   "now": 359,
    "prev7": 272,
    "shown": true,
    "state": "worse",
@@ -111,14 +111,14 @@
    "change7_pct": 27.9,
    "d30": null,
    "delta30": null,
-   "delta7": 36.0,
+   "delta7": 36,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 165.0,
+   "now": 165,
    "prev7": 129,
    "shown": true,
    "state": "worse",
@@ -245,18 +245,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 87.7,
-   "change7_pct": 11.0,
+   "change30_pct": 88.1,
+   "change7_pct": 11.2,
    "d30": 1125.5,
-   "delta30": 987.5,
-   "delta7": 209,
+   "delta30": 991.5,
+   "delta7": 213.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 77,
-   "now": 2113,
+   "now": 2117.0,
    "prev7": 1904,
    "shown": true,
    "state": "flat",
@@ -296,9 +296,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 0,
-   "now": 312,
+   "now": 312.0,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -312,14 +312,14 @@
    "change7_pct": 0.0,
    "d30": 232.0,
    "delta30": 75.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 307.0,
+   "now": 307,
    "prev7": 307,
    "shown": true,
    "state": "flat",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -0.9,
+   "change7_pct": -0.6,
    "d30": null,
    "delta30": null,
-   "delta7": -1.5,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 172.5,
+   "now": 173,
    "prev7": 174,
    "shown": true,
    "state": "flat",
@@ -396,14 +396,14 @@
    "change7_pct": 14.7,
    "d30": null,
    "delta30": null,
-   "delta7": 21.0,
+   "delta7": 21,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 164.0,
+   "now": 164,
    "prev7": 143,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 49,
+   "n_now": 50,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -566,14 +566,14 @@
    "change7_pct": -25.0,
    "d30": 677.0,
    "delta30": -674.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 106,
+   "n_now": 107,
    "n_prev": 101,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -667,7 +667,7 @@
    "to": 128.7
   },
   {
-   "change_pct": 40.3,
+   "change_pct": 39.6,
    "commits": [
     {
      "pr": 871,
@@ -725,7 +725,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 297.5
+   "to": 296
   },
   {
    "change_pct": 36.6,
@@ -850,7 +850,7 @@
    "to": 483.5
   },
   {
-   "change_pct": 32.2,
+   "change_pct": 32.0,
    "commits": [
     {
      "pr": 871,
@@ -908,7 +908,7 @@
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 359.5
+   "to": 359
   },
   {
    "change_pct": 27.9,
@@ -969,7 +969,7 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 165.0
+   "to": 165
   }
  ],
  "schema": 2,
@@ -984,25 +984,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 359.5
+   "now": 359
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 312
+   "now": 312.0
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 307.0
+   "now": 307
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 297.5
+   "now": 296
   }
  ],
  "slowest_local": [
