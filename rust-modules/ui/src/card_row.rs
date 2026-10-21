@@ -12,6 +12,7 @@
 //! supplies.
 use crate::consts::*;
 use crate::hstack::{Flow, Item};
+use crate::vstack::{Anchor, VStack};
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
 use crate::widgets::{card, pop_factor, Art};
@@ -1000,14 +1001,19 @@ impl TileLabel {
     /// not have is `None`. The one place the block's vertical metrics are read as boxes, so what is
     /// drawn, what a test reads and what the reveal rule is solved against cannot disagree.
     pub fn lines(&self) -> [Option<LineBox>; 2] {
-        let mut y = UNDER_DROP;
-        let title = self.title.is_some().then(|| {
-            let line = self.line(y, y + UNDER_LINE_H);
-            y += UNDER_LINE_H + UNDER_LINE_GAP;
-            line
-        });
-        let details = self.caption.is_some().then(|| self.line(y, y + UNDER_CAPTION_H));
-        [title, details]
+        let items = Self::items(self.title.is_some(), self.caption.is_some());
+        let stack = VStack::new(&items, UNDER_LINE_GAP, Anchor::Top(UNDER_DROP));
+        let line = |i: usize| stack.span(i).map(|(y, h)| self.line(y, y + h));
+        [line(0), line(1)]
+    }
+    /// The block's two lines as one stack: the title line (index 0) and the details line (index 1),
+    /// each present or absent. Both [`TileLabel::lines`] and [`TileLabel::height`] read this, so the
+    /// drawn lines and the reserved height are the same stack.
+    fn items(title: bool, caption: bool) -> [Item; 2] {
+        [
+            if title { Item::new(UNDER_LINE_H) } else { Item::absent() },
+            if caption { Item::new(UNDER_CAPTION_H) } else { Item::absent() },
+        ]
     }
     /// The line whose box is `top..bottom` under the card, at the alpha this block's band gives it.
     fn line(&self, top: f32, bottom: f32) -> LineBox {
@@ -1020,13 +1026,9 @@ impl TileLabel {
     /// budget marquees in place rather than growing the block, so this no longer varies with the
     /// row style at all.
     pub fn height(caption: bool) -> f32 {
-        UNDER_DROP
-            + UNDER_LINE_H
-            + if caption {
-                UNDER_LINE_GAP + UNDER_CAPTION_H
-            } else {
-                0.0
-            }
+        // The title is always a line, so the block's height is the stack's height from its top.
+        let items = Self::items(true, caption);
+        UNDER_DROP + VStack::new(&items, UNDER_LINE_GAP, Anchor::Top(0.0)).height()
     }
     /// [`TileLabel::height`] for a block that has whatever THIS one has.
     #[cfg(test)]
@@ -2756,6 +2758,24 @@ mod tests {
     fn the_label_height_is_fixed_regardless_of_row_style() {
         assert_eq!(TileLabel::height(true), UNDER_LABEL_H);
         assert!(TileLabel::height(false) < TileLabel::height(true));
+    }
+
+    /// The two lines are one stack: the details line stands [`UNDER_LINE_GAP`] under the title line,
+    /// an absent caption draws no line, and the block's height is the stack's.
+    #[test]
+    fn the_label_lines_are_one_stack_with_the_reserved_height() {
+        let both = TileLabel::titled("Title", "Caption");
+        let [title, details] = both.lines();
+        let (title, details) = (title.unwrap(), details.unwrap());
+        assert_eq!(title.top, UNDER_DROP);
+        assert_eq!(title.bottom, UNDER_DROP + UNDER_LINE_H);
+        assert_eq!(details.top - title.bottom, UNDER_LINE_GAP);
+        assert_eq!(details.bottom - details.top, UNDER_CAPTION_H);
+        assert_eq!(details.bottom, TileLabel::height(true));
+        let bare = TileLabel::title("Title");
+        let [title, details] = bare.lines();
+        assert!(details.is_none());
+        assert_eq!(title.unwrap().bottom, TileLabel::height(false));
     }
 
     /// [`TileLabel::own_height`] agrees with the free function for a label that carries whatever

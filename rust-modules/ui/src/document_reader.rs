@@ -11,7 +11,9 @@
 
 use crate::consts::K_SCROLL;
 use plx_machine::machine::Measure;
+use crate::hstack::Item;
 use crate::text_view::TextView;
+use crate::vstack::VFlow;
 use crate::widgets;
 use crate::{theme, Painter, Rect, Spring};
 use std::hash::{Hash, Hasher};
@@ -192,13 +194,17 @@ impl DocumentReader {
     /// only the lines the clip rect can see; measures lines only when `(body, text_w)` changed
     /// since the last call.
     pub fn draw(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str) {
+        // The title, then the body under it with one MD gap; no title and the body starts at the top.
         let mut body_frame = frame;
+        let mut flow = VFlow::new(frame.y, theme::space::MD);
         if let Some(title) = title {
             let title = TextView::new(title, theme::size::HEADLINE, theme::TEXT_HEADING).bold();
             let h = title.measure_h(frame.w);
-            title.draw(p, Rect::new(frame.x, frame.y, frame.w, h));
-            body_frame.y += h + theme::space::MD;
-            body_frame.h -= h + theme::space::MD;
+            if let Some(span) = flow.push(Item::new(h)) {
+                title.draw(p, Rect::new(frame.x, span.y, frame.w, span.h));
+            }
+            body_frame.y = flow.next_y();
+            body_frame.h -= body_frame.y - frame.y;
         }
 
         let text_w = (body_frame.w - widgets::RAIL_W - RAIL_GAP).max(1.0);

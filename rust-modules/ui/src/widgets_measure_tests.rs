@@ -591,10 +591,11 @@ fn the_note_stands_in_the_rows_place_without_one_and_md_under_it_with_one() {
     assert_eq!(row.note_band(&b, m).unwrap().y, b.action_y + StatusOverlay::CTRL_H + theme::space::MD);
 }
 
-/// `still_line`'s label stands `STILL_PAIR_GAP` above the sub line's cap top, measured on what was
-/// painted; without a label the sub line stays where it was.
+/// `still_line`'s label baseline stands where it always stood, `sy - sct - STILL_PAIR_GAP` with
+/// `sy` the sub line's text origin (measured on what was painted); without a label the sub line
+/// stays where it was.
 #[test]
-fn still_line_pair_is_a_bottom_anchored_vstack_of_cap_bands() {
+fn still_line_label_baseline_is_where_it_always_stood() {
     let card = Rect::new(0.0, 0.0, 400.0, 225.0);
     let draw = |label: &str| {
         crate::draw_census::capture_runs(|| {
@@ -605,7 +606,7 @@ fn still_line_pair_is_a_bottom_anchored_vstack_of_cap_bands() {
     let (sct, _) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
     let both = draw("Show");
     let (label, sub) = (&both[0], &both[1]);
-    assert!(((sub.at.y + sct) - (label.at.y + lcb) - STILL_PAIR_GAP).abs() < 0.5);
+    assert!(((label.at.y + lcb) - (sub.at.y - sct - STILL_PAIR_GAP)).abs() < 0.01);
     let alone = draw("");
     assert_eq!(alone.len(), 1);
     assert_eq!(alone[0].at.y, sub.at.y);

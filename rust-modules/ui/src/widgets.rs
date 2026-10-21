@@ -518,9 +518,11 @@ pub fn still_line(
 ) {
     // The pair is one bottom-anchored VStack of cap bands, because that is what the two insets are
     // about: the sub line's baseline sits at the tile's own bottom inset and the label stacks above
-    // it, `STILL_PAIR_GAP` between the label's baseline and the sub's cap top. The band heights come
-    // from the cap bands (a font swap cannot silently close the pair up); a label-less tile leaves
-    // the sub exactly where it was.
+    // it. The band heights come from the cap bands (a font swap cannot silently close the pair up); a
+    // label-less tile leaves the sub exactly where it was. The label's baseline stands
+    // `STILL_PAIR_GAP` above the sub's TEXT ORIGIN less its cap top (the design's "line-height 1.15,
+    // then 2px" measured from the sub's box), which is `2 * sct` further up than the gap between the
+    // bands, so that distance is the sub item's `before`.
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
     let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
     let (lct, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
@@ -531,7 +533,7 @@ pub fn still_line(
     };
     let pair = [
         if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
-        HItem::new(scb - sct),
+        HItem::new(scb - sct).before(STILL_PAIR_GAP + 2.0 * sct),
     ];
     let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(card.y + card.h - bot));
     let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;

@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 use crate::fit;
 use crate::hstack::{Flow, Item, Span};
+use crate::vstack::{Anchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use crate::theme;
 use crate::{Painter, Rect, Spring};
@@ -1754,10 +1755,14 @@ impl TableView {
             let (title_y, detail_y) = if two_line {
                 let (t_top, t_base) = plx_gfx::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
-                let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
-                let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
-                let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
-                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top)
+                // The pair's cap bands, one stack: title cap-top, then the detail cap-top one
+                // ROW_SUB_GAP below the title's baseline, the pair centred in the row.
+                let items = [Item::new(t_base - t_top), Item::new(d_base - d_top)];
+                let pair = VStack::new(&items, ROW_SUB_GAP, Anchor::Centre(sy + h * 0.5));
+                let (Some((title_cap, _)), Some((detail_cap, _))) = (pair.span(0), pair.span(1)) else {
+                    unreachable!("the title and the detail line are always present")
+                };
+                (title_cap - t_top, detail_cap - d_top)
             } else {
                 (0.0, 0.0) // unused single-line; Label centres the label
             };
