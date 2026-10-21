@@ -9,8 +9,8 @@
 //! given page shows (`HeroCtl`, `HeroSet`) stays with that page and feeds these functions its
 //! widths.
 //!
-//! **Behaviour-neutral.** These bodies moved out of `screens::detail::hero` unchanged; the
-//! Detail page calls them back, so its pixels and its tests are the contract
+//! **Behaviour-neutral.** These began as the bodies of `screens::detail::hero` and were
+//! re-based on the shared `HStack` without moving a pixel; the Detail page calls them back, so its pixels and its tests are the contract
 //! (`hero_layout_tests.rs` pins the arithmetic on its own).
 use std::ffi::CStr;
 
