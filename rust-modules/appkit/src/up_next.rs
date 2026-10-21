@@ -34,6 +34,7 @@
 //! never hands us a different show. Sourcing it from Continue Watching is the owner's call.)*
 #![allow(dead_code)]
 use plx_media::route::UpNext;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::label::{HAlign, Label};
 use plx_ui::theme;
 use plx_ui::widgets::{draw_card, Button, ControlGround};
@@ -220,8 +221,13 @@ pub struct Layout {
 /// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
 pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
     use crate::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
-    let next = Rect::new(CTRL_RIGHT - next_w, CTRL_Y, next_w, CTRL_H);
-    let credits = Rect::new(next.x - PILL_GAP - credits_w, next.y, credits_w, next.h);
+    // The two pills are one run, right-anchored at the control row's edge, `PILL_GAP` apart.
+    let pills = [Item::new(credits_w), Item::new(next_w)];
+    let row = HStack::new(&pills, PILL_GAP, Align::Trailing(CTRL_RIGHT));
+    let (credits_x, _) = row.span(0).unwrap_or_default();
+    let (next_x, _) = row.span(1).unwrap_or_default();
+    let next = Rect::new(next_x, CTRL_Y, next_w, CTRL_H);
+    let credits = Rect::new(credits_x, next.y, credits_w, next.h);
     let caption = Rect::new(
         CTRL_RIGHT - CAPTION_W,
         CTRL_Y - BTN_GAP - CAPTION_H,
@@ -416,7 +422,7 @@ mod tests {
     /// the host suite cannot link SDL2_ttf at all.
     #[test]
     fn the_column_is_right_anchored_on_one_edge() {
-        // the real orders of magnitude: `ctrl_slot`'s floor is 236, and "Watch Credits" measures a
+        // the real orders of magnitude: `ctrl_slot`'s floor is 232, and "Watch Credits" measures a
         // little under it — which is the asymmetry the design is making a point of
         let l = layout_of(243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);
