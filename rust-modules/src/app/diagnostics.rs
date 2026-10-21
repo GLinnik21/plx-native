@@ -1575,7 +1575,9 @@ fn mb(b: i64) -> String {
 const MARGIN: f32 = 60.0;
 const PAD: f32 = 24.0;
 const COL_GAP: f32 = 32.0;
-/// Minimum header height: title, single-line identity/verdict, and column headings.
+/// Minimum header height: title, single-line identity/verdict, and column headings. The ladder in
+/// [`HeaderLayout::new`] yields exactly this for one-line blocks; only the tests quote it.
+#[cfg(test)]
 const HEAD_H: f32 = 118.0;
 const HEAD_LINE_H: f32 = 24.0;
 const HEAD_IDENTITY_Y: f32 = 38.0;
