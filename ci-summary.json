@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T12:42:25Z",
+ "generated": "2026-10-21T12:49:59Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,18 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 36.6,
+   "change7_pct": 36.9,
    "d30": null,
    "delta30": null,
-   "delta7": 77.5,
+   "delta7": 78.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 289.5,
-   "prev7": 212,
+   "prev7": 211.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -44,10 +44,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -30.1,
+   "change30_pct": -30.0,
    "change7_pct": 32.7,
-   "d30": 680.0,
-   "delta30": -205.0,
+   "d30": 679,
+   "delta30": -204,
    "delta7": 117,
    "group": "ci",
    "id": "pr_wait",
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 29.8,
+   "change7_pct": 30.4,
    "d30": null,
    "delta30": null,
-   "delta7": 38.5,
+   "delta7": 39.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 167.5,
-   "prev7": 129,
+   "prev7": 128.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -129,18 +129,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 27.7,
+   "change7_pct": 27.4,
    "d30": null,
    "delta30": null,
-   "delta7": 75.5,
+   "delta7": 75.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 348.5,
-   "prev7": 273,
+   "prev7": 273.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -149,19 +149,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.9,
+   "change30_pct": -47.0,
    "change7_pct": 12.7,
    "d30": 677,
-   "delta30": -317.5,
+   "delta30": -318,
    "delta7": 40.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 126,
-   "n_prev": 113,
-   "now": 359.5,
-   "prev7": 319,
+   "n_now": 127,
+   "n_prev": 112,
+   "now": 359,
+   "prev7": 318.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 91.7,
-   "change7_pct": 12.0,
+   "change30_pct": 91.3,
+   "change7_pct": 11.7,
    "d30": 127,
-   "delta30": 116.5,
-   "delta7": 26.0,
+   "delta30": 116,
+   "delta7": 25.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 98,
-   "now": 243.5,
+   "now": 243,
    "prev7": 217.5,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 173.6,
-   "change7_pct": -29.9,
+   "change30_pct": 174.3,
+   "change7_pct": -29.7,
    "d30": 70,
-   "delta30": 121.5,
-   "delta7": -81.5,
+   "delta30": 122,
+   "delta7": -81.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 98,
-   "now": 191.5,
+   "now": 192,
    "prev7": 273.0,
    "shown": true,
    "state": "better",
@@ -360,9 +360,9 @@
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 171.5,
-   "prev7": 174,
+   "prev7": 174.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -372,18 +372,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.4,
+   "change7_pct": 13.1,
    "d30": null,
    "delta30": null,
-   "delta7": 19.5,
+   "delta7": 19.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 164.5,
-   "prev7": 145,
+   "prev7": 145.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -401,9 +401,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 98,
-   "now": 150.0,
+   "now": 150,
    "prev7": 134.0,
    "shown": true,
    "state": "flat",
@@ -414,18 +414,18 @@
   },
   {
    "change30_pct": -50.4,
-   "change7_pct": -62.5,
+   "change7_pct": -62.4,
    "d30": 233.0,
    "delta30": -117.5,
-   "delta7": -192.5,
+   "delta7": -192.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 115.5,
-   "prev7": 308,
+   "prev7": 307.5,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -502,15 +502,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
+   "delta30": 2,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 98,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -572,9 +572,9 @@
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 110,
-   "n_prev": 101,
+   "n_prev": 100,
    "now": 3.0,
-   "prev7": 4,
+   "prev7": 4.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
@@ -657,6 +652,11 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
    "from": 57.5,
@@ -667,13 +667,8 @@
    "to": 127.3
   },
   {
-   "change_pct": 36.6,
+   "change_pct": 36.9,
    "commits": [
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
     {
      "pr": 886,
      "sha": "65bcd4d1e",
@@ -718,9 +713,14 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
-   "from": 212,
+   "from": 211.5,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
@@ -731,11 +731,6 @@
    "change_pct": 32.7,
    "commits": [
     {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
@@ -779,6 +774,11 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
    "from": 358,
@@ -789,13 +789,8 @@
    "to": 475
   },
   {
-   "change_pct": 29.8,
+   "change_pct": 30.4,
    "commits": [
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
     {
      "pr": 886,
      "sha": "65bcd4d1e",
@@ -840,9 +835,14 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
-   "from": 129,
+   "from": 128.5,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
@@ -853,11 +853,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
@@ -901,6 +896,11 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
    "from": 46.5,
@@ -914,11 +914,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
@@ -962,6 +957,11 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
    "from": 108.7,
@@ -972,13 +972,8 @@
    "to": 140.7
   },
   {
-   "change_pct": 27.7,
+   "change_pct": 27.4,
    "commits": [
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
     {
      "pr": 886,
      "sha": "65bcd4d1e",
@@ -1023,9 +1018,14 @@
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
     }
    ],
-   "from": 273,
+   "from": 273.5,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
@@ -1063,7 +1063,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 243.5
+   "now": 243
   }
  ],
  "slowest_local": [
