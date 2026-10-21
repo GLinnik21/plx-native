@@ -250,8 +250,8 @@ pub struct LibraryScreen {
     clock: super::clock_readout::ClockWatch,
     /// The question, asked from the failed read-out's *Connect*.
     plaintext_alert: super::plaintext_question::PlaintextAlert,
-    /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, the rarer
-    /// cadence of a non-Home card screen). Paint-only: not hashed, not in the shape.
+    /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, once per
+    /// install). Paint-only: not hashed, not in the shape.
     hold_hint: plx_ui::hold_hint::HoldHint,
 }
 
@@ -289,7 +289,7 @@ impl LibraryScreen {
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
-            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
+            hold_hint: plx_ui::hold_hint::HoldHint::new(),
         }
     }
 

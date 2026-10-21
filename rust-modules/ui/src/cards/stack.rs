@@ -357,11 +357,11 @@ impl<K: Copy + Eq> Stack<K> {
     }
 
     /// Teach the hold on this page: a standing "Hold OK for options" hint over the cards, on the
-    /// rarer cadence of a non-Home screen of `kind` (`HoldHint::once_per_run`). The stack steps it
+    /// run-wide cadence every card screen shares (`HoldHint::new`). The stack steps it
     /// on its `Tick`, answers its two screen-specific questions itself ([`hint_input`](Self::hint_input))
     /// and draws it last in [`StackView::paint`]. For a page whose card holds open the item menu.
-    pub fn hold_hint(mut self, kind: crate::hold_hint::Kind) -> Self {
-        self.hint = Some(crate::hold_hint::HoldHint::once_per_run(kind));
+    pub fn hold_hint(mut self) -> Self {
+        self.hint = Some(crate::hold_hint::HoldHint::new());
         self
     }
 

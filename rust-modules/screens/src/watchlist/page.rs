@@ -850,7 +850,7 @@ impl WatchlistScreen {
         Self {
             page,
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint().home_when_unfocused(true),
             ground: PageGround::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
@@ -876,7 +876,7 @@ impl WatchlistScreen {
     /// The same page mounted as `entry`.
     pub fn at_entry(mut self, entry: EntryId) -> Self {
         self.page.entry = entry;
-        self.stack = Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true);
+        self.stack = Stack::new(entry).hold_hint().home_when_unfocused(true);
         self
     }
 

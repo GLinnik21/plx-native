@@ -708,7 +708,7 @@ impl CollectionScreen {
                 sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint().home_when_unfocused(true),
             teardown_closed: false, ground: PageGround::new(), ground_seeded: false,
         }
     }
@@ -1252,10 +1252,10 @@ mod tests {
             ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "b")));
     }
 
-    /// The hold hint on a Collection page (`ui::hold_hint`): the first time it teaches like Home's
-    /// (a 1.5 s dwell on a settled member), and a page of this kind never self-teaches again.
+    /// The hold hint on a Collection page (`ui::hold_hint`): the first time it teaches
+    /// (a 1.5 s dwell on a settled member), and no page self-teaches again this run.
     #[test]
-    fn the_hold_hint_stands_on_a_resting_member_once_per_run() {
+    fn the_hold_hint_stands_on_a_resting_member_once_per_install() {
         let _g = plx_base::testlock::serial();
         plx_ui::hold_hint::reset_learned_for_test();
         plx_ui::hold_hint::reset_shown_for_test();
@@ -1271,21 +1271,21 @@ mod tests {
         };
         rest(&mut screen, a, 1.2);
         assert!(!screen.stack.hint_visible(), "not before the dwell");
-        // The negatives come BEFORE the first stand: once it has stood the kind's latch is spent
+        // The negatives come BEFORE the first stand: once it has stood the run's latch is spent
         // and nothing could stand whatever the wiring.
         // a menu open over the page: focus is the menu's, not this page's
         let menu = plx_machine::machine::FocusKey { entry: EntryId(77), elem: 0 };
         rest(&mut screen, menu, 3.0);
-        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Collection), "never while a menu is open");
+        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu is open");
         // nor on the header, which is not a card
         let header = plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM };
         rest(&mut screen, header, 3.0);
-        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Collection), "never on a non-card focus");
+        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on a non-card focus");
         rest(&mut screen, a, 3.6);
         assert!(screen.stack.hint_visible(), "after the dwell, on a settled member");
         rest(&mut screen, menu, 1.0);
         assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");
-        // spent for the kind: another member, and a second Collection page, stay quiet
+        // spent for the run: another member, and a second page, stay quiet
         rest(&mut screen, b, 3.0);
         assert!(!screen.stack.hint_visible(), "not twice on the same page");
         let (store2, mut again) = seeded();

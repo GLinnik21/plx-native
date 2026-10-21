@@ -176,8 +176,8 @@ smallest worked example.
 - Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
   through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
   (`focusable_via_view!(Screen, H: [Bounds], view)` for a screen generic over its host).
-- Opt into the hold hint with `Stack::hold_hint(Kind)`; `card_has_menu` says which cards a hold
-  actually opens a menu on.
+- Opt into the hold hint with `Stack::hold_hint()`; `card_has_menu` says which cards a hold
+  actually opens a menu on. The hint is once per INSTALL per surface (`plx_ui::hold_hint::Surface`: a card, and Detail's season pill, which takes a shorter dwell); the screen only names the surface and focus in `HintInput`, and the application persists what was taught (`app/hint_taught.rs`, the `hold_hint_taught` Install preference).
 - Register a conformance mount: a `cards_harness.rs` child module of the screen exposing
   `mount` (see `collection/cards_harness.rs`), and a row for it in `table()` of
   `cards_conformance_tests.rs`; the shared drivers live in `ui/src/cards/conformance.rs`.

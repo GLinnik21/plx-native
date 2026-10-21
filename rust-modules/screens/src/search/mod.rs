@@ -636,7 +636,7 @@ fn group(id: GroupId, kind: GroupKind, len: usize, extent: Rect, elem: ElemKind,
 /// `render.rs` (the cards fade in with the results).
 fn new_stack(entry: EntryId) -> Stack<Sec> {
     let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
-    Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Search).reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
+    Stack::new(entry).hold_hint().reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
 }
 
 impl<H: SearchLike> StackPage<H> for SearchScreen {

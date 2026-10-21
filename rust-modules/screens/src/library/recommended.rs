@@ -348,7 +348,7 @@ impl RecommendedScreen {
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false, fade: Xfade::new(), sweep_down: true,
             header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(),
             header_row: plx_ui::page_header::SharedRow::new(),
-            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
+            hold_hint: plx_ui::hold_hint::HoldHint::new(),
             hold_sent: None, rows_stale: false,
             #[cfg(test)] shelf_visits: std::cell::Cell::new(0),
         }

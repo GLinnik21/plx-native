@@ -1876,6 +1876,24 @@ mod tests {
             json!({"language": "be", "auto_sign_in": true}));
     }
 
+    /// The taught hold hints are the television's, not the account's: sign-out keeps them, so the
+    /// self-appearing hint does not teach a second time after the next sign-in.
+    #[test]
+    fn clear_tenure_keeps_the_taught_hold_hints() {
+        assert!(!ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({"language": "be", "hold_hint_taught": {"card": true}}),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences, json!({"language": "be", "hold_hint_taught": {"card": true}}));
+    }
+
     /// Sign-out forgets what each profile remembered of its own browsing and playback with the
     /// other account-bound preferences (QR3): the subtitle timing corrections (each names a server
     /// and a ratingKey), how each library was last browsed, and the library each tab opened in.

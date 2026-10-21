@@ -106,6 +106,7 @@ impl Frame {
 pub(crate) unsafe fn run(app: &mut App) {
     let watchdog = plx_base::task::watchdog::LoopWatch::start();
     let mut clock_notice = super::clock_notice::ClockNotice::new();
+    let mut hint_taught = super::hint_taught::HintTaught::new();
     while app.running {
         watchdog.advance();
         let _frame_scope = plx_base::task::FrameScope::enter();
@@ -152,6 +153,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_platform::tv::home::poll();
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
+        // What the hold hint has taught since last frame, written once to the install's session.
+        hint_taught.poll(app.boot_initial.is_some());
         ingest(app, fr);
         app.instr.mark(plx_base::diag::heartbeat::Phase::Ingest); // ingest
 

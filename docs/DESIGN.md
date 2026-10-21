@@ -127,7 +127,7 @@ Menus over a page are glass on frozen ground (DS6: `popover_glass`, gradient fac
 underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
 material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
 bar's track and the profile chip — plus two non-interactive standing notes in the page layer: the "Hold OK for options"
-capsule (`ui::hold_hint`: standing on Home, and once per screen kind per run on the other card screens) and the Library's
+capsule (`ui::hold_hint`: standing once per install on the card screens, and once on the Detail season pill) and the Library's
 scroll capsule (`ui::scroll_capsule`: the library's name and size once the chrome has tucked away on a page whose header names two
 or more libraries; the nav pill's own glass, asked for by the owner in place of its frozen-ground form). The guard is the file
 list in `widgets_glass_budget_tests`, not this paragraph. See `docs/liquid-glass.md`.

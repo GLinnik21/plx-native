@@ -49,7 +49,7 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+pub use prefs::{HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
@@ -611,7 +611,7 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (`ui_resolution`, `profile_prefs`, the per-profile home of the ten player
+    /// Every preference key but `language` (`ui_resolution`, `hold_hint_taught`, `profile_prefs`, the per-profile home of the ten player
     /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
     /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
     /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
@@ -1308,6 +1308,30 @@ impl UnderPosters {
     /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default.
     pub fn unpack(b: u8) -> UnderPosters {
         UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111) }
+    }
+}
+
+/// **Which "Hold [OK] for options" hints this install has been taught** (`plx_ui::hold_hint`): one
+/// flag per surface, `card` for any media card and `pill` for the Detail season tabs. Each is set
+/// once a read showing happened on that surface (or an item menu was opened, which sets both) and
+/// is never cleared, so the self-appearing hint stands once per INSTALL and survives relaunches.
+/// Install-wide: kept across sign-out, shared by every profile. Absence is "not taught yet";
+/// each flag is soft-parsed on its own, so garbage costs only that flag.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldHintTaught {
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub card: bool,
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub pill: bool,
+}
+
+impl HoldHintTaught {
+    /// Nothing taught: the default, and what an absent key reads.
+    pub const NONE: HoldHintTaught = HoldHintTaught { card: false, pill: false };
+
+    /// Both sets joined: a surface taught in either stays taught.
+    pub fn union(self, other: HoldHintTaught) -> HoldHintTaught {
+        HoldHintTaught { card: self.card || other.card, pill: self.pill || other.pill }
     }
 }
 
@@ -2323,6 +2347,18 @@ impl Session {
         self.prefs.ui_resolution
     }
 
+    /// Which hold hints this install has been taught; see [`HoldHintTaught`].
+    pub fn hold_hint_taught(&self) -> HoldHintTaught {
+        self.prefs.hold_hint_taught
+    }
+
+    /// This session with `taught` joined into what it already holds (a lesson is never unlearned).
+    pub fn with_hold_hint_taught(&self, taught: HoldHintTaught) -> Self {
+        let mut next = self.clone();
+        next.prefs.hold_hint_taught = next.prefs.hold_hint_taught.union(taught);
+        next
+    }
+
     pub fn with_ui_resolution(&self, mode: UiResolution) -> Self {
         let mut next = self.clone();
         next.prefs.ui_resolution = mode;
@@ -2921,6 +2957,23 @@ pub fn learn_server_key(machine_id: &str, pin: &str) -> bool {
     // sign-out repopulate the table that sign-out just emptied.
     let (machine_id, pin) = (machine_id.to_owned(), pin.to_owned());
     queue_update(move |cur| cur.with_server_key_pin(&machine_id, &pin))
+}
+
+/// Remember that this install has been taught the hold hints in `taught` (`plx_ui::hold_hint`),
+/// off the caller's thread and best-effort: the frame thread calls it on the rising edge, the
+/// cached session says whether anything is new (nothing is queued when the stored flags already
+/// cover `taught`), and the queued edit re-checks under IO and writes only a change. Returns
+/// whether an edit was queued, not whether it was saved. With no stored session the edit finds
+/// nothing to write and the hint teaches once more on the next install of a session.
+pub fn learn_hold_hint_taught(taught: HoldHintTaught) -> bool {
+    let stored = peek().hold_hint_taught();
+    if stored.union(taught) == stored {
+        return false;
+    }
+    queue_update(move |cur| {
+        let next = cur.with_hold_hint_taught(taught);
+        (next.prefs.hold_hint_taught != cur.prefs.hold_hint_taught).then_some(next)
+    })
 }
 
 /// The UI may retain the receipt while showing its pending preference locally.
@@ -6046,6 +6099,26 @@ mod server_key_pin_tests {
 
         clear();
         assert!(peek().prefs.server_key_pins.is_empty(), "cleared with the credentials");
+    }
+
+    /// `plx_ui::hold_hint` hands the application what an install was taught: the learn door queues a
+    /// write only for news, never un-teaches, and writes through the same ticketed door every
+    /// install-wide preference uses.
+    #[test]
+    fn learning_a_taught_hold_hint_writes_once_and_never_unlearns() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("hold-hint-learn");
+        save(&test_support::signed_in());
+        let card = HoldHintTaught { card: true, pill: false };
+        assert!(learn_hold_hint_taught(card), "news is queued");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().hold_hint_taught(), card);
+        assert!(!learn_hold_hint_taught(card), "the same lesson is not");
+        assert!(!learn_hold_hint_taught(HoldHintTaught::NONE), "nothing taught is not news");
+        assert!(learn_hold_hint_taught(HoldHintTaught { card: false, pill: true }), "another surface is");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().hold_hint_taught(), HoldHintTaught { card: true, pill: true }, "joined, never replaced");
+        assert_eq!(peek().account_token, "acct", "the credentials are untouched");
     }
 
     // ---- Issue #378: the session → `net::keypin` projection. Each test uses its own machine id and
