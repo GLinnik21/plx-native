@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T12:22:59Z",
+ "generated": "2026-10-21T12:27:24Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,19 +44,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -29.9,
-   "change7_pct": 33.6,
+   "change30_pct": -30.0,
+   "change7_pct": 33.0,
    "d30": 680.0,
-   "delta30": -203.0,
-   "delta7": 120.0,
+   "delta30": -204.0,
+   "delta7": 118.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 269,
-   "n_prev": 220,
-   "now": 477,
-   "prev7": 357.0,
+   "n_now": 268,
+   "n_prev": 221,
+   "now": 476.0,
+   "prev7": 358,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -149,18 +149,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.7,
-   "change7_pct": 12.9,
-   "d30": 676.0,
-   "delta30": -316.0,
-   "delta7": 41,
+   "change30_pct": -46.9,
+   "change7_pct": 12.7,
+   "d30": 677,
+   "delta30": -317.5,
+   "delta7": 40.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 125,
+   "n_now": 126,
    "n_prev": 113,
-   "now": 360,
+   "now": 359.5,
    "prev7": 319,
    "shown": true,
    "state": "flat",
@@ -245,10 +245,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 88.4,
+   "change30_pct": 87.4,
    "change7_pct": 11.6,
-   "d30": 1125.5,
-   "delta30": 995.5,
+   "d30": 1132,
+   "delta30": 989,
    "delta7": 220.0,
    "group": "ci",
    "id": "minutes",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 93.7,
-   "change7_pct": 12.2,
-   "d30": 126.0,
-   "delta30": 118.0,
-   "delta7": 26.5,
+   "change30_pct": 91.7,
+   "change7_pct": 12.0,
+   "d30": 127,
+   "delta30": 116.5,
+   "delta7": 26.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 98,
-   "now": 244,
+   "now": 243.5,
    "prev7": 217.5,
    "shown": true,
    "state": "flat",
@@ -331,8 +331,8 @@
   {
    "change30_pct": -2.6,
    "change7_pct": -26.3,
-   "d30": 233,
-   "delta30": -6,
+   "d30": 233.0,
+   "delta30": -6.0,
    "delta7": -81,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 170.9,
-   "change7_pct": -30.0,
-   "d30": 70.5,
-   "delta30": 120.5,
-   "delta7": -82.0,
+   "change30_pct": 173.6,
+   "change7_pct": -29.9,
+   "d30": 70,
+   "delta30": 121.5,
+   "delta7": -81.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 98,
-   "now": 191,
+   "now": 191.5,
    "prev7": 273.0,
    "shown": true,
    "state": "better",
@@ -422,9 +422,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 98,
-   "now": 150,
+   "now": 150.0,
    "prev7": 134.0,
    "shown": true,
    "state": "flat",
@@ -501,16 +501,16 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16.0,
+   "d30": 16,
    "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 119,
+   "n_now": 120,
    "n_prev": 98,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -564,8 +564,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 677,
-   "delta30": -674,
+   "d30": 679.0,
+   "delta30": -676.0,
    "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -657,6 +652,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 36.3,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -718,6 +713,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 212,
@@ -728,13 +728,8 @@
    "to": 289
   },
   {
-   "change_pct": 33.6,
+   "change_pct": 33.0,
    "commits": [
-    {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
     {
      "pr": 881,
      "sha": "99f7dc501",
@@ -779,24 +774,24 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
-   "from": 357.0,
+   "from": 358,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-21",
    "threshold_pct": 25.0,
-   "to": 477
+   "to": 476.0
   },
   {
    "change_pct": 30.0,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -840,6 +835,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 273,
@@ -853,11 +853,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -901,6 +896,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 46.5,
@@ -914,11 +914,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -962,6 +957,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 129,
@@ -975,11 +975,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
@@ -1023,6 +1018,11 @@
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
     }
    ],
    "from": 108.7,
@@ -1063,7 +1063,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 244
+   "now": 243.5
   }
  ],
  "slowest_local": [
