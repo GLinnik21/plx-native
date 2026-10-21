@@ -1915,6 +1915,41 @@ mod tests {
         assert_eq!(moving.dip(), 0.92);
     }
 
+    /// The runs `draw_heading_c` PAINTS for a title, a count and a source, left to right.
+    fn painted_heading(title: &std::ffi::CStr, count: &std::ffi::CStr, source: &std::ffi::CStr) -> Vec<crate::draw_census::Run> {
+        let mut runs = crate::draw_census::capture_runs(|| {
+            draw_heading_c(Painter::recording(), title, count, source, 100.0, 50.0, 1.0, &crate::widgets::LegacyMeasure);
+        });
+        runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        runs
+    }
+
+    /// Q4, painted: title -> dot -> count stand `HEADING_SOURCE_PAD` apart edge to edge, the count is
+    /// the quiet BODY note, and an absent count draws no dot, no gap and no run (Search and Person
+    /// both paint through this call).
+    #[test]
+    fn a_painted_heading_keeps_the_pad_between_title_dot_and_count() {
+        let _g = plx_base::testlock::serial();
+        let runs = painted_heading(c"Movies", c"12", c"");
+        let texts: Vec<_> = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, ["Movies", "\u{b7}", "12"]);
+        assert_eq!(runs[0].at.x, 100.0);
+        for pair in runs.windows(2) {
+            let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+            assert!((gap - HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+        }
+        assert_eq!((runs[2].size, runs[2].ink), (theme::size::BODY, theme::TEXT_TERTIARY));
+        assert_eq!((runs[1].size, runs[1].ink), (theme::size::BODY, theme::TEXT_SEPARATOR));
+        // the source rides the same pad behind the count
+        let both = painted_heading(c"Movies", c"12", c"friend");
+        assert_eq!(both.len(), 5);
+        let gap = both[3].at.x - (both[2].at.x + both[2].at.w);
+        assert!((gap - HEADING_SOURCE_PAD).abs() < 0.5, "count -> second dot: {gap}");
+        // hidden count: the title alone
+        let bare = painted_heading(c"Movies", c"", c"");
+        assert_eq!(bare.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Movies"]);
+    }
+
     #[test]
     fn discovery_and_text_recording_keep_visible_cards_when_gl_is_suppressed() {
         use crate::frame::backdrop::{self, Sources};

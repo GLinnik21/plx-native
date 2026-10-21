@@ -3178,4 +3178,30 @@ mod tests {
         assert!(worst <= 0.0, "a caption line of the Movies shelf ends {worst:.1} px below the drawn top of the Shows heading");
     }
 
+
+    /// Q4, painted: a shelf's heading is the one heading + count idiom. The title, the dot and the
+    /// count are PAINTED through a recording painter and read back run by run: each stands
+    /// `HEADING_SOURCE_PAD` after the one before it; a shelf with no count draws its title alone.
+    #[test]
+    fn a_painted_shelf_heading_keeps_the_pad_between_title_dot_and_count() {
+        let _g = plx_base::testlock::serial();
+        let (_store, mut s) = seed(2, 2);
+        s.page.shelf_count_c = [std::ffi::CString::new("22").unwrap(), std::ffi::CString::default()];
+        let paint = |kind: usize| {
+            let mut runs = plx_ui::draw_census::capture_runs(|| {
+                s.page.draw_shelf_heading(Painter::recording(), kind, 0.0, &plx_ui::widgets::LegacyMeasure);
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        let counted = paint(0);
+        assert_eq!(counted.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), [shelf_title()[0].to_str().unwrap(), "\u{b7}", "22"]);
+        assert_eq!(counted[0].at.x, MARGIN_X);
+        for pair in counted.windows(2) {
+            let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+            assert!((gap - plx_ui::cards::HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+        }
+        assert_eq!(counted[2].size, theme::size::BODY, "the count is a BODY note, not a caption");
+        assert_eq!(paint(1).len(), 1, "a shelf with no count draws its title alone");
+    }
 }

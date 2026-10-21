@@ -143,6 +143,31 @@ fn footer_scroll_items(label_w: f32) -> [Item; 3] {
     ]
 }
 
+/// The footer's left read-out: the two chevrons + "to scroll", starting at `x`, the chevrons centred
+/// on `cy` and the label in the footer band at `fy`. Marks, not controls — there is nothing to
+/// focus, so they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
+fn draw_scroll_hint(p: Painter, x: f32, cy: f32, fy: f32, cw: f32, measure: &dyn plx_machine::machine::Measure) {
+    let hint = plx_platform::i18n::msg::widgets_hint_scroll_c();
+    let items = footer_scroll_items(measure.width(hint, theme::size::CAPTION, false));
+    for (span, icon) in HStack::new(&items, FOOTER_SCROLL_GAP, Align::Leading(x))
+        .placed()
+        .zip([Some(Icon::ChevronUp), Some(Icon::ChevronDown), None])
+    {
+        match icon {
+            Some(icon) => plx_ui::icons::draw(
+                p,
+                icon,
+                Rect::new(span.box_x, cy - FOOTER_GLYPH * 0.5, FOOTER_GLYPH, FOOTER_GLYPH),
+                theme::TEXT_TERTIARY,
+            ),
+            None => {
+                Label::new(hint.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+                    .draw(p, Rect::new(span.x, fy, cw, FOOTER_H));
+            }
+        }
+    }
+}
+
 // Body rhythm — the design's `gap` values, one per nesting level.
 const SECTION_GAP: f32 = theme::space::LG; // 40 — between the grid / AUDIO / SUBTITLES blocks
 const COL_GAP: f32 = theme::space::LG; // 40 — between the three columns
@@ -1076,27 +1101,7 @@ impl TracksPanelScreen {
         let fy = r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below() - FOOTER_H;
         rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
         let cy = fy + FOOTER_H * 0.5;
-        // left: the two chevrons + "to scroll". Marks, not controls — there is nothing to focus, so
-        // they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
-        let hint = plx_platform::i18n::msg::widgets_hint_scroll_c();
-        let items = footer_scroll_items(measure.width(hint, theme::size::CAPTION, false));
-        for (span, icon) in HStack::new(&items, FOOTER_SCROLL_GAP, Align::Leading(cx))
-            .placed()
-            .zip([Some(Icon::ChevronUp), Some(Icon::ChevronDown), None])
-        {
-            match icon {
-                Some(icon) => plx_ui::icons::draw(
-                    p,
-                    icon,
-                    Rect::new(span.box_x, cy - FOOTER_GLYPH * 0.5, FOOTER_GLYPH, FOOTER_GLYPH),
-                    theme::TEXT_TERTIARY,
-                ),
-                None => {
-                    Label::new(hint.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-                        .draw(p, Rect::new(span.x, fy, cw, FOOTER_H));
-                }
-            }
-        }
+        draw_scroll_hint(p, cx, cy, fy, cw, measure);
         // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
         // `widgets::KeyHint` places by x and each caller solves its own alignment, so a right edge is
         // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
@@ -1325,22 +1330,31 @@ fn sheet_painter(appear: f32) -> Painter {
 mod tests {
     use super::*;
 
-    /// Q6: the footer's chevrons stand by their INK, so the gap the eye reads (ink to ink, and the
-    /// last ink to the label) is the token, not the token plus the empty margin of the 22 px box.
+    /// Q6, painted: the footer's chevrons stand by their INK, so the gap the eye reads (ink to ink, and
+    /// the last ink to the label) is the token, not the token plus the empty margin of the 22 px box.
+    /// The footer is PAINTED through a recording painter and read back off the glyph and run census.
     #[test]
-    fn the_scroll_hint_footer_keeps_one_visible_gap_between_chevron_inks_and_label() {
-        let items = footer_scroll_items(120.0);
-        let spans: Vec<_> = HStack::new(&items, FOOTER_SCROLL_GAP, Align::Leading(100.0)).placed().collect();
-        assert_eq!(spans.len(), 3);
-        let ink = |icon: Icon, box_x: f32| {
-            let (l, r) = plx_ui::icons::ink_x(icon);
-            (box_x + l * FOOTER_GLYPH, box_x + r * FOOTER_GLYPH)
+    fn the_painted_scroll_hint_footer_keeps_one_visible_gap_between_chevron_inks_and_label() {
+        let _g = plx_base::testlock::serial();
+        let mut runs = Vec::new();
+        let icons = plx_ui::draw_census::capture_icons(|| {
+            runs = plx_ui::draw_census::capture_runs(|| {
+                draw_scroll_hint(Painter::recording(), 100.0, 300.0, 280.0, 600.0, &plx_ui::widgets::LegacyMeasure);
+            });
+        });
+        let label = runs.iter().find(|r| r.text == plx_platform::i18n::msg::widgets_hint_scroll_c().to_str().unwrap()).expect("the label is painted");
+        assert_eq!((label.size, label.ink), (theme::size::CAPTION, theme::TEXT_TERTIARY));
+        let ink = |icon: Icon| {
+            let (_, r) = icons.iter().find(|(i, _)| *i == icon).unwrap_or_else(|| panic!("{icon:?} is painted"));
+            assert_eq!((r.w, r.h), (FOOTER_GLYPH, FOOTER_GLYPH));
+            assert!((r.y + r.h * 0.5 - 300.0).abs() < 0.01, "centred on the footer band");
+            let (l, rt) = plx_ui::icons::ink_x(icon);
+            (r.x + l * r.w, r.x + rt * r.w)
         };
-        let up = ink(Icon::ChevronUp, spans[0].box_x);
-        let down = ink(Icon::ChevronDown, spans[1].box_x);
-        assert!((up.0 - 100.0).abs() < 0.5, "the run starts at the first ink");
-        assert!((down.0 - up.1 - theme::space::SM).abs() < 0.5);
-        assert!((spans[2].x - down.1 - theme::space::SM).abs() < 0.5);
+        let (up, down) = (ink(Icon::ChevronUp), ink(Icon::ChevronDown));
+        assert!((up.0 - 100.0).abs() < 0.5, "the run starts at the first ink: {}", up.0);
+        assert!((down.0 - up.1 - FOOTER_SCROLL_GAP).abs() < 0.5, "chevron to chevron: {}", down.0 - up.1);
+        assert!((label.at.x - down.1 - FOOTER_SCROLL_GAP).abs() < 0.5, "chevron to label: {}", label.at.x - down.1);
     }
 
     fn audio(lang: &str, codec: &str, layout: &str, ch: i64, kbps: i64) -> Stream {

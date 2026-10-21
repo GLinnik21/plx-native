@@ -634,11 +634,16 @@ fn draw_play_mode(
     after: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
+    let (bits, n) = play_mode_bits(d, after);
+    paint_bits(p, &bits[..n], x, y, measure)
+}
+
+/// Paint the play-mode clause's `bits` from `x` on the line whose text top is `y`; the width drawn.
+fn paint_bits(p: Painter, bits: &[Bit], x: f32, y: f32, measure: &dyn plx_machine::machine::Measure) -> f32 {
     let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
     let cy = y + (top + baseline) * 0.5;
-    let (bits, n) = play_mode_bits(d, after);
     let mut bx = x;
-    for bit in &bits[..n] {
+    for bit in bits {
         match *bit {
             Bit::Word(text, color, bold) => {
                 bx += p.text(text.as_ptr(), bx, y, theme::size::CAPTION, color, 0, bold);
@@ -1183,26 +1188,47 @@ mod tests {
         assert_eq!(events.into_inner().last(), Some(&Event::Mode));
     }
 
-    /// Q2: the dot before the play-mode clause is padded like every other dot on the line
-    /// (`FACTS_SEP_PAD`), where it used to carry a wider pad of its own.
+    /// Q2, painted: the facts line is flowed and PAINTED through a recording painter, and every
+    /// dot on it, the one before the play-mode clause included, stands `FACTS_SEP_PAD` after the
+    /// run before it and `FACTS_SEP_PAD` before the run after it. With nothing in front of the
+    /// clause there is no dot.
     #[test]
-    fn the_dot_before_the_play_mode_clause_pads_like_every_other_dot() {
+    fn a_painted_facts_line_pads_the_play_mode_dot_like_every_other_dot() {
         use plx_media::route::Preview;
         use plx_plex::plex::serverinfo::Subscription;
-        for preview in [Preview::DirectPlay, Preview::Converts] {
-            let (bits, n) = play_mode_bits_for(preview, false, Subscription::No, true);
-            let Bit::Sep(gap) = bits[0] else { panic!("the clause opens on its dot") };
-            assert!(n > 1);
-            assert_eq!(gap, FACTS_SEP_PAD);
-            // and the clause's own dot (Pass-less converting item) is the same pad
-            for bit in &bits[1..n] {
-                if let Bit::Sep(inner) = bit {
-                    assert_eq!(*inner, FACTS_SEP_PAD);
-                }
-            }
-            let (bare, _) = play_mode_bits_for(preview, false, Subscription::No, false);
-            assert!(!matches!(bare[0], Bit::Sep(_)), "nothing before it, no dot");
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::widgets::LegacyMeasure;
+        let paint = |parts: &[&str]| {
+            let mut runs = plx_ui::draw_census::capture_runs(|| {
+                let p = Painter::recording();
+                facts_flow(
+                    parts,
+                    "",
+                    |text, dx, size, color| {
+                        let text = CString::new(text).unwrap();
+                        p.text(text.as_ptr(), 100.0 + dx, 50.0, size, color, 0, 0)
+                    },
+                    |dx, after| {
+                        let (bits, n) = play_mode_bits_for(Preview::DirectPlay, false, Subscription::No, after);
+                        paint_bits(p, &bits[..n], 100.0 + dx, 50.0, &measure)
+                    },
+                );
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        let line = paint(&["2021", "1h 40m"]);
+        let dots: Vec<usize> = (0..line.len()).filter(|&i| line[i].text == "\u{b7}").collect();
+        assert_eq!(dots.len(), 2, "one dot between the facts and one before the clause: {line:?}");
+        for i in dots {
+            let (before, after) = (&line[i - 1], &line[i + 1]);
+            let lead = line[i].at.x - (before.at.x + before.at.w);
+            let trail = after.at.x - (line[i].at.x + line[i].at.w);
+            assert!((lead - FACTS_SEP_PAD).abs() < 0.5, "run {} -> dot: {lead}", i - 1);
+            assert!((trail - FACTS_SEP_PAD).abs() < 0.5, "dot -> run {}: {trail}", i + 1);
         }
+        let bare = paint(&["", ""]);
+        assert!(bare.iter().all(|r| r.text != "\u{b7}"), "nothing in front of the clause, no dot: {bare:?}");
     }
 
     #[test]

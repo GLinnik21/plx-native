@@ -368,6 +368,27 @@ pub mod draw_census {
         MARKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
+    thread_local! {
+        static ICONS: RefCell<Option<Vec<(crate::icons::Icon, Rect)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was asked for glyph `id` in `r` (`icons::draw_raster`): it paints no
+    /// pixel, so this is how a test reads WHICH glyph stood where.
+    pub fn note_icon(id: crate::icons::Icon, r: Rect) {
+        ICONS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((id, r));
+            }
+        });
+    }
+    /// Every glyph a recording painter is handed while `f` runs, as `(icon, screen box)`: the glyph
+    /// half of the painted-run census, for a gap measured from a glyph's INK ([`crate::icons::ink_x`])
+    /// to the text beside it.
+    pub fn capture_icons(f: impl FnOnce()) -> Vec<(crate::icons::Icon, Rect)> {
+        ICONS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        ICONS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
     /// A recorded text run with its STYLE: what a test needs to say "regular weight, 65% white".
     #[derive(Clone, Debug, PartialEq)]
     pub struct Run {

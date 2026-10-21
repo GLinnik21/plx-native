@@ -530,15 +530,23 @@ fn a_dotted_run_measures_parts_dots_and_pads_for_any_number_of_parts() {
     assert_eq!(run.width(&m, &many), 9.0 * w("a") + 8.0 * (dot + 2.0 * pad));
 }
 
-/// Q6: a pill's trailing accessory is placed by INK, so the gap the eye reads between the label
-/// and the chevron is `BTN_ICON_GAP`, for every accessory the bearing table knows.
+/// Q6: a pill's trailing accessory is placed by INK. The pill is PAINTED through a recording painter,
+/// and the gap the eye reads from the label's end to the glyph's first ink (`icons::ink_x`) is
+/// `BTN_ICON_GAP`, for every accessory the bearing table knows; the label keeps its place.
 #[test]
-fn a_trailing_accessory_stands_one_icon_gap_from_the_label_by_ink() {
+fn a_painted_trailing_accessory_stands_one_icon_gap_from_the_label_by_ink() {
+    let _g = plx_base::testlock::serial();
     for icon in [crate::icons::Icon::ChevronDown, crate::icons::Icon::ChevronUp, crate::icons::Icon::Chevron] {
-        let box_w = 28.0 * BTN_ICON_RATIO;
-        let label_end = 400.0;
-        let bx = btn_trailing_box_x(icon, label_end, box_w, BTN_ICON_GAP);
-        let ink_left = bx + crate::icons::ink_x(icon).0 * box_w;
-        assert!((ink_left - (label_end + BTN_ICON_GAP)).abs() < 0.01, "{icon:?}: ink starts at {ink_left}");
+        let button = Button::new(c"Alt".as_ptr(), theme::size::BODY, Rect::new(100.0, 200.0, 400.0, 60.0)).trailing_icon(icon);
+        let mut runs = Vec::new();
+        let icons = crate::draw_census::capture_icons(|| {
+            runs = crate::draw_census::capture_runs(|| button.draw(&Env::inert(), Painter::recording()));
+        });
+        let label = runs.iter().find(|r| r.text == "Alt").expect("the label is painted");
+        let (bx, _) = icons.iter().find(|(i, _)| *i == icon).map(|(_, r)| (r.x, r.w)).expect("the accessory is painted");
+        let box_w = theme::size::BODY as f32 * BTN_ICON_RATIO;
+        let (l, _) = crate::icons::ink_x(icon);
+        let gap = (bx + l * box_w) - (label.at.x + label.at.w);
+        assert!((gap - BTN_ICON_GAP).abs() < 0.5, "{icon:?}: the painted label-to-ink gap is {gap}");
     }
 }

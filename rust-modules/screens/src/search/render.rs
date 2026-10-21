@@ -1085,43 +1085,48 @@ mod tests {
 
     #[test]
     fn the_heading_states_its_count_and_annotates_only_a_borrowed_source() {
-        use plx_ui::cards::{heading_parts, HeadingPart, HEADING_SOURCE_PAD};
-        use std::os::raw::c_int;
-        let w = |s: &str, sz: c_int| s.chars().count() as f32 * sz as f32 * 0.5;
-        type Run = (String, f32, c_int, c_int, [f32; 4], HeadingPart);
-        let runs = |title: &str, count: &str, source: &str| {
+        use plx_ui::cards::HEADING_SOURCE_PAD;
+        let _g = plx_base::testlock::serial();
+        // PAINTED through the call Search's result rows make, read back run by run, left to right
+        let runs = |title: &str, count: &str, source: &str, alpha: f32| {
             let (t, c, s) = (cs(title), cs(count), cs(source));
-            let mut out: Vec<Run> = Vec::new();
-            heading_parts(&*t, &*c, &*s, |run, dx, size, bold, ink, part| {
-                let text = run.to_str().unwrap_or_default().to_string();
-                out.push((text.clone(), dx, size, bold, ink, part));
-                w(&text, size)
+            let mut out = plx_ui::draw_census::capture_runs(|| {
+                plx_ui::cards::draw_heading_c(
+                    plx_ui::Painter::recording(),
+                    &t,
+                    &c,
+                    &s,
+                    MARGIN_X,
+                    100.0,
+                    alpha,
+                    &plx_ui::widgets::LegacyMeasure,
+                );
             });
+            out.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
             out
         };
+        let gaps_are_the_pad = |runs: &[plx_ui::draw_census::Run]| {
+            for pair in runs.windows(2) {
+                let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+                assert!((gap - HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+            }
+        };
         // the count is a quiet note behind a dot, at the gap every heading's note keeps
-        let bare = runs("Movies", "12 results", "");
-        assert_eq!(bare.len(), 3);
-        assert_eq!((bare[0].2, bare[0].3), (theme::size::HEADLINE, 1));
-        assert_eq!(bare[0].4, theme::TEXT_HEADING);
-        assert_eq!(bare[1].0, "·");
-        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + HEADING_SOURCE_PAD);
-        assert_eq!(bare[1].4, theme::TEXT_SEPARATOR);
-        assert_eq!((bare[2].2, bare[2].3, bare[2].4), (theme::size::BODY, 0, theme::TEXT_TERTIARY));
-        assert_eq!(bare[2].1, bare[1].1 + w("·", theme::size::BODY) + HEADING_SOURCE_PAD);
-        assert_eq!(bare[2].5, HeadingPart::Count);
-        let shared = runs("Movies", "12 results", "friend");
-        assert_eq!(shared.len(), 5);
-        assert_eq!(shared[..3], bare[..3]);
-        assert_eq!(shared[3].0, "·");
-        assert_eq!(
-            shared[3].1,
-            bare[2].1 + w("12 results", theme::size::BODY) + HEADING_SOURCE_PAD
-        );
-        assert_eq!(shared[4].0, "friend");
-        assert_eq!(shared[4].4, theme::TEXT_TERTIARY);
-        assert!(shared[3].5 == HeadingPart::Source && shared[4].5 == HeadingPart::Source);
-        assert_eq!(runs("Collections", "", "").len(), 1);
+        let bare = runs("Movies", "12 results", "", 1.0);
+        assert_eq!(bare.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Movies", "\u{b7}", "12 results"]);
+        assert_eq!(bare[0].at.x, MARGIN_X);
+        assert_eq!((bare[0].size, bare[0].bold, bare[0].ink), (theme::size::HEADLINE, true, theme::TEXT_HEADING));
+        assert_eq!(bare[1].ink, theme::TEXT_SEPARATOR);
+        assert_eq!((bare[2].size, bare[2].bold, bare[2].ink), (theme::size::BODY, false, theme::TEXT_TERTIARY));
+        gaps_are_the_pad(&bare);
+        // a borrowed source is a second note on the same pad, and only it fades with the owner
+        let shared = runs("Movies", "12 results", "friend", 0.5);
+        assert_eq!(shared.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Movies", "\u{b7}", "12 results", "\u{b7}", "friend"]);
+        gaps_are_the_pad(&shared);
+        assert_eq!(shared[2].ink, theme::TEXT_TERTIARY, "the count does not fade");
+        assert!((shared[4].ink[3] - theme::TEXT_TERTIARY[3] * 0.5).abs() < 1e-4, "the source rides the owner's alpha: {:?}", shared[4].ink);
+        // a hidden count is ABSENT: the title alone, no dot
+        assert_eq!(runs("Collections", "", "", 1.0).len(), 1);
     }
 
     /// A tile that is not a poster keeps this block: an episode still is worded by the one landscape

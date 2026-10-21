@@ -484,6 +484,10 @@ pub fn draw_raster(p: Painter, id: Icon, r: Rect, raster_px: i32, tint: [f32; 4]
     // A text-recording painter submits no primitive; rasterising the mask for it would only
     // spend the transition's prewarm budget on something it then does not draw.
     if px <= 0 || p.is_recording() {
+        #[cfg(any(test, feature = "test-support"))]
+        if p.is_recording() {
+            crate::draw_census::note_icon(id, p.place(r));
+        }
         return;
     }
     let tex = tex_for(id, px);

@@ -559,6 +559,34 @@ mod tests {
         assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).total, "");
     }
 
+    /// Q4, painted: a linked heading is the one heading + count idiom. The title, the count and the
+    /// source are PAINTED through a recording painter and read back run by run, each note behind
+    /// its own dot on `HEADING_SOURCE_PAD`; a heading with no count and no source is its title alone.
+    #[test]
+    fn a_painted_linked_heading_keeps_the_pad_between_title_dot_and_count() {
+        let _g = plx_base::testlock::serial();
+        let measure = widgets::LegacyMeasure;
+        let paint = |heading: LinkedHeading| {
+            let m = heading.measure(&measure);
+            let mut runs = crate::draw_census::capture_runs(|| {
+                heading.draw(Painter::recording(), 72.0, 200.0, 0.0, &m, &measure)
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        let runs = paint(LinkedHeading::heading("Saga", "friend").total(12));
+        assert_eq!(
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["Saga", "\u{b7}", "12", "\u{b7}", "friend"]
+        );
+        for pair in runs.windows(2) {
+            let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+            assert!((gap - card_row::HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+        }
+        assert_eq!((runs[2].size, runs[2].ink), (theme::size::BODY, theme::TEXT_TERTIARY));
+        assert_eq!(paint(LinkedHeading::heading("Saga", "").total(0)).len(), 1, "no count, no source, no dot");
+    }
+
     #[test]
     fn entry_measure_and_face_keep_equal_focused_air() {
         let measure = FixtureMeasure;
