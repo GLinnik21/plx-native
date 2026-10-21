@@ -393,7 +393,7 @@ fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLay
     let text_w = measure.width(status, theme::size::BODY, false)
         .min((layout.content.w - gutter).max(1.0));
     // The status row: the spinner's box, one SM, the text — centred on the content column.
-    let run = [Item::new(spinner_extent * 2.0), Item::new(text_w)];
+    let run = Spinner::pair_items(spinner_extent * 2.0, text_w);
     let run = HStack::new(&run, theme::space::SM, Align::Centre(layout.content.cx()));
     let row_w = run.width();
     let row_x = run.span(0).map_or(0.0, |(x, _)| x);

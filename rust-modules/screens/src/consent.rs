@@ -364,10 +364,11 @@ impl ConsentPage {
 
     fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
         labels: &[&std::ffi::CStr], measure: &dyn plx_machine::machine::Measure) -> RouteLayout {
-        let action_w = labels.iter().map(|label|
-            plx_ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
-            + plx_ui::widgets::CONTROL_GAP;
-        let action_w = action_w.ceil();
+        let pill = |label: &std::ffi::CStr| plx_ui::table_screen::pill_w(measure, label, theme::size::BODY);
+        let action_w = match labels {
+            [lead, trail] => RouteLayout::action_pair_w(pill(lead), pill(trail)),
+            _ => labels.iter().map(|label| pill(label)).sum::<f32>(),
+        }.ceil();
         let reader = DocumentReader::new().with_size(theme::size::BODY);
         RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
             let frame = layout.narrative_copy_frame(has_crumb, title, layout.action.y, measure);
