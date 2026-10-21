@@ -211,7 +211,36 @@ static MEASURED: OnceLock<bool> = OnceLock::new();
 /// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
 /// boot calls it first, so that path exists for host tests, not the TV.
 pub fn caps() -> &'static Caps {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(caps) = THREAD_CAPS.with(std::cell::Cell::get) {
+        return caps;
+    }
     CAPS.get_or_init(Caps::assumed)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static THREAD_CAPS: std::cell::Cell<Option<&'static Caps>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make [`caps`] answer `caps` on THIS test thread until the guard drops (the
+/// `i18n::language_on_this_thread_for_test` precedent). Tests run in parallel and the
+/// process-wide snapshot is write-once, so a thread-local door is how one test plays a set whose
+/// table lists a DTS decoder. The snapshot is leaked: a test-only cost.
+#[cfg(any(test, feature = "test-support"))]
+pub fn caps_on_this_thread_for_test(caps: Caps) -> CapsGuard {
+    let caps: &'static Caps = Box::leak(Box::new(caps));
+    CapsGuard(THREAD_CAPS.with(|slot| slot.replace(Some(caps))))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct CapsGuard(Option<&'static Caps>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for CapsGuard {
+    fn drop(&mut self) {
+        THREAD_CAPS.with(|slot| slot.set(self.0));
+    }
 }
 
 /// The one canonical spelling of an AUDIO codec name, for every comparison between vocabularies:
