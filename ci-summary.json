@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T12:04:17Z",
+ "generated": "2026-10-21T12:06:21Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 36.8,
+   "change7_pct": 36.3,
    "d30": null,
    "delta30": null,
-   "delta7": 78.0,
+   "delta7": 77,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 101,
-   "now": 290.0,
+   "now": 289,
    "prev7": 212,
    "shown": true,
    "state": "worse",
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.2,
+   "change7_pct": 30.0,
    "d30": null,
    "delta30": null,
-   "delta7": 82.5,
+   "delta7": 82,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 101,
-   "now": 355.5,
+   "now": 355,
    "prev7": 273,
    "shown": true,
    "state": "worse",
@@ -108,6 +108,27 @@
   },
   {
    "change30_pct": null,
+   "change7_pct": 29.5,
+   "d30": null,
+   "delta30": null,
+   "delta7": 38,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 109,
+   "n_prev": 101,
+   "now": 167,
+   "prev7": 129,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
    "change7_pct": 29.4,
    "d30": null,
    "delta30": null,
@@ -125,27 +146,6 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 29.1,
-   "d30": null,
-   "delta30": null,
-   "delta7": 37.5,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 108,
-   "n_prev": 101,
-   "now": 166.5,
-   "prev7": 129,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -245,18 +245,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 88.1,
-   "change7_pct": 11.4,
+   "change30_pct": 88.4,
+   "change7_pct": 11.6,
    "d30": 1125.5,
-   "delta30": 991.5,
-   "delta7": 216.0,
+   "delta30": 995.5,
+   "delta7": 220.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 76,
-   "now": 2117.0,
+   "now": 2121,
    "prev7": 1901.0,
    "shown": true,
    "state": "flat",
@@ -296,34 +296,13 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 0,
-   "now": 312,
+   "now": 312.5,
    "prev7": null,
    "shown": true,
    "state": "new",
    "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 13.9,
-   "change7_pct": -13.8,
-   "d30": 233,
-   "delta30": 32.5,
-   "delta7": -42.5,
-   "group": "ci",
-   "id": "ci|cross-build (armv7) + artifact assertions",
-   "kind": "job",
-   "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 108,
-   "n_prev": 101,
-   "now": 265.5,
-   "prev7": 308,
-   "shown": true,
-   "state": "flat",
-   "state30": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
@@ -346,6 +325,27 @@
    "state": "flat",
    "state30": "worse",
    "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -2.6,
+   "change7_pct": -26.3,
+   "d30": 233,
+   "delta30": -6,
+   "delta7": -81,
+   "group": "ci",
+   "id": "ci|cross-build (armv7) + artifact assertions",
+   "kind": "job",
+   "label": "CI: cross-build (armv7) + artifact assertions",
+   "n_now": 109,
+   "n_prev": 101,
+   "now": 227,
+   "prev7": 308,
+   "shown": true,
+   "state": "better",
+   "state30": "flat",
+   "threshold_abs": 20.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -375,14 +375,14 @@
    "change7_pct": -1.1,
    "d30": null,
    "delta30": null,
-   "delta7": -2.0,
+   "delta7": -2,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 101,
-   "now": 172.0,
+   "now": 172,
    "prev7": 174,
    "shown": true,
    "state": "flat",
@@ -396,14 +396,14 @@
    "change7_pct": 13.1,
    "d30": null,
    "delta30": null,
-   "delta7": 19.0,
+   "delta7": 19,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 101,
-   "now": 164.0,
+   "now": 164,
    "prev7": 145,
    "shown": true,
    "state": "flat",
@@ -550,9 +550,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 53,
+   "n_now": 54,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -565,15 +565,15 @@
    "change30_pct": -99.6,
    "change7_pct": -25.0,
    "d30": 677,
-   "delta30": -674.0,
-   "delta7": -1.0,
+   "delta30": -674,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 101,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -667,7 +667,7 @@
    "to": 127.3
   },
   {
-   "change_pct": 36.8,
+   "change_pct": 36.3,
    "commits": [
     {
      "pr": 877,
@@ -725,7 +725,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 290.0
+   "to": 289
   },
   {
    "change_pct": 33.8,
@@ -789,7 +789,7 @@
    "to": 477.5
   },
   {
-   "change_pct": 30.2,
+   "change_pct": 30.0,
    "commits": [
     {
      "pr": 877,
@@ -847,7 +847,7 @@
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 355.5
+   "to": 355
   },
   {
    "change_pct": 29.5,
@@ -911,6 +911,67 @@
    "to": 60.2
   },
   {
+   "change_pct": 29.5,
+   "commits": [
+    {
+     "pr": 877,
+     "sha": "659cca7a1",
+     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
+    },
+    {
+     "pr": 881,
+     "sha": "99f7dc501",
+     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
+    },
+    {
+     "pr": 888,
+     "sha": "623715b3d",
+     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
+    },
+    {
+     "pr": 891,
+     "sha": "01de26af3",
+     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    }
+   ],
+   "from": 129,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-19",
+   "threshold_pct": 20.0,
+   "to": 167
+  },
+  {
    "change_pct": 29.4,
    "commits": [
     {
@@ -970,67 +1031,6 @@
    "since": "2026-10-19",
    "threshold_pct": 25.0,
    "to": 140.7
-  },
-  {
-   "change_pct": 29.1,
-   "commits": [
-    {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
-     "pr": 888,
-     "sha": "623715b3d",
-     "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
-    },
-    {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
-     "pr": 890,
-     "sha": "f353f6d93",
-     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
-    },
-    {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    }
-   ],
-   "from": 129,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-19",
-   "threshold_pct": 20.0,
-   "to": 166.5
   }
  ],
  "schema": 2,
@@ -1045,25 +1045,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 355.5
+   "now": 355
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 312
+   "now": 312.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 290.0
+   "now": 289
   },
   {
    "group": "ci",
-   "id": "ci|cross-build (armv7) + artifact assertions",
-   "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 265.5
+   "id": "sim|Linux simulator build + launch",
+   "label": "Simulator CI: Linux simulator build + launch",
+   "now": 244
   }
  ],
  "slowest_local": [
