@@ -100,7 +100,7 @@ pub use avatars::AvatarRow;
 // Geometry and painters a screen's own layout reads (L0 `card_row` / `poster_grid`, re-exported so
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
-    column_near_x, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
+    column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
     resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, TileLabel,
     band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
 };

@@ -63,7 +63,7 @@ use plx_ui::screen::{
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
-use plx_ui::hstack::Item;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::text_view::TextView;
 use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
@@ -388,17 +388,22 @@ fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLay
     let code_y = at(0);
     let status_top = at(1);
     let spinner_extent = STATUS_SPINNER_R + Spinner::dot_r(STATUS_SPINNER_R);
+    // The gutter is the room the text may NOT use (the clamp below); the run itself is placed once.
     let gutter = spinner_extent * 2.0 + theme::space::SM;
     let text_w = measure.width(status, theme::size::BODY, false)
         .min((layout.content.w - gutter).max(1.0));
-    let row_w = text_w + gutter;
-    let row_x = layout.content.cx() - row_w * 0.5;
+    // The status row: the spinner's box, one SM, the text — centred on the content column.
+    let run = [Item::new(spinner_extent * 2.0), Item::new(text_w)];
+    let run = HStack::new(&run, theme::space::SM, Align::Centre(layout.content.cx()));
+    let row_w = run.width();
+    let row_x = run.span(0).map_or(0.0, |(x, _)| x);
+    let text_x = run.span(1).map_or(0.0, |(x, _)| x);
     // The first line retains the old cap-band anchor. Further lines flow below it, and their
     // complete measured extent also owns the retry hit/focus rectangle.
     let cap_h = measure.cap_h(theme::size::BODY);
     let text_top = status_top + (status_h - cap_h).max(0.0) * 0.5;
     let text_h = waiting_view(status, measure).measure_h(text_w);
-    let status_text = Rect::new(row_x + gutter, text_top, text_w, text_h);
+    let status_text = Rect::new(text_x, text_top, text_w, text_h);
     let status_spinner = Rect::new(row_x, text_top + cap_h * 0.5 - spinner_extent,
         spinner_extent * 2.0, spinner_extent * 2.0);
     let status_frame = Rect::new(row_x, status_top, row_w,
@@ -1850,7 +1855,9 @@ impl LoginScreen {
             // A report on its way: the shared inline spinner in a leading gutter, on the first
             // line's cap band (TextView sets each line cap-top), the text one gutter over.
             let gutter = if note.busy { Spinner::inline_gutter() } else { 0.0 };
-            let col = Rect::new(layout.narrative.x + gutter, 0.0, layout.narrative.w - gutter, 0.0);
+            let run = [Item::new(gutter), Item::new(layout.narrative.w - gutter)];
+            let (col_x, col_w) = HStack::new(&run, 0.0, Align::Leading(layout.narrative.x)).span(1).unwrap_or((layout.narrative.x, 0.0));
+            let col = Rect::new(col_x, 0.0, col_w, 0.0);
             let line = note.text.to_string_lossy();
             let view = TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY).max_lines(2);
             let h = view.measure_h(col.w);
@@ -4052,4 +4059,24 @@ mod tests {
         assert_eq!(spin_after_ticks(auth::owner::IncidentState::Delivered { receipt: "r".into() }), 0.0, "delivered: still");
     }
 
+}
+
+#[cfg(test)]
+mod status_row_tests {
+    use super::*;
+
+    /// The QR status row stands where the hand sums put it (centred spinner box, one SM, text),
+    /// to well under a hundredth of a pixel (the stack adds the same terms in another order).
+    #[test]
+    fn the_status_row_stands_the_spinner_one_sm_before_the_text() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let route = RouteLayout::screen();
+        let q = qr_layout(route, waiting_status(false, false, false), &measure);
+        let ext = STATUS_SPINNER_R + Spinner::dot_r(STATUS_SPINNER_R);
+        let gutter = ext * 2.0 + theme::space::SM;
+        let row_x = route.content.cx() - (q.status_text.w + gutter) * 0.5;
+        assert!((q.status_spinner.x - row_x).abs() < 0.01);
+        assert!((q.status_text.x - (row_x + gutter)).abs() < 0.01);
+        assert!((q.status.x - row_x).abs() < 0.01 && (q.status.w - (q.status_text.w + gutter)).abs() < 0.01);
+    }
 }

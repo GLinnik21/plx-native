@@ -72,7 +72,7 @@ use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::popover::Popover;
 use plx_ui::theme;
-use plx_ui::vstack::{AlertHead, HeadRule};
+use plx_ui::vstack::{Anchor, AlertHead, HeadRule, VStack};
 use plx_ui::widgets;
 use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
@@ -212,17 +212,33 @@ fn header(top: f32) -> Header {
     Header { head, rule: rule.y, body_top: body.y }
 }
 
+/// Where the footer stands: the body viewport's bottom, the rule under it and the footer band.
+struct Footer {
+    /// The body viewport's bottom edge.
+    body_bottom: f32,
+    /// The rule's top edge.
+    rule: f32,
+    /// The footer band's top edge.
+    top: f32,
+}
+
+/// **The footer's one stack**, read by [`body_rect`] (where the body ends) and [`TracksPanelScreen::paint`]
+/// (the rule and the band): from the panel's bottom pad up, the band, `MD`, the rule, `MD`, and the
+/// body's bottom, so the measure and the draw cannot sum the gaps apart.
+fn footer() -> Footer {
+    let r = panel_rect();
+    let items = [Item::new(0.0), Item::new(widgets::HAIRLINE_H), Item::new(FOOTER_H)];
+    let stack = VStack::new(&items, theme::space::MD, Anchor::Bottom(r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below()));
+    let at = |i| stack.span(i).map_or(0.0, |(y, _)| y);
+    Footer { body_bottom: at(0), rule: at(1), top: at(2) }
+}
+
 /// The scrolling body's viewport — inside the padding, below the header rule, above the footer
 /// rule, and left of the rail.
 fn body_rect() -> Rect {
     let r = panel_rect();
     let top = header(r.y + PAD).body_top;
-    let bottom = r.y + PANEL_H
-        - plx_ui::widgets::KeyHint::pad_below()
-        - FOOTER_H
-        - theme::space::MD
-        - widgets::HAIRLINE_H
-        - theme::space::MD;
+    let bottom = footer().body_bottom;
     Rect::new(
         r.x + PAD,
         top,
@@ -1108,8 +1124,9 @@ impl TracksPanelScreen {
         );
 
         // ---- footer ------------------------------------------------------------------------------
-        let fy = r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below() - FOOTER_H;
-        rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
+        let foot = footer();
+        let fy = foot.top;
+        rule(p, cx, foot.rule, cw);
         let cy = fy + FOOTER_H * 0.5;
         draw_scroll_hint(p, cx, cy, fy, cw);
         // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
@@ -2103,4 +2120,20 @@ mod tests {
         assert_eq!(r.body_top, r.rule + widgets::HAIRLINE_H + GAP_RULE_BODY);
     }
 
+}
+
+#[cfg(test)]
+mod footer_tests {
+    use super::*;
+
+    /// The footer stack is the old hand sums, to the bit.
+    #[test]
+    fn the_footer_stack_is_the_old_sums_to_the_bit() {
+        let (r, f) = (panel_rect(), footer());
+        let fy = r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below() - FOOTER_H;
+        assert_eq!(f.top, fy);
+        assert_eq!(f.rule, fy - theme::space::MD - widgets::HAIRLINE_H);
+        assert_eq!(f.body_bottom, fy - theme::space::MD - widgets::HAIRLINE_H - theme::space::MD);
+        assert_eq!(body_rect().y + body_rect().h, f.body_bottom);
+    }
 }

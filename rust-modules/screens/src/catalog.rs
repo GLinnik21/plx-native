@@ -45,7 +45,7 @@ use plx_machine::machine::{
 use plx_machine::present::Provenance;
 use plx_plex::plex::ServerId;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
-use plx_ui::hstack::Item;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::screen::{
@@ -431,17 +431,15 @@ impl CatalogScreen {
         if let (Some(y), Some(icon), Some(text)) =
             (stack.status, status_icon(*status, release), status_text(*status, release))
         {
-            plx_ui::icons::draw(p, icon, Rect::new(x, y, STATUS_ICON_D, STATUS_ICON_D), theme::TEXT_SECONDARY);
+            // The status row: the icon box, one SM, the label in the rest of the hero column.
+            let row = [Item::new(STATUS_ICON_D), Item::new(detail_layout::HERO_TEXT_W - STATUS_ICON_D - theme::space::SM)];
+            let row = HStack::new(&row, theme::space::SM, Align::Leading(x));
+            let (Some((icon_x, icon_w)), Some((text_x, text_w))) = (row.span(0), row.span(1)) else { return };
+            plx_ui::icons::draw(p, icon, Rect::new(icon_x, y, icon_w, STATUS_ICON_D), theme::TEXT_SECONDARY);
             if let Ok(text) = CString::new(text) {
-                Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_SECONDARY).v(VAlign::Middle).draw(
-                    p,
-                    Rect::new(
-                        x + STATUS_ICON_D + theme::space::SM,
-                        y,
-                        detail_layout::HERO_TEXT_W - STATUS_ICON_D - theme::space::SM,
-                        STATUS_ICON_D,
-                    ),
-                );
+                Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_SECONDARY)
+                    .v(VAlign::Middle)
+                    .draw(p, Rect::new(text_x, y, text_w, STATUS_ICON_D));
             }
         }
 
