@@ -164,9 +164,10 @@ promoted items; the dots under the action row show the position.
 | control | what OK does |
 |---|---|
 | **Play** / **Continue** | starts playback — *Continue* when the item has a resume point, *Play* when it does not |
+| **🔖** (bookmark) | adds the title to the Watchlist (an episode's or season's show), or removes it when it is already on it; outline off the list, filled on it. Present only when the hero row names a title with a known catalog id |
 | **ⓘ** (info) | opens that item's detail page |
 
-Those are the only two. **The `›` beside them is an indicator, not a third button** — it is drawn,
+Those are the only three, in that order (the bookmark disc is absent for a row with no catalog id), and none of the circles carries a name, focused or not. **The `›` beside them is an indicator, not a third button** — it is drawn,
 it never takes focus and it has no hit rect. The hero is paged by **RIGHT past the info disc** or
 **LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle. The
 dots under the row show the position.

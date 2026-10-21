@@ -273,6 +273,7 @@ fn a_focused_icon_only_control_draws_no_name() {
     assert_eq!(rest, [plx_appkit::hero_layout::play_text(false)], "premise: with no focus the row says the Play pill's label and nothing else");
     for face in [Membership::Off, Membership::On] {
         s.set_watchlist(HEX_A, face);
+        tick(&mut s, view, 90);
         for slot in [Some(0), Some(1), Some(2)] {
             assert_eq!(hero_runs(&mut s, view, slot), rest, "{face:?}, focus on slot {slot:?}: the row says more than with no focus");
         }
