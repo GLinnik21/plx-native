@@ -86,10 +86,19 @@ def main(src, dst, lead_s, skew=False):
     phase1 = [x for x in blocks if is_a(x[1]) and x[0] < lead_ms]
     phase2 = [x for x in blocks if not (is_a(x[1]) and x[0] < lead_ms)]
     if skew:
-        # File order by (pts - lead for audio, pts for video); the sort is stable so equal keys
-        # keep their original relative order. One list, no separate prefix phase.
+        # Merge two sequences, never re-sort a track's own blocks: a track keeps its ORIGINAL file
+        # order (decode order; video with B-frames is NOT in pts order, and a decoder fed pts order
+        # fails with "Could not find ref with POC"). The merge key is monotonic within each track:
+        # the running maximum of the track's pts, minus the lead for audio. The sort is stable, so
+        # equal keys (and a B-frame whose pts is below the running maximum) keep original order.
         phase1 = []
-        phase2 = sorted(blocks, key=lambda x: x[0] - (lead_ms if is_a(x[1]) else 0))
+        run = {}
+        keyed = []
+        for x in blocks:
+            a = is_a(x[1])
+            run[x[1]] = max(run.get(x[1], x[0]), x[0])
+            keyed.append((run[x[1]] - (lead_ms if a else 0), x))
+        phase2 = [x for _, x in sorted(keyed, key=lambda k: k[0])]
     def emit(group):
         cts = min(x[0] for x in group)
         body = elem(TIMESTAMP, cts.to_bytes(4, "big"))

@@ -652,7 +652,9 @@ fn generate_early(dir: &Path, audio_s: u32, lead_s: f64, min_audio_bytes: u64) -
         .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=4,noise=alls=100:allf=t+u"])
         .args(["-f", "lavfi", "-i", &format!("sine=frequency=440:sample_rate=48000:duration={audio_s}")])
         .args(["-map", "0:v", "-map", "1:a"])
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "25"])
+        // B-frames on (ultrafast turns them off): decode order differs from pts order, which is what
+        // `assert_video_order_kept` needs to see a fixture that re-sorts a track's blocks.
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-bf", "2", "-pix_fmt", "yuv420p", "-g", "25"])
         .args(["-b:v", "1M", "-maxrate", "1M", "-bufsize", "1M"])
         .args(["-c:a", "eac3", "-b:a", &format!("{}k", EARLY_AUDIO_BPS / 1000)])
         .arg(&interleaved)
@@ -671,6 +673,7 @@ fn generate_early(dir: &Path, audio_s: u32, lead_s: f64, min_audio_bytes: u64) -
         .status()
         .expect("run python3");
     assert!(status.success(), "tests/mkv_audio_lead.py could not reorder the fixture");
+    assert_video_order_kept(&interleaved, &out);
     let (audio_before, first_video_s) = audio_bytes_before_first_video(&out);
     eprintln!("fixture: {audio_before} bytes of audio precede the first video packet (pts {first_video_s:.3} s)");
     assert!(first_video_s.abs() < 0.1, "fixture: the first video packet must still be at pts 0, got {first_video_s}");
@@ -679,6 +682,26 @@ fn generate_early(dir: &Path, audio_s: u32, lead_s: f64, min_audio_bytes: u64) -
         "fixture: {audio_before} bytes of audio must precede the first video packet, wanted at least {min_audio_bytes}"
     );
     out
+}
+
+/// The video packets' pts (as ffprobe prints them) in FILE order. A reordering fixture may change
+/// the interleave of audio against video but never a track's own order: video with B-frames is
+/// stored in decode order, and a file that sorts it by pts does not decode (#600).
+fn video_pts_in_file_order(path: &Path) -> Vec<String> {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v", "-show_entries", "packet=pts", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    assert!(probe.status.success(), "ffprobe could not list the video packets of {}", path.display());
+    String::from_utf8_lossy(&probe.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+}
+
+/// Assert `out` keeps the video packet sequence of `src` exactly, in order.
+fn assert_video_order_kept(src: &Path, out: &Path) {
+    let (a, b) = (video_pts_in_file_order(src), video_pts_in_file_order(out));
+    assert!(!a.is_empty(), "the source fixture has no video packets");
+    assert_eq!(a, b, "tests/mkv_audio_lead.py must keep the video packets in their original (decode) order");
 }
 
 /// Read the fixture back in FILE order: `(bytes of audio packets before the first video packet,
@@ -883,7 +906,9 @@ fn generate_skew(dir: &Path) -> PathBuf {
         .args(["-f", "lavfi", "-i", &format!("color=c=gray:s=640x360:r=25:d={SKEW_VIDEO_S},noise=alls=100:allf=t+u")])
         .args(["-f", "lavfi", "-i", &format!("sine=frequency=440:sample_rate=48000:duration={}", SKEW_VIDEO_S as f64 + SKEW_LEAD_S)])
         .args(["-map", "0:v", "-map", "1:a"])
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "25"])
+        // B-frames on (ultrafast turns them off): decode order differs from pts order, which is what
+        // `assert_video_order_kept` needs to see a fixture that re-sorts a track's blocks.
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-bf", "2", "-pix_fmt", "yuv420p", "-g", "25"])
         .args(["-b:v", "1M", "-maxrate", "1M", "-bufsize", "1M"])
         .args(["-c:a", "eac3", "-b:a", &format!("{}k", EARLY_AUDIO_BPS / 1000)])
         .arg(&interleaved)
@@ -903,6 +928,7 @@ fn generate_skew(dir: &Path) -> PathBuf {
         .status()
         .expect("run python3");
     assert!(status.success(), "tests/mkv_audio_lead.py could not skew the fixture");
+    assert_video_order_kept(&interleaved, &out);
 
     let probe = Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "packet=stream_index,codec_type,pts_time,size"])
