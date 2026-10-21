@@ -66,7 +66,7 @@ already defined by its proper owner, and the legacy copy was the duplicate:
 | Legacy item | Owner today |
 |---|---|
 | `Backdrop`, `HERO_WASH_W`, `HERO_CTRL_D`, `HERO_PREFETCH`, `prefetch_order`, `meta_source_flow` | `screens/home/mod.rs` (its own definitions, since phase 8) |
-| `HERO_BASE_SCRIM_Y0`, `HERO_CTRL_GAP` (`CTRL_GAP`), `redraw_profile_chip` | `ui/widgets.rs` |
+| `HERO_BASE_SCRIM_Y0`, `HERO_CTRL_GAP` (`CONTROL_GAP`), `redraw_profile_chip` | `ui/widgets.rs` |
 | `base_scrim_a` and the hero scrim curve | `ui/landing_hero.rs` |
 | `MAX_HUBS` / `MAX_ITEMS` | `MAX_HUBS` is deleted (the grid follows the published rows); `MAX_ITEMS` is `pms::MAX_SHELF_ITEMS`, which `screens/home` reads from there, as `ui/home.rs` did |
 | the heading flow (`flow`) | `ui/card_row.rs::heading_flow` |

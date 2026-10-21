@@ -9,8 +9,8 @@
 //! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster's BUDGET is sized ONCE from its widest
 //! case (`widest`), so the room the left group may use never changes when a value changes; the
-//! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (a read-out: at least
-//! [`READOUT_GAP`]), right-anchored at [`TEXT_X1`]. Both groups are [`HStack`]s ([`crate::hstack`]):
+//! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (the filter
+//! read-out too, so it moves with the live cluster's width), right-anchored at [`TEXT_X1`]. Both groups are [`HStack`]s ([`crate::hstack`]):
 //! the stack places the left names and the cluster, and `width` / `budget_w` are the sums the packing
 //! and the budget read, so no `x += w + GAP` of the row's own can disagree with them.
 //!
@@ -70,10 +70,6 @@ pub const GRID_TOP: f32 = TOP + BLOCK_H;
 /// is one number, and every placement and every packing uses it. The breadcrumb's chevron takes the
 /// same air on each side ([`breadcrumb::AIR`]).
 pub const GAP: f32 = 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM;
-/// The least text-edge to text-edge gap between a read-out and the control after it (the gap the
-/// cluster is sized with). The read-out is anchored at the cluster's measured left edge, so the gap
-/// grows by however much narrower the live cluster is than its widest case.
-pub const READOUT_GAP: f32 = 64.0;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
 
@@ -98,8 +94,8 @@ pub struct HeaderItem {
     pub focusable: bool,
     /// Drawn quieter (an owner handle, an unavailable control).
     pub dimmed: bool,
-    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`] and at least [`READOUT_GAP`] before
-    /// the next item.
+    /// A read-out ("24 of 27"): [`theme::COUNT_FILTERED_INK`], no stop, one [`GAP`] before the next
+    /// item like any other (it moves with the live cluster's width).
     pub readout: bool,
     /// A control whose value is a count that comes and goes ("Collections · 4"): the widest value it
     /// ever wears, measured once. The slot sizes the cluster's BUDGET (`cluster_w`, `left_budget`:
@@ -209,13 +205,11 @@ const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
 
 /// One right-cluster item as the stack sees it: it DRAWS [`ink_w`], a [`HeaderItem::value_slot`] is
-/// its [`Item::slot`] (budget [`run_w`], never air), and a read-out stands [`READOUT_GAP`] from the
-/// control after it instead of [`GAP`]. The one place a right-cluster item becomes a stack item, so
+/// its [`Item::slot`] (budget [`run_w`], never air). The one place a right-cluster item becomes a stack item, so
 /// the cluster's budget ([`cluster_width`]) and its placement ([`PageHeader::layout`]) read one thing.
 fn stack_item(item: &HeaderItem, measure: &dyn Measure) -> Item {
     let drawn = Item::new(ink_w(item, measure));
-    let drawn = if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn };
-    if item.readout { drawn.after(READOUT_GAP) } else { drawn }
+    if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn }
 }
 
 /// The right cluster as stack items, in order.
@@ -223,24 +217,11 @@ fn cluster_items(items: &[HeaderItem], measure: &dyn Measure) -> Vec<Item> {
     items.iter().map(|item| stack_item(item, measure)).collect()
 }
 
-/// Width of a cluster of items laid out with [`GAP`] between them ([`READOUT_GAP`] after a
-/// read-out), each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
+/// Width of a cluster of items laid out with [`GAP`] between them, each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
 /// [`HStack::budget_w`].
 pub fn cluster_width(items: &[HeaderItem], measure: &dyn Measure) -> f32 {
     HStack::new(&cluster_items(items, measure), GAP, Align::Leading(0.0)).budget_w()
 }
-
-/// **The readout pin.** A read-out leads the right cluster and stands at the cluster's measured left
-/// edge (`cluster_x0`, from the widest case), not one gap before the control after it, so a control
-/// after it that comes, goes or changes its count (or a new Sort value) moves nothing of it; the gap
-/// after it is [`READOUT_GAP`] plus however much narrower the live cluster is than its budget. The
-/// items after it are placed as if it stood at its unpinned place, so only the read-out moves. Set
-/// this `false` and the read-out stands exactly [`READOUT_GAP`] (64) before the control after it
-/// (the row's other gaps are [`GAP`], 58), and moves with every change of the live cluster's width;
-/// [`HeaderSwap`] carries only slotted controls, so it cuts to its new x rather than dissolving. No
-/// other item moves and the budget is unchanged. One equal [`GAP`] there also needs `stack_item`'s
-/// `.after(READOUT_GAP)` removed.
-const READOUT_PINNED: bool = true;
 
 impl PageHeader {
     /// `widest` is the right cluster in its widest case (every value at its longest): it sizes the
@@ -290,13 +271,11 @@ impl PageHeader {
         // above), never air between two items, so every gap of the row is the same whatever a count
         // holds. The cluster is right-anchored, so the items after a control whose count changes
         // stand still; the control's own label moves by the digits' width (`HeaderSwap` dissolves
-        // that). The read-out leads the cluster at its measured left edge (`READOUT_PINNED`), so a
-        // control after it that comes or goes (or changes its count) moves nothing of it.
+        // that). The read-out is the cluster's leading item and stands one gap before the next like any
+        // other, so it moves with the live cluster's width.
         let cluster = cluster_items(&self.spec.right, measure);
         for span in HStack::new(&cluster, GAP, Align::Trailing(x1)).placed() {
-            let it = &self.spec.right[span.i];
-            let at = if READOUT_PINNED && it.readout && span.i == 0 { cluster_x0.min(span.x) } else { span.x };
-            place(Slot::Right(span.i), at, span.w, it.focusable);
+            place(Slot::Right(span.i), span.x, span.w, self.spec.right[span.i].focusable);
         }
         HeaderLayout {
             items,

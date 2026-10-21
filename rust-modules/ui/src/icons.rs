@@ -263,6 +263,9 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
         // One entry for the mirrored pair: the reflected path has the same ink bounds.
         Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
+        // The fold pair: path x 6..18 plus the 3-unit stroke's 1.5 each side. One entry, the pair
+        // reflected about y=12 (`the_fold_chevrons_ink_matches_their_assets`).
+        Icon::ChevronDown | Icon::ChevronUp => (4.5 / 24.0, 19.5 / 24.0),
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
@@ -529,6 +532,8 @@ mod ink_tests {
             Icon::FastForward,
             Icon::Chevron,
             Icon::ChevronLeft,
+            Icon::ChevronDown,
+            Icon::ChevronUp,
             Icon::Check,
         ] {
             let (l, r) = ink_x(id);
@@ -548,6 +553,17 @@ mod ink_tests {
         assert_eq!(ink_x(Icon::ChevronLeft), ink_x(Icon::Chevron));
         assert!(src(Icon::Chevron).contains(r#"d="M9 6l6 6-6 6""#));
         assert!(src(Icon::ChevronLeft).contains(r#"d="M15 6l-6 6 6 6""#));
+    }
+
+    /// The fold chevrons' `ink_x` is their asset's own bounds (path x 6..18, stroke 3), and the up
+    /// mark is the down mark reflected about y=12, so one entry serves the pair.
+    #[test]
+    fn the_fold_chevrons_ink_matches_their_assets() {
+        assert_eq!(ink_x(Icon::ChevronDown), ink_x(Icon::ChevronUp));
+        assert!(src(Icon::ChevronDown).contains(r#"d="M6 9l6 6 6-6""#));
+        assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
+        let (l, r) = ink_x(Icon::ChevronDown);
+        assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
@@ -1237,6 +1238,11 @@ fn pop_outset(pop: f32) -> f32 {
 /// happen to share a row. The decision alert's `Cancel`/`Delete` pair has always used this
 /// distance (`decision_alert::BUTTON_GAP`, the design's `--alert-btn-gap`); the two are separate
 /// tokens in the design system that happen to have landed on one number, so either may move alone.
+///
+/// It is also the air between one control of an ACTION ROW and the next, edge to edge, the sibling
+/// of [`StatusOverlay::CTRL_H`] on the other axis: the home hero's row and the detail hero's row
+/// are one object rather than two that agree by inspection (`CTRL_GAP`, a second constant holding
+/// the same 20, was folded into this one when the stack took over the spacing).
 pub const CONTROL_GAP: f32 = 20.0;
 
 /// One control ROW's focus pop — a spring per control, so the arriving face grows while the one
@@ -1378,18 +1384,6 @@ impl<const N: usize> Default for CtlPop<N> {
 /// Icon box as a fraction of a round control's diameter — the ONE ratio every disc glyph uses
 /// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
 pub const DISC_ICON_RATIO: f32 = 0.54;
-
-/// The air between one control of an ACTION ROW and the next, edge to edge — the sibling of
-/// [`StatusOverlay::CTRL_H`] on the other axis, and the second half of what makes the home hero's
-/// row and the detail hero's row one object rather than two that agree by inspection. Both wrote
-/// out a private `20.0` (Home's `HERO_CTRL_GAP`, `detail::CGAP`), so the rhythm those rows are meant
-/// to share was a number two files happened to hold the same copy of.
-///
-/// Deliberately NOT a [`theme::space`] rung: that ladder is the gap between stacked BLOCKS in a
-/// page's vertical flow, and this is the air inside one horizontal control row, measured against
-/// the 60px control it separates. Adding a 20 to the ladder to launder it would put a rung on the
-/// scale that no block spacing may use, which is worse than an honest constant with a home.
-pub const CTRL_GAP: f32 = 20.0;
 
 /// A media card shared by the episode picker and the chapters strip so they resolve + animate
 /// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
@@ -3307,37 +3301,35 @@ impl PageDots {
         let w = self.width();
         self.at(cx - w * 0.5, y)
     }
-    /// The row's drawn width — the SAME advance `draw` walks (each element's own width plus one
-    /// gap between neighbours), so a centred row can't drift from the pixels.
+    /// The row as stack items: one per dot, the active one the wider pill.
+    fn items(&self) -> Vec<HItem> {
+        (0..self.count).map(|d| HItem::new(if d == self.active { Self::PILL } else { Self::DOT })).collect()
+    }
+    /// The row's drawn width — the SAME [`HStack`] `draw` places (each element's own width plus
+    /// one gap between neighbours), so a centred row can't drift from the pixels.
     pub fn width(&self) -> f32 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        (self.count - 1) as f32 * (Self::DOT + Self::GAP) + Self::PILL
+        HStack::new(&self.items(), Self::GAP, StackAlign::Leading(self.x)).width()
     }
 }
 impl View for PageDots {
     fn draw(&self, _e: &Env, p: Painter) {
-        // Advance by each element's own width + a fixed gap, so the gaps are equal even around the
-        // wider active pill (equal centre-pitch would squeeze the pill's neighbours). The pill just
-        // takes more width and nudges the trailing dots along.
-        let mut x = self.x;
-        for d in 0..self.count {
-            let active = d == self.active;
-            let w = if active { Self::PILL } else { Self::DOT };
+        // One equal gap between neighbours, so the gaps are equal even around the wider active pill
+        // (equal centre-pitch would squeeze the pill's neighbours). The pill just takes more width
+        // and nudges the trailing dots along.
+        let items = self.items();
+        for span in HStack::new(&items, Self::GAP, StackAlign::Leading(self.x)).placed() {
             // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
             let col = crate::theme::with_a(
                 crate::theme::TEXT_PRIMARY,
-                if active { 1.0 } else { 0.35 },
+                if span.i == self.active { 1.0 } else { 0.35 },
             );
             p.rect(
-                Rect::new(x, self.y, w, Self::DOT),
+                Rect::new(span.x, self.y, span.w, Self::DOT),
                 Self::DOT * 0.5,
                 col,
                 col,
                 0.0,
             );
-            x += w + Self::GAP;
         }
     }
 }
@@ -4472,20 +4464,14 @@ impl<'a> StatusOverlay<'a> {
         self.action.into_iter().map(|l| (0, l)).chain(rest)
     }
 
-    /// Lay the row out from its pill widths: one centred run, `CONTROL_GAP` apart — the
+    /// Lay the row out from its pill widths: one centred [`HStack`], `CONTROL_GAP` apart — the
     /// control-group distance a pair of answers uses everywhere else. A lone primary is exactly
     /// the centred pill it always was.
     fn row_rects(&self, widths: [Option<f32>; STATUS_ROW_MAX], bands: &StatusBands) -> [Option<Rect>; STATUS_ROW_MAX] {
-        let present = widths.iter().flatten().count();
-        let total = widths.iter().flatten().sum::<f32>()
-            + CONTROL_GAP * present.saturating_sub(1) as f32;
-        let mut x = self.frame.cx() - total * 0.5;
+        let items = widths.map(|w| w.map_or(HItem::absent(), HItem::new));
         let mut out = [None; STATUS_ROW_MAX];
-        for (i, w) in widths.iter().enumerate() {
-            if let Some(w) = w {
-                out[i] = Some(Rect::new(x, bands.action_y, *w, Self::CTRL_H));
-                x += w + CONTROL_GAP;
-            }
+        for span in HStack::new(&items, CONTROL_GAP, StackAlign::Centre(self.frame.cx())).placed() {
+            out[span.i] = Some(Rect::new(span.x, bands.action_y, span.w, Self::CTRL_H));
         }
         out
     }

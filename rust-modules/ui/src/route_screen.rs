@@ -84,6 +84,7 @@
 //! The paragraph is never shortened to make translated actions fit.
 
 use crate::consts::SAFE;
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::icons::{self, Icon};
 use plx_machine::machine::Measure;
 use crate::text_view::TextView;
@@ -900,9 +901,13 @@ impl RouteLayout {
     /// sharing a row rather than one question's two faces.
     pub fn action_pair(self, leading_w: f32, trailing_w: f32) -> (Rect, Rect) {
         let gap = crate::widgets::CONTROL_GAP;
-        if leading_w + gap + trailing_w <= self.action.w {
-            let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
-            let trailing = Rect::new(leading.x + leading.w + gap, self.action.y, trailing_w, self.action.h);
+        let pair = [HItem::new(leading_w), HItem::new(trailing_w)];
+        let row = HStack::new(&pair, gap, StackAlign::Leading(self.action.x));
+        if row.width() <= self.action.w {
+            let mut spans = row.placed();
+            let (leading, trailing) = (spans.next().expect("two items"), spans.next().expect("two items"));
+            let (leading, trailing) = (Rect::new(leading.x, self.action.y, leading.w, self.action.h),
+                Rect::new(trailing.x, self.action.y, trailing.w, self.action.h));
             (leading, trailing)
         } else {
             // Preserve label size and equal treatment. The final control retains the bottom

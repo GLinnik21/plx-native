@@ -53,6 +53,7 @@
 use std::borrow::Cow;
 
 use crate::consts::{K_SCROLL, SAFE};
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use plx_machine::machine::Measure;
 use crate::popover::Popover;
 use crate::text_view::TextView;
@@ -136,15 +137,15 @@ pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
     let viewport_h = text_h.min(SAFE.h - fixed_h);
     let h = fixed_h + viewport_h;
     let panel = Rect::new((Rect::FULL.w - PANEL_W) * 0.5, (Rect::FULL.h - h) * 0.5, PANEL_W, h);
-    let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
-    let x = panel.cx() - row_w * 0.5;
     let by = panel.y + PAD_TOP + viewport_h + QUESTION_GAP;
     let (cancel, destructive) = if answers == Answers::One {
-        (Rect::new(panel.cx() - BUTTON_W * 0.5, by, BUTTON_W, StatusOverlay::CTRL_H),
-         Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H))
+        let lone = [HItem::new(BUTTON_W)];
+        let at = HStack::new(&lone, BUTTON_GAP, StackAlign::Centre(panel.cx())).span(0).expect("present").0;
+        (Rect::new(at, by, BUTTON_W, StatusOverlay::CTRL_H), Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H))
     } else {
-        (Rect::new(x, by, BUTTON_W, StatusOverlay::CTRL_H),
-         Rect::new(x + BUTTON_W + BUTTON_GAP, by, BUTTON_W, StatusOverlay::CTRL_H))
+        let pair = [HItem::new(BUTTON_W), HItem::new(BUTTON_W)];
+        let at = |i| HStack::new(&pair, BUTTON_GAP, StackAlign::Centre(panel.cx())).span(i).expect("present").0;
+        (Rect::new(at(0), by, BUTTON_W, StatusOverlay::CTRL_H), Rect::new(at(1), by, BUTTON_W, StatusOverlay::CTRL_H))
     };
     Layout {
         panel,
@@ -672,6 +673,15 @@ mod tests {
         assert_eq!(alert.question, "Second question?");
         assert!(alert.body.is_empty());
         alert.close();
+    }
+
+    /// The pair is one centred [`HStack`] run: [`BUTTON_GAP`] between the answers, the run centred on
+    /// the panel (the answers' geometry has not moved since the stack took the spacing).
+    #[test]
+    fn the_two_answers_stand_one_button_gap_apart_centred_on_the_panel() {
+        let l = layout(40.0, 90.0);
+        assert_eq!(l.destructive.x - (l.cancel.x + l.cancel.w), BUTTON_GAP);
+        assert_eq!((l.cancel.x + l.destructive.x + l.destructive.w) * 0.5, l.panel.cx());
     }
 
     /// **A one-answer card centres its one answer** in the cancel slot, keeps the two-answer

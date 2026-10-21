@@ -250,7 +250,7 @@ fn the_title_is_plain_text_with_no_plate_under_it() {
 }
 
 /// **A count is a filter read-out and nothing else** (the Library's rule): "6 of 14" while a filter
-/// narrows the list, ahead of the control by the read-out gap, and no "14 titles" at rest.
+/// narrows the list, one row gap ahead of the control, and no "14 titles" at rest.
 #[test]
 fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     let plain = header::Row::new(&FixtureMeasure, "Default", Some(Count::All(14)));
@@ -259,7 +259,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     assert_eq!(narrowed.items().len(), 3);
     let readout = narrowed.items()[1];
     let control = narrowed.items()[2];
-    assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::READOUT_GAP);
+    assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::GAP);
     assert!(!readout.focusable && control.focusable);
     assert_eq!(narrowed.plate(), plain.plate(), "the control does not move for the read-out");
     let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));

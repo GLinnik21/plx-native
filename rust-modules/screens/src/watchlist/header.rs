@@ -3,7 +3,7 @@
 //! left as plain text (`HeaderItem::title`: no plate, which means "current among siblings", and no
 //! pill, which means "focusable"; design review S10); on the right a filter
 //! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
-//! [`READOUT_GAP`] before the control) and the one control, "Sort & Filter · <value> ▾".
+//! one [`GAP`](plx_ui::page_header::GAP) before the control) and the one control, "Sort & Filter · <value> ▾".
 //!
 //! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
 //! travels, the pop) and focus group are the ui's, the same ones the Library, Collections and

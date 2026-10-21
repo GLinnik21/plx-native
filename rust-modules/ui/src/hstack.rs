@@ -16,6 +16,9 @@
 //!   takes a spring. The motion belongs to whoever owns the spring (`TabStrip`'s `SelMark` is the
 //!   row of pills' only glide); the stack just reads the present value.
 //!
+//! **A glyph is placed by its ink** ([`Item::glyph`]): its bearings come from [`crate::icons::ink_x`], the gap beside
+//! it is the token, and [`Span::box_x`] is where the caller draws its box.
+//!
 //! The gap is a token the caller passes (`theme::space::*`, `page_header::GAP`), never a literal here.
 //!
 //! **A slot sizes a budget, never air inside the row** (the Library header, #875). A control whose
@@ -37,6 +40,8 @@
 //! `PageHeader::new` measures, and `Item::absent` has no caller yet.) `width` and `placed` skip it,
 //! budget and gap both.
 
+use crate::icons::{self, Icon};
+
 /// One item in the run: how wide it draws, whether it is there, what it may reserve and the gap
 /// after it if that differs from the stack's. Built from the width the caller measured.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,18 +54,21 @@ pub struct Item {
     budget: Option<f32>,
     /// The gap after this item instead of the stack's own (`setCustomSpacing`).
     after: Option<f32>,
+    /// A glyph's empty margin left of its ink inside its box (0 for anything else): see
+    /// [`Item::glyph`].
+    lead: f32,
 }
 
 impl Item {
     /// A present item `w` wide. A `w` of 0 is still present, and keeps its gap.
     pub const fn new(w: f32) -> Self {
-        Self { w, present: true, budget: None, after: None }
+        Self { w, present: true, budget: None, after: None, lead: 0.0 }
     }
 
     /// An item that is not on the row: no width, no gap. Give it [`Self::slot`] and it still
     /// reserves its room in [`HStack::budget_w`].
     pub const fn absent() -> Self {
-        Self { w: 0.0, present: false, budget: None, after: None }
+        Self { w: 0.0, present: false, budget: None, after: None, lead: 0.0 }
     }
 
     /// The widest case this item will ever draw, which [`HStack::budget_w`] reserves (the larger of
@@ -78,6 +86,18 @@ impl Item {
     pub const fn after(mut self, gap: f32) -> Self {
         self.after = Some(gap);
         self
+    }
+}
+
+// ---- Glyphs placed by their INK (lane ui-1) ----
+impl Item {
+    /// A glyph drawn in a `box_w`-wide box, placed by its INK: it is `icon`'s ink width wide
+    /// ([`crate::icons::ink_x`] times `box_w`), so the gap beside it is the gap the eye reads, not
+    /// the gap to an empty margin. The stack stands the ink; the caller draws the box at
+    /// [`Span::box_x`] (the ink's x less the margin the asset leaves on its left).
+    pub fn glyph(icon: Icon, box_w: f32) -> Self {
+        let (l, r) = icons::ink_x(icon);
+        Self { w: (r - l) * box_w, lead: l * box_w, ..Self::new(0.0) }
     }
 }
 
@@ -102,6 +122,9 @@ pub struct Span {
     pub x: f32,
     /// Its width: what the caller said it draws.
     pub w: f32,
+    /// Where to draw the item's BOX: `x` less the empty margin a [`Item::glyph`] leaves left of its
+    /// ink. Equal to `x` for every other item.
+    pub box_x: f32,
 }
 
 /// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows the slice,
@@ -183,7 +206,7 @@ impl<'a> HStack<'a> {
                 x += by;
             }
             advance = Some(item.w + item.after.unwrap_or(gap));
-            Some(Span { i, x, w: item.w })
+            Some(Span { i, x, w: item.w, box_x: x - item.lead })
         })
     }
 
@@ -367,5 +390,30 @@ mod tests {
         let items = run(&widths);
         let want: f32 = widths.iter().sum::<f32>() + 4.0 * GAP;
         assert_eq!(HStack::new(&items, GAP, Align::Leading(0.0)).width(), want);
+    }
+
+    /// **A glyph is placed by its ink**: the visible gap beside it is the stack's gap whatever
+    /// margin its box leaves, and the box is drawn `lead` left of the ink. A glyph with no margin
+    /// (`ink_x` default) places box and ink together.
+    #[test]
+    fn a_glyph_is_placed_by_its_ink_and_drawn_by_its_box() {
+        const BOX: f32 = 24.0;
+        let (l, r) = icons::ink_x(Icon::Chevron);
+        let items = [Item::new(100.0), Item::glyph(Icon::Chevron, BOX), Item::new(40.0)];
+        for align in [Align::Leading(96.0), Align::Trailing(1771.0), Align::Centre(960.0)] {
+            let stack = HStack::new(&items, GAP, align);
+            assert_eq!(gaps(&stack), [GAP; 2], "{align:?}: the INK is a gap from each neighbour");
+            let glyph = stack.placed().nth(1).unwrap();
+            assert!((glyph.w - (r - l) * BOX).abs() < 1e-4, "it is as wide as its ink");
+            assert!((glyph.x - glyph.box_x - l * BOX).abs() < 1e-4, "the box starts the left margin before the ink");
+            let first = stack.placed().next().unwrap();
+            assert_eq!(first.box_x, first.x, "a plain item's box is its span");
+        }
+        // The fold pair has bearings now (they were the (0, 1) default, i.e. ink = box).
+        let (l, r) = icons::ink_x(Icon::ChevronDown);
+        assert!(l > 0.0 && r < 1.0);
+        let none = Item::glyph(Icon::Check, BOX);
+        let s = HStack::new(std::slice::from_ref(&none), GAP, Align::Leading(10.0)).placed().next().unwrap();
+        assert_eq!((s.x, s.w, s.box_x), (10.0, BOX, 10.0), "an unmeasured mark's ink fills its box");
     }
 }

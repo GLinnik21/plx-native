@@ -454,3 +454,60 @@ fn the_hint_cap_is_the_alert_cap_with_more_room_and_nothing_else() {
         "past the floor only the padding differs ({inner}px of legend)"
     );
 }
+
+/// **The drawn gaps of the read-out's action row are the stack's** ([`crate::hstack`]): three
+/// controls (primary, secondary, one extra) painted through a recording painter, the pills read
+/// back off the painted rects, are [`CONTROL_GAP`] apart edge to edge, and a hidden SECONDARY (slot
+/// 1) leaves one gap, not two. The row stays centred on the frame whatever it holds.
+#[test]
+fn the_drawn_pills_of_a_status_row_stand_one_control_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    let frame = Rect::new(100.0, 200.0, 1200.0, 500.0);
+    let pills = |overlay: StatusOverlay| -> Vec<Rect> {
+        let mut rects: Vec<Rect> = crate::draw_census::capture(|| {
+            overlay.draw_measured(&Env::inert(), Painter::recording(), &StatusMetrics);
+        })
+        .into_iter()
+        .map(|(_, r)| r)
+        .filter(|r| r.h > StatusOverlay::CTRL_H * 0.9 && r.w > r.h)
+        .collect();
+        rects.sort_by(|a, b| a.x.total_cmp(&b.x));
+        rects.dedup_by(|a, b| a.x == b.x && a.w == b.w);
+        rects
+    };
+    let base = || StatusOverlay::new(frame, c"Couldn't load", StatusKind::Failed);
+    let three = pills(base().row(&[c"Try again", c"Settings", c"Sign out"]));
+    assert_eq!(three.len(), 3, "{three:?}");
+    for pair in three.windows(2) {
+        assert!((pair[1].x - (pair[0].x + pair[0].w) - CONTROL_GAP).abs() <= 0.5, "{three:?}");
+    }
+    let (left, right) = (three[0].x, three[2].x + three[2].w);
+    assert!(((left + right) * 0.5 - frame.cx()).abs() <= 0.5, "the row is centred on the frame");
+    // Slot 1 hidden: primary and the extra (slot 2) are neighbours with ONE gap between them.
+    let mut gapped = base().action(c"Try again");
+    gapped.extra[0] = Some(c"Sign out");
+    let two = pills(gapped);
+    assert_eq!(two.len(), 2, "{two:?}");
+    assert!((two[1].x - (two[0].x + two[0].w) - CONTROL_GAP).abs() <= 0.5, "no double gap where the secondary stood: {two:?}");
+}
+
+/// **A dot pager's gaps are equal around the wider active pill**, read off the painted rects, and
+/// `width` is the extent it paints (a centred row cannot drift from its pixels).
+#[test]
+fn the_drawn_dots_of_a_pager_stand_one_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    for active in [0usize, 2, 4] {
+        let dots = PageDots::new(5).active(active).centered_at(960.0, 900.0);
+        let mut rects: Vec<Rect> = crate::draw_census::capture(|| dots.draw(&Env::inert(), Painter::recording()))
+            .into_iter().map(|(_, r)| r).filter(|r| r.h == PageDots::DOT).collect();
+        rects.sort_by(|a, b| a.x.total_cmp(&b.x));
+        assert_eq!(rects.len(), 5, "active {active}: {rects:?}");
+        for pair in rects.windows(2) {
+            assert!((pair[1].x - (pair[0].x + pair[0].w) - PageDots::GAP).abs() <= 0.5, "active {active}: {rects:?}");
+        }
+        let extent = rects[4].x + rects[4].w - rects[0].x;
+        assert!((extent - dots.width()).abs() <= 0.5, "width() is the painted extent");
+        assert!((rects[0].x + extent * 0.5 - 960.0).abs() <= 0.5, "centred on cx");
+    }
+    assert_eq!(PageDots::new(0).width(), 0.0);
+}

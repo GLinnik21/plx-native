@@ -23,8 +23,8 @@ use plx_ui::{theme, Rect};
 pub const PW: f32 = 168.0;
 
 /// The row's inter-control air and its disc diameter: the SHARED control-family numbers
-/// (`ui::widgets::CTRL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
-pub const CGAP: f32 = plx_ui::widgets::CTRL_GAP;
+/// (`ui::widgets::CONTROL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
+pub const CGAP: f32 = plx_ui::widgets::CONTROL_GAP;
 pub const CD: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 
 /// The right edge the hero's controls and facts line may reach: the People column's left edge less
