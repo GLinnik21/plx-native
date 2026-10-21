@@ -10,7 +10,7 @@
 //!   the caller's own `Measure`. The stack never asks for a width itself, because a replay answers
 //!   only the `Width` keys its recording holds and refuses a miss (`rec.rs`): a stack that measured
 //!   would add a key to every screen that used it. It places what it is given, so it adds none;
-//! - a glyph or plate's box;
+//! - a plate's box, or a glyph's INK via [`Item::glyph`] (the box is then drawn at [`Span::box_x`]);
 //! - a spring's value, mid-flight (`Item::new(spring.pos)`): the stack has no state, so the items
 //!   after a growing one stand where the value puts them on THIS frame, the way `Column::height`
 //!   takes a spring. The motion belongs to whoever owns the spring (`TabStrip`'s `SelMark` is the
