@@ -1009,7 +1009,7 @@ impl TileLabel {
     /// The block's two lines as one stack: the title line (index 0) and the details line (index 1),
     /// each present or absent. Both [`TileLabel::lines`] and [`TileLabel::height`] read this, so the
     /// drawn lines and the reserved height are the same stack.
-    fn items(title: bool, caption: bool) -> [Item; 2] {
+    const fn items(title: bool, caption: bool) -> [Item; 2] {
         [
             if title { Item::new(UNDER_LINE_H) } else { Item::absent() },
             if caption { Item::new(UNDER_CAPTION_H) } else { Item::absent() },
@@ -1026,7 +1026,12 @@ impl TileLabel {
     /// budget marquees in place rather than growing the block, so this no longer varies with the
     /// row style at all.
     pub fn height(caption: bool) -> f32 {
-        // The title is always a line, so the block's height is the stack's height from its top.
+        Self::block_h(caption)
+    }
+    /// [`Self::height`] as a `const fn`, so [`UNDER_LABEL_H`] IS this stack's full case rather than
+    /// a hand-summed copy of it. The title is always a line, so the block's height is the stack's
+    /// height from its top.
+    const fn block_h(caption: bool) -> f32 {
         let items = Self::items(true, caption);
         UNDER_DROP + VStack::new(&items, UNDER_LINE_GAP, Anchor::Top(0.0)).height()
     }
@@ -1202,7 +1207,7 @@ const UNDER_CAPTION_H: f32 = 28.0;
 /// also drives [`TileLabel::height`], instead of a screen re-deriving or (worse) hand-copying it.
 /// `consts::UNDER_LABEL_AIR` is this constant's other half: the two together are what unifies
 /// Home's and Library's row spacing.
-pub const UNDER_LABEL_H: f32 = UNDER_DROP + UNDER_LINE_H + UNDER_LINE_GAP + UNDER_CAPTION_H;
+pub const UNDER_LABEL_H: f32 = TileLabel::block_h(true);
 
 /// **What an UNFOCUSED shelf reserves where the focused one reserves [`UNDER_LABEL_H`]** — the
 /// collapsed half of the band, and the reason it is a subtraction rather than a taste number.
@@ -2757,6 +2762,8 @@ mod tests {
     #[test]
     fn the_label_height_is_fixed_regardless_of_row_style() {
         assert_eq!(TileLabel::height(true), UNDER_LABEL_H);
+        // derived from the stack, and still the 92 px band detail.rs and every row pitch were built on
+        assert_eq!(UNDER_LABEL_H, 92.0);
         assert!(TileLabel::height(false) < TileLabel::height(true));
     }
 

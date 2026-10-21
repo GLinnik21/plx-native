@@ -80,7 +80,7 @@ impl<'a> VStack<'a> {
     }
 
     /// The run's height as DRAWN: every present item's height and one gap between present neighbours.
-    pub fn height(&self) -> f32 {
+    pub const fn height(&self) -> f32 {
         self.0.width()
     }
 
