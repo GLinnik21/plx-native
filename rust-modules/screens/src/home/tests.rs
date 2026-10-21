@@ -1031,6 +1031,29 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
     );
 }
 
+#[test]
+fn a_continue_watching_episode_is_captioned_by_its_address_not_its_show() {
+    let m = |kind: i32, ep_index: i32, resume_ms: i64| PmsMovie {
+        kind,
+        show_title: "Laura".into(),
+        season_index: 2,
+        ep_index,
+        dur_ns: 45 * 60 * 1_000_000_000,
+        resume_ms,
+        ..Default::default()
+    };
+    let cap = |m: &PmsMovie| {
+        ui_cards::cw_caption(&tile_facts::of(m)).unwrap().to_str().unwrap().to_owned()
+    };
+    // the poster is the show's own art, so the show's name adds nothing: the address leads
+    assert_eq!(cap(&m(3, 5, 20 * 60_000)), "S2 \u{00b7} E5 \u{00b7} 25m left");
+    assert_eq!(cap(&m(3, 5, 0)), "S2 \u{00b7} E5 \u{00b7} New episode");
+    // an unnumbered episode still names its show
+    assert_eq!(cap(&m(3, 0, 20 * 60_000)), "Laura \u{00b7} 25m left");
+    // a movie: the time left alone
+    assert_eq!(cap(&m(1, 0, 20 * 60_000)), "25m left");
+}
+
 fn top_band_bottom() -> f32 {
     let chip = plx_ui::widgets::CHIP_CAP_MAX;
     assert_eq!(chip.y + chip.h, plx_ui::widgets::TOP_BAR_BOTTOM,

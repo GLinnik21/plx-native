@@ -64,9 +64,9 @@ pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>
 
 /// A poster shelf tile's label under `policy`: Home's shelves and the Library's Recommended
 /// shelves. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
-/// (`is_continue`) its time left ("8m left", "Show · 8m left", or "Show · New episode" for a
-/// next-up episode) is the details line whatever kind the setting asks for (but Nothing), and the
-/// amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
+/// (`is_continue`) its time left ("8m left", "S3 · E4 · 8m left", or "S2 · E1 · New episode" for a
+/// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
+/// whatever kind the setting asks for (but Nothing), and the amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
 /// episode's default details line is its address ("S1 · E8"), as it was on a shelf.
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let facts = crate::registry::tile_facts::caption_facts(item);
