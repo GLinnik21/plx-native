@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T09:49:00Z",
+ "generated": "2026-10-21T09:58:08Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,10 +65,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -29.2,
+   "change30_pct": -29.1,
    "change7_pct": 35.4,
-   "d30": 683,
-   "delta30": -199.5,
+   "d30": 682.0,
+   "delta30": -198.5,
    "delta7": 126.5,
    "group": "ci",
    "id": "pr_wait",
@@ -128,18 +128,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -45.0,
-   "change7_pct": 16.5,
-   "d30": 676.0,
-   "delta30": -304.5,
-   "delta7": 52.5,
+   "change30_pct": -45.3,
+   "change7_pct": 15.7,
+   "d30": 675,
+   "delta30": -306,
+   "delta7": 50,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 122,
+   "n_now": 123,
    "n_prev": 113,
-   "now": 371.5,
+   "now": 369,
    "prev7": 319,
    "shown": true,
    "state": "flat",
@@ -310,7 +310,7 @@
   {
    "change30_pct": 32.3,
    "change7_pct": 0.0,
-   "d30": 232,
+   "d30": 232.0,
    "delta30": 75.0,
    "delta7": 0.0,
    "group": "ci",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.0,
-   "change7_pct": 11.7,
+   "change30_pct": 94.4,
+   "change7_pct": 11.9,
    "d30": 125.5,
-   "delta30": 118.0,
-   "delta7": 25.5,
+   "delta30": 118.5,
+   "delta7": 26.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 243.5,
+   "now": 244,
    "prev7": 218.0,
    "shown": true,
    "state": "flat",
@@ -359,9 +359,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 191.0,
+   "now": 191,
    "prev7": 278.5,
    "shown": true,
    "state": "better",
@@ -422,9 +422,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 150.0,
+   "now": 150,
    "prev7": 134.5,
    "shown": true,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 98,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -564,7 +564,7 @@
   {
    "change30_pct": -99.6,
    "change7_pct": -25.0,
-   "d30": 677,
+   "d30": 677.0,
    "delta30": -674.0,
    "delta7": -1.0,
    "group": "ci",
@@ -609,11 +609,6 @@
    "change_pct": 126.7,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -657,6 +652,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 40.3,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -718,6 +713,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 212,
@@ -731,11 +731,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -779,6 +774,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 103.0,
@@ -792,11 +792,6 @@
    "change_pct": 35.4,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -840,6 +835,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 357.0,
@@ -853,11 +853,6 @@
    "change_pct": 32.2,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -901,6 +896,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 272,
@@ -914,11 +914,6 @@
    "change_pct": 27.9,
    "commits": [
     {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
      "pr": 871,
      "sha": "a9dcfe67d",
      "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
@@ -962,6 +957,11 @@
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
+    },
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
     }
    ],
    "from": 129,
