@@ -138,14 +138,20 @@ fn crumb_label_top(cy: f32, cap_h: f32) -> f32 {
 /// crumb of its own that drifts from the family's.
 pub fn draw_back_crumb(p: Painter, band: Rect, back_to: &str, measure: &dyn Measure) {
     let cy = band.y + band.h * 0.5;
+    // The mark by its INK, then the word `XS` off it. The mark's box stands on `band.x` (the stack
+    // starts at the ink, a margin in), so the ink-less margin never moves the crumb.
+    let (ink_l, _) = icons::ink_x(Icon::ChevronLeft);
+    let items = [HItem::glyph(Icon::ChevronLeft, CRUMB_MARK), HItem::new(0.0)];
+    let stack = HStack::new(&items, theme::space::XS, StackAlign::Leading(band.x + ink_l * CRUMB_MARK));
+    let mut spans = stack.placed();
+    let (mark, word) = (spans.next().expect("two items"), spans.next().expect("two items"));
     icons::draw(
         p,
         Icon::ChevronLeft,
-        Rect::new(band.x, cy - CRUMB_MARK * 0.5, CRUMB_MARK, CRUMB_MARK),
+        Rect::new(mark.box_x, cy - CRUMB_MARK * 0.5, CRUMB_MARK, CRUMB_MARK),
         theme::TEXT_TERTIARY,
     );
-    let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
-    let x = band.x + CRUMB_MARK * ink_r + theme::space::XS;
+    let x = word.x;
     let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
     TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
         .max_lines(1)
@@ -901,9 +907,8 @@ impl RouteLayout {
     /// a separate hint, and two peer answers at that distance read as two unrelated controls
     /// sharing a row rather than one question's two faces.
     pub fn action_pair(self, leading_w: f32, trailing_w: f32) -> (Rect, Rect) {
-        let gap = crate::widgets::CONTROL_GAP;
-        let pair = [HItem::new(leading_w), HItem::new(trailing_w)];
-        let row = HStack::new(&pair, gap, StackAlign::Leading(self.action.x));
+        let pair = Self::pair_items(leading_w, trailing_w);
+        let row = Self::pair_row(&pair, self.action.x);
         if row.width() <= self.action.w {
             let mut spans = row.placed();
             let (leading, trailing) = (spans.next().expect("two items"), spans.next().expect("two items"));
@@ -913,10 +918,30 @@ impl RouteLayout {
         } else {
             // Preserve label size and equal treatment. The final control retains the bottom
             // anchor; the first moves up and the narrative reserves the resulting full extent.
-            let leading = Rect::new(self.action.x, self.action.y - self.action.h - gap, leading_w, self.action.h);
-            let trailing = Rect::new(self.action.x, self.action.y, trailing_w, self.action.h);
+            let heights = [HItem::new(self.action.h), HItem::new(self.action.h)];
+            let column = VStack::new(&heights, crate::widgets::CONTROL_GAP, Anchor::Bottom(self.action.y + self.action.h));
+            let mut spans = column.placed();
+            let (top, bottom) = (spans.next().expect("two items"), spans.next().expect("two items"));
+            let leading = Rect::new(self.action.x, top.y, leading_w, top.h);
+            let trailing = Rect::new(self.action.x, bottom.y, trailing_w, bottom.h);
             (leading, trailing)
         }
+    }
+
+    /// How wide [`Self::action_pair`]'s row is for these control widths: the SAME stack
+    /// (`pair_row`) that places it, so a caller that asks whether the pair fits one line reads the
+    /// width the layout uses and keeps no `a + CONTROL_GAP + b` of its own.
+    pub fn action_pair_w(leading_w: f32, trailing_w: f32) -> f32 {
+        Self::pair_row(&Self::pair_items(leading_w, trailing_w), 0.0).width()
+    }
+
+    fn pair_items(leading_w: f32, trailing_w: f32) -> [HItem; 2] {
+        [HItem::new(leading_w), HItem::new(trailing_w)]
+    }
+
+    /// The action pair as one row on `x`, [`widgets::CONTROL_GAP`] apart.
+    fn pair_row(pair: &[HItem; 2], x: f32) -> HStack<'_> {
+        HStack::new(pair, crate::widgets::CONTROL_GAP, StackAlign::Leading(x))
     }
 
     /// Draw the return crumb — `‹ <where BACK goes>` — in the band whose top is at `top`.
@@ -1216,6 +1241,36 @@ mod tests {
             "and a control-group gap is tighter than any rung of the block ladder"
         );
         assert!(inside_safe(trailing));
+    }
+
+    /// The pair's width is the row's: `action_pair_w` reads the stack `action_pair` places, and a
+    /// pair wider than the band stacks bottom-anchored one `CONTROL_GAP` apart, the trailing
+    /// control on the band's bottom edge.
+    #[test]
+    fn the_action_pair_width_and_its_column_read_one_gap() {
+        let l = RouteLayout::screen();
+        let gap = crate::widgets::CONTROL_GAP;
+        assert_eq!(RouteLayout::action_pair_w(280.0, 240.0), 280.0 + gap + 240.0);
+        let wide = l.action.w;
+        assert!(RouteLayout::action_pair_w(wide, wide) > l.action.w);
+        let (lead, trail) = l.action_pair(wide, wide);
+        assert_eq!((lead.x, trail.x), (l.action.x, l.action.x));
+        assert_eq!(trail.y, l.action.y);
+        assert_eq!(lead.y, l.action.y - l.action.h - gap);
+        assert_eq!((lead.w, trail.w, lead.h, trail.h), (wide, wide, l.action.h, l.action.h));
+    }
+
+    /// The crumb's word stands one `XS` past the chevron's ink, whose box is on the band's x.
+    #[test]
+    fn the_crumb_word_stands_xs_past_the_marks_ink() {
+        let items = [HItem::glyph(Icon::ChevronLeft, CRUMB_MARK), HItem::new(0.0)];
+        let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
+        let (ink_l, _) = icons::ink_x(Icon::ChevronLeft);
+        let x0 = 100.0;
+        let stack = HStack::new(&items, theme::space::XS, StackAlign::Leading(x0 + ink_l * CRUMB_MARK));
+        let spans: Vec<_> = stack.placed().collect();
+        assert_eq!(spans[0].box_x, x0);
+        assert!((spans[1].x - (x0 + CRUMB_MARK * ink_r + theme::space::XS)).abs() < 1e-4);
     }
 
     /// **The crumb costs the TITLE its own height and nothing else pays.** The content column is
