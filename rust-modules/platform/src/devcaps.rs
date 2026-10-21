@@ -109,7 +109,8 @@ pub struct Caps {
     pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
+    /// as does its PMS profile. Forced mode starts from the pipeline's feed set with no channel
+    /// ceiling and admits DTS only with a DTS row in `audio_channels` (`Caps::forced_feeds_audio`).
     /// as does its PMS profile. Forced mode uses the software feed set independently.
     pub audio: String,
     /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
