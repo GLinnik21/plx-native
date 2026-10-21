@@ -58,6 +58,11 @@ impl Held {
     /// Forgets everything: a fresh answer from the server, a reset, a profile switch.
     pub(crate) fn clear(&mut self) { self.copies.clear(); }
 
+    /// Lets go of the copy `gone` picks out: the card was removed from the deck. The span test in
+    /// [`Held::feed`] cannot see this one, because removing the lane's newest or oldest row leaves
+    /// its copy outside the span of the rows that remain.
+    pub(crate) fn forget(&mut self, gone: impl Fn(&PmsMovie) -> bool) { self.copies.retain(|c| !gone(&c.item.m)); }
+
     #[cfg(test)]
     pub(crate) fn rks(&self) -> Vec<String> { self.copies.iter().map(|c| c.item.m.rk.clone()).collect() }
 
@@ -76,8 +81,10 @@ impl Held {
         }
         let span = rows.iter().min_by(|a, b| order(a, b)).zip(rows.iter().max_by(|a, b| order(a, b)));
         match span {
-            // nothing held and the listing is over: the server lists no show at all
-            None if !lane.placed || lane.done => self.copies.clear(),
+            // nothing held and the listing is over, with no window ever moved off its head: the
+            // server lists no show at all. A lane the deck has paged past holds nothing too (it
+            // trimmed every row behind the window), and its copies are still the server's.
+            None if !lane.placed || (lane.done && lane.lo == 0 && lane.seen.is_empty()) => self.copies.clear(),
             None => {}
             Some((first, last)) => self.copies.retain(|held| {
                 seen.iter().all(|c| c.group != held.group)
@@ -93,7 +100,8 @@ impl Held {
 /// A server as the pass sees it: its held copies, in roster order, and whether it may win.
 pub(crate) struct Source<'a> {
     pub(crate) held: &'a Held,
-    /// The server answered in this process and its deck read is not failing. A source restored
+    /// The server answered its deck in this process and the latest deck read did not fail (a
+    /// refresh in flight does not count against it). A source restored
     /// from earlier, one that is asleep or one whose client is gone must not win with a copy that
     /// cannot play (Plex Web merges only the servers that answered this load).
     pub(crate) eligible: bool,

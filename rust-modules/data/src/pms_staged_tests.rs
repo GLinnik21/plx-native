@@ -578,7 +578,7 @@ fn a_deck_advance_owes_the_quiet_read_for_what_it_dropped() {
     let _g = plx_base::testlock::serial();
     let mut r = rig(1);
     r.stage(0, cw_moved(r.slots[0]));
-    advance_deck(&mut r.o.state.srcs, false);
+    advance_deck(&mut r.o.state.srcs, false, 1);
     assert!(r.o.state.srcs[0].staged.is_none(), "the lane moved under the staged copy");
     let (_, asked) = r.run(None, 120.0);
     assert_eq!(asked.len(), 1, "and its update is asked for again");

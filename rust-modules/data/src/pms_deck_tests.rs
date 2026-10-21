@@ -486,3 +486,26 @@ fn a_window_of_hidden_copies_asks_on() {
     assert!(shown.iter().all(|key| key.starts_with("s0-")), "and never the other server's copy: {shown:?}");
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A mirrored household whose second server is read long ago: every copy on it sorts after the
+/// first server's. A forward ask can land on a window of nothing but hidden copies, and the row
+/// must not vanish while it has more to show: it asks on until a card is visible, and at the end
+/// of the listing it stays where the last visible card was.
+#[test]
+fn a_window_of_only_hidden_copies_keeps_the_row() {
+    let _guard = plx_base::testlock::serial();
+    let (mut a, mut b) = (Listing::new(0, (0..40).map(|i| 9000 - i * 20)), Listing::new(1, (0..40).map(|i| 5000 - i * 20)));
+    for i in 0..40 { a = a.episode(i, i as u8, true); b = b.episode(i, i as u8, true); }
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    let mut shown = rks(&owner.state, 0);
+    for step in 0..12 {
+        move_deck(&mut owner, &listings, false, None);
+        assert!(hub_is_continue(&owner.state, 0), "step {step}: the row is still there ({} cards shown)", shown.len());
+        assert!(!rks(&owner.state, 0).is_empty(), "step {step}: and it holds a card");
+        for key in rks(&owner.state, 0) { if !shown.contains(&key) { shown.push(key); } }
+    }
+    assert_eq!(shown.iter().filter(|key| key.starts_with("s0-")).count(), 40, "every show once: {shown:?}");
+    assert!(shown.iter().all(|key| key.starts_with("s0-")), "never the other server's copy: {shown:?}");
+    plx_plex::plex::reset_servers_for_test();
+}

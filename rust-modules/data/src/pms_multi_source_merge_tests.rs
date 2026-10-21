@@ -1021,6 +1021,7 @@ fn owner_with(sources: Vec<Src>) -> Owner {
 fn ready(s: ServerId, handle: &str, cards: Vec<CwItem>) -> Src {
     let mut source = Src::new(s, handle.into());
     source.state = HubState::Ready;
+    source.deck_read = DeckRead::Answered;
     source.last = Some(deck_of(cards));
     source
 }
@@ -1155,19 +1156,20 @@ fn a_friend_who_never_answers_never_hides_the_own_copy() {
 fn a_cached_only_or_failing_roster_first_copy_does_not_win() {
     let _g = plx_base::testlock::serial();
     let h = household(2);
-    for state in [HubState::Failed, HubState::Loading] {
+    for read in [DeckRead::Failed, DeckRead::Cached] {
         let mut own = ready(h[0].0, "", vec![card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 100)]);
-        own.state = state;
+        own.deck_read = read;
+        own.state = if read == DeckRead::Failed { HubState::Failed } else { HubState::Loading };
         let mut o = owner_with(vec![
             own,
             ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 900)]),
         ]);
-        assert_eq!(rks(&o.state, 0), ["theirs"], "{state:?}: the copy that can play");
+        assert_eq!(rks(&o.state, 0), ["theirs"], "{read:?}: the copy that can play");
         reset(&mut o.state, &o.adapter);
     }
     // a deck read that is failing and retrying counts the same
     let mut own = ready(h[0].0, "", vec![card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 100)]);
-    own.retry_n = 1;
+    (own.retry_n, own.deck_read) = (1, DeckRead::Failed);
     let mut o = owner_with(vec![
         own,
         ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 900)]),
@@ -1218,6 +1220,133 @@ fn row_handles_stay_parallel_after_grouping() {
             _ => {}
         }
     }
+    reset(&mut o.state, &o.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Removing the lane's NEWEST row leaves the held copy outside the span of the rows the lane still
+/// holds; it must not stay the winner and keep hiding the other server's copy.
+#[test]
+fn removing_the_edge_row_shows_the_other_servers_copy() {
+    let _g = plx_base::testlock::serial();
+    let h = household(2);
+    let mut o = owner_with(vec![
+        ready(h[0].0, "", vec![
+            card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 900),
+            card(h[0].0, "film", "Film", None, 0, true, 500),
+        ]),
+        ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 100)]),
+    ]);
+    assert_eq!(rks(&o.state, 0), ["own", "film"]);
+    assert!(edit_item(&mut o.state, &ViewAt::leaf(h[0].0, "own"), ViewEdit::LeftDeck));
+    assert_eq!(rks(&o.state, 0), ["film", "theirs"], "the pressed copy is gone, the other server's copy is the tile");
+    // and the oldest edge: remove the friend's copy's neighbour at the other end of a lane
+    let mut o2 = owner_with(vec![
+        ready(h[0].0, "", vec![
+            card(h[0].0, "film", "Film", None, 0, true, 900),
+            card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 500),
+        ]),
+        ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 100)]),
+    ]);
+    assert!(edit_item(&mut o2.state, &ViewAt::leaf(h[0].0, "own"), ViewEdit::LeftDeck));
+    assert_eq!(rks(&o2.state, 0), ["film", "theirs"]);
+    reset(&mut o.state, &o.adapter);
+    reset(&mut o2.state, &o2.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Two servers that both hold a show 4 copy, a film behind each, and a full refresh under way.
+fn refreshing(h: &[(ServerId, String)]) -> (Owner, Vec<HubRequest>) {
+    let mut o = owner_with(vec![
+        ready(h[0].0, "", vec![
+            card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 900),
+            card(h[0].0, "own-film", "Film", None, 0, true, 500),
+        ]),
+        ready(h[1].0, "friend", vec![
+            card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 800),
+            card(h[1].0, "their-film", "Film", None, 0, true, 400),
+        ]),
+    ]);
+    settle_deck(&mut o.state.srcs, false); // the deck has been placed, as after any answer
+    assert_eq!(rks(&o.state, 0), ["own", "own-film", "their-film"], "premise");
+    let mut held = Vec::new();
+    let _ = request_refetch_hubs_with_scope(&mut o.state, &o.adapter, &BrowseScope::standalone(),
+        &mut |request| { held.push(request); true });
+    assert_eq!(held.len(), 2, "premise: both sources read again");
+    (o, held)
+}
+
+/// A landing of the worker `request` started: the deck rows carry the listing positions a projection gives them.
+fn answer(o: &mut Owner, request: HubRequest, mut build: SourceBuild) {
+    for (at, row) in build.cw.iter_mut().enumerate() { row.position = at; }
+    let key = |at: Option<&CwItem>| at.map_or(String::new(), |row| row.m.rk.clone());
+    build.lane = deck::Lane::preview(&key(build.cw.first()), &key(build.cw.last()), build.cw.len(), build.cw.len(), true);
+    // a refreshed lane comes back seated where the deck stood (`deck::reload`)
+    deck::place(std::slice::from_mut(&mut build.lane), &[build.cw.as_slice()]);
+    let landing = request.complete(Some(build));
+    let _ = super::land(&mut o.state, &o.adapter, &landing);
+}
+
+/// The friend's answer lands before ours: our copy stays the tile all along (a refresh in flight is
+/// not a reason to stop being eligible), so the row never shows the friend's copy and flips back.
+#[test]
+fn a_refresh_where_the_friend_lands_first_does_not_flip_the_tile() {
+    let _g = plx_base::testlock::serial();
+    let h = household(2);
+    let (mut o, mut held) = refreshing(&h);
+    let friend = held.pop().unwrap();
+    answer(&mut o, friend, deck_of(vec![
+        card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 800),
+        card(h[1].0, "their-film", "Film", None, 0, true, 400),
+    ]));
+    assert_eq!(rks(&o.state, 0), ["own", "own-film", "their-film"], "friend landed, ours not yet");
+    let own = held.pop().unwrap();
+    answer(&mut o, own, deck_of(vec![
+        card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 900),
+        card(h[0].0, "own-film", "Film", None, 0, true, 500),
+    ]));
+    assert_eq!(rks(&o.state, 0), ["own", "own-film", "their-film"], "both landed");
+    reset(&mut o.state, &o.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A commit while both sources are reading must not publish the show twice.
+#[test]
+fn a_commit_while_both_sources_refresh_shows_the_show_once() {
+    let _g = plx_base::testlock::serial();
+    let h = household(2);
+    let (mut o, _held) = refreshing(&h);
+    assert!(edit_item(&mut o.state, &ViewAt::leaf(h[0].0, "own-film"), ViewEdit::Watched(true)));
+    let shows = rks(&o.state, 0).into_iter().filter(|rk| rk == "own" || rk == "theirs").count();
+    assert_eq!(shows, 1, "one tile: {:?}", rks(&o.state, 0));
+    reset(&mut o.state, &o.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Another shelf's failing page is not a failing deck: it must not make our copies ineligible. A
+/// failing deck read still does.
+#[test]
+fn only_a_failing_deck_read_makes_a_source_ineligible() {
+    let _g = plx_base::testlock::serial();
+    let h = household(2);
+    let mut o = owner_with(vec![
+        ready(h[0].0, "", vec![card(h[0].0, "own", "Estudios sociales", Some(4), 0, true, 900)]),
+        ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 0, true, 100)]),
+    ]);
+    // a Recently Added page that fails
+    o.state.srcs[0].page = Some(PageQuery { id: "home.movies.recent".into(), key: "/hubs/x".into(), start: 12, before: false,
+        hidden: Vec::new(), reload: false });
+    let _ = landed_fail(&mut o.state.srcs[0]);
+    let (cat, hubs, _) = merge_with_scope(&o.state.srcs, &BrowseScope::standalone());
+    let deck: Vec<_> = cat[hubs[0].start..hubs[0].start + hubs[0].len].iter().map(|m| m.rk.clone()).collect();
+    assert_eq!(deck, ["own"], "a failing shelf page leaves the deck copy eligible");
+    // the deck's own page failing
+    o.state.srcs[0].page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before: false,
+        hidden: Vec::new(), reload: false });
+    let _ = landed_fail(&mut o.state.srcs[0]);
+    let (cat, hubs, _) = merge_with_scope(&o.state.srcs, &BrowseScope::standalone());
+    let deck: Vec<_> = cat[hubs[0].start..hubs[0].start + hubs[0].len].iter().map(|m| m.rk.clone()).collect();
+    assert_eq!(deck, ["theirs"], "a failing deck read yields to the server that answered");
     reset(&mut o.state, &o.adapter);
     plx_plex::plex::reset_servers_for_test();
 }

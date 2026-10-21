@@ -83,6 +83,8 @@ pub(super) fn src(slot: u16, handle: &str, state: HubState, last: Option<SourceB
     let mut s = Src::new(sid(slot), handle.into());
     s.state = state;
     s.last = last;
+    // a Ready fixture is a source that answered
+    if state == HubState::Ready { s.deck_read = DeckRead::Answered; }
     s
 }
 

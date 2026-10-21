@@ -270,6 +270,8 @@ const DECK_ID: &str = "home.continue";
 /// server it asked has landed or is retrying, so one failing server never holds the others.
 struct DeckAsk {
     before: bool,
+    /// How many pages the move is: more than one once a window of hidden copies was passed over.
+    pages: usize,
     waiting: Vec<ServerId>,
 }
 
@@ -828,6 +830,9 @@ fn edit_item_with_scope(
         // what a quiet read brought is the server from before this edit; it must carry the edit
         // when it lands, and it is not what the person sees, so it never decides `hit`
         if let Some(b) = s.staged.as_mut() { apply_edit(b, at, edit); }
+        // a removed card leaves the facts with it, wherever it sorted in its lane (`Held::feed`
+        // drops only copies inside the span of the rows that remain)
+        if matches!(edit, ViewEdit::LeftDeck) { s.copies.forget(|m| at.is_item(m.sid, &m.rk)); }
         s.feed_copies(); // a removed card, a marked one
     }
     if !hit {
@@ -1167,12 +1172,43 @@ fn settle_deck(srcs: &mut [Src], refreshed: bool) {
     put_lanes(srcs, &idx, lanes);
 }
 
-/// Moves the deck one page in a direction; a lane that could not be read stays where it is.
-fn advance_deck(srcs: &mut [Src], before: bool) {
+/// Moves the deck `pages` pages in a direction; a lane that could not be read stays where it is.
+fn advance_deck(srcs: &mut [Src], before: bool, pages: usize) -> usize {
     for s in srcs.iter_mut() { drop_staging(s); } // its lane would put the deck back
     let (idx, mut lanes) = take_lanes(srcs);
-    deck::advance(&mut lanes, !before, deck::PAGE);
+    let taken = deck::advance(&mut lanes, !before, pages * deck::PAGE);
     put_lanes(srcs, &idx, lanes);
+    taken
+}
+
+/// What a move of `pages` pages would leave on the deck, worked out on copies of the lanes.
+enum DeckMove {
+    /// A window with a card to show.
+    Visible,
+    /// A window of nothing but hidden copies, with the listing going on past it.
+    Hidden,
+    /// Nothing to show in the direction of travel, now or later: the deck stays where it is.
+    End,
+}
+
+fn deck_after(srcs: &[Src], scope: &BrowseScope, before: bool, pages: usize) -> DeckMove {
+    let live: Vec<&Src> = srcs.iter().filter(|s| s.last.is_some()).collect();
+    let mut lanes: Vec<deck::Lane> = live.iter().filter_map(|s| s.last.as_ref().map(|b| b.lane.clone())).collect();
+    deck::advance(&mut lanes, !before, pages * deck::PAGE);
+    let held: Vec<crate::stores::deck_group::Held> = live.iter().zip(&lanes).map(|(s, lane)| {
+        let mut held = s.copies.clone();
+        held.feed(lane, &[]);
+        held
+    }).collect();
+    let roster: Vec<crate::stores::deck_group::Source> = live.iter().zip(&held)
+        .map(|(s, held)| crate::stores::deck_group::Source { held, eligible: s.deck_eligible() }).collect();
+    let refs: Vec<&deck::Lane> = lanes.iter().collect();
+    let (cards, behind, ahead) = deck::merge_deck(&refs);
+    let cards = cards.into_iter().map(|(i, c)| (live[i].handle.as_str(), c))
+        .filter(|(_, c)| item_pinned(&scope.pins, &c.m)).collect();
+    if !crate::stores::deck_group::present(cards, &roster, &scope.pins).is_empty() { DeckMove::Visible }
+    else if if before { behind } else { ahead } { DeckMove::Hidden }
+    else { DeckMove::End }
 }
 
 /// A move of the Continue Watching deck. Every lane that holds too few rows to be sure of the next
@@ -1180,41 +1216,69 @@ fn advance_deck(srcs: &mut [Src], before: bool) {
 /// moves. With nothing to read, it moves at once.
 fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    if state.deck_ask.is_some() { return Default::default(); }
+    ask_deck(state, adapter, before, 1, scope, launch)
+}
+
+/// The move of `pages` pages: reads what the lanes lack, then [`move_deck`]. A window that would
+/// show no card (every card in it is another server's copy of a show Home draws from the first
+/// server) is not stopped at: the same ask goes on a page further, which reads further, until a
+/// window has a card or the listing ends. Nothing is published in between, so the row never blanks.
+fn ask_deck(state: &mut PmsState, adapter: &PmsAdapter, before: bool, mut pages: usize, scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    if state.deck_ask.is_some() { return endpoints; }
     let gen = state.hub_gen;
     let mut srcs = std::mem::take(&mut state.srcs);
-    let (idx, lanes) = take_lanes(&mut srcs);
-    let short: Vec<usize> = deck::needs(&lanes, !before, deck::PAGE).into_iter().map(|k| idx[k]).collect();
-    put_lanes(&mut srcs, &idx, lanes);
-    if idx.is_empty() || srcs.iter().any(|s| s.last.as_ref().is_some_and(|b| !b.lane.placed)) {
+    loop {
+        let (idx, lanes) = take_lanes(&mut srcs);
+        let short: Vec<usize> = deck::needs(&lanes, !before, pages * deck::PAGE).into_iter().map(|k| idx[k]).collect();
+        put_lanes(&mut srcs, &idx, lanes);
+        if idx.is_empty() || srcs.iter().any(|s| s.last.as_ref().is_some_and(|b| !b.lane.placed)) {
+            state.srcs = srcs;
+            return endpoints;
+        }
+        let mut waiting = Vec::new();
+        for &i in &short {
+            let s = &mut srcs[i];
+            if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready
+                || s.abandoned.iter().any(|a| a.page.id == DECK_ID) { continue; }
+            s.retry_n = 0;
+            s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new(), reload: false });
+            waiting.push(i);
+        }
+        if waiting.is_empty() {
+            // nothing more can be read now (a server that fails or is out): move on what is held
+            let moved = if pages == 1 || short.is_empty() { move_deck(&mut srcs, scope, before, pages) } else { Some(false) };
+            match moved {
+                Some(_) => {
+                    let mut build = merge_with_scope(&srcs, scope);
+                    state.srcs = srcs;
+                    preserve_heroes(state, &mut build);
+                    commit(state, build);
+                    return endpoints;
+                }
+                None => { pages += 1; continue; }
+            }
+        }
+        let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
+        for &i in &waiting {
+            if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, &mut *launch) { endpoints.insert(request); }
+        }
+        state.deck_ask = Some(DeckAsk { before, pages, waiting: waiting.iter().map(|&i| srcs[i].sid).collect() });
         state.srcs = srcs;
         return endpoints;
     }
-    let mut waiting = Vec::new();
-    for &i in &short {
-        let s = &mut srcs[i];
-        if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready
-            || s.abandoned.iter().any(|a| a.page.id == DECK_ID) { continue; }
-        s.retry_n = 0;
-        s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new(), reload: false });
-        waiting.push(i);
+}
+
+/// Moves the deck `pages` pages if the window it lands on has a card to show. `None`: it has not,
+/// and the listing goes on, so the caller asks for a further page; `Some(false)`: it has not and
+/// nothing is left, so the deck stays; `Some(true)`: it moved.
+fn move_deck(srcs: &mut [Src], scope: &BrowseScope, before: bool, pages: usize) -> Option<bool> {
+    match deck_after(srcs, scope, before, pages) {
+        DeckMove::Visible => { advance_deck(srcs, before, pages); Some(true) }
+        DeckMove::Hidden => None,
+        DeckMove::End => Some(false),
     }
-    if waiting.is_empty() {
-        advance_deck(&mut srcs, before);
-        let mut build = merge_with_scope(&srcs, scope);
-        state.srcs = srcs;
-        preserve_heroes(state, &mut build);
-        commit(state, build);
-        return endpoints;
-    }
-    let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
-    for &i in &waiting {
-        if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, &mut *launch) { endpoints.insert(request); }
-    }
-    state.deck_ask = Some(DeckAsk { before, waiting: waiting.iter().map(|&i| srcs[i].sid).collect() });
-    state.srcs = srcs;
-    endpoints
 }
 
 /// The deck's pending move has nothing left to wait for: every server it asked has landed, or
@@ -1229,6 +1293,7 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
 fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
     last.lane = build.lane;
+    source.deck_read = DeckRead::Answered;
     source.feed_copies();
     true
 }
@@ -1595,6 +1660,7 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
         if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut new); }
         olds.push((i, s.last.replace(new)));
         s.copies.clear(); // a fresh answer, as `landed_ok` takes one
+        s.deck_read = DeckRead::Answered;
     }
     settle_deck(&mut srcs, true);
     let candidate = merge_with_scope(&srcs, scope);
@@ -2026,13 +2092,17 @@ fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
     total
 }
 
+/// The sources with whether each may win a show: `deck_group` makes one tile of a show two servers
+/// list (docs/shared-servers.md, "One tile per show in Continue Watching").
+fn deck_roster(srcs: &[Src]) -> Vec<crate::stores::deck_group::Source<'_>> {
+    srcs.iter().filter(|s| s.last.is_some())
+        .map(|s| crate::stores::deck_group::Source { held: &s.copies, eligible: s.deck_eligible() }).collect()
+}
+
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let pins = &scope.pins;
     let live = live_sources(srcs);
-    // The same sources, with whether each may win a show: `deck_group` makes one tile of a show two
-    // servers list (docs/shared-servers.md, "One tile per show in Continue Watching").
-    let roster: Vec<crate::stores::deck_group::Source> = srcs.iter().filter(|s| s.last.is_some())
-        .map(|s| crate::stores::deck_group::Source { held: &s.copies, eligible: s.deck_eligible() }).collect();
+    let roster = deck_roster(srcs);
 
     let mut new_cat: Vec<Arc<PmsMovie>> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
@@ -2262,6 +2332,8 @@ struct Src {
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
     last: Option<SourceBuild>,
+    /// What this process knows of the server's deck: see [`DeckRead`].
+    deck_read: DeckRead,
     /// The show each deck row of this server belongs to, remembered past the lane's trim
     /// (`stores::deck_group`). Facts only: the pick is made by the merge from these.
     copies: crate::stores::deck_group::Held,
@@ -2281,6 +2353,17 @@ struct Src {
     /// back-off after a failed one.
     quiet_after: f32,
     quiet_fails: u32,
+}
+
+/// What the process knows of one source's Continue Watching deck.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DeckRead {
+    /// Only what was restored from earlier (or from before a profile switch): not yet confirmed.
+    Cached,
+    /// Answered in this process, and the latest deck read (a full refresh or a deck page) succeeded.
+    Answered,
+    /// The latest deck read failed.
+    Failed,
 }
 
 /// The least spacing between two quiet reads of one source; asks inside it coalesce into one.
@@ -2341,10 +2424,12 @@ impl Src {
         }
     }
 
-    /// Whether this source's copy may win a show: it answered, its client is present and its deck
-    /// read is not failing. (Plex Web merges only the servers that answered this load.)
+    /// Whether this source's copy may win a show: its deck answered in this process, its client is
+    /// present and its most recent DECK read did not fail. (Plex Web merges only the servers that
+    /// answered this load.) A refresh in flight does not count against it, and neither does another
+    /// shelf's failing page: the copies it holds are the facts of its last deck answer.
     fn deck_eligible(&self) -> bool {
-        self.last.is_some() && self.state == HubState::Ready && self.client.is_some() && self.retry_n == 0
+        self.last.is_some() && self.deck_read == DeckRead::Answered && self.client.is_some()
     }
 
     fn new(sid: ServerId, handle: String) -> Src {
@@ -2368,6 +2453,7 @@ impl Src {
             stamp: 0,
             last: None,
             copies: Default::default(),
+            deck_read: DeckRead::Cached,
             staged: None,
             quiet: false,
             quiet_owed: false,
@@ -2418,6 +2504,7 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
         }
     }
     s.state = HubState::Loading;
+    s.deck_read = DeckRead::Cached; // retained cards belong to the previous client or profile
     s.retry_s = 0.0;
     s.retry_n = 0;
     s.seq = s.seq.wrapping_add(1);
@@ -2889,6 +2976,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     s.last = Some(b);
     s.copies.clear(); // a fresh answer: what was remembered deeper than its preview may be gone
     s.feed_copies();
+    s.deck_read = DeckRead::Answered;
     s.staged = None; // this answer is newer than anything a quiet read held
     s.quiet_owed = false;
     s.state = HubState::Ready;
@@ -2898,6 +2986,8 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
 
 /// Record one source's failure: keep whatever it last answered with and arm ITS next attempt.
 fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
+    // only a read that carries the deck can fail it: the whole-source read, or a deck page
+    if s.page.as_ref().is_none_or(|page| page.id == DECK_ID) { s.deck_read = DeckRead::Failed; }
     s.retry_n = s.retry_n.saturating_add(1);
     s.retry_s = backoff_secs(s.retry_n);
     if s.page.is_some() && s.retry_n >= 3 {
@@ -3387,7 +3477,14 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         }
     }
     if state.deck_ask.as_ref().is_some_and(|ask| deck_ready(ask, &srcs)) {
-        if let Some(ask) = state.deck_ask.take() { advance_deck(&mut srcs, ask.before); }
+        if let Some(ask) = state.deck_ask.take() {
+            // a window with no card to show asks on, by the same path, a page further
+            if move_deck(&mut srcs, scope, ask.before, ask.pages).is_none() {
+                state.srcs = srcs;
+                endpoints.merge(ask_deck(state, adapter, ask.before, ask.pages + 1, scope, &mut *launch));
+                srcs = std::mem::take(&mut state.srcs);
+            }
+        }
         dirty = true;
         paged = true;
     }
