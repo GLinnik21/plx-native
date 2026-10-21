@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T07:56:16Z",
+ "generated": "2026-10-21T07:58:36Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -128,21 +128,21 @@
    "unit": "s"
   },
   {
-   "change30_pct": -43.3,
-   "change7_pct": 20.0,
+   "change30_pct": -44.7,
+   "change7_pct": 17.1,
    "d30": 676.0,
-   "delta30": -292.5,
-   "delta7": 64.0,
+   "delta30": -302.0,
+   "delta7": 54.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 122,
+   "n_now": 123,
    "n_prev": 114,
-   "now": 383.5,
+   "now": 374,
    "prev7": 319.5,
    "shown": true,
-   "state": "worse",
+   "state": "flat",
    "state30": "better",
    "threshold_abs": 60.0,
    "threshold_pct": 15.0,
@@ -333,14 +333,14 @@
    "change7_pct": 10.0,
    "d30": 125.5,
    "delta30": 116.5,
-   "delta7": 22.0,
+   "delta7": 22,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 242.0,
+   "now": 242,
    "prev7": 220,
    "shown": true,
    "state": "flat",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 171.6,
-   "change7_pct": -35.1,
+   "change30_pct": 172.3,
+   "change7_pct": -34.9,
    "d30": 70.5,
-   "delta30": 121.0,
-   "delta7": -103.5,
+   "delta30": 121.5,
+   "delta7": -103,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 191.5,
+   "now": 192,
    "prev7": 295,
    "shown": true,
    "state": "better",
@@ -417,14 +417,14 @@
    "change7_pct": 11.1,
    "d30": null,
    "delta30": null,
-   "delta7": 15.0,
+   "delta7": 15,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 150.0,
+   "now": 150,
    "prev7": 135,
    "shown": true,
    "state": "flat",
@@ -503,14 +503,14 @@
    "change7_pct": 5.9,
    "d30": 16.5,
    "delta30": 1.5,
-   "delta7": 1.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 99,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -657,6 +652,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 47.5,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -718,6 +713,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 212.5,
@@ -731,11 +731,6 @@
    "change_pct": 38.2,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -779,6 +774,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 351,
@@ -792,11 +792,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -840,6 +835,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 103.0,
@@ -853,11 +853,6 @@
    "change_pct": 33.6,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -901,6 +896,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 272.0,
@@ -914,11 +914,6 @@
    "change_pct": 27.5,
    "commits": [
     {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
      "pr": 859,
      "sha": "1fbab7089",
      "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
@@ -962,6 +957,11 @@
      "pr": 886,
      "sha": "65bcd4d1e",
      "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
+    },
+    {
+     "pr": 887,
+     "sha": "fa04c5faf",
+     "title": "Hero: no name under a focused icon-only control"
     }
    ],
    "from": 129.0,
@@ -970,67 +970,6 @@
    "since": "2026-10-19",
    "threshold_pct": 20.0,
    "to": 164.5
-  },
-  {
-   "change_pct": 20.0,
-   "commits": [
-    {
-     "pr": 866,
-     "sha": "69db933db",
-     "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
-    },
-    {
-     "pr": 859,
-     "sha": "1fbab7089",
-     "title": "Captions: Under posters applies to every poster tile, a caption line shows only once its room is there, and Home rests l"
-    },
-    {
-     "pr": 867,
-     "sha": "fd25378a9",
-     "title": "statics: no static mut owns heap - render caches are thread_local!, and a tree-wide gate refuses the class"
-    },
-    {
-     "pr": 871,
-     "sha": "a9dcfe67d",
-     "title": "home: Down from the hero dives to the first shelf only, and a shelf keeps its offset at the hero"
-    },
-    {
-     "pr": 872,
-     "sha": "a06719da3",
-     "title": "Recommended: arrive through the shared mechanisms, and BACK onto it no longer holds the dip's image"
-    },
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
-     "pr": 876,
-     "sha": "cc31d5489",
-     "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
-    },
-    {
-     "pr": 877,
-     "sha": "659cca7a1",
-     "title": "Detail: choosing an episode keeps the show logo; the season strip rests under it (#679)"
-    },
-    {
-     "pr": 881,
-     "sha": "99f7dc501",
-     "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
-    },
-    {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    }
-   ],
-   "from": 319.5,
-   "id": "push_wait",
-   "label": "Wait after merge",
-   "since": "2026-10-21",
-   "threshold_pct": 15.0,
-   "to": 383.5
   }
  ],
  "schema": 2,
