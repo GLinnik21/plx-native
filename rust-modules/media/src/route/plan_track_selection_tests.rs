@@ -908,3 +908,36 @@ fn the_encoder_names_the_default_when_nothing_stands_in() {
     assert_eq!(encode_audio_id(true, 0, 0, &tracks, none), 2);
     assert_eq!(encode_audio_id(true, 0, 0, &[], none), 0);
 }
+
+/// An English subtitle stream as the PMS reports it: `title` and the two structured flags, which
+/// on a real library are often both unset while the NAME says Forced or SDH (#828).
+fn titled_sub(id: i64, index: i64, title: &str, forced: bool, sdh: bool) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream { title: title.into(), forced, sdh, ..sub(id, index, "eng", false) }
+}
+
+fn account_pick(subs: &[plx_data::metadata::Stream], forced: i64) -> Option<i64> {
+    let account = SubtitleLangPrefs { language: Some("en"), mode: 2, forced };
+    pick_dp_subtitle_account(subs, &plx_plex::plex::ShowLangPrefs::default(), account, "eng").map(|p| p.0)
+}
+
+/// **The account rule reads "forced" the way the track menu does (#828).** A track whose title
+/// says "Forced" but whose PMS flag is unset is FORCED in the menu (`sub_traits`), so "prefer not
+/// forced" must skip it for the full track behind it, and "forced only" must take it.
+#[test]
+fn the_account_rule_treats_a_track_titled_forced_as_forced() {
+    let subs = [titled_sub(1, 2, "Forced", false, false), titled_sub(2, 3, "", false, false)];
+    assert!(plx_data::metadata::sub_layout::sub_traits(&subs[0]).forced, "the menu calls track 1 Forced");
+    assert_eq!(account_pick(&subs, 0), Some(2), "prefer non-forced skips the track named Forced");
+    assert_eq!(account_pick(&subs, 3), Some(2), "never-forced skips it too");
+    assert_eq!(account_pick(&subs, 1), Some(1), "prefer forced takes it");
+    assert_eq!(account_pick(&subs, 2), Some(1), "forced only takes it");
+}
+
+/// The SDH half of #828: a track titled "English SDH" with no `sdh` flag is SDH in the menu, so
+/// the plain track behind it wins the first tier.
+#[test]
+fn the_account_rule_treats_a_track_titled_sdh_as_sdh() {
+    let subs = [titled_sub(1, 2, "English SDH", false, false), titled_sub(2, 3, "", false, false)];
+    assert!(plx_data::metadata::sub_layout::sub_traits(&subs[0]).sdh, "the menu calls track 1 SDH");
+    assert_eq!(account_pick(&subs, 0), Some(2), "pref non-SDH skips the track named SDH");
+}

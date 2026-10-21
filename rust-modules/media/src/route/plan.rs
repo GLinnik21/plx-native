@@ -10,6 +10,7 @@
 //! belongs in `decision.rs`.
 
 use plx_data::metadata::lang_matches;
+use plx_data::metadata::sub_layout::{sub_traits, SubTraits};
 use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
 use super::track_memory::{blank_lang, match_audio, memory_subtitle, Miss, SubMode, TrackContext};
 
@@ -3301,6 +3302,8 @@ fn mde_subtitle_id_of(subs: &[plx_data::metadata::Stream], pick: Option<(i64, i3
 /// that selection ([`pick_subtitle`] orders the rungs). Automatic picks stay embedded/client-rendered:
 /// selecting an account default never requests a subtitle burn on the transcode path. (Only a
 /// remembered pick burns, and only where the route re-encodes video anyway: Q-TOP (b).)
+/// `forced` is the account's forced preference; the tiers that apply it (and the SDH tier) read the
+/// track menu's `sub_traits`, so a track that only NAMES itself Forced or SDH counts as one.
 #[derive(Clone, Copy, Default)]
 pub(super) struct SubtitleLangPrefs<'a> {
     pub language: Option<&'a str>,
@@ -3339,19 +3342,24 @@ fn pick_dp_subtitle_account(
         let ord = plx_data::metadata::sub_render_ordinal(subs, i);
         (ord >= 0 && subs[i].id > 0).then_some((subs[i].id, ord))
     };
+    // Forced and SDH are the track menu's reading (`sub_traits`, which also reads the title): the
+    // PMS flags alone miss a track that only NAMES itself Forced or SDH, most of a real library's.
     let prefer_forced = account.forced == 1 || account.forced == 2;
-    let tiers: [&dyn Fn(&plx_data::metadata::Stream) -> bool; 3] = [
-        &|s| s.forced == prefer_forced && !s.sdh,
-        &|s| s.forced == prefer_forced,
+    let tiers: [&dyn Fn(SubTraits) -> bool; 3] = [
+        &|t| t.forced == prefer_forced && !t.sdh,
+        &|t| t.forced == prefer_forced,
         &|_| true,
     ];
     tiers.iter().find_map(|tier| {
         (0..subs.len())
-            .filter(|&i| !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
-                && lang_matches(lang, &subs[i].lang_code)
-                && (account.forced != 2 || subs[i].forced)
-                && (account.forced != 3 || !subs[i].forced)
-                && tier(&subs[i]))
+            .filter(|&i| {
+                let traits = sub_traits(&subs[i]);
+                !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
+                    && lang_matches(lang, &subs[i].lang_code)
+                    && (account.forced != 2 || traits.forced)
+                    && (account.forced != 3 || !traits.forced)
+                    && tier(traits)
+            })
             .find_map(embedded)
     })
 }
