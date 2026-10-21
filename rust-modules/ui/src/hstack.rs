@@ -161,14 +161,14 @@ enum Items<'a> {
 }
 
 impl Items<'_> {
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Items::Slice(s) => s.len(),
             Items::Widths(w) => w.len(),
         }
     }
 
-    fn get(&self, i: usize) -> Item {
+    const fn get(&self, i: usize) -> Item {
         match self {
             Items::Slice(s) => s[i],
             Items::Widths(w) => Item::new(w[i]),
@@ -185,24 +185,40 @@ impl<'a> HStack<'a> {
 
     /// The gap between neighbours `a` then `b`: `b`'s [`Item::before`], else `a`'s [`Item::after`],
     /// else the stack's own.
-    fn gap_between(&self, a: &Item, b: &Item) -> f32 {
+    const fn gap_between(&self, a: &Item, b: &Item) -> f32 {
         gap_between(self.gap, a, b)
     }
 
     /// Item `i` as this run sees it: itself, or [`Item::absent`] once [`Self::fit`] dropped it.
-    fn live(&self, i: usize) -> Item {
+    const fn live(&self, i: usize) -> Item {
         if self.kept.has(i) { self.items.get(i) } else { Item::absent() }
     }
 
     /// The sum of `size` over the items that count (`Some`), plus one gap between each neighbouring
     /// pair of them. The widths are added first and the gaps second, so a caller that summed a row
     /// as "runs, then gaps" gets the same float back.
-    fn sum(&self, size: impl Fn(&Item) -> Option<f32>) -> f32 {
+    ///
+    /// `budget` picks what counts: `false` the drawn run ([`Self::width`]), `true` the reserved one
+    /// ([`Self::budget_w`]). A flag, not a closure, so [`Self::width`] can be a `const fn`.
+    const fn sum(&self, budget: bool) -> f32 {
         let (mut runs, mut gaps) = (0.0, 0.0);
         let mut before: Option<Item> = None;
-        for i in 0..self.items.len() {
+        let mut i = 0;
+        while i < self.items.len() {
             let item = self.live(i);
-            let Some(w) = size(&item) else { continue };
+            i += 1;
+            let size = if budget {
+                match (item.present, item.budget) {
+                    (true, Some(b)) => Some(if item.w > b { item.w } else { b }),
+                    (true, None) => Some(item.w),
+                    (false, b) => b,
+                }
+            } else if item.present {
+                Some(item.w)
+            } else {
+                None
+            };
+            let Some(w) = size else { continue };
             runs += w;
             if let Some(prev) = before {
                 gaps += self.gap_between(&prev, &item);
@@ -214,18 +230,15 @@ impl<'a> HStack<'a> {
 
     /// The run's width as DRAWN: every present item's width and one gap between present
     /// neighbours. An absent item adds neither; a present item of width 0 adds its gaps.
-    pub fn width(&self) -> f32 {
-        self.sum(|item| item.present.then_some(item.w))
+    pub const fn width(&self) -> f32 {
+        self.sum(false)
     }
 
     /// What the run RESERVES: [`Self::width`] with every item at the larger of what it draws and
     /// its [`Item::slot`], and an absent item that has a slot counted at its slot, gap included.
     /// This sizes the room a neighbour may use; it is never where anything stands.
     pub fn budget_w(&self) -> f32 {
-        self.sum(|item| match (item.present, item.budget) {
-            (true, budget) => Some(budget.map_or(item.w, |b| item.w.max(b))),
-            (false, budget) => budget,
-        })
+        self.sum(true)
     }
 
     /// Where the first present item's leading edge stands.
@@ -432,8 +445,11 @@ impl Item {
 }
 
 /// The gap between present neighbours `a` then `b` in a run whose own gap is `gap`.
-fn gap_between(gap: f32, a: &Item, b: &Item) -> f32 {
-    b.before.or(a.after).unwrap_or(gap)
+const fn gap_between(gap: f32, a: &Item, b: &Item) -> f32 {
+    match (b.before, a.after) {
+        (Some(g), _) | (None, Some(g)) => g,
+        (None, None) => gap,
+    }
 }
 
 // ---- Runs of plain widths (lane ui-2) ----
