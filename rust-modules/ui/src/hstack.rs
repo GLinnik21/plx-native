@@ -102,6 +102,16 @@ impl Item {
     }
 }
 
+// ---- Runs read item by item (lane ui-2) ----
+impl<'a> HStack<'a> {
+    /// A run of `count` items read through `rule` (item `i` is `rule(i)`), for a run whose length no
+    /// array bounds: the top bar's tab pills, a strip of library names. The stack is the same stack;
+    /// only where it reads its items from differs, so nothing is allocated.
+    pub const fn each(count: usize, rule: &'a dyn Fn(usize) -> Item, gap: f32, align: Align) -> Self {
+        Self { items: Items::Each(count, rule), gap, align }
+    }
+}
+
 /// Where a run is anchored, as an x.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
@@ -132,16 +142,46 @@ pub struct Span {
 /// holds no state and allocates nothing: build it where it is read, as often as that is.
 #[derive(Clone, Copy, Debug)]
 pub struct HStack<'a> {
-    items: &'a [Item],
+    items: Items<'a>,
     gap: f32,
     align: Align,
+}
+
+/// Where a stack reads its items from: a slice the caller built, or (see "Runs read item by item")
+/// a count and a rule, so a run of unbounded length needs no array.
+#[derive(Clone, Copy)]
+enum Items<'a> {
+    Slice(&'a [Item]),
+    Each(usize, &'a dyn Fn(usize) -> Item),
+}
+
+impl core::fmt::Debug for Items<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Items({})", self.len())
+    }
+}
+
+impl Items<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Items::Slice(s) => s.len(),
+            Items::Each(n, _) => *n,
+        }
+    }
+
+    fn get(&self, i: usize) -> Item {
+        match self {
+            Items::Slice(s) => s[i],
+            Items::Each(_, rule) => rule(i),
+        }
+    }
 }
 
 impl<'a> HStack<'a> {
     /// A run of `items`, `gap` apart (an item's [`Item::after`] overrides it for that one), anchored
     /// by `align`.
     pub const fn new(items: &'a [Item], gap: f32, align: Align) -> Self {
-        Self { items, gap, align }
+        Self { items: Items::Slice(items), gap, align }
     }
 
     /// The gap after `item`.
@@ -154,12 +194,13 @@ impl<'a> HStack<'a> {
     /// as "runs, then gaps" gets the same float back.
     fn sum(&self, size: impl Fn(&Item) -> Option<f32>) -> f32 {
         let (mut runs, mut gaps) = (0.0, 0.0);
-        let mut before: Option<&Item> = None;
-        for item in self.items {
-            let Some(w) = size(item) else { continue };
+        let mut before: Option<Item> = None;
+        for i in 0..self.items.len() {
+            let item = self.items.get(i);
+            let Some(w) = size(&item) else { continue };
             runs += w;
             if let Some(prev) = before {
-                gaps += self.gap_after(prev);
+                gaps += self.gap_after(&prev);
             }
             before = Some(item);
         }
@@ -195,11 +236,12 @@ impl<'a> HStack<'a> {
     /// allocation; absent items are skipped. Draw, focus and hit-test read this, so they cannot
     /// disagree. An item's slot is not read: it never changes where anything stands.
     pub fn placed(&self) -> impl Iterator<Item = Span> + 'a {
-        let items: &'a [Item] = self.items;
+        let items = self.items;
         let gap = self.gap;
         let mut x = self.start();
         let mut advance: Option<f32> = None;
-        items.iter().enumerate().filter_map(move |(i, item)| {
+        (0..items.len()).filter_map(move |i| {
+            let item = items.get(i);
             if !item.present {
                 return None;
             }
@@ -416,5 +458,21 @@ mod tests {
         let none = Item::glyph(Icon::Check, BOX);
         let s = HStack::new(std::slice::from_ref(&none), GAP, Align::Leading(10.0)).placed().next().unwrap();
         assert_eq!((s.x, s.w, s.box_x), (10.0, BOX, 10.0), "an unmeasured mark's ink fills its box");
+    }
+
+    /// **A run read item by item stands where the same slice does** — widths, gaps, placements, the
+    /// budget and an absent item alike — so a strip of unbounded length needs no array.
+    #[test]
+    fn a_run_read_item_by_item_places_exactly_as_the_slice_does() {
+        let items = [Item::new(120.0), Item::absent().slot(40.0), Item::new(33.5).after(9.0), Item::new(7.25)];
+        let rule = |i: usize| items[i];
+        for align in [Align::Leading(96.0), Align::Trailing(1771.0), Align::Centre(960.0)] {
+            let slice = HStack::new(&items, GAP, align);
+            let each = HStack::each(items.len(), &rule, GAP, align);
+            assert_eq!(at(&slice), at(&each));
+            assert_eq!(slice.width(), each.width());
+            assert_eq!(slice.budget_w(), each.budget_w());
+        }
+        assert_eq!(HStack::each(0, &rule, GAP, Align::Leading(0.0)).width(), 0.0);
     }
 }

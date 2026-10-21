@@ -5692,13 +5692,19 @@ fn strip_layout_by(
     gap: f32,
     mut width: impl FnMut(&CStr) -> f32,
 ) -> Vec<StripLay> {
-    let mut x = x0;
     let mut out = Vec::new();
     for (i, label) in labels.enumerate() {
         let Ok(lc) = CString::new(label) else { continue };
         let w = width(&lc);
-        out.push(StripLay { i, x, w, label: lc });
-        x += w + 2.0 * STRIP_PAD + gap;
+        out.push(StripLay { i, x: 0.0, w, label: lc });
+    }
+    // The pills stand on ONE HStack, a STRIP_PAD-padded frame each and `gap` between frames; a
+    // label stands STRIP_PAD inside its frame, and the first frame starts STRIP_PAD before `x0`.
+    let frames: Vec<f32> = out.iter().map(|lay| lay.w + 2.0 * STRIP_PAD).collect();
+    let rule = |i: usize| HItem::new(frames[i]);
+    let stack = HStack::each(frames.len(), &rule, gap, StackAlign::Leading(x0 - STRIP_PAD));
+    for span in stack.placed() {
+        out[span.i].x = span.x + STRIP_PAD;
     }
     out
 }
@@ -7271,7 +7277,13 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CSt
 
 /// Content width of the whole pill strip: the pills plus the air between them.
 fn tab_content_w(widths: &[f32]) -> f32 {
-    widths.iter().sum::<f32>() + TAB_GAP * (widths.len() as f32 - 1.0).max(0.0)
+    tab_stack(widths, |stack| stack.width())
+}
+/// The pill row as ONE [`HStack`] of the measured pill widths, [`TAB_GAP`] apart, from content x 0:
+/// the paint, the hit test and the capsules' span all read their x from it.
+fn tab_stack<R>(widths: &[f32], read: impl FnOnce(&HStack<'_>) -> R) -> R {
+    let rule = |i: usize| HItem::new(widths[i]);
+    read(&HStack::each(widths.len(), &rule, TAB_GAP, StackAlign::Leading(0.0)))
 }
 /// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
 fn tab_view_w(widths: &[f32]) -> f32 {
@@ -7321,8 +7333,12 @@ fn tab_geometry(widths: &[f32], scroll: f32) -> TabGeometry<'_> {
 }
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
-    let i = i.min(widths.len());
-    widths[..i].iter().sum::<f32>() + TAB_GAP * i as f32
+    // Past the end reads as the strip's end plus one gap (where the next pill would stand).
+    tab_stack(widths, |stack| match stack.span(i) {
+        Some((x, _)) => x,
+        None if widths.is_empty() => 0.0,
+        None => stack.width() + TAB_GAP,
+    })
 }
 /// Scroll offset that brings pill `idx` into the strip's viewport: the minimal scroll-into-view
 /// rule the season tabs and every shelf share ([`card_row::reveal`]) — move only when the pill
