@@ -3485,7 +3485,24 @@ impl Spinner {
     /// over by this and nothing else. Read by [`StatusOverlay`]'s busy note and by any column of
     /// fine print that marks a line the same way.
     pub fn inline_gutter() -> f32 {
-        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE)) + theme::space::XS
+        Self::inline_extent() + theme::space::XS
+    }
+    /// The inline ring's full extent, dots included: the width its [`Self::pair_items`] item takes.
+    pub fn inline_extent() -> f32 {
+        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE))
+    }
+    /// **A spinner then the line it marks, as stack items**: the ring `ring_extent` wide (its full
+    /// extent, dots included), then `text_w` of text. Stand them in an `HStack` whose gap is the
+    /// air between ring and text (`space::XS` for the inline ring, [`Self::inline_gutter`] being that
+    /// gap plus [`Self::inline_extent`]), anchored `Align::Centre(x)` for a pair centred on a band or
+    /// `Align::Leading(x)` for a line that starts on one. `Span::x` of item 0 is the ring's left
+    /// edge ([`Self::leading`]'s `x`); item 1's is the text's.
+    pub fn pair_items(ring_extent: f32, text_w: f32) -> [crate::hstack::Item; 2] {
+        [crate::hstack::Item::new(ring_extent), crate::hstack::Item::new(text_w)]
+    }
+    /// [`Self::pair_items`] for the inline ring: gap [`theme::space::XS`].
+    pub fn inline_pair_items(text_w: f32) -> [crate::hstack::Item; 2] {
+        Self::pair_items(Self::inline_extent(), text_w)
     }
     /// An inline spinner in the leading gutter that starts at `x`, centred on `cy` — the middle
     /// of the cap band of the line it marks.
@@ -4691,9 +4708,10 @@ impl<'a> StatusOverlay<'a> {
     /// `text_w` of text — centred on `band` as one group, so the line reads as centred as a
     /// settled one. Returns the gutter's left edge and the text's rect.
     fn busy_note_split(band: Rect, text_w: f32) -> (f32, Rect) {
-        let gutter = Spinner::inline_gutter();
-        let left = band.cx() - (gutter + text_w) / 2.0;
-        (left, Rect::new(left + gutter, band.y, text_w, band.h))
+        let pair = Spinner::inline_pair_items(text_w);
+        let stack = crate::hstack::HStack::new(&pair, theme::space::XS, crate::hstack::Align::Centre(band.cx()));
+        let (ring, text) = (stack.span(0).expect("present").0, stack.span(1).expect("present").0);
+        (ring, Rect::new(text, band.y, text_w, band.h))
     }
 
     fn draw_geometry(
