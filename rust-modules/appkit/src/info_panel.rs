@@ -588,7 +588,7 @@ fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
         plx_platform::i18n::msg::widgets_info_go_movie_c(),
     ];
     let bw = labels.iter().map(|label| {
-        plx_ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, false, measure)
+        plx_ui::widgets::Button::pill_w_measured(label, theme::size::BODY, true, None, measure)
     }).fold(352.0f32, f32::max);
     let bh = 70.0f32;
     let bx = card.x + card.w - pad - bw;

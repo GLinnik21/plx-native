@@ -83,7 +83,7 @@ pub(super) fn clear_below(list_end: f32, measure: &dyn plx_machine::machine::Mea
         plx_platform::i18n::msg::browse_search_clear_c(),
         plx_ui::theme::size::BODY,
         false,
-        false,
+        None,
         measure,
     );
     Rect::new(

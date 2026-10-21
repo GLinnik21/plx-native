@@ -65,6 +65,10 @@ const PEOPLE_SUMMARY: usize = 3;
 const PEOPLE_LABEL_INK: [f32; 4] = theme::TEXT_TERTIARY;
 const FACTS_SEP_PAD: f32 = theme::space::SM;
 
+/// The Alt pill's trailing mark: drawn by `Button::trailing_icon` and counted by [`alt_pill_w`], so
+/// the pill is sized to the very glyph it carries.
+pub const ALT_ICON: plx_ui::icons::Icon = plx_ui::icons::Icon::ChevronDown;
+
 pub fn alt_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_also_available_c() }
 
 fn mark_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_watched_c() }
@@ -364,13 +368,13 @@ pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
         hero_pill_label(has_restart),
         theme::size::BODY,
         true,
-        false,
+        None,
     )
     .max(PW)
 }
 
 pub fn alt_pill_w(measure: &dyn Measure) -> f32 {
-    plx_appkit::hero_layout::pill_w(measure, alt_label(), theme::size::BODY, false, true)
+    plx_appkit::hero_layout::pill_w(measure, alt_label(), theme::size::BODY, false, Some(ALT_ICON))
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in `set`, given both pills'
@@ -589,7 +593,7 @@ fn play_mode_bits_for(
         )),
         PlayNote::Soft => {
             push(Bit::Word(converts_on_server_c(), plx_ui::detail_layout::FACTS_INK, 0));
-            push(Bit::Sep(theme::space::SM));
+            push(Bit::Sep(FACTS_SEP_PAD));
             push(Bit::Word(
                 plx_platform::i18n::msg::browse_detail_hardware_needs_c(),
                 theme::TEXT_SECONDARY,
@@ -602,7 +606,7 @@ fn play_mode_bits_for(
             push(Bit::Glyph);
             push(Bit::Air(theme::space::SM));
             push(Bit::Word(c"HDR \u{2192} SDR", theme::TEXT_SECONDARY, 1));
-            push(Bit::Sep(theme::space::SM));
+            push(Bit::Sep(FACTS_SEP_PAD));
             push(Bit::Word(plx_platform::i18n::msg::browse_detail_tonemap_needs_c(), theme::TEXT_SECONDARY, 0));
             push(Bit::Air(theme::space::SM));
             push(Bit::Capsule);

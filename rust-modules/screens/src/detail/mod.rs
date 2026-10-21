@@ -3008,7 +3008,7 @@ impl DetailScreen {
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
                     Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
-                        .trailing_icon(plx_ui::icons::Icon::ChevronDown)
+                        .trailing_icon(hero::ALT_ICON)
                         .focus_mix(fill)
                         .palette(palette)
                         .ground(ground)

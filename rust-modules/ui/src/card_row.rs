@@ -789,12 +789,24 @@ pub fn bounded_heading_flow(
     measure: &dyn plx_machine::machine::Measure,
     mut run: impl FnMut(&str, f32, std::os::raw::c_int, std::os::raw::c_int, [f32; 4]) -> f32,
 ) -> f32 {
+    // A note's dot is drawn only with its note: when the room the note WOULD have after the dot is
+    // under `MIN_HEADING_RUN` the dot is dropped, and so is the note that follows it.
+    let mut dot_dropped = false;
     heading_parts(title, count, source, |s, dx, sz, bold, ink, _| {
         let room = max_w - dx;
         if max_w.is_finite() && room < MIN_HEADING_RUN {
             return 0.0; // no room left for this run at all — drop it rather than draw a stub
         }
         if max_w.is_finite() {
+            if s == <str as HeadingText>::dot() {
+                let note_room = room - measure.width_str(s, sz, bold != 0) - HEADING_SOURCE_PAD;
+                dot_dropped = note_room < MIN_HEADING_RUN;
+                if dot_dropped {
+                    return 0.0;
+                }
+            } else if std::mem::take(&mut dot_dropped) {
+                return 0.0; // the note of a dropped dot
+            }
             let owned =
                 plx_gfx::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
             run(&owned, dx, sz, bold, ink)
@@ -1913,6 +1925,36 @@ mod tests {
         assert_eq!(plx_machine::machine::PressRead::<()>::default().dip(), 1.0);
         let moving = plx_machine::machine::PressRead::<()> { scale: 0.92, ..Default::default() };
         assert_eq!(moving.dip(), 0.92);
+    }
+
+    /// A bound that leaves a note less than `MIN_HEADING_RUN` drops the note AND its dot: a lone
+    /// separator dot trailing the title reads as damage.
+    #[test]
+    fn a_bound_that_drops_a_note_drops_its_dot_too() {
+        struct Fixed;
+        impl plx_machine::machine::Measure for Fixed {
+            fn width(&self, s: &std::ffi::CStr, sz: i32, _: bool) -> f32 {
+                s.to_bytes().len() as f32 * sz as f32 * 0.5
+            }
+            fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+        }
+        let flow = |max_w: f32| {
+            let mut texts = Vec::new();
+            bounded_heading_flow("T", "12 results", "", max_w, &Fixed, |s, _, sz, _, _| {
+                texts.push(s.to_string());
+                s.len() as f32 * sz as f32 * 0.5
+            });
+            texts
+        };
+        let title_w = theme::size::HEADLINE as f32 * 0.5;
+        let dot_x = title_w + HEADING_SOURCE_PAD;
+        // the dot has room (>= MIN), the note after it does not
+        let tight = flow(dot_x + MIN_HEADING_RUN + 1.0);
+        assert_eq!(tight, ["T"], "no dot without its note: {tight:?}");
+        // ample room keeps all three
+        assert_eq!(flow(f32::INFINITY), ["T", "\u{b7}", "12 results"]);
+        assert_eq!(flow(10_000.0).len(), 3);
     }
 
     /// The runs `draw_heading_c` PAINTS for a title, a count and a source, left to right.

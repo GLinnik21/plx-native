@@ -51,14 +51,14 @@ const HERO_ICON_GAP: f32 = 12.0;
 
 /// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `plx_gfx::text`
 /// directly (host-test-safe geometry shared by `place` and `draw`).
-pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: bool) -> f32 {
-    // One run: the leading icon box, the label, the trailing icon box, `HERO_ICON_GAP` apart. An
+pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: Option<plx_ui::icons::Icon>) -> f32 {
+    // One run: the leading icon box, the label, the trailing icon's INK (its bearing is not air), `HERO_ICON_GAP` apart. An
     // icon the pill does not carry is ABSENT, so it leaves neither its width nor its gap.
     let box_w = sz as f32 * HERO_ICON_RATIO;
     let run = [
         if icon { Item::new(box_w) } else { Item::absent() },
         Item::new(measure.width(label, sz, true)),
-        if trailing { Item::new(box_w) } else { Item::absent() },
+        trailing.map_or_else(Item::absent, |acc| Item::glyph(acc, box_w)),
     ];
     HStack::new(&run, HERO_ICON_GAP, Align::Leading(0.0)).width() + plx_ui::widgets::BTN_PILL_AIR
 }

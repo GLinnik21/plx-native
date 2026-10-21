@@ -46,16 +46,24 @@ fn row_rect_of_an_empty_row_is_a_zero_width_control_at_the_margin() {
     assert_eq!((r.x, r.y, r.w, r.h), (plx_ui::consts::MARGIN_X, 3.0, 0.0, CD));
 }
 
+const CHEV: Option<plx_ui::icons::Icon> = Some(plx_ui::icons::Icon::ChevronDown);
+
+/// The trailing chevron counts as its INK (`icons::ink_x`), not its box, at a 20 px type size.
+fn chevron_ink() -> f32 {
+    let (l, r) = plx_ui::icons::ink_x(plx_ui::icons::Icon::ChevronDown);
+    (r - l) * 20.0 * HERO_ICON_RATIO
+}
+
 #[test]
 fn pill_w_adds_icon_boxes_only_when_asked() {
     let label = CString::new("Play").unwrap();
     let text = 4.0 * GLYPH;
-    let plain = pill_w(&Mono, &label, 20, false, false);
+    let plain = pill_w(&Mono, &label, 20, false, None);
     assert_eq!(plain, text + plx_ui::widgets::BTN_PILL_AIR);
-    let lead = pill_w(&Mono, &label, 20, true, false);
+    let lead = pill_w(&Mono, &label, 20, true, None);
     assert_eq!(lead, plain + 20.0 * 1.15 + 12.0);
-    let both = pill_w(&Mono, &label, 20, true, true);
-    assert_eq!(both, plain + 2.0 * (20.0 * 1.15 + 12.0));
+    let both = pill_w(&Mono, &label, 20, true, CHEV);
+    assert_eq!(both, plain + (20.0 * 1.15 + 12.0) + chevron_ink() + 12.0);
 }
 
 #[test]
@@ -99,8 +107,8 @@ fn pill_w_gaps_only_the_icons_it_carries() {
     let text = 4.0 * GLYPH;
     let box_w = 20.0 * HERO_ICON_RATIO;
     let air = plx_ui::widgets::BTN_PILL_AIR;
-    assert_eq!(pill_w(&Mono, &label, 20, false, false), text + air);
-    assert_eq!(pill_w(&Mono, &label, 20, true, false), box_w + text + HERO_ICON_GAP + air);
-    assert_eq!(pill_w(&Mono, &label, 20, false, true), text + box_w + HERO_ICON_GAP + air);
-    assert_eq!(pill_w(&Mono, &label, 20, true, true), box_w + text + box_w + 2.0 * HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, false, None), text + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, None), box_w + text + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, false, CHEV), text + chevron_ink() + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, CHEV), box_w + text + chevron_ink() + 2.0 * HERO_ICON_GAP + air);
 }

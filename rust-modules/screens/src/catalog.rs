@@ -353,7 +353,7 @@ impl CatalogScreen {
     /// The pill's frame: the hero row's first (and only) control.
     fn pill_rect(&self, measure: &dyn Measure) -> Option<Rect> {
         let stack = self.stack(measure)?;
-        let w = hero_layout::pill_w(measure, pill_label(self.vm.membership), theme::size::BODY, true, false)
+        let w = hero_layout::pill_w(measure, pill_label(self.vm.membership), theme::size::BODY, true, None)
             .max(hero_layout::PW);
         Some(hero_layout::row_rect(&[w], 0, stack.pill))
     }

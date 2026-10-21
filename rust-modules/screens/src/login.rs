@@ -1333,7 +1333,7 @@ impl LoginScreen {
         if !self.details_offered() {
             return None;
         }
-        let w = Button::pill_w_measured(plx_platform::i18n::msg::settings_login_details_c(), theme::size::BODY, false, false, measure);
+        let w = Button::pill_w_measured(plx_platform::i18n::msg::settings_login_details_c(), theme::size::BODY, false, None, measure);
         Some(RouteLayout::screen().action_pair(w, 0.0).0)
     }
 

@@ -135,20 +135,22 @@ const FOOTER_SCROLL_GAP: f32 = theme::space::SM;
 /// The chevron marks' box, at their natural size with no frame (the Library A-Z rail's idiom).
 const FOOTER_GLYPH: f32 = 22.0;
 
-fn footer_scroll_items(label_w: f32) -> [Item; 3] {
+/// The label is the LAST item of a leading-aligned stack, so its width moves no x: it is passed as 0
+/// and never measured (no per-frame Width query for a width nothing reads).
+fn footer_scroll_items() -> [Item; 3] {
     [
         Item::glyph(Icon::ChevronUp, FOOTER_GLYPH),
         Item::glyph(Icon::ChevronDown, FOOTER_GLYPH),
-        Item::new(label_w),
+        Item::new(0.0),
     ]
 }
 
 /// The footer's left read-out: the two chevrons + "to scroll", starting at `x`, the chevrons centred
 /// on `cy` and the label in the footer band at `fy`. Marks, not controls — there is nothing to
 /// focus, so they are drawn at their natural size with no frame (the Library A–Z rail's idiom).
-fn draw_scroll_hint(p: Painter, x: f32, cy: f32, fy: f32, cw: f32, measure: &dyn plx_machine::machine::Measure) {
+fn draw_scroll_hint(p: Painter, x: f32, cy: f32, fy: f32, cw: f32) {
     let hint = plx_platform::i18n::msg::widgets_hint_scroll_c();
-    let items = footer_scroll_items(measure.width(hint, theme::size::CAPTION, false));
+    let items = footer_scroll_items();
     for (span, icon) in HStack::new(&items, FOOTER_SCROLL_GAP, Align::Leading(x))
         .placed()
         .zip([Some(Icon::ChevronUp), Some(Icon::ChevronDown), None])
@@ -1101,7 +1103,7 @@ impl TracksPanelScreen {
         let fy = r.y + PANEL_H - plx_ui::widgets::KeyHint::pad_below() - FOOTER_H;
         rule(p, cx, fy - theme::space::MD - widgets::HAIRLINE_H, cw);
         let cy = fy + FOOTER_H * 0.5;
-        draw_scroll_hint(p, cx, cy, fy, cw, measure);
+        draw_scroll_hint(p, cx, cy, fy, cw);
         // right: Press [BACK] to return, RIGHT-aligned on the padding edge. The shared
         // `widgets::KeyHint` places by x and each caller solves its own alignment, so a right edge is
         // `right - width()`. (This was a local `key_cap_hint` that built its cap out of `keyline_chip`
@@ -1339,7 +1341,7 @@ mod tests {
         let mut runs = Vec::new();
         let icons = plx_ui::draw_census::capture_icons(|| {
             runs = plx_ui::draw_census::capture_runs(|| {
-                draw_scroll_hint(Painter::recording(), 100.0, 300.0, 280.0, 600.0, &plx_ui::widgets::LegacyMeasure);
+                draw_scroll_hint(Painter::recording(), 100.0, 300.0, 280.0, 600.0);
             });
         });
         let label = runs.iter().find(|r| r.text == plx_platform::i18n::msg::widgets_hint_scroll_c().to_str().unwrap()).expect("the label is painted");

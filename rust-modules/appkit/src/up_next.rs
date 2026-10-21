@@ -258,7 +258,7 @@ pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 pub fn layout(row: &mut crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
     )
 }
 
@@ -269,7 +269,7 @@ pub fn layout(row: &mut crate::player_hud::TransportRow, measure: &dyn plx_machi
 pub fn layout_peek(row: &crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
     )
 }
 

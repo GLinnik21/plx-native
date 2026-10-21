@@ -4635,7 +4635,7 @@ impl<'a> StatusOverlay<'a> {
         }
         let mut widths = [None; STATUS_ROW_MAX];
         for (i, l) in self.row_labels() {
-            widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, false, measure));
+            widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, None, measure));
         }
         self.row_rects(widths, &self.bands_measured(measure))
     }
@@ -8298,10 +8298,6 @@ pub struct Button {
 /// the two drift.
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
-/// Where a trailing accessory's BOX stands so its INK is `gap` after the label ends at `label_end`.
-pub(crate) fn btn_trailing_box_x(icon: crate::icons::Icon, label_end: f32, box_w: f32, gap: f32) -> f32 {
-    label_end + gap - crate::icons::ink_x(icon).0 * box_w
-}
 /// Total horizontal air a pill carries around its icon+label run.
 pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
@@ -8388,15 +8384,15 @@ impl Button {
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
     /// sizing path is exactly the drift this file exists to prevent.
     pub fn pill_w(label: *const c_char, sz: c_int, icon: bool) -> f32 {
-        Self::pill_w_full(label, sz, icon, false)
+        Self::pill_w_full(label, sz, icon, None)
     }
 
     /// [`Button::pill_w`] with the TRAILING accessory counted too — the same one formula, taking
     /// both of the button's optional slots rather than growing a second sizing path beside it (the
     /// drift this file exists to prevent, and the exact reason `pill_w` gained its `icon` flag).
-    /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
-    /// lays out below.
-    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
+    /// An accessory occupies one more gap and its INK width (`icons::ink_x`): the pill's right pad
+    /// is measured to the accessory's ink, which is what [`Button::draw`] lays out below.
+    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
         // The `Measure`-threaded twin is `pill_w_measured`, just below. This raw form has to stay
         // measure-less: its own caller `StatusOverlay::action_frame` is reached from
         // `impl View for StatusOverlay` (`View::draw` takes no `Measure`, and reshaping that shared
@@ -8412,23 +8408,26 @@ impl Button {
         Self::pill_w_from_advance(advance, sz, icon, trailing)
     }
 
-    pub fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: bool,
+    pub fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>,
         measure: &dyn plx_machine::machine::Measure) -> f32 {
         Self::pill_w_from_advance(measure.width(label, sz, true), sz, icon, trailing)
     }
 
-    fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: bool) -> f32 {
-        let (isz, gap) = if icon {
-            (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        let (tsz, tgap) = if trailing {
-            (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        isz + gap + advance + tgap + tsz + BTN_PILL_AIR
+    fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
+        HStack::new(&Self::run_items(advance, sz, icon, trailing), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
+            + BTN_PILL_AIR
+    }
+
+    /// The pill's one run, which `draw` places and `pill_w_*` sizes: the leading icon's box, the
+    /// label, and the trailing accessory standing by its INK. An accessory the pill does not carry
+    /// is ABSENT, so it leaves neither its width nor its gap.
+    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> [HItem; 3] {
+        let box_w = sz as f32 * BTN_ICON_RATIO;
+        [
+            if icon { HItem::new(box_w) } else { HItem::absent() },
+            HItem::new(advance),
+            trailing.map_or_else(HItem::absent, |acc| HItem::glyph(acc, box_w)),
+        ]
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -8559,40 +8558,27 @@ impl View for Button {
                 true,
             )
         };
-        let (isz, gap) = if self.icon.is_some() {
-            (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        let (asz, agap) = if self.trailing.is_some() {
-            (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
         // the WHOLE run is centred — accessory included — which is why `pill_w_full` measures it:
-        // sizing the pill without the chevron and then drawing one would push the label off-centre
-        let gl = r.cx() - (isz + gap + tw + agap + asz) * 0.5;
-        if let Some(icon) = self.icon {
-            crate::icons::draw(
-                p,
-                icon,
-                Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz),
-                ink,
-            );
-        }
-        p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
-        if let Some(acc) = self.trailing {
-            // placed by INK: the gap the eye reads between the label and the mark is `BTN_ICON_GAP`,
-            // not that gap plus the empty margin the asset leaves inside its box. The run's width
-            // (and so `pill_w_*`, which `hero_layout::pill_w` mirrors) is unchanged: the box stands
-            // `ink_x` bearing left, inside the room it already had.
-            let ax = btn_trailing_box_x(acc, gl + isz + gap + tw, asz, agap);
-            crate::icons::draw(
-                p,
-                acc,
-                Rect::new(ax, r.y + (r.h - asz) * 0.5, asz, asz),
-                ink,
-            );
+        // sizing the pill without the chevron and then drawing one would push the label off-centre.
+        // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
+        let isz = self.sz as f32 * BTN_ICON_RATIO;
+        let items = Self::run_items(tw, self.sz, self.icon.is_some(), self.trailing);
+        for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
+            match span.i {
+                0 => {
+                    if let Some(icon) = self.icon {
+                        crate::icons::draw(p, icon, Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    }
+                }
+                1 => {
+                    p.text(self.label, span.x, ty, self.sz, ink, 0, 1); // left-aligned after the icon
+                }
+                _ => {
+                    if let Some(acc) = self.trailing {
+                        crate::icons::draw(p, acc, Rect::new(span.box_x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    }
+                }
+            }
         }
     }
 }

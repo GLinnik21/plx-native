@@ -51,7 +51,7 @@ pub struct LinkedMeasure {
     /// A bounded `Heading`'s elided runs, kept so the draw reuses the measure's elision. Empty for
     /// every other heading, whose flow draws straight from the strings at no elision cost.
     runs: Vec<Run>,
-    /// A `Heading`'s member count as drawn ("" when it has none); its source is `count`.
+    /// A `Heading`'s member count as drawn ("" when it has none); the source is `LinkedHeading::count`.
     total: String,
 }
 

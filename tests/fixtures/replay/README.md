@@ -552,5 +552,6 @@ queries plus exactly three gained Width queries, all at 28 px regular: the separ
 shelf counts ("22", "4"); none lost. The route and focus-fingerprint sequences are identical to the
 committed recording's. The anchor was recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only
 12`), passed `plxnative-rec check`, and only its `rec-0000.jsonl` was replaced (the manifest already equals
-the recorder's header, `anchor: true` kept). `make check-replay` replays all three with `verdict=SAME` in
-Targets and Resolve and every difference counter at zero (three consecutive runs).
+the recorder's header, `anchor: true` kept). The re-record also gained 4 non-tick `eff` records (an extra Home
+hubs/discovery work+delivery pair): timing of the recording, not Q4. `make check-replay` replays all three with
+`verdict=SAME` in Targets and Resolve and every difference counter at zero (three consecutive runs).

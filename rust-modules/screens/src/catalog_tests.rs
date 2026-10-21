@@ -216,7 +216,7 @@ fn every_line_fits_in_every_shipped_language() {
         }
         for m in [Membership::On, Membership::Off] {
             let label = pill_label(m);
-            let w = hero_layout::pill_w(&ShippedMeasure, label, theme::size::BODY, true, false);
+            let w = hero_layout::pill_w(&ShippedMeasure, label, theme::size::BODY, true, None);
             let room = (plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X) * HEADROOM;
             if w > room {
                 over.push(format!("{} pill {m:?}: {w}px of {room}px: {label:?}", language.tag()));
