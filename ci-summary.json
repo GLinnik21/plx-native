@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T15:58:05Z",
+ "generated": "2026-10-21T16:03:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -107,19 +107,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -30.5,
-   "change7_pct": 27.8,
+   "change30_pct": -30.8,
+   "change7_pct": 27.4,
    "d30": 681,
-   "delta30": -208,
-   "delta7": 103,
+   "delta30": -209.5,
+   "delta7": 101.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 265,
-   "n_prev": 223,
-   "now": 473,
-   "prev7": 370,
+   "n_now": 264,
+   "n_prev": 224,
+   "now": 471.5,
+   "prev7": 370.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -149,18 +149,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -47.3,
-   "change7_pct": 11.4,
+   "change30_pct": -47.4,
+   "change7_pct": 11.2,
    "d30": 677,
-   "delta30": -320.5,
-   "delta7": 36.5,
+   "delta30": -321,
+   "delta7": 36,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 120,
+   "n_now": 121,
    "n_prev": 117,
-   "now": 356.5,
+   "now": 356,
    "prev7": 320,
    "shown": true,
    "state": "flat",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 91.0,
-   "change7_pct": 12.7,
+   "change30_pct": 91.4,
+   "change7_pct": 12.9,
    "d30": 128,
-   "delta30": 116.5,
-   "delta7": 27.5,
+   "delta30": 117,
+   "delta7": 28,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 244.5,
+   "now": 245,
    "prev7": 217,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 172.5,
-   "change7_pct": -20.7,
+   "change30_pct": 173.2,
+   "change7_pct": -20.5,
    "d30": 71,
-   "delta30": 122.5,
-   "delta7": -50.5,
+   "delta30": 123,
+   "delta7": -50,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 193.5,
+   "now": 194,
    "prev7": 244,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.0,
+   "change7_pct": 9.6,
    "d30": null,
    "delta30": null,
-   "delta7": 13.5,
+   "delta7": 13,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 148.5,
+   "now": 148,
    "prev7": 135,
    "shown": true,
    "state": "flat",
@@ -481,15 +481,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 1.0,
+   "delta30": 2,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 101,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -657,6 +652,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 57.5,
@@ -670,11 +670,6 @@
    "change_pct": 34.3,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -718,6 +713,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 213.0,
@@ -731,11 +731,6 @@
    "change_pct": 32.8,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -779,6 +774,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 128.0,
@@ -792,11 +792,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -840,6 +835,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 46.5,
@@ -853,11 +853,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -901,6 +896,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 108.7,
@@ -911,13 +911,8 @@
    "to": 140.7
   },
   {
-   "change_pct": 27.8,
+   "change_pct": 27.4,
    "commits": [
-    {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
     {
      "pr": 887,
      "sha": "fa04c5faf",
@@ -962,24 +957,24 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
-   "from": 370,
+   "from": 370.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-21",
    "threshold_pct": 25.0,
-   "to": 473
+   "to": 471.5
   },
   {
    "change_pct": 24.6,
    "commits": [
     {
-     "pr": 886,
-     "sha": "65bcd4d1e",
-     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
-    },
-    {
      "pr": 887,
      "sha": "fa04c5faf",
      "title": "Hero: no name under a focused icon-only control"
@@ -1023,6 +1018,11 @@
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
     }
    ],
    "from": 274.5,
@@ -1063,7 +1063,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 244.5
+   "now": 245
   }
  ],
  "slowest_local": [
