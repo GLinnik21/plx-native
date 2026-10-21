@@ -37,9 +37,14 @@
 //! and as if it were there: a control that is not on the row now but may land can reserve its room,
 //! so what its neighbour may use does not change when it comes or goes. (The page header does not
 //! use this today: it reserves Collections' room through `widest`, the widest-case cluster
-//! `PageHeader::new` measures. `Item::absent` is used by `StatusOverlay::row_rects` for a part
-//! that is not shown, and by `PageDots` for a block with no dot.) `width` and `placed` skip it,
-//! budget and gap both.
+//! `PageHeader::new` measures; `Item::absent` is how a pill without an icon and a tab without
+//! chapters leave the row, and what `StatusOverlay::row_rects` uses for a part that is not shown and
+//! `PageDots` for a block with no dot.) `width` and `placed` skip it, budget and gap both.
+//!
+//! **A row that must fit its room sheds items by priority** ([`Item::priority`], [`HStack::fit`],
+//! [`HStack::kept`]): the lowest priority goes first, the last of equals first, an item with no
+//! priority never goes. It drops whole items and measures nothing; a dropped item is absent, so the
+//! survivors close up around it, re-anchored by [`Align`]. It is for short rows (at most 64 items).
 
 use crate::icons::{self, Icon};
 
@@ -55,6 +60,8 @@ pub struct Item {
     budget: Option<f32>,
     /// The gap after this item instead of the stack's own (`setCustomSpacing`).
     after: Option<f32>,
+    /// Drop order for [`HStack::fit`]; `None` is never dropped. See the fit section.
+    priority: Option<u8>,
     /// A glyph's empty margin left of its ink inside its box (0 for anything else): see
     /// [`Item::glyph`].
     lead: f32,
@@ -63,13 +70,13 @@ pub struct Item {
 impl Item {
     /// A present item `w` wide. A `w` of 0 is still present, and keeps its gap.
     pub const fn new(w: f32) -> Self {
-        Self { w, present: true, budget: None, after: None, lead: 0.0 }
+        Self { w: w, present: true, budget: None, after: None, priority: None, lead: 0.0 }
     }
 
     /// An item that is not on the row: no width, no gap. Give it [`Self::slot`] and it still
     /// reserves its room in [`HStack::budget_w`].
     pub const fn absent() -> Self {
-        Self { w: 0.0, present: false, budget: None, after: None, lead: 0.0 }
+        Self { w: 0.0, present: false, budget: None, after: None, priority: None, lead: 0.0 }
     }
 
     /// The widest case this item will ever draw, which [`HStack::budget_w`] reserves (the larger of
@@ -102,16 +109,6 @@ impl Item {
     }
 }
 
-// ---- Runs read item by item (lane ui-2) ----
-impl<'a> HStack<'a> {
-    /// A run of `count` items read through `rule` (item `i` is `rule(i)`), for a run whose length no
-    /// array bounds: the top bar's tab pills, a strip of library names. The stack is the same stack;
-    /// only where it reads its items from differs, so nothing is allocated.
-    pub const fn each(count: usize, rule: &'a dyn Fn(usize) -> Item, gap: f32, align: Align) -> Self {
-        Self { items: Items::Each(count, rule), gap, align }
-    }
-}
-
 /// Where a run is anchored, as an x.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
@@ -138,41 +135,38 @@ pub struct Span {
     pub box_x: f32,
 }
 
-/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows its items (a slice,
-/// or a count and a rule: [`HStack::each`]), holds no state and allocates nothing: build it where it is read, as often as that is.
+/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows its items
+/// (a slice of [`Item`]s, or a slice of widths: [`HStack::widths`]), holds no state and allocates
+/// nothing: build it where it is read, as often as that is.
 #[derive(Clone, Copy, Debug)]
 pub struct HStack<'a> {
     items: Items<'a>,
     gap: f32,
     align: Align,
+    /// Which items [`HStack::fit`] kept ([`Kept::ALL`] until [`HStack::kept`] narrows it).
+    kept: Kept,
 }
 
-/// Where a stack reads its items from: a slice the caller built, or (see "Runs read item by item")
-/// a count and a rule, so a run of unbounded length needs no array.
-#[derive(Clone, Copy)]
+/// Where a stack reads its items from: a slice of [`Item`]s, or (see "Runs of plain widths") a slice
+/// of widths, each read as [`Item::new`].
+#[derive(Clone, Copy, Debug)]
 enum Items<'a> {
     Slice(&'a [Item]),
-    Each(usize, &'a dyn Fn(usize) -> Item),
-}
-
-impl core::fmt::Debug for Items<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Items({})", self.len())
-    }
+    Widths(&'a [f32]),
 }
 
 impl Items<'_> {
     fn len(&self) -> usize {
         match self {
             Items::Slice(s) => s.len(),
-            Items::Each(n, _) => *n,
+            Items::Widths(w) => w.len(),
         }
     }
 
     fn get(&self, i: usize) -> Item {
         match self {
             Items::Slice(s) => s[i],
-            Items::Each(_, rule) => rule(i),
+            Items::Widths(w) => Item::new(w[i]),
         }
     }
 }
@@ -181,12 +175,17 @@ impl<'a> HStack<'a> {
     /// A run of `items`, `gap` apart (an item's [`Item::after`] overrides it for that one), anchored
     /// by `align`.
     pub const fn new(items: &'a [Item], gap: f32, align: Align) -> Self {
-        Self { items: Items::Slice(items), gap, align }
+        Self { items: Items::Slice(items), gap, align, kept: Kept::ALL }
     }
 
     /// The gap after `item`.
     fn gap_after(&self, item: &Item) -> f32 {
         item.after.unwrap_or(self.gap)
+    }
+
+    /// Item `i` as this run sees it: itself, or [`Item::absent`] once [`Self::fit`] dropped it.
+    fn live(&self, i: usize) -> Item {
+        if self.kept.has(i) { self.items.get(i) } else { Item::absent() }
     }
 
     /// The sum of `size` over the items that count (`Some`), plus one gap between each neighbouring
@@ -196,7 +195,7 @@ impl<'a> HStack<'a> {
         let (mut runs, mut gaps) = (0.0, 0.0);
         let mut before: Option<Item> = None;
         for i in 0..self.items.len() {
-            let item = self.items.get(i);
+            let item = self.live(i);
             let Some(w) = size(&item) else { continue };
             runs += w;
             if let Some(prev) = before {
@@ -238,11 +237,12 @@ impl<'a> HStack<'a> {
     pub fn placed(&self) -> impl Iterator<Item = Span> + 'a {
         let items = self.items;
         let gap = self.gap;
+        let kept = self.kept;
         let mut x = self.start();
         let mut advance: Option<f32> = None;
         (0..items.len()).filter_map(move |i| {
             let item = items.get(i);
-            if !item.present {
+            if !item.present || !kept.has(i) {
                 return None;
             }
             if let Some(by) = advance {
@@ -257,6 +257,86 @@ impl<'a> HStack<'a> {
     /// closure and a hit test ask for.
     pub fn span(&self, i: usize) -> Option<(f32, f32)> {
         self.placed().find(|placed| placed.i == i).map(|placed| (placed.x, placed.w))
+    }
+}
+
+// ---- fit: drop the least important items until the run fits its room -----------------------------
+
+impl Item {
+    /// How much this item matters to [`HStack::fit`]: the LOWER the number, the sooner it goes. An
+    /// item with no priority is never dropped.
+    #[must_use]
+    pub const fn priority(mut self, p: u8) -> Self {
+        self.priority = Some(p);
+        self
+    }
+}
+
+/// Which items of a run survived [`HStack::fit`]: a small `Copy` set, indexed like the run. Items past the 64th are always kept (and never dropped by `fit`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kept(u64);
+
+impl Kept {
+    /// Every item kept: what a stack holds until [`HStack::kept`] narrows it.
+    pub const ALL: Self = Self(u64::MAX);
+
+    /// Is item `i` kept?
+    pub const fn has(self, i: usize) -> bool {
+        i >= u64::BITS as usize || self.0 & (1 << i) != 0
+    }
+}
+
+impl<'a> HStack<'a> {
+    /// **Drop items until the run's [`Self::width`] is at most `room`.** Each step drops the present,
+    /// still-kept item with the LOWEST [`Item::priority`]; among equal priorities the LAST one in the
+    /// run goes first, so a row whose items all share a priority sheds from its tail, and a row
+    /// listed in order of importance (equal priorities) keeps the longest prefix that fits. An item
+    /// with no priority is never dropped: if only those remain the run may still be wider than
+    /// `room`. An item is dropped whole (nothing is shrunk) and takes its gap with it, because a
+    /// dropped item is absent. Absent items are never dropped: they cost nothing already. A `room`
+    /// at or below 0 drops everything droppable.
+    ///
+    /// It measures nothing: the widths are the ones the caller gave. Read the result back with
+    /// [`Self::kept`]: a dropped item is absent, so the survivors close up around it, re-anchored by
+    /// [`Align`].
+    ///
+    /// **For short rows only (at most 64 items):** the result is a 64-bit set, and an item past the
+    /// 64th is neither considered for dropping nor ever dropped.
+    pub fn fit(&self, room: f32) -> Kept {
+        debug_assert!(self.items.len() <= u64::BITS as usize, "fit is for short rows (<= 64 items)");
+        let mut kept = self.kept;
+        loop {
+            if (HStack { kept, ..*self }).width() <= room {
+                return kept;
+            }
+            let mut victim: Option<(usize, u8)> = None;
+            for i in 0..self.items.len().min(u64::BITS as usize) {
+                let item = self.items.get(i);
+                let Some(p) = item.priority else { continue };
+                if item.present && kept.has(i) && victim.map_or(true, |(_, low)| p <= low) {
+                    victim = Some((i, p));
+                }
+            }
+            let Some((i, _)) = victim else { return kept };
+            kept.0 &= !(1 << i);
+        }
+    }
+
+    /// This run with only the items `kept` names: the rest are absent, so [`Self::placed`],
+    /// [`Self::width`] and [`Self::span`] see the survivors alone (an item keeps its index).
+    #[must_use]
+    pub const fn kept(&self, kept: Kept) -> HStack<'a> {
+        HStack { kept, ..*self }
+    }
+}
+
+// ---- Runs of plain widths (lane ui-2) ----
+impl<'a> HStack<'a> {
+    /// A run of `widths`, each an [`Item::new`] (present, no slot, no gap of its own), `gap` apart:
+    /// a strip of labels or a row of pills a caller measured into a slice, read in place with no
+    /// [`Item`] array built beside it.
+    pub const fn widths(widths: &'a [f32], gap: f32, align: Align) -> Self {
+        Self { items: Items::Widths(widths), gap, align, kept: Kept::ALL }
     }
 }
 
@@ -435,6 +515,58 @@ mod tests {
         assert_eq!(HStack::new(&items, GAP, Align::Leading(0.0)).width(), want);
     }
 
+    /// **fit drops the lowest priority first, the later one on a tie, and keeps a stack's
+    /// placement.** Equal priorities shed from the tail (the longest prefix that fits).
+    #[test]
+    fn fit_sheds_the_tail_of_equal_priorities_and_the_lowest_first() {
+        let items: Vec<Item> = [100.0, 60.0, 40.0].iter().map(|&w| Item::new(w).priority(1)).collect();
+        let stack = HStack::new(&items, GAP, Align::Leading(0.0));
+        // 100 + 50 + 60 + 50 + 40 = 300.
+        assert_eq!(stack.fit(300.0), Kept::ALL);
+        assert_eq!(stack.kept(stack.fit(299.0)).width(), 210.0, "the last item goes alone");
+        let two = stack.fit(299.0);
+        assert!(two.has(0) && two.has(1) && !two.has(2));
+        let one = stack.fit(209.0);
+        assert!(one.has(0) && !one.has(1) && !one.has(2));
+        let none = stack.fit(99.0);
+        assert!((0..3).all(|i| !none.has(i)));
+        assert_eq!(stack.kept(none).placed().count(), 0);
+        // A lower priority goes before a later item of higher priority.
+        let mixed = [Item::new(100.0).priority(2), Item::new(60.0).priority(1), Item::new(40.0).priority(2)];
+        let stack = HStack::new(&mixed, GAP, Align::Leading(0.0));
+        let kept = stack.fit(250.0);
+        assert!(kept.has(0) && !kept.has(1) && kept.has(2), "the middle one has the lowest priority");
+        assert_eq!(gaps(&stack.kept(kept)), [GAP], "a dropped item takes its gap with it");
+    }
+
+    /// An item with no priority is never dropped; an exact fit is kept; a room at or below zero
+    /// drops everything droppable.
+    #[test]
+    fn fit_never_drops_an_unprioritised_item_and_keeps_an_exact_fit() {
+        let items = [Item::new(100.0), Item::new(50.0).priority(1)];
+        let stack = HStack::new(&items, 20.0, Align::Leading(10.0));
+        assert_eq!(stack.fit(170.0), Kept::ALL, "100 + 20 + 50 fits exactly");
+        let tight = stack.fit(169.0);
+        assert!(tight.has(0) && !tight.has(1));
+        let never = stack.fit(0.0);
+        assert!(never.has(0) && !never.has(1), "the unprioritised item stays however small the room");
+        assert_eq!(stack.kept(never).span(0), Some((10.0, 100.0)));
+        let all = [Item::new(10.0).priority(1)];
+        let stack = HStack::new(&all, GAP, Align::Leading(0.0));
+        assert!(!stack.fit(-5.0).has(0));
+        assert!(!stack.fit(0.0).has(0), "an empty run is 0 wide, but a 10 wide item is not <= 0");
+        assert_eq!(HStack::new(&[], GAP, Align::Leading(0.0)).fit(964.0), Kept::ALL);
+    }
+
+    /// `kept` narrows `budget_w` too: a dropped slotted item reserves nothing.
+    #[test]
+    fn a_dropped_item_reserves_no_budget() {
+        let items = [Item::new(10.0), Item::new(20.0).slot(90.0).priority(1)];
+        let stack = HStack::new(&items, GAP, Align::Leading(0.0));
+        assert_eq!(stack.budget_w(), 10.0 + GAP + 90.0);
+        assert_eq!(stack.kept(stack.fit(15.0)).budget_w(), 10.0);
+    }
+
     /// **A glyph is placed by its ink**: the visible gap beside it is the stack's gap whatever
     /// margin its box leaves, and the box is drawn `lead` left of the ink. A glyph with no margin
     /// (`ink_x` default) places box and ink together.
@@ -460,19 +592,20 @@ mod tests {
         assert_eq!((s.x, s.w, s.box_x), (10.0, BOX, 10.0), "an unmeasured mark's ink fills its box");
     }
 
-    /// **A run read item by item stands where the same slice does** — widths, gaps, placements, the
-    /// budget and an absent item alike — so a strip of unbounded length needs no array.
+    /// **A run of plain widths stands where the same widths as items do** — placements, width and
+    /// budget alike, and `fit`'s survivors — so a strip needs no `Item` array.
     #[test]
-    fn a_run_read_item_by_item_places_exactly_as_the_slice_does() {
-        let items = [Item::new(120.0), Item::absent().slot(40.0), Item::new(33.5).after(9.0), Item::new(7.25)];
-        let rule = |i: usize| items[i];
+    fn a_run_of_widths_places_exactly_as_the_slice_does() {
+        let widths = [120.0, 33.5, 7.25, 0.0, 80.0];
+        let items = run(&widths);
         for align in [Align::Leading(96.0), Align::Trailing(1771.0), Align::Centre(960.0)] {
             let slice = HStack::new(&items, GAP, align);
-            let each = HStack::each(items.len(), &rule, GAP, align);
-            assert_eq!(at(&slice), at(&each));
-            assert_eq!(slice.width(), each.width());
-            assert_eq!(slice.budget_w(), each.budget_w());
+            let by_width = HStack::widths(&widths, GAP, align);
+            assert_eq!(at(&slice), at(&by_width));
+            assert_eq!(slice.width(), by_width.width());
+            assert_eq!(slice.budget_w(), by_width.budget_w());
+            assert_eq!(slice.fit(300.0), by_width.fit(300.0));
         }
-        assert_eq!(HStack::each(0, &rule, GAP, Align::Leading(0.0)).width(), 0.0);
+        assert_eq!(HStack::widths(&[], GAP, Align::Leading(0.0)).width(), 0.0);
     }
 }

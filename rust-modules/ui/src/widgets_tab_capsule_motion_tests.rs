@@ -1005,6 +1005,12 @@ fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
         let air = pair[1].0 - (pair[0].0 + pair[0].1);
         assert!((air - TAB_GAP).abs() <= 0.5, "top-bar pill frames stand {air} apart, not {TAB_GAP}");
     }
+    // the Search icon pill's frame is the geometry's (an icon has no run to read): TAB_ICON_PILL_W
+    // wide, and one TAB_GAP after the last label's painted frame
+    let search = with_tab_metrics_for(labels, |_, _, widths| tab_geometry(widths, 0.0).pill(3));
+    assert_eq!(search.w, TAB_ICON_PILL_W, "the Search pill is the icon pill's width");
+    let air = search.x - (bar[2].0 + bar[2].1);
+    assert!((air - TAB_GAP).abs() <= 0.5, "the Search pill's frame stands {air} after TV Shows, not {TAB_GAP}");
     // ---- a strip, with a label that cannot be drawn between two that can ----
     let measure = crate::fixture::FixtureMeasure;
     let gap = 37.0;
@@ -1013,6 +1019,7 @@ fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
         96.0, theme::size::BODY, gap, &measure,
     );
     assert_eq!(lays.len(), 3, "the unusable label is skipped");
+    assert_eq!(lays.iter().map(|l| l.i).collect::<Vec<_>>(), [0, 2, 3], "indices survive the skip");
     let tabs = TabStrip::new();
     let runs = crate::draw_census::capture_runs(|| draw_strip(Painter::recording(), &tabs, &lays, 10.0, 60.0, 0.0, TabGround::Plated { pop: 0.0 }));
     let frames: Vec<(f32, f32)> = ["Alpha", "Beta", "Gamma"].iter().map(|w| frame(&runs, w, STRIP_PAD)).collect();

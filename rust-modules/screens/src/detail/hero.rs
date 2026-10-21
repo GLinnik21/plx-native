@@ -54,7 +54,7 @@ pub const HERO_GROUP: GroupId = GroupId(0);
 // The row's shared geometry (PW, CGAP, CD, FACTS_R, the pill-width formula, the row accumulation,
 // the disc-unfurl budget and the meta line) lives in `appkit::hero_layout`, so the catalog page lays
 // out with the same numbers.
-pub use plx_appkit::hero_layout::{HeroWidths, CD};
+pub use plx_appkit::hero_layout::{HeroWidths, CD, MAX_CTLS};
 use plx_appkit::hero_layout::{FACTS_R, PW};
 #[cfg(test)]
 use plx_appkit::hero_layout::CGAP;
@@ -143,10 +143,6 @@ pub struct HeroSet {
     pub alt: bool,
     pub mark: PosterMark,
 }
-
-/// How many controls the row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
-/// watch face.
-pub const MAX_CTLS: usize = 6;
 
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
 /// live count, so no per-frame allocation. The bookmark disc (only when `set.watchlist`) is SECOND, after Play/Resume;

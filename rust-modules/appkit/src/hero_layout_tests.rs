@@ -76,3 +76,31 @@ fn disc_caps_open_when_room_and_close_when_the_trial_row_overruns() {
     let shut = disc_caps_with([0.0; 3], [60.0; 3], |_| 100.0);
     assert_eq!(shut, [CD; 3]);
 }
+
+/// **The drawn gap between neighbouring controls is `CGAP`, for any widths** (the stack's one gap),
+/// and a control that is `0` wide is still on the row: it keeps a gap on each side. A disc springs
+/// between `CD` and its open width, never through 0, so this is the rule's edge, not a live case.
+#[test]
+fn every_control_stands_one_cgap_from_the_next_even_at_zero_width() {
+    for widths in [[200.0, CD, 90.5], [200.0, 0.0, 90.5]] {
+        let rects: Vec<Rect> = (0..3).map(|i| row_rect(&widths, i, 0.0)).collect();
+        for pair in rects.windows(2) {
+            assert_eq!(pair[1].x - (pair[0].x + pair[0].w), CGAP, "{widths:?}");
+        }
+        assert_eq!(rects.iter().map(|r| r.w).collect::<Vec<_>>(), widths);
+    }
+}
+
+/// A pill's icon boxes and label are one run `HERO_ICON_GAP` apart; an icon the pill does not carry
+/// leaves neither its box nor its gap (so no double gap beside the label).
+#[test]
+fn pill_w_gaps_only_the_icons_it_carries() {
+    let label = CString::new("Play").unwrap();
+    let text = 4.0 * GLYPH;
+    let box_w = 20.0 * HERO_ICON_RATIO;
+    let air = plx_ui::widgets::BTN_PILL_AIR;
+    assert_eq!(pill_w(&Mono, &label, 20, false, false), text + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, false), box_w + text + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, false, true), text + box_w + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, true), box_w + text + box_w + 2.0 * HERO_ICON_GAP + air);
+}

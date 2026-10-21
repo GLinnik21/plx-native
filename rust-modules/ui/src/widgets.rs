@@ -1872,19 +1872,6 @@ pub fn key_hint_parts(message: &str) -> (std::ffi::CString, std::ffi::CString) {
 
 // ---- Dotted run: fine-print facts separated by `·` ----------------------------------------------
 
-/// Draw `parts` left to right from `x` on the cap-band y `y`, joined by a **`·` in
-/// [`theme::TEXT_SEPARATOR`]** with `pad` either side of it. Returns the total drawn width.
-///
-/// **Empty parts are ABSENT, not blank**: a run with no content contributes neither a draw nor a
-/// separator, so a person with no birthplace gets "Actor · 1987" and never "Actor · 1987 · ". That
-/// is the whole reason this is a component and not a `join(" · ")` — the dot is a *different ink*
-/// from the runs it divides ([`theme::TEXT_SEPARATOR`], .45 of the words' own, which is what every
-/// mock in the design project sets a separator to). A dot sharing the ink of the words either side
-/// JOINS them instead of punctuating them, and one `p.text` call cannot express the difference.
-///
-/// Promoted out of `detail.rs`, where it was `dotted_run` and private; the detail facts row and the
-/// bio panel's identity line are the same idiom one screen apart, and the second copy is where the
-/// separator ink would have drifted.
 /// The hairline divider's height. Published because a panel's flow has to MEASURE the rule as
 /// well as draw it, and the two files that made it a private constant each called it something
 /// else (`RULE_H`, `HAIRLINE_H`) while holding the same 1.0.
@@ -1907,6 +1894,125 @@ pub fn hairline(p: Painter, x: f32, y: f32, w: f32) {
     );
 }
 
+/// One dotted run: fine-print parts left to right, joined by a **`·` in
+/// [`theme::TEXT_SEPARATOR`]** with `pad` either side of it. The ONE implementation of the idiom:
+/// [`dotted_run`] is its plain call, and a caller that must know the width before it draws (a row
+/// that fits chips into a room) or that bolds the parts, or continues another run, sets those here.
+///
+/// **Empty parts are ABSENT, not blank**: a run with no content contributes neither a draw nor a
+/// separator, so a person with no birthplace gets "Actor · 1987" and never "Actor · 1987 · ". That
+/// is the whole reason this is a component and not a `join(" · ")` — the dot is a *different ink*
+/// from the runs it divides ([`theme::TEXT_SEPARATOR`], .45 of the words' own, which is what every
+/// mock in the design project sets a separator to). A dot sharing the ink of the words either side
+/// JOINS them instead of punctuating them, and one `p.text` call cannot express the difference.
+///
+/// The cells (parts and dots) stand where the shared [`crate::hstack::HStack`] puts them, `pad`
+/// apart. Their widths are the [`Self::measured`] capability's when it is set, else what each
+/// `p.text` call answers as it draws (so a plain run asks for no new measurement). The dot is
+/// always regular weight; `bold` is the parts'. Promoted out of `detail.rs`, where it was
+/// `dotted_run` and private; the detail facts row, the bio panel's identity line and the player
+/// info card's meta line are the same idiom, and a second copy is where the separator ink would
+/// have drifted.
+#[derive(Clone, Copy)]
+pub struct DottedRun<'a> {
+    sz: c_int,
+    col: [f32; 4],
+    pad: f32,
+    bold: c_int,
+    lead_dot: bool,
+    measure: Option<&'a dyn plx_machine::machine::Measure>,
+}
+
+impl<'a> DottedRun<'a> {
+    /// Regular-weight parts of size `sz` in `col`, `pad` either side of every dot.
+    pub fn new(sz: c_int, col: [f32; 4], pad: f32) -> Self {
+        Self { sz, col, pad, bold: 0, lead_dot: false, measure: None }
+    }
+
+    /// Draw the parts at this weight (the dot stays regular).
+    #[must_use]
+    pub fn bold(mut self, bold: c_int) -> Self {
+        self.bold = bold;
+        self
+    }
+
+    /// Put a dot before the first part: this run continues the one before it.
+    #[must_use]
+    pub fn lead_dot(mut self) -> Self {
+        self.lead_dot = true;
+        self
+    }
+
+    /// Take the cells' widths from `measure` instead of from the draw, so [`Self::width`] can say
+    /// how wide the run will be before anything is drawn.
+    #[must_use]
+    pub fn measured(mut self, measure: &'a dyn plx_machine::machine::Measure) -> Self {
+        self.measure = Some(measure);
+        self
+    }
+
+    /// Draw `parts` from `x` on the cap-band y `y`; returns the total drawn width.
+    pub fn draw<S: AsRef<str>>(&self, p: Painter, parts: &[S], x: f32, y: f32) -> f32 {
+        self.lay(Some((p, y)), self.measure, parts, x)
+    }
+
+    /// The width [`Self::draw`] will give, without drawing: needs [`Self::measured`] (`measure`
+    /// here stands in for it when the run was built without).
+    pub fn width<S: AsRef<str>>(&self, measure: &dyn plx_machine::machine::Measure, parts: &[S]) -> f32 {
+        self.lay(None, Some(measure), parts, 0.0)
+    }
+
+    /// The single placement. Each cell is placed by an `HStack` of the cells so far (a leading run's
+    /// cell stands where the cells before it put it, whatever its own width), then drawn, which
+    /// is when a plain run learns its width.
+    fn lay<S: AsRef<str>>(
+        &self,
+        paint: Option<(Painter, f32)>,
+        measure: Option<&dyn plx_machine::machine::Measure>,
+        parts: &[S],
+        x: f32,
+    ) -> f32 {
+        debug_assert!(paint.is_some() || measure.is_some(), "a run with neither a painter nor a measure has no widths");
+        // `Some(i)` is part i, `None` a dot; the text a cell shows is built only for the cells drawn.
+        let live: Vec<(usize, CString)> = parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| CString::new(s.as_ref()).ok().filter(|c| !c.as_bytes().is_empty()).map(|c| (i, c)))
+            .collect();
+        let mut cells: Vec<Option<&CString>> = Vec::with_capacity(live.len() * 2);
+        for (n, (_, c)) in live.iter().enumerate() {
+            if n > 0 || self.lead_dot {
+                cells.push(None);
+            }
+            cells.push(Some(c));
+        }
+        let dot = c"\u{b7}";
+        // The dot is measured once, and only when one will be drawn.
+        let dot_w = measure.filter(|_| cells.contains(&None)).map(|m| m.width(dot, self.sz, false));
+        let mut items = vec![HItem::new(0.0); cells.len()];
+        for (k, cell) in cells.iter().enumerate() {
+            let at = HStack::new(&items[..=k], self.pad, StackAlign::Leading(x))
+                .placed()
+                .last()
+                .map_or(x, |s| s.x);
+            let (text, col, bold) = match cell {
+                Some(c) => (c.as_c_str(), self.col, self.bold),
+                None => (dot, theme::TEXT_SEPARATOR, 0),
+            };
+            let drawn = paint.map(|(p, y)| p.text(text.as_ptr(), at, y, self.sz, col, 0, bold));
+            let w = match (cell, dot_w, measure) {
+                (None, Some(w), _) => w,
+                (Some(_), _, Some(m)) => m.width(text, self.sz, bold != 0),
+                _ => drawn.unwrap_or(0.0),
+            };
+            items[k] = HItem::new(w);
+        }
+        HStack::new(&items, self.pad, StackAlign::Leading(x)).width()
+    }
+}
+
+/// Draw `parts` left to right from `x` on the cap-band y `y` as a plain [`DottedRun`] (regular
+/// weight, widths learned as it draws); returns the total drawn width.
 pub fn dotted_run(
     p: Painter,
     parts: &[&str],
@@ -1916,20 +2022,7 @@ pub fn dotted_run(
     col: [f32; 4],
     pad: f32,
 ) -> f32 {
-    let mut bx = x;
-    for part in parts.iter().filter(|s| !s.is_empty()) {
-        if bx > x {
-            bx += pad;
-            // `c"·"`, not `CString::new` — the separator is a compile-time constant, and this runs
-            // once per gap per frame on the detail facts row and the bio identity line.
-            bx += p.text(c"\u{b7}".as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
-            bx += pad;
-        }
-        if let Ok(pc) = CString::new(*part) {
-            bx += p.text(pc.as_ptr(), bx, y, sz, col, 0, 0);
-        }
-    }
-    bx - x
+    DottedRun::new(sz, col, pad).draw(p, parts, x, y)
 }
 
 // ---- Scroll rail: how far through a paged viewport you are --------------------------------------
@@ -5693,18 +5786,18 @@ fn strip_layout_by(
     mut width: impl FnMut(&CStr) -> f32,
 ) -> Vec<StripLay> {
     let mut out = Vec::new();
+    let mut widths = Vec::new();
     for (i, label) in labels.enumerate() {
         let Ok(lc) = CString::new(label) else { continue };
         let w = width(&lc);
+        widths.push(w);
         out.push(StripLay { i, x: 0.0, w, label: lc });
     }
-    // The pills stand on ONE HStack, a STRIP_PAD-padded frame each and `gap` between frames; a
-    // label stands STRIP_PAD inside its frame, and the first frame starts STRIP_PAD before `x0`.
-    let frames: Vec<f32> = out.iter().map(|lay| lay.w + 2.0 * STRIP_PAD).collect();
-    let rule = |i: usize| HItem::new(frames[i]);
-    let stack = HStack::each(frames.len(), &rule, gap, StackAlign::Leading(x0 - STRIP_PAD));
+    // The labels stand on ONE HStack: each is `STRIP_PAD` inside a padded frame, so two labels are
+    // a frame's two pads plus the row's `gap` apart, and the first stands at `x0`.
+    let stack = HStack::widths(&widths, gap + 2.0 * STRIP_PAD, StackAlign::Leading(x0));
     for span in stack.placed() {
-        out[span.i].x = span.x + STRIP_PAD;
+        out[span.i].x = span.x;
     }
     out
 }
@@ -7277,13 +7370,12 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CSt
 
 /// Content width of the whole pill strip: the pills plus the air between them.
 fn tab_content_w(widths: &[f32]) -> f32 {
-    tab_stack(widths, |stack| stack.width())
+    tab_stack(widths).width()
 }
 /// The pill row as ONE [`HStack`] of the measured pill widths, [`TAB_GAP`] apart, from content x 0:
 /// the paint, the hit test and the capsules' span all read their x from it.
-fn tab_stack<R>(widths: &[f32], read: impl FnOnce(&HStack<'_>) -> R) -> R {
-    let rule = |i: usize| HItem::new(widths[i]);
-    read(&HStack::each(widths.len(), &rule, TAB_GAP, StackAlign::Leading(0.0)))
+fn tab_stack(widths: &[f32]) -> HStack<'_> {
+    HStack::widths(widths, TAB_GAP, StackAlign::Leading(0.0))
 }
 /// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
 fn tab_view_w(widths: &[f32]) -> f32 {
@@ -7305,8 +7397,14 @@ struct TabGeometry<'a> {
 
 impl TabGeometry<'_> {
     fn pill(&self, i: usize) -> Rect {
+        self.pill_at(tab_pill_x(self.widths, i), i)
+    }
+
+    /// Pill `i` given its content-space x, for a caller that walks the stack once ([`Self::pill`]
+    /// finds the x itself, which is a walk per call).
+    fn pill_at(&self, x: f32, i: usize) -> Rect {
         Rect::new(
-            self.clip.x + tab_pill_x(self.widths, i) - self.scroll,
+            self.clip.x + x - self.scroll,
             TOP_BAR_Y,
             self.widths.get(i).copied().unwrap_or(0.0),
             TAB_PILL_H,
@@ -7334,11 +7432,12 @@ fn tab_geometry(widths: &[f32], scroll: f32) -> TabGeometry<'_> {
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
     // Past the end reads as the strip's end plus one gap (where the next pill would stand).
-    tab_stack(widths, |stack| match stack.span(i) {
+    let stack = tab_stack(widths);
+    match stack.span(i) {
         Some((x, _)) => x,
         None if widths.is_empty() => 0.0,
         None => stack.width() + TAB_GAP,
-    })
+    }
 }
 /// Scroll offset that brings pill `idx` into the strip's viewport: the minimal scroll-into-view
 /// rule the season tabs and every shelf share ([`card_row::reveal`]) — move only when the pill
@@ -7647,12 +7746,13 @@ impl StripRender {
             TAB_PILL_H,
             TabGround::Tracked { glass: glass_on },
         );
+        // ONE walk of the stack per frame (`tab_pill_x` is O(i), so a call per pill is O(n²)): the
+        // pills are all present, so the i-th span is pill i, and the rect and the capsule coverage
+        // both read its x. The hit test builds the SAME stack from the same widths.
+        let mut stand = tab_stack(widths).placed();
         for i in 0..n {
-            // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
-            // the rect and again for the capsule coverage — so the row re-summed its own width every
-            // frame for nothing.
-            let px = tab_pill_x(widths, i);
-            let r = geometry.pill(i);
+            let px = stand.next().map_or(0.0, |span| span.x);
+            let r = geometry.pill_at(px, i);
             // ONE rule for "is this pill on screen": its rect clipped to the viewport. The clipped
             // rect is what gets recorded for the hit test AND what decides whether to draw at all
             // (a 12-library server would otherwise lay out three rows' worth of text the scissor

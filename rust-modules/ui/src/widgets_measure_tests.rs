@@ -511,3 +511,21 @@ fn the_drawn_dots_of_a_pager_stand_one_gap_apart() {
     }
     assert_eq!(PageDots::new(0).width(), 0.0);
 }
+
+/// **One dotted-run mechanism, no part limit.** A measured run's width is its parts plus a dot and
+/// two pads between each pair (and one more dot cell before the first for `lead_dot`), empty parts
+/// leave no dot, and more parts than the old fixed-size stack held still lay out.
+#[test]
+fn a_dotted_run_measures_parts_dots_and_pads_for_any_number_of_parts() {
+    let m = crate::fixture::FixtureMeasure;
+    let pad = theme::space::SM;
+    let sz = theme::size::CAPTION;
+    let dot = m.width(c"\u{b7}", sz, false);
+    let w = |s: &str| m.width(&CString::new(s).unwrap(), sz, false);
+    let run = DottedRun::new(sz, theme::TEXT_SECONDARY, pad);
+    assert_eq!(run.width(&m, &["ab", "", "cde"]), w("ab") + w("cde") + dot + 2.0 * pad);
+    assert_eq!(run.lead_dot().width(&m, &["ab"]), dot + w("ab") + pad);
+    assert_eq!(run.width(&m, &["", ""]), 0.0);
+    let many = ["a"; 9];
+    assert_eq!(run.width(&m, &many), 9.0 * w("a") + 8.0 * (dot + 2.0 * pad));
+}

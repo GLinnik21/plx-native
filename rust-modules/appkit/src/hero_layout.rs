@@ -9,15 +9,20 @@
 //! given page shows (`HeroCtl`, `HeroSet`) stays with that page and feeds these functions its
 //! widths.
 //!
-//! **Behaviour-neutral.** These bodies moved out of `screens::detail::hero` unchanged; the
-//! Detail page calls them back, so its pixels and its tests are the contract
+//! **Behaviour-neutral.** These began as the bodies of `screens::detail::hero` and were
+//! re-based on the shared `HStack` without moving a pixel; the Detail page calls them back, so its pixels and its tests are the contract
 //! (`hero_layout_tests.rs` pins the arithmetic on its own).
 use std::ffi::CStr;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::Measure;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
+
+/// How many controls the hero row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
+/// watch face. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 6;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
@@ -47,17 +52,15 @@ const HERO_ICON_GAP: f32 = 12.0;
 /// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `plx_gfx::text`
 /// directly (host-test-safe geometry shared by `place` and `draw`).
 pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: bool) -> f32 {
-    let (isz, gap) = if icon {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
-    } else {
-        (0.0, 0.0)
-    };
-    let (tsz, tgap) = if trailing {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
-    } else {
-        (0.0, 0.0)
-    };
-    isz + gap + measure.width(label, sz, true) + tgap + tsz + plx_ui::widgets::BTN_PILL_AIR
+    // One run: the leading icon box, the label, the trailing icon box, `HERO_ICON_GAP` apart. An
+    // icon the pill does not carry is ABSENT, so it leaves neither its width nor its gap.
+    let box_w = sz as f32 * HERO_ICON_RATIO;
+    let run = [
+        if icon { Item::new(box_w) } else { Item::absent() },
+        Item::new(measure.width(label, sz, true)),
+        if trailing { Item::new(box_w) } else { Item::absent() },
+    ];
+    HStack::new(&run, HERO_ICON_GAP, Align::Leading(0.0)).width() + plx_ui::widgets::BTN_PILL_AIR
 }
 
 /// **The one verb for the Play control: "Resume" when the title has a resume point, else "Play".**
@@ -91,22 +94,29 @@ pub struct HeroWidths {
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
-/// order, are `widths` wide (`CGAP` apart, from the page margin). An index past the end lands one
+/// order, are `widths` wide (`CGAP` apart, from the page margin), placed by the shared
+/// [`HStack`]. Every control is PRESENT whatever its width: a disc springing between `CD` and its
+/// open width never passes through 0 and so never pops its gap. An index past the end lands one
 /// gap after the last control, as the Detail row always has.
 ///
 /// `widths` is never empty from the Detail row (`hero_ctls` always yields Play and a watch face).
 /// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
 /// unreachable and was not carried over: an empty slice yields a zero-width control at the margin.
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
-    let mut x = plx_ui::consts::MARGIN_X;
-    let mut w = widths.first().copied().unwrap_or(0.0);
-    for (k, &cw) in widths.iter().enumerate() {
-        w = cw;
-        if k >= i {
-            break;
-        }
-        x += w + CGAP;
+    debug_assert!(widths.len() <= MAX_CTLS);
+    let n = widths.len().min(MAX_CTLS);
+    // Fixed storage: this runs ~10-16 times a frame on Detail, so it allocates nothing. One extra,
+    // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
+    // the last control, exactly where the old accumulation left `x`.
+    let mut items = [Item::absent(); MAX_CTLS + 1];
+    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
+        *slot = Item::new(*w);
     }
+    items[n] = Item::new(0.0);
+    let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
+    let at = i.min(n);
+    let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
+    let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
     Rect::new(x, y, w, CD)
 }
 
