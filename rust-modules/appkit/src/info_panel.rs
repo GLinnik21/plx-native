@@ -17,7 +17,7 @@ use plx_ui::screen::{
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
 use plx_ui::widgets::{
-    badge, badge_w, dotted_run_measured, dotted_run_measured_w, resolve_tex_wh_on, BadgeStyle,
+    badge, badge_w, resolve_tex_wh_on, BadgeStyle, DottedRun,
 };
 use plx_ui::{Painter, Rect, View};
 use std::ffi::CString;
@@ -310,7 +310,7 @@ impl InfoPanelState {
                 meta.push(plx_ui::fmt::duration(dur_ms));
             }
             // The item's own facts are ONE text run, its parts a dot apart exactly as the Detail
-            // page's identity line spaces them (`widgets::dotted_run_measured`: `space::SM` each side
+            // page's identity line spaces them (`widgets::DottedRun`: `space::SM` each side
             // of the dot), and the badges follow at the same `SM` / `XS` the identity line gives its
             // badges. Nothing about the spacing is baked into a string. Every candidate's width is
             // known before any of them touches the screen.
@@ -723,10 +723,10 @@ struct Chip {
 
 enum ChipKind {
     /// A text run (the meta line, or the live playback fact): its parts only, since the dots
-    /// between them and the air around them belong to `widgets::dotted_run_measured` at draw time;
+    /// between them and the air around them belong to `widgets::DottedRun` at draw time;
     /// `lead_dot` continues the run before it, and the two runs on this row are inked differently
     /// (see the call site).
-    Run { parts: Vec<CString>, lead_dot: bool, bold: c_int, col: [f32; 4] },
+    Run { parts: Vec<String>, lead_dot: bool, bold: c_int, col: [f32; 4] },
     /// An outlined capability badge ([`meta_badge`]) saying this.
     Badge(String),
 }
@@ -742,9 +742,19 @@ impl Chip {
         col: [f32; 4],
         measure: &dyn plx_machine::machine::Measure,
     ) -> Self {
-        let parts: Vec<CString> = parts.iter().filter_map(|s| CString::new(s.as_str()).ok()).collect();
-        let w = dotted_run_measured_w(measure, &parts, theme::size::CAPTION, bold, lead_dot, theme::space::SM);
+        let w = Self::dotted(bold, lead_dot, col).width(measure, parts);
+        let parts = parts.to_vec();
         Self { kind: ChipKind::Run { parts, lead_dot, bold, col }, w }
+    }
+
+    /// The one dotted run a text chip is measured and drawn by.
+    fn dotted(bold: c_int, lead_dot: bool, col: [f32; 4]) -> DottedRun<'static> {
+        let run = DottedRun::new(theme::size::CAPTION, col, theme::space::SM).bold(bold);
+        if lead_dot {
+            run.lead_dot()
+        } else {
+            run
+        }
     }
 
     /// An outlined badge saying `label`, as wide as [`badge_w`] says.
@@ -832,18 +842,7 @@ fn draw_chip_row(
         match &chip.kind {
             ChipKind::Run { parts, lead_dot, bold, col } => {
                 let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, *bold, my);
-                dotted_run_measured(
-                    p,
-                    measure,
-                    parts,
-                    placed.x,
-                    y,
-                    theme::size::CAPTION,
-                    *col,
-                    *bold,
-                    *lead_dot,
-                    theme::space::SM,
-                );
+                Chip::dotted(*bold, *lead_dot, *col).measured(measure).draw(p, parts, placed.x, y);
             }
             ChipKind::Badge(label) => {
                 meta_badge(p, placed.x, my, label, measure);
