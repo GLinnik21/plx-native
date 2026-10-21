@@ -45,6 +45,7 @@ use plx_data::person::Person;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::label::{Label, VAlign};
 use plx_ui::theme;
+use plx_ui::vstack::AlertHead;
 use plx_ui::widgets;
 use plx_ui::prose_scroll::{self, paging, ProseScroll};
 use plx_ui::{Painter, Rect};
@@ -408,17 +409,19 @@ fn viewport() -> Rect {
 /// The last run keeps its measured cap: the identity line is the block's last, so nothing below
 /// depends on its band — only on where its ink ends.
 fn head_h() -> f32 {
+    head(0.0).h
+}
+
+/// The head ladder from `top`: the ONE stack [`head_h`] measures and [`draw_head`] paints, so the
+/// two cannot sum the bands apart. The identity line is the last, so its band is its measured cap.
+fn head(top: f32) -> AlertHead {
     // `viewport()`/`page_state()` call this from BOTH the draw path and pagination arithmetic
     // reached from key handling, so no single `&dyn Measure` from a `DrawFrame` covers every call
     // site — going through `TtfMeasure` (spec §4.3's device/simulator impl) directly is exactly
     // the capability a draw-time caller would have handed in, and `cap_h` is a pure `f(sz)` font
     // metric no string or replay state can move.
     use plx_machine::machine::Measure;
-    theme::alert::EYEBROW_LEAD
-        + theme::alert::GAP_EYEBROW_TITLE
-        + theme::alert::TITLE_LEAD
-        + theme::alert::GAP_TITLE_SUB
-        + plx_gfx::text::TtfMeasure.cap_h(theme::size::CAPTION)
+    AlertHead::new(top, theme::alert::TITLE_LEAD, Some(plx_gfx::text::TtfMeasure.cap_h(theme::size::CAPTION)))
 }
 
 /// The footer band's height — the keycap is the tallest thing in it, so the band is the cap.
@@ -485,10 +488,9 @@ pub fn library_line(films: usize, shows: usize) -> Option<String> {
 /// Eyebrow, name, identity line — stacked from the content box's top edge on the alert family's
 /// head ladder ([`theme::alert`]), the same flow [`head_h`] measures.
 fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::machine::Measure) {
-    let mut y = c.y;
+    let head = head(c.y);
     Label::new(plx_platform::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
-    y += theme::alert::EYEBROW_LEAD + theme::alert::GAP_EYEBROW_TITLE;
+        .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, head.eyebrow.y, c.w, 0.0));
 
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
     // would push the reading window down by a whole rung of the flow. `person::refresh_runs` budgets
@@ -500,9 +502,9 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
             .h(theme::alert::TEXT_ALIGN)
             .bold()
             .v(VAlign::CapTop)
-            .draw(p, Rect::new(c.x, y, c.w, 0.0));
+            .draw(p, Rect::new(c.x, head.title.y, c.w, 0.0));
     }
-    y += theme::alert::TITLE_LEAD + theme::alert::GAP_TITLE_SUB;
+    let y = head.sub.map_or(head.title.y + head.title.h, |s| s.y);
 
     let runs = meta_runs(
         &person.roles.join(", "),
@@ -958,4 +960,17 @@ mod tests {
         );
     }
 
+
+    /// The head is ONE ladder: `draw_head` paints at these spans, and `head_h` (what the viewport
+    /// and the pagination subtract) is the same ladder's height, so the two cannot drift.
+    #[test]
+    fn the_head_ladder_stands_the_alert_gaps_apart_and_head_h_is_its_height() {
+        let h = head(200.0);
+        let sub = h.sub.expect("the identity line is reserved");
+        assert_eq!(h.eyebrow.y, 200.0);
+        assert_eq!(h.title.y - (h.eyebrow.y + h.eyebrow.h), theme::alert::GAP_EYEBROW_TITLE);
+        assert_eq!(sub.y - (h.title.y + h.title.h), theme::alert::GAP_TITLE_SUB);
+        assert_eq!(head(0.0).h, head_h());
+        assert!((h.h - (sub.y + sub.h - 200.0)).abs() < 0.001);
+    }
 }
