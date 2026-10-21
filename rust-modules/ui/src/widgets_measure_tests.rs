@@ -561,3 +561,52 @@ fn a_painted_trailing_accessory_stands_one_icon_gap_from_the_label_by_ink() {
         assert!((right_pad - BTN_PILL_AIR * 0.5).abs() < 0.5, "{icon:?}: the ink-to-edge pad is {right_pad}");
     }
 }
+
+/// The read-out's verdict, reason and action slot are one top-anchored VStack: the reason `SM` under
+/// the verdict, the slot `LG` + drop under the reason, and an absent reason takes no gap.
+#[test]
+fn status_bands_are_one_vstack_with_an_absent_reason_taking_no_gap() {
+    let frame = Rect::new(100.0, 200.0, 600.0, 500.0);
+    let bare = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).bands_measured(&StatusMetrics);
+    assert!(bare.reason.is_none());
+    assert_eq!(bare.action_y, bare.cap.y + bare.cap.h + theme::space::LG);
+    let with = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).reason(c"Shared source");
+    let b = with.bands_measured(&StatusMetrics);
+    let reason = b.reason.expect("a reason band");
+    assert_eq!(reason.y - (b.cap.y + b.cap.h), theme::space::SM);
+    assert_eq!(b.action_y - (reason.y + reason.h), theme::space::LG + with.row_drop());
+}
+
+/// A note with no action row keeps standing `LG` (+ drop) under the reason (Q1, neutral); under a
+/// row it stands `MD` below the row.
+#[test]
+fn the_note_stands_in_the_rows_place_without_one_and_md_under_it_with_one() {
+    let frame = Rect::new(100.0, 200.0, 600.0, 500.0);
+    let m = &StatusMetrics;
+    let lone = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).reason(c"why").note(Some(c"hint"));
+    let b = lone.bands_measured(m);
+    assert_eq!(lone.note_band(&b, m).unwrap().y, b.action_y);
+    let row = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).action(c"Try again").note(Some(c"hint"));
+    let b = row.bands_measured(m);
+    assert_eq!(row.note_band(&b, m).unwrap().y, b.action_y + StatusOverlay::CTRL_H + theme::space::MD);
+}
+
+/// `still_line`'s label stands `STILL_PAIR_GAP` above the sub line's cap top, measured on what was
+/// painted; without a label the sub line stays where it was.
+#[test]
+fn still_line_pair_is_a_bottom_anchored_vstack_of_cap_bands() {
+    let card = Rect::new(0.0, 0.0, 400.0, 225.0);
+    let draw = |label: &str| {
+        crate::draw_census::capture_runs(|| {
+            still_line(Painter::recording(), card, PosterMark::None, label, "S1 · E2", false, false, &LegacyMeasure)
+        })
+    };
+    let (_, lcb) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
+    let (sct, _) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
+    let both = draw("Show");
+    let (label, sub) = (&both[0], &both[1]);
+    assert!(((sub.at.y + sct) - (label.at.y + lcb) - STILL_PAIR_GAP).abs() < 0.5);
+    let alone = draw("");
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0].at.y, sub.at.y);
+}
