@@ -2635,7 +2635,43 @@ fn forced_direct_play_refuses_an_unplayable_session_pick() {
         "ac3",
         |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
     );
-    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio))), "{:?}", plan.verdict);
+    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio { .. }))), "{:?}", plan.verdict);
+}
+
+/// The Force Direct Play audio refusal names the codec it refused, by the one codec->name map: PMS
+/// spells DTS `dca`, and the read-out must say "DTS" for it, "Dolby TrueHD" for `truehd`.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_audio_refusal_names_the_codec() {
+    for (name, raw, shown) in [("cold-forced-names-dca", "dca", "DTS"), ("cold-forced-names-truehd", "truehd", "Dolby TrueHD")] {
+        let (plan, _) = cold_audio_resolve(
+            name,
+            2,
+            MDE_DIRECTPLAY,
+            vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, raw, "eng", false, "")],
+            Vec::new(),
+            "ac3",
+            |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
+        );
+        let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+            panic!("{raw}: {:?}", plan.verdict);
+        };
+        assert_eq!(codec, shown, "{raw}");
+        let sentence = plan.verdict.as_ref().unwrap().text();
+        assert!(sentence.contains(shown), "{raw}: {sentence}");
+    }
+}
+
+/// With no codec known (no tracks, no Media-level audio codec) the refusal keeps the generic
+/// sentence rather than naming an empty codec.
+#[test]
+fn forced_audio_refusal_without_a_codec_keeps_the_generic_sentence() {
+    let blank = PlayVerdict::Forced(ForcedFailure::Audio { codec: String::new() });
+    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio());
+    let blank = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: String::new() });
+    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio_conversion());
+    let named = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: "DTS".into() });
+    assert!(named.text().contains("DTS"), "{}", named.text());
 }
 
 /// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.

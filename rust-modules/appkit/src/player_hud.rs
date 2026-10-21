@@ -2874,7 +2874,7 @@ mod tests {
     #[test]
     fn the_forced_readout_says_what_and_why_once_and_draws_the_diagnostics_as_the_footer() {
         use plx_media::player::FailureAction as A;
-        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().to_owned();
+        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().into_owned();
         let e = plx_media::player::failtest_policy_shape_for_test(&verdict);
         let r = readout_of(&e);
         assert_eq!(r.reason(), verdict.as_str());
@@ -2894,7 +2894,7 @@ mod tests {
     #[test]
     fn the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().to_owned();
+        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().into_owned();
         let e = plx_media::player::failtest_policy_shape_for_test(&verdict);
         let r = readout_of(&e);
         let row_bottom = r.frames(&ShippedMeasure).iter().flatten().map(|f| f.y + f.h).fold(0.0, f32::max);

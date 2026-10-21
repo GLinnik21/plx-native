@@ -799,6 +799,20 @@
     "value": "Force Direct Play is on, and this audio track needs conversion.",
     "description": "Playback failure detail while Force Direct Play is on: the selected audio track would need server conversion."
   },
+  "widgets.verdict.forced_audio_codec": {
+    "value": "Force Direct Play is on, and {codec} audio can’t play without conversion.",
+    "description": "Playback failure detail while Force Direct Play is on: the named audio codec cannot be played directly. Used instead of the generic audio sentence when the codec is known.",
+    "args": {
+      "codec": "str"
+    }
+  },
+  "widgets.verdict.forced_audio_conversion_codec": {
+    "value": "Force Direct Play is on, and this {codec} audio track needs conversion.",
+    "description": "Playback failure detail while Force Direct Play is on: the selected audio track, of the named codec, would need server conversion. Used instead of the generic sentence when the codec is known.",
+    "args": {
+      "codec": "str"
+    }
+  },
   "widgets.quality.original": {
     "value": "Original",
     "description": "Playback quality choice that plays the original file without conversion."

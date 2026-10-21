@@ -178,6 +178,8 @@
   "widgets.verdict.forced_unauthorized": "A Reprodução direta forçada está ativada e o servidor não permitiu reproduzir o ficheiro original.",
   "widgets.verdict.forced_open": "A Reprodução direta forçada está ativada e não foi possível abrir o ficheiro original.",
   "widgets.verdict.forced_audio_conversion": "A Reprodução direta forçada está ativada e esta faixa de áudio precisa de conversão.",
+  "widgets.verdict.forced_audio_codec": "A Reprodução direta forçada está ativada e o áudio {codec} não pode ser reproduzido sem conversão.",
+  "widgets.verdict.forced_audio_conversion_codec": "A Reprodução direta forçada está ativada e esta faixa de áudio {codec} precisa de conversão.",
   "widgets.quality.original": "Original",
   "widgets.ass.start_failed": "Não foi possível iniciar as legendas com estilo",
   "widgets.ass.invalid_file": "Este ficheiro de legendas com estilo é inválido ou demasiado grande",
