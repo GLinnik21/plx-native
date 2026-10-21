@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T20:55:30Z",
+ "generated": "2026-10-21T20:56:31Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -27,15 +27,36 @@
    "change7_pct": 31.5,
    "d30": null,
    "delta30": null,
-   "delta7": 68,
+   "delta7": 68.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 99,
-   "now": 284,
+   "now": 284.0,
    "prev7": 216,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 29.9,
+   "d30": null,
+   "delta30": null,
+   "delta7": 39.5,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 102,
+   "n_prev": 99,
+   "now": 171.5,
+   "prev7": 132,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -66,27 +87,6 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 29.5,
-   "d30": null,
-   "delta30": null,
-   "delta7": 39,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 101,
-   "n_prev": 99,
-   "now": 171,
-   "prev7": 132,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
    "change7_pct": 29.4,
    "d30": null,
    "delta30": null,
@@ -104,6 +104,27 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 20.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 56.0,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 102,
+   "n_prev": 99,
+   "now": 334.0,
+   "prev7": 278,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -224,18 +245,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.0,
-   "change7_pct": 8.5,
+   "change30_pct": 85.1,
+   "change7_pct": 8.6,
    "d30": 1134.0,
-   "delta30": 964.0,
-   "delta7": 165,
+   "delta30": 964.5,
+   "delta7": 165.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 75,
-   "now": 2098,
+   "now": 2098.5,
    "prev7": 1933,
    "shown": true,
    "state": "flat",
@@ -267,27 +288,6 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 19.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 55,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 101,
-   "n_prev": 99,
-   "now": 333,
-   "prev7": 278,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
    "change7_pct": null,
    "d30": null,
    "delta30": null,
@@ -296,9 +296,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 0,
-   "now": 313.5,
+   "now": 314,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -351,17 +351,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -4.0,
+   "change7_pct": -4.3,
    "d30": null,
    "delta30": null,
-   "delta7": -7,
+   "delta7": -7.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 99,
-   "now": 168,
+   "now": 167.5,
    "prev7": 175,
    "shown": true,
    "state": "flat",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.9,
+   "change7_pct": 13.3,
    "d30": null,
    "delta30": null,
-   "delta7": 19,
+   "delta7": 19.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 99,
-   "now": 166,
+   "now": 166.5,
    "prev7": 147,
    "shown": true,
    "state": "flat",
@@ -529,9 +529,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 0,
-   "now": 5.0,
+   "now": 5,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -545,14 +545,14 @@
    "change7_pct": -98.7,
    "d30": 234.0,
    "delta30": -230.0,
-   "delta7": -305,
+   "delta7": -305.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 99,
-   "now": 4,
+   "now": 4.0,
    "prev7": 309,
    "shown": false,
    "state": "better",
@@ -566,14 +566,14 @@
    "change7_pct": 0.0,
    "d30": 682.5,
    "delta30": -679.5,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 99,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -725,7 +725,68 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
    "threshold_pct": 20.0,
-   "to": 284
+   "to": 284.0
+  },
+  {
+   "change_pct": 29.9,
+   "commits": [
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
+    },
+    {
+     "pr": 891,
+     "sha": "01de26af3",
+     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    }
+   ],
+   "from": 132,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-19",
+   "threshold_pct": 20.0,
+   "to": 171.5
   },
   {
    "change_pct": 29.5,
@@ -789,67 +850,6 @@
    "to": 60.2
   },
   {
-   "change_pct": 29.5,
-   "commits": [
-    {
-     "pr": 889,
-     "sha": "b6c5ad0cb",
-     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
-    },
-    {
-     "pr": 890,
-     "sha": "f353f6d93",
-     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
-    },
-    {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
-     "pr": 896,
-     "sha": "dbe7b014b",
-     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
-    },
-    {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
-     "pr": 903,
-     "sha": "acf1d2a36",
-     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
-    },
-    {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    }
-   ],
-   "from": 132,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-19",
-   "threshold_pct": 20.0,
-   "to": 171
-  },
-  {
    "change_pct": 29.4,
    "commits": [
     {
@@ -909,6 +909,67 @@
    "since": "2026-10-19",
    "threshold_pct": 25.0,
    "to": 140.7
+  },
+  {
+   "change_pct": 20.1,
+   "commits": [
+    {
+     "pr": 889,
+     "sha": "b6c5ad0cb",
+     "title": "appkit: hero row, HUD and info card on HStack; HUD gap is CONTROL_GAP, info card spaced like Detail"
+    },
+    {
+     "pr": 890,
+     "sha": "f353f6d93",
+     "title": "ui: strips and top-bar tabs on HStack (HStack::widths), one placement pass per frame"
+    },
+    {
+     "pr": 891,
+     "sha": "01de26af3",
+     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
+    },
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    }
+   ],
+   "from": 278,
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "since": "2026-10-21",
+   "threshold_pct": 20.0,
+   "to": 334.0
   }
  ],
  "schema": 2,
@@ -923,19 +984,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 333
+   "now": 334.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 313.5
+   "now": 314
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 284
+   "now": 284.0
   },
   {
    "group": "ci",
