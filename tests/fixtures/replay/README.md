@@ -542,3 +542,15 @@ was replaced (`git rm -r`, `tools/plxnative-rec import`, the committed manifests
 byte, `anchor: true` kept: they already equal the new recorder's header). `make check-replay`
 replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero
 (three consecutive runs).
+
+One heading + count idiom (`card_row::heading_parts`, Q4: a Person's shelf count is now a quiet note behind a
+dot, in the `BODY` rung where it was `CAPTION` bare) changed recorded behaviour without moving the shape:
+`12-filmography-detail-return` mounts Person, so it was observed being refused (`replay: REFUSED — replay
+measurement table miss`, both modes), while `1-boot-home-chip-grid` and `6-settings-family` stayed SAME.
+Attributed from the measurements themselves: the fresh recording holds the committed one's 136 `metrics`
+queries plus exactly three gained Width queries, all at 28 px regular: the separator dot (`·`) and the two
+shelf counts ("22", "4"); none lost. The route and focus-fingerprint sequences are identical to the
+committed recording's. The anchor was recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only
+12`), passed `plxnative-rec check`, and only its `rec-0000.jsonl` was replaced (the manifest already equals
+the recorder's header, `anchor: true` kept). `make check-replay` replays all three with `verdict=SAME` in
+Targets and Resolve and every difference counter at zero (three consecutive runs).
