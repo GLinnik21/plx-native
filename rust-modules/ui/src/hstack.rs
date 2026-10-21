@@ -1,4 +1,4 @@
-//! **HStack** — one horizontal run of items a caller has already measured, spaced the way
+//! **HStack** (and its one-at-a-time sibling [`Flow`]) — one horizontal run of items, spaced the way
 //! `UIStackView` spaces them: ONE gap between neighbours, a per-item override for the odd one
 //! (`setCustomSpacing`), and the run anchored by its leading edge, its trailing edge or its centre.
 //! It is the answer to "what is the gap between these" that a header row, a crumb and a name packer

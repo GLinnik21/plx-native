@@ -5045,3 +5045,151 @@ fn the_bookmark_flip_snaps_to_its_target_at_rest() {
     }
     assert_eq!(screen.watchlist.pos(), 0.0);
 }
+
+// ---- the hero's ratings row and identity line, read off the PAINTED runs ----------------------
+
+/// Shipped advances scaled by `.0`: a way to make a ratings row overflow by a chosen amount.
+struct ScaledMeasure(f32);
+impl plx_machine::machine::Measure for ScaledMeasure {
+    fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+        plx_base::fontcov::advances::ShippedMeasure.width(s, sz, bold) * self.0
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        plx_base::fontcov::advances::ShippedMeasure.cap_h(sz)
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        plx_base::fontcov::advances::ShippedMeasure.line_h(sz)
+    }
+}
+
+fn two_provider_ratings() -> Detail {
+    use plx_data::metadata::{Rating, RatingArt};
+    Detail {
+        ratings: vec![
+            Rating { art: RatingArt::Imdb, value: 8.1, critic: false },
+            Rating { art: RatingArt::Tmdb, value: 7.5, critic: false },
+        ],
+        ..Default::default()
+    }
+}
+
+/// The group a provider's rating row stands: width as `draw_ratings` measures it.
+fn group_w(art: plx_data::metadata::RatingArt, value: f64, m: &dyn plx_machine::machine::Measure) -> f32 {
+    let score = plx_ui::fmt::rating_score(rating_scale(art), value);
+    let cells = [plx_ui::widgets::RatingCell {
+        mark: rating_mark(art),
+        value: &score,
+        suffix: plx_ui::fmt::rating_suffix(rating_scale(art)),
+    }];
+    plx_ui::widgets::rating_group_w(art.provider(), &cells, m)
+}
+
+fn painted_x(runs: &[plx_ui::draw_census::Run], text: &str) -> Option<f32> {
+    runs.iter().find(|r| r.text == text).map(|r| r.at.x)
+}
+
+/// **Two rating groups stand `RATING_GROUP_GAP` apart, read off the painted captions.**
+#[test]
+fn the_ratings_row_paints_its_groups_one_gap_apart() {
+    use plx_data::metadata::RatingArt;
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let d = two_provider_ratings();
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_ratings(plx_ui::Painter::recording(), &d, 600.0, m));
+    let first = painted_x(&runs, "IMDb").expect("first caption painted");
+    let second = painted_x(&runs, "TMDB").expect("second caption painted");
+    assert!((first - plx_ui::consts::MARGIN_X).abs() < 0.5, "the row starts at the margin: {first}");
+    let gap = second - (first + group_w(RatingArt::Imdb, 8.1, m));
+    assert!((gap - plx_ui::widgets::RATING_GROUP_GAP).abs() < 0.5, "groups a gap apart, got {gap}");
+}
+
+/// **A group that would overflow the right margin is not drawn.** The scale is bisected until the
+/// second group is JUST past the margin (by less than a gap), so a row that tested the group
+/// against `end()` (the last group's edge, without the gap it owes) would still draw it.
+#[test]
+fn a_ratings_group_that_would_overflow_the_margin_is_not_drawn() {
+    use plx_data::metadata::RatingArt;
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let d = two_provider_ratings();
+    let limit = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X;
+    let overshoot = |k: f32| {
+        let m = ScaledMeasure(k);
+        plx_ui::consts::MARGIN_X + group_w(RatingArt::Imdb, 8.1, &m) + plx_ui::widgets::RATING_GROUP_GAP + group_w(RatingArt::Tmdb, 7.5, &m) - limit
+    };
+    let (mut lo, mut hi) = (1.0f32, 12.0f32);
+    assert!(overshoot(lo) < 0.0 && overshoot(hi) > 0.0, "the bracket straddles the margin");
+    for _ in 0..40 {
+        let mid = (lo + hi) * 0.5;
+        if overshoot(mid) > 0.0 { hi = mid } else { lo = mid }
+    }
+    let m = ScaledMeasure(hi);
+    let over = overshoot(hi);
+    assert!(over > 0.0 && over < plx_ui::widgets::RATING_GROUP_GAP, "just past the margin, by less than a gap: {over}");
+    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_ratings(plx_ui::Painter::recording(), &d, 600.0, &m));
+    assert!(painted_x(&runs, "IMDb").is_some(), "the group that fits is drawn");
+    assert!(painted_x(&runs, "TMDB").is_none(), "the group past the margin is not: {runs:?}");
+    // and just inside, both are
+    let m = ScaledMeasure(lo);
+    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_ratings(plx_ui::Painter::recording(), &d, 600.0, &m));
+    assert!(painted_x(&runs, "TMDB").is_some(), "a group that fits is drawn");
+}
+
+fn identity_detail(parts_empty: bool) -> Detail {
+    use plx_data::metadata::Stream;
+    let mut d = Detail {
+        kind: if parts_empty { "episode".into() } else { "movie".into() },
+        video_resolution: "1080".into(),
+        subs: vec![Stream { sdh: true, ..Default::default() }],
+        ..Default::default()
+    };
+    d.is_show = false;
+    d
+}
+
+/// The left edge of the chip whose label was painted at `label_x`: a filled badge centres its
+/// label in the chip, a keyline chip pads it by a fixed 7px.
+fn filled_left(label_x: f32, text: &str, m: &dyn plx_machine::machine::Measure) -> (f32, f32) {
+    let w = plx_ui::widgets::badge_w(text, None, m);
+    let tw = m.width_str(text, theme::size::CAPTION, true);
+    let left = label_x - (w - tw) * 0.5;
+    (left, left + w)
+}
+fn keyline_left(label_x: f32, text: &str, m: &dyn plx_machine::machine::Measure) -> (f32, f32) {
+    let left = label_x - 7.0;
+    (left, left + plx_ui::widgets::keyline_chip_w(text, m))
+}
+
+/// **The identity line: the chips stand `SM` after the dotted run and `XS` apart.**
+#[test]
+fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let d = identity_detail(false);
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let kind = plx_platform::i18n::msg::browse_kind_movie();
+    let kind_run = runs.iter().find(|r| r.text == kind).expect("the kind label is painted");
+    let run_right = kind_run.at.x + kind_run.at.w;
+    let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
+    let cc_label = plx_platform::i18n::msg::widgets_badge_cc();
+    let sdh_label = plx_platform::i18n::msg::widgets_badge_sdh();
+    let cc = keyline_left(painted_x(&runs, cc_label).expect("CC chip"), cc_label, m);
+    let sdh = keyline_left(painted_x(&runs, sdh_label).expect("SDH chip"), sdh_label, m);
+    assert!((res.0 - run_right - theme::space::SM).abs() < 0.5, "SM after the dotted run: {} vs {run_right}", res.0);
+    assert!((cc.0 - res.1 - theme::space::XS).abs() < 0.5, "XS between the badge and the first chip");
+    assert!((sdh.0 - cc.1 - theme::space::XS).abs() < 0.5, "XS between the chips");
+}
+
+/// **An empty dotted run owes no gap**: the first chip stands on the margin itself.
+#[test]
+fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let d = identity_detail(true);
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
+    assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
+}
