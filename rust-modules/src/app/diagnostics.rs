@@ -1581,6 +1581,8 @@ const HEAD_LINE_H: f32 = 24.0;
 const HEAD_IDENTITY_Y: f32 = 38.0;
 /// The air between the verdict's last line and the column headings (off the spacing ladder, kept).
 const SECTIONS_GAP: f32 = 4.0;
+/// The column headings' line to the field lists under them.
+const FIELDS_GAP: f32 = 4.0;
 const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 
 /// Identity and verdict remain complete; even opaque build identifiers wrap at a character
@@ -1603,14 +1605,18 @@ impl HeaderLayout {
     fn new(lines: &[Vec<String>; 2]) -> Self {
         let identity_h = lines[0].len().max(1) as f32 * HEAD_LINE_H;
         let verdict_h = lines[1].len().max(1) as f32 * HEAD_LINE_H;
-        // The identity block, the verdict under it with no gap, and the column headings
-        // SECTIONS_GAP below the verdict: one run.
+        // The identity block, the verdict under it with no gap, the column headings SECTIONS_GAP
+        // below the verdict, and the field lists FIELDS_GAP under the headings: one run.
         let mut head = VFlow::new(HEAD_IDENTITY_Y, 0.0);
         head.push(Item::new(identity_h));
         let verdict_y = head.next_y();
         head.push(Item::new(verdict_h).after(SECTIONS_GAP));
-        let sections_y = head.next_y();
-        let fields_y = HEAD_H + identity_h + verdict_h - 2.0 * HEAD_LINE_H;
+        let (Some(sections), Some(fields)) =
+            (head.push(Item::new(HEAD_LINE_H).after(FIELDS_GAP)), head.push(Item::new(0.0)))
+        else {
+            unreachable!("the headings line and the field lists' top are always present")
+        };
+        let (sections_y, fields_y) = (sections.y, fields.y);
         Self { verdict_y, sections_y, fields_y }
     }
 }

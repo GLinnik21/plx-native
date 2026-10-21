@@ -40,6 +40,8 @@ const PAIR_AIR: f32 = 22.0;
 const BADGE_AIR: f32 = 26.0;
 /// A pair's value sits this far under its label.
 const PAIR_VALUE_DY: f32 = 34.0;
+/// An accessibility row: the badge line, then the description this far under its top.
+const BADGE_DESC_DY: f32 = 52.0;
 const LANG_X: f32 = 760.0;
 /// The Languages column's text measure — the width the audio list wraps to, and what the focus
 /// plate is [`CARD_PAD`] wider than on each side.
@@ -419,8 +421,8 @@ impl Rows {
                     .with_measure(measure)
                     .leading(30.0)
                     .max_lines(4)
-                    .draw(p, Rect::new(x, yy + 52.0, 500.0, 0.0));
-                Item::new(52.0 + h).after(BADGE_AIR)
+                    .draw(p, Rect::new(x, yy + BADGE_DESC_DY, 500.0, 0.0));
+                Item::new(BADGE_DESC_DY + h).after(BADGE_AIR)
             });
         }
     }

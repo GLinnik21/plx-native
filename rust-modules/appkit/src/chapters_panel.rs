@@ -191,15 +191,19 @@ impl ChaptersState {
 }
 
 /// Card, name, timestamp: one column every card shares; returns the name's and the timestamp's y.
-/// The name's height is its advance to the stamp.
+/// The name and the stamp are origins, not boxes: each is a zero-height item standing its drop
+/// (`CH_NAME_DROP`, `CH_TIME_DROP`) under the one before it.
 fn label_ys() -> (f32, f32) {
     let column = [
         Item::new(CH_H),
-        Item::new(CH_TIME_DROP).before(CH_NAME_DROP),
-        Item::new(theme::size::CAPTION as f32),
+        Item::new(0.0).before(CH_NAME_DROP),
+        Item::new(0.0).before(CH_TIME_DROP),
     ];
     let col = VStack::new(&column, 0.0, Anchor::Top(CH_TOP));
-    (col.span(1).map_or(CH_TOP, |s| s.0), col.span(2).map_or(CH_TOP, |s| s.0))
+    let (Some((name_y, _)), Some((time_y, _))) = (col.span(1), col.span(2)) else {
+        unreachable!("the name and the stamp are always present")
+    };
+    (name_y, time_y)
 }
 
 /// the playing leaf's chapters — the ONE read, so within a frame the count, the open, the seek and

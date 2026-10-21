@@ -72,8 +72,9 @@ pub fn bands(frame: Rect, measure: &dyn Measure) -> (Rect, Rect) {
     // the one top-anchored run the overlay's are: the verdict's line box, `SM`, a two-line reason.
     let items = [HItem::new(measure.line_h(cap_sz)), HItem::new(2.0 * measure.line_h(reason_sz))];
     let stack = VStack::new(&items, theme::space::SM, VAnchor::Top(StatusOverlay::FULL_ANCHOR_TOP));
-    let (cap_y, cap_h) = stack.span(0).unwrap_or((StatusOverlay::FULL_ANCHOR_TOP, 0.0));
-    let (reason_y, reason_h) = stack.span(1).unwrap_or((cap_y + cap_h, 0.0));
+    let (Some((cap_y, cap_h)), Some((reason_y, reason_h))) = (stack.span(0), stack.span(1)) else {
+        unreachable!("the verdict and the reason are always present")
+    };
     let cap = Rect::new(frame.x, cap_y, frame.w, cap_h);
     let w = StatusOverlay::REASON_W.min(frame.w);
     let reason = Rect::new(frame.cx() - w * 0.5, reason_y, w, reason_h);

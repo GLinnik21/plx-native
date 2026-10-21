@@ -132,7 +132,7 @@ impl VFlow {
 
 /// **The alert family's head ladder** ([`theme::alert`]): eyebrow, title, and an optional third line
 /// (a file path, a dot-separated identity line), stacked from `top` with the alert gaps, as the
-/// Tracks panel, the person biography and (eyebrow only) the About panel all draw it. One builder, so
+/// Tracks panel (ruled, [`AlertHead::ruled`]) and the person biography draw it. One builder, so
 /// the measure function and the draw function read the SAME spans instead of each summing the bands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AlertHead {
@@ -142,8 +142,23 @@ pub struct AlertHead {
     pub title: VSpan,
     /// The third line, `None` when the caller passed no height for it.
     pub sub: Option<VSpan>,
-    /// The ladder's height: from `top` to the bottom of its last present line.
+    /// The rule under the ladder, `Some` only for [`AlertHead::ruled`].
+    pub rule: Option<VSpan>,
+    /// A zero-height marker where the content under the ruled ladder starts, `Some` only for
+    /// [`AlertHead::ruled`].
+    pub body: Option<VSpan>,
+    /// The ladder's height: from `top` to the bottom of its last present line (for a ruled one, to
+    /// [`Self::body`]).
     pub h: f32,
+}
+
+/// What stands under a ruled [`AlertHead`]: the air above the rule, the rule's own height and the
+/// air between the rule and the content under it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeadRule {
+    pub gap_above: f32,
+    pub h: f32,
+    pub gap_below: f32,
 }
 
 impl AlertHead {
@@ -151,17 +166,35 @@ impl AlertHead {
     /// [`theme::alert::GAP_TITLE_SUB`], then a third line `sub_h` tall when there is one (a panel that
     /// reserves the line whether or not it has text passes `Some` regardless).
     pub fn new(top: f32, title_h: f32, sub_h: Option<f32>) -> Self {
+        Self::build(top, title_h, sub_h, None)
+    }
+
+    /// [`Self::new`] with the family's rule and the start of the content under it as two more items
+    /// of the SAME stack: the rule `rule.gap_above` under the last line, a [`Self::body`] marker
+    /// `rule.gap_below` under the rule. A panel that sits its body under the rule reads both from
+    /// here instead of adding hand sums to the ladder.
+    pub fn ruled(top: f32, title_h: f32, sub_h: Option<f32>, rule: HeadRule) -> Self {
+        Self::build(top, title_h, sub_h, Some(rule))
+    }
+
+    fn build(top: f32, title_h: f32, sub_h: Option<f32>, rule: Option<HeadRule>) -> Self {
+        let above = rule.map_or(0.0, |r| r.gap_above);
         let items = [
             Item::new(theme::alert::EYEBROW_LEAD),
             Item::new(title_h).after(theme::alert::GAP_TITLE_SUB),
-            sub_h.map_or(Item::absent(), Item::new),
+            sub_h.map_or(Item::absent(), |h| Item::new(h).after(above)),
+            rule.map_or(Item::absent(), |r| Item::new(r.h).after(r.gap_below)),
+            rule.map_or(Item::absent(), |_| Item::new(0.0)),
         ];
         let stack = VStack::new(&items, theme::alert::GAP_EYEBROW_TITLE, Anchor::Top(top));
         let mut spans = stack.placed();
         let (Some(eyebrow), Some(title)) = (spans.next(), spans.next()) else {
             unreachable!("the eyebrow and the title are always present")
         };
-        Self { eyebrow, title, sub: spans.next(), h: stack.height() }
+        let sub = stack.span(2).map(|(y, h)| VSpan { i: 2, y, h, box_y: y });
+        let rule = stack.span(3).map(|(y, h)| VSpan { i: 3, y, h, box_y: y });
+        let body = stack.span(4).map(|(y, h)| VSpan { i: 4, y, h, box_y: y });
+        Self { eyebrow, title, sub, rule, body, h: stack.height() }
     }
 }
 
@@ -292,7 +325,7 @@ mod tests {
         const RULE_H: f32 = 1.0;
         const FOOT_H: f32 = 30.0;
         const EYEBROW: f32 = theme::alert::EYEBROW_LEAD;
-        // (synopsis, tagline) -> the hand-rolled `about_panel::stack` y's
+        // (synopsis, tagline) -> the hand-summed `about_panel::stack` y's it replaced
         let oracle = |syn: f32, tag: f32| {
             let mut y = PAD;
             let eyebrow = y;

@@ -43,13 +43,6 @@ pub fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroSta
     HeroStack { title, meta, synopsis: spans.next() }
 }
 
-/// The ladder's top edge, for a caller that is handed the synopsis band WITH its leading
-/// [`theme::space::SM`] already added (`0.0` for none).
-pub fn stack_top(title_h: f32, meta_h: f32, synopsis_h: f32) -> f32 {
-    let synopsis = (synopsis_h > 0.0).then(|| synopsis_h - theme::space::SM);
-    hero_stack(title_h, meta_h, synopsis).title.y
-}
-
 pub fn base_scrim_bottom_a(hero_a: f32) -> f32 { 0.30 + 0.64 * hero_a.clamp(0.0, 1.0) }
 
 pub fn base_scrim_ramp(hero_a: f32) -> [f32; 4] {
@@ -81,8 +74,5 @@ mod tests {
         let bare = hero_stack(100.0, 24.0, None);
         assert!(bare.synopsis.is_none());
         assert!((bare.meta.y + bare.meta.h - TEXT_BOTTOM).abs() < 0.01);
-        // the legacy entry point (synopsis band WITH its SM) agrees
-        assert!((stack_top(100.0, 24.0, theme::space::SM + 66.0) - with.title.y).abs() < 0.01);
-        assert!((stack_top(100.0, 24.0, 0.0) - bare.title.y).abs() < 0.01);
     }
 }

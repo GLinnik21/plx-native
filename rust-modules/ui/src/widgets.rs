@@ -4610,7 +4610,7 @@ impl<'a> StatusOverlay<'a> {
         // in `action_y`, kept rather than the `MD` a row would give).
         let items = [
             if self.action.is_some() { HItem::new(Self::CTRL_H) } else { HItem::absent() },
-            HItem::new(h).before(theme::space::MD),
+            HItem::new(h),
         ];
         let top = VStack::new(&items, theme::space::MD, VAnchor::Top(bands.action_y)).span(1).map_or(bands.action_y, |(y, _)| y);
         Some(Rect::new(self.frame.x, top, self.frame.w, h))

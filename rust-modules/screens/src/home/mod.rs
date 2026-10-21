@@ -27,8 +27,6 @@ use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::label::{Label, VAlign};
 use plx_ui::linked_heading::{self, LinkedHeading};
-#[cfg(test)]
-use plx_ui::landing_hero::stack_top as hero_stack_top;
 use plx_ui::landing_hero::{
     base_scrim_ramp, hero_stack, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,

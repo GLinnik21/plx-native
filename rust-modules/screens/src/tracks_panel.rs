@@ -72,7 +72,7 @@ use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::popover::Popover;
 use plx_ui::theme;
-use plx_ui::vstack::AlertHead;
+use plx_ui::vstack::{AlertHead, HeadRule};
 use plx_ui::widgets;
 use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
@@ -197,20 +197,26 @@ fn panel_rect() -> Rect {
 /// the file has a path, so the body viewport stays fixed from one item to the next.
 struct Header {
     head: AlertHead,
+    /// The rule's top edge.
     rule: f32,
+    /// Where the body viewport opens: the rule's bottom and `GAP_RULE_BODY`.
+    body_top: f32,
 }
 
 fn header(top: f32) -> Header {
-    let head = AlertHead::new(top, theme::alert::TITLE_LEAD, Some(PATH_H));
-    let path_end = head.sub.map_or(top + head.h, |s| s.y + s.h);
-    Header { head, rule: path_end + GAP_PATH_RULE }
+    let rule = HeadRule { gap_above: GAP_PATH_RULE, h: widgets::HAIRLINE_H, gap_below: GAP_RULE_BODY };
+    let head = AlertHead::ruled(top, theme::alert::TITLE_LEAD, Some(PATH_H), rule);
+    let (Some(rule), Some(body)) = (head.rule, head.body) else {
+        unreachable!("a ruled head has its rule and its body marker")
+    };
+    Header { head, rule: rule.y, body_top: body.y }
 }
 
 /// The scrolling body's viewport — inside the padding, below the header rule, above the footer
 /// rule, and left of the rail.
 fn body_rect() -> Rect {
     let r = panel_rect();
-    let top = header(r.y + PAD).rule + widgets::HAIRLINE_H + GAP_RULE_BODY;
+    let top = header(r.y + PAD).body_top;
     let bottom = r.y + PANEL_H
         - plx_ui::widgets::KeyHint::pad_below()
         - FOOTER_H
@@ -2094,6 +2100,7 @@ mod tests {
         assert_eq!(h.rule - (sub.y + sub.h), GAP_PATH_RULE);
         let r = header(panel_rect().y + PAD);
         assert_eq!(body_rect().y, r.rule + widgets::HAIRLINE_H + GAP_RULE_BODY);
+        assert_eq!(r.body_top, r.rule + widgets::HAIRLINE_H + GAP_RULE_BODY);
     }
 
 }

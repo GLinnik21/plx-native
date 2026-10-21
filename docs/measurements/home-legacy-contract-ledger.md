@@ -42,7 +42,7 @@ Counts: **27 ported, 3 already covered, 4 retired** — 34 total.
 | `prefetch_order_wraps_and_never_warms_the_page_on_screen` | Ported; identical but for `c_int` → `i32`. |
 | `the_prefetch_is_armed_only_from_a_settled_hero` | Ported; byte-identical. |
 | `the_ground_is_skipped_only_when_opaque_art_covers_it` | Ported; byte-identical. |
-| `the_home_hero_logo_never_reaches_the_top_bar` | Ported; same arithmetic over `hero_syn_h`, `hero_logo::band_h`, `hero_stack_top` and `TOP_BAR_BOTTOM`, message text dropped. |
+| `the_home_hero_logo_never_reaches_the_top_bar` | Ported; same arithmetic over `hero_syn_h`, `hero_logo::band_h`, `landing_hero::hero_stack` and `TOP_BAR_BOTTOM`, message text dropped. |
 | `the_hero_logo_key_is_the_shows_for_an_episode` | Ported; byte-identical. |
 | `the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn` | Ported; byte-identical. |
 | `the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip` | Ported; the first shelf rests at `rest_scroll(0, 5)` (0), whichever way focus arrived, and its raised heading is still `>= top_band_bottom()`. |

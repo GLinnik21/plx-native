@@ -20,6 +20,8 @@
 //! it is the token, and [`Span::box_x`] is where the caller draws its box.
 //!
 //! The gap is a token the caller passes (`theme::space::*`, `page_header::GAP`), never a literal here.
+//! The gap between two present neighbours `a` then `b` is `b`'s [`Item::before`] if it has one, else
+//! `a`'s [`Item::after`], else the stack's own; an absent item gives and takes neither.
 //!
 //! **A slot sizes a budget, never air inside the row** (the Library header, #875). A control whose
 //! count comes and goes ("Collections · 12") is placed by the text it DRAWS, one gap from its

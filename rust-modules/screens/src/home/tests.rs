@@ -957,7 +957,7 @@ fn the_home_hero_logo_never_reaches_the_top_bar() {
     const META_H: f32 = 28.0 * 1.32;
     let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
     let band = hero_logo::band_h(LogoRung::Hero);
-    let top = hero_stack_top(band, META_H, theme::space::SM + synopsis);
+    let top = plx_ui::landing_hero::hero_stack(band, META_H, Some(synopsis)).title.y;
     assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 

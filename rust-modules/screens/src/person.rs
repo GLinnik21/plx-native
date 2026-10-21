@@ -243,17 +243,17 @@ fn header_flow(
         f.bio_truncated = view.truncates(BIO_W);
         view.measure_h(BIO_W)
     };
-    // One stack, so a missing line takes its gap with it. Every gap is the item's own `before`: the
-    // life line follows the meta line by LIFE_GAP, or the name by META_GAP when there is no meta; the
+    // One stack, so a missing line takes its gap with it. The name and meta lines own the gap BELOW
+    // them (`after`): the name leaves META_GAP to whatever follows it (the meta line, or the life
+    // line when there is no meta) and the meta line leaves LIFE_GAP to the life line; the
     // biography keeps BIO_GAP, and the entry ENTRY_GAP, whichever lines above them are absent. The
     // life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by the wrong
     // rung's cap height left a few px of drift between the pending skeleton's reserved band and the
     // loaded line's actual one.
     let items = [
-        Item::new(measure.cap_h(theme::size::DISPLAY)),
-        presence(has_meta, measure.cap_h(theme::size::LABEL)).before(META_GAP),
-        presence(has_life, measure.cap_h(theme::size::CAPTION))
-            .before(if has_meta { LIFE_GAP } else { META_GAP }),
+        Item::new(measure.cap_h(theme::size::DISPLAY)).after(META_GAP),
+        presence(has_meta, measure.cap_h(theme::size::LABEL)).after(LIFE_GAP),
+        presence(has_life, measure.cap_h(theme::size::CAPTION)),
         presence(has_bio, bio_h).before(BIO_GAP),
         presence(has_entry, LinkedHeading::HEIGHT).before(ENTRY_GAP),
     ];

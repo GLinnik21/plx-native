@@ -131,13 +131,14 @@ pub fn layout(question_h: f32, body_h: f32) -> Layout {
 /// panel and the destructive rect is the zero-width point at the row's centre — nothing draws
 /// there and nothing registers it.
 pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
-    // The text block is ONE stack: the question, then the body BODY_GAP under it (absent, so no gap,
-    // for an alert that asks its question alone). The body rect stands where a present body would.
-    let text = [HItem::new(question_h), if body_h > 0.0 { HItem::new(body_h).before(BODY_GAP) } else { HItem::absent() }];
-    let text_h = VStack::new(&text, BODY_GAP, Anchor::Top(0.0)).height();
-    let body_off = VStack::new(&[HItem::new(question_h), HItem::new(body_h)], BODY_GAP, Anchor::Top(0.0))
-        .span(1)
-        .map_or(0.0, |(y, _)| y);
+    // The text block is ONE stack: the question, then the body BODY_GAP under it. The body item is
+    // always there so its rect stands where a present body would (and a zero-height body keeps
+    // today's rect); the BLOCK's height only counts it, and its gap, when the body has any height,
+    // so an alert that asks its question alone is exactly the question.
+    let text = [HItem::new(question_h), HItem::new(body_h)];
+    let stack = VStack::new(&text, BODY_GAP, Anchor::Top(0.0));
+    let body_off = stack.span(1).map_or(0.0, |(y, _)| y);
+    let text_h = if body_h > 0.0 { stack.height() } else { question_h };
     let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
     let overflow = text_h + fixed_h > SAFE.h;
     let viewport_h = text_h.min(SAFE.h - fixed_h);

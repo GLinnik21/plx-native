@@ -16,8 +16,6 @@ use plx_plex::plex::ServerId;
 use plx_ui::cards as ui_cards;
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
-use plx_ui::hstack::Item;
-use plx_ui::vstack::VFlow;
 use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
     Machine, Measure, Tick,
@@ -109,10 +107,9 @@ fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Mea
         .leading(theme::size::LABEL as f32 + theme::space::XS)
         .max_lines(12)
         .measure_h(text.w);
-    // The copy's run, and the preview one LG under it (never above its own slot).
-    let mut copy = VFlow::new(text.y, theme::space::LG);
-    copy.push(Item::new(copy_h));
-    let top = PV.y.max(copy.next_y());
+    // The preview hangs one LG under the copy's block (never above its own slot): a single
+    // `bottom + gap`, not a stack.
+    let top = PV.y.max(text.y + copy_h + theme::space::LG);
     let height = PV.h.min((layout.narrative.y + layout.narrative.h - top).max(0.0));
     Rect::new(layout.narrative.x, top, PV.w * height / PV.h, height)
 }
@@ -1836,13 +1833,16 @@ mod preview_gap_tests {
             .max_lines(12)
             .measure_h(text.w);
         let long_top = preview_frame(layout, title, &long, &measure).y;
-        assert_eq!(long_top, PV.y.max(text.y + long_h + theme::space::LG));
-        // A short copy: the slot still wins while the copy's block is above it.
+        assert!(long_top > PV.y, "a tall copy pushes the preview below its slot");
+        assert!((long_top - (text.y + long_h + theme::space::LG)).abs() < 1e-3);
+        // A short copy hangs the same LG under its own (shorter) block, and never above the slot.
         let short_h = plx_ui::text_view::TextView::new("x", theme::size::LABEL, theme::TEXT_READING)
             .with_measure(&measure)
             .leading(theme::size::LABEL as f32 + theme::space::XS)
             .max_lines(12)
             .measure_h(text.w);
-        assert_eq!(preview_frame(layout, title, "x", &measure).y, PV.y.max(text.y + short_h + theme::space::LG));
+        let short_top = preview_frame(layout, title, "x", &measure).y;
+        assert!(short_top >= PV.y && short_top < long_top);
+        assert_eq!(short_top, PV.y.max(text.y + short_h + theme::space::LG));
     }
 }
