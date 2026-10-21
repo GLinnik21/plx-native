@@ -4,6 +4,7 @@ use crate::registry::tile_facts;
 use plx_data::search::scope::{ScopeSource, SourceScopeSnapshot};
 use plx_ui::consts::{MARGIN_X, SCR_H};
 use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};
 use std::ffi::{CStr, CString};
@@ -352,19 +353,29 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     let statement = cstring(&statement);
     let hh = f.cx.measure.cap_h(theme::size::CAPTION);
     let sh = f.cx.measure.cap_h(theme::size::TITLE);
-    let top = rect.y + (rect.h - hh - sh - theme::space::MD) * 0.5;
+    let (header_y, statement_y) = empty_pair(rect, hh, sh);
     Label::new(header.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .h(HAlign::Center)
         .v(VAlign::CapTop)
-        .draw(p, Rect::new(rect.x, top, rect.w, 0.0));
+        .draw(p, Rect::new(rect.x, header_y, rect.w, 0.0));
     Label::new(statement.as_ptr(), theme::size::TITLE, theme::TEXT_HEADING)
         .bold()
         .h(HAlign::Center)
         .v(VAlign::CapTop)
-        .draw(
-            p,
-            Rect::new(rect.x, top + hh + theme::space::MD, rect.w, 0.0),
-        );
+        .draw(p, Rect::new(rect.x, statement_y, rect.w, 0.0));
+}
+
+/// The empty state's two cap tops: the header's band over the statement's, one MD apart, the pair
+/// centred in `area`. `Item` is the search's own row type here, so the stack's is named by its path.
+pub(super) fn empty_pair(area: Rect, header_h: f32, statement_h: f32) -> (f32, f32) {
+    let items = [plx_ui::hstack::Item::new(header_h), plx_ui::hstack::Item::new(statement_h)];
+    let pair = VStack::new(
+        &items,
+        theme::space::MD,
+        Anchor::Centre(area.y + area.h * 0.5),
+    );
+    let at = |i| pair.span(i).map_or(area.y, |(y, _)| y);
+    (at(0), at(1))
 }
 
 /// What a result tile draws. A collection always draws through `Art::Poster` with its row, so the
