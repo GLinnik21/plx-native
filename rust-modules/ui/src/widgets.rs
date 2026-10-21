@@ -3,6 +3,7 @@
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
+use crate::vstack::{Anchor as VAnchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
@@ -515,26 +516,31 @@ pub fn still_line(
     has_bar: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
-    // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
+    // The pair is one bottom-anchored VStack of cap bands, because that is what the two insets are
+    // about: the sub line's baseline sits at the tile's own bottom inset and the label stacks above
+    // it, `STILL_PAIR_GAP` between the label's baseline and the sub's cap top. The band heights come
+    // from the cap bands (a font swap cannot silently close the pair up); a label-less tile leaves
+    // the sub exactly where it was.
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
     let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
-    let (_, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
+    let (lct, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
     let bot = if has_bar {
         STILL_LINE_BOT_BAR
     } else {
         STILL_LINE_BOT
     };
-    let sy = card.y + card.h - bot - scb;
+    let pair = [
+        if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
+        HItem::new(scb - sct),
+    ];
+    let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(card.y + card.h - bot));
+    let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;
     let x0 = card.x + STILL_LINE_INSET;
     let right = card.x + card.w - STILL_LINE_INSET;
 
     // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
-    if !label.is_empty() {
-        // `line-height: 1.15` on the sub, then the design's 2px gap, then this run's own descent —
-        // measured through the cap bands rather than a literal, so a font swap cannot silently
-        // close the pair up.
-        let ly = sy - sct - STILL_PAIR_GAP - lcb;
+    if let Some((y, _)) = pair.span(0) {
+        let ly = y - lct;
         let run = measure.fit_line(label, right - x0, lsz, true);
         p.text(run.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
     }
@@ -4549,14 +4555,18 @@ impl<'a> StatusOverlay<'a> {
             cy - cap_h * 0.5
         };
         let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
-        let mut below = cap_y + cap_h;
-        let reason = self.reason.map(|_| {
-            let h = reason_h;
-            let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
-            below = r.y + h;
-            r
-        });
-        let action_y = below + theme::space::LG + self.row_drop();
+        // One top-anchored run from the caption: verdict, the reason `SM` under it (absent without
+        // one), then the action row's slot. The row's slot is placed whether or not there is a row,
+        // because the note takes the row's place without one (Q1, kept neutral: the note stands
+        // `LG` + the slot's drop under the reason, which is the row's own `before`).
+        let items = [
+            HItem::new(cap_h),
+            self.reason.map_or(HItem::absent(), |_| HItem::new(reason_h)),
+            HItem::new(Self::CTRL_H).before(theme::space::LG + self.row_drop()),
+        ];
+        let stack = VStack::new(&items, theme::space::SM, VAnchor::Top(cap_y));
+        let reason = stack.span(1).map(|(y, h)| Rect::new(self.frame.x, y, self.frame.w, h));
+        let action_y = stack.span(2).map_or(cap_y + cap_h, |(y, _)| y);
         StatusBands { cap, reason, action_y }
     }
 
@@ -4588,16 +4598,19 @@ impl<'a> StatusOverlay<'a> {
     /// height inside [`Self::REASON_W`].
     fn note_band(&self, bands: &StatusBands, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         let line = self.note?;
-        let top = if self.action.is_some() {
-            bands.action_y + Self::CTRL_H + theme::space::MD
-        } else {
-            bands.action_y
-        };
         let h = if self.note_busy {
             self.note_view(c"").line_h()
         } else {
             self.note_view(line).with_measure(measure).measure_h(Self::REASON_W.min(self.frame.w))
         };
+        // The row's slot (absent without an action) then the note `MD` under it; with no row the
+        // note is the run's first item and stands at `action_y` itself (Q1: the `LG` + drop already
+        // in `action_y`, kept rather than the `MD` a row would give).
+        let items = [
+            if self.action.is_some() { HItem::new(Self::CTRL_H) } else { HItem::absent() },
+            HItem::new(h).before(theme::space::MD),
+        ];
+        let top = VStack::new(&items, theme::space::MD, VAnchor::Top(bands.action_y)).span(1).map_or(bands.action_y, |(y, _)| y);
         Some(Rect::new(self.frame.x, top, self.frame.w, h))
     }
 
