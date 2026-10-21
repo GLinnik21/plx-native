@@ -63,7 +63,9 @@ use plx_ui::screen::{
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
+use plx_ui::hstack::Item;
 use plx_ui::text_view::TextView;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
 use plx_ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, Rect, View};
@@ -375,7 +377,16 @@ fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLay
     let url_h = theme::size::TITLE as f32 + theme::space::XS;
     let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
     let status_h = theme::size::BODY as f32 + theme::space::SM;
-    let status_top = card.y + card.h + theme::space::LG + code_h + theme::space::MD;
+    // The code hangs one LG under the card and the status one MD under the code: one run.
+    let items = [Item::new(code_h), Item::new(status_h)];
+    let below = VStack::new(
+        &items,
+        theme::space::MD,
+        Anchor::Top(card.y + card.h + theme::space::LG),
+    );
+    let at = |i| below.span(i).map_or(0.0, |(y, _)| y);
+    let code_y = at(0);
+    let status_top = at(1);
     let spinner_extent = STATUS_SPINNER_R + Spinner::dot_r(STATUS_SPINNER_R);
     let gutter = spinner_extent * 2.0 + theme::space::SM;
     let text_w = measure.width(status, theme::size::BODY, false)
@@ -402,7 +413,7 @@ fn qr_layout(layout: RouteLayout, status: &CStr, measure: &dyn Measure) -> QrLay
         card,
         code: Rect::new(
             layout.content.x,
-            card.y + card.h + theme::space::LG,
+            code_y,
             layout.content.w,
             code_h,
         ),
@@ -2646,6 +2657,19 @@ mod tests {
             wait_restarted(old_code, (Phase::Discovering, 7)),
             "…and the original rule still holds: a step forward is a fresh wait"
         );
+    }
+
+    /// The code hangs one LG under the card and the status one MD under the code: the painted gaps
+    /// are the stack's tokens, not whatever the hand-written sums used to leave.
+    #[test]
+    fn the_code_and_status_hang_one_lg_and_one_md_below_the_card() {
+        let route = RouteLayout::screen();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let q = qr_layout(route, waiting_status(false, false, false), &measure);
+        let code_h = theme::size::DISPLAY as f32 + theme::space::XS;
+        assert_eq!(q.code.y - (q.card.y + q.card.h), theme::space::LG);
+        assert_eq!(q.code.h, code_h);
+        assert_eq!(q.status.y - (q.code.y + q.code.h), theme::space::MD);
     }
 
     /// Ported verbatim.

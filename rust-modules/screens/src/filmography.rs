@@ -16,6 +16,8 @@ use plx_plex::plex::ServerId;
 use plx_ui::cards as ui_cards;
 use plx_ui::consts::*;
 use plx_ui::frame::Budget;
+use plx_ui::hstack::Item;
+use plx_ui::vstack::VFlow;
 use plx_machine::machine::{
     Canon, Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, LogicalState,
     Machine, Measure, Tick,
@@ -107,7 +109,10 @@ fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Mea
         .leading(theme::size::LABEL as f32 + theme::space::XS)
         .max_lines(12)
         .measure_h(text.w);
-    let top = PV.y.max(text.y + copy_h + theme::space::LG);
+    // The copy's run, and the preview one LG under it (never above its own slot).
+    let mut copy = VFlow::new(text.y, theme::space::LG);
+    copy.push(Item::new(copy_h));
+    let top = PV.y.max(copy.next_y());
     let height = PV.h.min((layout.narrative.y + layout.narrative.h - top).max(0.0));
     Rect::new(layout.narrative.x, top, PV.w * height / PV.h, height)
 }
@@ -1807,5 +1812,37 @@ mod tests {
             out.extend(table.app_fit_failures(w, language.tag()));
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+#[cfg(test)]
+mod preview_gap_tests {
+    use super::*;
+    use plx_ui::fixture::FixtureMeasure;
+
+    /// The preview hangs one LG under the copy's block and never rises above its own slot: a copy
+    /// tall enough to reach past the slot pushes the preview to its bottom plus LG, and an empty
+    /// copy leaves it at the slot.
+    #[test]
+    fn the_preview_sits_one_lg_under_the_copy_and_never_above_its_slot() {
+        let layout = RouteLayout::screen();
+        let measure = FixtureMeasure;
+        let title = "A Title";
+        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
+        let long = "word ".repeat(400);
+        let long_h = plx_ui::text_view::TextView::new(&long, theme::size::LABEL, theme::TEXT_READING)
+            .with_measure(&measure)
+            .leading(theme::size::LABEL as f32 + theme::space::XS)
+            .max_lines(12)
+            .measure_h(text.w);
+        let long_top = preview_frame(layout, title, &long, &measure).y;
+        assert_eq!(long_top, PV.y.max(text.y + long_h + theme::space::LG));
+        // A short copy: the slot still wins while the copy's block is above it.
+        let short_h = plx_ui::text_view::TextView::new("x", theme::size::LABEL, theme::TEXT_READING)
+            .with_measure(&measure)
+            .leading(theme::size::LABEL as f32 + theme::space::XS)
+            .max_lines(12)
+            .measure_h(text.w);
+        assert_eq!(preview_frame(layout, title, "x", &measure).y, PV.y.max(text.y + short_h + theme::space::LG));
     }
 }
