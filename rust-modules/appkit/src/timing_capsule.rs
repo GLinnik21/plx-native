@@ -11,6 +11,7 @@
 //! [`TimingCapsule::key`] only for an ADMITTED press — a `Down` or an already-gated `Repeat`, never
 //! a raw hardware repeat this module would have to re-gate itself.
 use plx_ui::consts::Key;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons::{self, Icon};
 use plx_ui::label::{HAlign, Label};
 use plx_machine::machine::Edge;
@@ -232,6 +233,17 @@ impl TimingCapsule {
         self.offset_ms >= self.hi
     }
 
+    /// The capsule's rect and the x of its three run items (left chevron, text block, right
+    /// chevron) with the capsule centred on `cx`: ONE stack sizes the capsule and places the run
+    /// inside its side pad, so the box and what stands in it cannot disagree.
+    fn geometry(cx: f32, bottom_y: f32) -> (Rect, [f32; 3]) {
+        let items = [Item::new(CHEVRON_SZ), Item::new(CAPSULE_TEXT_W), Item::new(CHEVRON_SZ)];
+        let w = HStack::new(&items, CAPSULE_GAP, Align::Leading(0.0)).width() + CAPSULE_PAD_X * 2.0;
+        let r = Rect::new(cx - w * 0.5, bottom_y - CAPSULE_H, w, CAPSULE_H);
+        let run = HStack::new(&items, CAPSULE_GAP, Align::Leading(r.x + CAPSULE_PAD_X));
+        (r, [0, 1, 2].map(|i| run.span(i).unwrap_or_default().0))
+    }
+
     /// Paint the capsule, its bottom edge fixed at `bottom_y` (`player_hud::CAPSULE_BOTTOM_Y`) —
     /// never the live caption's own baseline, which would make the capsule jump as a cue's line
     /// count changes. `appear` is the container's own appear fraction (`DrawFrame::page_alpha`),
@@ -242,25 +254,14 @@ impl TimingCapsule {
         }
         // the container's appear fraction fades the capsule in and out, as every player panel does
         let p = Painter::root().alpha(appear);
-        let w = CHEVRON_SZ * 2.0 + CAPSULE_GAP * 2.0 + CAPSULE_TEXT_W + CAPSULE_PAD_X * 2.0;
         let cx = plx_ui::consts::SCR_W * 0.5 + self.shake.pos;
-        let r = Rect::new(cx - w * 0.5, bottom_y - CAPSULE_H, w, CAPSULE_H);
+        let (r, [left_x, text_x, right_x]) = Self::geometry(cx, bottom_y);
         p.rect(r, CAPSULE_H * 0.5, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
         let left_ink = if self.at_lo() { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
         let right_ink = if self.at_hi() { theme::INK_DISABLED } else { theme::TEXT_PRIMARY };
-        icons::draw(
-            p,
-            Icon::ChevronLeft,
-            Rect::new(r.x + CAPSULE_PAD_X, r.y + (CAPSULE_H - CHEVRON_SZ) * 0.5, CHEVRON_SZ, CHEVRON_SZ),
-            left_ink,
-        );
-        icons::draw(
-            p,
-            Icon::Chevron,
-            Rect::new(r.x + r.w - CAPSULE_PAD_X - CHEVRON_SZ, r.y + (CAPSULE_H - CHEVRON_SZ) * 0.5, CHEVRON_SZ, CHEVRON_SZ),
-            right_ink,
-        );
-        let text_x = r.x + CAPSULE_PAD_X + CHEVRON_SZ + CAPSULE_GAP;
+        let chevron_at = |x: f32| Rect::new(x, r.y + (CAPSULE_H - CHEVRON_SZ) * 0.5, CHEVRON_SZ, CHEVRON_SZ);
+        icons::draw(p, Icon::ChevronLeft, chevron_at(left_x), left_ink);
+        icons::draw(p, Icon::Chevron, chevron_at(right_x), right_ink);
         Label::new(self.caption.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
             .bold()
             .h(HAlign::Center)
@@ -271,6 +272,21 @@ impl TimingCapsule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stack-placed capsule stands exactly where the hand-summed ladder it replaced put it:
+    /// width = 2 chevrons + 2 gaps + text + 2 pads, chevrons on the pads, text between them.
+    #[test]
+    fn capsule_geometry_matches_the_hand_summed_ladder() {
+        for cx in [960.0_f32, 960.0 - 7.0, 960.0 + 3.0] {
+            let (r, [lx, tx, rx]) = TimingCapsule::geometry(cx, 900.0);
+            let w = CHEVRON_SZ * 2.0 + CAPSULE_GAP * 2.0 + CAPSULE_TEXT_W + CAPSULE_PAD_X * 2.0;
+            let want = Rect::new(cx - w * 0.5, 900.0 - CAPSULE_H, w, CAPSULE_H);
+            assert_eq!((r.x, r.y, r.w, r.h), (want.x, want.y, want.w, want.h));
+            assert_eq!(lx, want.x + CAPSULE_PAD_X);
+            assert_eq!(tx, want.x + CAPSULE_PAD_X + CHEVRON_SZ + CAPSULE_GAP);
+            assert_eq!(rx, want.x + want.w - CAPSULE_PAD_X - CHEVRON_SZ);
+        }
+    }
 
     fn cap() -> TimingCapsule {
         TimingCapsule::new(0, 0, 30_000) // embedded floor: no advance

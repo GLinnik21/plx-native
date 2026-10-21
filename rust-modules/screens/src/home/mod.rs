@@ -139,11 +139,6 @@ const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
 const HERO_META_R: f32 = 0.60 * SCR_W;
 const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
 const SOURCE_PAD: f32 = theme::space::XS;
-// The same screen-side measurement seam as `screens/detail/hero.rs`. The frame produced here is
-// handed to `Button::draw`, so focus geometry and paint share one capability-derived width. The
-// widget should eventually expose these two private terms through `Button::pill_w_with`.
-const HERO_ICON_RATIO: f32 = 1.15;
-const HERO_ICON_GAP: f32 = 12.0;
 
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
 /// (`base_y` included), so the text, `SCREEN_SHAPES_PIN` and the replay anchors stay what they were;
@@ -3479,7 +3474,7 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
     let has_disc = disc_hex(item).is_some();
     let items = [
-        Item::new(hero_pill_w(measure, label)),
+        Item::new(plx_appkit::hero_layout::pill_w(measure, label, theme::size::BODY, true, None)),
         if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
         Item::new(HERO_CTRL_D),
     ];
@@ -3490,13 +3485,6 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
         disc: at(1),
         info: at(2).unwrap_or_default(),
     }
-}
-
-fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {
-    theme::size::BODY as f32 * HERO_ICON_RATIO
-        + HERO_ICON_GAP
-        + measure.width(label, theme::size::BODY, true)
-        + plx_ui::widgets::BTN_PILL_AIR
 }
 
 fn card_x(col: usize, scroll: f32) -> f32 {
