@@ -8,8 +8,10 @@ use std::ffi::CString;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
+use plx_ui::hstack::Item;
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{self, PosterMark};
 use plx_ui::{on_axis, theme, Painter, Rect};
 
@@ -114,7 +116,6 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
         .max_lines(2)
         .measure_h(TEXT_W)
         .max(TITLE_LEAD);
-    let summary_y = TITLE_DY + title_h + theme::space::MD;
     let summary_h = if ep.summary.is_empty() {
         0.0
     } else {
@@ -124,18 +125,18 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(TEXT_W)
     };
-    let date_y = summary_y
-        + summary_h
-        + if ep.aired.is_empty() {
-            0.0
-        } else {
-            theme::space::MD
-        };
-    let bottom = if ep.aired.is_empty() {
-        summary_y + summary_h
-    } else {
-        date_y + theme::size::MICRO as f32
-    };
+    // NEUTRAL, deliberately: the summary row is ALWAYS present (zero high when empty), so an empty
+    // summary with an air date leaves two MD gaps above the date, and a title-only platter keeps a
+    // trailing MD. That is today's pixels; collapsing it is an open owner question (Q6).
+    let items = [
+        Item::new(title_h),
+        Item::new(summary_h),
+        if ep.aired.is_empty() { Item::absent() } else { Item::new(theme::size::MICRO as f32) },
+    ];
+    let stack = VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY));
+    let (summary_y, _) = stack.span(1).unwrap_or((TITLE_DY, 0.0));
+    let bottom = TITLE_DY + stack.height();
+    let date_y = stack.span(2).map_or(summary_y + summary_h, |(y, _)| y);
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
 }
 
@@ -782,5 +783,25 @@ mod tests {
                 .x
             );
         }
+    }
+
+    /// NEUTRAL by design (owner question Q6): the summary row is always present, so an empty summary
+    /// with an air date keeps today's double MD above the date, and a title-only platter keeps its
+    /// trailing MD. Fixing either moves pixels and is a separate change.
+    #[test]
+    fn the_meta_block_keeps_todays_gaps_for_an_absent_summary_and_date() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let md = theme::space::MD;
+        let title = Episode { title: "Pilot".into(), ..Default::default() };
+        let (date_y, summary_y, bottom) = meta_layout(&title, &measure);
+        let title_h = summary_y - TITLE_DY - md;
+        assert!(title_h >= TITLE_LEAD);
+        assert_eq!(date_y, summary_y, "no date: it reports the summary's end");
+        assert_eq!(bottom, summary_y + META_BOTTOM_PAD, "a title-only platter keeps its trailing MD");
+        let dated = Episode { aired: "2020-01-01".into(), ..title.clone() };
+        let (date_y, summary_y2, bottom) = meta_layout(&dated, &measure);
+        assert_eq!(summary_y2, summary_y);
+        assert!((date_y - summary_y - md).abs() < 0.01, "an empty summary still leaves its MD before the date");
+        assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
     }
 }
