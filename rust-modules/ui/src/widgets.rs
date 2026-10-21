@@ -3301,9 +3301,13 @@ impl PageDots {
         let w = self.width();
         self.at(cx - w * 0.5, y)
     }
-    /// The row as stack items: one per dot, the active one the wider pill.
-    fn items(&self) -> Vec<HItem> {
-        (0..self.count).map(|d| HItem::new(if d == self.active { Self::PILL } else { Self::DOT })).collect()
+    /// The row as three stack items, no allocation: the dots before the lit one (one block, a
+    /// dot and a gap each), the lit pill, the dots after it. A block is absent when it has no
+    /// dot, so it takes no gap either; the gap between two dots of a block is the stack's own.
+    fn items(&self) -> [HItem; 3] {
+        let block = |n: usize| if n == 0 { HItem::absent() } else { HItem::new(n as f32 * Self::DOT + (n - 1) as f32 * Self::GAP) };
+        if self.count == 0 { return [HItem::absent(); 3]; }
+        [block(self.active), HItem::new(Self::PILL), block(self.count - 1 - self.active)]
     }
     /// The row's drawn width — the SAME [`HStack`] `draw` places (each element's own width plus
     /// one gap between neighbours), so a centred row can't drift from the pixels.
@@ -3318,18 +3322,28 @@ impl View for PageDots {
         // and nudges the trailing dots along.
         let items = self.items();
         for span in HStack::new(&items, Self::GAP, StackAlign::Leading(self.x)).placed() {
-            // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
-            let col = crate::theme::with_a(
-                crate::theme::TEXT_PRIMARY,
-                if span.i == self.active { 1.0 } else { 0.35 },
-            );
-            p.rect(
-                Rect::new(span.x, self.y, span.w, Self::DOT),
-                Self::DOT * 0.5,
-                col,
-                col,
-                0.0,
-            );
+            // The pill is the lit page; a block steps its dots at one dot and one gap.
+            let (first, n) = match span.i {
+                0 => (0, self.active),
+                1 => (self.active, 1),
+                _ => (self.active + 1, self.count - 1 - self.active),
+            };
+            for k in 0..n {
+                let d = first + k;
+                // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
+                let col = crate::theme::with_a(
+                    crate::theme::TEXT_PRIMARY,
+                    if d == self.active { 1.0 } else { 0.35 },
+                );
+                let w = if span.i == 1 { span.w } else { Self::DOT };
+                p.rect(
+                    Rect::new(span.x + k as f32 * (Self::DOT + Self::GAP), self.y, w, Self::DOT),
+                    Self::DOT * 0.5,
+                    col,
+                    col,
+                    0.0,
+                );
+            }
         }
     }
 }

@@ -37,7 +37,8 @@
 //! and as if it were there: a control that is not on the row now but may land can reserve its room,
 //! so what its neighbour may use does not change when it comes or goes. (The page header does not
 //! use this today: it reserves Collections' room through `widest`, the widest-case cluster
-//! `PageHeader::new` measures, and `Item::absent` has no caller yet.) `width` and `placed` skip it,
+//! `PageHeader::new` measures. `Item::absent` is used by `StatusOverlay::row_rects` for a part
+//! that is not shown, and by `PageDots` for a block with no dot.) `width` and `placed` skip it,
 //! budget and gap both.
 
 use crate::icons::{self, Icon};

@@ -692,6 +692,72 @@ fn a_control_the_row_before_lacked_fades_in_where_it_stands() {
     assert!(!swap.is_active(), "and the swap ends on the new row alone");
 }
 
+/// A row whose read-out says `text`, with the Collections control holding `collections` (none:
+/// the control is not on the row).
+fn row_with_readout(text: &str, collections: Option<&str>) -> HeaderRow {
+    let (mut spec, widest) = slotted(collections, true);
+    spec.right[0].label = text.into();
+    if collections.is_none() { spec.right.remove(1); }
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[])
+}
+
+/// **The read-out rides the content swap** (the owner dislikes an un-animated jump): the unpinned
+/// filter read-out stands one gap before the cluster's next item, so it moves when Collections
+/// arrives or leaves, when its count changes digit count, and when its own text changes. Each is a
+/// leave-and-arrive at the two xs on the swap clock (the same dissolve a slotted control that moves
+/// plays), never a cut: opacities sum to the read-out's resting one on every frame.
+#[test]
+fn a_readout_that_moves_or_changes_dissolves_at_each_x() {
+    let _g = plx_base::testlock::serial();
+    let rest = theme::COUNT_FILTERED_INK[3];
+    // Collections arrives (the read-out moves left), then leaves, then the text changes in place.
+    for (old, new) in [
+        (row_with_readout("24 of 27", None), row_with_readout("24 of 27", Some("4"))),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("24 of 27", None)),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("8 of 27", Some("4"))),
+    ] {
+        let (old_text, new_text) = (old.page.spec().right[0].label.clone(), new.page.spec().right[0].label.clone());
+        let (old_x, new_x) = (old.layout.items[0].text.x, new.layout.items[0].text.x);
+        let mut swap = HeaderSwap::new();
+        swap.begin(&old, &new);
+        assert!(swap.is_active(), "{old_text} to {new_text}: the swap runs although no slotted value changed");
+        let mut dissolving = 0;
+        for _ in 0..30 {
+            let runs = swap_runs(&new, &swap);
+            let at = |text: &str, x: f32| runs.iter().find(|(t, rx, _)| t == text && *rx == x).map(|(_, _, alpha)| *alpha);
+            if let (Some(out), Some(arriving)) = (at(&old_text, old_x), at(&new_text, new_x)) {
+                assert!((out + arriving - rest).abs() < 1e-4, "the two faces' opacities sum to the resting one: {out} {arriving}");
+                if out > 0.01 && arriving > 0.01 { dissolving += 1; }
+            }
+            swap.step(1.0 / 60.0);
+        }
+        assert!(dissolving >= 6, "{old_text} to {new_text}: several frames of dissolve, not a cut: {dissolving}");
+        assert!(!swap.is_active());
+        let runs = swap_runs(&new, &swap);
+        assert_eq!(runs.iter().filter(|(t, ..)| *t == new_text).count(), 1, "the new face stands alone: {runs:?}");
+        assert!(runs.iter().find(|(t, ..)| *t == new_text).is_some_and(|r| r.1 == new_x && (r.2 - rest).abs() < 1e-4));
+        assert!(old_text == new_text || runs.iter().all(|(t, ..)| *t != old_text));
+    }
+}
+
+/// A read-out both libraries have dissolves on a switch like a control both rows have; one only the
+/// new library has is simply there, and one only the old library had is not drawn (`Edge::Cut`).
+#[test]
+fn a_switch_cuts_a_readout_only_one_row_has() {
+    let _g = plx_base::testlock::serial();
+    let with = row_with_readout("24 of 27", Some("4"));
+    let without = row_with(Some("4"));
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&with, &without);
+    assert!(swap_runs(&without, &swap).iter().all(|(t, ..)| t != "24 of 27"), "the library left's read-out is not drawn");
+    swap.begin_switch(&without, &with);
+    let runs = swap_runs(&with, &swap);
+    let readout = runs.iter().find(|(t, ..)| t == "24 of 27").expect("the read-out is on the row");
+    assert!((readout.2 - theme::COUNT_FILTERED_INK[3]).abs() < 1e-4, "and not fading in: {readout:?}");
+}
+
 /// **A control the next row does not have fades out where it stood** (a library with no
 /// collections): its face is painted at the old x with a falling opacity, never cut, and the swap
 /// leaves the row exactly as the new row draws it.
