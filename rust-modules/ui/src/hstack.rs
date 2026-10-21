@@ -127,7 +127,7 @@ pub enum Align {
 /// Where one present item stands: the span it DRAWS.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Span {
-    /// Its index in the slice the stack was built from (absent items leave gaps in the numbering).
+    /// Its index in the run (absent items leave gaps in the numbering).
     pub i: usize,
     /// Its leading edge.
     pub x: f32,
@@ -138,8 +138,8 @@ pub struct Span {
     pub box_x: f32,
 }
 
-/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows the slice,
-/// holds no state and allocates nothing: build it where it is read, as often as that is.
+/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows its items (a slice,
+/// or a count and a rule: [`HStack::each`]), holds no state and allocates nothing: build it where it is read, as often as that is.
 #[derive(Clone, Copy, Debug)]
 pub struct HStack<'a> {
     items: Items<'a>,
