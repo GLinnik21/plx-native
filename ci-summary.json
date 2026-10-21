@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T19:33:59Z",
+ "generated": "2026-10-21T19:39:37Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,18 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 32.9,
+   "change7_pct": 32.6,
    "d30": null,
    "delta30": null,
-   "delta7": 70.5,
+   "delta7": 70,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 285,
-   "prev7": 214.5,
+   "prev7": 215,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -45,18 +45,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 32.0,
+   "change7_pct": 31.5,
    "d30": null,
    "delta30": null,
-   "delta7": 41.5,
+   "delta7": 41,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 171,
-   "prev7": 129.5,
+   "prev7": 130,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -111,15 +111,15 @@
    "change7_pct": 23.3,
    "d30": null,
    "delta30": null,
-   "delta7": 64.0,
+   "delta7": 64,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 339,
-   "prev7": 275.0,
+   "prev7": 275,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -149,19 +149,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -47.6,
-   "change7_pct": 11.1,
+   "change30_pct": -48.2,
+   "change7_pct": 9.5,
    "d30": 677,
-   "delta30": -322,
-   "delta7": 35.5,
+   "delta30": -326.5,
+   "delta7": 30.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
-   "n_prev": 112,
-   "now": 355,
-   "prev7": 319.5,
+   "n_now": 118,
+   "n_prev": 111,
+   "now": 350.5,
+   "prev7": 320,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -246,18 +246,18 @@
   },
   {
    "change30_pct": 85.4,
-   "change7_pct": 9.8,
+   "change7_pct": 9.7,
    "d30": 1132,
    "delta30": 967,
-   "delta7": 187.5,
+   "delta7": 186,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 91,
-   "n_prev": 76,
+   "n_prev": 75,
    "now": 2099,
-   "prev7": 1911.5,
+   "prev7": 1913,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -308,19 +308,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 92.2,
-   "change7_pct": 13.6,
+   "change30_pct": 93.0,
+   "change7_pct": 14.4,
    "d30": 128,
-   "delta30": 118,
-   "delta7": 29.5,
+   "delta30": 119.0,
+   "delta7": 31.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 111,
-   "n_prev": 94,
-   "now": 246,
-   "prev7": 216.5,
+   "n_now": 112,
+   "n_prev": 93,
+   "now": 247.0,
+   "prev7": 216,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,19 +329,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 174.6,
-   "change7_pct": -2.0,
+   "change30_pct": 176.1,
+   "change7_pct": -1.0,
    "d30": 71,
-   "delta30": 124,
-   "delta7": -4.0,
+   "delta30": 125.0,
+   "delta7": -2.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 111,
-   "n_prev": 94,
-   "now": 195,
-   "prev7": 199.0,
+   "n_now": 112,
+   "n_prev": 93,
+   "now": 196.0,
+   "prev7": 198,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -354,15 +354,15 @@
    "change7_pct": -4.0,
    "d30": null,
    "delta30": null,
-   "delta7": -7.0,
+   "delta7": -7,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 168,
-   "prev7": 175.0,
+   "prev7": 175,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -375,15 +375,15 @@
    "change7_pct": 12.9,
    "d30": null,
    "delta30": null,
-   "delta7": 19.0,
+   "delta7": 19,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 166,
-   "prev7": 147.0,
+   "prev7": 147,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -393,18 +393,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.9,
+   "change7_pct": 6.6,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 9.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 111,
-   "n_prev": 94,
-   "now": 144,
-   "prev7": 136.0,
+   "n_now": 112,
+   "n_prev": 93,
+   "now": 146.0,
+   "prev7": 137,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -481,16 +481,16 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2,
+   "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 111,
-   "n_prev": 94,
-   "now": 18,
-   "prev7": 17.0,
+   "n_now": 112,
+   "n_prev": 93,
+   "now": 18.0,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -545,15 +545,15 @@
    "change7_pct": -98.7,
    "d30": 234,
    "delta30": -230,
-   "delta7": -304.5,
+   "delta7": -304,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 4,
-   "prev7": 308.5,
+   "prev7": 308,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -566,15 +566,15 @@
    "change7_pct": 0.0,
    "d30": 681,
    "delta30": -678,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 103,
-   "n_prev": 100,
+   "n_prev": 99,
    "now": 3,
-   "prev7": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
@@ -657,6 +652,11 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
    "from": 57.5,
@@ -667,13 +667,8 @@
    "to": 127.3
   },
   {
-   "change_pct": 32.9,
+   "change_pct": 32.6,
    "commits": [
-    {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
     {
      "pr": 888,
      "sha": "623715b3d",
@@ -718,9 +713,14 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
-   "from": 214.5,
+   "from": 215,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
@@ -728,13 +728,8 @@
    "to": 285
   },
   {
-   "change_pct": 32.0,
+   "change_pct": 31.5,
    "commits": [
-    {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
     {
      "pr": 888,
      "sha": "623715b3d",
@@ -779,9 +774,14 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
-   "from": 129.5,
+   "from": 130,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
@@ -792,11 +792,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
@@ -840,6 +835,11 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
    "from": 46.5,
@@ -853,11 +853,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
@@ -901,6 +896,11 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
    "from": 108.7,
@@ -914,11 +914,6 @@
    "change_pct": 23.3,
    "commits": [
     {
-     "pr": 887,
-     "sha": "fa04c5faf",
-     "title": "Hero: no name under a focused icon-only control"
-    },
-    {
      "pr": 888,
      "sha": "623715b3d",
      "title": "ui: hstack glyphs by ink, the filter read-out on one equal gap, control rows on HStack"
@@ -962,9 +957,14 @@
      "pr": 901,
      "sha": "59466656b",
      "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
     }
    ],
-   "from": 275.0,
+   "from": 275,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
@@ -1002,7 +1002,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 246
+   "now": 247.0
   }
  ],
  "slowest_local": [
