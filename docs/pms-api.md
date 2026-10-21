@@ -263,6 +263,14 @@ Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
 - **Only the primary `plex://` guid matches.** `plex://movie/<24 hex>` and `plex://show/<24 hex>`.
   `imdb://`, `tmdb://` and `tvdb://` (which the items carry in `Guid[]` with `includeGuids=1`) answer
   size 0, so a title with no `plex://` guid cannot be looked up this way.
+- **An episode's `grandparentGuid` is the show's catalog id.** Measured 2026-10-21 on the local PMS: it
+  is `plex://show/<24 hex>` even for an episode whose own `guid` is `local://N`, and it is the global
+  agent id, the same on every server using the Plex agent. Continue Watching groups on it
+  (`docs/shared-servers.md`, "One tile per show in Continue Watching").
+- **A scrobble restamps `lastViewedAt` and moves the deck.** `/:/scrobble` on a never-watched episode
+  set `viewCount=1` and `lastViewedAt` to now, and `/hubs/continueWatching/items` then listed the show's
+  next episode first with that same `lastViewedAt`; `/:/unscrobble` restored both. Every row of that
+  hub carried `Media[0].Part[0]` (the hub parse fills `PmsMovie::part` from it).
 - **`type` narrows and must be right.** `type=1` movies, `type=2` shows. A wrong `type` answers
   size 0, which is indistinguishable from "not held", so the call is made once per kind and the kind
   comes from the guid's own prefix. Rows carry `librarySectionID` and, when the server has them,

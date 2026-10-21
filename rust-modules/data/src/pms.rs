@@ -2029,6 +2029,10 @@ fn catalog_bytes(cat: &[Arc<PmsMovie>]) -> usize {
 fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let pins = &scope.pins;
     let live = live_sources(srcs);
+    // The same sources, with whether each may win a show: `deck_group` makes one tile of a show two
+    // servers list (docs/shared-servers.md, "One tile per show in Continue Watching").
+    let roster: Vec<crate::stores::deck_group::Source> = srcs.iter().filter(|s| s.last.is_some())
+        .map(|s| crate::stores::deck_group::Source { held: &s.copies, eligible: s.deck_eligible() }).collect();
 
     let mut new_cat: Vec<Arc<PmsMovie>> = Vec::new();
     let mut new_hubs: Vec<HubRow> = Vec::new();
@@ -2047,7 +2051,8 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         if !lanes.is_empty() && lanes.iter().all(|lane| lane.placed) {
             let (cards, before, after) = deck::merge_deck(&lanes);
             let offset = if before { lanes.iter().map(|lane| lane.lo).sum::<usize>().max(1) } else { 0 };
-            (cards.into_iter().map(|(i, c)| (live[i].0, c)).filter(|(_, c)| item_pinned(pins, &c.m)).collect(), offset, after)
+            let cards = cards.into_iter().map(|(i, c)| (live[i].0, c)).filter(|(_, c)| item_pinned(pins, &c.m)).collect();
+            (crate::stores::deck_group::present(cards, &roster, pins), offset, after)
         } else {
             let mut cw: Vec<(&str, &CwItem)> = live
                 .iter()
@@ -2056,7 +2061,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 .collect();
             // stable: equal timestamps keep source order, so the owned server wins a tie
             cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
-            (cw, 0, false)
+            (crate::stores::deck_group::present(cw, &roster, pins), 0, false)
         };
     cw.truncate(MAX_SHELF_ITEMS);
     for (h, c) in &cw {
@@ -2338,7 +2343,6 @@ impl Src {
 
     /// Whether this source's copy may win a show: it answered, its client is present and its deck
     /// read is not failing. (Plex Web merges only the servers that answered this load.)
-    #[allow(dead_code)] // RED-RUN
     fn deck_eligible(&self) -> bool {
         self.last.is_some() && self.state == HubState::Ready && self.client.is_some() && self.retry_n == 0
     }

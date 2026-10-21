@@ -426,15 +426,15 @@ fn walk_forward(owner: &mut Owner, listings: &[&Listing]) -> Vec<String> {
 #[test]
 fn a_copy_read_pages_later_stays_hidden() {
     let _guard = plx_base::testlock::serial();
-    // A's show sits 30 rows down its deck; B lists the same show first of all.
-    let a = Listing::new(0, (0..40).map(|i| 9000 - i * 20)).episode(30, 4, true);
+    // A's show sits 21 rows down its deck, past the window but inside the lookahead its lane holds; B lists the same show first of all.
+    let a = Listing::new(0, (0..40).map(|i| 9000 - i * 20)).episode(21, 4, true);
     let b = Listing::new(1, (0..6).map(|i| 9500 - i * 20)).episode(0, 4, true);
     let listings = [&a, &b];
     let mut owner = deck_owner(&listings);
     assert!(!rks(&owner.state, 0).contains(&"s1-0".to_string()), "B's copy hides behind A's, which A lists later");
     let shown = walk_forward(&mut owner, &listings);
     assert!(!shown.contains(&"s1-0".to_string()), "B's copy never shows: {shown:?}");
-    assert_eq!(shown.iter().filter(|key| *key == "s0-30").count(), 1, "A's copy shows once, where it sorts");
+    assert_eq!(shown.iter().filter(|key| *key == "s0-21").count(), 1, "A's copy shows once, where it sorts");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -461,7 +461,6 @@ fn a_winner_that_left_its_server_no_longer_hides_the_other_copy() {
     let b = Listing::new(1, (0..50).map(|i| 8990 - i * 20)).episode(30, 4, true);
     let listings = [&a, &b];
     let mut owner = deck_owner(&listings);
-    move_deck(&mut owner, &listings, false, None);
     let sid0 = owner.state.srcs[0].sid;
     assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, "s0-2"), ViewEdit::LeftDeck));
     let a = Listing { items: a.items.iter().filter(|(key, _)| key != "s0-2").cloned().collect(), shows: a.shows.clone() };

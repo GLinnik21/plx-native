@@ -19,8 +19,6 @@
 //! offsets): a held copy that falls inside the span of the rows the lane now holds, and is not among
 //! them, is gone.
 
-#![allow(dead_code)] // RED-RUN: removed when the pass is wired
-
 use std::cmp::Ordering;
 
 use plx_plex::plex::ServerId;
@@ -59,9 +57,6 @@ pub(crate) struct Held {
 impl Held {
     /// Forgets everything: a fresh answer from the server, a reset, a profile switch.
     pub(crate) fn clear(&mut self) { self.copies.clear(); }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize { self.copies.len() }
 
     #[cfg(test)]
     pub(crate) fn rks(&self) -> Vec<String> { self.copies.iter().map(|c| c.item.m.rk.clone()).collect() }
