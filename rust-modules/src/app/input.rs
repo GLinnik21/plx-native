@@ -987,10 +987,9 @@ pub(crate) fn note_global_press(
     if !is_bound(sym, wcode) {
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
     }
-    // What the user could SEE, and only then the un-dismiss — one operation, because the order is
-    // load-bearing (`HudState::note_fresh_press`). Taken for every BOUND key on every screen: it is
-    // one cheap predicate, and the alternative is each player arm remembering to ask first, which
-    // is exactly the ordering the pointer path had to be fixed for once already.
+    // A modal's key does not reach the player page: preserve its global HUD preparation here.
+    // The bare player samples and un-dismisses at ordered delivery instead, after earlier queued
+    // events have changed the HUD. Both paths use the same bound-key guard and HUD operation.
     if let Some(hud) = hud {
         hud.note_fresh_press(ps, now, paused());
     }

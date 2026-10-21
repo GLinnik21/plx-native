@@ -1067,18 +1067,23 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.down_sym = sym;
             return;
         }
+        // The bare player prepares its HUD when this queued key is DELIVERED, after earlier
+        // pointer/key events. A modal owns its keys instead, so retain its global HUD preparation.
+        let modal_owns_key = app.pages.nav.modals.input_owner().is_some();
         begin_fresh_press(&mut app.player.session,
             key,
             sym,
             wcode,
             app.last_input,
             &mut app.down_sym,
-            super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud),
+            if modal_owns_key {
+                super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud)
+            } else { None },
             &mut app.ptr,
             &mut app.ok_armed,
             &mut app.input.press,
         );
-        // `note_fresh_press` may have extended the auto-hide deadline; publish it once, here.
+        // Publish the modal's global HUD preparation; the bare player publishes on delivery.
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.publish();
         }
@@ -3971,6 +3976,242 @@ mod lifecycle_regression_tests {
         super::super::bridge::frame(&mut app.pages, &mut app.bridge,
             Tick { ms: 4_000, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
         assert!(app.bridge.take_player_reqs().is_empty());
+    }
+
+    fn player_sdl_app() -> App {
+        use plx_media::player::PlaybackState;
+        let mut app = app();
+        plx_media::player::restore_state_for_test(
+            if paused() { PlaybackState::Paused } else { PlaybackState::Playing } as u8);
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 0);
+        app
+    }
+
+    fn player_sdl(app: &mut App, bytes: [u8; 128], now: u32) {
+        clock::set_replay(now);
+        app.ev = bytes;
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        unsafe {
+            ingest_sdl_event_with_window(app, &mut fr, |_| panic!("no window event"));
+        }
+    }
+
+    fn player_motion(app: &mut App, now: u32) {
+        let mut bytes = [0; 128];
+        bytes[..4].copy_from_slice(&SDL_MOUSEMOTION.to_ne_bytes());
+        let (x, y) = plx_base::surface::to_physical(900.0, 500.0);
+        bytes[20..24].copy_from_slice(&(x.round() as i32).to_ne_bytes());
+        bytes[24..28].copy_from_slice(&(y.round() as i32).to_ne_bytes());
+        player_sdl(app, bytes, now);
+    }
+
+    fn dispatch_player_sdl(app: &mut App, now: u32) -> Vec<plx_screens::registry::PlayerReq> {
+        super::super::bridge::frame(
+            &mut app.pages,
+            &mut app.bridge,
+            plx_machine::machine::Tick {
+                ms: now,
+                dt_us: 16_000,
+            },
+            std::mem::take(&mut app.inputs),
+        );
+        app.bridge.take_player_reqs()
+    }
+
+    #[test]
+    fn player_sdl_back_after_queued_hud_reveal_hides_without_exit() {
+        let _serial = plx_base::testlock::serial();
+        for paused in [false, true] {
+            let _paused = TransportPaused::set(paused);
+            for (sym, wcode) in [(0, 482), (0, 461), (27, 0)] {
+                let mut app = player_sdl_app();
+                // Mount gives the transport its initial linger. Hide it through a real Back first.
+                player_sdl(&mut app, encode_key(sym, wcode, true), 100);
+                player_sdl(&mut app, encode_key(sym, wcode, false), 101);
+                assert!(dispatch_player_sdl(&mut app, 116).is_empty());
+                assert!(!super::super::bridge::player(&app.pages)
+                    .unwrap()
+                    .hud
+                    .visible(&app.player.session, 1_000, paused));
+                // One SDL poll batch: motion reveals the HUD before Back is delivered.
+                player_motion(&mut app, 1_000);
+                player_sdl(&mut app, encode_key(sym, wcode, true), 1_001);
+                player_sdl(&mut app, encode_key(sym, wcode, false), 1_002);
+                assert!(
+                    dispatch_player_sdl(&mut app, 1_016).is_empty(),
+                    "Back after a queued reveal must hide only the HUD, never request Exit"
+                );
+                assert!(
+                    super::super::bridge::player(&app.pages)
+                        .unwrap()
+                        .hud
+                        .dismissed
+                );
+                assert_eq!(
+                    super::paused(),
+                    paused,
+                    "Back leaves the playback clock unchanged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn player_sdl_two_fresh_backs_in_one_batch_hide_then_exit() {
+        let _serial = plx_base::testlock::serial();
+        for paused in [false, true] {
+            let _paused = TransportPaused::set(paused);
+            for (sym, wcode) in [(0, 482), (0, 461), (27, 0)] {
+                let mut app = player_sdl_app();
+                player_motion(&mut app, 1_000);
+                assert!(dispatch_player_sdl(&mut app, 1_016).is_empty());
+                for now in [1_020, 1_022] {
+                    player_sdl(&mut app, encode_key(sym, wcode, true), now);
+                    player_sdl(&mut app, encode_key(sym, wcode, false), now + 1);
+                }
+                assert_eq!(
+                    dispatch_player_sdl(&mut app, 1_040),
+                    vec![plx_screens::registry::PlayerReq::Exit],
+                    "the second fresh Back must see the first Back's dismissal"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn player_sdl_back_repeat_and_release_cannot_exit_after_hiding() {
+        let _serial = plx_base::testlock::serial();
+        for paused in [false, true] {
+            let _paused = TransportPaused::set(paused);
+            for (sym, wcode) in [(0, 482), (0, 461), (27, 0)] {
+                let mut app = player_sdl_app();
+                player_sdl(&mut app, encode_key(sym, wcode, true), 1_000);
+                assert!(dispatch_player_sdl(&mut app, 1_016).is_empty());
+                for now in [1_200, 1_400] {
+                    player_sdl(&mut app, encode_key_repeat(sym, wcode), now);
+                    assert!(dispatch_player_sdl(&mut app, now + 16).is_empty());
+                    assert!(
+                        super::super::bridge::player(&app.pages)
+                            .unwrap()
+                            .hud
+                            .dismissed
+                    );
+                }
+                player_sdl(&mut app, encode_key(sym, wcode, false), 1_450);
+                assert!(dispatch_player_sdl(&mut app, 1_466).is_empty());
+                player_sdl(&mut app, encode_key(sym, wcode, true), 1_500);
+                assert_eq!(
+                    dispatch_player_sdl(&mut app, 1_516),
+                    vec![plx_screens::registry::PlayerReq::Exit]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn player_sdl_unsupported_key_stays_inert_and_stop_still_exits() {
+        let _serial = plx_base::testlock::serial();
+        let _paused = TransportPaused::set(true);
+        let mut app = player_sdl_app();
+        player_sdl(&mut app, encode_key(0, 482, true), 1_000);
+        player_sdl(&mut app, encode_key(0, 482, false), 1_001);
+        assert!(dispatch_player_sdl(&mut app, 1_016).is_empty());
+        app.ok_armed = true;
+        app.input.press.begin(1_020);
+        player_sdl(&mut app, encode_key(0, 269, true), 1_030);
+        player_sdl(&mut app, encode_key(0, 269, false), 1_031);
+        assert!(dispatch_player_sdl(&mut app, 1_046).is_empty());
+        assert!(
+            super::super::bridge::player(&app.pages)
+                .unwrap()
+                .hud
+                .dismissed
+        );
+        assert!(app.ok_armed && app.input.press.is_active());
+        player_motion(&mut app, 1_050);
+        player_sdl(&mut app, encode_key(0, 413, true), 1_051);
+        assert_eq!(
+            dispatch_player_sdl(&mut app, 1_066),
+            vec![plx_screens::registry::PlayerReq::Exit],
+            "Stop exits even over a visible HUD"
+        );
+        assert!(!app.ok_armed, "a bound Stop still cancels the armed click");
+    }
+
+    #[test]
+    fn player_sdl_back_cancels_live_seek_before_hiding_or_exiting() {
+        let _serial = plx_base::testlock::serial();
+        for paused in [false, true] {
+            let _paused = TransportPaused::set(paused);
+            let mut app = player_sdl_app();
+            plx_media::player::SHARED
+                .duration_ns
+                .store(100_000_000_000, Ordering::Relaxed);
+            player_sdl(
+                &mut app,
+                encode_key(plx_ui::consts::SDLK_RIGHT, 0, true),
+                1_000,
+            );
+            player_sdl(
+                &mut app,
+                encode_key(plx_ui::consts::SDLK_RIGHT, 0, false),
+                1_020,
+            );
+            assert!(dispatch_player_sdl(&mut app, 1_036).is_empty());
+            assert!(super::super::bridge::player(&app.pages)
+                .unwrap()
+                .scrub
+                .is_live());
+            player_sdl(&mut app, encode_key(0, 482, true), 1_100);
+            player_sdl(&mut app, encode_key_repeat(0, 482), 1_300);
+            player_sdl(&mut app, encode_key(0, 482, false), 1_320);
+            assert!(dispatch_player_sdl(&mut app, 1_336).is_empty());
+            let player = super::super::bridge::player(&app.pages).unwrap();
+            assert!(!player.scrub.is_live() && player.scrub.ns == -1);
+            assert!(
+                !player.hud.dismissed,
+                "cancel spends the Back on the seek target"
+            );
+            assert_eq!(super::paused(), paused);
+        }
+    }
+
+    #[test]
+    fn player_sdl_panels_take_back_before_the_hud_and_keep_stop_swallowed() {
+        use plx_screens::player::overlay::{OverlayKind, Panel};
+        use plx_screens::registry::PlayerReq;
+        let _serial = plx_base::testlock::serial();
+        let _paused = TransportPaused::set(false);
+        for kind in [OverlayKind::Tracks { tab: 0 }, OverlayKind::Info,
+            OverlayKind::Chapters, OverlayKind::More { quality: false },
+            OverlayKind::More { quality: true }, OverlayKind::Timing] {
+            let mut app = player_sdl_app();
+            super::super::bridge::open_player_overlay(&app.player.session,
+                app.bridge.metadata_view(), &mut app.pages, kind);
+            for now in (16..=512).step_by(16) { frame(&mut app, now); }
+            app.bridge.take_player_reqs();
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), Some(kind));
+            player_sdl(&mut app, encode_key(0, 413, true), 600);
+            player_sdl(&mut app, encode_key(0, 413, false), 601);
+            let reqs = dispatch_player_sdl(&mut app, 616);
+            assert!(!reqs.contains(&PlayerReq::Exit), "{kind:?}: panel swallows Stop");
+            player_sdl(&mut app, encode_key(0, 482, true), 700);
+            player_sdl(&mut app, encode_key_repeat(0, 482), 900);
+            player_sdl(&mut app, encode_key(0, 482, false), 920);
+            let reqs = dispatch_player_sdl(&mut app, 936);
+            assert!(!reqs.contains(&PlayerReq::Exit), "{kind:?}: Back belongs to the panel");
+            if kind == (OverlayKind::More { quality: true }) {
+                let surface = super::super::bridge::player_overlay_mut(&mut app.pages).unwrap();
+                let Panel::More(menu) = surface.panel() else { panic!("More panel"); };
+                assert_eq!(menu.page(), None, "Back pops Quality, rather than closing More");
+                player_sdl(&mut app, encode_key(0, 482, true), 1_000);
+                player_sdl(&mut app, encode_key(0, 482, false), 1_001);
+                assert!(!dispatch_player_sdl(&mut app, 1_016).contains(&PlayerReq::Exit));
+            }
+            assert!(super::super::bridge::player_overlay_kind(&app.pages).is_none(),
+                "{kind:?}: Back dismisses the root panel");
+        }
     }
 
     #[test]

@@ -537,6 +537,18 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// this the stop landed on `key_ok`'s final `else` and toggled play/pause, and the drag flag
     /// was a field of the loop's pointer machine whose producer had become unreachable.
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // Sample and un-dismiss together, in delivery order: ingestion can queue a pointer
+        // reveal or another Back before this key reaches the player. An engine edge re-delivery
+        // is still the SAME physical press, and unsupported keys must leave the HUD alone.
+        if let ScreenEvent::Input(input) = ev {
+            if let InputKind::Key { sym, wcode, edge: Edge::Down, at_edge: false, .. } = input.kind {
+                if consts::is_bound(sym, wcode) {
+                    self.hud.note_fresh_press(H::session(cx), input.at.ms,
+                        plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed));
+                    self.publish();
+                }
+            }
+        }
         if self.repair_alert.visible() {
             match ev {
                 ScreenEvent::FocusMoved { to, .. } => {
@@ -1801,7 +1813,8 @@ mod step_ladder_tests {
     }
 
     fn fresh(page: &mut PlayerScreen) {
-        page.hud.visible_at_press = true;
+        page.hud.dismissed = false;
+        page.hud.extend(1_000, input::HUD_LINGER_MS);
     }
 
     /// The census's other half: a control the frame does NOT draw registers no stop, so a click
@@ -2090,10 +2103,7 @@ mod step_ladder_tests {
         assert!(page.hud.dismissed, "the transport is dismissed");
         assert_eq!(page.hud.nav.focus, 0, "ring parked on the scrubber");
         assert_eq!(page.scrub.ns, -1, "no scrub target left behind");
-        // A bound key un-dismisses; BACK itself is bound, so the second press must sample the
-        // dismissed state BEFORE that, which is what `visible_at_press` is for.
-        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
-        assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
+        // Delivery samples the dismissal before the bound key un-dismisses it.
         let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
     }
@@ -2124,6 +2134,8 @@ mod step_ladder_tests {
         assert_eq!(page.hud.nav.focus, 1, "scrubber -> control row");
         press(&mut page, SDLK_UP, 0, Edge::Down);
         assert_eq!(page.hud.nav.focus, 0, "control row has nothing above: hides+reparks");
+        press(&mut page, SDLK_DOWN, 0, Edge::Down);
+        assert_eq!(page.hud.nav.focus, 0, "the first press reveals the hand-hidden transport");
         press(&mut page, SDLK_DOWN, 0, Edge::Down);
         assert_eq!(page.hud.nav.focus, 2, "scrubber -> tabs");
         press(&mut page, SDLK_DOWN, 0, Edge::Down);
@@ -2311,7 +2323,7 @@ mod scrub_ownership_tests {
     /// below begins from.
     fn page_on_the_bar() -> PlayerScreen {
         let mut page = PlayerScreen::new(ENTRY);
-        page.hud.visible_at_press = true;
+        page.hud.extend(1_000, input::HUD_LINGER_MS);
         page.hud.nav.focus = 0;
         page
     }
@@ -3099,7 +3111,7 @@ mod scrub_ownership_tests {
         playhead(50 * S);
         let mut page = page_on_the_bar();
         let (at, _) = tap_and_commit(&mut page, 1_000);
-        page.hud.visible_at_press = false; // the transport is not on screen at the press
+        page.hud.dismissed = true; // the transport is not on screen at the press
         let (_, reqs) = back(&mut page, at + 500);
         assert_eq!(reqs, vec![PlayerReq::Exit], "an ordinary BACK over a bare picture: {reqs:?}");
     }
@@ -3124,6 +3136,7 @@ mod scrub_ownership_tests {
             assert!(all.is_empty(), "paused {paused}: no timer commits a target: {all:?}");
             assert_eq!(page.scrub.ns, 60 * S, "paused {paused}: the target is still pending");
 
+            tick(&mut page, 129_984); // the real frame loop keeps the pending target's HUD alive
             key(&mut page, SDLK_RIGHT, Edge::Down, 130_000);
             key(&mut page, SDLK_RIGHT, Edge::Up, 130_020);
             assert_eq!(page.scrub.ns, 70 * S, "the second tap goes on from the target, not the playhead");

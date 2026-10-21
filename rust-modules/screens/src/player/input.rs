@@ -200,9 +200,9 @@ pub struct HudState {
     /// UP-from-the-top explicitly dismisses the HUD even while paused; any other player
     /// input clears it. Without this, paused() would force the HUD permanently visible.
     pub dismissed: bool,
-    /// Was the transport ON SCREEN when the key being handled arrived? Sampled by
-    /// `begin_fresh_press` at the top of every fresh press, and the ONLY honest answer to that
-    /// question by the time an arm runs.
+    /// Was the transport ON SCREEN before the fresh key being handled? Sampled at ordered
+    /// `PlayerScreen::step` delivery, before un-dismissing it, so earlier queued pointer/key
+    /// events have already taken effect.
     ///
     /// The arm cannot re-derive it, because the same function clears [`dismissed`] one line later —
     /// and `dismissed` OUTRANKS the timer inside [`hud_visible`]. So a user who hid the transport
@@ -263,12 +263,13 @@ impl HudState {
     /// rather than two lines in its caller so that the order is a thing a test can hold still,
     /// instead of a convention a later edit can quietly transpose.
     ///
-    /// That caller is `note_global_press`, NOT `begin_fresh_press` as it once was, and the
-    /// difference is the point of the split: an unsupported key never gets here at all.
+    /// The bare player's caller is its ordered key delivery; a modal's keys retain the global
+    /// preparation in `note_global_press`. Both guard with `is_bound`: unsupported keys never
+    /// get here.
     pub fn note_fresh_press(&mut self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) {
         self.visible_at_press = self.visible(ps, now, is_paused);
         // Any BOUND fresh key un-dismisses the HUD (UP-hide re-sets it). "Bound" and not "any" is
-        // the whole of `note_global_press`, the ONLY caller: an unsupported press never reaches
+        // both callers' `is_bound` guard: an unsupported press never reaches
         // here, so a colour button over a film no longer raises the transport.
         self.dismissed = false;
     }
