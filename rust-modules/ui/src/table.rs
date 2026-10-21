@@ -556,9 +556,9 @@ fn ticon_box_dx(icon: crate::icons::Icon) -> f32 {
 /// it. The step back is the INK's alone.
 ///
 /// ONE constant, because the three calls at the draw site have to agree: the cap band the run is
-/// centred on, the advance width it adds to `trailing`, and the paint. Bold glyphs are WIDER than
-/// their regular twins, so measuring on one flag and painting on the other under-counts `trailing`
-/// — and `trailing` is the LABEL's elision budget (`text_w` below), so the label would be elided
+/// centred on, the advance width it adds to the trailing stack ([`trailing_items`]), and the paint.
+/// Bold glyphs are WIDER than their regular twins, so measuring on one flag and painting on the
+/// other under-counts [`trailing_reserved`] — and that is the LABEL's elision budget (`text_w` below), so the label would be elided
 /// as though the read-out were narrower than it is and run right into it. The BADGE run is not at
 /// risk: it is placed outside the read-out, while the complete trailing-width calculation
 /// reserves both runs before measuring the label.
@@ -1100,7 +1100,7 @@ impl TableView {
     }
 
     /// Where a row's read-out ends (its right edge) in a `frame_w`-wide table — the x offset from
-    /// the panel's left, the same `text_right - trailing` the draw uses.
+    /// the panel's left, the same [`trailing_stack`] edge the draw uses.
     #[cfg(any(test, feature = "test-support"))]
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
         let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure);
@@ -1689,8 +1689,9 @@ impl TableView {
             }
             // The trailing run — read-out, badge run, trailing icon — is ONE stack ([`trailing_items`]),
             // anchored by the icon's ink at `text_right`; each part below is drawn where it stands.
-            let natural_value_w = row.readout().map(|v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0));
-            let trailing_run = trailing_items(row, natural_value_w, measure);
+            // The read-out is flush right at its item's trailing edge (below), so its width moves
+            // nothing the draw reads: a zero-wide item places the same edge, and costs no measure.
+            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure);
             let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right).placed().find(|s| s.i == i);
             // trailing accessory (SVG), its BOX at the stack's `box_x` so its ink ends on the edge
             if let (Some(ti), Some(at)) = (row.ticon, trailing_at(2)) {

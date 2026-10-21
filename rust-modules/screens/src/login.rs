@@ -496,6 +496,17 @@ fn status_row_rects(
         .action_frames_measured(measure)
 }
 
+/// Where a report note's text column stands in the narrative column `[x, x + w)`: the whole
+/// column, or — with the busy spinner — what is left of it after the shared inline ring and its
+/// `space::XS` gap (the stack `StatusOverlay::busy_note_split` stands, leading-anchored here).
+fn note_column(x: f32, w: f32, busy: bool) -> (f32, f32) {
+    if !busy {
+        return (x, w);
+    }
+    let pair = Spinner::inline_pair_items(w - Spinner::inline_gutter());
+    HStack::new(&pair, theme::space::XS, Align::Leading(x)).span(1).unwrap_or((x, w))
+}
+
 /// The lone action's rect — [`status_row_rects`] for a read-out with one control.
 #[cfg(test)]
 fn status_action_rect(
@@ -1854,9 +1865,7 @@ impl LoginScreen {
         if let Some(note) = self.report_note() {
             // A report on its way: the shared inline spinner in a leading gutter, on the first
             // line's cap band (TextView sets each line cap-top), the text one gutter over.
-            let gutter = if note.busy { Spinner::inline_gutter() } else { 0.0 };
-            let run = [Item::new(gutter), Item::new(layout.narrative.w - gutter)];
-            let (col_x, col_w) = HStack::new(&run, 0.0, Align::Leading(layout.narrative.x)).span(1).unwrap_or((layout.narrative.x, 0.0));
+            let (col_x, col_w) = note_column(layout.narrative.x, layout.narrative.w, note.busy);
             let col = Rect::new(col_x, 0.0, col_w, 0.0);
             let line = note.text.to_string_lossy();
             let view = TextView::new(&line, theme::size::CAPTION, theme::TEXT_TERTIARY).max_lines(2);
@@ -2364,6 +2373,16 @@ mod text_fit_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_note_column_is_the_gutter_off_the_narrative_as_before() {
+        for (x, w) in [(0.0f32, 600.0f32), (128.0, 733.5), (96.0, 1024.0)] {
+            let gutter = Spinner::inline_gutter();
+            let (cx, cw) = note_column(x, w, true);
+            assert!((cx - (x + gutter)).abs() < 0.001 && (cw - (w - gutter)).abs() < 0.001, "{cx} {cw}");
+            assert_eq!(note_column(x, w, false), (x, w));
+        }
+    }
     use std::sync::{Arc, LazyLock};
 
     use plx_ui::consts::inside_safe;

@@ -25,6 +25,22 @@ const CHEVRON_BEARING_R: f32 = CHEVRON_SIZE * (1.0 - CHEVRON_INK.1);
 /// Where the chevron sits in [`LinkedMeasure::items`].
 const CHEVRON_AT: usize = 3;
 
+/// The room the chevron takes after the run, read off the face's own stack: its full width less
+/// the width without the chevron, for an empty run.
+fn chevron_room() -> f32 {
+    let empty = LinkedMeasure {
+        runs: Vec::new(),
+        total: String::new(),
+        run_w: 0.0,
+        lead_w: 0.0,
+        note: None,
+        face_w: 0.0,
+    };
+    let items = empty.items();
+    HStack::new(&items, ENTRY_RUN_GAP, Align::Leading(0.0)).width()
+        - HStack::new(&items[..CHEVRON_AT], ENTRY_RUN_GAP, Align::Leading(0.0)).width()
+}
+
 /// The face's scale at focus progress `focus_t`: 1 at rest, `CTRL_FOCUS_SCALE` focused.
 fn focus_scale(focus_t: f32) -> f32 {
     1.0 + (widgets::CTRL_FOCUS_SCALE - 1.0) * focus_t.clamp(0.0, 1.0)
@@ -80,8 +96,9 @@ pub struct LinkedHeading<'a> {
 impl LinkedMeasure {
     /// **The face's one run**, as `HStack` items at `ENTRY_RUN_GAP`: the title (or a `Heading`'s
     /// whole elided flow), the dot and the count (absent without one), then the chevron by its ink
-    /// `CHEVRON_GAP` off the run. `measure` sizes the face from it, `content_x` and `draw` stand
-    /// the pieces from it, so the face and what it holds cannot disagree.
+    /// `CHEVRON_GAP` off the run. `measure` sizes the face from it, `draw` stands the pieces
+    /// from it (`LinkedHeading::content_x` is its first span), so the face and what it holds
+    /// cannot disagree.
     fn items(&self) -> [Item; 4] {
         let (dot, count) = match self.note {
             Some((d, c)) => (Item::new(d), Item::new(c)),
@@ -140,7 +157,7 @@ impl<'a> LinkedHeading<'a> {
     }
 
     fn text_room(&self) -> f32 {
-        self.max_w - (CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R)
+        self.max_w - chevron_room()
     }
 
     pub fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
@@ -260,7 +277,7 @@ impl<'a> LinkedHeading<'a> {
         let items = m.items();
         let stack = HStack::new(&items, ENTRY_RUN_GAP, self.align(face));
         let at = |i: usize| stack.span(i).map_or(face.x, |(x, _)| x);
-        let content_x = at(0);
+        let content_x = self.content_x(face, m);
         match self.presentation {
             Presentation::Entry => {
                 let cy = face.cy();
@@ -653,6 +670,14 @@ mod tests {
                 assert!((g - w).abs() < 0.001, "count {count:?} focus {focus_t}: {got:?} vs {want:?}");
             }
         }
+    }
+
+    #[test]
+    fn chevron_room_is_the_gap_plus_the_chevron_ink_width() {
+        let by_hand = CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R;
+        assert!((chevron_room() - by_hand).abs() < 0.001, "{} vs {by_hand}", chevron_room());
+        let h = LinkedHeading::heading("T", "").bounded(500.0);
+        assert!((h.text_room() - (500.0 - by_hand)).abs() < 0.001);
     }
 
     #[test]
