@@ -901,7 +901,8 @@ impl DetailScreen {
                 row,
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
-                self.episode_cells.scale(i) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
+                self.episode_cells.scale(i),
+                focus.map_or(1.0, |k| f.press.dip_of(&k)),
                 &self.episode_lift(i),
                 f.measure,
                 meta,
@@ -2490,6 +2491,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                                 _ => None,
                             },
                             |i| self.episode_cells.scale(i),
+                            |i| episodes::elem(i, episodes::Row::Still)
+                                .and_then(|local| self.engine_key(local))
+                                .map_or(1.0, |elem| f.press.dip_of(&FocusKey { entry: self.entry, elem })),
+                            |i| episodes::elem(i, episodes::Row::Still)
+                                .and_then(|local| self.engine_key(local))
+                                .is_some_and(|elem| f.leaves_out(self.entry, elem)),
                             |i| self.episode_lift(i),
                             f.measure,
                             meta,
@@ -3859,6 +3866,24 @@ impl DetailScreen {
                 let has_menu = self
                     .focused_related(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
                     .is_some_and(crate::registry::item_has_menu);
+                if !has_menu {
+                    return none;
+                }
+                let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
+                let still = (self.scroll.pos - self.scroll_target).abs() < 0.5 && self.scroll.vel.abs() < 0.5;
+                plx_ui::hold_hint::HintInput::for_placed(key.elem, drawn, still, cx.press.held_ms)
+            }
+            // A held OK on an episode's still opens the episode's item menu, so the hold shows its
+            // progress like the other openers. The text stop is no card (a held OK there does
+            // nothing), and the episode's own `rk` is the gate, as the menu's is.
+            Some(Located::Episode(i, episodes::Row::Still)) => {
+                if !self.hold_hint.wants_input(ok_held) {
+                    return none;
+                }
+                let has_menu = self
+                    .detail(<H as crate::registry::MetadataLike>::metadata(cx))
+                    .and_then(|d| d.episodes.get(i))
+                    .is_some_and(|ep| !ep.rk.is_empty());
                 if !has_menu {
                     return none;
                 }

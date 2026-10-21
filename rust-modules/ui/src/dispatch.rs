@@ -741,8 +741,9 @@ where
 
     /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the
     /// page's focused card drawn a second time above the dim. A card a card section left out of the
-    /// page pass ([`DrawFrame::lifted`]) is drawn by the lift ALONE, at this scale. An opener no
-    /// card section draws (the Detail episode strip, season tabs, hero buttons, the Home hero) is
+    /// page pass ([`DrawFrame::lifted`], asked through [`DrawFrame::leaves_out`]: a card section's
+    /// tile, the Detail episode strip's cell) is drawn by the lift ALONE, at this scale. An opener
+    /// no page leaves out (season tabs, hero buttons, the Home hero) is
     /// still drawn by the page at the press scale (`DrawFrame.press`, from [`Self::parts`]), so
     /// there the lift must be handed the SAME number or the two disagree on every frame the press is
     /// moving. They did, while this was a constant `1.0`: a taken hold's card was drawn at its pop
