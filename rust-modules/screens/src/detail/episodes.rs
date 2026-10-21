@@ -125,16 +125,17 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(TEXT_W)
     };
-    // NEUTRAL, deliberately: the summary row is ALWAYS present (zero high when empty), so an empty
-    // summary with an air date leaves two MD gaps above the date, and a title-only platter keeps a
-    // trailing MD. That is today's pixels; collapsing it is an open owner question (Q6).
+    // An empty summary or air date is ABSENT, not a zero-high row: one `MD` between the blocks that
+    // are there, none after the last (the date sits one gap under the title when there is no
+    // summary, and a title-only platter ends at the title).
     let items = [
         Item::new(title_h),
-        Item::new(summary_h),
+        if ep.summary.is_empty() { Item::absent() } else { Item::new(summary_h) },
         if ep.aired.is_empty() { Item::absent() } else { Item::new(theme::size::MICRO as f32) },
     ];
     let stack = VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY));
-    let (summary_y, _) = stack.span(1).unwrap_or((TITLE_DY, 0.0));
+    // Where a summary WOULD stand (unread when there is none: the draw skips an empty one).
+    let (summary_y, _) = stack.span(1).unwrap_or((TITLE_DY + title_h + theme::space::MD, 0.0));
     let bottom = TITLE_DY + stack.height();
     let date_y = stack.span(2).map_or(summary_y + summary_h, |(y, _)| y);
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
@@ -785,23 +786,27 @@ mod tests {
         }
     }
 
-    /// NEUTRAL by design (owner question Q6): the summary row is always present, so an empty summary
-    /// with an air date keeps today's double MD above the date, and a title-only platter keeps its
-    /// trailing MD. Fixing either moves pixels and is a separate change.
+    /// Q6: an empty summary is ABSENT from the meta stack, so there is one gap wherever two blocks
+    /// meet: the date stands one MD under the title (not two), and a title-only platter ends at the
+    /// title with no trailing MD. A summary, when there is one, keeps its MD on both sides.
     #[test]
-    fn the_meta_block_keeps_todays_gaps_for_an_absent_summary_and_date() {
+    fn the_meta_block_has_one_gap_between_blocks_and_none_trailing() {
         let measure = plx_ui::fixture::FixtureMeasure;
         let md = theme::space::MD;
-        let title = Episode { title: "Pilot".into(), ..Default::default() };
-        let (date_y, summary_y, bottom) = meta_layout(&title, &measure);
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), aired: "2020-01-01".into(), ..Default::default() };
+        let (date_y, summary_y, bottom) = meta_layout(&full, &measure);
         let title_h = summary_y - TITLE_DY - md;
         assert!(title_h >= TITLE_LEAD);
-        assert_eq!(date_y, summary_y, "no date: it reports the summary's end");
-        assert_eq!(bottom, summary_y + META_BOTTOM_PAD, "a title-only platter keeps its trailing MD");
-        let dated = Episode { aired: "2020-01-01".into(), ..title.clone() };
-        let (date_y, summary_y2, bottom) = meta_layout(&dated, &measure);
-        assert_eq!(summary_y2, summary_y);
-        assert!((date_y - summary_y - md).abs() < 0.01, "an empty summary still leaves its MD before the date");
+        assert!(date_y > summary_y + md, "a summary keeps its MD before the date");
         assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
+        // (a) no summary, a date: one MD under the title.
+        let dated = Episode { summary: String::new(), ..full.clone() };
+        let (date_y, _, bottom) = meta_layout(&dated, &measure);
+        assert!((date_y - (TITLE_DY + title_h + md)).abs() < 0.01, "the date stands one MD under the title: {date_y}");
+        assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
+        // (b) title only: no trailing MD under the title.
+        let title = Episode { summary: String::new(), aired: String::new(), ..full };
+        let (_, _, bottom) = meta_layout(&title, &measure);
+        assert!((bottom - (TITLE_DY + title_h + META_BOTTOM_PAD)).abs() < 0.01, "a title-only platter has no trailing MD: {bottom}");
     }
 }

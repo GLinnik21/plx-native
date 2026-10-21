@@ -4525,6 +4525,18 @@ impl<'a> StatusOverlay<'a> {
         self.bands_measured(&LegacyMeasure)
     }
 
+    /// The verdict's and the reason's bands of a page-placed `Failed` read-out that HAS a reason, for
+    /// a caller that draws its own text into the same slots (the Watchlist's full-screen read-outs):
+    /// the overlay's own placement, the reason's reserved two-line slot included, not a copy of it.
+    pub fn failed_page_text_bands(frame: Rect, measure: &dyn plx_machine::machine::Measure) -> (Rect, Rect) {
+        let bands = Self::new(frame, c"", StatusKind::Failed)
+            .page(crate::icons::Icon::ServerBadgeMinus)
+            .reason(c"-")
+            .bands_measured(measure);
+        let cap = bands.cap;
+        (cap, bands.reason.unwrap_or(Rect::new(frame.x, cap.y + cap.h, frame.w, 0.0)))
+    }
+
     fn bands_measured(&self, measure: &dyn plx_machine::machine::Measure) -> StatusBands {
         let (cap_sz, _, _) = Self::verdict_face(self.kind);
         let (reason_sz, _) = Self::reason_face(self.kind);

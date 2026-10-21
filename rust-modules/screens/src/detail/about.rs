@@ -30,11 +30,9 @@ const CARD_PAD: f32 = 30.0;
 /// The `ui::text_lift` corner radius of the About card and the Languages column (the mockup's 14).
 const LIFT_RADIUS: f32 = 14.0;
 const COL_Y: f32 = 430.0;
-/// A column's heading is drawn at the column's top; Information and Languages start their first row
-/// this far below it, Accessibility's badge rows [`HEAD_TO_BADGES`] below (its "no flags" dash uses
-/// the Information distance). The four px difference is today's pixels, kept as two names.
+/// A column's heading is drawn at the column's top; Information, Languages and Accessibility (its
+/// badge rows and its "no flags" dash alike) start their first row this far below it.
 const HEAD_TO_ROWS: f32 = 68.0;
-const HEAD_TO_BADGES: f32 = 64.0;
 /// The air under a label/value pair, and under an accessibility badge row.
 const PAIR_AIR: f32 = 22.0;
 const BADGE_AIR: f32 = 26.0;
@@ -405,7 +403,7 @@ impl Rows {
             return;
         }
         let mut flow = VFlow::new(y, 0.0);
-        flow.push(Item::new(0.0).after(HEAD_TO_BADGES));
+        flow.push(Item::new(0.0).after(HEAD_TO_ROWS));
         for (label, desc) in &self.access {
             flow.place(|yy| {
                 plx_ui::widgets::badge(
@@ -709,5 +707,35 @@ mod tests {
         let runs = draw(&rows);
         let audio = y_of(&runs, plx_platform::i18n::msg::browse_detail_audio());
         assert!((audio - (COL_Y + HEAD_TO_ROWS)).abs() < tol);
+    }
+
+    /// Q3: Accessibility's first badge row stands [`HEAD_TO_ROWS`] under its heading, the very
+    /// distance Information's and Languages' first rows keep (it was four px nearer): the heading
+    /// is at the column top, the first description [`BADGE_DESC_DY`] under the badge row.
+    #[test]
+    fn the_accessibility_rows_stand_the_same_distance_under_their_heading_as_the_others() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let d = Detail::default();
+        let mut rows = Rows::new();
+        rows.access = vec![(plx_platform::i18n::msg::widgets_badge_cc(), plx_platform::i18n::msg::browse_detail_closed_captions())];
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            rows.draw(Painter::recording(), &d, 0.0, false, &TextLift::new(), &TextLift::new(), &measure)
+        });
+        let y_of = |text: &str| runs.iter().find(|r| r.text == text).map(|r| r.at.y).unwrap_or_else(|| panic!("{text} not drawn"));
+        let head = y_of(plx_platform::i18n::msg::browse_detail_accessibility());
+        let desc = runs.iter().filter(|r| r.at.x == 1360.0 && r.at.y > head).map(|r| r.at.y).fold(f32::MAX, f32::min);
+        assert!((head - COL_Y).abs() < 0.5, "the heading stands at the column top");
+        // The same description drawn where Information's first row would stand its own body.
+        let want = plx_ui::draw_census::capture_runs(|| {
+            TextView::new(plx_platform::i18n::msg::browse_detail_closed_captions(), theme::size::CAPTION, theme::TEXT_HEADING)
+                .with_measure(&measure)
+                .leading(30.0)
+                .max_lines(4)
+                .draw(Painter::recording(), Rect::new(1360.0, COL_Y + HEAD_TO_ROWS + BADGE_DESC_DY, 500.0, 0.0));
+        })[0]
+            .at
+            .y;
+        assert!((desc - want).abs() < 0.5, "the first description is at {desc}, want {want}: a row stands {HEAD_TO_ROWS} under the heading");
     }
 }
