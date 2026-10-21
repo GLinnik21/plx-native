@@ -11,6 +11,7 @@
 //! focus globals / catalog: focus is a plain `Option<usize>`, the item art is a [`Art`] the caller
 //! supplies.
 use crate::consts::*;
+use crate::hstack::{Flow, Item};
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
 use crate::widgets::{card, pop_factor, Art};
@@ -696,17 +697,18 @@ pub fn heading_parts<S: HeadingText + ?Sized + 'static>(
     source: &S,
     mut run: impl FnMut(&S, f32, std::os::raw::c_int, std::os::raw::c_int, [f32; 4], HeadingPart) -> f32,
 ) -> f32 {
-    let mut dx = run(title, 0.0, theme::size::HEADLINE, 1, theme::TEXT_HEADING, HeadingPart::Title);
+    // One flow: title, then per note a dot and the note, each `HEADING_SOURCE_PAD` from the last.
+    // Each run is painted (and so measured) as it is placed, hence `place`, not a slice.
+    let mut flow = Flow::new(0.0, HEADING_SOURCE_PAD);
+    flow.place(|x| Item::new(run(title, x, theme::size::HEADLINE, 1, theme::TEXT_HEADING, HeadingPart::Title)));
     for (note, part) in [(count, HeadingPart::Count), (source, HeadingPart::Source)] {
         if note.blank() {
             continue; // absent, not empty: no gap, no dot, no run
         }
-        dx += HEADING_SOURCE_PAD;
-        dx += run(S::dot(), dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, part);
-        dx += HEADING_SOURCE_PAD;
-        dx += run(note, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, part);
+        flow.place(|x| Item::new(run(S::dot(), x, theme::size::BODY, 0, theme::TEXT_SEPARATOR, part)));
+        flow.place(|x| Item::new(run(note, x, theme::size::BODY, 0, theme::TEXT_TERTIARY, part)));
     }
-    dx
+    flow.end()
 }
 
 /// [`heading_parts`] painted with its title's cap top at `(x, y)`: every run on the TITLE's

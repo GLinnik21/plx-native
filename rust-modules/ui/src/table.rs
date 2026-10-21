@@ -8,6 +8,7 @@
 //! same widget serves the in-player track menu and the Settings, Privacy and Legal surfaces.
 #![allow(dead_code)]
 use crate::fit;
+use crate::hstack::{Flow, Item, Span};
 use crate::label::{HAlign, Label, VAlign};
 use crate::theme;
 use crate::{Painter, Rect, Spring};
@@ -488,6 +489,25 @@ const ACCESSORY_ICON_W: f32 = 26.0;
 fn ticon_slot_w(icon: crate::icons::Icon) -> f32 {
     let (l, r) = crate::icons::ink_x(icon);
     (r - l) * ACCESSORY_ICON_W + ACCESSORY_GAP
+}
+
+/// The badges of a row's trailing run, [`BADGE_GAP`] apart from `x` on: each with the span it
+/// draws. The ONE place the run is laid out — its width ([`badge_run_w`]) and where each chip is
+/// painted are both read off it, so they cannot disagree.
+fn badge_spans<'a>(
+    badges: &'a [Badge],
+    x: f32,
+    measure: &'a dyn plx_machine::machine::Measure,
+) -> impl Iterator<Item = (&'a Badge, Span)> + 'a {
+    let mut flow = Flow::new(x, BADGE_GAP);
+    badges.iter().filter_map(move |b| {
+        flow.push(Item::new(crate::widgets::badge_w(b.text(), None, measure))).map(|span| (b, span))
+    })
+}
+
+/// The badge run's width: the last chip's trailing edge when it starts at 0 (0 for no badges).
+fn badge_run_w(badges: &[Badge], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    badge_spans(badges, 0.0, measure).last().map_or(0.0, |(_, s)| s.x + s.w)
 }
 
 /// Where the trailing icon's box starts, as an offset from the content edge (<= 0): the box is
@@ -1053,8 +1073,7 @@ impl TableView {
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
         let mut trailing = row.ticon.map_or(0.0, ticon_slot_w);
         if !row.badges.is_empty() {
-            trailing += row.badges.iter().map(|b| crate::widgets::badge_w(b.text(), None, &plx_base::fontcov::advances::ShippedMeasure)).sum::<f32>()
-                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
+            trailing += badge_run_w(&row.badges, &plx_base::fontcov::advances::ShippedMeasure) + ACCESSORY_GAP;
         }
         frame_w - SIDE - CONTENT_PAD - trailing
     }
@@ -1086,8 +1105,7 @@ impl TableView {
     fn trailing_width(&self, row: &Row, measure: &dyn plx_machine::machine::Measure) -> f32 {
         let mut width = row.ticon.map_or(0.0, ticon_slot_w);
         if !row.badges.is_empty() {
-            width += row.badges.iter().map(|badge| crate::widgets::badge_w(badge.text(), None, measure)).sum::<f32>()
-                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
+            width += badge_run_w(&row.badges, measure) + ACCESSORY_GAP;
         }
         if let Some(value) = row.readout() {
             width += measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP;
@@ -1676,14 +1694,8 @@ impl TableView {
             // the whole label block, so on a two-line row it sits level with the pair rather than
             // ~16px high, level with the first line.
             if !row.badges.is_empty() {
-                let run: f32 = row
-                    .badges
-                    .iter()
-                    .map(|b| crate::widgets::badge_w(b.text(), None, measure))
-                    .sum::<f32>()
-                    + BADGE_GAP * (row.badges.len() - 1) as f32;
-                let mut bx = text_right - trailing - run;
-                for b in row.badges.iter() {
+                let run = badge_run_w(&row.badges, measure);
+                for (b, span) in badge_spans(&row.badges, text_right - trailing - run, measure) {
                     // the shared chip leaf in this row's contextual colours: the row's own ink for
                     // the label, the design's keyline for the ring (the pill's near-black ink over
                     // a focused row, where a 55%-white stroke would vanish), the row's ground
@@ -1693,7 +1705,7 @@ impl TableView {
                         border: on_pill(theme::OVERLAY_BORDER, ink),
                         bg: row_bg,
                     };
-                    bx += crate::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
+                    crate::widgets::badge(p, span.x, cyc, b.text(), None, sty, measure);
                 }
                 trailing += run + ACCESSORY_GAP;
             }

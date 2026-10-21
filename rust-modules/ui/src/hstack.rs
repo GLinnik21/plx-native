@@ -236,20 +236,14 @@ impl<'a> HStack<'a> {
     /// disagree. An item's slot is not read: it never changes where anything stands.
     pub fn placed(&self) -> impl Iterator<Item = Span> + 'a {
         let items = self.items;
-        let gap = self.gap;
         let kept = self.kept;
-        let mut x = self.start();
-        let mut advance: Option<f32> = None;
+        let mut flow = Flow::new(self.start(), self.gap);
         (0..items.len()).filter_map(move |i| {
             let item = items.get(i);
-            if !item.present || !kept.has(i) {
+            if !kept.has(i) {
                 return None;
             }
-            if let Some(by) = advance {
-                x += by;
-            }
-            advance = Some(item.w + item.after.unwrap_or(gap));
-            Some(Span { i, x, w: item.w, box_x: x - item.lead })
+            flow.push(item).map(|span| Span { i, ..span })
         })
     }
 
@@ -327,6 +321,60 @@ impl<'a> HStack<'a> {
     #[must_use]
     pub const fn kept(&self, kept: Kept) -> HStack<'a> {
         HStack { kept, ..*self }
+    }
+}
+
+// ---- Flow: a leading-anchored run placed one item at a time (lane hs-final) ----
+
+/// **A run placed as it is painted**: the leading-anchored half of [`HStack::placed`], for a run
+/// whose items are not in a slice, because their count is the data's (a rating row's cells) or
+/// because each is painted, and so measured, as it is placed (a heading's runs). Same rule as the
+/// stack's: one gap between neighbours, an [`Item::after`] in its place, an absent item no room and
+/// no gap. It holds only the pen, allocates nothing and measures nothing. A caller that knows all
+/// its widths up front builds an [`HStack`] instead; [`HStack::placed`] is itself a `Flow`.
+#[derive(Clone, Copy, Debug)]
+pub struct Flow {
+    x: f32,
+    gap: f32,
+    /// What the pen moves by before the next present item: the last item's width and its gap.
+    advance: Option<f32>,
+    /// The trailing edge of the last present item.
+    edge: f32,
+    /// Counts the items pushed, present or not: the next [`Span::i`].
+    next: usize,
+}
+
+impl Flow {
+    /// A flow whose first item's leading edge stands at `x`, `gap` between neighbours.
+    pub const fn new(x: f32, gap: f32) -> Self {
+        Self { x, gap, advance: None, edge: x, next: 0 }
+    }
+
+    /// Place the next item: the span it draws, `None` (and no room taken) when it is absent.
+    pub fn push(&mut self, item: Item) -> Option<Span> {
+        self.place(|_| item)
+    }
+
+    /// Place the next item, handing `make` the x its leading edge will stand at (the pen after the
+    /// gap) BEFORE the item exists, for a caller that paints the run to learn its width. `make`
+    /// runs for an absent item too, at the pen's current x; its item then takes no room.
+    pub fn place(&mut self, make: impl FnOnce(f32) -> Item) -> Option<Span> {
+        let i = self.next;
+        self.next += 1;
+        let x = self.x + self.advance.unwrap_or(0.0);
+        let item = make(x);
+        if !item.present {
+            return None;
+        }
+        self.x = x;
+        self.advance = Some(item.w + item.after.unwrap_or(self.gap));
+        self.edge = x + item.w;
+        Some(Span { i, x, w: item.w, box_x: x - item.lead })
+    }
+
+    /// The trailing edge of the last present item (the leading `x` while none is): where the run ends.
+    pub const fn end(&self) -> f32 {
+        self.edge
     }
 }
 

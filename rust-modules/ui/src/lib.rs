@@ -30,7 +30,6 @@ pub mod card_motion;
 pub mod card_motion_metrics;
 #[cfg(feature = "devtriggers")]
 pub mod card_probe; // `plxnative-focusx`: the focused card's drawn rect/index/art of every Shelf and Grid
-pub mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;

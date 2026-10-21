@@ -33,6 +33,7 @@ use std::ffi::CStr;
 
 use plx_machine::machine::Measure;
 
+use crate::hstack::{Align, HStack};
 use crate::{theme, widgets, Painter, Rect};
 
 /// Left edge, top edge and height of the capsule: the board's x 96, y 54, 64 tall. The width is the
@@ -62,8 +63,13 @@ fn run_w(s: &CStr, size: i32, bold: bool, measure: &dyn Measure) -> f32 {
 /// The capsule's width for `name` (BODY bold) and `count` (CAPTION regular): left padding, the two
 /// runs and the gap between them, right padding.
 pub fn width(name: &CStr, count: &CStr, measure: &dyn Measure) -> f32 {
-    PAD_L + run_w(name, theme::size::BODY, true, measure) + NAME_COUNT_GAP
-        + run_w(count, theme::size::CAPTION, false, measure) + PAD_R
+    PAD_L + HStack::widths(&text_widths(name, count, measure), NAME_COUNT_GAP, Align::Leading(0.0)).width() + PAD_R
+}
+
+/// The advances of the name (BODY bold) and the count (CAPTION regular): the two items of the
+/// capsule's one text run, which an [`HStack`] spaces [`NAME_COUNT_GAP`] apart.
+fn text_widths(name: &CStr, count: &CStr, measure: &dyn Measure) -> [f32; 2] {
+    [run_w(name, theme::size::BODY, true, measure), run_w(count, theme::size::CAPTION, false, measure)]
 }
 
 /// The ground's alpha `y` px down the page's top edge: `1 - smoothstep(y / depth)`, opaque at the
@@ -143,9 +149,12 @@ pub fn draw(p: Painter, name: &CStr, count: &CStr, alpha: f32, measure: &dyn Mea
     let cy = r.y + r.h * 0.5;
     let x = r.x + PAD_L;
     let name_y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, cy);
-    let w = p.text(name.as_ptr(), x, name_y, theme::size::BODY, theme::TEXT_PRIMARY, 0, 1);
+    let widths = text_widths(name, count, measure);
+    let run = HStack::widths(&widths, NAME_COUNT_GAP, Align::Leading(x));
+    let (name_x, count_x) = (run.span(0).map_or(x, |s| s.0), run.span(1).map_or(x, |s| s.0));
+    p.text(name.as_ptr(), name_x, name_y, theme::size::BODY, theme::TEXT_PRIMARY, 0, 1);
     let count_y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
-    p.text(count.as_ptr(), x + w + NAME_COUNT_GAP, count_y, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
+    p.text(count.as_ptr(), count_x, count_y, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
 }
 
 #[cfg(test)]
