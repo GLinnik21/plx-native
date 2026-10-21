@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T11:15:33Z",
+ "generated": "2026-10-21T11:22:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -24,18 +24,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 36.6,
+   "change7_pct": 36.9,
    "d30": null,
    "delta30": null,
-   "delta7": 78,
+   "delta7": 78.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 291,
-   "prev7": 213,
+   "prev7": 212.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -69,15 +69,15 @@
    "change7_pct": 30.4,
    "d30": null,
    "delta30": null,
-   "delta7": 83,
+   "delta7": 83.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 356,
-   "prev7": 273,
+   "prev7": 273.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -132,15 +132,15 @@
    "change7_pct": 28.7,
    "d30": null,
    "delta30": null,
-   "delta7": 37,
+   "delta7": 37.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 166,
-   "prev7": 129,
+   "prev7": 129.0,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -149,19 +149,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.6,
+   "change30_pct": -46.7,
    "change7_pct": 12.8,
    "d30": 676.0,
-   "delta30": -315.0,
-   "delta7": 41,
+   "delta30": -315.5,
+   "delta7": 41.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 123,
-   "n_prev": 115,
-   "now": 361,
-   "prev7": 320,
+   "n_now": 124,
+   "n_prev": 114,
+   "now": 360.5,
+   "prev7": 319.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -246,18 +246,18 @@
   },
   {
    "change30_pct": 86.7,
-   "change7_pct": 10.9,
+   "change7_pct": 11.0,
    "d30": 1132,
    "delta30": 981,
-   "delta7": 208.0,
+   "delta7": 209,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 95,
-   "n_prev": 78,
+   "n_prev": 77,
    "now": 2113,
-   "prev7": 1905.0,
+   "prev7": 1904,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -309,18 +309,18 @@
   },
   {
    "change30_pct": 31.0,
-   "change7_pct": -1.3,
+   "change7_pct": -1.1,
    "d30": 232,
    "delta30": 72,
-   "delta7": -4,
+   "delta7": -3.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 304,
-   "prev7": 308,
+   "prev7": 307.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,19 +329,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 94.4,
-   "change7_pct": 12.4,
+   "change30_pct": 94.0,
+   "change7_pct": 12.2,
    "d30": 126,
-   "delta30": 119,
-   "delta7": 27.0,
+   "delta30": 118.5,
+   "delta7": 26.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 117,
-   "n_prev": 100,
-   "now": 245,
-   "prev7": 218.0,
+   "n_now": 118,
+   "n_prev": 99,
+   "now": 244.5,
+   "prev7": 218,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -351,18 +351,18 @@
   },
   {
    "change30_pct": 169.0,
-   "change7_pct": -30.3,
+   "change7_pct": -30.0,
    "d30": 71,
-   "delta30": 120,
-   "delta7": -83.0,
+   "delta30": 120.0,
+   "delta7": -82.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 117,
-   "n_prev": 100,
-   "now": 191,
-   "prev7": 274.0,
+   "n_now": 118,
+   "n_prev": 99,
+   "now": 191.0,
+   "prev7": 273,
    "shown": true,
    "state": "better",
    "state30": "worse",
@@ -375,15 +375,15 @@
    "change7_pct": -1.1,
    "d30": null,
    "delta30": null,
-   "delta7": -2,
+   "delta7": -2.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 172,
-   "prev7": 174,
+   "prev7": 174.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -393,18 +393,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.9,
+   "change7_pct": 13.5,
    "d30": null,
    "delta30": null,
-   "delta7": 20,
+   "delta7": 19.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 164,
-   "prev7": 144,
+   "prev7": 144.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -414,18 +414,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.8,
+   "change7_pct": 11.6,
    "d30": null,
    "delta30": null,
-   "delta7": 14.5,
+   "delta7": 15.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 117,
-   "n_prev": 100,
-   "now": 149,
-   "prev7": 134.5,
+   "n_now": 118,
+   "n_prev": 99,
+   "now": 149.5,
+   "prev7": 134,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -502,16 +502,16 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2,
+   "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 117,
-   "n_prev": 100,
-   "now": 18,
-   "prev7": 17.0,
+   "n_now": 118,
+   "n_prev": 99,
+   "now": 18.0,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -566,15 +566,15 @@
    "change7_pct": -25.0,
    "d30": 677,
    "delta30": -674,
-   "delta7": -1,
+   "delta7": -1.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 107,
-   "n_prev": 103,
+   "n_prev": 102,
    "now": 3,
-   "prev7": 4,
+   "prev7": 4.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 121.4,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -657,6 +652,11 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
    "from": 57.5,
@@ -667,13 +667,8 @@
    "to": 127.3
   },
   {
-   "change_pct": 36.6,
+   "change_pct": 36.9,
    "commits": [
-    {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
     {
      "pr": 876,
      "sha": "cc31d5489",
@@ -718,9 +713,14 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
-   "from": 213,
+   "from": 212.5,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-21",
@@ -731,11 +731,6 @@
    "change_pct": 33.5,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -779,6 +774,11 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
    "from": 358,
@@ -792,11 +792,6 @@
    "change_pct": 30.4,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -840,9 +835,14 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
-   "from": 273,
+   "from": 273.0,
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-21",
@@ -853,11 +853,6 @@
    "change_pct": 29.5,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -901,6 +896,11 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
    "from": 46.5,
@@ -914,11 +914,6 @@
    "change_pct": 29.4,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -962,6 +957,11 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
    "from": 108.7,
@@ -975,11 +975,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 875,
-     "sha": "5d74e0ff1",
-     "title": "Library header: one gap between the controls, and Collections only with a known count"
-    },
-    {
      "pr": 876,
      "sha": "cc31d5489",
      "title": "Hold hint: shown once per install, and the Detail season pill teaches it on a faster dwell"
@@ -1023,9 +1018,14 @@
      "pr": 891,
      "sha": "01de26af3",
      "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
+    },
+    {
+     "pr": 874,
+     "sha": "5648058a3",
+     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
     }
    ],
-   "from": 129,
+   "from": 129.0,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
