@@ -3215,6 +3215,26 @@ fn extras_sit_after_cast_and_crew_and_do_not_move_the_compact_title() {
     clear();
 }
 
+/// Choosing an episode keeps the pinned show logo: the page rests with the season strip just under
+/// it (the scroll the strip's own focus gives), because resting with the strip scrolled up into the
+/// logo's band drew the wordmark half-faded across the season pills (issue #679).
+#[test]
+fn focusing_an_episode_rests_the_season_strip_under_the_logo_and_keeps_the_logo() {
+    let _guard = install(deck_show(3, 0, 8, None));
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    let d = screen.detail(test_store().view()).expect("installed");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let (sections, n) = screen.sections(Some(d));
+    assert_eq!(&sections[..3.min(n)], &[0, 1, 2], "a show with seasons: hero, strip, episodes");
+    let strip_top = screen.section_top_settled(1, d, &measure);
+    for focused in [1, 2] {
+        let target = screen.reveal_target(focused, d, &measure);
+        assert_eq!(target, strip_top - plx_ui::detail_layout::TOP_MARGIN, "section {focused} rests with the strip under the logo");
+        assert_eq!(super::compact_title_alpha(target, strip_top, 0.0), 1.0, "the logo is fully shown at rest on section {focused}");
+    }
+    clear();
+}
+
 /// Pins the exact hazard `docs/trailer-ux-plan.md` §8's eng review verified was already retired
 /// (the `detail-sections-array-position-traps` prior learning) with a test rather than only a
 /// source read: `LayoutCache.top`/`.seen` must be indexed by `SectionId as usize` (identity), not
