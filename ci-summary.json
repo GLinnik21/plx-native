@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-21T07:48:56Z",
+ "generated": "2026-10-21T07:51:00Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -128,18 +128,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -41.9,
-   "change7_pct": 23.0,
+   "change30_pct": -43.3,
+   "change7_pct": 20.0,
    "d30": 676.0,
-   "delta30": -283.0,
-   "delta7": 73.5,
+   "delta30": -292.5,
+   "delta7": 64.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 121,
+   "n_now": 122,
    "n_prev": 114,
-   "now": 393,
+   "now": 383.5,
    "prev7": 319.5,
    "shown": true,
    "state": "worse",
@@ -333,14 +333,14 @@
    "change7_pct": 10.0,
    "d30": 125.5,
    "delta30": 116.5,
-   "delta7": 22,
+   "delta7": 22.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 99,
-   "now": 242,
+   "now": 242.0,
    "prev7": 220,
    "shown": true,
    "state": "flat",
@@ -350,18 +350,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 170.9,
-   "change7_pct": -35.3,
+   "change30_pct": 171.6,
+   "change7_pct": -35.1,
    "d30": 70.5,
-   "delta30": 120.5,
-   "delta7": -104,
+   "delta30": 121.0,
+   "delta7": -103.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 99,
-   "now": 191,
+   "now": 191.5,
    "prev7": 295,
    "shown": true,
    "state": "better",
@@ -417,14 +417,14 @@
    "change7_pct": 11.1,
    "d30": null,
    "delta30": null,
-   "delta7": 15,
+   "delta7": 15.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 99,
-   "now": 150,
+   "now": 150.0,
    "prev7": 135,
    "shown": true,
    "state": "flat",
@@ -503,14 +503,14 @@
    "change7_pct": 5.9,
    "d30": 16.5,
    "delta30": 1.5,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 99,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 124.3,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -657,6 +652,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 56.8,
@@ -670,11 +670,6 @@
    "change_pct": 54.4,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -718,6 +713,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 212.5,
@@ -731,11 +731,6 @@
    "change_pct": 38.2,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -779,6 +774,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 351,
@@ -792,11 +792,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -840,6 +835,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 103.0,
@@ -853,11 +853,6 @@
    "change_pct": 34.9,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -901,6 +896,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 272.0,
@@ -914,11 +914,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
-    {
      "pr": 866,
      "sha": "69db933db",
      "title": "Cards: every released grid card lands on its own spring, so a held key no longer snaps the card it left"
@@ -962,6 +957,11 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 129.0,
@@ -972,13 +972,8 @@
    "to": 164
   },
   {
-   "change_pct": 23.0,
+   "change_pct": 20.0,
    "commits": [
-    {
-     "pr": 864,
-     "sha": "1236b92eb",
-     "title": "tests: app-tier route tests for #857-#861 (released cards at exact rest, deep shelves, Home and Recommended Detail retur"
-    },
     {
      "pr": 866,
      "sha": "69db933db",
@@ -1023,14 +1018,19 @@
      "pr": 881,
      "sha": "99f7dc501",
      "title": "Compatibility reports: a Discussions category with a form, a list of reports, and routing from the issue chooser"
+    },
+    {
+     "pr": 886,
+     "sha": "65bcd4d1e",
+     "title": "UI: a shared horizontal stack (hstack); the page header, crumb and Library name packer ride it"
     }
    ],
    "from": 319.5,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-10-20",
+   "since": "2026-10-21",
    "threshold_pct": 15.0,
-   "to": 393
+   "to": 383.5
   }
  ],
  "schema": 2,
