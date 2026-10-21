@@ -76,6 +76,7 @@ pub mod panel_motion; // the resize/page-slide spring of the in-player table pop
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
+pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
 pub mod page_header; // the page header row: one layout, paint, focus group and motion for the Library, Collections, Recommended and Watchlist pages
 pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the pages' links, BACK and first seat
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
