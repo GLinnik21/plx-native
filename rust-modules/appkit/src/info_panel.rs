@@ -16,6 +16,7 @@ use plx_ui::screen::{
 };
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{
     badge, badge_w, resolve_tex_wh_on, BadgeStyle, DottedRun,
 };
@@ -380,8 +381,9 @@ impl InfoPanelState {
         // px figure forward onto a smaller font, which would leave the new rung looking loose.
         let syn_lh = theme::size::LABEL as f32 + 3.0; // synopsis line advance (font 26) — 29
         let tag_h = 34.0f32;
+        // Off-ladder gaps, kept at their painted values (named, not rounded to a rung).
         let gap_title = 6.0f32; // title → synopsis
-        let gap_tags = 12.0f32; // synopsis → tags
+        let gap_tags = 12.0f32; // whatever is above → the tag row (title → tags when there is no synopsis)
 
         // title (1 line, elided) + synopsis (up to 2 lines, ellipsized) through the shared TextView —
         // its wrap is memoised internally, replacing this panel's old hand-rolled wrap2/WrapCache.
@@ -401,16 +403,13 @@ impl InfoPanelState {
         // row's contribution is gated on `n > 0` — whether the chip row ACTUALLY has something to draw
         // — not `has_tags`; see the comment above where `chips`/`n` are built for why those are two
         // different questions once a fit can drop every candidate.
-        let span = title_h
-            + if syn_h > 0.0 { gap_title + syn_h } else { 0.0 }
-            + if n > 0 { gap_tags + tag_h } else { 0.0 };
-        let mut ty = cyt + (ch - span) * 0.5;
-        title_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-        ty += title_h;
-        if syn_h > 0.0 {
-            ty += gap_title;
-            syn_v.draw(p, Rect::new(tx, ty, tw, 0.0));
-            ty += syn_h;
+        let items = card_items(title_h, syn_h, gap_tags, (n > 0).then_some(tag_h));
+        let stack = VStack::new(&items, gap_title, Anchor::Centre(cyt + ch * 0.5));
+        if let Some((y, _)) = stack.span(0) {
+            title_v.draw(p, Rect::new(tx, y, tw, 0.0));
+        }
+        if let Some((y, _)) = stack.span(1) {
+            syn_v.draw(p, Rect::new(tx, y, tw, 0.0));
         }
         // metadata line (genres · year · duration) + capability badges, centred on the tag row —
         // `chips`/`n` were already measured and fit above, so this is draw-only.
@@ -430,12 +429,22 @@ impl InfoPanelState {
         // more" — a clean drop keeps every chip that IS shown fully legible, which a fade cannot
         // promise once it crosses a border. [`ChipRow`] + `HStack::fit` is the pure packer that turns the
         // measured candidates into a cut, so the maths is pinned by a host test with no font involved.
-        if n > 0 {
-            ty += gap_tags;
-            let my = ty + tag_h * 0.5; // vertical centre of the tag row
+        if let Some((y, _)) = stack.span(2) {
+            let my = y + tag_h * 0.5; // vertical centre of the tag row
             draw_chip_row(p, &chips, chips.row(tx).kept(kept), my, measure);
         }
     }
+}
+
+/// The card's title / synopsis / tag-row column. `syn_h` of zero and `tags` of `None` are absent.
+/// The tag row carries its gap as `before`, not the stack gap: with no synopsis it still sits
+/// `gap_tags` under the title (the stack's own gap is title -> synopsis).
+fn card_items(title_h: f32, syn_h: f32, gap_tags: f32, tags: Option<f32>) -> [Item; 3] {
+    [
+        Item::new(title_h),
+        if syn_h > 0.0 { Item::new(syn_h) } else { Item::absent() },
+        tags.map_or(Item::absent(), |h| Item::new(h).before(gap_tags)),
+    ]
 }
 
 /// **The Engine-shaped view of this card** (restructure phase 12): one `Column` focus group over
@@ -1259,5 +1268,23 @@ mod focus_tests {
 
         test_store().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
         plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    }
+}
+
+#[cfg(test)]
+mod vstack_tests {
+    use super::*;
+
+    fn ys(syn_h: f32, tags: Option<f32>) -> Vec<(usize, f32)> {
+        let items = card_items(42.0, syn_h, 12.0, tags);
+        VStack::new(&items, 6.0, Anchor::Top(0.0)).placed().map(|s| (s.i, s.y)).collect()
+    }
+
+    /// Title, synopsis, tags: 6 then 12 apart; with no synopsis the tags stay 12 under the title, not 6.
+    #[test]
+    fn the_gaps_survive_an_absent_synopsis() {
+        assert_eq!(ys(58.0, Some(34.0)), vec![(0, 0.0), (1, 48.0), (2, 118.0)]);
+        assert_eq!(ys(0.0, Some(34.0)), vec![(0, 0.0), (2, 54.0)]);
+        assert_eq!(ys(58.0, None), vec![(0, 0.0), (1, 48.0)]);
     }
 }
