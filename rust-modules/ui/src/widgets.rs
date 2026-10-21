@@ -5374,7 +5374,7 @@ impl TabPill {
     /// [`TabStrip::ink_spans`] cuts a pill where a capsule's drawn edge crosses it and hands each
     /// stretch its own, so a label a capsule is half across wears the capsule's ink on one side of
     /// the edge and the resting ink on the other, and `focus` is 0 or 1 (the flip happens where the
-    /// capsule has made the ground behind the label bright enough, see `INK_FLIP_LUMA`). A mix in
+    /// capsule has faded in past half way, see `INK_FLIP_ALPHA`). A mix in
     /// between would be the ink of neither side: the "labels dim when I move" report was exactly a
     /// whole-label mid-grey. The fix lives in that call, one rule for every strip, not in a second
     /// spring that leads the fill.
@@ -6075,7 +6075,7 @@ impl TabStrip {
 
     /// **The ink a pill wears, region by region.** A pill's glyphs are inked by what is under each
     /// PIXEL of them, as the capsules are DRAWN: inside the focus capsule's rounded rect they wear
-    /// its ink (once the composited ground behind them is bright enough, see `INK_FLIP_LUMA`),
+    /// its ink (once the capsule is more than half faded in, see `INK_FLIP_ALPHA`),
     /// inside the selection plate's the selected one and elsewhere the resting one. A label a capsule
     /// is half way across is therefore two inks along the capsule's ARC, instead of one mid-grey
     /// that is illegible on both sides of it, and a glyph row above or below the centre row flips
@@ -6087,10 +6087,9 @@ impl TabStrip {
     /// on every frame: it is painted once, plain, as before. Otherwise one region per ink, each painted
     /// once with its fragments cut by [`paint_inked`].
     pub fn pill_ink(&self, pill: Rect, ground: TabGround) -> PillInk {
-        let (draws_focus, sel_plate) = match ground {
-            TabGround::Bare { focus, .. } => (focus, theme::TAB_PLATE_SELECTED),
-            TabGround::Plated { .. } => (true, theme::TAB_PLATE_SELECTED_OVER),
-            TabGround::Tracked { .. } => (true, theme::OVERLAY_FOCUS_PILL),
+        let draws_focus = match ground {
+            TabGround::Bare { focus, .. } => focus,
+            TabGround::Plated { .. } | TabGround::Tracked { .. } => true,
         };
         // A capsule as DRAWN (`Capsule::drawn`, the one `draw` paints), or `None` while it is not on
         // screen. Its shape is that rect with corner radius half its height.
@@ -6112,8 +6111,7 @@ impl TabStrip {
         };
         let (sel_rel, foc_rel) = (rel(sel), rel(foc));
         let sel_alpha = self.sel.alpha();
-        let flip = |sel_alpha: f32| backing_luma(sel_plate, sel_alpha, self.foc.alpha()) > INK_FLIP_LUMA;
-        let (flip_in_plate, flip_off_plate) = (flip(sel_alpha), flip(0.0));
+        let flip = self.foc.alpha() > INK_FLIP_ALPHA;
         let cover = (pill.x, pill.w);
         let weight = self.sel.mix(cover).max(if draws_focus { self.foc.mix(cover) } else { 0.0 });
         let mut out = PillInk { regions: [InkRegion::RESTING; 4], n: 0, sel, foc, weight };
@@ -6124,7 +6122,7 @@ impl TabStrip {
         for (in_sel, in_foc) in [(false, false), (true, false), (false, true), (true, true)] {
             let feasible = |rel: Rel, inside: bool| match rel { Rel::Absent => !inside, Rel::Full => inside, Rel::Part => true };
             if !feasible(sel_rel, in_sel) || !feasible(foc_rel, in_foc) { continue; }
-            let focus = if in_foc && (if in_sel { flip_in_plate } else { flip_off_plate }) { 1.0 } else { 0.0 };
+            let focus = if in_foc && flip { 1.0 } else { 0.0 };
             let selected = if focus > 0.5 || !in_sel { 0.0 } else { sel_alpha };
             let at = groups[..seen].iter().position(|g| g.0 == focus && g.1 == selected).unwrap_or_else(|| {
                 groups[seen] = (focus, selected, [None; 2], [false; 2]);
@@ -6251,33 +6249,27 @@ impl PillInk {
     }
 }
 
-/// **The luminance of the ground where a capsule's ink flips**: dark ink (`ACCENT_INK`) on the
-/// capsule's side of it, the light ink on the other. Judged on the COMPOSITED backing, not on the
-/// capsule's alpha, because the capsule fades in over a plate that is already there: a linear ink
-/// crosses the plate's own luminance on the way (a label that "nearly vanishes while the grey plate
-/// brightens into the white one") where a flip never leaves the label on something it cannot be
-/// read from. 0.14 keeps the worse of the two inks (the resting white at 65%) above 3:1 on either
-/// side of the flip, over [`INK_GROUND`], with and without a selection plate under the capsule.
-const INK_FLIP_LUMA: f32 = 0.14;
+/// **The capsule alpha where its ink flips**: dark ink (`ACCENT_INK`) on the capsule's side of it,
+/// the light ink on the other. The ink is binary, never a mix (a mix is the ink of neither side), and
+/// the frame it flips on is the capsule's alpha midpoint, so a capsule fading in place flips at the
+/// same point of the fade going in and coming out. A flip judged on the composited backing's
+/// luminance fell at alpha ~0.14 over a selection plate, which the critically damped fade crosses on
+/// frame ~3 going in and ~12 coming out: dark ink on a mid-grey fill for ~6 frames of every focus-out.
+/// The frames either side of the flip read ~2.4:1 over [`INK_GROUND`] (a mid-tone fill neither ink
+/// clears 3:1 on); the settled states and a travelling capsule keep 3:1.
+const INK_FLIP_ALPHA: f32 = 0.5;
 /// The ground the flip is judged over: the dark slate the app's pages stand on (a Library page at
 /// rest samples to `#29374d`). Every strip that wears this ink is drawn on a ground at least this
 /// dark, which is what the 3:1 above is graded against.
 const INK_GROUND: [f32; 4] = [41.0 / 255.0, 55.0 / 255.0, 77.0 / 255.0, 1.0];
 
-/// The relative luminance of [`INK_GROUND`] under a selection plate at `sel_alpha` and a focus
-/// capsule at `foc_alpha`, composited in that order.
-fn backing_luma(sel_plate: [f32; 4], sel_alpha: f32, foc_alpha: f32) -> f32 {
-    let c = over(INK_GROUND, sel_plate, sel_plate[3] * sel_alpha);
-    rel_luma(over(c, crate::ACCENT, crate::ACCENT[3] * foc_alpha))
-}
-
 /// **The ink a plate is read in: the candidate with the best contrast against the plate as it is
 /// composited**, judged on the worse of the plate's two gradient stops (`stops`, laid over
 /// [`INK_GROUND`] by their own alpha, the ground every strip that wears this ink stands on) with
 /// the ink laid over each by ITS alpha. Ties keep the first candidate, so a plate that has not
-/// moved keeps the ink it had. This is the max-contrast choice `INK_FLIP_LUMA` stands in for on the
-/// pills (a luma threshold tuned to their 65% resting ink); for white against the dark ink it falls
-/// at plate luma ~0.18, ~4.6:1 on either side.
+/// moved keeps the ink it had. This is the max-contrast choice the pills approximate with
+/// `INK_FLIP_ALPHA` (their flip is the capsule's alpha midpoint, tuned to their 65% resting ink); for
+/// white against the dark ink it falls at plate luma ~0.18, ~4.6:1 on either side.
 fn best_ink(candidates: [[f32; 4]; 2], stops: [[f32; 4]; 2]) -> [f32; 4] {
     let read = |ink: [f32; 4]| {
         stops.iter().map(|s| over(INK_GROUND, *s, s[3])).map(|fill| contrast(over(fill, ink, ink[3]), fill)).fold(f32::MAX, f32::min)
