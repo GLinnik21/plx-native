@@ -125,13 +125,13 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(TEXT_W)
     };
-    // An empty summary or air date is ABSENT, not a zero-high row: one `MD` between the blocks that
+    // An empty summary, or neither air date nor rating chip (one row paints both), is ABSENT, not a zero-high row: one `MD` between the blocks that
     // are there, none after the last (the date sits one gap under the title when there is no
     // summary, and a title-only platter ends at the title).
     let items = [
         Item::new(title_h),
         if ep.summary.is_empty() { Item::absent() } else { Item::new(summary_h) },
-        if ep.aired.is_empty() { Item::absent() } else { Item::new(theme::size::MICRO as f32) },
+        if ep.aired.is_empty() && ep.rating.is_empty() { Item::absent() } else { Item::new(theme::size::MICRO as f32) },
     ];
     let stack = VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY));
     // Where a summary WOULD stand (unread when there is none: the draw skips an empty one).
@@ -804,9 +804,34 @@ mod tests {
         let (date_y, _, bottom) = meta_layout(&dated, &measure);
         assert!((date_y - (TITLE_DY + title_h + md)).abs() < 0.01, "the date stands one MD under the title: {date_y}");
         assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
-        // (b) title only: no trailing MD under the title.
-        let title = Episode { summary: String::new(), aired: String::new(), ..full };
+    }
+
+    /// Q6 (b): a title-only platter (no summary, no date, no rating) ends at the title with no trailing MD.
+    #[test]
+    fn a_title_only_platter_has_no_trailing_md() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), ..Default::default() };
+        let title_h = meta_layout(&full, &measure).1 - TITLE_DY - theme::space::MD;
+        let title = Episode { title: "Pilot".into(), ..Default::default() };
         let (_, _, bottom) = meta_layout(&title, &measure);
-        assert!((bottom - (TITLE_DY + title_h + META_BOTTOM_PAD)).abs() < 0.01, "a title-only platter has no trailing MD: {bottom}");
+        assert!((bottom - (TITLE_DY + title_h + META_BOTTOM_PAD)).abs() < 0.01, "no trailing MD: {bottom}");
+    }
+
+    /// A rating chip with no air date, no summary: the date row is present for the chip, so the
+    /// platter (which ends [`PLATTER_PAD`] under the last row `meta_layout` measured) reaches it.
+    #[test]
+    fn a_rating_chip_without_a_date_stays_inside_the_platter() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let ep = Episode { title: "Pilot".into(), rating: "TV-14".into(), ..Default::default() };
+        let (_, _, bottom) = meta_layout(&ep, &measure);
+        let text_top = H + META_TOP;
+        let platter_bottom = text_top + (bottom - META_BOTTOM_PAD) + PLATTER_PAD;
+        let d = Detail::default();
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            draw_cell(Painter::recording(), &d, 0, &ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+        });
+        let chip = runs.iter().find(|r| r.text == "TV-14").expect("the rating chip is drawn");
+        assert!(chip.at.y + theme::size::MICRO as f32 <= platter_bottom + 0.5, "chip run at {} + MICRO past platter bottom {platter_bottom}", chip.at.y);
     }
 }
