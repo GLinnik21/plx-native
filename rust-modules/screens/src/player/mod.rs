@@ -893,7 +893,10 @@ impl PlayerScreen {
                 self.key_back_scrub(now);
                 Handled::Yes
             }
-            Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
+            // A BACK that finds the transport on screen hides it instead of leaving. While the
+            // pipeline is busy the transport is always on screen and cannot be hidden, so BACK
+            // must leave. Otherwise a load that never shows a picture traps the user.
+            Key::Back if edge == Edge::Down && self.hud.visible_at_press && !plx_media::player::loading(ps) => {
                 self.hud.nav.focus = 0;
                 self.scrub.ns = -1;
                 self.scrub.disengage();
@@ -2096,6 +2099,22 @@ mod step_ladder_tests {
         assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
         let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
+    }
+
+    /// **BACK leaves a stalled load.** While the pipeline is busy the transport cannot be hidden
+    /// (`hud_visible` keeps it up), so BACK must exit on every press instead of trying to hide it.
+    #[test]
+    fn back_leaves_a_stalled_load_every_time() {
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        let mut page = PlayerScreen::new(ENTRY);
+        for press_no in 1..=3 {
+            fresh(&mut page);
+            let (handled, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+            assert_eq!(handled, Handled::Yes);
+            assert_eq!(reqs, vec![PlayerReq::Exit], "BACK press {press_no} while loading");
+        }
+        plx_media::player::restore_state_for_test(was);
     }
 
     /// STOP leaves even with the transport up, and BACK's key-up edge does nothing either way.
