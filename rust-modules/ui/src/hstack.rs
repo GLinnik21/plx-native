@@ -124,7 +124,7 @@ pub enum Align {
 /// Where one present item stands: the span it DRAWS.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Span {
-    /// Its index in the slice the stack was built from (absent items leave gaps in the numbering).
+    /// Its index in the run (absent items leave gaps in the numbering).
     pub i: usize,
     /// Its leading edge.
     pub x: f32,
@@ -135,22 +135,47 @@ pub struct Span {
     pub box_x: f32,
 }
 
-/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows the slice,
-/// holds no state and allocates nothing: build it where it is read, as often as that is.
+/// A run of [`Item`]s with one gap between neighbours, anchored by [`Align`]. It borrows its items
+/// (a slice of [`Item`]s, or a slice of widths: [`HStack::widths`]), holds no state and allocates
+/// nothing: build it where it is read, as often as that is.
 #[derive(Clone, Copy, Debug)]
 pub struct HStack<'a> {
-    items: &'a [Item],
+    items: Items<'a>,
     gap: f32,
     align: Align,
     /// Which items [`HStack::fit`] kept ([`Kept::ALL`] until [`HStack::kept`] narrows it).
     kept: Kept,
 }
 
+/// Where a stack reads its items from: a slice of [`Item`]s, or (see "Runs of plain widths") a slice
+/// of widths, each read as [`Item::new`].
+#[derive(Clone, Copy, Debug)]
+enum Items<'a> {
+    Slice(&'a [Item]),
+    Widths(&'a [f32]),
+}
+
+impl Items<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Items::Slice(s) => s.len(),
+            Items::Widths(w) => w.len(),
+        }
+    }
+
+    fn get(&self, i: usize) -> Item {
+        match self {
+            Items::Slice(s) => s[i],
+            Items::Widths(w) => Item::new(w[i]),
+        }
+    }
+}
+
 impl<'a> HStack<'a> {
     /// A run of `items`, `gap` apart (an item's [`Item::after`] overrides it for that one), anchored
     /// by `align`.
     pub const fn new(items: &'a [Item], gap: f32, align: Align) -> Self {
-        Self { items, gap, align, kept: Kept::ALL }
+        Self { items: Items::Slice(items), gap, align, kept: Kept::ALL }
     }
 
     /// The gap after `item`.
@@ -159,8 +184,8 @@ impl<'a> HStack<'a> {
     }
 
     /// Item `i` as this run sees it: itself, or [`Item::absent`] once [`Self::fit`] dropped it.
-    fn live(&self, i: usize, item: &Item) -> Item {
-        if self.kept.has(i) { *item } else { Item::absent() }
+    fn live(&self, i: usize) -> Item {
+        if self.kept.has(i) { self.items.get(i) } else { Item::absent() }
     }
 
     /// The sum of `size` over the items that count (`Some`), plus one gap between each neighbouring
@@ -169,8 +194,8 @@ impl<'a> HStack<'a> {
     fn sum(&self, size: impl Fn(&Item) -> Option<f32>) -> f32 {
         let (mut runs, mut gaps) = (0.0, 0.0);
         let mut before: Option<Item> = None;
-        for (i, item) in self.items.iter().enumerate() {
-            let item = self.live(i, item);
+        for i in 0..self.items.len() {
+            let item = self.live(i);
             let Some(w) = size(&item) else { continue };
             runs += w;
             if let Some(prev) = before {
@@ -210,12 +235,13 @@ impl<'a> HStack<'a> {
     /// allocation; absent items are skipped. Draw, focus and hit-test read this, so they cannot
     /// disagree. An item's slot is not read: it never changes where anything stands.
     pub fn placed(&self) -> impl Iterator<Item = Span> + 'a {
-        let items: &'a [Item] = self.items;
+        let items = self.items;
         let gap = self.gap;
         let kept = self.kept;
         let mut x = self.start();
         let mut advance: Option<f32> = None;
-        items.iter().enumerate().filter_map(move |(i, item)| {
+        (0..items.len()).filter_map(move |i| {
+            let item = items.get(i);
             if !item.present || !kept.has(i) {
                 return None;
             }
@@ -246,8 +272,7 @@ impl Item {
     }
 }
 
-/// Which items of a run survived [`HStack::fit`]: a small `Copy` set, indexed like the slice the
-/// stack was built from. Items past the 64th are always kept (and never dropped by `fit`).
+/// Which items of a run survived [`HStack::fit`]: a small `Copy` set, indexed like the run. Items past the 64th are always kept (and never dropped by `fit`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Kept(u64);
 
@@ -285,7 +310,8 @@ impl<'a> HStack<'a> {
                 return kept;
             }
             let mut victim: Option<(usize, u8)> = None;
-            for (i, item) in self.items.iter().enumerate().take(u64::BITS as usize) {
+            for i in 0..self.items.len().min(u64::BITS as usize) {
+                let item = self.items.get(i);
                 let Some(p) = item.priority else { continue };
                 if item.present && kept.has(i) && victim.map_or(true, |(_, low)| p <= low) {
                     victim = Some((i, p));
@@ -301,6 +327,16 @@ impl<'a> HStack<'a> {
     #[must_use]
     pub const fn kept(&self, kept: Kept) -> HStack<'a> {
         HStack { kept, ..*self }
+    }
+}
+
+// ---- Runs of plain widths (lane ui-2) ----
+impl<'a> HStack<'a> {
+    /// A run of `widths`, each an [`Item::new`] (present, no slot, no gap of its own), `gap` apart:
+    /// a strip of labels or a row of pills a caller measured into a slice, read in place with no
+    /// [`Item`] array built beside it.
+    pub const fn widths(widths: &'a [f32], gap: f32, align: Align) -> Self {
+        Self { items: Items::Widths(widths), gap, align, kept: Kept::ALL }
     }
 }
 
@@ -554,5 +590,22 @@ mod tests {
         let none = Item::glyph(Icon::Check, BOX);
         let s = HStack::new(std::slice::from_ref(&none), GAP, Align::Leading(10.0)).placed().next().unwrap();
         assert_eq!((s.x, s.w, s.box_x), (10.0, BOX, 10.0), "an unmeasured mark's ink fills its box");
+    }
+
+    /// **A run of plain widths stands where the same widths as items do** — placements, width and
+    /// budget alike, and `fit`'s survivors — so a strip needs no `Item` array.
+    #[test]
+    fn a_run_of_widths_places_exactly_as_the_slice_does() {
+        let widths = [120.0, 33.5, 7.25, 0.0, 80.0];
+        let items = run(&widths);
+        for align in [Align::Leading(96.0), Align::Trailing(1771.0), Align::Centre(960.0)] {
+            let slice = HStack::new(&items, GAP, align);
+            let by_width = HStack::widths(&widths, GAP, align);
+            assert_eq!(at(&slice), at(&by_width));
+            assert_eq!(slice.width(), by_width.width());
+            assert_eq!(slice.budget_w(), by_width.budget_w());
+            assert_eq!(slice.fit(300.0), by_width.fit(300.0));
+        }
+        assert_eq!(HStack::widths(&[], GAP, Align::Leading(0.0)).width(), 0.0);
     }
 }

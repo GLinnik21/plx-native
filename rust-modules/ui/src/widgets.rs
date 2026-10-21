@@ -5785,13 +5785,19 @@ fn strip_layout_by(
     gap: f32,
     mut width: impl FnMut(&CStr) -> f32,
 ) -> Vec<StripLay> {
-    let mut x = x0;
     let mut out = Vec::new();
+    let mut widths = Vec::new();
     for (i, label) in labels.enumerate() {
         let Ok(lc) = CString::new(label) else { continue };
         let w = width(&lc);
-        out.push(StripLay { i, x, w, label: lc });
-        x += w + 2.0 * STRIP_PAD + gap;
+        widths.push(w);
+        out.push(StripLay { i, x: 0.0, w, label: lc });
+    }
+    // The labels stand on ONE HStack: each is `STRIP_PAD` inside a padded frame, so two labels are
+    // a frame's two pads plus the row's `gap` apart, and the first stands at `x0`.
+    let stack = HStack::widths(&widths, gap + 2.0 * STRIP_PAD, StackAlign::Leading(x0));
+    for span in stack.placed() {
+        out[span.i].x = span.x;
     }
     out
 }
@@ -7364,7 +7370,12 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CSt
 
 /// Content width of the whole pill strip: the pills plus the air between them.
 fn tab_content_w(widths: &[f32]) -> f32 {
-    widths.iter().sum::<f32>() + TAB_GAP * (widths.len() as f32 - 1.0).max(0.0)
+    tab_stack(widths).width()
+}
+/// The pill row as ONE [`HStack`] of the measured pill widths, [`TAB_GAP`] apart, from content x 0:
+/// the paint, the hit test and the capsules' span all read their x from it.
+fn tab_stack(widths: &[f32]) -> HStack<'_> {
+    HStack::widths(widths, TAB_GAP, StackAlign::Leading(0.0))
 }
 /// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
 fn tab_view_w(widths: &[f32]) -> f32 {
@@ -7386,8 +7397,14 @@ struct TabGeometry<'a> {
 
 impl TabGeometry<'_> {
     fn pill(&self, i: usize) -> Rect {
+        self.pill_at(tab_pill_x(self.widths, i), i)
+    }
+
+    /// Pill `i` given its content-space x, for a caller that walks the stack once ([`Self::pill`]
+    /// finds the x itself, which is a walk per call).
+    fn pill_at(&self, x: f32, i: usize) -> Rect {
         Rect::new(
-            self.clip.x + tab_pill_x(self.widths, i) - self.scroll,
+            self.clip.x + x - self.scroll,
             TOP_BAR_Y,
             self.widths.get(i).copied().unwrap_or(0.0),
             TAB_PILL_H,
@@ -7414,8 +7431,13 @@ fn tab_geometry(widths: &[f32], scroll: f32) -> TabGeometry<'_> {
 }
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
-    let i = i.min(widths.len());
-    widths[..i].iter().sum::<f32>() + TAB_GAP * i as f32
+    // Past the end reads as the strip's end plus one gap (where the next pill would stand).
+    let stack = tab_stack(widths);
+    match stack.span(i) {
+        Some((x, _)) => x,
+        None if widths.is_empty() => 0.0,
+        None => stack.width() + TAB_GAP,
+    }
 }
 /// Scroll offset that brings pill `idx` into the strip's viewport: the minimal scroll-into-view
 /// rule the season tabs and every shelf share ([`card_row::reveal`]) — move only when the pill
@@ -7724,12 +7746,13 @@ impl StripRender {
             TAB_PILL_H,
             TabGround::Tracked { glass: glass_on },
         );
+        // ONE walk of the stack per frame (`tab_pill_x` is O(i), so a call per pill is O(n²)): the
+        // pills are all present, so the i-th span is pill i, and the rect and the capsule coverage
+        // both read its x. The hit test builds the SAME stack from the same widths.
+        let mut stand = tab_stack(widths).placed();
         for i in 0..n {
-            // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
-            // the rect and again for the capsule coverage — so the row re-summed its own width every
-            // frame for nothing.
-            let px = tab_pill_x(widths, i);
-            let r = geometry.pill(i);
+            let px = stand.next().map_or(0.0, |span| span.x);
+            let r = geometry.pill_at(px, i);
             // ONE rule for "is this pill on screen": its rect clipped to the viewport. The clipped
             // rect is what gets recorded for the hit test AND what decides whether to draw at all
             // (a 12-library server would otherwise lay out three rows' worth of text the scissor
