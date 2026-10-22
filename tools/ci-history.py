@@ -427,6 +427,7 @@ def fold(doc: dict, now: str) -> int:
                              "longest": round(statistics.median(longest)) if longest else None})
     doc["daily"].sort(key=lambda d: (d["day"], d["wf"], d["event"]))
     doc["cancelled"] = {d: c for d, c in doc["cancelled"].items() if d >= edge}
+    doc["flaky"] = [e for e in doc["flaky"] if day_of(e["at"]) >= edge]      # flake events are not folded, only dropped
     return folded
 
 
@@ -497,8 +498,7 @@ def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, fu
     before = (json.dumps(doc["cancelled"], sort_keys=True), len(doc["daily"]))
     count_cancelled(doc, infos)
     folded = fold(doc, now)
-    edge = (parse_time(now) - timedelta(days=RETENTION_DAYS)).strftime("%Y-%m-%d")
-    doc["flaky"] = sorted((e for e in doc["flaky"] if day_of(e["at"]) >= edge), key=lambda e: (e["at"], e["run"], e["job"], e["test"]))
+    doc["flaky"].sort(key=lambda e: (e["at"], e["run"], e["job"], e["test"]))
     changed = (before != (json.dumps(doc["cancelled"], sort_keys=True), len(doc["daily"])) or folded
                or flaky_before != json.dumps(doc["flaky"], sort_keys=True))
     if added or refreshed or changed or not doc.get("updated"):

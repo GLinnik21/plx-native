@@ -396,7 +396,7 @@ def summarize(history: dict, bench: dict | None, now: datetime, quarantined: set
             "slowest_ci": top(longest([m for m in metrics if m["kind"] == "job"])),
             "slowest_local": top(longest([m for m in metrics if m["kind"] == "local" and "parent" not in m and m["id"] != HEALTH_ROW])),
             "regressions": sorted(regressions, key=lambda r: (-r["change_pct"], r["id"])),
-            "flaky": flaky_list(history, set(quarantined), now)}
+            "flaky": flaky_list(history, quarantined, now)}
 
 
 def link_parts(metrics: list) -> None:
