@@ -83,14 +83,17 @@ pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>
 /// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
 /// whatever kind the setting asks for, and the amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
 /// episode's default details line is its address ("S1 · E8"), as it was on a shelf. On the deck that
-/// line is shown under Nothing too ([`deck_policy`]).
+/// line is shown under Nothing too ([`deck_policy`]); a deck tile with no state to show draws no
+/// fallback line under Nothing (the shelf's band stays open, per shelf).
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
-    let policy = &if is_continue { deck_policy(policy) } else { *policy };
     let facts = crate::registry::tile_facts::caption_facts(item);
     let state = is_continue
         .then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
         .flatten()
         .map(|c| c.to_string_lossy().into_owned());
+    // A deck tile with a state is worded by the deck's policy (its progress line shows under
+    // Nothing); one with no state to show has nothing to say under Nothing, only the shelf's band.
+    let policy = &if state.is_some() { deck_policy(policy) } else { *policy };
     label(policy, &facts, state, is_continue && plx_media::route::deck_press().press_plays())
 }
 
