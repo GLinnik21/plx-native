@@ -22,10 +22,22 @@
 //! there is a signed-in profile with Home at the root, makes sure Home is alone on the stack, asks
 //! for the item's metadata and hands the landing to the shared menu-play wait
 //! (`input::MenuPlayAwait::for_link`), which opens or plays it; a key the server does not know
-//! leaves Home in place (and a line in the event log), never a blank page. Sign-in,
-//! the profile picker and onboarding are never interrupted: the link waits behind the picker and
-//! onboarding, and is dropped when no account is signed in.
-use plx_screens::registry::AppArg;
+//! leaves Home in place (and a line in the event log), never a blank page.
+//!
+//! **When it acts.** The link is a pure step ([`DeepLink::step`]): one event and the read-only
+//! facts of the frame in ([`link_inputs`] is the only reader of the outside world), effect values
+//! out ([`LinkOut`], performed by [`perform`], which decides nothing). It waits, and never
+//! interrupts, behind sign-in, the profile picker and onboarding (the root is not Home), behind any
+//! surface that is up (the first-run consent question), and while the window is backgrounded.
+//! A link that names a server survives a sign-in and resolves against the roster of the account
+//! that signed in (the wait for the server starts the first frame Home is the root, and ends
+//! after `SERVER_WAIT_MS`); a link that names none means "the signed-in server" and, having waited
+//! across a sign-in, cannot know which account it was meant for: it is dropped.
+use plx_machine::machine::{Fx, LogLine, MachineId, NavOp};
+use plx_plex::plex::ServerId;
+use plx_screens::registry::{AppArg, AppFx};
+
+use super::bridge::AppHost;
 
 /// What the launch asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,122 +86,229 @@ pub(crate) fn parse(raw: &str) -> Parsed {
 /// are discovered after Home mounts. The metadata wait after it is `MenuPlayAwait`'s own ceiling.
 const SERVER_WAIT_MS: u32 = 15_000;
 
-/// The link not yet handed to the menu-play wait. Owned by `App`, driven by [`tick`] every frame,
-/// which also takes each payload that arrives.
+/// What one frame brings the link: a payload that arrived (already read by pure [`parse`]), or
+/// nothing new.
+pub(crate) enum LinkEvent { Arrived(Parsed), Frame }
+
+/// The roster facts [`DeepLink::step`] may ask about: a synchronous read port. Production's
+/// [`GlobalRoster`] is the only code that reads the servers registry for the link; tests pass a
+/// fixture.
+pub(crate) trait LinkRoster {
+    /// The server with this `machineIdentifier`, once the roster knows it.
+    fn by_machine(&self, machine: &str) -> Option<ServerId>;
+    /// The signed-in current server, once there is one.
+    fn current(&self) -> Option<ServerId>;
+}
+
+/// Where the stack's root stands, as the link reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Root {
+    /// Sign-in: no account yet. The link waits, and remembers it waited across a sign-in.
+    Login,
+    /// Home: signed in and settled.
+    Home,
+    /// Boot, the profile picker, onboarding: nothing to act in yet.
+    Other,
+}
+
+/// Read-only facts for one step, built by [`link_inputs`] alone.
+pub(crate) struct LinkEnv<'a> {
+    pub(crate) now: u32,
+    /// The window is foregrounded (`WindowActivity::allow_present`).
+    pub(crate) foreground: bool,
+    pub(crate) root: Root,
+    /// A surface (the consent question, a menu) is up over the stack.
+    pub(crate) surface_up: bool,
+    pub(crate) nav_pending: bool,
+    /// Home is the settled top with nothing above it.
+    pub(crate) home_settled: bool,
+    pub(crate) roster: &'a dyn LinkRoster,
+}
+
+/// What a step asks for: existing effect values, plus the one app-loop write.
 #[derive(Default)]
-pub(crate) enum DeepLink {
+pub(crate) struct LinkOut {
+    pub(crate) fx: Vec<Fx<AppHost>>,
+    /// The wait that lands the item: `(server, ratingKey, open instead of play)`. `MenuPlayAwait`
+    /// is an inline driver with no effect value, so this stays an app-loop write.
+    pub(crate) arm: Option<(ServerId, String, bool)>,
+}
+
+/// The link not yet handed to the menu-play wait. Owned by `App`; the state is private, so only
+/// [`DeepLink::step`] writes it.
+#[derive(Default)]
+pub(crate) struct DeepLink(LinkState);
+
+#[derive(Default)]
+enum LinkState {
     #[default]
     Idle,
-    /// Parsed, waiting for a session with Home at the root. `server_deadline` is set the first
-    /// frame Home is the root and bounds the wait for the link's server.
-    Waiting { link: Link, server_deadline: Option<u32> },
-}
-
-impl DeepLink {
-    /// The link a launch carried in `raw`, if any.
-    pub(crate) fn from_launch(raw: Option<String>) -> DeepLink {
-        match raw.as_deref().map(parse) {
-            None | Some(Parsed::None) => DeepLink::Idle,
-            Some(Parsed::Bad) => {
-                not_found("bad ratingKey");
-                DeepLink::Idle
-            }
-            Some(Parsed::Link(link)) => {
-                plx_base::eventlog::log(&format!(
-                    "deeplink: {:?} rk={} server={}", link.action, link.rk,
-                    if link.server.is_some() { "named" } else { "current" }));
-                DeepLink::Waiting { link, server_deadline: None }
-            }
-        }
-    }
-}
-
-/// Where a waiting link stands, from the stack's ROOT page. Pure, so the gate is tested without a
-/// session.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Gate {
-    /// Nothing to act in yet: boot, the profile picker, onboarding, a consent question.
-    Wait,
-    /// No account is signed in: the link is dropped.
-    Drop,
-    /// Home is the root: the app is signed in and settled.
-    Home,
-}
-
-pub(crate) fn gate(root: Option<&AppArg>) -> Gate {
-    match root {
-        Some(AppArg::Login) => Gate::Drop,
-        Some(AppArg::Home) => Gate::Home,
-        _ => Gate::Wait,
-    }
+    /// Parsed, waiting to act. `server_deadline` is set the first frame Home is the root and
+    /// bounds the wait for the link's server; `crossed_sign_in` is set when the root was the
+    /// sign-in screen while the link waited.
+    Waiting { link: Link, server_deadline: Option<u32>, crossed_sign_in: bool },
 }
 
 fn expired(now: u32, deadline: u32) -> bool { now.wrapping_sub(deadline) < u32::MAX / 2 }
 
-fn resolve(server: Option<&str>) -> Option<plx_plex::plex::ServerId> {
-    use plx_plex::plex as servers;
-    match server {
-        Some(machine) => servers::id_of_machine(machine),
-        None => servers::client_opt().map(|_| servers::current_server()),
+fn log_line(line: impl Into<String>) -> Fx<AppHost> { Fx::Log(LogLine(line.into())) }
+
+impl DeepLink {
+    /// One frame of the link. Pure: no IO, no globals; every line and request is returned.
+    pub(crate) fn step(&mut self, event: LinkEvent, env: &LinkEnv) -> LinkOut {
+        let mut out = LinkOut::default();
+        if let LinkEvent::Arrived(parsed) = event {
+            match parsed {
+                // A launch without a link (the launcher's own icon) leaves one still waiting alone.
+                Parsed::None => {}
+                Parsed::Bad => out.fx.push(log_line("deeplink: not opened (bad ratingKey)")),
+                Parsed::Link(link) => {
+                    out.fx.push(log_line(format!(
+                        "deeplink: {:?} rk={} server={}", link.action, link.rk,
+                        if link.server.is_some() { "named" } else { "current" })));
+                    self.0 = LinkState::Waiting { link, server_deadline: None, crossed_sign_in: false };
+                }
+            }
+        }
+        let LinkState::Waiting { link, server_deadline, crossed_sign_in } = &mut self.0 else { return out };
+        match env.root {
+            Root::Login => {
+                *crossed_sign_in = true;
+                *server_deadline = None;
+                return out;
+            }
+            Root::Other => {
+                *server_deadline = None;
+                return out;
+            }
+            Root::Home => {}
+        }
+        if link.server.is_none() && *crossed_sign_in {
+            self.0 = LinkState::Idle;
+            out.fx.push(log_line("deeplink: dropped (signed in after the link arrived; it names no server)"));
+            return out;
+        }
+        let deadline = *server_deadline.get_or_insert(env.now.wrapping_add(SERVER_WAIT_MS));
+        let sid = match link.server.as_deref() {
+            Some(machine) => env.roster.by_machine(machine),
+            None => env.roster.current(),
+        };
+        let Some(sid) = sid else {
+            if expired(env.now, deadline) {
+                self.0 = LinkState::Idle;
+                out.fx.push(log_line("deeplink: not opened (server not available)"));
+            }
+            return out;
+        };
+        if !env.foreground || env.surface_up {
+            return out;
+        }
+        // Home alone underneath, so BACK off the page lands there: unwind whatever stands above it
+        // and wait for that to settle before asking.
+        if !env.home_settled {
+            if !env.nav_pending {
+                out.fx.push(Fx::Nav(NavOp::SelectTab(AppArg::Home)));
+            }
+            return out;
+        }
+        let LinkState::Waiting { link, .. } = std::mem::take(&mut self.0) else { return out };
+        out.fx.push(Fx::App(AppFx::Store(
+            plx_data::stores::StoreId::Metadata,
+            plx_data::stores::StoreCmd::Metadata(plx_data::stores::metadata::MetadataCmd::RequestDetail {
+                sid, rk: link.rk.clone() }),
+        )));
+        out.arm = Some((sid, link.rk, link.action == Action::Open));
+        out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waiting_for_test(link: Link, server_deadline: Option<u32>, crossed_sign_in: bool) -> Self {
+        DeepLink(LinkState::Waiting { link, server_deadline, crossed_sign_in })
+    }
+
+    /// The route rig's "settled" check.
+    #[cfg(test)]
+    pub(crate) fn is_idle(&self) -> bool { matches!(self.0, LinkState::Idle) }
+
+    #[cfg(test)]
+    fn is_crossed(&self) -> bool {
+        matches!(self.0, LinkState::Waiting { crossed_sign_in: true, .. })
+    }
+
+    #[cfg(test)]
+    fn server_deadline(&self) -> Option<u32> {
+        match self.0 { LinkState::Waiting { server_deadline, .. } => server_deadline, _ => None }
     }
 }
 
-/// The link went nowhere: Home stays as it is. Only the log says so; a launcher passes keys it
-/// read from the same server, so a miss is an edge case not worth a message on screen.
-fn not_found(why: &str) {
-    plx_base::eventlog::log(&format!("deeplink: not opened ({why})"));
+/// Production's roster: the one place the link reads the servers registry.
+pub(crate) struct GlobalRoster;
+
+impl LinkRoster for GlobalRoster {
+    fn by_machine(&self, machine: &str) -> Option<ServerId> { plx_plex::plex::id_of_machine(machine) }
+    fn current(&self) -> Option<ServerId> {
+        plx_plex::plex::client_opt().map(|_| plx_plex::plex::current_server())
+    }
 }
 
-/// One frame of the link: take a newly arrived payload, then, once Home is the root, alone, and
-/// the link's server is known, ask for the item and arm the menu-play wait that lands it. Runs
-/// just before `menu_play_tick`.
-pub(crate) fn tick(
-    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: &mut super::bridge::Bridge,
-    state: &mut DeepLink,
+/// **The one function that reads the outside world for the link:** the launch slot (a payload that
+/// arrived, read by pure [`parse`]), the window, the nav stack and the roster port.
+pub(crate) fn link_inputs(
+    pages: &plx_ui::dispatch::Dispatcher<AppHost>,
+    foreground: bool,
+    now: u32,
+) -> (LinkEvent, LinkEnv<'static>) {
+    let event = match plx_platform::tv::launch::take() {
+        Some(raw) => LinkEvent::Arrived(parse(&raw)),
+        None => LinkEvent::Frame,
+    };
+    let root = match pages.nav.tabs.stack.entries.first().map(|e| &e.arg) {
+        Some(AppArg::Login) => Root::Login,
+        Some(AppArg::Home) => Root::Home,
+        _ => Root::Other,
+    };
+    (event, LinkEnv {
+        now,
+        foreground,
+        root,
+        surface_up: pages.surface_up(),
+        nav_pending: pages.has_pending_navigation(),
+        home_settled: super::bridge::top_settled_on(pages, &AppArg::Home),
+        roster: &GlobalRoster,
+    })
+}
+
+/// Hand a step's output to the executors that already exist. It makes no decisions: a structural
+/// op goes through `Dispatcher::request`, any other effect through `Dispatcher::emit`, and the
+/// wait is the one app-loop write.
+pub(crate) fn perform(
+    out: LinkOut,
+    pages: &mut plx_ui::dispatch::Dispatcher<AppHost>,
     menu_play_await: &mut Option<super::input::MenuPlayAwait>,
     now: u32,
 ) {
-    if let Some(raw) = plx_platform::tv::launch::take() {
-        // A launch without a link (the launcher's own icon) leaves one still waiting alone.
-        let next = DeepLink::from_launch(Some(raw));
-        if matches!(next, DeepLink::Waiting { .. }) {
-            *state = next;
+    for fx in out.fx {
+        match fx {
+            Fx::Nav(op) => pages.request(MachineId::Nav, op),
+            other => pages.emit(MachineId::Nav, other),
         }
     }
-    let DeepLink::Waiting { link, server_deadline } = state else { return };
-    match gate(pages.nav.tabs.stack.entries.first().map(|e| &e.arg)) {
-        Gate::Wait => {
-            *server_deadline = None;
-            return;
-        }
-        Gate::Drop => {
-            plx_base::eventlog::log("deeplink: no account signed in - dropped");
-            *state = DeepLink::Idle;
-            return;
-        }
-        Gate::Home => {}
+    if let Some((sid, rk, open)) = out.arm {
+        *menu_play_await = Some(super::input::MenuPlayAwait::for_link(sid, rk, open, now));
     }
-    let deadline = *server_deadline.get_or_insert(now.wrapping_add(SERVER_WAIT_MS));
-    let Some(sid) = resolve(link.server.as_deref()) else {
-        if expired(now, deadline) {
-            not_found("server not available");
-            *state = DeepLink::Idle;
-        }
-        return;
-    };
-    // Home alone underneath, so BACK off the page lands there: unwind whatever stands above it
-    // and wait for that to settle before asking.
-    if !super::bridge::top_settled_on(pages, &AppArg::Home) {
-        if !pages.has_pending_navigation() {
-            super::bridge::nav_select_tab(pages, AppArg::Home);
-        }
-        return;
-    }
-    let DeepLink::Waiting { link, .. } = std::mem::take(state) else { return };
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail {
-        sid, rk: link.rk.clone() });
-    *menu_play_await = Some(super::input::MenuPlayAwait::for_link(sid, link.rk, link.action == Action::Open, now));
+}
+
+/// One frame of the link, run just before `menu_play_tick`: read, step, perform.
+pub(crate) fn frame(
+    pages: &mut plx_ui::dispatch::Dispatcher<AppHost>,
+    link: &mut DeepLink,
+    menu_play_await: &mut Option<super::input::MenuPlayAwait>,
+    foreground: bool,
+    now: u32,
+) {
+    let (event, env) = link_inputs(pages, foreground, now);
+    let out = link.step(event, &env);
+    perform(out, pages, menu_play_await, now);
 }
 
 #[cfg(test)]
@@ -247,13 +366,157 @@ mod tests {
         assert_eq!(parse("/tmp/plxnative/.sentry-native/abc.envelope"), Parsed::None);
     }
 
+    // The link's pure step: a fixture roster and env, one event in, the exact state and effects out.
+
+    struct FixedRoster {
+        named: Option<(&'static str, ServerId)>,
+        current: Option<ServerId>,
+    }
+
+    impl LinkRoster for FixedRoster {
+        fn by_machine(&self, machine: &str) -> Option<ServerId> {
+            self.named.filter(|(m, _)| *m == machine).map(|(_, sid)| sid)
+        }
+        fn current(&self) -> Option<ServerId> { self.current }
+    }
+
+    const KNOWN: FixedRoster = FixedRoster { named: Some(("abc", ServerId::UNSET)), current: Some(ServerId::UNSET) };
+    const EMPTY: FixedRoster = FixedRoster { named: None, current: None };
+
+    fn env(roster: &FixedRoster) -> LinkEnv<'_> {
+        LinkEnv {
+            now: 1_000,
+            foreground: true,
+            root: Root::Home,
+            surface_up: false,
+            nav_pending: false,
+            home_settled: true,
+            roster,
+        }
+    }
+
+    fn fx_names(fx: &[Fx<AppHost>]) -> Vec<String> {
+        fx.iter().map(|f| match f {
+            Fx::Log(LogLine(line)) => format!("log:{line}"),
+            Fx::Nav(NavOp::SelectTab(AppArg::Home)) => "select-home".to_owned(),
+            Fx::App(AppFx::Store(
+                plx_data::stores::StoreId::Metadata,
+                plx_data::stores::StoreCmd::Metadata(plx_data::stores::metadata::MetadataCmd::RequestDetail { rk, .. }),
+            )) => format!("request-detail:{rk}"),
+            _ => panic!("the link emitted an effect it must not"),
+        }).collect()
+    }
+
+    fn waiting(server: Option<&str>, crossed: bool) -> DeepLink {
+        DeepLink::waiting_for_test(
+            Link { server: server.map(str::to_owned), rk: "7".into(), action: Action::Open }, None, crossed)
+    }
+
     #[test]
-    fn the_gate_waits_behind_the_picker_and_drops_without_an_account() {
-        assert_eq!(gate(None), Gate::Wait);
-        assert_eq!(gate(Some(&AppArg::Profiles)), Gate::Wait);
-        assert_eq!(gate(Some(&AppArg::Onboard)), Gate::Wait);
-        assert_eq!(gate(Some(&AppArg::Login)), Gate::Drop);
-        assert_eq!(gate(Some(&AppArg::Home)), Gate::Home);
+    fn link_step_login_waits_and_marks_the_sign_in() {
+        let mut link = waiting(None, false);
+        let mut e = env(&EMPTY);
+        e.root = Root::Login;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none());
+        assert!(link.is_crossed() && !link.is_idle());
+    }
+
+    #[test]
+    fn link_step_the_picker_and_onboarding_wait_without_marking_a_sign_in() {
+        let mut link = waiting(None, false);
+        let mut e = env(&KNOWN);
+        e.root = Root::Other;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none());
+        assert!(!link.is_crossed() && !link.is_idle() && link.server_deadline().is_none());
+    }
+
+    #[test]
+    fn link_step_a_serverless_link_that_crossed_a_sign_in_is_dropped() {
+        let mut link = waiting(None, true);
+        let out = link.step(LinkEvent::Frame, &env(&KNOWN));
+        assert_eq!(fx_names(&out.fx),
+            ["log:deeplink: dropped (signed in after the link arrived; it names no server)"]);
+        assert!(out.arm.is_none() && link.is_idle());
+    }
+
+    #[test]
+    fn link_step_a_named_link_that_crossed_a_sign_in_lands() {
+        let mut link = waiting(Some("abc"), true);
+        let out = link.step(LinkEvent::Frame, &env(&KNOWN));
+        assert_eq!(fx_names(&out.fx), ["request-detail:7"]);
+        assert!(matches!(out.arm, Some((_, ref rk, true)) if rk == "7") && link.is_idle());
+    }
+
+    #[test]
+    fn link_step_the_server_wait_starts_at_home_and_expires() {
+        let mut link = waiting(Some("zzz"), false);
+        let mut e = env(&KNOWN);
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && !link.is_idle());
+        assert_eq!(link.server_deadline(), Some(1_000 + SERVER_WAIT_MS));
+        e.now = 1_000 + SERVER_WAIT_MS;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert_eq!(fx_names(&out.fx), ["log:deeplink: not opened (server not available)"]);
+        assert!(link.is_idle());
+    }
+
+    #[test]
+    fn link_step_the_server_wait_runs_under_a_surface() {
+        let mut link = waiting(Some("zzz"), false);
+        let mut e = env(&KNOWN);
+        e.surface_up = true;
+        link.step(LinkEvent::Frame, &e);
+        assert_eq!(link.server_deadline(), Some(1_000 + SERVER_WAIT_MS));
+    }
+
+    #[test]
+    fn link_step_waits_under_a_surface_and_while_backgrounded() {
+        for (surface_up, foreground) in [(true, true), (false, false), (true, false)] {
+            let mut link = waiting(None, false);
+            let mut e = env(&KNOWN);
+            e.surface_up = surface_up;
+            e.foreground = foreground;
+            e.home_settled = false;
+            let out = link.step(LinkEvent::Frame, &e);
+            assert!(fx_names(&out.fx).is_empty() && out.arm.is_none() && !link.is_idle(),
+                "surface_up={surface_up} foreground={foreground}");
+        }
+    }
+
+    #[test]
+    fn link_step_unwinds_to_home_once_and_waits_for_the_commit() {
+        let mut link = waiting(None, false);
+        let mut e = env(&KNOWN);
+        e.home_settled = false;
+        assert_eq!(fx_names(&link.step(LinkEvent::Frame, &e).fx), ["select-home"]);
+        e.nav_pending = true;
+        assert!(fx_names(&link.step(LinkEvent::Frame, &e).fx).is_empty());
+        assert!(!link.is_idle());
+    }
+
+    #[test]
+    fn link_step_the_landing_requests_the_item_and_arms_the_wait() {
+        let mut link = waiting(None, false);
+        let out = link.step(LinkEvent::Frame, &env(&KNOWN));
+        assert_eq!(fx_names(&out.fx), ["request-detail:7"]);
+        assert!(matches!(out.arm, Some((_, ref rk, true)) if rk == "7") && link.is_idle());
+    }
+
+    #[test]
+    fn link_step_an_arrival_logs_and_a_bad_key_changes_nothing() {
+        let mut link = DeepLink::default();
+        let mut e = env(&KNOWN);
+        e.root = Root::Other;
+        let arrived = LinkEvent::Arrived(Parsed::Link(Link { server: None, rk: "9".into(), action: Action::Play }));
+        let out = link.step(arrived, &e);
+        assert_eq!(fx_names(&out.fx), ["log:deeplink: Play rk=9 server=current"]);
+        assert!(!link.is_idle());
+        let out = link.step(LinkEvent::Arrived(Parsed::Bad), &e);
+        assert_eq!(fx_names(&out.fx), ["log:deeplink: not opened (bad ratingKey)"]);
+        let out = link.step(LinkEvent::Arrived(Parsed::None), &e);
+        assert!(fx_names(&out.fx).is_empty() && !link.is_idle());
     }
 
     #[test]

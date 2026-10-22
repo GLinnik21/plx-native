@@ -1,7 +1,7 @@
 //! A launch link (`app::deeplink`) driven through production frames against a one-thread loopback
 //! PMS that knows one item: the link lands on that item's detail page with Home alone underneath,
 //! unwinding whatever page the app was on; a key the server does not know leaves Home in place;
-//! and a television with no account signed in drops the link without touching the stack.
+//! and a television with no account signed in keeps the link pending without touching the stack.
 
 use super::*;
 use super::test_support::{frame, tick, Pms};
@@ -55,7 +55,7 @@ impl Rig {
             pa: plx_media::player::adapter::PlayerAdapter::new(mt),
             d,
             bridge,
-            link: DeepLink::Idle,
+            link: DeepLink::default(),
             wait: None,
             sid,
             i: 1,
@@ -69,7 +69,7 @@ impl Rig {
     fn run(&mut self) {
         for _ in 0..2500 {
             self.once();
-            if matches!(self.link, DeepLink::Idle) && self.wait.is_none() && !self.d.has_pending_navigation() {
+            if self.link.is_idle() && self.wait.is_none() && !self.d.has_pending_navigation() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -95,7 +95,7 @@ impl Rig {
                 let _frame = plx_base::task::FrameScope::enter();
                 self.bridge.metadata_pump_detail();
                 let now = tick(self.i).ms;
-                deeplink::tick(&mut self.d, &mut self.bridge, &mut self.link, &mut self.wait, now);
+                deeplink::frame(&mut self.d, &mut self.link, &mut self.wait, true, now);
                 unsafe {
                     input::menu_play_tick(&mut self.ps, &mut self.pa, &mut self.d, &mut self.bridge,
                         &mut self.wait, now);
@@ -137,18 +137,21 @@ fn a_link_lands_on_its_detail_page_with_home_alone_behind_it() {
 #[test]
 fn a_key_the_server_does_not_know_leaves_home_in_place() {
     let mut rig = Rig::new(AppArg::Home);
-    rig.link = DeepLink::from_launch(Some(payload("999")));
+    plx_platform::tv::launch::offer(&payload("999"));
     rig.run();
     assert!(rig.stack() == vec![AppArg::Home], "Home alone stays");
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// Sign-in is never interrupted and no longer drops the link: it stays pending, and the stack is
+/// left alone. Its two endings are the two `..._sign_in` tests below.
 #[test]
-fn no_account_signed_in_drops_the_link_and_leaves_sign_in_alone() {
+fn a_link_with_no_account_waits_through_sign_in() {
     let mut rig = Rig::new(AppArg::Login);
-    rig.link = DeepLink::from_launch(Some(payload(KNOWN)));
-    rig.run();
+    plx_platform::tv::launch::offer(&payload(KNOWN));
+    rig.frames(60);
     assert!(rig.stack() == vec![AppArg::Login], "sign-in stays alone");
+    assert!(!rig.link.is_idle(), "the link is still pending");
     plx_plex::plex::reset_servers_for_test();
 }
 

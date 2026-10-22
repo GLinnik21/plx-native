@@ -2487,8 +2487,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // from Home while a different page is up by the time the landing (or its settled
         // failure, or the ceiling) says the wait is over. A title the launch asked for
         // (`deeplink`) arms the same wait once Home is up.
-        super::deeplink::tick(&mut app.pages, &mut app.bridge, &mut app.deeplink,
-            &mut app.menu_play_await, fr.now);
+        super::deeplink::frame(&mut app.pages, &mut app.deeplink, &mut app.menu_play_await,
+            app.window_activity.allow_present(true), fr.now);
         if app.menu_play_await.is_some() {
             menu_play_tick(&mut app.player.session, &mut app.adapters.player,
                 &mut app.pages, &mut app.bridge, &mut app.menu_play_await, fr.now);
@@ -4727,6 +4727,8 @@ mod lifecycle_regression_tests {
         event(&mut rig.app, &mut fr, 0x105);
         event(&mut rig.app, &mut fr, 0x106);
         for _ in 0..1500 {
+            // A test build parks a detail fetch until the test runs it, off the frame.
+            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
             step(&mut rig.app, &mut t, vec![]);
             if top(&rig.app).as_ref() == Some(&linked) { break; }
             std::thread::sleep(Duration::from_millis(2));
