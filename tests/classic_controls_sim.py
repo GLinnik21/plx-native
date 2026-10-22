@@ -113,6 +113,7 @@ def verify_rapid(binary, media, output):
     output.mkdir(parents=True, exist_ok=False)
     (output / "auth.json").write_text(json.dumps({"playback_controls": "classic", "trailer_autoplay": False}))
     server, pms = mock_pms.serve(0, media=media, media_next_episode=True)
+    server.media_kbit = 20_000  # stay ahead of playback without reading the whole clip to EOF
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}"
     sim = SimRun(binary.resolve(), port, {

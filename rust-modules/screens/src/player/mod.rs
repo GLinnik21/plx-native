@@ -215,9 +215,9 @@ impl PlayerScreen {
     /// copy and the next [`publish`](Self::publish) republishes it.
     ///
     /// `for_reload` is the same distinction the transport draws: a reload is the SAME playback at a
-    /// new position (a seek, a quality pick, an app-switch resume), so only the in-flight gesture
-    /// is retired; a real stop ends the session, so the HUD's timer, its dismissal and the Up Next
-    /// countdown go with it.
+    /// new position (a seek, a quality pick, an app-switch resume), so the pending scrub is retired
+    /// while a classic tap burst keeps its requested target. A real stop ends the session, so the
+    /// burst, HUD timer, dismissal and Up Next countdown go with it.
     pub fn transport_reset(&mut self, for_reload: bool) {
         self.scrub.cancel();
         self.row.reset_title();

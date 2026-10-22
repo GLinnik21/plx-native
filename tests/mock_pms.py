@@ -3206,7 +3206,7 @@ class Handler(BaseHTTPRequestHandler):
                     block = src.read(min(left, 256 * 1024))
                     if not block:
                         break
-                    self.wfile.write(block)
+                    link_conditioner.write_throttled(self.wfile.write, block, self.server.media_kbit)
                     left -= len(block)
                 if self.close_connection:
                     self.wfile.flush()
@@ -3427,6 +3427,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
+    # Opt-in media pacing uses the same writer as conditioned catalog responses. Test drivers
+    # can keep a tiny local fixture from reaching EOF before a repeated-seek scenario finishes.
+    media_kbit = 0
     daemon_threads = True
     allow_reuse_address = True
 
