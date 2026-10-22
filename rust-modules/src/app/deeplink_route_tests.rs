@@ -68,6 +68,26 @@ impl Rig {
     /// the detail pump), until both settle or ~5 s pass (the bound is a count of 2 ms naps: no clock reads in `app/`).
     fn run(&mut self) {
         for _ in 0..2500 {
+            self.once();
+            if matches!(self.link, DeepLink::Idle) && self.wait.is_none() && !self.d.has_pending_navigation() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("the link never settled");
+    }
+
+    /// `n` production frames of the link, for a test whose link is meant to keep waiting.
+    fn frames(&mut self, n: u32) {
+        for _ in 0..n {
+            self.once();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// One production frame with the link and the menu-play wait ticked where `run.rs` ticks them.
+    fn once(&mut self) {
+        {
             // Under `cfg(test)` a detail fetch is parked until the test runs it; run it here, off
             // the frame, where the worker thread would have.
             self.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
@@ -83,12 +103,7 @@ impl Rig {
             }
             super::frame(&mut self.d, &mut self.bridge, tick(self.i), vec![]);
             self.i += 1;
-            if matches!(self.link, DeepLink::Idle) && self.wait.is_none() && !self.d.has_pending_navigation() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        panic!("the link never settled");
     }
 
     fn stack(&self) -> Vec<AppArg> {
@@ -135,4 +150,66 @@ fn no_account_signed_in_drops_the_link_and_leaves_sign_in_alone() {
     rig.run();
     assert!(rig.stack() == vec![AppArg::Login], "sign-in stays alone");
     plx_plex::plex::reset_servers_for_test();
+}
+
+/// The payload for `KNOWN` naming the rig's server by its machine identifier.
+fn payload_naming(rig: &Rig) -> String {
+    let machine = plx_plex::plex::client_for(rig.sid).unwrap().machine_id().to_owned();
+    format!(r#"{{"event":"launch","parameters":{{"plex":{{"server":"{machine}","ratingKey":"{KNOWN}","action":"open"}}}}}}"#)
+}
+
+/// A consent question over Home is a surface the viewer has not answered: the link opens nothing
+/// under it, and lands once the question is dismissed.
+#[test]
+fn a_link_waits_under_the_consent_sheet() {
+    let mut rig = Rig::new(AppArg::Home);
+    open_first_run_consent_at(&mut rig.d, 0);
+    rig.frames(20);
+    assert!(rig.d.surface_up(), "premise: the sheet is up");
+    plx_platform::tv::launch::offer(&payload(KNOWN));
+    rig.frames(60);
+    assert!(rig.bridge.metadata_view().detail_request_status(rig.sid, KNOWN).is_none(),
+        "the link asked for its item under the sheet");
+    assert!(rig.stack() == vec![AppArg::Home], "the stack moved under the sheet");
+    dismiss_surfaces(&mut rig.d);
+    rig.run();
+    assert!(rig.stack() == vec![
+        AppArg::Home,
+        AppArg::Content(ContentArg::Detail { sid: rig.sid, rk: KNOWN.into() }),
+    ], "the link lands after the dismiss");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The owner's rule: a link that names its server waits through sign-in and resolves against the
+/// roster of the account that signed in.
+#[test]
+fn a_link_with_a_server_survives_sign_in() {
+    let mut rig = Rig::new(AppArg::Login);
+    plx_platform::tv::launch::offer(&payload_naming(&rig));
+    rig.frames(20);
+    nav_root(&mut rig.d, AppArg::Home);
+    rig.run();
+    assert!(rig.stack() == vec![
+        AppArg::Home,
+        AppArg::Content(ContentArg::Detail { sid: rig.sid, rk: KNOWN.into() }),
+    ], "the link named the server and should have survived sign-in");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A link naming no server means "the signed-in server"; one that waited across a sign-in cannot
+/// know which account it was meant for, so it is dropped, and says so.
+#[test]
+fn a_serverless_link_that_waited_across_sign_in_is_dropped() {
+    plx_base::eventlog::with_private_log(|| {
+        let mut rig = Rig::new(AppArg::Login);
+        plx_platform::tv::launch::offer(&payload(KNOWN));
+        rig.frames(20);
+        nav_root(&mut rig.d, AppArg::Home);
+        rig.run();
+        assert!(rig.stack() == vec![AppArg::Home], "Home stays");
+        let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+        assert!(log.contains("deeplink: dropped (signed in after the link arrived; it names no server)"),
+            "log was: {log}");
+        plx_plex::plex::reset_servers_for_test();
+    });
 }

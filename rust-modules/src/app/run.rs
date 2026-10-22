@@ -4684,6 +4684,56 @@ mod lifecycle_regression_tests {
         assert!(rig.app.window_activity.allow_present(true), "DID foreground allows the next present");
     }
 
+    /// A launch link that arrives while the window is backgrounded acts on nothing until DID
+    /// foreground: the page stays where it was and no request leaves, then the link lands.
+    #[test]
+    fn a_link_waits_for_the_foreground() {
+        use plx_screens::registry::ContentArg;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| {
+            if request.starts_with("GET /library/metadata/777") {
+                return r#"{"MediaContainer":{"size":1,"Metadata":[
+                    {"ratingKey":"777","type":"movie","title":"Linked","duration":60000}]}}"#.into();
+            }
+            queue_body(request, false).to_owned()
+        }) else {
+            eprintln!("SKIPPED a_link_waits_for_the_foreground: fixture worker thread could not be spawned");
+            return;
+        };
+        // The fixture parks its first answer until released; release it ahead of time.
+        rig.release.send(()).unwrap();
+        let _ = plx_platform::tv::launch::take();
+        let sid = rig.sid;
+        let top = |app: &App| app.pages.nav.tabs.stack.entries.last().map(|e| e.arg.clone());
+        let linked = AppArg::Content(ContentArg::Detail { sid, rk: "777".into() });
+        let held = AppArg::Content(ContentArg::Detail { sid, rk: "other".into() });
+        super::super::bridge::nav_push(&mut rig.app.pages, held.clone());
+        let mut t = 0;
+        settle(&mut rig.app, &mut t);
+        assert!(top(&rig.app) == Some(held.clone()), "premise: a detail page is on top");
+
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        plx_platform::tv::launch::offer(
+            r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#);
+        for i in 0..30 {
+            assert!(!backgrounded_iteration(&mut rig.app, &mut t), "iteration {i} presented while backgrounded");
+        }
+        assert!(top(&rig.app) == Some(held), "the link moved the page while the window was hidden");
+        assert!(!rig.requests.lock().unwrap().iter().any(|r| r.contains("/library/metadata/777")),
+            "the link asked the server for its item while the window was hidden");
+
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        for _ in 0..1500 {
+            step(&mut rig.app, &mut t, vec![]);
+            if top(&rig.app).as_ref() == Some(&linked) { break; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(top(&rig.app) == Some(linked), "the link lands once the window is foregrounded");
+    }
+
     #[test]
     fn did_background_cancels_accepted_resolve_before_player_mount() {
         let _serial = plx_base::testlock::serial();
