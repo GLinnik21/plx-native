@@ -3875,15 +3875,15 @@ impl DetailScreen {
             }
             // A held OK on an episode's still opens the episode's item menu, so the hold shows its
             // progress like the other openers. The text stop is no card (a held OK there does
-            // nothing), and the episode's own `rk` is the gate, as the menu's is.
-            Some(Located::Episode(i, episodes::Row::Still)) => {
+            // nothing), and `focused_episode` is the gate, the menu's own: it answers `None` while
+            // a switched season reloads and for an episode with no `rk`.
+            Some(Located::Episode(_, episodes::Row::Still)) => {
                 if !self.hold_hint.wants_input(ok_held) {
                     return none;
                 }
                 let has_menu = self
-                    .detail(<H as crate::registry::MetadataLike>::metadata(cx))
-                    .and_then(|d| d.episodes.get(i))
-                    .is_some_and(|ep| !ep.rk.is_empty());
+                    .focused_episode(Some(key), <H as crate::registry::MetadataLike>::metadata(cx))
+                    .is_some_and(|(rk, _)| !rk.is_empty());
                 if !has_menu {
                     return none;
                 }

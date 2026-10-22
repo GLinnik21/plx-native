@@ -5263,3 +5263,32 @@ fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lif
     assert_eq!(plates(&lift), plates(&page_pressed), "...and it is the same plate");
     clear();
 }
+
+/// A held OK on an episode's still opens its menu only through `focused_episode`, which answers
+/// `None` while a season fetch is in flight. The hold hint must use that same answer: no promise
+/// of a hold that opens nothing while a switched season reloads, and the hint is there again once
+/// the season lands.
+#[test]
+fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=3).map(|i| episode(&format!("e{i}"), i)).collect();
+    let _guard = install(show);
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let elem = episode_key(&screen, 0, episodes::Row::Still).unwrap();
+    let mut context = cx(&measure, Some(elem));
+    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None };
+    let located = Some(Located::Episode(0, episodes::Row::Still));
+    let hinted = |screen: &DetailScreen| screen.hint_input(&context, located).focus.is_some();
+
+    assert!(hinted(&screen), "a loaded season's still has a menu to hold for");
+    plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), true);
+    assert!(!hinted(&screen), "no hint while the season loads: the hold would open nothing");
+    plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), false);
+    assert!(hinted(&screen), "the hint is back once the season has landed");
+    clear();
+}

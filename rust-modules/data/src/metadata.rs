@@ -3798,6 +3798,19 @@ pub fn begin_detail_for_test(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     gen
 }
 
+/// Put the season fetch in flight (`season_loading()` true) with no worker behind it, or settle it
+/// again: the state a tab press leaves between `LoadSeason` and the landing, for a test that needs
+/// the loading half of a screen's behaviour without a network fetch.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_season_loading_for_test(adapter: &MetadataAdapter, loading: bool) {
+    use std::sync::atomic::Ordering;
+    if loading {
+        adapter.season_gen.fetch_add(1, Ordering::SeqCst);
+    } else {
+        supersede_season(adapter);
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
