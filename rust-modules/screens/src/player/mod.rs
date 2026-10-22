@@ -578,6 +578,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
         match ev {
             ScreenEvent::Tick(tick) => {
                 self.render.ass.update(H::session(cx), tick.ms);
+                self.hud.settle(plx_media::player::loading(H::session(cx)));
                 let failed = player_hud::readout_owns_frame(self.busy);
                 if failed && !self.failure_up {
                     self.failure_sel = 0;
@@ -900,8 +901,9 @@ impl PlayerScreen {
             // up. Leaving on the FIRST busy BACK instead would end the film on one press to clear
             // the transport after a seek, an audio retranscode hold or an HLS rebuffer. Only a hide
             // done WHILE busy arms it, and any other bound press spends it
-            // (`HudState::note_fresh_press`), so a rebuffer that pops the transport up after the
-            // viewer hid it in normal play still takes two presses.
+            // (`HudState::note_fresh_press`); so does the pipeline settling with nothing pressed
+            // (`HudState::settle`, on the Tick). A rebuffer that pops the transport up after the
+            // viewer hid it in normal play, or long after a busy hide, still takes two presses.
             Key::Back if edge == Edge::Down && self.scrub.is_live() => {
                 self.key_back_scrub(now);
                 Handled::Yes
@@ -1821,6 +1823,18 @@ mod step_ladder_tests {
         (handled, reqs)
     }
 
+    /// One frame's `ScreenEvent::Tick` through `PlayerScreen::step`: the per-frame half of the page,
+    /// where nothing is pressed.
+    fn tick(page: &mut PlayerScreen, ms: u32) {
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(
+            &ScreenEvent::<TestHost>::Tick(Tick { ms, dt_us: 16_000 }),
+            &cx(),
+            &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present),
+        );
+    }
+
     fn fresh(page: &mut PlayerScreen) {
         page.hud.visible_at_press = true;
     }
@@ -2197,6 +2211,34 @@ mod step_ladder_tests {
         assert_eq!(hide, vec![], "the first BACK hides the transport");
         assert_eq!(hidden, (true, false), "…and, with nothing busy, arms nothing");
         assert_eq!(one, vec![], "one BACK over the rebuffer hides again");
+        assert_eq!(two, vec![PlayerReq::Exit], "the next one leaves");
+    }
+
+    /// The arming lasts only as long as the busy window it was made in. A BACK that hid the
+    /// transport over a Buffering load armed the exit; the pipeline then settles and nothing is
+    /// pressed, so a rebuffer much later is a rebuffer after a hide, which still costs two presses
+    /// (the rule `a_back_hide_in_play_does_not_arm_the_exit_for_a_later_rebuffer` holds for a hide
+    /// in play). The next Tick over a settled pipeline drops the arming; it leaves the hide itself
+    /// alone.
+    #[test]
+    fn a_busy_hide_stops_arming_the_exit_once_the_pipeline_settles() {
+        use plx_media::player::PlaybackState::{Buffering, Playing};
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(Buffering);
+        let mut page = PlayerScreen::new(ENTRY);
+        let (_, hide) = bound_press(&mut page, 0, WCODE_BACK);
+        let armed = (page.hud.dismissed, page.hud.exit_armed);
+        plx_media::player::swap_state_for_test(Playing);
+        tick(&mut page, 2_000);
+        let settled = (page.hud.dismissed, page.hud.exit_armed);
+        plx_media::player::swap_state_for_test(Buffering);
+        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, two) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(hide, vec![], "the first BACK over a Buffering load only hides the transport");
+        assert_eq!(armed, (true, true), "the fixture: that busy hide armed the exit");
+        assert_eq!(settled, (true, false), "a Tick over a settled pipeline drops the arming, not the hide");
+        assert_eq!(one, vec![], "one BACK over the later rebuffer does not leave");
         assert_eq!(two, vec![PlayerReq::Exit], "the next one leaves");
     }
 

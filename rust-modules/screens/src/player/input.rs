@@ -216,8 +216,9 @@ pub struct HudState {
     /// The last BACK that hid the transport did so WHILE the pipeline was busy
     /// (`plx_media::player::loading`), so the hide could not take effect: the transport stays up
     /// until the pipeline settles ([`hud_visible`] ORs the busy state in). The next BACK should then
-    /// leave. Written ONLY by [`hide`](Self::hide); [`note_fresh_press`](Self::note_fresh_press)
-    /// spends it on the very next bound press, whatever that press is.
+    /// leave. SET only by [`hide`](Self::hide); [`note_fresh_press`](Self::note_fresh_press)
+    /// spends it on the very next bound press, whatever that press is, and
+    /// [`settle`](Self::settle) drops it when the pipeline settles with nothing pressed.
     ///
     /// A hide done in normal play never sets it: a rebuffer that pops the transport back up after
     /// the viewer hid it must still cost two presses, because that viewer has not asked to leave.
@@ -307,6 +308,18 @@ impl HudState {
     pub fn hide(&mut self, while_busy: bool) {
         self.dismissed = true;
         self.exit_armed = while_busy;
+    }
+
+    /// Once per frame, with whether the pipeline is busy right now (`plx_media::player::loading`):
+    /// drops the arming when it is not. The arming belongs to the busy window the hide was done in,
+    /// where the transport could not come down and a second BACK is the only way out; if the
+    /// pipeline settles and nothing is pressed, that window is over, and a rebuffer much later is
+    /// a rebuffer after a hide, which still costs two presses. `dismissed` is not touched: the hide
+    /// itself stands.
+    pub fn settle(&mut self, busy: bool) {
+        if !busy {
+            self.exit_armed = false;
+        }
     }
 
     /// A FRESH segment offer takes the control row: put the HUD ON SCREEN and, from rest, park the
