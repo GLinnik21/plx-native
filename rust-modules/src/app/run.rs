@@ -4879,6 +4879,9 @@ mod lifecycle_regression_tests {
         plx_platform::tv::launch::offer(LINK_777);
         event(&mut rig.app, &mut fr, 0x105);
         event(&mut rig.app, &mut fr, 0x106);
+        assert!(matches!(rig.app.player.lifecycle.state(), ForegroundState::Suspended { .. }),
+            "the DID claimed a restore the link was about to end (state: {:?})",
+            rig.app.player.lifecycle.state());
         assert!(rig.app.player.lifecycle.pending_load_attempt().is_none()
             && !rig.app.player.lifecycle.flight_pending(),
             "the DID claimed a restore the link was about to end");
@@ -4887,6 +4890,31 @@ mod lifecycle_regression_tests {
         assert!(run_until_linked(&mut rig, &mut t), "the link lands");
         settle(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+    }
+
+    /// A link that arrives while the window is hidden ends nothing until the DID: an Exit drained
+    /// in the background would tear the session down (scrobble, transcode stop, hub refetch) while
+    /// hidden, and a 0x106 right behind it would find the link already leaving and restore the
+    /// film just to be stopped. The Exit and the superseding DID happen together at the DID.
+    #[test]
+    fn a_link_arriving_in_the_background_ends_playback_only_at_the_did() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = linked_rig("a_link_arriving_in_the_background_ends_playback_only_at_the_did") else { return };
+        start_film(&mut rig);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        plx_platform::tv::launch::offer(LINK_777);
+        let mut t = 16;
+        backgrounded_iteration(&mut rig.app, &mut t);
+        assert!(!rig.app.deeplink.is_leaving(), "the link started leaving while the window was hidden");
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        assert!(matches!(rig.app.player.lifecycle.state(), ForegroundState::Suspended { .. }),
+            "the DID restored a film the link ends (state: {:?})", rig.app.player.lifecycle.state());
+        assert!(run_until_linked(&mut rig, &mut t), "the link lands");
+        settle(&mut rig.app, &mut t);
         assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
     }
 

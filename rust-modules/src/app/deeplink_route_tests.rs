@@ -116,6 +116,21 @@ fn payload(rk: &str) -> String {
 }
 
 #[test]
+fn a_paramless_relaunch_right_behind_a_link_does_not_lose_it() {
+    let mut rig = Rig::new(AppArg::Home);
+    // The cold argv link and a second tile press (no `plex` object) both arrive before a frame
+    // takes either: the later, link-less payload must not displace the link.
+    plx_platform::tv::launch::offer(&payload(KNOWN));
+    plx_platform::tv::launch::offer(r#"{"event":"relaunch","parameters":{}}"#);
+    rig.run();
+    assert!(rig.stack() == vec![
+        AppArg::Home,
+        AppArg::Content(ContentArg::Detail { sid: rig.sid, rk: KNOWN.into() }),
+    ], "the link was lost; {} entries", rig.stack().len());
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
 fn a_link_lands_on_its_detail_page_with_home_alone_behind_it() {
     let mut rig = Rig::new(AppArg::Home);
     // Whatever stands above Home when the link is due is unwound: here, another item's page.

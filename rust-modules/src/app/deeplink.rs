@@ -303,7 +303,7 @@ impl DeepLink {
     pub(crate) fn is_idle(&self) -> bool { matches!(self.0, LinkState::Idle) }
 
     #[cfg(test)]
-    fn is_leaving(&self) -> bool { matches!(self.0, LinkState::Leaving { .. }) }
+    pub(crate) fn is_leaving(&self) -> bool { matches!(self.0, LinkState::Leaving { .. }) }
 
     #[cfg(test)]
     fn leaving_rk(&self) -> Option<&str> {
