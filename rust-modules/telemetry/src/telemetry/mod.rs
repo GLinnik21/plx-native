@@ -34,6 +34,7 @@ pub mod posthog;
 pub mod queue;
 pub mod sender;
 pub mod sentry;
+pub mod session;
 pub mod spool;
 pub mod transition;
 
@@ -134,7 +135,10 @@ pub fn activate_initial(c: Consent) -> native::Guard {
     // `holding 5 records` directly above `net: bound libcurl`.
     // The native daemon's envelopes and the local C/panic log are recovered together: the two may
     // describe the same death, and pairing them keeps it one Sentry event — the more useful one.
-    crashreport::recover_pending();
+    let crashes_found = crashreport::recover_pending();
+    // The previous process's open release-health session is reported now that this boot knows
+    // whether it died of a crash, and this process's own begins.
+    session::recover_and_start(crashes_found);
     // The SDK capture backend starts only after consent is published and old fallback records are
     // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
     native::sync(&c)

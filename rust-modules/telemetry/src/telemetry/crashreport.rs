@@ -1327,8 +1327,13 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// symbols. Sending no image at least says so. The one deliberate exception is a firmware library
 /// with no build id: [`module_images`] lists it by name with a nil `debug_id` and no `code_id`,
 /// because attributing a crash to a library is worth more than the silent `missing_symbol`.
-pub fn recover_pending() {
-    recover_pending_at(&log_path());
+///
+/// **Returns how many crash records this pass FOUND** (local log reports plus native envelopes, a
+/// crash that left both counts twice): `telemetry::session` reads "more than none" as "the previous
+/// process died of a crash", which is what separates a `crashed` release-health session from an
+/// `abnormal` one. `0` also when nothing may be read (no consent, no destination).
+pub fn recover_pending() -> usize {
+    recover_pending_at(&log_path())
 }
 
 /// **May this process read crash data at all** — the crash log here, and the native envelopes in
@@ -1345,9 +1350,9 @@ pub fn may_read_crash_data() -> bool {
     super::consent::allows_errors() && super::sender::has_sentry()
 }
 
-fn recover_pending_at(path: &std::path::Path) {
+fn recover_pending_at(path: &std::path::Path) -> usize {
     if !may_read_crash_data() {
-        return; // no consent, or nowhere to send — nothing is read and nothing is queued
+        return 0; // no consent, or nowhere to send — nothing is read and nothing is queued
     }
     let natives = super::native::read_pending();
     // An unreadable log (symlink, foreign owner, over the bound) imports nothing and leaves the mark
@@ -1461,6 +1466,7 @@ fn recover_pending_at(path: &std::path::Path) {
             }) { "yes" } else { "partial/no" }
         ));
     }
+    reports.len() + natives.len()
 }
 
 /// Make crash consent prospective. When error reporting is switched on, faults already present in

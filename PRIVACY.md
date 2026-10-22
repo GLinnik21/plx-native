@@ -120,6 +120,15 @@ Settings shows it while crash reports are on. Turning crash reports off, or sign
 the local identifier; enabling them later creates a new one. Reports already sent keep the old
 identifier, so copy it down first if you intend to ask for their deletion.
 
+While crash reports are on, PlxNative also sends one small **session record** for each stretch of
+use, even when nothing crashed, so that crash-free sessions can be counted per release: the start
+time, its length, how it ended (exited, crashed or ended abnormally), a crash count, the Crash
+report ID, the app version and the build's `environment` label — no content, title, account or
+server. A session ends after 15 minutes without a key press while nothing is playing, when the app
+goes to the background, or after 4 hours. Its start and last activity time are kept on this
+television until it ends, so a crash can be attributed on the next launch; turning crash reports
+off, or signing out, deletes that and any record waiting to be sent.
+
 The same independent choice also covers a handled playback-error report when playback reaches its
 explicit terminal error screen, or when a trailer preview behind a detail page fails. That report contains a fixed failure kind, delivery and quality
 classes, coarse raster, rate, HTTP and buffer classes, whether a first picture appeared, and at

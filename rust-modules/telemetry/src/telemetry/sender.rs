@@ -282,6 +282,7 @@ pub fn allowed(r: &Record, c: &consent::Consent) -> bool {
 /// no amount of reading the status code could have.
 fn wire_body(r: &Record) -> Vec<u8> {
     match r.dest {
+        Dest::Sentry if super::session::is_session_body(&r.body) => sentry::session_envelope(&r.body),
         Dest::Sentry => sentry::envelope(&r.event_id, "event", &r.body),
         Dest::PostHog => {
             let Some(event) = crate::diag::schema::UsageEnvelope::decode(&r.body) else {
@@ -457,6 +458,22 @@ mod tests {
             wire_body(&r).is_empty(),
             "future internal storage escaped onto the wire"
         );
+    }
+
+    /// A spooled session goes on the wire as a `session` item under an empty envelope header —
+    /// the exact bytes, since a wrong frame is a silent 200 — and an event still goes as `event`.
+    #[test]
+    fn a_session_record_is_framed_as_a_session_item_and_an_event_is_not() {
+        let payload = br#"{"sid":"s","did":"d","init":true,"started":"2027-01-15T08:00:00Z","status":"exited","attrs":{"release":"plxnative@1"}}"#;
+        let mut r = rec(Category::Errors, Dest::Sentry);
+        r.body = payload.to_vec();
+        let mut expected = format!("{{}}\n{{\"type\":\"session\",\"length\":{}}}\n", payload.len()).into_bytes();
+        expected.extend_from_slice(payload);
+        expected.push(b'\n');
+        assert_eq!(wire_body(&r), expected);
+
+        r.body = br#"{"event_id":"aaa","level":"fatal"}"#.to_vec();
+        assert!(String::from_utf8(wire_body(&r)).unwrap().contains(r#""type":"event""#));
     }
 
     fn rec(cat: Category, dest: Dest) -> Record {

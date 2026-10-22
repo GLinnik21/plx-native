@@ -109,6 +109,9 @@ pub(crate) unsafe fn run(app: &mut App) {
     let mut hint_taught = super::hint_taught::HintTaught::new();
     while app.running {
         watchdog.advance();
+        // Release health's once-per-frame beat: expires an idle session, and counts a film
+        // playing with no remote input as activity (`telemetry::session`).
+        plx_telemetry::telemetry::session::tick(matches!(app.route(), AppArg::Player));
         let _frame_scope = plx_base::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(super::window_activity::WslgFrameBudget::begin);
@@ -772,6 +775,11 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     app.window_activity.event(et);
     let playing = matches!(app.route(), AppArg::Player);
     plx_telemetry::telemetry::window::lifecycle(et, playing);
+    // Release health: the foreground/background edge ends or begins a session, and a key or
+    // pointer event is the activity that keeps one open (`telemetry::session`; consent-gated
+    // inside, a no-op while crash reports are off).
+    plx_telemetry::telemetry::session::lifecycle(et);
+    if is_input_event(et) { plx_telemetry::telemetry::session::input(); }
     if controlled_replay(app) {
         // The tape owns logical ingress; real SDL startup notifications must not be
         // counted a second time. The real compositor still owns window safety.
@@ -3242,6 +3250,9 @@ pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
+    // A clean exit ends the release-health session as `exited`; a death leaves its state for
+    // the next boot to classify.
+    plx_telemetry::telemetry::session::shutdown();
     plx_media::player::report::abandon_pending(ps);
     if is_started() {
         plx_media::player::stop_bufferfeed(ps, pa);

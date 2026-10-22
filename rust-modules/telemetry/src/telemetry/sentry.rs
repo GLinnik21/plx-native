@@ -636,6 +636,17 @@ pub fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Frame one release-health session item. The envelope header is `{}`: a session is not an event
+/// and the documentation's examples frame it so (<https://develop.sentry.dev/sdk/telemetry/sessions/>).
+pub fn session_envelope(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 40);
+    out.extend_from_slice(b"{}\n");
+    out.extend_from_slice(format!("{{\"type\":\"session\",\"length\":{}}}\n", payload.len()).as_bytes());
+    out.extend_from_slice(payload);
+    out.push(b'\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

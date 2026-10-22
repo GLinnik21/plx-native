@@ -698,6 +698,28 @@ pub fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
         .collect()
 }
 
+/// The open release-health session (`telemetry::session`), beside the decision that authorised it.
+///
+/// **Persistent, not in the runtime root.** A session that was open when the television lost power
+/// or the process was killed is only knowable on the next boot, and the runtime root is `/tmp`,
+/// which a restart clears: the state would vanish with exactly the death it exists to record.
+/// Written rarely (at the session's start and at most every five minutes of activity), deleted
+/// when the session ends, on withdrawal and on sign-out.
+pub fn telemetry_session_candidates() -> Vec<PathBuf> {
+    telemetry_candidates()
+        .into_iter()
+        .map(|p| {
+            p.with_file_name(p.file_name().map_or_else(
+                || "telemetry-session.json".into(),
+                |n| {
+                    n.to_string_lossy()
+                        .replace("telemetry.json", "telemetry-session.json")
+                },
+            ))
+        })
+        .collect()
+}
+
 pub fn telemetry_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build keeps its own, for exactly the reason the session file does: several
