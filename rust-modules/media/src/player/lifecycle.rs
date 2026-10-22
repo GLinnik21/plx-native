@@ -309,6 +309,13 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         true
     }
 
+    /// Read-only view of the machine for tests in other crates; every write goes through
+    /// [`claim`](Self::claim) and the `finish_*` settlements.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state(&self) -> ForegroundState<Attempt> {
+        self.state
+    }
+
     pub fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
         let state = self.state;
         match state {
