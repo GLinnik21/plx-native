@@ -36,15 +36,14 @@ def verify(binary, media, output):
 
     def control_row():
         # A hidden-HUD reveal can produce the same fingerprint as the previous visible frame.
-        # Await the actual key-up instead of requiring a deduplicated focus line to repeat.
+        # A reveal may therefore need a second UP. Await each actual focus transition rather
+        # than assuming a fixed render delay, especially while the host is also building.
         for _ in range(3):
             stamp = sim.key("up")
             wait(r"key type=0x301", stamp)
-            time.sleep(0.15)  # focus is published after the input batch, after the key-up log
-            latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
-            if "hud=1 f=1 " in latest:
-                assert "slot=legacy items=5" in latest
+            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=legacy items=5", 1, after=stamp):
                 return
+        latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
         raise AssertionError(f"control row not reached: {latest}")
 
     try:
@@ -85,11 +84,14 @@ def verify(binary, media, output):
         stamp = sim.key("right")
         wait(r"seek\(in-place\): av_seek t=[1-9][0-9]* ", stamp)
         wait(r"loop=.*route=player .*pos=1[1-9]s", stamp)
+        flashes = [line for at, line in sim.snapshot() if at >= stamp
+                   and line.startswith("focus route=player ") and "hud=1 " in line]
+        assert not flashes, f"hidden seeking flashed the HUD during reprime: {flashes}"
         latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
         assert "route=player " in latest and "hud=0 " in latest, latest
         stamp = sim.key("shot")
         wait(r"shot: wrote ", stamp)
-        print("PASS hidden-HUD seek commits immediately and leaves the HUD dismissed", flush=True)
+        print("PASS hidden-HUD seek stays hidden through the first new picture", flush=True)
 
         stamp = sim.key("up")
         wait(r"^focus route=player .*hud=1 f=0", stamp)

@@ -59,5 +59,5 @@ python3 tests/legacy_controls_sim.py --sim rust-modules/target-sim/debug/plxnati
   --media /tmp/legacy-media --out /tmp/legacy-controls-evidence
 ```
 
-Use a new output directory for each run. A normal buffering read-out can briefly appear while
-the simulator primes its clock sink after seeking; the HUD remains dismissed when playback resumes.
+Use a new output directory for each run. Hidden seeking keeps the controls dismissed through
+the first new picture; later rebuffering still shows the normal status read-out.

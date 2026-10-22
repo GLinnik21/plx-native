@@ -3,12 +3,19 @@
 use super::*;
 use plx_plex::plex::session::PlaybackControls;
 
-/// Only a seek requested over a dismissed legacy HUD stays invisible. Buffering and failures
-/// retain the shared read-out policy, so a stalled pipeline can still explain itself.
+/// A seek requested over a dismissed legacy HUD stays invisible through the first new picture.
+/// Ordinary rebuffering and failures retain the shared read-out policy.
 pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismissed: bool) -> bool {
-    dismissed
-        && plx_media::route::playback_controls() == PlaybackControls::Legacy
-        && plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking
+    use plx_media::player::{self, PlaybackState};
+    // Play clears Seeking before the first presented-frame callback. The pump then derives
+    // Buffering until the first new picture. Its cached state can outlive frames=0 for a frame,
+    // so use the existing seek target and rebuffer marker rather than re-sampling frame counts.
+    let state = player::state(ps);
+    let seeking = state == PlaybackState::Seeking
+        || (state == PlaybackState::Buffering
+            && !player::rebuffering()
+            && player::seek_display_ns() >= 0);
+    dismissed && plx_media::route::playback_controls() == PlaybackControls::Legacy && seeking
 }
 
 impl PlayerScreen {
@@ -64,6 +71,8 @@ mod tests {
         position: i64,
         controls: PlaybackControls,
         state: u8,
+        rebuffering: bool,
+        seek_display: i64,
     }
     impl PlaybackFixture {
         fn new() -> Self {
@@ -78,6 +87,10 @@ mod tests {
                 state: plx_media::player::swap_state_for_test(
                     plx_media::player::PlaybackState::Playing,
                 ),
+                rebuffering: plx_media::player::SHARED
+                    .hls_rebuffering
+                    .swap(false, Relaxed),
+                seek_display: plx_media::player::SHARED.seek_display_ns.swap(-1, Relaxed),
             };
             plx_media::route::restore_playback_controls(PlaybackControls::Legacy);
             saved
@@ -93,6 +106,12 @@ mod tests {
                 .store(self.position, Relaxed);
             plx_media::route::restore_playback_controls(self.controls);
             plx_media::player::restore_state_for_test(self.state);
+            plx_media::player::SHARED
+                .hls_rebuffering
+                .store(self.rebuffering, Relaxed);
+            plx_media::player::SHARED
+                .seek_display_ns
+                .store(self.seek_display, Relaxed);
         }
     }
 
@@ -183,6 +202,19 @@ mod tests {
         assert!(input::hud_visible(&ps, 1_000, 2_000, false, false));
         plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
         assert!(input::hud_visible(&ps, 1_000, 0, false, true));
+        // Play has been issued after seeking, but its first new picture has not arrived yet.
+        // The derived state briefly becomes Buffering; that must not flash the transport.
+        plx_media::player::SHARED
+            .seek_display_ns
+            .store(50_000_000_000, Relaxed);
+        assert!(!input::hud_visible(&ps, 1_000, 0, false, true));
+        plx_media::player::SHARED
+            .hls_rebuffering
+            .store(true, Relaxed);
+        assert!(
+            input::hud_visible(&ps, 1_000, 0, false, true),
+            "later rebuffering stays visible"
+        );
     }
 
     #[test]
