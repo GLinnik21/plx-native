@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-22T19:01:49Z",
+ "generated": "2026-10-22T19:07:17Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,21 +66,21 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.9,
-   "change7_pct": -25.0,
+   "change30_pct": -49.1,
+   "change7_pct": -25.3,
    "d30": 685.0,
-   "delta30": -335.0,
-   "delta7": -116.5,
+   "delta30": -336.0,
+   "delta7": -118.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 176,
+   "n_now": 175,
    "n_prev": 252,
-   "now": 350.0,
-   "prev7": 466.5,
+   "now": 349,
+   "prev7": 467.5,
    "shown": true,
-   "state": "flat",
+   "state": "better",
    "state30": "better",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
@@ -90,15 +90,15 @@
    "change30_pct": -51.8,
    "change7_pct": -20.1,
    "d30": 684,
-   "delta30": -354.0,
-   "delta7": -83.0,
+   "delta30": -354,
+   "delta7": -83,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 117,
-   "now": 330.0,
+   "now": 330,
    "prev7": 413,
    "shown": true,
    "state": "better",
@@ -225,19 +225,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 55.4,
-   "change7_pct": -3.7,
+   "change30_pct": 55.2,
+   "change7_pct": -4.3,
    "d30": 612,
-   "delta30": 339,
-   "delta7": -36.5,
+   "delta30": 338.0,
+   "delta7": -43.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 25,
-   "n_prev": 10,
-   "now": 951,
-   "prev7": 987.5,
+   "n_now": 24,
+   "n_prev": 11,
+   "now": 950.0,
+   "prev7": 993,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -309,18 +309,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.0,
-   "change7_pct": 16.4,
+   "change30_pct": 102.3,
+   "change7_pct": 16.7,
    "d30": 128,
-   "delta30": 130.5,
-   "delta7": 36.5,
+   "delta30": 131,
+   "delta7": 37.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 110,
-   "now": 258.5,
+   "now": 259,
    "prev7": 222.0,
    "shown": true,
    "state": "flat",
@@ -330,18 +330,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 183.1,
-   "change7_pct": 8.9,
+   "change30_pct": 182.4,
+   "change7_pct": 8.7,
    "d30": 71,
-   "delta30": 130,
-   "delta7": 16.5,
+   "delta30": 129.5,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 110,
-   "now": 201,
+   "now": 200.5,
    "prev7": 184.5,
    "shown": true,
    "state": "flat",
@@ -394,17 +394,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.1,
+   "change7_pct": 8.1,
    "d30": null,
    "delta30": null,
-   "delta7": 10.0,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 110,
-   "now": 151.5,
+   "now": 153,
    "prev7": 141.5,
    "shown": true,
    "state": "flat",
@@ -467,10 +467,10 @@
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 25,
-   "n_prev": 10,
-   "now": 19,
-   "prev7": 17.0,
+   "n_now": 24,
+   "n_prev": 11,
+   "now": 19.0,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -482,15 +482,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2.0,
+   "delta30": 2,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 110,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -503,16 +503,16 @@
    "change30_pct": 33.3,
    "change7_pct": 6.7,
    "d30": 12,
-   "delta30": 4,
+   "delta30": 4.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 25,
-   "n_prev": 10,
-   "now": 16,
-   "prev7": 15.0,
+   "n_now": 24,
+   "n_prev": 11,
+   "now": 16.0,
+   "prev7": 15,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -610,11 +610,6 @@
    "change_pct": 38.2,
    "commits": [
     {
-     "pr": 912,
-     "sha": "0dd6797c1",
-     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
-    },
-    {
      "pr": 913,
      "sha": "cb5c2a140",
      "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
@@ -658,6 +653,11 @@
      "pr": 930,
      "sha": "33f29b775",
      "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
     }
    ],
    "from": 142.5,
@@ -671,11 +671,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 912,
-     "sha": "0dd6797c1",
-     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
-    },
-    {
      "pr": 913,
      "sha": "cb5c2a140",
      "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
@@ -719,6 +714,11 @@
      "pr": 930,
      "sha": "33f29b775",
      "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
     }
    ],
    "from": 103.0,
@@ -732,11 +732,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 912,
-     "sha": "0dd6797c1",
-     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
-    },
-    {
      "pr": 913,
      "sha": "cb5c2a140",
      "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
@@ -780,6 +775,11 @@
      "pr": 930,
      "sha": "33f29b775",
      "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
     }
    ],
    "from": 46.0,
@@ -796,7 +796,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 951
+   "now": 950.0
   },
   {
    "group": "ci",
@@ -820,7 +820,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 258.5
+   "now": 259
   }
  ],
  "slowest_local": [
