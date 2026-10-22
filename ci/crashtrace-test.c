@@ -346,13 +346,23 @@ static void maps_cases(void) {
  * signal death) — and then the record. Off `__arm__` the interrupted context is not read, so the
  * header carries `pc=0x0 lr=0x0` and no `frames:` line; the frame walk itself is graded on a
  * synthetic stack by `ci/crashfmt-test.c`, and the live walk only on a television. */
-static int freeze_child(const char *path, int raises) {
+/* Rust's probe number, which the Rust watchdog (`plx_base::task::watchdog`) exports and stores
+ * right before it signals. The tracer only reads it, so the test stands in for that owner. */
+volatile unsigned int plx_freeze_seq;
+
+/* `mode`: 0 = armed probes numbered 10, 11, ...; 1 = stray signals that arm nothing; 2 = armed
+ * probes with SIGUSR2 inherited as SIG_IGN, as from a parent that ignored it. */
+static int freeze_child(const char *path, int raises, int mode) {
     pid_t pid = fork();
     if (pid < 0) { fail("fork", strerror(errno)); return -1; }
     if (pid == 0) {
         int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+        if (mode == 2) signal(SIGUSR2, SIG_IGN);
         plx_crash_install(fd, fd);
-        for (int i = 0; i < raises; i++) raise(SIGUSR2);
+        for (int i = 0; i < raises; i++) {
+            if (mode != 1) plx_freeze_seq = 10 + (unsigned)i;
+            raise(SIGUSR2);
+        }
         /* Still alive: say so with a status no signal death can produce. */
         _exit(23);
     }
@@ -366,21 +376,40 @@ static void freeze_cases(void) {
     snprintf(path, sizeof path, "/tmp/plx-crashtrace-freeze-%d.log", (int)getpid());
     unlink(path);
 
-    int status = freeze_child(path, 2);
+    int status = freeze_child(path, 2, 0);
     expect("freeze: the process survives the probe", WIFEXITED(status) && WEXITSTATUS(status) == 23,
            "the child did not run on to its own exit — the handler killed it or never returned");
     size_t len = 0;
     const char *log = slurp(path, &len);
     /* BOTH sinks are the one file here, so every line appears twice. */
-    expect("freeze: first record written", count(log, "*** FREEZE seq=1 pc=0x") == 2, "no seq=1 header");
-    expect("freeze: second record is seq=2", count(log, "*** FREEZE seq=2 pc=0x") == 2, "no seq=2 header");
+    expect("freeze: first record written", count(log, "*** FREEZE seq=10 pc=0x") == 2,
+           "no seq=10 header: the record must carry Rust's number, not a count of its own");
+    expect("freeze: second record is seq=11", count(log, "*** FREEZE seq=11 pc=0x") == 2, "no seq=11 header");
     expect("freeze: a time line follows", count(log, "\ntime: ") >= 4, "no time: lines");
     expect("freeze: it is not a fault record", count(log, "*** SIGNAL") == 0,
            "a freeze wrote a SIGNAL header, which every fault parser would take for a death");
     unlink(path);
 
     /* The backstop: a storm of probes writes at most PLX_MAX_FREEZE_RECORDS records. */
-    status = freeze_child(path, PLX_MAX_FREEZE_RECORDS + 4);
+    /* A SIGUSR2 from this process that Rust did not arm is not a probe: no record. */
+    status = freeze_child(path, 3, 1);
+    expect("freeze: a stray signal does not kill the process", WIFEXITED(status) && WEXITSTATUS(status) == 23,
+           "the child died");
+    log = slurp(path, &len);
+    expect("freeze: a signal with no armed probe writes nothing", count(log, "*** FREEZE") == 0,
+           "an unarmed SIGUSR2 produced a record, so the record numbers can drift from Rust's");
+    unlink(path);
+
+    /* An inherited SIG_IGN is replaced, as SIG_DFL is: the probe is answered. */
+    status = freeze_child(path, 1, 2);
+    expect("freeze: an inherited SIG_IGN does not kill the process", WIFEXITED(status) && WEXITSTATUS(status) == 23,
+           "the child died");
+    log = slurp(path, &len);
+    expect("freeze: an inherited SIG_IGN is installed over", count(log, "*** FREEZE seq=10 pc=0x") == 2,
+           "the tracer left an inherited SIG_IGN in place, so a freeze goes unrecorded");
+    unlink(path);
+
+    status = freeze_child(path, PLX_MAX_FREEZE_RECORDS + 4, 0);
     expect("freeze: a storm of probes does not kill the process",
            WIFEXITED(status) && WEXITSTATUS(status) == 23, "the child died");
     log = slurp(path, &len);

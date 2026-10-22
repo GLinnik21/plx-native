@@ -1150,7 +1150,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   removed when it fires). A real freeze is a 5 s stall of the loop in the foreground: the watchdog
   (`plx_base::task::watchdog`) sends `SIGUSR2` to the main thread, `freeze_handler` in
   `src/crashtrace.c` writes a `*** FREEZE` record, and the next launch reports it
-  (`telemetry::crashreport`). The app is never stopped.
+  (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
+  stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:
+  write `log` there before launching, or no freeze report is produced.
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the

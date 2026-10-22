@@ -109,13 +109,6 @@ static void s_write(int fd, const char *p, size_t n) {
     }
 }
 
-/* Both sinks get every line, so the two logs tell the same story: the event log is where the rest
- * of the session is, and the crash log is the half that survives the relaunch. */
-static void emit(const struct plx_sbuf *b) {
-    s_write((int)event_fd, b->p, b->n);
-    s_write((int)crash_fd, b->p, b->n);
-}
-
 /* Static, because signal context has no business allocating and the stack is the one resource a
  * SIGSEGV may have just exhausted.
  *
@@ -130,6 +123,20 @@ struct bufs {
 };
 static struct bufs crash_bufs;
 static struct bufs freeze_bufs;
+
+/* Set on entry to the fatal handler and never cleared: the process is dying. The freeze probe
+ * checks it before every line it writes, because a probe interrupting a thread while ANOTHER
+ * thread crashes must not put its lines into the middle of the crash's record. */
+static volatile sig_atomic_t crashing;
+
+/* Both sinks get every line, so the two logs tell the same story: the event log is where the rest
+ * of the session is, and the crash log is the half that survives the relaunch. A freeze line
+ * (written from the freeze buffers) is dropped once a crash has begun. */
+static void emit(const struct plx_sbuf *b) {
+    if (crashing && b->p == freeze_bufs.rec) return;
+    s_write((int)event_fd, b->p, b->n);
+    s_write((int)crash_fd, b->p, b->n);
+}
 
 /* One /proc/self/maps line: emit it as `at:` when it contains the PC or the LR, and as `bin:`
  * when it is our own executable's mapping (which is what gives triage the load base). */
@@ -247,6 +254,7 @@ static void emit_regs(struct bufs *B, const struct sigcontext *c) {
 #endif
 
 static void crash_handler(int sig, siginfo_t *si, void *uc) {
+    crashing = 1;
     /* Saved and restored around the body: every syscall below can set it, and a handler that
      * returns having clobbered `errno` corrupts whatever the interrupted code was about to read.
      * We do not return — the re-raise kills us — but the rule holds regardless of that. */
@@ -354,8 +362,11 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
  * `sentry_options_set_enable_app_hang_tracking` is called, which this app never does. This
  * tracer's own list is SEGV/ABRT/BUS/FPE/ILL/SYS/TRAP, and glibc's NPTL owns real-time signals 32
  * and 33. SDL2 and LG's closed libraries were NOT audited for a SIGUSR2 handler. The Rust side
- * refuses to send unless some handler is installed (a `sigaction` query), which cannot tell whose
- * it is, so the record's trust rests on `si_pid` below.
+ * (`probe_main_thread`) refuses to send unless the installed handler is in this very binary
+ * (`handler_is_ours`: a `sigaction` query, then `dladdr` on the handler and on its own code,
+ * compared by the object they live in), so a library that took the signal after install is never
+ * signalled; `si_pid` below and the number Rust arms in `plx_freeze_seq` keep any other SIGUSR2
+ * out of the record.
  *
  * # What it does to the interrupted thread
  *
@@ -374,7 +385,7 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
  * the pointer trusted. A probe from any other process is ignored (`si_pid`).
  * ------------------------------------------------------------------------------------------- */
 static volatile int freeze_busy;      /* one freeze record at a time */
-static volatile int freeze_count;     /* records started this process: the `seq=` */
+static volatile int freeze_written;   /* records started this process, against the backstop */
 static unsigned long main_stack_hi;   /* end of the main thread's [stack], 0 = unknown, no walk */
 static struct plx_range exec_ranges[PLX_MAX_EXEC_RANGES];
 static size_t n_exec_ranges;
@@ -405,6 +416,11 @@ static void freeze_handler(int sig, siginfo_t *si, void *uc) {
 #else
     (void)si;
 #endif
+    /* Rust arms the probe's number in `plx_freeze_seq` right before it signals, and it is taken
+     * back to 0 here whatever happens next, so one arming answers one signal. A SIGUSR2 that finds
+     * none is not a probe (nothing of ours sent it): it records nothing, and the record numbers
+     * stay Rust's. */
+    unsigned int seq = __sync_lock_test_and_set(&plx_freeze_seq, 0);
     /* A probe that lands while a fatal-signal handler is running (Sentry's native backend waits up
      * to 10 s for its daemon, in the crashing thread) would write a FREEZE record into the middle
      * of a crash. Neither that handler nor ours uses SA_NODEFER, so the fatal signal stays in the
@@ -415,10 +431,11 @@ static void freeze_handler(int sig, siginfo_t *si, void *uc) {
         for (size_t i = 0; i < sizeof fatal / sizeof fatal[0]; i++)
             if (sigismember(interrupted, fatal[i]) == 1) return;
     }
+    if (crashing) return;
     if (__sync_lock_test_and_set(&freeze_busy, 1)) return;
+    if (!seq) { __sync_lock_release(&freeze_busy); return; }
     int saved_errno = errno;
-    int seq = ++freeze_count;
-    if (seq <= PLX_MAX_FREEZE_RECORDS) {
+    if (++freeze_written <= PLX_MAX_FREEZE_RECORDS) {
         unsigned long pc = 0, lr = 0, sp = 0, fp = 0;
 #if defined(__arm__)
         ucontext_t *c = (ucontext_t *)uc;
@@ -494,9 +511,12 @@ void plx_crash_install(int ev_fd, int cr_fd) {
     sa.sa_flags = SA_SIGINFO | SA_RESTART;
     {
         /* A library constructor that already took SIGUSR2 owns it: decline rather than replace it
-         * (the watchdog also refuses to probe a handler that is not this binary's own). */
+         * (the watchdog also refuses to probe a handler that is not this binary's own). The two
+         * dispositions nobody owns are replaced: the default, and `SIG_IGN`, which a parent that
+         * ignored the signal hands down across `exec` and which would swallow every probe. */
         struct sigaction prior;
-        if (sigaction(SIGUSR2, NULL, &prior) == 0 && prior.sa_handler == SIG_DFL)
+        if (sigaction(SIGUSR2, NULL, &prior) == 0 &&
+            (prior.sa_handler == SIG_DFL || prior.sa_handler == SIG_IGN))
             sigaction(SIGUSR2, &sa, NULL);
     }
     memset(&sa, 0, sizeof sa);

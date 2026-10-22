@@ -12,7 +12,7 @@ use std::{
     cell::Cell,
     marker::PhantomData,
     rc::Rc,
-    sync::{atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering}, OnceLock},
+    sync::{atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering}, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -458,36 +458,60 @@ struct Freezes {
     probes: u32,
     /// The probe of the freeze in progress, until progress resumes.
     open: Option<u32>,
+    /// Stalled time already counted before the last observer gap, for the freeze in progress.
+    carried: u64,
 }
 
 impl Freezes {
+    /// The probe just announced was not sent: it never reached the tracer, so it is not counted.
+    /// The freeze stays open (it is not retried: nothing changed that could make a send work).
+    fn unsent(&mut self) {
+        self.probes = self.probes.saturating_sub(1);
+    }
+
     fn observe(&mut self, now: u64, progress: Option<usize>, foreground: bool) -> Option<FreezeEvent> {
-        let late = self.last_poll.replace(now).is_some_and(|p| now.saturating_sub(p) > MAX_POLL_GAP_MS);
+        let previous_poll = self.last_poll.replace(now);
+        let late = previous_poll.is_some_and(|p| now.saturating_sub(p) > MAX_POLL_GAP_MS);
         let active = progress.filter(|_| foreground);
         if late {
-            // The interval proves nothing about the loop: rebase, and forget a freeze in flight
-            // (its end cannot be timed), which the importer reads as unrecovered.
+            // The interval proves nothing about the loop, so it is never counted as freeze time and
+            // never starts a second probe: a freeze in flight stays the SAME freeze while the
+            // counter is unchanged, and its time so far is carried over the gap. If the counter
+            // moved (or the app left the foreground) during the gap the freeze did end, and the
+            // time before the gap is the lower bound of how long it lasted.
+            let before = self.carried
+                + match (self.sample, previous_poll) {
+                    (Some((_, at)), Some(p)) => p.saturating_sub(at),
+                    _ => 0,
+                };
+            let unchanged = matches!((active, self.sample), (Some(c), Some((s, _))) if c == s);
             self.sample = active.map(|counter| (counter, now));
-            self.open = None;
-            return None;
+            if unchanged {
+                self.carried = if self.open.is_some() { before } else { 0 };
+                return None;
+            }
+            self.carried = 0;
+            return self.open.take().map(|seq| FreezeEvent::Recovered { seq, ms: before });
         }
         let Some(counter) = active else {
             // Backgrounded, or no loop at all: not a freeze. A freeze in flight ended with the
             // loop running far enough to flip the flag.
             let recovered = self.open.take().zip(self.sample).map(|(seq, (_, at))| FreezeEvent::Recovered {
                 seq,
-                ms: now.saturating_sub(at),
+                ms: self.carried + now.saturating_sub(at),
             });
             self.sample = None;
+            self.carried = 0;
             return recovered;
         };
         let Some((previous, at)) = self.sample else {
             self.sample = Some((counter, now));
             return None;
         };
-        let elapsed = now.saturating_sub(at);
+        let elapsed = self.carried + now.saturating_sub(at);
         if counter != previous {
             self.sample = Some((counter, now));
+            self.carried = 0;
             return self.open.take().map(|seq| FreezeEvent::Recovered { seq, ms: elapsed });
         }
         if elapsed >= FREEZE_THRESHOLD_MS && self.open.is_none() && self.probes < MAX_FREEZE_PROBES {
@@ -499,14 +523,25 @@ impl Freezes {
     }
 }
 
-/// Send the freeze probe to the main thread, if there is a handler to answer it.
+/// The probe number the tracer's `freeze_handler` (`src/crashtrace.c`) records, read there as
+/// `plx_freeze_seq`. [`probe_main_thread`] stores the number right before it signals; the handler
+/// takes it back to 0 and writes it as the record's `seq=`. A `SIGUSR2` that finds 0 here (a stray
+/// one from this process) is not a probe and writes nothing, so the record numbers and the
+/// `freeze-end: seq=` lines this thread writes cannot drift apart.
+#[no_mangle]
+#[allow(non_upper_case_globals)]
+pub static plx_freeze_seq: AtomicU32 = AtomicU32::new(0);
+
+/// Send the freeze probe `seq` to the main thread, if there is a handler to answer it.
 ///
 /// The probe is `SIGUSR2` (`src/crashtrace.c` says why that number and what the handler does).
-/// **It is sent only when a handler is installed**: a `SIGUSR2` with the default disposition would
-/// terminate the process, which is exactly what a freeze report must never do, and the simulators
-/// and the host test harness have no tracer installed. The query cannot say whose handler it is;
-/// the tracer's own `si_pid` check is what keeps a stranger's signal out of its record.
-fn probe_main_thread(main_thread: usize) -> bool {
+/// **It is sent only when the tracer's handler is installed**: a `SIGUSR2` with the default
+/// disposition would terminate the process, which is exactly what a freeze report must never do,
+/// and the simulators and the host test harness have no tracer installed. The disposition query
+/// says which function is installed and [`handler_is_ours`] says whether it is in this binary,
+/// which is the tracer's `freeze_handler` and nothing else, so a library's handler (ACB's, loaded
+/// at playback) is never signalled. Returns whether the signal was sent.
+fn probe_main_thread(main_thread: usize, seq: u32) -> bool {
     // SAFETY: `sigaction` with a null new action only reads the current disposition into `old`,
     // a zeroed plain-data struct; `pthread_kill` on a thread id captured from the loop owner,
     // which lives for the whole process, is the call the developer build's abort already makes.
@@ -521,7 +556,12 @@ fn probe_main_thread(main_thread: usize) -> bool {
         if !handler_is_ours(old.sa_sigaction) {
             return false;
         }
-        libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGUSR2) == 0
+        plx_freeze_seq.store(seq, Ordering::Release);
+        if libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGUSR2) == 0 {
+            return true;
+        }
+        plx_freeze_seq.store(0, Ordering::Release);
+        false
     }
 }
 
@@ -569,7 +609,10 @@ fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bo
         let event = detector.observe(now, progress, label);
         match freezes.observe(now, progress, SIGNALS.foreground.load(Ordering::Acquire)) {
             Some(FreezeEvent::Probe { seq, ms }) => {
-                let sent = probe_main_thread(main_thread);
+                let sent = probe_main_thread(main_thread, seq);
+                if !sent {
+                    freezes.unsent();
+                }
                 crate::eventlog::log(&format!("main-thread freeze: {ms}ms without loop progress (probe {seq}, recorded={sent})"));
                 probed = sent.then_some(seq);
             }
@@ -1079,6 +1122,42 @@ mod tests {
     }
 
     #[test]
+    fn a_late_observer_does_not_report_one_freeze_twice() {
+        let mut f = Freezes::default();
+        assert_eq!(stall(&mut f, 0, 5_000, 1, true).len(), 1, "the probe");
+        // The observer is stopped for 25 s and the counter never moved: the freeze is still the
+        // same one, so no second probe, however long the counter stays unchanged afterwards.
+        assert_eq!(f.observe(30_000, Some(1), true), None);
+        assert!(stall(&mut f, 30_100, 45_000, 1, true).is_empty(), "the open freeze is not probed again");
+        assert_eq!(
+            f.observe(45_100, Some(2), true),
+            Some(FreezeEvent::Recovered { seq: 1, ms: 5_000 + 15_100 }),
+            "the time before the gap still counts, the gap itself does not"
+        );
+    }
+
+    #[test]
+    fn a_recovery_inside_a_late_gap_is_still_reported() {
+        let mut f = Freezes::default();
+        assert_eq!(stall(&mut f, 0, 5_000, 1, true).len(), 1);
+        // The counter moved while the observer was away: the pre-gap time is the lower bound.
+        assert_eq!(f.observe(40_000, Some(2), true), Some(FreezeEvent::Recovered { seq: 1, ms: 5_000 }));
+        assert_eq!(f.observe(40_100, Some(2), true), None, "recovery is reported once");
+    }
+
+    #[test]
+    fn an_unsent_probe_is_not_counted() {
+        let mut f = Freezes::default();
+        assert_eq!(stall(&mut f, 0, 5_000, 1, true).len(), 1);
+        f.unsent();
+        assert!(stall(&mut f, 5_100, 20_000, 1, true).is_empty(), "the same freeze is not retried");
+        assert_eq!(f.observe(20_100, Some(2), true), Some(FreezeEvent::Recovered { seq: 1, ms: 20_100 }));
+        // The next freeze reuses the number the unsent one never spent.
+        let events = stall(&mut f, 20_200, 25_200, 2, true);
+        assert_eq!(events, vec![(25_100, FreezeEvent::Probe { seq: 1, ms: 5_000 })]);
+    }
+
+    #[test]
     fn a_freeze_that_ends_by_backgrounding_is_recovered() {
         let mut f = Freezes::default();
         assert_eq!(stall(&mut f, 0, 6_000, 1, true).len(), 1);
@@ -1122,7 +1201,8 @@ mod tests {
         // The test harness installs no tracer, so SIGUSR2 has its default (fatal) disposition and
         // sending it would kill this test process. Sending nothing is the behaviour under test.
         let me = unsafe { libc::pthread_self() } as usize;
-        assert!(!probe_main_thread(me));
+        assert!(!probe_main_thread(me, 1));
+        assert_eq!(plx_freeze_seq.load(Ordering::Acquire), 0, "an unsent probe arms nothing");
     }
 
 }

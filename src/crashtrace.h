@@ -40,6 +40,13 @@ void plx_crash_install(int event_fd, int crash_fd);
  * it on a host with no `/proc`. Async-signal-safe, like everything it calls. */
 void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr);
 
+/* The freeze probe's number, OWNED BY THE RUST WATCHDOG (`plx_base::task::watchdog`, which defines
+ * the symbol): it stores the number right before it signals the main thread and the handler takes
+ * it back to 0 and writes it as `seq=`. A SIGUSR2 that finds 0 is not a probe and writes nothing,
+ * so the records and the `freeze-end: seq=` lines Rust writes cannot number differently. A host
+ * test that links `crashtrace.c` without Rust defines it itself. */
+extern volatile unsigned int plx_freeze_seq;
+
 /* [`plx_crash_scan_maps_file`] for a freeze: an `at:` line for every mapping containing ANY of the
  * `n` addresses (pc, lr and the walked frames), using the freeze handler's own buffers. Exported
  * for the same reason, so the fixtures can reach it. */

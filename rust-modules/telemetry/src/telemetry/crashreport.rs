@@ -554,15 +554,24 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
     // The first report of the current process. A `freeze-end:` names a per-process probe number,
     // so it may only close a freeze written after the startup marker that began its own process.
     let mut process_start = 0usize;
+    // Where each process's reports begin, for the stuck-freeze rule below.
+    let mut process_starts: Vec<usize> = vec![0];
+    // The report whose own `reg:` line has not been read yet. A `reg:` belongs to the header it
+    // directly follows, so any other header (a skipped one included) closes the slot.
+    let mut awaiting_regs: Option<usize> = None;
     for l in log.lines() {
         if l.starts_with("img: ") {
+            awaiting_regs = None;
+            process_starts.push(out.len());
             // An explicit but unreadable marker is a process boundary too: clear rather than
             // attributing this process's later crash to the executable that ran before it.
             image = parse_image(l);
             process_start = out.len();
         } else if let Some(rest) = l.strip_prefix("*** FREEZE ") {
+            awaiting_regs = None;
             if let Some(f) = parse_freeze(rest, l, image.clone()) {
                 out.push(Report::Freeze(f));
+                awaiting_regs = Some(out.len() - 1);
             }
         } else if let Some(rest) = l.strip_prefix("frames:") {
             if let Some(Report::Freeze(f)) = out.last_mut() {
@@ -580,6 +589,7 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 }
             }
         } else if let Some(rest) = l.strip_prefix("*** SIGNAL ") {
+            awaiting_regs = None;
             let Some(f) = parse_fault(rest, l, image.clone()) else {
                 continue;
             };
@@ -587,6 +597,7 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 continue; // the panic above it is the report — see the doc
             }
             out.push(Report::Fault(f));
+            awaiting_regs = Some(out.len() - 1);
         } else if l.starts_with("at: ") {
             // Kept only when the mapping holds THIS fault's pc or lr, which also stops a stray
             // `at:` after a skipped record being credited to the fault before it.
@@ -612,7 +623,7 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 _ => {}
             }
         } else if l.starts_with("reg: ") {
-            match out.last_mut() {
+            match awaiting_regs.take().and_then(|i| out.get_mut(i)) {
                 Some(Report::Fault(Fault { registers, pc, lr, .. }))
                 | Some(Report::Freeze(Freeze { registers, pc, lr, .. })) => {
                     *registers = parse_registers(l);
@@ -640,6 +651,7 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 }
             }
         } else if l.starts_with("*** RUST PANIC ") {
+            awaiting_regs = None;
             if PANIC_FOLLOWUPS.iter().any(|m| l.ends_with(m))
                 && matches!(out.last(), Some(Report::Panic(_)))
             {
@@ -651,7 +663,29 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
             }
         }
     }
-    out
+    drop_freezes_that_ended_in_a_crash(out, &process_starts)
+}
+
+/// A freeze that never recovered and is followed by a fault or a panic of the SAME process is the
+/// crash's own prelude, not a separate hang: the process died stuck or while stuck, and the crash
+/// is the report that says where and why. Reported too it would be two events for one death (and a
+/// freeze probe that overlapped a crash on another thread would be a bogus one). A freeze from an
+/// earlier process, or one that recovered, is kept.
+fn drop_freezes_that_ended_in_a_crash(out: Vec<Report>, process_starts: &[usize]) -> Vec<Report> {
+    let process_of = |i: usize| process_starts.iter().rposition(|&start| start <= i).unwrap_or(0);
+    let mut crashed = vec![false; process_starts.len()];
+    for (i, r) in out.iter().enumerate() {
+        if matches!(r, Report::Fault(_) | Report::Panic(_)) {
+            crashed[process_of(i)] = true;
+        }
+    }
+    out.into_iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            !matches!(r, Report::Freeze(f) if f.bucket == FreezeBucket::Unrecovered && crashed[process_of(*i)])
+        })
+        .map(|(_, r)| r)
+        .collect()
 }
 
 fn parse_fault(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option<Fault> {
@@ -3142,6 +3176,40 @@ mod tests {
         assert_eq!(reports.len(), 2);
         assert!(matches!(&reports[0], Report::Freeze(f) if f.bucket == FreezeBucket::Long));
         assert!(matches!(reports[1], Report::Fault(_)));
+    }
+
+    #[test]
+    fn a_reg_line_attaches_only_to_the_record_it_follows() {
+        // A freeze header, then a crash header, then ONE `reg:` line: the crash's own, written
+        // right after its header. The freeze must not take it, and the crash must.
+        let log = "\n*** FREEZE seq=1 pc=0xb6f10000 lr=0x4bccd0\n\
+                   *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n\
+                   reg: sp=0xbe8f1a90 fp=0x0 ip=0x1 cpsr=0x60000010 r0=0x0 r1=0x2a\n";
+        let reports = parse(log);
+        let Some(Report::Fault(fault)) = reports.last() else { panic!("a fault: {reports:?}") };
+        assert_eq!(fault.registers.r1, Some(0x2a), "the crash keeps the register line that followed it");
+        // A `reg:` after a skipped header attaches to nothing.
+        let log = "\n*** FREEZE seq=1 pc=0xb6f10000 lr=0x4bccd0\n*** FREEZE seq=bad pc=0x1 lr=0x1\nreg: sp=0x1 r1=0x2a\n";
+        let Report::Freeze(f) = &parse(log)[0] else { panic!("a freeze") };
+        assert_eq!(f.registers.r1, None, "a register line that follows another record's header is not this freeze's");
+    }
+
+    #[test]
+    fn an_unrecovered_freeze_followed_by_a_crash_of_its_process_is_dropped() {
+        let unrecovered = FRZ.replace("freeze-end: seq=1 bucket=10-30s\n", "");
+        let crash = "\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n";
+        let reports = parse(&format!("{unrecovered}{crash}"));
+        assert_eq!(reports.len(), 1, "the crash is the report: {reports:?}");
+        assert!(matches!(reports[0], Report::Fault(_)));
+        let panic = "\n*** RUST PANIC [t] at src/a.rs:1: boom\n";
+        let reports = parse(&format!("{unrecovered}{panic}"));
+        assert!(reports.iter().any(|r| matches!(r, Report::Panic(_))), "the panic is parsed: {reports:?}");
+        assert!(reports.iter().all(|r| !matches!(r, Report::Freeze(_))), "{reports:?}");
+        // A recovered freeze is kept, and so is one from an EARLIER process than the crash.
+        assert_eq!(parse(&format!("{FRZ}{crash}")).len(), 2);
+        let next_process = "\nimg: build_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa image_addr=0x10000 image_size=0x5f0000\n";
+        let reports = parse(&format!("{unrecovered}{next_process}{crash}"));
+        assert_eq!(reports.len(), 2, "the earlier process's stuck freeze stays: {reports:?}");
     }
 
     #[test]

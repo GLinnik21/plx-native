@@ -381,6 +381,11 @@ pub(crate) fn crash_on_purpose() {}
 /// again without being asked. `std::thread::sleep` restarts after `EINTR`, so the probe signal
 /// cannot cut the stall short.
 ///
+/// **With the default `threadcheck` feature the developer watchdog is armed**, and it aborts the
+/// process once the main thread has made no progress for `HANG_FATAL_MS` (2 s), well before the 5 s
+/// freeze probe. To see a freeze report come back, write `log` into `/tmp/plxnative-guard` before
+/// launching (that file turns the abort into a log line), or build without `threadcheck`.
+///
 /// **Compiled out of a release build** with the rest of `devtriggers`.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn freeze_on_purpose() {
