@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-22T23:47:39Z",
+ "generated": "2026-10-22T23:58:01Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.2,
+   "change30_pct": -51.3,
    "change7_pct": -29.5,
-   "d30": 685.0,
-   "delta30": -351.0,
+   "d30": 686,
+   "delta30": -352,
    "delta7": -140,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 151,
-   "n_prev": 269,
+   "n_now": 149,
+   "n_prev": 271,
    "now": 334,
    "prev7": 474,
    "shown": true,
@@ -88,18 +88,18 @@
   },
   {
    "change30_pct": -51.8,
-   "change7_pct": -20.3,
+   "change7_pct": -20.2,
    "d30": 684,
    "delta30": -354,
-   "delta7": -84,
+   "delta7": -83.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 77,
-   "n_prev": 121,
+   "n_prev": 122,
    "now": 330,
-   "prev7": 414,
+   "prev7": 413.5,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -225,10 +225,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.0,
+   "change30_pct": 52.6,
    "change7_pct": -6.7,
-   "d30": 613,
-   "delta30": 325.0,
+   "d30": 614.5,
+   "delta30": 323.5,
    "delta7": -67.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -310,18 +310,18 @@
   },
   {
    "change30_pct": 100.8,
-   "change7_pct": 14.2,
+   "change7_pct": 13.7,
    "d30": 128,
    "delta30": 129,
-   "delta7": 32.0,
+   "delta7": 31,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
    "n_now": 71,
-   "n_prev": 114,
+   "n_prev": 115,
    "now": 257,
-   "prev7": 225.0,
+   "prev7": 226,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -340,9 +340,9 @@
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
    "n_now": 70,
-   "n_prev": 114,
+   "n_prev": 115,
    "now": 200.5,
-   "prev7": 184.0,
+   "prev7": 184,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -394,18 +394,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 2.1,
+   "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 3.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "n_now": 71,
-   "n_prev": 114,
-   "now": 148,
-   "prev7": 145.0,
+   "n_prev": 115,
+   "now": 146,
+   "prev7": 146,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -458,10 +458,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.3,
+   "change30_pct": 36.7,
    "change7_pct": 13.9,
-   "d30": 15.5,
-   "delta30": 5.0,
+   "d30": 15,
+   "delta30": 5.5,
    "delta7": 2.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -479,19 +479,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.5,
-   "change7_pct": 5.9,
+   "change30_pct": 18.8,
+   "change7_pct": 11.8,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 1.0,
+   "delta30": 3,
+   "delta7": 2,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
    "n_now": 71,
-   "n_prev": 114,
-   "now": 18,
-   "prev7": 17.0,
+   "n_prev": 115,
+   "now": 19,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -502,7 +502,7 @@
   {
    "change30_pct": 30.8,
    "change7_pct": 13.3,
-   "d30": 13,
+   "d30": 13.0,
    "delta30": 4.0,
    "delta7": 2.0,
    "group": "ci",
@@ -610,11 +610,6 @@
    "change_pct": 36.8,
    "commits": [
     {
-     "pr": 853,
-     "sha": "a56ed21b7",
-     "title": "Open a Plex title from another app's launch params"
-    },
-    {
      "pr": 919,
      "sha": "5b9979d61",
      "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
@@ -658,6 +653,11 @@
      "pr": 928,
      "sha": "575d9d842",
      "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
     }
    ],
    "from": 145.5,
@@ -671,11 +671,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 853,
-     "sha": "a56ed21b7",
-     "title": "Open a Plex title from another app's launch params"
-    },
-    {
      "pr": 919,
      "sha": "5b9979d61",
      "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
@@ -719,6 +714,11 @@
      "pr": 928,
      "sha": "575d9d842",
      "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
     }
    ],
    "from": 103.0,
@@ -732,11 +732,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 853,
-     "sha": "a56ed21b7",
-     "title": "Open a Plex title from another app's launch params"
-    },
-    {
      "pr": 919,
      "sha": "5b9979d61",
      "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
@@ -780,6 +775,11 @@
      "pr": 928,
      "sha": "575d9d842",
      "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
     }
    ],
    "from": 46.0,
