@@ -39,6 +39,13 @@ pub fn commit(previous: &Consent, next: &Consent) {
         super::playback::clear_error_trace();
     }
     crate::telemetry::spool::purge_withdrawn(next);
+    // The release-health session follows the crash-report decision: withdrawn, it is forgotten
+    // and its persisted state deleted; newly enabled, the app is in use right now.
+    if !effectively_allows_errors(next) {
+        crate::telemetry::session::stop();
+    } else if enabling_errors {
+        crate::telemetry::session::start();
+    }
     crate::telemetry::native::sync_change(next);
     persist_record_off_thread(next.clone());
 }
@@ -80,6 +87,7 @@ pub fn forget(_prior: &Consent) {
     super::playback::clear_error_trace();
     crate::telemetry::delivery::forget();
     crate::telemetry::spool::purge_all_local();
+    crate::telemetry::session::stop();
     crate::telemetry::native::sync_change(&next);
     persist_forget_off_thread();
 }

@@ -110,6 +110,8 @@ or `development`), the time of the panic (read and bounded as above), the same k
 webOS and hardware compatibility details (including the `probe` fact) that the fault fallback report carries, and
 the Crash report ID below. It carries none of the library details above.
 
+A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's
@@ -119,6 +121,15 @@ account, your television or anything about you, and it is never sent with produc
 Settings shows it while crash reports are on. Turning crash reports off, or signing out, deletes
 the local identifier; enabling them later creates a new one. Reports already sent keep the old
 identifier, so copy it down first if you intend to ask for their deletion.
+
+While crash reports are on, PlxNative also sends one small **session record** for each stretch of
+use, even when nothing crashed, so that crash-free sessions can be counted per release: the start
+time, its length, how it ended (exited, crashed or ended abnormally), a crash count, the Crash
+report ID, the app version and the build's `environment` label — no content, title, account or
+server. A session ends after 15 minutes without a key press while nothing is playing, when the app
+goes to the background, or after 4 hours. Its start and last activity time are kept on this
+television until it ends, so a crash can be attributed on the next launch; turning crash reports
+off, or signing out, deletes that and any record waiting to be sent.
 
 The same independent choice also covers a handled playback-error report when playback reaches its
 explicit terminal error screen, or when a trailer preview behind a detail page fails. That report contains a fixed failure kind, delivery and quality

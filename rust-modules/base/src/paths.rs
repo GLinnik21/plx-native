@@ -656,15 +656,17 @@ pub fn image_cache_dir_is_private(path: &Path) -> bool {
 /// would put the consent record itself at risk on every single upload, which is the one piece of
 /// state whose loss changes what the app is allowed to do.
 pub fn telemetry_spool_candidates() -> Vec<PathBuf> {
+    telemetry_sibling_candidates("telemetry-spool.bin")
+}
+
+/// `telemetry.json`'s candidate directories and search order, naming `file` instead.
+fn telemetry_sibling_candidates(file: &str) -> Vec<PathBuf> {
     telemetry_candidates()
         .into_iter()
         .map(|p| {
             p.with_file_name(p.file_name().map_or_else(
-                || "telemetry-spool.bin".into(),
-                |n| {
-                    n.to_string_lossy()
-                        .replace("telemetry.json", "telemetry-spool.bin")
-                },
+                || file.into(),
+                |n| n.to_string_lossy().replace("telemetry.json", file),
             ))
         })
         .collect()
@@ -684,18 +686,18 @@ pub fn telemetry_spool_candidates() -> Vec<PathBuf> {
 /// beside the decision that authorised sending it, which is also the directory that survives a
 /// reinstall.
 pub fn telemetry_crashmark_candidates() -> Vec<PathBuf> {
-    telemetry_candidates()
-        .into_iter()
-        .map(|p| {
-            p.with_file_name(p.file_name().map_or_else(
-                || "telemetry-crashmark.json".into(),
-                |n| {
-                    n.to_string_lossy()
-                        .replace("telemetry.json", "telemetry-crashmark.json")
-                },
-            ))
-        })
-        .collect()
+    telemetry_sibling_candidates("telemetry-crashmark.json")
+}
+
+/// The open release-health session (`telemetry::session`), beside the decision that authorised it.
+///
+/// **Persistent, not in the runtime root.** A session that was open when the television lost power
+/// or the process was killed is only knowable on the next boot, and the runtime root is `/tmp`,
+/// which a restart clears: the state would vanish with exactly the death it exists to record.
+/// Written rarely (at the session's start and at most every five minutes of activity), deleted
+/// when the session ends, on withdrawal and on sign-out.
+pub fn telemetry_session_candidates() -> Vec<PathBuf> {
+    telemetry_sibling_candidates("telemetry-session.json")
 }
 
 pub fn telemetry_candidates() -> Vec<PathBuf> {

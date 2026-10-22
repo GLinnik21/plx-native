@@ -1,0 +1,18 @@
+# count: 0
+# The flaky-test QUARANTINE list. One entry per test that is known to be flaky and has an owner working
+# on it, as `test<TAB>reason`, where `test` is the key plxnative.com/ci/ shows for it (`package::test::path`,
+# e.g. `plx_ui::focus::tests::moves_right`; tools/ci-test-results.py makes the key) and `reason` names the
+# issue that tracks the fix (`#1234 intermittent timeout under load`).
+#
+# What a listing does today: tools/ci-summary.py (run by .github/workflows/ci-metrics.yml, which reads
+# this file from `main`) reports the test as Quarantined on the page instead of Active, and its "no flake for
+# 30 days" rule stops applying to it (a quarantined test is not expected to flake, so silence proves nothing).
+# Nothing skips a quarantined test yet and nothing fails a pull request for a new flaky one; both are
+# deliberately later steps.
+#
+# The lifecycle is Active (seen both passing and failing for one commit, within 30 days) -> Quarantined (listed
+# here) -> Fixed (a test with no flake for 30 days that is not listed here; delete its line when the fix lands).
+#
+# It only shrinks, like ci/allow/layers.txt: an entry is removed when its test is fixed or deleted, and a line
+# is added only with the issue that will remove it, never to make a red run green. The `# count:` line above
+# must equal the number of entries (tools/ci-summary.py refuses the file otherwise).

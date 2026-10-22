@@ -302,6 +302,28 @@ jobs:
           echo "passed=$(grep -E '^test result:' "$RUNNER_TEMP/make-check.log" \
             | sed -E 's/.* ([0-9]+) passed;.*/\1/' | awk '{n += $1} END {print n+0}')" >> "$GITHUB_OUTPUT"
 
+      - name: Record the per-test results
+        # What tools/ci-history.py reads to tell a FLAKY test (one that failed in one attempt of this run and
+        # passed in another) from a broken one: every test's outcome, from the libtest lines of the log above
+        # (stable libtest has no JSON format). `always()` because a red run is the one that matters; the
+        # attempt is in the artifact name so a re-run of this job does not collide with the first
+        # attempt's artifact. A job that died before `make` left no log and records nothing.
+        if: always()
+        shell: bash
+        run: |
+          if [ -s "$RUNNER_TEMP/make-check.log" ]; then
+            python3 tools/ci-test-results.py --log "$RUNNER_TEMP/make-check.log" --job "host unit tests (default features)" --out "$RUNNER_TEMP/test-results.json"
+          fi
+
+      - name: Upload the per-test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-host-unit-default-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-results.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload the cargo build timings
         # Where to read it: the run page, "Artifacts", `cargo-timings-host-unit-default`. `always()`
         # so a red test run still leaves the timings of the build that preceded it; a missing file
@@ -348,6 +370,28 @@ jobs:
           { echo '```'; grep -E '^test result:' "$RUNNER_TEMP/make-check.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           echo "passed=$(grep -E '^test result:' "$RUNNER_TEMP/make-check.log" \
             | sed -E 's/.* ([0-9]+) passed;.*/\1/' | awk '{n += $1} END {print n+0}')" >> "$GITHUB_OUTPUT"
+
+      - name: Record the per-test results
+        # What tools/ci-history.py reads to tell a FLAKY test (one that failed in one attempt of this run and
+        # passed in another) from a broken one: every test's outcome, from the libtest lines of the log above
+        # (stable libtest has no JSON format). `always()` because a red run is the one that matters; the
+        # attempt is in the artifact name so a re-run of this job does not collide with the first
+        # attempt's artifact. A job that died before `make` left no log and records nothing.
+        if: always()
+        shell: bash
+        run: |
+          if [ -s "$RUNNER_TEMP/make-check.log" ]; then
+            python3 tools/ci-test-results.py --log "$RUNNER_TEMP/make-check.log" --job "host unit tests (hostsim)" --out "$RUNNER_TEMP/test-results.json"
+          fi
+
+      - name: Upload the per-test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-host-unit-hostsim-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-results.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   host-python:
     name: host python/shell/C gates

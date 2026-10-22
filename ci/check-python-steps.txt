@@ -202,6 +202,9 @@ python3 tools/test_ci_history.py
 # tools/ci-summary.py (the page's "now" block with its order and selection, the two slowest lists and regressions) against synthetic series: step up and down,
 # noisy flat, missing days, the re-run wall rule, PR/push separation; no network.
 python3 tools/test_ci_summary.py
+# tools/ci-test-results.py (the per-test outcomes of a host unit job's log, for the flaky-test list on the CI page) on libtest output
+# as tools/cargo-test-parallel.py and plain cargo print it; no network.
+python3 tools/test_ci_test_results.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
 # test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
