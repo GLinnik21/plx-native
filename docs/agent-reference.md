@@ -1135,7 +1135,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `plex_run()` (`rust-modules/src/port.rs`, which runs `app::run_application`). `src/crashtrace.c`
   (+ `crashtrace.h`) — the **fatal-signal tracer**, its own TU so the signal path can be tested; `src/crashfmt.h` is its pure half. **Both halves are host-tested in
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
-  processes on purpose and checks the record AND the exit status. `src/starfish.c` — the
+  processes on purpose and checks the record AND the exit status, and probes another with the freeze
+  signal (`SIGUSR2`) to check it records and survives. `src/starfish.c` — the
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
   narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These five are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
@@ -1144,6 +1145,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   panics inside an `extern "C"` callback, and `unwind` panics straight in `crash_on_purpose` so the
   unwind crosses `plex_run`'s own frame (`rust-modules/src/dev.rs`'s `crash_on_purpose` doc comment
   has the detail).
+  `/tmp/plxnative-freeze=<seconds>` (1 to 120) stalls the MAIN thread on purpose, once, on the
+  eighth heartbeat, to exercise the freeze probe (`dev::freeze_on_purpose`; the trigger file is
+  removed when it fires). A real freeze is a 5 s stall of the loop in the foreground: the watchdog
+  (`plx_base::task::watchdog`) sends `SIGUSR2` to the main thread, `freeze_handler` in
+  `src/crashtrace.c` writes a `*** FREEZE` record, and the next launch reports it
+  (`telemetry::crashreport`). The app is never stopped.
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the

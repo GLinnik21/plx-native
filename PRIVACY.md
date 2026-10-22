@@ -110,6 +110,8 @@ or `development`), the time of the panic (read and bounded as above), the same k
 webOS and hardware compatibility details (including the `probe` fact) that the fault fallback report carries, and
 the Crash report ID below. It carries none of the library details above.
 
+A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's

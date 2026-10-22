@@ -3111,6 +3111,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
 pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
     let rn = fr.rn;
         if loop_tick(&mut app.iters_ct, &mut app.loop_t, &mut app.loop_shown, fr.now) {
+            // Dev only: a deliberate main-thread stall, for exercising the freeze report.
+            crate::dev::freeze_on_purpose();
             if crate::dev::scenarios::imagecache_stats_armed() {
                 super::adapters::poster::log_cache_stats();
             }
