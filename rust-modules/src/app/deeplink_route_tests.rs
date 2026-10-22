@@ -95,7 +95,7 @@ impl Rig {
                 let _frame = plx_base::task::FrameScope::enter();
                 self.bridge.metadata_pump_detail();
                 let now = tick(self.i).ms;
-                deeplink::frame(&mut self.d, &mut self.link, &mut self.wait, true, now);
+                deeplink::frame(&mut self.d, &mut self.link, &mut self.wait, true, false, now);
                 unsafe {
                     input::menu_play_tick(&mut self.ps, &mut self.pa, &mut self.d, &mut self.bridge,
                         &mut self.wait, now);

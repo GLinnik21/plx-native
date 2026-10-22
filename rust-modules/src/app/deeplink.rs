@@ -35,7 +35,7 @@
 //! across a sign-in, cannot know which account it was meant for: it is dropped.
 use plx_machine::machine::{Fx, LogLine, MachineId, NavOp};
 use plx_plex::plex::ServerId;
-use plx_screens::registry::{AppArg, AppFx};
+use plx_screens::registry::{AppArg, AppFx, PlayerReq};
 
 use super::bridge::AppHost;
 
@@ -86,6 +86,11 @@ pub(crate) fn parse(raw: &str) -> Parsed {
 /// are discovered after Home mounts. The metadata wait after it is `MenuPlayAwait`'s own ceiling.
 const SERVER_WAIT_MS: u32 = 15_000;
 
+/// How long a link waits for the playback it asked to end to be gone (the engine released, the
+/// player page popped) before it gives up. The ritual finishes within a few frames and the return
+/// hold is `CW_RETURN_HOLD_MS` (300 ms); this bounds an engine that never dies.
+const LEAVE_WAIT_MS: u32 = 5_000;
+
 /// What one frame brings the link: a payload that arrived (already read by pure [`parse`]), or
 /// nothing new.
 pub(crate) enum LinkEvent { Arrived(Parsed), Frame }
@@ -122,6 +127,9 @@ pub(crate) struct LinkEnv<'a> {
     pub(crate) nav_pending: bool,
     /// Home is the settled top with nothing above it.
     pub(crate) home_settled: bool,
+    /// A playback session stands: a player page is up, a parked one awaits its restore, or an
+    /// engine is live that is not a preview. See [`session_stands`].
+    pub(crate) session_stands: bool,
     pub(crate) roster: &'a dyn LinkRoster,
 }
 
@@ -132,6 +140,9 @@ pub(crate) struct LinkOut {
     /// The wait that lands the item: `(server, ratingKey, open instead of play)`. `MenuPlayAwait`
     /// is an inline driver with no effect value, so this stays an app-loop write.
     pub(crate) arm: Option<(ServerId, String, bool)>,
+    /// This step emitted `PlayerReq::Exit`: the link is ending playback, so a DID foreground that
+    /// is being composed with it must not restore the film (`ForegroundInput::DidForegroundSuperseded`).
+    pub(crate) leaves_playback: bool,
 }
 
 /// The link not yet handed to the menu-play wait. Owned by `App`; the state is private, so only
@@ -147,6 +158,9 @@ enum LinkState {
     /// bounds the wait for the link's server; `crossed_sign_in` is set when the root was the
     /// sign-in screen while the link waited.
     Waiting { link: Link, server_deadline: Option<u32>, crossed_sign_in: bool },
+    /// The link asked playback to end (one `Exit`, emitted on entering this state) and waits for
+    /// the session to be gone. `leave_deadline` bounds an engine that never dies.
+    Leaving { link: Link, crossed_sign_in: bool, leave_deadline: u32 },
 }
 
 fn expired(now: u32, deadline: u32) -> bool { now.wrapping_sub(deadline) < u32::MAX / 2 }
@@ -166,9 +180,17 @@ impl DeepLink {
                     out.fx.push(log_line(format!(
                         "deeplink: {:?} rk={} server={}", link.action, link.rk,
                         if link.server.is_some() { "named" } else { "current" })));
-                    self.0 = LinkState::Waiting { link, server_deadline: None, crossed_sign_in: false };
+                    self.0 = match std::mem::take(&mut self.0) {
+                        // A newer link replaces the one on its way out; the Exit is not sent twice.
+                        LinkState::Leaving { crossed_sign_in, leave_deadline, .. } =>
+                            LinkState::Leaving { link, crossed_sign_in, leave_deadline },
+                        _ => LinkState::Waiting { link, server_deadline: None, crossed_sign_in: false },
+                    };
                 }
             }
+        }
+        if matches!(self.0, LinkState::Leaving { .. }) {
+            return self.leaving(env, out);
         }
         let LinkState::Waiting { link, server_deadline, crossed_sign_in } = &mut self.0 else { return out };
         match env.root {
@@ -200,6 +222,17 @@ impl DeepLink {
             }
             return out;
         };
+        // The resolve above came first, so a link that can never open never stops the viewer's
+        // film. Leaving early is good, even backgrounded or over the player's own overlays: the
+        // ritual closes them.
+        if env.session_stands {
+            let LinkState::Waiting { link, crossed_sign_in, .. } = std::mem::take(&mut self.0) else { return out };
+            self.0 = LinkState::Leaving {
+                link, crossed_sign_in, leave_deadline: env.now.wrapping_add(LEAVE_WAIT_MS) };
+            out.fx.push(Fx::App(AppFx::Player(PlayerReq::Exit)));
+            out.leaves_playback = true;
+            return out;
+        }
         if !env.foreground || env.surface_up {
             return out;
         }
@@ -221,6 +254,27 @@ impl DeepLink {
         out
     }
 
+    /// A frame in `Leaving`: back to `Waiting` once the session is gone and the stack has
+    /// settled, or give up past the deadline. Emits nothing else, so there is never a second Exit.
+    fn leaving(&mut self, env: &LinkEnv, mut out: LinkOut) -> LinkOut {
+        let LinkState::Leaving { link, crossed_sign_in, leave_deadline } = std::mem::take(&mut self.0) else {
+            return out;
+        };
+        if !env.session_stands && !env.nav_pending {
+            self.0 = LinkState::Waiting { link, server_deadline: None, crossed_sign_in };
+        } else if expired(env.now, leave_deadline) {
+            out.fx.push(log_line("deeplink: not opened (playback did not end)"));
+        } else {
+            self.0 = LinkState::Leaving { link, crossed_sign_in, leave_deadline };
+        }
+        out
+    }
+
+    #[cfg(test)]
+    pub(crate) fn leaving_for_test(link: Link, leave_deadline: u32) -> Self {
+        DeepLink(LinkState::Leaving { link, crossed_sign_in: false, leave_deadline })
+    }
+
     #[cfg(test)]
     pub(crate) fn waiting_for_test(link: Link, server_deadline: Option<u32>, crossed_sign_in: bool) -> Self {
         DeepLink(LinkState::Waiting { link, server_deadline, crossed_sign_in })
@@ -229,6 +283,14 @@ impl DeepLink {
     /// The route rig's "settled" check.
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool { matches!(self.0, LinkState::Idle) }
+
+    #[cfg(test)]
+    fn is_leaving(&self) -> bool { matches!(self.0, LinkState::Leaving { .. }) }
+
+    #[cfg(test)]
+    fn leaving_rk(&self) -> Option<&str> {
+        match &self.0 { LinkState::Leaving { link, .. } => Some(&link.rk), _ => None }
+    }
 
     #[cfg(test)]
     fn is_crossed(&self) -> bool {
@@ -251,11 +313,18 @@ impl LinkRoster for GlobalRoster {
     }
 }
 
+/// Does a playback session stand: a player page mounted, a parked one awaiting its restore, or a
+/// live engine that is not a preview? Pure over the facts `run.rs` reads.
+pub(crate) fn session_stands(player_mounted: bool, awaiting_load: bool, engine_live: bool, preview: bool) -> bool {
+    player_mounted || awaiting_load || (engine_live && !preview)
+}
+
 /// **The one function that reads the outside world for the link:** the launch slot (a payload that
 /// arrived, read by pure [`parse`]), the window, the nav stack and the roster port.
 pub(crate) fn link_inputs(
     pages: &plx_ui::dispatch::Dispatcher<AppHost>,
     foreground: bool,
+    session_stands: bool,
     now: u32,
 ) -> (LinkEvent, LinkEnv<'static>) {
     let event = match plx_platform::tv::launch::take() {
@@ -274,6 +343,7 @@ pub(crate) fn link_inputs(
         surface_up: pages.surface_up(),
         nav_pending: pages.has_pending_navigation(),
         home_settled: super::bridge::top_settled_on(pages, &AppArg::Home),
+        session_stands,
         roster: &GlobalRoster,
     })
 }
@@ -304,9 +374,10 @@ pub(crate) fn frame(
     link: &mut DeepLink,
     menu_play_await: &mut Option<super::input::MenuPlayAwait>,
     foreground: bool,
+    session_stands: bool,
     now: u32,
 ) {
-    let (event, env) = link_inputs(pages, foreground, now);
+    let (event, env) = link_inputs(pages, foreground, session_stands, now);
     let out = link.step(event, &env);
     perform(out, pages, menu_play_await, now);
 }
@@ -391,6 +462,7 @@ mod tests {
             surface_up: false,
             nav_pending: false,
             home_settled: true,
+            session_stands: false,
             roster,
         }
     }
@@ -399,6 +471,7 @@ mod tests {
         fx.iter().map(|f| match f {
             Fx::Log(LogLine(line)) => format!("log:{line}"),
             Fx::Nav(NavOp::SelectTab(AppArg::Home)) => "select-home".to_owned(),
+            Fx::App(AppFx::Player(PlayerReq::Exit)) => "exit".to_owned(),
             Fx::App(AppFx::Store(
                 plx_data::stores::StoreId::Metadata,
                 plx_data::stores::StoreCmd::Metadata(plx_data::stores::metadata::MetadataCmd::RequestDetail { rk, .. }),
@@ -524,5 +597,103 @@ mod tests {
         assert!(!expired(100, 200));
         assert!(expired(200, 200));
         assert!(expired(5, u32::MAX - 5));
+    }
+
+    fn standing(roster: &FixedRoster) -> LinkEnv<'_> {
+        let mut e = env(roster);
+        e.session_stands = true;
+        e
+    }
+
+    #[test]
+    fn link_step_a_standing_session_is_left_with_one_exit() {
+        let mut link = waiting(None, false);
+        let out = link.step(LinkEvent::Frame, &standing(&KNOWN));
+        assert_eq!(fx_names(&out.fx), ["exit"]);
+        assert!(out.leaves_playback && out.arm.is_none() && link.is_leaving());
+        // Every later frame while it stands emits nothing, and the link stays.
+        let out = link.step(LinkEvent::Frame, &standing(&KNOWN));
+        assert!(fx_names(&out.fx).is_empty() && !out.leaves_playback && link.is_leaving());
+    }
+
+    #[test]
+    fn link_step_an_arrival_while_leaving_replaces_the_link_without_a_second_exit() {
+        let mut link = DeepLink::leaving_for_test(
+            Link { server: None, rk: "7".into(), action: Action::Open }, 1_000 + LEAVE_WAIT_MS);
+        let arrived = LinkEvent::Arrived(Parsed::Link(Link { server: None, rk: "9".into(), action: Action::Play }));
+        let out = link.step(arrived, &standing(&KNOWN));
+        assert_eq!(fx_names(&out.fx), ["log:deeplink: Play rk=9 server=current"]);
+        assert!(!out.leaves_playback && link.is_leaving() && link.leaving_rk() == Some("9"));
+    }
+
+    #[test]
+    fn link_step_leaving_waits_while_the_session_or_the_stack_moves() {
+        let mut link = DeepLink::leaving_for_test(
+            Link { server: None, rk: "7".into(), action: Action::Open }, 1_000 + LEAVE_WAIT_MS);
+        let mut e = env(&KNOWN);
+        e.nav_pending = true;
+        assert!(fx_names(&link.step(LinkEvent::Frame, &e).fx).is_empty() && link.is_leaving());
+        e.nav_pending = false;
+        e.session_stands = true;
+        assert!(fx_names(&link.step(LinkEvent::Frame, &e).fx).is_empty() && link.is_leaving());
+    }
+
+    #[test]
+    fn link_step_leaving_returns_to_waiting_once_the_session_is_gone() {
+        let mut link = DeepLink::leaving_for_test(
+            Link { server: None, rk: "7".into(), action: Action::Open }, 1_000 + LEAVE_WAIT_MS);
+        let out = link.step(LinkEvent::Frame, &env(&KNOWN));
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none() && !out.leaves_playback);
+        assert!(!link.is_leaving() && !link.is_idle());
+        // …and the next frame lands it, in the usual order.
+        let out = link.step(LinkEvent::Frame, &env(&KNOWN));
+        assert_eq!(fx_names(&out.fx), ["request-detail:7"]);
+        assert!(out.arm.is_some() && link.is_idle());
+    }
+
+    #[test]
+    fn link_step_a_playback_that_never_ends_gives_up_at_the_leave_deadline() {
+        let mut link = waiting(None, false);
+        link.step(LinkEvent::Frame, &standing(&KNOWN));
+        let mut e = standing(&KNOWN);
+        e.now = 1_000 + LEAVE_WAIT_MS - 1;
+        assert!(fx_names(&link.step(LinkEvent::Frame, &e).fx).is_empty() && link.is_leaving());
+        e.now = 1_000 + LEAVE_WAIT_MS;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert_eq!(fx_names(&out.fx), ["log:deeplink: not opened (playback did not end)"]);
+        assert!(link.is_idle() && !out.leaves_playback);
+    }
+
+    #[test]
+    fn link_step_an_unresolvable_server_never_stops_the_film() {
+        let mut link = waiting(Some("zzz"), false);
+        let out = link.step(LinkEvent::Frame, &standing(&KNOWN));
+        assert!(fx_names(&out.fx).is_empty() && !out.leaves_playback && !link.is_leaving());
+    }
+
+    #[test]
+    fn link_step_backgrounded_it_only_leaves() {
+        let mut link = waiting(None, false);
+        let mut e = standing(&KNOWN);
+        e.foreground = false;
+        e.home_settled = false;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert_eq!(fx_names(&out.fx), ["exit"]);
+        assert!(out.arm.is_none() && out.leaves_playback);
+        e.session_stands = false;
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none());
+        // Back to waiting, backgrounded: still no SelectTab, no request, no arm.
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none() && !link.is_idle());
+    }
+
+    #[test]
+    fn link_step_session_stands_reads_the_player_the_park_and_a_non_preview_engine() {
+        assert!(session_stands(true, false, false, false));
+        assert!(session_stands(false, true, false, false));
+        assert!(session_stands(false, false, true, false));
+        assert!(!session_stands(false, false, true, true), "a preview is not a session");
+        assert!(!session_stands(false, false, false, false));
     }
 }

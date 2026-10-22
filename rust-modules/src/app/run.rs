@@ -1665,6 +1665,17 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     true
 }
 
+/// The facts of whether a playback session stands, for the launch link's step
+/// (`deeplink::session_stands`).
+fn link_session_stands(app: &App) -> bool {
+    super::deeplink::session_stands(
+        super::bridge::player(&app.pages).is_some(),
+        app.player.lifecycle.awaiting_load(),
+        app.adapters.player.is_live(),
+        plx_media::route::is_preview(&app.player.session),
+    )
+}
+
 /// A foreground Load launched — straight from the DID edge, or from the frame that landed a flight
 /// the restore was waiting on (`poll_foreground_flight`): mount the player and pin its transport.
 fn finish_foreground_launch(app: &mut App) {
@@ -2500,8 +2511,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // from Home while a different page is up by the time the landing (or its settled
         // failure, or the ceiling) says the wait is over. A title the launch asked for
         // (`deeplink`) arms the same wait once Home is up.
+        let stands = link_session_stands(app);
         super::deeplink::frame(&mut app.pages, &mut app.deeplink, &mut app.menu_play_await,
-            app.window_activity.allow_present(true), fr.now);
+            app.window_activity.allow_present(true), stands, fr.now);
         if app.menu_play_await.is_some() {
             menu_play_tick(&mut app.player.session, &mut app.adapters.player,
                 &mut app.pages, &mut app.bridge, &mut app.menu_play_await, fr.now);
