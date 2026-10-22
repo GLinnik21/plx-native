@@ -1,5 +1,5 @@
-//! **The twelve per-profile settings, live: one cell each, one restore, one write door.** (The ten
-//! player settings, hero trailer autoplay and Under posters.)
+//! **Per-profile settings, live: one cell each, one restore, one write door.**
+//! Includes playback controls, hero trailer autoplay and Under posters.
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
 //! other half, the in-memory copy the player reads every frame (a process-global [`LiveCell`], an
@@ -36,7 +36,7 @@
 //! frozen top-level keys: no pick in this module ever writes one.
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
-    effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
+    PlaybackControls, PlaybackControlsPref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UnderPosters,
@@ -142,7 +142,7 @@ macro_rules! packed_by_index {
         }
     )*};
 }
-packed_by_index!(NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
+packed_by_index!(PlaybackControls = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
 
 impl Packed for DirectPlayMode {
     const SEED: u8 = 0;
@@ -228,6 +228,8 @@ impl Packed for AudioEnhancements {
         }
     }
 }
+
+live_cell!(pub(super) PLAYBACK_CONTROLS: PlaybackControls, "playback controls");
 
 // ---- the cells ------------------------------------------------------------------------------
 
@@ -321,6 +323,7 @@ macro_rules! live_setting {
 }
 
 live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
+live_setting!(PlaybackControlsPref, PLAYBACK_CONTROLS, "playback controls");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
@@ -380,6 +383,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<HdrOverlayBrightnessPref>(),
     LiveRow::of::<NextEpisodeModePref>(),
     LiveRow::of::<SkipIntervalPref>(),
+    LiveRow::of::<PlaybackControlsPref>(),
     LiveRow::of::<DeckPressPref>(),
     LiveRow::of::<UnderPostersPref>(),
     LiveRow::of::<AudioEnhancementsPref>(),
@@ -763,6 +767,7 @@ choices! {
     DirectPlay => DirectPlayModePref,
     NextEpisode => NextEpisodeModePref,
     SkipInterval => SkipIntervalPref,
+    PlaybackControls => PlaybackControlsPref,
     DeckPress => DeckPressPref,
     UnderPosters => UnderPostersPref,
     TrailerAutoplay => TrailerAutoplayPref,
@@ -881,6 +886,9 @@ pub fn restore_next_episode_mode(mode: NextEpisodeMode) { restore_live::<NextEpi
 /// Blocking persistence seam. The live value changes only once the write is durable, so a failed
 /// save claims nothing.
 pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool { confirm::<NextEpisodeModePref>(mode) }
+
+pub fn playback_controls() -> PlaybackControls { PlaybackControlsPref::live() }
+pub fn restore_playback_controls(controls: PlaybackControls) { restore_live::<PlaybackControlsPref>(controls) }
 
 pub fn skip_interval() -> SkipInterval { SkipIntervalPref::live() }
 pub fn restore_skip_interval(interval: SkipInterval) { restore_live::<SkipIntervalPref>(interval) }

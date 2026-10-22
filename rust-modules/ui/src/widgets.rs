@@ -4838,6 +4838,9 @@ impl View for StatusOverlay<'_> {
 pub struct TransportButton {
     pub frame: Rect,
     pub which: i32,
+    /// Optional glyph for additional transport actions; the three original indices stay valid.
+    pub icon: Option<crate::icons::Icon>,
+    pub enabled: bool,
     pub focused: bool,
     /// WHICH GROUND this disc stands on — see [`ControlGround`]. It defaults to
     /// [`Keyed`](ControlGround::Keyed) like every other control face, even though this family's one
@@ -4855,12 +4858,16 @@ impl TransportButton {
         Self {
             frame,
             which,
+            icon: None,
+            enabled: true,
             focused: false,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
             scale: 1.0,
         }
     }
+    pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
+    pub fn enabled(mut self, enabled: bool) -> Self { self.enabled = enabled; self }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
         self
@@ -4887,7 +4894,7 @@ impl View for TransportButton {
         // control face rather than spelling one of its own: the two used to be the same three
         // tokens written twice, which is how a ground (or a palette) reaches one and not the other.
         let face = ControlStyle::Accent.face(self.focused, self.ground, self.palette);
-        let ink = face.ink;
+        let ink = if self.enabled { face.ink } else { theme::INK_DISABLED };
         // **The same edge every other control wears** — [`control_rim`], not a bare `rect`. This was
         // the one control family the rim missed: `Button` and `CircleButton` both took it and these
         // discs kept a plain fill, so the transport read as a different material from the disc pair
@@ -4913,11 +4920,11 @@ impl View for TransportButton {
             self.focused,
             self.ground,
         );
-        let id = match self.which {
+        let id = self.icon.unwrap_or(match self.which {
             1 => Icon::Audio,
             2 => Icon::More,
             _ => Icon::Cc,
-        };
+        });
         let s = (r.w * DISC_ICON_RATIO).round();
         let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
         crate::icons::draw(p, id, ir, ink);

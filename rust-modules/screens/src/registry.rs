@@ -182,6 +182,7 @@ pub enum PlayerReq {
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
     /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
+    /// Commit a pointer scrub or an immediate legacy-key seek, and leave a paused film paused.
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///

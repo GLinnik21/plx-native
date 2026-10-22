@@ -49,7 +49,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+mod playback_controls;
+pub use playback_controls::PlaybackControls;
+
+pub use prefs::{PlaybackControlsPref, HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};

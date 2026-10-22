@@ -7329,7 +7329,6 @@ pub fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
 /// `request_play_up_next`'s by-value signature exists to make unrepresentable. A caller that wants
 /// to keep a row past the call clones it out (`with_queue(|q| q.get(i).cloned())`); the borrow
 /// checker cannot police a `&'static`, but it does police this.
-#[allow(dead_code)] // nothing reads the rows yet — the queue overlay that draws them is its own batch
 pub fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[plx_plex::plex::QueueRow]) -> R) -> R {
     f(&ps.queue)
 }

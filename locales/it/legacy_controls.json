@@ -1,0 +1,6 @@
+{
+  "settings.playback.legacy_controls": "Controlli di riproduzione classici",
+  "settings.playback.legacy_controls.copy": "Salta subito con Sinistra o Destra quando i controlli sono nascosti. Se sono visibili, conferma con OK. Precedente riavvia dopo cinque secondi; prima, riproduce l’elemento precedente.",
+  "settings.playback.legacy_controls.off": "Disattivati",
+  "settings.playback.legacy_controls.on": "Attivati"
+}

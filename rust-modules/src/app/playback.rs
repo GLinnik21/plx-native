@@ -21,6 +21,7 @@
 
 use super::*;
 use plx_media::player::report::AttemptOrigin;
+mod queue_transport;
 // The list is what the LOOP still spells, and phase 12 (PX-PLAYER) is why it is short: the scrub
 // gesture's constants and its two pure policies (`scrub_press`, `failed_key_action`) are read by
 // `screens::player` alone now, so re-exporting them here would be this module claiming a
@@ -920,7 +921,7 @@ pub(crate) fn activate_ctrl_row(
                 }
             }
         }
-        ControlSlot::Discs => false,
+        ControlSlot::Discs | ControlSlot::Legacy(_) => false,
     }
 }
 
@@ -932,7 +933,7 @@ pub(crate) fn activate_ctrl_row(
 /// the credits are still rolling) and in all three an Engine is live — `start_bufferfeed`
 /// no-ops while one is, so skipping the stop would silently fail to advance. The stop is
 /// also what posts the `state=stopped` timeline that commits the watched state, and it
-/// must happen BEFORE `request_play_up_next`: teardown reads the outgoing item's session
+/// must happen BEFORE requesting the replacement through `queue_transport`:  teardown reads the outgoing item's session
 /// ids and clears the URL, both of which the new plan is about to overwrite.
 pub(crate) fn play_up_next(
     ps: &mut plx_media::route::PlaybackSession,
@@ -950,37 +951,12 @@ pub(crate) fn play_up_next(
     // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
     // backstop for shapes like this; not writing it is the mechanism.
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
-    let (rk, resume) = (
-        u.rk.clone(),
-        plx_data::metadata::resume_ns(u.resume_ms, u.dur_ms),
-    );
-    close_player_overlays(pages);
-    plx_media::player::stop_bufferfeed(ps, pa);
-    let ctx = plx_ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
-    if !plx_media::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
-        return false;
-    }
-    // Same ritual as `play_item_now`: retire the finished episode's descriptor so the HUD
-    // caption and Info card don't label the new playback with the old one's title for the
-    // whole pre-roll, and fetch the new leaf off the loop.
-    // Read BEFORE `retire_playing` drops the store: the successor is a row of the queue
-    // the finished episode created, so it lives on that episode's server.
-    let sid = bridge.metadata_view().playing()
-        .map(|p| p.sid)
-        .unwrap_or_else(plx_plex::plex::current_server);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
-    start_playback(
-        ps,
-        pa,
-        resume,
-        Origin::Unchanged,
-        hud_ms,
-        None,
-        pages,
-        bridge,
-    );
-    true
+    let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps));
+    queue_transport::play(ps, pa, plx_plex::plex::QueueRow {
+        sid, rk: u.rk, kind: "episode".into(), title: u.ep_title, show_title: u.show_title,
+        season: u.season, index: u.index, part: u.part, vcodec: u.vcodec, acodec: u.acodec,
+        resume_ms: u.resume_ms, dur_ms: u.dur_ms, ..Default::default()
+    }, hud_ms, pages, bridge)
 }
 
 /// Direct-play a LEAF catalog item (movie or episode) — the hero-pill / Continue-Watching
@@ -1147,6 +1123,18 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
+    let btn = if let plx_appkit::player_hud::ControlSlot::Legacy(controls) = ctrl {
+        use plx_appkit::player_hud::legacy_controls::Action;
+        use plx_media::route::QueueStep;
+        match controls.action(btn) {
+            Some(Action::Previous) => { queue_transport::step(ps, pa, QueueStep::Previous, pages, bridge); return; }
+            Some(Action::Next) => { queue_transport::step(ps, pa, QueueStep::Next, pages, bridge); return; }
+            Some(Action::Subtitles) => 0,
+            Some(Action::Audio) => 1,
+            Some(Action::More) => plx_appkit::player_hud::BTN_MORE,
+            None => return,
+        }
+    } else { btn };
     if !ctrl.is_discs() {
         // A stand-in owns row 1 — activate it. Same value the draw used. (Its `true` answer used
         // to clear the loop's client-side hold-repeat sym as well, so an async route flip could

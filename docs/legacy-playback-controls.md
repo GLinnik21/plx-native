@@ -1,0 +1,41 @@
+# Legacy Playback Controls
+
+Enable **Settings → Playback → Legacy Playback Controls → On**. The preference is saved for
+the current profile and defaults to Off. Missing or unrecognized stored values retain the
+modern controls.
+
+- With the HUD hidden, Left/Right immediately seeks by the existing Skip interval without
+  opening the controls. Each fresh press is one jump; holding the key does not start a scrub.
+- With the HUD visible, the existing preview/OK-to-confirm gesture is unchanged.
+- Previous restarts the current item at five seconds or later. Before five seconds it plays
+  the previous queue item. It is unavailable when there is no previous item and playback is
+  still inside the first five seconds.
+- Next plays the next queue item and is unavailable at the queue's end.
+- Subtitles, Audio, More, Info, Chapters, Skip Intro/Credits and Up Next retain their existing
+  behavior. Marker offers still temporarily occupy the control row.
+- An immediate seek preserves a viewer's pause. Genuine buffering and failures can still show
+  the normal diagnostic read-out.
+
+## Carrying this feature in a fork
+
+The implementation deliberately adds a variant to the existing HUD rather than copying the
+player screen or its renderer. Shared playback fixes continue to apply to both modes.
+
+The feature's main files are:
+
+| File under `rust-modules/` | Responsibility |
+| --- | --- |
+| `screens/src/player/legacy_controls.rs` | Hidden-HUD key policy and regression tests |
+| `appkit/src/player_hud/legacy_controls.rs` | Previous/Next row, actions and geometry |
+| `media/src/route/legacy_controls.rs` | Queue neighbor selection and five-second rule |
+| `plex/src/plex/session/playback_controls.rs` | Persisted preference type and default |
+| `src/app/playback/queue_transport.rs` | Shared queue playback handoff, also used by Up Next |
+
+Small integration hooks remain in the HUD slot, player key dispatcher, preference schema/live
+setting registrations and Settings picker. Translations live in separate `legacy_controls.json`
+catalog shards, and Previous/Next use separate SVG assets. Those hooks must be retained when
+merging upstream updates; separate files reduce conflicts but cannot eliminate them.
+
+No native decoder, Starfish/ACB, demuxer, build configuration or Plex endpoint changes are needed.
+Host tests and simulator checks do not establish LG decoder or video-plane behavior; finish
+device verification through the repository's `tv-session` workflow before shipping.

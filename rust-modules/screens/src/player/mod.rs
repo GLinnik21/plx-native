@@ -23,6 +23,7 @@
 //! is the only writer of either.
 
 mod ass_subtitles;
+mod legacy_controls;
 pub mod input;
 pub mod overlay;
 #[cfg(test)]
@@ -404,6 +405,7 @@ impl PlayerScreen {
         ));
         mix(match self.slot {
             ControlSlot::Discs => 1,
+            ControlSlot::Legacy(controls) => 4 + u64::from(controls.previous) + 2 * u64::from(controls.next),
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
         });
@@ -513,7 +515,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// ramp it guards, and the screen states its INTENT while the pump keeps a pause across a seek,
     /// which is what a request is for.
     ///
-    /// **A key scrub never commits by itself — OK confirms it** (click-to-confirm, the same on a
+    /// **In modern mode, and with a visible legacy HUD, a key scrub never commits by itself — OK confirms it** (click-to-confirm, the same on a
     /// playing film as on a paused one). LEFT/RIGHT taps, holds and FF/REW only move the TARGET;
     /// releasing a key, the lost-keyup net and every timer end the key gesture and seek nothing, and
     /// the film plays on underneath with the transport held up ([`Self::hold_the_transport_for_a_target`]).
@@ -864,6 +866,9 @@ impl PlayerScreen {
                 }
             }
             // Swallowed either way: that is what "the read-out owns the frame" means.
+            return Handled::Yes;
+        }
+        if self.legacy_hidden_seek(ps, key, edge, fx) {
             return Handled::Yes;
         }
         match key {
@@ -1987,8 +1992,10 @@ mod step_ladder_tests {
         let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();
         let failure_n = player_hud::FailureReadout::now(TestHost::session(&cx())).actions().len() as u32;
         assert!(failure_n >= 1, "Back is always offered");
-        let cases: [(&str, ControlSlot, Busy, Vec<u32>); 4] = [
+        let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
             ("discs", ControlSlot::Discs, Busy::None, [row(3), vec![ELEM_TAB_BASE]].concat()),
+            ("legacy", ControlSlot::Legacy(player_hud::legacy_controls::Controls { previous: true, next: true }),
+                Busy::None, [row(5), vec![ELEM_TAB_BASE]].concat()),
             ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
             ("up next", up_next, Busy::None, [row(2), vec![ELEM_TAB_BASE]].concat()),
             ("failed", ControlSlot::Discs, failed, (0..failure_n).map(|i| ELEM_FAILURE_BASE + i).collect()),

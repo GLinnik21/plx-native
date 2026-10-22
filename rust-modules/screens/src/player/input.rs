@@ -22,7 +22,8 @@ use std::os::raw::c_int;
 
 /// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
 /// BUSY — unless the user explicitly dismissed it (UP from the top row), which holds until the
-/// next key but cannot hide a stalled pipeline's read-out.
+/// next key but cannot hide a stalled pipeline's read-out. A dismissed legacy HUD also stays
+/// hidden through an immediate seek; ordinary buffering retains the read-out.
 ///
 /// **The `loading()` term is load-bearing and there must be exactly ONE predicate.** The draw path
 /// and the pointer path used to spell it out inline while the three KEY sites and the focus PARKER
@@ -37,7 +38,8 @@ use std::os::raw::c_int;
 /// obvious one to reach for. One predicate, no wrong choice.
 #[inline]
 pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
-    ((now < until || is_paused) && !dismissed) || plx_media::player::loading(ps)
+    ((now < until || is_paused) && !dismissed)
+        || (plx_media::player::loading(ps) && !super::legacy_controls::seek_stays_hidden(ps, dismissed))
 }
 
 // (A different `struct HeldKey` stood here, unrelated to `appkit::held_key::HeldKey` — WHICH key the remote is holding, as one value: the sym the

@@ -1,0 +1,6 @@
+{
+  "settings.playback.legacy_controls": "Hagyományos lejátszásvezérlés",
+  "settings.playback.legacy_controls.copy": "Rejtett vezérlőknél a Balra vagy Jobbra gomb azonnal teker. Látható vezérlőknél az OK gombbal erősítsd meg. Az Előző öt másodperc után újraindítja az aktuális elemet, előtte az előzőt játssza le.",
+  "settings.playback.legacy_controls.off": "Ki",
+  "settings.playback.legacy_controls.on": "Be"
+}
