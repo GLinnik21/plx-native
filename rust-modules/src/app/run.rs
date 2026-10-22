@@ -956,15 +956,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             plx_machine::idle::invalidate();
             // A decoder-release park is claimed by this edge like any other park.
             app.decoder_parked = false;
-            let activation = drive_foreground(
-                &mut app.player.lifecycle,
-                &mut app.player.session,
-                ForegroundInput::DidForeground,
-                &mut PlayerForegroundActuator {
-                    pa: &mut app.adapters.player,
-                    repause_at: &mut app.repause_at,
-                },
-            );
+            let activation = did_foreground_with_link(app);
             if matches!(activation, ForegroundActivation::Launched) {
                 finish_foreground_launch(app);
             }
@@ -1256,8 +1248,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // route terms were two of the four that made this chain's ORDER behaviour, which is why
         // they are recorded rather than silently dropped. Phase 12, PX-PLAYER.)
         } else if matches!(key, Key::Back) {
-            key_back(&mut app.player.session,
+            key_back(&mut app.player,
                 &mut app.adapters.player,
+                &mut app.repause_at,
                 &mut app.refresh_hubs,
                 &mut app.pages,
             );
@@ -1664,6 +1657,46 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     true
 }
 
+/// The warm-launch DID composes its two children in order: the launch link sees the arrival
+/// first, and its output picks the lifecycle's input. The parent reads no child's state: a link
+/// that ends playback (`leaves_playback`, true only when its step emitted `PlayerReq::Exit`)
+/// makes the DID claim nothing, so the parked film is not restored just to be stopped; the Exit,
+/// drained at the next frame, retires it (`Superseded(Exit)`).
+fn did_foreground_with_link(app: &mut App) -> ForegroundActivation {
+    let now = clock::now();
+    let stands = link_session_stands(app);
+    let (event, env) = super::deeplink::link_inputs(
+        &app.pages, app.window_activity.allow_present(true), stands, now);
+    let out = app.deeplink.step(event, &env);
+    let input = if out.leaves_playback {
+        ForegroundInput::DidForegroundSuperseded
+    } else {
+        ForegroundInput::DidForeground
+    };
+    let activation = drive_foreground(
+        &mut app.player.lifecycle,
+        &mut app.player.session,
+        input,
+        &mut PlayerForegroundActuator {
+            pa: &mut app.adapters.player,
+            repause_at: &mut app.repause_at,
+        },
+    );
+    super::deeplink::perform(out, &mut app.pages, &mut app.menu_play_await, now);
+    activation
+}
+
+/// The facts of whether a playback session stands, for the launch link's step
+/// (`deeplink::session_stands`).
+fn link_session_stands(app: &App) -> bool {
+    super::deeplink::session_stands(
+        super::bridge::player(&app.pages).is_some(),
+        app.player.lifecycle.awaiting_load(),
+        app.adapters.player.is_live(),
+        plx_media::route::is_preview(&app.player.session),
+    )
+}
+
 /// A foreground Load launched — straight from the DID edge, or from the frame that landed a flight
 /// the restore was waiting on (`poll_foreground_flight`): mount the player and pin its transport.
 fn finish_foreground_launch(app: &mut App) {
@@ -1768,8 +1801,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // the player (back to the detail page or home, whichever is behind), instead of freezing
         // on the last frame.
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && plx_media::player::ended() {
-            let handed_off_to_up_next = finish_playback(&mut app.player.session,
+            let handed_off_to_up_next = finish_playback(&mut app.player,
                 &mut app.adapters.player,
+                &mut app.repause_at,
                 &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
@@ -2075,15 +2109,17 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                             Some(plx_screens::player::overlay::OverlayKind::Info)
                         ) =>
                     {
-                        commit_info_press(&mut app.player.session,
+                        commit_info_press(&mut app.player,
                             &mut app.adapters.player,
+                            &mut app.repause_at,
                             &mut app.refresh_hubs,
                             &mut app.pages,
                             &mut app.bridge,
                         )
                     }
-                    AppArg::Player => activate_player_row(&mut app.player.session,
+                    AppArg::Player => activate_player_row(&mut app.player,
                         &mut app.adapters.player,
+                        &mut app.repause_at,
                         fr.ctrl,
                         fr.now,
                         &mut app.refresh_hubs,
@@ -2412,10 +2448,19 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Async play resolve: install the worker's plan and start the engine. Permission comes
         // from the window/playback lifecycle, independently of which screen is mounted.
         // A fresh accepted resolve owns a different playback from any parked foreground retry.
-        // Retire that old owner at this transaction boundary; a same-session Prepared retry does
-        // not set play_pending and remains owned by drive_foreground.
+        // Tell the machine at this transaction boundary (`Superseded(Playback)`): it retires the
+        // parked owner and leaves a pending Load to its own settlement. A same-session Prepared
+        // retry does not set play_pending and remains owned by drive_foreground.
         if app.window_activity.allow_present(true) && plx_media::route::play_pending() {
-            app.player.lifecycle.replace_with_new_playback();
+            let _ = drive_foreground(
+                &mut app.player.lifecycle,
+                &mut app.player.session,
+                ForegroundInput::Superseded(Successor::Playback),
+                &mut PlayerForegroundActuator {
+                    pa: &mut app.adapters.player,
+                    repause_at: &mut app.repause_at,
+                },
+            );
         }
         land_play_then_observe(
             app,
@@ -2485,7 +2530,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // `App::menu_play_await`/`input::menu_play_tick`'s own doc. Right beside the pump above
         // for the same route-unconditional reason: the press that armed the wait may have come
         // from Home while a different page is up by the time the landing (or its settled
-        // failure, or the ceiling) says the wait is over.
+        // failure, or the ceiling) says the wait is over. A title the launch asked for
+        // (`deeplink`) arms the same wait once Home is up.
+        let stands = link_session_stands(app);
+        super::deeplink::frame(&mut app.pages, &mut app.deeplink, &mut app.menu_play_await,
+            app.window_activity.allow_present(true), stands, fr.now);
         if app.menu_play_await.is_some() {
             menu_play_tick(&mut app.player.session, &mut app.adapters.player,
                 &mut app.pages, &mut app.bridge, &mut app.menu_play_await, fr.now);
@@ -3391,6 +3440,7 @@ mod lifecycle_regression_tests {
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
             menu_play_await: Default::default(),
+            deeplink: Default::default(),
             prev: Default::default(),
             refresh_hubs: Default::default(),
             return_hold: Default::default(),
@@ -4680,6 +4730,194 @@ mod lifecycle_regression_tests {
         assert!(rig.app.window_activity.allow_present(true), "DID foreground allows the next present");
     }
 
+    /// A launch link that arrives while the window is backgrounded acts on nothing until DID
+    /// foreground: the page stays where it was and no request leaves, then the link lands.
+    #[test]
+    fn a_link_waits_for_the_foreground() {
+        use plx_screens::registry::ContentArg;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| {
+            if request.starts_with("GET /library/metadata/777") {
+                return r#"{"MediaContainer":{"size":1,"Metadata":[
+                    {"ratingKey":"777","type":"movie","title":"Linked","duration":60000}]}}"#.into();
+            }
+            queue_body(request, false).to_owned()
+        }) else {
+            eprintln!("SKIPPED a_link_waits_for_the_foreground: fixture worker thread could not be spawned");
+            return;
+        };
+        // The fixture parks its first answer until released; release it ahead of time.
+        rig.release.send(()).unwrap();
+        let _ = plx_platform::tv::launch::take_all();
+        let sid = rig.sid;
+        let top = |app: &App| app.pages.nav.tabs.stack.entries.last().map(|e| e.arg.clone());
+        let linked = AppArg::Content(ContentArg::Detail { sid, rk: "777".into() });
+        let held = AppArg::Content(ContentArg::Detail { sid, rk: "other".into() });
+        super::super::bridge::nav_push(&mut rig.app.pages, held.clone());
+        let mut t = 0;
+        settle(&mut rig.app, &mut t);
+        assert!(top(&rig.app) == Some(held.clone()), "premise: a detail page is on top");
+
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        plx_platform::tv::launch::offer(
+            r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#);
+        for i in 0..30 {
+            assert!(!backgrounded_iteration(&mut rig.app, &mut t), "iteration {i} presented while backgrounded");
+        }
+        assert!(top(&rig.app) == Some(held), "the link moved the page while the window was hidden");
+        assert!(!rig.requests.lock().unwrap().iter().any(|r| r.contains("/library/metadata/777")),
+            "the link asked the server for its item while the window was hidden");
+
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        for _ in 0..1500 {
+            // A test build parks a detail fetch until the test runs it, off the frame.
+            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            step(&mut rig.app, &mut t, vec![]);
+            if top(&rig.app).as_ref() == Some(&linked) { break; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(top(&rig.app) == Some(linked), "the link lands once the window is foregrounded");
+    }
+
+    /// A rig whose server also knows the link's item (777): the stage for the tests of a link that
+    /// arrives over playback.
+    fn linked_rig(name: &str) -> Option<Rig> {
+        let rig = Rig::serving_with(|request: &str| {
+            if request.starts_with("GET /library/metadata/777") {
+                return r#"{"MediaContainer":{"size":1,"Metadata":[
+                    {"ratingKey":"777","type":"movie","title":"Linked","duration":60000}]}}"#.into();
+            }
+            queue_body(request, true).to_owned()
+        });
+        if rig.is_none() {
+            eprintln!("SKIPPED {name}: fixture worker thread could not be spawned");
+        }
+        rig
+    }
+
+    /// The film started and its player mounted, as the first half of `refuse_restore` does it.
+    fn start_film(rig: &mut Rig) {
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        frame(&mut rig.app, 16);
+        let _ = plx_platform::tv::launch::take_all();
+    }
+
+    const LINK_777: &str = r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#;
+
+    /// Frame the app until the link's detail page is on top (or the budget runs out).
+    fn run_until_linked(rig: &mut Rig, t: &mut u32) -> bool {
+        use plx_screens::registry::ContentArg;
+        let linked = AppArg::Content(ContentArg::Detail { sid: rig.sid, rk: "777".into() });
+        for _ in 0..1500 {
+            // A test build parks a detail fetch until the test runs it, off the frame.
+            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            step(&mut rig.app, t, vec![]);
+            if rig.app.pages.nav.tabs.stack.entries.last().map(|e| &e.arg) == Some(&linked) { return true; }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// A launch link over a playing film ends the film the way STOP does, then lands: the engine
+    /// is released and the foreground lifecycle is Idle, not just the player page popped.
+    #[test]
+    fn a_link_over_the_player_stops_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = linked_rig("a_link_over_the_player_stops_it") else { return };
+        start_film(&mut rig);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some() && rig.app.adapters.player.is_live(),
+            "premise: the film is playing");
+        plx_platform::tv::launch::offer(LINK_777);
+        let mut t = 16;
+        assert!(run_until_linked(&mut rig, &mut t), "the link lands over the film");
+        settle(&mut rig.app, &mut t);
+        assert!(!rig.app.adapters.player.is_live(), "the engine outlived the link");
+        assert!(super::super::bridge::player(&rig.app.pages).is_none());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+    }
+
+    /// A film parked by the background, then a link, then the foreground: the DID must not bring
+    /// the film back behind the page the link opened.
+    #[test]
+    fn a_link_over_a_parked_film_does_not_bring_it_back() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = linked_rig("a_link_over_a_parked_film_does_not_bring_it_back") else { return };
+        start_film(&mut rig);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        plx_platform::tv::launch::offer(LINK_777);
+        let mut t = 16;
+        for _ in 0..5 { backgrounded_iteration(&mut rig.app, &mut t); }
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        assert!(run_until_linked(&mut rig, &mut t), "the link lands once foregrounded");
+        settle(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "the film came back");
+        assert!(!rig.app.adapters.player.is_live(), "the film came back");
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+    }
+
+    /// The link arrives in the very DID foreground that wakes a parked film: the DID must restore
+    /// nothing (no Prepare, no Load in flight, no engine), so the link's Exit retires a parked
+    /// session instead of racing a restore.
+    #[test]
+    fn a_warm_link_at_did_restores_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = linked_rig("a_warm_link_at_did_restores_nothing") else { return };
+        start_film(&mut rig);
+        assert_eq!(plx_plex::plex::current_server(), rig.sid, "premise: a server-less link resolves");
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        assert!(rig.app.player.lifecycle.awaiting_load(), "premise: the film is parked");
+        plx_platform::tv::launch::offer(LINK_777);
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        assert!(matches!(rig.app.player.lifecycle.state(), ForegroundState::Suspended { .. }),
+            "the DID claimed a restore the link was about to end (state: {:?})",
+            rig.app.player.lifecycle.state());
+        assert!(rig.app.player.lifecycle.pending_load_attempt().is_none()
+            && !rig.app.player.lifecycle.flight_pending(),
+            "the DID claimed a restore the link was about to end");
+        assert!(!rig.app.adapters.player.is_live(), "the DID started the film's engine");
+        let mut t = 32;
+        assert!(run_until_linked(&mut rig, &mut t), "the link lands");
+        settle(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+    }
+
+    /// A link that arrives while the window is hidden ends nothing until the DID: an Exit drained
+    /// in the background would tear the session down (scrobble, transcode stop, hub refetch) while
+    /// hidden, and a 0x106 right behind it would find the link already leaving and restore the
+    /// film just to be stopped. The Exit and the superseding DID happen together at the DID.
+    #[test]
+    fn a_link_arriving_in_the_background_ends_playback_only_at_the_did() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = linked_rig("a_link_arriving_in_the_background_ends_playback_only_at_the_did") else { return };
+        start_film(&mut rig);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        event(&mut rig.app, &mut fr, 0x103);
+        event(&mut rig.app, &mut fr, 0x104);
+        plx_platform::tv::launch::offer(LINK_777);
+        let mut t = 16;
+        backgrounded_iteration(&mut rig.app, &mut t);
+        assert!(!rig.app.deeplink.is_leaving(), "the link started leaving while the window was hidden");
+        event(&mut rig.app, &mut fr, 0x105);
+        event(&mut rig.app, &mut fr, 0x106);
+        assert!(matches!(rig.app.player.lifecycle.state(), ForegroundState::Suspended { .. }),
+            "the DID restored a film the link ends (state: {:?})", rig.app.player.lifecycle.state());
+        assert!(run_until_linked(&mut rig, &mut t), "the link lands");
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+    }
+
     #[test]
     fn did_background_cancels_accepted_resolve_before_player_mount() {
         let _serial = plx_base::testlock::serial();
@@ -5232,6 +5470,129 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none());
     }
 
+    /// The first half of a foreground restore the engine refuses: playback, an OS background, DID
+    /// foreground, and a Load the route answers with `StartFailed`, leaving the machine `Prepared`
+    /// with no live engine. Returns the frame the rest of the test keeps driving.
+    fn refuse_restore(rig: &mut Rig) -> Frame {
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        frame(&mut rig.app, 16);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some());
+
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        fr.now = 32;
+        event(&mut rig.app, &mut fr, 0x104);
+        assert!(rig.app.player.lifecycle.awaiting_load());
+        // The host test has no GL context for `tv::window::grab`. Drive the remaining production
+        // DID-foreground seams directly after granting the same WindowActivity permission.
+        rig.app.window_activity.event(0x106);
+        super::super::bridge::foreground(&mut rig.app.pages);
+        assert_eq!(
+            drive_foreground(
+                &mut rig.app.player.lifecycle,
+                &mut rig.app.player.session,
+                ForegroundInput::DidForeground,
+                &mut PlayerForegroundActuator {
+                    pa: &mut rig.app.adapters.player,
+                    repause_at: &mut rig.app.repause_at,
+                },
+            ),
+            ForegroundActivation::Launched
+        );
+        let failed_attempt = rig
+            .app
+            .player
+            .lifecycle
+            .pending_load_attempt()
+            .expect("DID foreground must launch the tracked Load");
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session,
+            failed_attempt,
+            plx_media::route::RouteStartResult::StartFailed,
+        ));
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(matches!(
+            rig.app.player.lifecycle.state(),
+            ForegroundState::Prepared { .. }
+        ));
+        assert!(!rig.app.adapters.player.is_live());
+        fr
+    }
+
+    /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left
+    /// it standing, so `playback_may_run` stayed false until the next play released it.
+    #[test]
+    fn exit_over_a_refused_restore_retires_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED exit_over_a_refused_restore_retires_it: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        let fr = refuse_restore(&mut rig);
+
+        player_requests(
+            &mut rig.app.player,
+            &mut rig.app.adapters.player,
+            &mut rig.app.repause_at,
+            vec![plx_screens::registry::PlayerReq::Exit],
+            fr.now,
+            &mut rig.app.refresh_hubs,
+            &mut rig.app.pages,
+            &mut rig.app.bridge,
+            &mut rig.app.ok_armed,
+            &mut rig.app.input.press,
+        );
+        frame(&mut rig.app, 48);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+        assert!(playback_may_run(&rig.app));
+    }
+
+    /// The failure screen's Retry over a refused restore: its fresh resolve supersedes the parked
+    /// `Prepared` at the `play_pending` boundary and the retry runs. Pins what replacing
+    /// `replace_with_new_playback` by `Superseded(Playback)` must keep.
+    #[test]
+    fn a_retry_from_a_refused_restore_still_runs() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED a_retry_from_a_refused_restore_still_runs: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        let mut fr = refuse_restore(&mut rig);
+
+        player_requests(
+            &mut rig.app.player,
+            &mut rig.app.adapters.player,
+            &mut rig.app.repause_at,
+            vec![plx_screens::registry::PlayerReq::RetryPlayback],
+            fr.now,
+            &mut rig.app.refresh_hubs,
+            &mut rig.app.pages,
+            &mut rig.app.bridge,
+            &mut rig.app.ok_armed,
+            &mut rig.app.input.press,
+        );
+        assert!(plx_media::route::play_pending());
+        rig.accept_start();
+        poll_until("the retry did not land past the refused restore", || {
+            unsafe {
+                playback_tick(&mut rig.app, &mut fr);
+                update(&mut rig.app, &mut fr);
+            }
+            rig.app.adapters.player.is_live()
+        });
+        assert!(!plx_media::route::play_pending());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+        assert!(playback_may_run(&rig.app));
+    }
+
     #[test]
     fn replacement_play_retires_failed_foreground_owner_and_lands() {
         let _serial = plx_base::testlock::serial();
@@ -5287,9 +5648,9 @@ mod lifecycle_regression_tests {
         assert!(!rig.app.adapters.player.is_live());
 
         player_requests(
-            &mut rig.app.player.repair,
-            &mut rig.app.player.session,
+            &mut rig.app.player,
             &mut rig.app.adapters.player,
+            &mut rig.app.repause_at,
             vec![plx_screens::registry::PlayerReq::Exit],
             fr.now,
             &mut rig.app.refresh_hubs,
@@ -5300,10 +5661,7 @@ mod lifecycle_regression_tests {
         );
         frame(&mut rig.app, 48);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
-        assert!(matches!(
-            rig.app.player.lifecycle.state,
-            ForegroundState::Prepared { .. }
-        ));
+        assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
 
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
@@ -5318,10 +5676,7 @@ mod lifecycle_regression_tests {
         ));
         rig.accept_start();
         assert!(plx_media::route::play_pending());
-        assert!(matches!(
-            rig.app.player.lifecycle.state,
-            ForegroundState::Prepared { .. }
-        ));
+        assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
         poll_until("replacement landing remained blocked by the old lifecycle", || {
             unsafe {
                 playback_tick(&mut rig.app, &mut fr);

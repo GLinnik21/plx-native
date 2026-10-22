@@ -5282,6 +5282,11 @@ pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
     ps.preview = false;
     ps.resolved_as_preview = true;
 }
+/// Test-only: mark `ps` as the hero preview's session, as `preview::start` does for a trailer.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_preview_for_test(ps: &mut PlaybackSession) {
+    ps.preview = true;
+}
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
 #[cfg(any(test, feature = "test-support"))]
