@@ -1151,8 +1151,8 @@ pub(crate) unsafe fn activate_player_row(
         use plx_appkit::player_hud::legacy_controls::Action;
         use plx_media::route::QueueStep;
         match controls.action(btn) {
-            Some(Action::Previous) => { queue_transport::step(ps, pa, QueueStep::Previous, pages, bridge); return; }
-            Some(Action::Next) => { queue_transport::step(ps, pa, QueueStep::Next, pages, bridge); return; }
+            Some(Action::Previous) => { queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge); return; }
+            Some(Action::Next) => { queue_transport::step(&mut player.session, pa, QueueStep::Next, pages, bridge); return; }
             Some(Action::Subtitles) => 0,
             Some(Action::Audio) => 1,
             Some(Action::More) => plx_appkit::player_hud::BTN_MORE,
