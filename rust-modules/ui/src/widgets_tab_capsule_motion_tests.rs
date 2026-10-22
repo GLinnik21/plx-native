@@ -668,12 +668,6 @@ fn ink_cases() -> Vec<(TabGround, fn(f32, f32) -> [f32; 4])> {
     cases
 }
 
-/// The contrast floor across an in-place fade (focus in or out of a pill). The ink is binary and
-/// flips at the capsule's alpha midpoint (`INK_FLIP_ALPHA`), where the fill is a mid-tone neither ink
-/// reads at 3:1; the worst measured frame either side of it is ~2.4:1. The settled states and
-/// travels keep 3:1.
-const FADE_FLIP_CONTRAST: f32 = 2.0;
-
 /// The tab bar's ink and the page header's: the same regions, two palettes (a header label rests
 /// at white 65% and a tab's at `TEXT_READING`).
 fn header_ink(focus: f32, selected: f32) -> [f32; 4] {
@@ -759,7 +753,7 @@ fn a_label_a_capsule_is_crossing_stays_readable_on_every_glyph_row_not_only_the_
                 let (ratio, x, dy) = worst_contrast_2d(&s, ground, span_of(&w, 3), ink_of);
                 if ratio < worst.0 { worst = (ratio, frame, x, dy); }
             }
-            assert!(worst.0 >= FADE_FLIP_CONTRAST, "{from} -> {to}: worst {:.2}:1 at frame {} x {} row {:+} from the centre ({FADE_FLIP_CONTRAST}:1 wanted)", worst.0, worst.1, worst.2, worst.3);
+            assert!(worst.0 >= 3.0, "{from} -> {to}: worst {:.2}:1 at frame {} x {} row {:+} from the centre (3:1 wanted)", worst.0, worst.1, worst.2, worst.3);
         }
     }
 }
@@ -1034,41 +1028,4 @@ fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
         let air = pair[1].0 - (pair[0].0 + pair[0].1);
         assert!((air - gap).abs() <= 0.5, "strip pill frames stand {air} apart, not {gap}");
     }
-}
-
-/// **A capsule fading in place flips its label's ink at the capsule's alpha midpoint, in both
-/// directions.** The flip used to fall where the composited backing crossed a luma (alpha ~0.14 over
-/// a selection plate), which the critically damped fade reaches on frame ~3 going in but ~12 coming
-/// out: the white fill had faded to grey while the ink still read dark on it, for ~6 frames. The ink
-/// stays binary; the frame it flips on is the one the alpha crosses 0.5, either way.
-#[test]
-fn a_fading_capsule_flips_its_ink_at_its_alpha_midpoint() {
-    let _g = serial_for_motion();
-    let w = widths_for(12);
-    let span = |i: usize| (i < w.len()).then(|| span_of(&w, i));
-    let (x, pw) = span_of(&w, 2);
-    let pill = Rect::new(x, 0.0, pw, INK_H);
-    let (cx, cy) = (x + pw * 0.5, INK_H * 0.5);
-    let ground = TabGround::Plated { pop: CTRL_FOCUS_SCALE };
-    let mut s = TabStrip::new();
-    // the selected pill at rest, focus elsewhere
-    for _ in 0..90 { s.update(2, -1, span, SelMark::Lands, DT); }
-    // (frame the ink first reads dark / light, frame the alpha first crosses 0.5), per direction
-    let mut run = |focused: c_int, rising: bool| {
-        let (mut flipped, mut crossed) = (None, None);
-        for frame in 0..90_u32 {
-            s.update(2, focused, span, SelMark::Lands, DT);
-            let dark = s.pill_ink(pill, ground).at(cx, cy).0 > 0.5;
-            let past = if rising { s.foc.alpha() >= 0.5 } else { s.foc.alpha() < 0.5 };
-            if crossed.is_none() && past { crossed = Some(frame); }
-            if flipped.is_none() && dark == rising { flipped = Some(frame); }
-        }
-        (flipped.expect("the ink flipped"), crossed.expect("the alpha crossed its midpoint"))
-    };
-    let (ink_in, alpha_in) = run(2, true);
-    let (ink_out, alpha_out) = run(-1, false);
-    assert!(
-        ink_in.abs_diff(alpha_in) <= 1 && ink_out.abs_diff(alpha_out) <= 1,
-        "ink flipped / alpha crossed 0.5: focus in frame {ink_in} / {alpha_in}, focus out frame {ink_out} / {alpha_out}"
-    );
 }
