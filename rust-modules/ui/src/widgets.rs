@@ -8186,8 +8186,9 @@ fn face_box(r: Rect) -> Rect {
 /// "the remote is here" over a ground nobody chose — the measured case is an `ACCENT` capsule over
 /// a white frame at ~1.2:1 — and the design's answer is [`theme::CONTROL_CAST_FOCUS`], two stops of
 /// black under the focused face only. Drawn to the stadium radius rather than to the solved
-/// capsule: at a 32px blur the half pixel between the two outlines is far below anything the
-/// penumbra resolves.
+/// capsule: the half pixel between the two outlines falls inside the shadow's cut, whose edge is a
+/// coverage ramp about a pixel wide (`fs_shadow.frag`'s `CUT_AA`), so the face's blended outline
+/// meets a partial shadow there and no hard, aliased strip.
 fn control_cast(p: Painter, r: Rect, rad: f32) {
     control_cast_at(p, r, rad, 1.0);
 }
@@ -8546,8 +8547,9 @@ impl Button {
                 face.top,
             );
         } else {
-            // FOCUS is an elevation as well as a fill — see `control_cast`. Under the face, so the
-            // near-opaque focused plate covers everything the shadow's own interior cut leaves.
+            // FOCUS is an elevation as well as a fill — see `control_cast`. Drawn before the face
+            // for draw order only: `control_cast_at` is outside-only, so nothing of it lies under
+            // the plate, even while the plate fades.
             if self.focused {
                 control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }

@@ -346,8 +346,8 @@ pub struct DetailScreen {
     /// it can answer without constructing a throwaway empty owner. Derived, not logical state —
     /// deliberately absent from [`SHAPE`].
     spot_facts: SpotFacts,
-    /// The standing "Hold OK for options" hint over a Related or Collection card or the season
-    /// pill (`plx_ui::hold_hint`: one `HoldHint`, the surface carried per frame; once per install
+    /// The standing "Hold OK for options" hint over a Related or Collection card, an episode's still
+    /// or the season pill (`plx_ui::hold_hint`: one `HoldHint`, the surface carried per frame; once per install
     /// per surface). Paint-only: not hashed,
     /// not in [`SHAPE`].
     hold_hint: plx_ui::hold_hint::HoldHint,
@@ -3844,8 +3844,9 @@ impl DetailScreen {
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
     /// CARD focus rests on, only on the shelves whose held OK opens an item menu (Related and the
-    /// member Collection — Extras and Cast have no hold action, and neither do the hero, a
-    /// heading or the about rows) and whose item `registry::item_has_menu`, never while full-trailer mode has taken the page off screen;
+    /// member Collection, whose item must `registry::item_has_menu`, and an episode's still when
+    /// `focused_episode` says its menu can open; the episode text stop, Extras, Cast, the hero,
+    /// headings and the about rows have no hold action), never while full-trailer mode has taken the page off screen;
     /// and whether it has arrived (the page scroll and the card's own glide).
     fn hint_input<H: ContentLike + crate::registry::MetadataLike>(
         &self,
