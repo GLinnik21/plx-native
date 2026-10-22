@@ -1,5 +1,6 @@
 {
- "generated": "2026-10-22T15:29:54Z",
+ "flaky": [],
+ "generated": "2026-10-22T15:32:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,18 +87,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.2,
-   "change7_pct": -17.3,
+   "change30_pct": -51.3,
+   "change7_pct": -17.6,
    "d30": 684,
-   "delta30": -350.0,
-   "delta7": -70.0,
+   "delta30": -351,
+   "delta7": -71,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 117,
-   "now": 334.0,
+   "now": 333,
    "prev7": 404,
    "shown": true,
    "state": "better",
@@ -311,15 +312,15 @@
    "change30_pct": 101.6,
    "change7_pct": 16.7,
    "d30": 128,
-   "delta30": 130,
+   "delta30": 130.0,
    "delta7": 37.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 108,
-   "now": 258,
+   "now": 258.0,
    "prev7": 221.0,
    "shown": true,
    "state": "flat",
@@ -393,17 +394,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.2,
+   "change7_pct": 8.5,
    "d30": null,
    "delta30": null,
-   "delta7": 11.5,
+   "delta7": 12.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 108,
-   "now": 152,
+   "now": 152.5,
    "prev7": 140.5,
    "shown": true,
    "state": "flat",
@@ -481,15 +482,15 @@
    "change30_pct": 12.5,
    "change7_pct": 5.9,
    "d30": 16,
-   "delta30": 2,
+   "delta30": 2.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 108,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +610,6 @@
    "change_pct": 38.0,
    "commits": [
     {
-     "pr": 908,
-     "sha": "30b5183be",
-     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
-    },
-    {
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
@@ -657,6 +653,11 @@
      "pr": 865,
      "sha": "60538b681",
      "title": "player: a film ends on the pipeline's end-of-stream"
+    },
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
     }
    ],
    "from": 142,
@@ -670,11 +671,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 908,
-     "sha": "30b5183be",
-     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
-    },
-    {
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
@@ -718,6 +714,11 @@
      "pr": 865,
      "sha": "60538b681",
      "title": "player: a film ends on the pipeline's end-of-stream"
+    },
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
     }
    ],
    "from": 103.0,
@@ -731,11 +732,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 908,
-     "sha": "30b5183be",
-     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
-    },
-    {
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
@@ -779,6 +775,11 @@
      "pr": 865,
      "sha": "60538b681",
      "title": "player: a film ends on the pipeline's end-of-stream"
+    },
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
     }
    ],
    "from": 46.0,
@@ -819,7 +820,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 258
+   "now": 258.0
   }
  ],
  "slowest_local": [
