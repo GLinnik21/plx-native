@@ -221,6 +221,19 @@ pub(crate) fn install_plex_seams() {
 }
 
 #[cfg(test)]
+mod relaunch_tap_tests {
+    use super::slot_holds;
+
+    #[test]
+    fn relaunch_slot_must_hold_libhelpers() {
+        assert!(slot_holds(0x1000, Some(0x1000)), "the slot holds libhelpers' function");
+        assert!(!slot_holds(0x1000, Some(0x1001)), "a different value, even by the Thumb bit");
+        assert!(!slot_holds(0x1000, None), "libhelpers is not mapped or lacks the symbol");
+        assert!(!slot_holds(0, None));
+    }
+}
+
+#[cfg(test)]
 mod seam_order_tests {
     /// `plx_plex` reports the version it is handed (`plex::identity::set_version`) and, in a
     /// shipping build, panics when asked for it earlier, so the hand-in has to be the first thing
@@ -643,6 +656,8 @@ fn self_sym(name: &str) -> Option<*mut std::ffi::c_void> {
 /// it unchanged, so SDL still raises the window. No new Luna registration: SAM refuses the app's
 /// own (`tv::launch`). The firmware inventories have the slot from webOS 7.4 on; where it is missing
 /// or empty (webOS 4.x to 6.x), nothing changes and callers keep closing the app first.
+/// The tap installs only when the slot holds the address `libhelpers.so.2` (already mapped,
+/// `RTLD_NOLOAD`) exports as `HLunaServiceMessage` ([`slot_holds`]); any other value is left alone.
 #[cfg(not(feature = "hostsim"))]
 unsafe fn tap_relaunch_payloads() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -660,6 +675,17 @@ unsafe fn tap_relaunch_payloads() {
             else { "relaunch tap: already installed" });
         return;
     }
+    // The slot is only ours to wrap while it holds libhelpers' own `HLunaServiceMessage`: another
+    // value (a different SDL build, a slot of some other type) would be called as a function
+    // pointer it is not.
+    let expected = plx_base::dynlib::Handle::open_loaded(&["libhelpers.so.2"])
+        .and_then(|(h, _)| h.sym("HLunaServiceMessage"))
+        .filter(|p| !p.is_null())
+        .map(|p| p as usize);
+    if !slot_holds(current, expected) {
+        log("relaunch tap: slot does not hold libhelpers' HLunaServiceMessage \u{2014} not installed");
+        return;
+    }
     REAL_MESSAGE.store(current, Ordering::Release);
     MAIN_THREAD.store(libc::pthread_self() as usize, Ordering::Relaxed);
     slot.store(wrapped, Ordering::Release);
@@ -667,6 +693,14 @@ unsafe fn tap_relaunch_payloads() {
 }
 #[cfg(feature = "hostsim")]
 unsafe fn tap_relaunch_payloads() {}
+
+/// Does the SDL slot hold exactly the function `libhelpers.so.2` exports as `HLunaServiceMessage`?
+/// The Thumb bit is compared as `dlsym` and the slot both carry it. `expected` is `None` when
+/// libhelpers is not mapped or lacks the symbol, and then nothing holds.
+#[cfg(any(test, not(feature = "hostsim")))]
+fn slot_holds(current: usize, expected: Option<usize>) -> bool {
+    expected == Some(current)
+}
 
 #[cfg(not(feature = "hostsim"))]
 type LunaMessageFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_char;
