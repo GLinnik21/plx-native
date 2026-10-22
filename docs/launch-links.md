@@ -29,11 +29,12 @@ luna://com.webos.applicationManager/launch
   `deeplink: dropped` line.
 - The link also lands only when no surface is up (the first-run consent question, a menu) and the
   app is in the foreground; it waits for the surface to be dismissed and the window to be
-  foregrounded again. Ending playback (next bullet) does not wait for either.
+  foregrounded again. Ending playback (next bullet) waits for the window but not for a surface.
 - A link over playback ends it the way the STOP key does (the player's exit ritual: the engine is
   released, the server is told, a parked restore is retired) and then lands. It does this as soon
-  as the link is due, even while the app is in the background, so a film that was parked is not
-  brought back first. If the engine does not end within 5 s the link is dropped with
+  as the link is due and the window is up. A link that arrives while the app is in the background
+  waits for the foreground and then does both at once, so a film that was parked is not brought
+  back first and nothing is torn down while the window is hidden. If the engine does not end within 5 s the link is dropped with
   `deeplink: not opened (playback did not end)`. A link whose server never resolves never stops
   the film.
 - `action: play` starts through the same door as a Play from a page. While a trailer preview is
@@ -53,7 +54,7 @@ Instead, `app::boot::tap_relaunch_payloads` wraps the pointer slot LG's SDL read
 payload through (`HELPER_HLunaServiceMessage`, exported by its `libSDL2` and filled in `SDL_Init`).
 A relaunch payload is passed to the link code and returned unchanged, so SDL still raises the
 window. The link then replaces wherever the app was, with Home underneath. A relaunch without a
-`plex` object leaves the app where it is. The tap is installed only where the slot holds the
+`plex` object leaves the app where it is, and does not displace a link that no frame has taken yet. The tap is installed only where the slot holds the
 address of libhelpers' `HLunaServiceMessage`; anywhere else it is not installed and the event log
 says so, so a warm link works only where the guarded tap installs. Measured on webOS 9.2.2 (LG C2): links opened from Home
 and from another detail page, on the same process.

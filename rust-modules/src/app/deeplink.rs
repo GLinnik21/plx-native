@@ -25,11 +25,12 @@
 //! leaves Home in place (and a line in the event log), never a blank page.
 //!
 //! **When it acts.** The link is a pure step ([`DeepLink::step`]): one event and the read-only
-//! facts of the frame in ([`link_inputs`] is the only reader of the outside world), effect values
+//! facts of the frame in ([`link_inputs`] is the only reader of the outside world; whether a playback
+//! session stands is the one fact the caller hands it, read from the player by `run.rs`), effect values
 //! out ([`LinkOut`], performed by [`perform`], which decides nothing). Its landing waits, and never
 //! interrupts, behind sign-in, the profile picker and onboarding (the root is not Home), behind any
-//! surface that is up (the first-run consent question), and while the window is backgrounded;
-//! ending playback does not wait for any of those (see "Leaving playback" below).
+//! surface that is up (the first-run consent question), and while the window is backgrounded.
+//! Ending playback waits only for the window (see "Leaving playback" below).
 //! A link that names a server survives a sign-in and resolves against the roster of the account
 //! that signed in (the wait for the server starts the first frame Home is the root, and ends
 //! after `SERVER_WAIT_MS`); a link that names none means "the signed-in server" and, having waited
@@ -40,8 +41,10 @@
 //! or a live engine that is not a preview) moves it to `Leaving`: the step emits one
 //! `Fx::App(AppFx::Player(PlayerReq::Exit))` and sets `LinkOut::leaves_playback`. The Exit goes
 //! through the dispatcher to the player's exit ritual (`Superseded(Exit)` and all), never a nav pop
-//! and never a direct call. This is allowed while backgrounded (leaving early is good) and over
-//! the player's own overlays. `Leaving` emits nothing more; it returns to `Waiting` once the
+//! and never a direct call. It waits for the window to be foregrounded (an Exit drained while hidden
+//! would tear the session down, with its server writes, before the DID's network and reread resume,
+//! and could race the DID's restore) and, once it is, goes ahead over the player's own overlays; the
+//! DID steps the link with the window up, so the Exit and the superseding DID land together. `Leaving` emits nothing more; it returns to `Waiting` once the
 //! session is gone and the stack has settled, and gives up after `LEAVE_WAIT_MS` (the engine that
 //! never dies). A newer link replaces the one on its way out without a second Exit.
 //!
@@ -240,9 +243,16 @@ impl DeepLink {
             }
             return out;
         };
+        // The window comes first: an Exit drained while hidden would tear the session down (the
+        // scrobble, the transcode stop, the hub refetch) before the DID's `network_changed` and
+        // reread resume, and a 0x106 right behind it would find the link already leaving and
+        // restore the film just to be stopped. The DID steps the link with the window up
+        // (`did_foreground_with_link`), so the Exit and the superseding DID land together there.
+        if !env.foreground {
+            return out;
+        }
         // The resolve above came first, so a link that can never open never stops the viewer's
-        // film. Leaving early is good, even backgrounded or over the player's own overlays: the
-        // ritual closes them.
+        // film. Leaving early is good, even over the player's own overlays: the ritual closes them.
         if env.session_stands {
             let LinkState::Waiting { link, crossed_sign_in, .. } = std::mem::take(&mut self.0) else { return out };
             self.0 = LinkState::Leaving {
@@ -251,7 +261,7 @@ impl DeepLink {
             out.leaves_playback = true;
             return out;
         }
-        if !env.foreground || env.surface_up {
+        if env.surface_up {
             return out;
         }
         // Home alone underneath, so BACK off the page lands there: unwind whatever stands above it
@@ -337,6 +347,23 @@ pub(crate) fn session_stands(player_mounted: bool, awaiting_load: bool, engine_l
     player_mounted || awaiting_load || (engine_live && !preview)
 }
 
+/// The payloads that arrived since the last frame, as the one event the step takes: the LAST real
+/// link wins, and a payload without a `plex` object (a second tile press, the launcher sending
+/// `launch` twice) does not displace one that came before it. With no link, a bad one is reported,
+/// else a link-less launch is `Arrived(None)`; no payload at all is a plain frame.
+fn fold_arrivals(raws: &[String]) -> LinkEvent {
+    let mut folded: Option<Parsed> = None;
+    for raw in raws {
+        let parsed = parse(raw);
+        folded = match (folded, parsed) {
+            (_, link @ Parsed::Link(_)) => Some(link),
+            (Some(link @ Parsed::Link(_)), _) => Some(link),
+            (_, other) => Some(other),
+        };
+    }
+    folded.map_or(LinkEvent::Frame, LinkEvent::Arrived)
+}
+
 /// **The one function that reads the outside world for the link:** the launch slot (a payload that
 /// arrived, read by pure [`parse`]), the window, the nav stack and the roster port.
 pub(crate) fn link_inputs(
@@ -345,10 +372,7 @@ pub(crate) fn link_inputs(
     session_stands: bool,
     now: u32,
 ) -> (LinkEvent, LinkEnv<'static>) {
-    let event = match plx_platform::tv::launch::take() {
-        Some(raw) => LinkEvent::Arrived(parse(&raw)),
-        None => LinkEvent::Frame,
-    };
+    let event = fold_arrivals(&plx_platform::tv::launch::take_all());
     let root = match pages.nav.tabs.stack.entries.first().map(|e| &e.arg) {
         Some(AppArg::Login) => Root::Login,
         Some(AppArg::Home) => Root::Home,
@@ -690,20 +714,39 @@ mod tests {
     }
 
     #[test]
-    fn link_step_backgrounded_it_only_leaves() {
+    fn link_step_backgrounded_it_does_nothing_until_the_window_is_up() {
         let mut link = waiting(None, false);
         let mut e = standing(&KNOWN);
         e.foreground = false;
         e.home_settled = false;
+        // A standing session is not exited while hidden, and nothing else moves either.
+        let out = link.step(LinkEvent::Frame, &e);
+        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none() && !out.leaves_playback);
+        assert!(!link.is_leaving() && !link.is_idle());
+        // The DID's step has the window up: the Exit goes out then.
+        e.foreground = true;
         let out = link.step(LinkEvent::Frame, &e);
         assert_eq!(fx_names(&out.fx), ["exit"]);
-        assert!(out.arm.is_none() && out.leaves_playback);
-        e.session_stands = false;
-        let out = link.step(LinkEvent::Frame, &e);
-        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none());
-        // Back to waiting, backgrounded: still no SelectTab, no request, no arm.
-        let out = link.step(LinkEvent::Frame, &e);
-        assert!(fx_names(&out.fx).is_empty() && out.arm.is_none() && !link.is_idle());
+        assert!(out.arm.is_none() && out.leaves_playback && link.is_leaving());
+    }
+
+    #[test]
+    fn fold_arrivals_keeps_the_last_real_link_and_a_linkless_launch_displaces_nothing() {
+        let l = |rk: &str| format!(r#"{{"parameters":{{"plex":{{"ratingKey":"{rk}"}}}}}}"#);
+        let plain = r#"{"event":"relaunch","parameters":{}}"#.to_owned();
+        let bad = r#"{"parameters":{"plex":{}}}"#.to_owned();
+        let rk_of = |e: LinkEvent| match e {
+            LinkEvent::Arrived(Parsed::Link(link)) => link.rk,
+            LinkEvent::Arrived(Parsed::Bad) => "bad".into(),
+            LinkEvent::Arrived(Parsed::None) => "none".into(),
+            LinkEvent::Frame => "frame".into(),
+        };
+        assert_eq!(rk_of(fold_arrivals(&[])), "frame");
+        assert_eq!(rk_of(fold_arrivals(&[plain.clone()])), "none");
+        assert_eq!(rk_of(fold_arrivals(&[l("1"), plain.clone()])), "1");
+        assert_eq!(rk_of(fold_arrivals(&[l("1"), bad.clone(), plain.clone()])), "1");
+        assert_eq!(rk_of(fold_arrivals(&[l("1"), plain.clone(), l("2")])), "2");
+        assert_eq!(rk_of(fold_arrivals(&[plain, bad])), "bad");
     }
 
     #[test]

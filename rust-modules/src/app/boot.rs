@@ -231,6 +231,14 @@ mod relaunch_tap_tests {
         assert!(!slot_holds(0x1000, None), "libhelpers is not mapped or lacks the symbol");
         assert!(!slot_holds(0, None));
     }
+
+    #[test]
+    fn the_slot_must_be_word_aligned() {
+        use super::slot_aligned;
+        let word = core::mem::align_of::<usize>();
+        assert!(slot_aligned(0x1000) && slot_aligned(word));
+        assert!(!slot_aligned(0x1000 + 1) && !slot_aligned(word + word / 2));
+    }
 }
 
 #[cfg(test)]
@@ -665,6 +673,12 @@ unsafe fn tap_relaunch_payloads() {
         log("relaunch tap: no HELPER_HLunaServiceMessage in this SDL");
         return;
     };
+    // An atomic reference to a misaligned address is undefined behaviour: refuse a symbol that is
+    // not a word-aligned slot before forming it.
+    if !slot_aligned(slot as usize) {
+        log("relaunch tap: slot misaligned \u{2014} not installed");
+        return;
+    }
     // SDL's Luna thread may read the slot while it is replaced: store it atomically, after the
     // function it forwards to is published.
     let slot = &*(slot as *const AtomicUsize);
@@ -700,6 +714,12 @@ unsafe fn tap_relaunch_payloads() {}
 #[cfg(any(test, not(feature = "hostsim")))]
 fn slot_holds(current: usize, expected: Option<usize>) -> bool {
     expected == Some(current)
+}
+
+/// Is `addr` aligned for the `AtomicUsize` the slot is read and written as?
+#[cfg(any(test, not(feature = "hostsim")))]
+fn slot_aligned(addr: usize) -> bool {
+    addr % core::mem::align_of::<usize>() == 0
 }
 
 #[cfg(not(feature = "hostsim"))]

@@ -17,23 +17,34 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-static PENDING: Mutex<Option<String>> = Mutex::new(None);
-/// Set with `PENDING`, so the per-frame [`take`] skips the lock while nothing has arrived.
+/// How many payloads wait for the next frame. The app takes them every frame; more than a handful
+/// can only mean the loop is not running (before SDL_Init has returned, or a stall), and the
+/// newest are the ones that matter, so the oldest are dropped. 8 is far past a cold argv link plus
+/// the relaunches a person can press before the first frame.
+const MAX_PENDING: usize = 8;
+
+static PENDING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Set with `PENDING`, so the per-frame [`take_all`] skips the lock while nothing has arrived.
 static WAITING: AtomicBool = AtomicBool::new(false);
 
 /// A launch payload: a cold start's `argv[1]`, or a relaunch event from any thread. The app decides
-/// what it means; a newer payload replaces one not yet taken.
+/// what it means; payloads queue in arrival order so a link-less relaunch cannot erase a link that
+/// no frame has taken yet.
 pub fn offer(raw: &str) {
-    *PENDING.lock().unwrap_or_else(|p| p.into_inner()) = Some(raw.to_owned());
+    let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
+    if pending.len() == MAX_PENDING {
+        pending.remove(0);
+    }
+    pending.push(raw.to_owned());
     WAITING.store(true, Ordering::Release);
 }
 
-/// The launch payload not yet acted on, once. Cheap enough for every frame.
-pub fn take() -> Option<String> {
+/// Every launch payload not yet acted on, oldest first, once. Cheap enough for every frame.
+pub fn take_all() -> Vec<String> {
     if !WAITING.swap(false, Ordering::Acquire) {
-        return None;
+        return Vec::new();
     }
-    PENDING.lock().unwrap_or_else(|p| p.into_inner()).take()
+    std::mem::take(&mut *PENDING.lock().unwrap_or_else(|p| p.into_inner()))
 }
 
 #[cfg(test)]
@@ -43,9 +54,23 @@ mod tests {
     #[test]
     fn hands_the_argument_over_once() {
         let _serial = plx_base::testlock::serial();
-        let _ = take();
+        let _ = take_all();
         offer(r#"{"parameters":{"plex":{"ratingKey":"1"}}}"#);
-        assert!(take().unwrap().contains(r#""1""#));
-        assert_eq!(take(), None);
+        let taken = take_all();
+        assert!(taken.len() == 1 && taken[0].contains(r#""1""#));
+        assert!(take_all().is_empty());
+    }
+
+    #[test]
+    fn queues_in_order_and_drops_the_oldest_past_the_bound() {
+        let _serial = plx_base::testlock::serial();
+        let _ = take_all();
+        for i in 0..MAX_PENDING + 2 {
+            offer(&i.to_string());
+        }
+        let taken = take_all();
+        assert_eq!(taken.len(), MAX_PENDING);
+        assert_eq!(taken.first().map(String::as_str), Some("2"));
+        assert_eq!(taken.last().map(String::as_str), Some(&*(MAX_PENDING + 1).to_string()));
     }
 }

@@ -4748,7 +4748,7 @@ mod lifecycle_regression_tests {
         };
         // The fixture parks its first answer until released; release it ahead of time.
         rig.release.send(()).unwrap();
-        let _ = plx_platform::tv::launch::take();
+        let _ = plx_platform::tv::launch::take_all();
         let sid = rig.sid;
         let top = |app: &App| app.pages.nav.tabs.stack.entries.last().map(|e| e.arg.clone());
         let linked = AppArg::Content(ContentArg::Detail { sid, rk: "777".into() });
@@ -4804,7 +4804,7 @@ mod lifecycle_regression_tests {
         rig.resolve();
         rig.accept_start();
         frame(&mut rig.app, 16);
-        let _ = plx_platform::tv::launch::take();
+        let _ = plx_platform::tv::launch::take_all();
     }
 
     const LINK_777: &str = r#"{"event":"launch","parameters":{"plex":{"ratingKey":"777","action":"open"}}}"#;
