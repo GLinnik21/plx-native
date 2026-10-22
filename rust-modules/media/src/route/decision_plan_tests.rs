@@ -1665,3 +1665,43 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
         plx_plex::plex::reset_servers_for_test();
     }
 }
+
+/// The other side of #584: on a set whose table DOES list a DTS decoder (here the dev set's 6ch
+/// row), PMS's `dca` 5.1 track direct-plays when MDE allows, and the profile the request carries
+/// names DTS in PMS's spelling. Before the canonicaliser the `dca` track never matched the `dts`
+/// the caps listed, so it always converted.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
+    use std::time::Duration;
+    let _caps = plx_platform::devcaps::caps_on_this_thread_for_test(plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    });
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(3, MDE_DIRECTPLAY, Duration::from_secs(3), false);
+    let sid = plx_plex::plex::register_for_test("dca-row", "127.0.0.1", port, "token", "dca-row-client");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    env.cached_item = Some(fourk_item(sid, vec![plx_data::metadata::Stream {
+        id: 29381,
+        index: 1,
+        lang_code: "eng".into(),
+        codec: "dca".into(),
+        channels: 6,
+        default: true,
+        selected: true,
+        ..Default::default()
+    }]));
+    let plan = build_stream(
+        &plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", "dca", &env,
+    );
+    let requests = rx.recv_timeout(Duration::from_secs(15)).expect("PMS never saw the resolve");
+    server.join().unwrap();
+    assert!(plan.url.contains("/library/parts/"), "dca on a DTS-row set must direct-play: {} / {requests:?}", plan.url);
+    let decision = requests.iter().find(|l| l.contains("/decision?")).expect("MDE was asked");
+    assert!(decision.contains("dca") && !decision.contains("dts"), "the profile names DTS as PMS does: {decision}");
+    plx_plex::plex::reset_servers_for_test();
+}

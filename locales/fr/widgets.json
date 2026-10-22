@@ -178,6 +178,8 @@
   "widgets.verdict.forced_unauthorized": "La lecture directe forcée est activée, et le serveur n’a pas autorisé la lecture du fichier d’origine.",
   "widgets.verdict.forced_open": "La lecture directe forcée est activée, et le fichier d’origine n’a pas pu être ouvert.",
   "widgets.verdict.forced_audio_conversion": "La lecture directe forcée est activée, et cette piste audio nécessite une conversion.",
+  "widgets.verdict.forced_audio_codec": "La lecture directe forcée est activée, et l’audio {codec} ne peut pas être lu sans conversion.",
+  "widgets.verdict.forced_audio_conversion_codec": "La lecture directe forcée est activée, et cette piste audio {codec} nécessite une conversion.",
   "widgets.quality.original": "Originale",
   "widgets.ass.start_failed": "Impossible de démarrer les sous-titres stylisés",
   "widgets.ass.invalid_file": "Ce fichier de sous-titres stylisés est invalide ou trop volumineux",

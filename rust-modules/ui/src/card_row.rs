@@ -1153,11 +1153,15 @@ pub fn draw_label(
     draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
-/// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
-/// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). The
-/// focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
-/// "<show> · 8m left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
-/// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
+/// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
+/// owner's 2026-10-22 call), Details Nothing included (`captions::deck_policy`); a
+/// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). An
+/// in-progress episode reads "S3 · E4 · 8m left" and a next-up episode (no resume point yet)
+/// "S2 · E1 · New episode"; a resumed movie reads just the time remaining. The episode's ADDRESS
+/// leads because the deck's poster is the show's own art and already names the show (the owner's
+/// call, 2026-10-22, replacing the Home Screen.dc "<show> · 8m left" wording); `title` above it
+/// carries the episode's own name, so the address never repeats it. An unnumbered episode (the
+/// server sent no index) still names its show: "Show · 8m left", "Show · New episode".
 ///
 /// "In progress" is `PmsMovie::resume_frac` — THE resume rule, which the caller applies when it
 /// fills [`TileFacts::resume`], and the same call `Grid::draw` makes for the BAR in the pass that
@@ -1169,25 +1173,30 @@ pub fn draw_label(
 /// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
 pub fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
+    use crate::caption_policy::join;
+    use plx_platform::i18n::msg;
     let show = m.show_title;
+    let is_episode = m.kind == TileKind::Episode;
+    let address = (is_episode && m.ep_index > 0)
+        .then(|| crate::fmt::episode_address(i64::from(m.season_index), i64::from(m.ep_index)));
     let s = if let Some(resume) = m.resume {
         let left = crate::fmt::time_left(resume.left_ms);
-        if m.kind == TileKind::Episode && !show.is_empty() {
-            format!("{show} \u{00b7} {left}")
-        } else {
-            left // a resumed movie: time-remaining alone
+        match address {
+            Some(a) => join(vec![a, left]),
+            None if is_episode && !show.is_empty() => join(vec![show.to_string(), left]),
+            None => Some(left), // a resumed movie: time-remaining alone
         }
-    } else if m.kind == TileKind::Episode {
+    } else if is_episode {
         // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
-        if show.is_empty() {
-            plx_platform::i18n::msg::widgets_card_new_episode().to_string()
-        } else {
-            plx_platform::i18n::msg::widgets_card_show_new_episode(show)
+        match address {
+            Some(a) => join(vec![a, msg::widgets_card_new_episode().to_string()]),
+            None if show.is_empty() => Some(msg::widgets_card_new_episode().to_string()),
+            None => Some(msg::widgets_card_show_new_episode(show)),
         }
     } else {
         return None;
     };
-    std::ffi::CString::new(s).ok()
+    std::ffi::CString::new(s?).ok()
 }
 
 // The under-tile metadata block's four metrics — the ONLY authority on its geometry, which
@@ -3023,7 +3032,7 @@ mod tests {
     }
 
     /// With no title the mark leads the details line, centred the same way; with no line at all
-    /// (Nothing) there is nothing to lead and no mark.
+    /// (a label with no lines) there is nothing to lead and no mark.
     #[test]
     fn the_play_mark_leads_the_details_line_when_there_is_no_title() {
         let _serial = plx_base::testlock::serial();

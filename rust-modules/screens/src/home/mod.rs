@@ -1457,6 +1457,13 @@ impl HomeScreen {
 
     /// The row whose label band is open (or opening) for `focus` — the focused card's row, `None`
     /// on a linked heading, and `fallback` (the row a hero→grid door would open) otherwise.
+    /// The band the shelf at `row` opens when focused (`None`, a linked heading focused, opens none):
+    /// the Continue Watching deck's is its own ([`shelf_policy`]).
+    fn band_open_at(&self, row: Option<usize>) -> f32 {
+        row.and_then(|row| self.rows.get(row)).map_or_else(|| band_open_of(false),
+            |hub| band_open_of(hub.identity == HomeHubIdentity::ContinueWatching))
+    }
+
     fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
         match self.focused_loc(focus) {
             Some(Located::Item(row, _)) => Some(row),
@@ -1486,7 +1493,7 @@ impl HomeScreen {
         let focused = self.focused_heading(focus) == Some(row);
         let y = match at {
             At::Drawn => heading_y(self.grid.base_y(row), self.grid.lift(row)),
-            At::SpringTarget => GRID_TOP_Y + shelf_top_banded(row, self.band_row(focus, row))
+            At::SpringTarget => GRID_TOP_Y + shelf_top_banded(row, self.band_row(focus, row), self.band_open_at(self.band_row(focus, row)))
                 - self.grid.scroll_target - TITLE_DY,
         };
         Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &m))
@@ -1516,9 +1523,8 @@ impl HomeScreen {
     }
 
     fn layout_grid(&mut self) {
-        let policy = Some(crate::registry::captions::policy());
-        for shelf in &mut self.grid.shelves {
-            shelf.set_caption_policy(policy);
+        for (shelf, hub) in self.grid.shelves.iter_mut().zip(&self.rows) {
+            shelf.set_caption_policy(Some(shelf_policy(hub.identity == HomeHubIdentity::ContinueWatching)));
         }
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
@@ -1584,7 +1590,7 @@ impl HomeScreen {
             }
         }
         if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len()) {
-            self.grid.scroll_target = rest_scroll(row, self.rows.len());
+            self.grid.scroll_target = rest_scroll(row, self.rows.len(), self.band_open_at(self.rows.len().checked_sub(1)));
         }
         self.grid
             .scroll_y
@@ -2586,7 +2592,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
         });
         let band_row = self.band_row(cx.focus.current, 0);
         for (row, projection) in self.rows.iter().enumerate() {
-            let top = GRID_TOP_Y + shelf_top_banded(row, band_row) - self.grid.scroll_target;
+            let top = GRID_TOP_Y + shelf_top_banded(row, band_row, self.band_open_at(band_row)) - self.grid.scroll_target;
             let linked = self.linked(row).is_some();
             if linked {
                 if let Some(rect) =
@@ -2621,7 +2627,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     MARGIN_X,
                     top + CARD_DY,
                     SCR_W - 2.0 * MARGIN_X,
-                    CARD_H + band_h(),
+                    CARD_H + band_h_of(projection.identity == HomeHubIdentity::ContinueWatching),
                 ),
                 len: projection.elems.len(),
                 elem: ElemKind::Card,
@@ -2738,7 +2744,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     .focused_grid(cx.focus.current)
                     .map(|(r, _)| r)
                     .unwrap_or(row);
-                let y = GRID_TOP_Y + shelf_top_settled(row, focus_row) - self.grid.scroll_target;
+                let y = GRID_TOP_Y + shelf_top_settled(row, focus_row, self.band_open_at(Some(focus_row))) - self.grid.scroll_target;
                 let base = Rect::new(
                     card_x(col, self.grid.scroll_x(row)),
                     y + CARD_DY,
@@ -3073,7 +3079,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                                 CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
                             shelf.restore_scroll(scroll, count);
                         }
-                        self.grid.scroll_target = rest_scroll(row, self.rows.len());
+                        self.grid.scroll_target = rest_scroll(row, self.rows.len(), self.band_open_at(self.rows.len().checked_sub(1)));
                         self.grid.scroll_y.jump(self.grid.scroll_target);
                     }
                     self.layout_grid();
@@ -3500,14 +3506,22 @@ fn col_at(x: f32, scroll: f32, count: usize) -> Option<usize> {
 fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
 }
-/// The focused shelf's caption band under the stored Under posters setting (0 / 80 / 112 px): the
-/// height every shelf here reserves, opens and reveals by (`Shelf::set_caption_policy`).
-fn band_h() -> f32 {
-    plx_ui::caption_policy::band_h(&crate::registry::captions::policy())
+/// The caption policy a shelf here follows: the stored Under posters setting, and for the Continue
+/// Watching deck (`deck`) its [`captions::deck_policy`](crate::registry::captions::deck_policy)
+/// (the progress line is always shown, so the deck's band keeps a line under Nothing).
+fn shelf_policy(deck: bool) -> plx_ui::caption_policy::CaptionPolicy {
+    let policy = crate::registry::captions::policy();
+    if deck { crate::registry::captions::deck_policy(&policy) } else { policy }
 }
-/// How far the focused band carries the rows below it down.
-fn band_open() -> f32 {
-    ui_cards::band_open_for(band_h())
+/// The focused shelf's caption band (0 / 80 / 112 px) under [`shelf_policy`]: the height the shelf
+/// reserves, opens and reveals by (`Shelf::set_caption_policy`).
+fn band_h_of(deck: bool) -> f32 {
+    plx_ui::caption_policy::band_h(&shelf_policy(deck))
+}
+/// How far the focused band carries the rows below it down: the band of the shelf holding focus
+/// (`deck` when it is the Continue Watching deck), per shelf and never per tile.
+fn band_open_of(deck: bool) -> f32 {
+    ui_cards::band_open_for(band_h_of(deck))
 }
 /// **The scroll a focused shelf RESTS at: the Library's rest rule** (`poster_grid::rest_scroll`,
 /// `ui_cards::grid_rest_scroll`): the shelf's top comes to `GRID_TOP_Y`, the first shelf's own
@@ -3521,21 +3535,23 @@ fn band_open() -> f32 {
 /// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest at
 /// the shelf's top. A rest that depends on the band and on the direction of the last move is not a
 /// rest a heading can be kept out of the chrome by.
-fn rest_scroll(row: usize, rows: usize) -> f32 {
-    ui_cards::grid_rest_scroll(row, ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED, 0.0, grid_max_scroll(rows))
+fn rest_scroll(row: usize, rows: usize, last_open: f32) -> f32 {
+    ui_cards::grid_rest_scroll(row, ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED, 0.0, grid_max_scroll(rows, last_open))
 }
-fn grid_max_scroll(rows: usize) -> f32 {
+/// The document's end, with `last_open` the band the LAST shelf opens when focused.
+fn grid_max_scroll(rows: usize, last_open: f32) -> f32 {
     let n = rows.max(1);
-    let h = ui_cards::settled_top_for(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED, band_open());
+    let h = ui_cards::settled_top_for(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED, last_open);
     (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
 }
-fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
-    shelf_top_banded(row, Some(focus_row))
+fn shelf_top_settled(row: usize, focus_row: usize, open: f32) -> f32 {
+    shelf_top_banded(row, Some(focus_row), open)
 }
 /// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
 /// holds focus, which opens no row's band.
-fn shelf_top_banded(row: usize, band_row: Option<usize>) -> f32 {
-    ui_cards::settled_top_for(row, band_row, ui_cards::ROW_PITCH_FIXED, band_open())
+/// `open` is the band the focused shelf opens ([`HomeScreen::band_open_at`]).
+fn shelf_top_banded(row: usize, band_row: Option<usize>, open: f32) -> f32 {
+    ui_cards::settled_top_for(row, band_row, ui_cards::ROW_PITCH_FIXED, open)
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {
