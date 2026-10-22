@@ -2011,12 +2011,14 @@ raster alone, each grading `expect.video_size` EXACTLY out of the `ff:` line rat
 floor — which is what stopped the item being answerable only as "pieces are covered", and which
 closed the `4k-h264` library gap on this tier (`8-bit-hevc` was already closed by
 `pipe_hevc_aac_mp4` and the gap list had not caught up; a generated clip closes neither gap's real
-half, which is a PMS DECISION on such an item). The same day added the one clip in
+half, which is a PMS DECISION on such an item). The same day added the first clip in
 either pack that is MEANT to run out (`pipe_finish_eos` and `pipe_replay_after_eos`, 20 s), which
 is #46 END TO END — the second of those restarts the finished stream through
 `/tmp/plxnative-replay[=N]`, a bounded counter re-arming `app.rs`'s one-shot autoplay latch, and
 grades the re-entry COUNT, a second `load:` line, a second fetch off the fixture server and a
-media position that falls and then climbs. Still
+media position that falls and then climbs. A second such clip followed for #865,
+`pipe_h264_ac3_audio_tail` (a film whose audio outlasts its picture, ended by the pipeline's own
+end-of-stream; `pipe_finish_audio_tail`). Still
 uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
 4096-wide edge and any refusal above it, a USER-driven replay (a Play control on a detail page is
 server-tier by construction), and the transcode INPUT space
