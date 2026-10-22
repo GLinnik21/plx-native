@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T13:04:19Z",
+ "generated": "2026-10-22T13:09:37Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -75,9 +75,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 170,
-   "n_prev": 254,
+   "n_prev": 253,
    "now": 375.0,
-   "prev7": 463.0,
+   "prev7": 463,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.5,
-   "change7_pct": -17.2,
+   "change30_pct": -51.6,
+   "change7_pct": -17.4,
    "d30": 682.5,
-   "delta30": -351.5,
-   "delta7": -69,
+   "delta30": -352.0,
+   "delta7": -69.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 117,
-   "now": 331,
+   "now": 330.5,
    "prev7": 400,
    "shown": true,
    "state": "better",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 99.6,
-   "change7_pct": 15.6,
+   "change30_pct": 100.0,
+   "change7_pct": 15.8,
    "d30": 128.0,
-   "delta30": 127.5,
-   "delta7": 34.5,
+   "delta30": 128.0,
+   "delta7": 35,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 107,
-   "now": 255.5,
+   "now": 256,
    "prev7": 221,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 187.9,
-   "change7_pct": 9.7,
+   "change30_pct": 186.5,
+   "change7_pct": 9.2,
    "d30": 70.5,
-   "delta30": 132.5,
-   "delta7": 18.0,
+   "delta30": 131.5,
+   "delta7": 17,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 107,
-   "now": 203.0,
+   "now": 202,
    "prev7": 185,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.9,
+   "change7_pct": 8.6,
    "d30": null,
    "delta30": null,
-   "delta7": 11.0,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 107,
-   "now": 151.0,
+   "now": 152,
    "prev7": 140,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 5.9,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 1.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 107,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 40.0,
    "commits": [
     {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
@@ -657,6 +652,11 @@
      "pr": 853,
      "sha": "a56ed21b7",
      "title": "Open a Plex title from another app's launch params"
+    },
+    {
+     "pr": 919,
+     "sha": "5b9979d61",
+     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
     }
    ],
    "from": 140,
@@ -670,11 +670,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
@@ -718,6 +713,11 @@
      "pr": 853,
      "sha": "a56ed21b7",
      "title": "Open a Plex title from another app's launch params"
+    },
+    {
+     "pr": 919,
+     "sha": "5b9979d61",
+     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
     }
    ],
    "from": 103.0,
@@ -731,11 +731,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
      "pr": 903,
      "sha": "acf1d2a36",
      "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
@@ -779,6 +774,11 @@
      "pr": 853,
      "sha": "a56ed21b7",
      "title": "Open a Plex title from another app's launch params"
+    },
+    {
+     "pr": 919,
+     "sha": "5b9979d61",
+     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
     }
    ],
    "from": 46.0,
@@ -819,7 +819,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 255.5
+   "now": 256
   }
  ],
  "slowest_local": [
