@@ -210,7 +210,7 @@ class BuildGcTests(unittest.TestCase):
         started = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):
             run_guarded(["sh", "-c", "sleep 3600 & echo $! > " + shlex.quote(str(pidfile)) + "; wait"],
-                        self.root, os.environ.copy(), timeout=2)
+                        self.root, os.environ.copy(), timeout=5)
         self.assertLess(time.monotonic() - started, 60)
         pid = int(pidfile.read_text())
         deadline = time.monotonic() + 10
