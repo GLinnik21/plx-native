@@ -75,7 +75,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -319,8 +319,10 @@ pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const
 /// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
 /// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
 const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
-static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_B: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static FONTS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_B: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
 static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
@@ -838,16 +840,15 @@ fn log_font_fallback_once() {
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = if bold != 0 {
-        &mut *addr_of_mut!(FONTS_B)
-    } else {
-        &mut *addr_of_mut!(FONTS)
-    };
-    if arr[sz].is_null() {
-        arr[sz] = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
-        if arr[sz].is_null() {
-            arr[sz] = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
-            if arr[sz].is_null() {
+    // Rendering is main-thread-only, so `Relaxed` is all the slot needs; it is an `AtomicPtr` so
+    // the table is not a `static mut` that every access reborrows through a raw pointer.
+    let slot = if bold != 0 { &FONTS_B[sz] } else { &FONTS[sz] };
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
+        f = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
+        if f.is_null() {
+            f = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
+            if f.is_null() {
                 // DroidSans is NOT an acceptable outcome, and it used to be an invisible one: the
                 // app booted looking plausible while every rung of the theme::size ladder rendered
                 // in a face the light-hinting/pixel-snapping contract was never tuned for — and
@@ -857,21 +858,23 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
                 // tools/font-hint-audit.py reads HOST files, so it structurally cannot catch this.
                 // Say so once, loudly, so it is a reportable bug rather than a mystery.
                 log_font_fallback_once();
-                arr[sz] = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
+                f = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
             }
-            if !arr[sz].is_null() && bold != 0 {
-                TTF_SetFontStyle(arr[sz], TTF_STYLE_BOLD);
+            if !f.is_null() && bold != 0 {
+                TTF_SetFontStyle(f, TTF_STYLE_BOLD);
             }
         }
-        if !arr[sz].is_null() {
+        if !f.is_null() {
             // Light hinting y-snaps strokes to the NEAREST pixel. Arial's own bytecode (default
             // NORMAL hinting) rounds horizontal bars UP — at bold 26 that draws 4px bars over
             // 3px stems, inverting the design's stem>bar weight — so every size token had to
             // dodge "unlucky" px values. Light keeps the whole theme::size scale design-true.
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        // A failed open stores null, so the next call retries.
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -914,9 +917,12 @@ const EMOJI_FONT: &str = "appfont-emoji.ttf";
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
-static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_EMOJI: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static FONTS_CJK: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_SYS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_EMOJI: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
 /// Per-link coverage, read from the file's cmap on FIRST NEED and never again. A slot holding
 /// `None` means the file is absent or unreadable, i.e. the link is empty.
 ///
@@ -995,23 +1001,25 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
         return font_at(sz, bold);
     }
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = match link {
-        Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
-        Link::Emoji => &mut *addr_of_mut!(FONTS_EMOJI),
-        _ => &mut *addr_of_mut!(FONTS_SYS),
+    let slot = match link {
+        Link::Cjk => &FONTS_CJK[sz],
+        Link::Emoji => &FONTS_EMOJI[sz],
+        _ => &FONTS_SYS[sz],
     };
-    if arr[sz].is_null() {
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
         let file = link_file(link);
         let Ok(c) = CString::new(file.into_os_string().into_encoded_bytes()) else {
             return std::ptr::null_mut();
         };
-        arr[sz] = TTF_OpenFont(c.as_ptr(), sz as c_int);
-        if !arr[sz].is_null() {
+        f = TTF_OpenFont(c.as_ptr(), sz as c_int);
+        if !f.is_null() {
             // The same light-hinting contract the base face is opened under (see `font_at`).
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 /// A string's split into single-face runs. Fixed capacity so the common path allocates nothing;

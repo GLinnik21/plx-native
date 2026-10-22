@@ -110,6 +110,8 @@ or `development`), the time of the panic (read and bounded as above), the same k
 webOS and hardware compatibility details (including the `probe` fact) that the fault fallback report carries, and
 the Crash report ID below. It carries none of the library details above.
 
+A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's
@@ -119,6 +121,15 @@ account, your television or anything about you, and it is never sent with produc
 Settings shows it while crash reports are on. Turning crash reports off, or signing out, deletes
 the local identifier; enabling them later creates a new one. Reports already sent keep the old
 identifier, so copy it down first if you intend to ask for their deletion.
+
+While crash reports are on, PlxNative also sends one small **session record** for each stretch of
+use, even when nothing crashed, so that crash-free sessions can be counted per release: the start
+time, its length, how it ended (exited, crashed or ended abnormally), a crash count, the Crash
+report ID, the app version and the build's `environment` label — no content, title, account or
+server. A session ends after 15 minutes without a key press while nothing is playing, when the app
+goes to the background, or after 4 hours. Its start and last activity time are kept on this
+television until it ends, so a crash can be attributed on the next launch; turning crash reports
+off, or signing out, deletes that and any record waiting to be sent.
 
 The same independent choice also covers a handled playback-error report when playback reaches its
 explicit terminal error screen, or when a trailer preview behind a detail page fails. That report contains a fixed failure kind, delivery and quality
@@ -228,10 +239,14 @@ automatically.
 ## Optional product analytics
 
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
-PlxNative sends typed screen and feature events and broad sign-in and playback outcome classes to
-PostHog in Germany. Reports carry a random Analytics ID created when you turn product analytics on
-and may include the app version, webOS version, television model and SoC, and whether the selected
-server is local, remote or relayed. Turning product analytics off, or signing out, deletes the
+PlxNative sends typed screen and feature events, broad sign-in and playback outcome classes and,
+when you leave a screen, broad classes of how smoothly the app ran on it (`route.left`: late
+frames, frozen frames, the app not responding, a remote key pressed repeatedly with nothing
+happening) to PostHog in Germany. The last is performance data about the app, never what you
+watched or searched for, and it carries no counts, durations or key names, only the classes below.
+Reports carry a random Analytics ID created when you turn product analytics on and may include the
+app version, webOS version, television model and SoC, and whether the selected server is local,
+remote or relayed. Turning product analytics off, or signing out, deletes the
 local identifier; enabling it later creates a new one.
 
 Signing in happens before this choice is asked. The sign-in events from before your answer
@@ -253,7 +268,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `device_model` | the LG model/platform class reported by nyx |
 | `soc` | the SoC/board class reported by nyx or, when nyx names none, the leading board-family token (at most eight lowercase letters and digits, such as `k5lp`) of the television's machine name |
 | `hardware_revision` | the hardware revision class reported by nyx |
-| `server_connection` | `local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no one server, such as `app.launch`, `route.entered` or a `signin.*` event |
+| `server_connection` | `local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no one server, such as `app.launch`, `route.entered`, `route.left` or a `signin.*` event |
 | `ip_version` | `v4` / `v6` / `unknown` — omitted entirely on an event with no one server, same as `server_connection` |
 | `rtkmem` | `ok` / `missing` / `n/a` — the k5lp/k3lp `/dev/rtkmem` jail pre-flight |
 | `install` | `devmode` / `homebrew` / `unknown` — never the install path |
@@ -262,6 +277,7 @@ Every product analytics event also carries this bounded compatibility and connec
 |---|---|
 | `app.launch` | *(none)* |
 | `route.entered` | `screen` — one of a fixed list of screen names |
+| `route.left` | `screen` — one of a fixed list of screen names; `slow_frames` — the share of presented frames that missed a refresh: `0` / `<1%` / `1-5%` / `5-20%` / `20%+` — never a count; `frozen_frames` — frames over 700 ms: `0` / `1` / `2-3` / `4+`; `hang` — seconds per hour the app did not respond for over 250 ms: `0` / `<1` / `1-10` / `10+` — never the interval; `dead_presses` — times one remote key was pressed four times in a second with nothing happening: `0` / `1` / `2+` — never which key |
 | `signin.completed` | *(none)* |
 | `signin.started` | *(none)* |
 | `signin.failed` | `kind` — `pin_create` / `authorization` / `discovery` / `other` |

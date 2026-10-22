@@ -288,5 +288,76 @@ class DocumentTest(unittest.TestCase):
             self.assertEqual(json.loads(first)["metrics"][0]["state"], "worse")
 
 
+def flake(days_ago, test="plx_ui::a", job="host unit tests (default features)", run=None, hours=0):
+    n = run or next(_ids)
+    return {"run": n, "at": stamp(NOW - timedelta(days=days_ago, hours=-hours)), "sha": f"{n:09x}", "pr": None,
+            "job": job, "test": test, "fail": [1], "pass": [2]}
+
+
+class FlakyTest(unittest.TestCase):
+    """The flaky list: lifecycle (Active, Quarantined, Fixed by the 30-day rule), count, first and last seen, `new`."""
+
+    def listed(self, events, quarantined=()):
+        return s.summarize({"ci": [], "flaky": events}, None, NOW, set(quarantined))["flaky"]
+
+    def test_a_summary_without_flaky_events_has_an_empty_list(self):
+        self.assertEqual(s.summarize({"ci": []}, None, NOW)["flaky"], [])
+
+    def test_one_entry_per_job_and_test_with_first_last_and_the_number_of_runs(self):
+        a, b, c = flake(20), flake(5), flake(2, test="plx_ui::b")
+        other_job = flake(1, job="host unit tests (hostsim)")
+        out = self.listed([c, a, b, other_job])
+        self.assertEqual([(f["test"], f["job"], f["count"]) for f in out],
+                         [("plx_ui::a", "host unit tests (hostsim)", 1), ("plx_ui::b", "host unit tests (default features)", 1),
+                          ("plx_ui::a", "host unit tests (default features)", 2)])
+        both = next(f for f in out if f["test"] == "plx_ui::a" and "default" in f["job"])
+        self.assertEqual((both["first_seen"], both["last_seen"], both["last"]["run"]), (a["at"], b["at"], b["run"]))
+
+    def test_two_events_of_one_run_count_once(self):
+        a = flake(3, run=77)
+        self.assertEqual(self.listed([a, {**a, "test": "plx_ui::a"}])[0]["count"], 1)
+
+    def test_the_thirty_day_rule_and_quarantine(self):
+        out = {f["test"]: f["status"] for f in self.listed(
+            [flake(29, test="recent"), flake(31, test="old"), flake(60, test="listed"), flake(1, test="listed2")], ["listed", "listed2"])}
+        self.assertEqual(out, {"recent": "Active", "old": "Fixed", "listed": "Quarantined", "listed2": "Quarantined"})
+
+    def test_active_first_then_newest_and_fixed_last(self):
+        out = self.listed([flake(40, test="fixed"), flake(9, test="older"), flake(1, test="newer"), flake(3, test="parked")], ["parked"])
+        self.assertEqual([f["test"] for f in out], ["newer", "older", "parked", "fixed"])
+
+    def test_a_test_first_seen_in_the_last_day_is_new_unless_it_is_fixed_or_older(self):
+        out = {f["test"]: f["new"] for f in self.listed(
+            [flake(0, hours=-1, test="fresh"), flake(3, test="old"), flake(3, test="again"), flake(0, hours=-2, test="again")])}
+        self.assertEqual(out, {"fresh": True, "old": False, "again": False})
+
+    def test_the_quarantine_file_is_read_with_its_count_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, "flaky.txt")
+            path.write_text("# count: 2\n# comment\nplx_ui::a\t#12 timeout\n\nplx_base::b\t#13\n")
+            self.assertEqual(s.load_quarantine(str(path)), {"plx_ui::a", "plx_base::b"})
+            path.write_text("# count: 1\nplx_ui::a\tx\nplx_base::b\ty\n")
+            with self.assertRaises(ValueError):
+                s.load_quarantine(str(path))
+            self.assertEqual(s.load_quarantine(str(Path(d, "missing.txt"))), set())
+            self.assertEqual(s.load_quarantine(None), set())
+
+    def test_the_quarantine_list_in_the_repository_is_well_formed_and_only_names_tests(self):
+        path = Path(__file__).resolve().parents[1] / "ci" / "flaky.txt"
+        entries = s.load_quarantine(str(path))
+        self.assertTrue(path.read_text().startswith("# count: "))
+        for name in entries:
+            self.assertRegex(name, r"^[A-Za-z0-9_]+(::[A-Za-z0-9_]+)+$")
+
+    def test_main_passes_the_quarantine_to_the_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            hist, quar, out = Path(d, "h.json"), Path(d, "q.txt"), Path(d, "o.json")
+            hist.write_text(json.dumps({"ci": [], "flaky": [flake(1, test="plx_ui::a")]}))
+            quar.write_text("# count: 1\nplx_ui::a\t#1\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(s.main(["--history", str(hist), "--quarantine", str(quar), "--out", str(out), "--now", stamp(NOW)]), 0)
+            self.assertEqual([f["status"] for f in json.loads(out.read_text())["flaky"]], ["Quarantined"])
+
+
 if __name__ == "__main__":
     unittest.main()

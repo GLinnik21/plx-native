@@ -25,6 +25,7 @@ Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock r
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -589,7 +590,7 @@ class BuildBenchWorkflow(unittest.TestCase):
         # a leg that left no document records nothing, rather than a day without half its rows
         self.assertIn("left no document: nothing recorded", publish)
         self.assertRegex(publish, r"python3 \.\./tools/build-history\.py")
-        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --out ci-summary\.json")
+        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --quarantine \.\./ci/flaky\.txt --out ci-summary\.json")
 
     def test_measurements_do_not_overlap_and_a_lost_push_race_is_retried(self):
         body = code(self.NAME)
@@ -1016,6 +1017,40 @@ class SiteVideoRelease(unittest.TestCase):
         # `publish` is the job that creates the release; the hook must come after it, never gate it
         self.assertNotIn("site-video", job_body("release.yml", "publish"))
         self.assertNotIn("site-video", job_body("release.yml", "build"))
+
+
+class PerTestResults(unittest.TestCase):
+    """The flaky-test pipeline (tools/ci-test-results.py -> artifact -> tools/ci-history.py -> tools/ci-summary.py).
+    Every link of it is silent when it breaks: a job that stops uploading, an artifact name the collector no
+    longer matches, or a summary that stops reading the quarantine list just leaves the page empty."""
+
+    JOBS = {"host-unit-default": "host unit tests (default features)", "host-unit-hostsim": "host unit tests (hostsim)"}
+
+    def test_both_host_unit_jobs_record_and_upload_their_results_under_a_name_the_collector_reads(self):
+        history = importlib.util.spec_from_file_location("ci_history", ROOT / "tools/ci-history.py")
+        module = importlib.util.module_from_spec(history)
+        history.loader.exec_module(module)
+        for job, name in self.JOBS.items():
+            body = job_body("ci.yml", job)
+            self.assertIn(f"name: {name}", body, "the job renamed: the page's job label must follow")
+            self.assertIn(f'--job "{name}"', body)
+            self.assertIn('--log "$RUNNER_TEMP/make-check.log"', body)
+            m = re.search(r"name: (test-results-[a-z-]+-)\$\{\{ github\.run_attempt \}\}", body)
+            self.assertTrue(m, f"{job} must upload test-results-<slug>-<run_attempt>")
+            self.assertRegex(m.group(1) + "1", module.RESULTS_ARTIFACT.pattern)
+            # a red job is the one whose results matter, and a job that died before `make` has no log to read
+            step = body[body.index("Record the per-test results"):]
+            self.assertIn("if: always()", step)
+            self.assertIn("if-no-files-found: ignore", body)
+
+    def test_the_collector_reads_the_quarantine_list_from_main_in_both_writers_of_the_summary(self):
+        metrics = code("ci-metrics.yml")
+        self.assertIn("ci/flaky.txt", metrics)
+        self.assertIn("--quarantine ci/flaky.txt", metrics)
+        self.assertIn("ci/flaky.txt", code("build-bench.yml"))
+        # artifacts are listed through the same token that lists the jobs: no new permission
+        self.assertRegex(metrics, r"(?m)^      actions: read ")
+        self.assertNotIn("actions: write", metrics)
 
 
 if __name__ == "__main__":

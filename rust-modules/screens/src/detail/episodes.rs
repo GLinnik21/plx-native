@@ -313,6 +313,12 @@ fn cell_rect(x: f32) -> Rect {
     Rect::new(x, 0.0, W, H)
 }
 
+/// The strip, as the PAGE pass draws it. `scale` is each cell's pop spring and `dip` the press
+/// machine's factor for its still (`PressRead::dip_of`; `1.0` for every cell but the pressed one),
+/// so a press dips the page's own copy as it dips a card. `left_out` names the cell a surface lifts
+/// out of the dim (`DrawFrame::leaves_out`): the page draws NOTHING of it, still or label plate,
+/// because the opener lift ([`draw_focused`]) is its only copy.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     p: Painter,
     d: &Detail,
@@ -320,6 +326,8 @@ pub fn draw(
     scroll: f32,
     focused: Option<(usize, Row)>,
     scale: impl Fn(usize) -> f32,
+    dip: impl Fn(usize) -> f32,
+    left_out: impl Fn(usize) -> bool,
     lift: impl Fn(usize) -> TextLift,
     measure: &dyn plx_machine::machine::Measure,
     meta: plx_data::metadata::MetadataView<'_>,
@@ -344,7 +352,10 @@ pub fn draw(
             plx_ui::placeholder::skeleton(p, plx_ui::placeholder::Reason::CardSkeleton, "", cell_rect(x), CARD_RADIUS);
             continue;
         };
-        draw_cell(p, d, i, ep, focused, scale(i), &lift(i), cap_top, measure);
+        if left_out(i) {
+            continue;
+        }
+        draw_cell(p, d, i, ep, focused, scale(i), dip(i), &lift(i), cap_top, measure);
         if reloading {
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::StaleEpisodes, &ep.rk);
             plx_ui::placeholder::stale_cover(p, cell_rect(x), CARD_RADIUS);
@@ -361,6 +372,7 @@ pub fn draw_focused(
     top: f32,
     scroll: f32,
     scale: f32,
+    dip: f32,
     lift: &TextLift,
     measure: &dyn plx_machine::machine::Measure,
     meta: plx_data::metadata::MetadataView<'_>,
@@ -382,6 +394,7 @@ pub fn draw_focused(
         episode,
         Some((index, row)),
         scale,
+        dip,
         lift,
         kicker_cap_top(),
         measure,
@@ -392,9 +405,11 @@ pub fn draw_focused(
     }
 }
 
-/// One filmstrip cell. `scale` is the still's pop spring; `lift` is the label block's own focus
-/// state (earned by the TEXT stop alone). The block's plate shows for either stop, at whichever of
-/// the two is further along.
+/// One filmstrip cell. `scale` is the still's pop spring and `dip` the press's factor on top of it
+/// (the still is drawn at `scale * dip`; the pop that earns the label plate follows the spring
+/// alone, as a card's does, so a press does not blink the plate out); `lift` is the label block's
+/// own focus state (earned by the TEXT stop alone). The block's plate shows for either stop, at
+/// whichever of the two is further along.
 #[allow(clippy::too_many_arguments)]
 fn draw_cell(
     p: Painter,
@@ -403,6 +418,7 @@ fn draw_cell(
     ep: &Episode,
     focused: Option<(usize, Row)>,
     scale: f32,
+    dip: f32,
     lift: &TextLift,
     kicker_cap_top: f32,
     measure: &dyn plx_machine::machine::Measure,
@@ -413,7 +429,8 @@ fn draw_cell(
     // A cell is drawn at its spring's scale for as long as the spring is off rest: the pop factor is
     // exactly 0.0 only at rest (a released cell lands there, `Cells::step`), so no threshold of its own.
     let focused_here = still_focused || pop > 0.0;
-    let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
+    let drawn_scale = scale * dip;
+    let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * widgets::pop_factor(drawn_scale, theme::EP_CARD_FOCUS_SCALE), W, H);
     #[cfg(feature = "devtriggers")]
     plx_ui::card_probe::begin_card();
     widgets::draw_card_peaked(
@@ -424,11 +441,11 @@ fn draw_cell(
         (640, 360),
         CARD_RADIUS,
         focused_here,
-        scale,
+        drawn_scale,
         theme::EP_CARD_FOCUS_SCALE,
     );
     let drawn = if focused_here {
-        card.scaled(scale)
+        card.scaled(drawn_scale)
     } else {
         card
     };
@@ -649,7 +666,7 @@ mod tests {
         let d = Detail::default();
         let ep = Episode { dur_ms: 100, ..Default::default() };
         plx_ui::draw_census::capture(|| {
-            draw_cell(Painter::recording(), &d, 0, &ep, None, scale, lift, kicker_cap_top(), &measure)
+            draw_cell(Painter::recording(), &d, 0, &ep, None, scale, 1.0, lift, kicker_cap_top(), &measure)
         })
     }
 
@@ -658,7 +675,7 @@ mod tests {
         let measure = plx_ui::fixture::FixtureMeasure;
         let d = Detail::default();
         plx_ui::draw_census::capture_text(|| {
-            draw_cell(Painter::recording(), &d, 0, ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+            draw_cell(Painter::recording(), &d, 0, ep, None, 1.0, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
         })
         .into_iter()
         .map(|(text, _)| text)
@@ -840,7 +857,7 @@ mod tests {
         let platter_bottom = text_top + (bottom - META_BOTTOM_PAD) + PLATTER_PAD;
         let d = Detail::default();
         let runs = plx_ui::draw_census::capture_runs(|| {
-            draw_cell(Painter::recording(), &d, 0, &ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+            draw_cell(Painter::recording(), &d, 0, &ep, None, 1.0, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
         });
         let chip = runs.iter().find(|r| r.text == "TV-14").expect("the rating chip is drawn");
         assert!(chip.at.y + theme::size::MICRO as f32 <= platter_bottom + 0.5, "chip run at {} + MICRO past platter bottom {platter_bottom}", chip.at.y);

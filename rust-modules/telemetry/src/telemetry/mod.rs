@@ -34,6 +34,7 @@ pub mod posthog;
 pub mod queue;
 pub mod sender;
 pub mod sentry;
+pub mod session;
 pub mod spool;
 pub mod transition;
 
@@ -134,7 +135,10 @@ pub fn activate_initial(c: Consent) -> native::Guard {
     // `holding 5 records` directly above `net: bound libcurl`.
     // The native daemon's envelopes and the local C/panic log are recovered together: the two may
     // describe the same death, and pairing them keeps it one Sentry event — the more useful one.
-    crashreport::recover_pending();
+    let crashes_found = crashreport::recover_pending();
+    // The previous process's open release-health session is reported now that this boot knows
+    // whether it died of a crash, and this process's own begins.
+    session::recover_and_start(crashes_found);
     // The SDK capture backend starts only after consent is published and old fallback records are
     // safely queued. Its guard lives for the whole app and restores the C tracer on clean exit.
     native::sync(&c)
@@ -364,7 +368,11 @@ fn process_records(
     let mut retired = Vec::new();
     let mut retry: Option<u64> = None;
     'destinations: for dest in [queue::Dest::Sentry, queue::Dest::PostHog] {
-        for r in all.iter().filter(|r| r.dest == dest) {
+        // A release-health session goes after the crash reports of its lane: a `429` on one holds the
+        // lane, and it must not be what holds a crash report back.
+        let mut lane: Vec<&queue::Record> = all.iter().filter(|r| r.dest == dest).collect();
+        lane.sort_by_key(|r| session::is_session_body(&r.body) && dest == queue::Dest::Sentry);
+        for r in lane.iter().copied() {
             // Never carry an old consent snapshot through a withdrawal, a sign-out or a quick
             // off→on cycle. A request that already passed this check may finish because the socket
             // API has no cancellation; PRIVACY.md ("Your choices") states that narrow in-flight
@@ -393,7 +401,7 @@ fn process_records(
                 (sender::Verdict::Keep, hold) => {
                     let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
                     retry = Some(retry.map_or(s, |old| old.min(s)));
-                    for held in all.iter().filter(|h| h.dest == dest).skip_while(|h| h.event_id != r.event_id) {
+                    for held in lane.iter().copied().skip_while(|h| h.event_id != r.event_id) {
                         delivery::settle(&held.event_id, delivery::DeliveryState::Held);
                     }
                     break;
@@ -474,6 +482,33 @@ mod tests {
         assert_eq!(attempted, vec!["s1", "p1"]);
         assert_eq!(retired, vec!["p1"]);
         assert_eq!(retry, Some(7));
+    }
+
+    /// A 429 on a release-health session must not hold the crash reports behind it: the Sentry
+    /// lane tries crash reports first.
+    #[test]
+    fn a_held_session_record_does_not_hold_the_crash_reports_behind_it() {
+        let record = |id: &str, body: &[u8]| queue::Record {
+            category: queue::Category::Errors,
+            dest: queue::Dest::Sentry,
+            event_id: id.into(),
+            body: body.to_vec(),
+        };
+        let all = vec![
+            record("sess", br#"{"attrs":{"release":"r"},"did":"d","sid":"s","started":"t"}"#),
+            record("crash", br#"{"event_id":"c","level":"fatal"}"#),
+        ];
+        let c = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let (retired, retry) = process_records(&all, &c, || true, |r| {
+            if r.event_id == "sess" { (sender::Verdict::Keep, Some(60)) } else { (sender::Verdict::Done, None) }
+        });
+        assert_eq!(retired, vec!["crash"]);
+        assert_eq!(retry, Some(60));
     }
 
     fn watched_record(id: &str, category: queue::Category) -> queue::Record {

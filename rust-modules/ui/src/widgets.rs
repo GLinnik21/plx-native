@@ -5995,7 +5995,7 @@ impl TabStrip {
                 // for a TRACKED pill or the selection plate — see the call sites' own comments for
                 // why each of those stays flat.
                 if cast {
-                    control_cast(p, r, h * 0.5);
+                    control_cast_at(p, r, h * 0.5, a);
                 }
                 match rim {
                     // On a GLASS track the selection plate is a piece of the same material, not a
@@ -8186,17 +8186,27 @@ fn face_box(r: Rect) -> Rect {
 /// "the remote is here" over a ground nobody chose — the measured case is an `ACCENT` capsule over
 /// a white frame at ~1.2:1 — and the design's answer is [`theme::CONTROL_CAST_FOCUS`], two stops of
 /// black under the focused face only. Drawn to the stadium radius rather than to the solved
-/// capsule: at a 32px blur the half pixel between the two outlines is far below anything the
-/// penumbra resolves.
+/// capsule: the half pixel between the two outlines falls inside the shadow's cut, whose edge is a
+/// coverage ramp about a pixel wide (`fs_shadow.frag`'s `CUT_AA`), so the face's blended outline
+/// meets a partial shadow there and no hard, aliased strip.
 fn control_cast(p: Painter, r: Rect, rad: f32) {
     control_cast_at(p, r, rad, 1.0);
 }
 
-/// [`control_cast`] at focus progress `t` (see [`ControlStyle::face_at`]): the lift's shadow rides
-/// the same spring as the fill it lifts, so it is not a step either.
+/// [`control_cast`] at focus progress `t` (see [`ControlStyle::face_at`]). Two rules, so the cast
+/// never outstays or shows through the face it lifts:
+///
+/// * it is drawn OUTSIDE the face's outline only ([`Painter::shadow_outside`]), because a fading
+///   face is translucent and an interior-painting shadow would show through it as a dark pill;
+/// * its strength is a smoothstep of `t` over `[0.5, 1]`, so it is whole at rest, gone by the time
+///   the face is half faded, and still continuous (a face that reads as gone must not keep a halo).
 fn control_cast_at(p: Painter, r: Rect, rad: f32, t: f32) {
+    let k = crate::xfade::smooth((t - 0.5) * 2.0);
+    if k <= 0.0 {
+        return;
+    }
     for (dy, blur, a) in theme::CONTROL_CAST_FOCUS {
-        p.shadow(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a * t));
+        p.shadow_outside(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a * k));
     }
 }
 
@@ -8537,8 +8547,9 @@ impl Button {
                 face.top,
             );
         } else {
-            // FOCUS is an elevation as well as a fill — see `control_cast`. Under the face, so the
-            // near-opaque focused plate covers everything the shadow's own interior cut leaves.
+            // FOCUS is an elevation as well as a fill — see `control_cast`. Drawn before the face
+            // for draw order only: `control_cast_at` is outside-only, so nothing of it lies under
+            // the plate, even while the plate fades.
             if self.focused {
                 control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }

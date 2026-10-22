@@ -339,6 +339,148 @@ static void maps_cases(void) {
     }
 }
 
+/* ---- the FREEZE probe ----------------------------------------------------------------------
+ *
+ * A freeze is the one record whose subject LIVES: the handler must write and RETURN. So each case
+ * asserts the half no log shows — that the process carried on afterwards (exit status 23, not a
+ * signal death) — and then the record. Off `__arm__` the interrupted context is not read, so the
+ * header carries `pc=0x0 lr=0x0` and no `frames:` line; the frame walk itself is graded on a
+ * synthetic stack by `ci/crashfmt-test.c`, and the live walk only on a television. */
+/* Rust's probe number, which the Rust watchdog (`plx_base::task::watchdog`) exports and stores
+ * right before it signals. The tracer only reads it, so the test stands in for that owner. */
+volatile unsigned int plx_freeze_seq;
+
+/* `mode`: 0 = armed probes numbered 10, 11, ...; 1 = stray signals that arm nothing; 2 = armed
+ * probes with SIGUSR2 inherited as SIG_IGN, as from a parent that ignored it. */
+static int freeze_child(const char *path, int raises, int mode) {
+    pid_t pid = fork();
+    if (pid < 0) { fail("fork", strerror(errno)); return -1; }
+    if (pid == 0) {
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+        if (mode == 2) signal(SIGUSR2, SIG_IGN);
+        plx_crash_install(fd, fd);
+        for (int i = 0; i < raises; i++) {
+            if (mode != 1) plx_freeze_seq = 10 + (unsigned)i;
+            raise(SIGUSR2);
+        }
+        /* Still alive: say so with a status no signal death can produce. */
+        _exit(23);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) { /* EINTR */ }
+    return status;
+}
+
+static void freeze_cases(void) {
+    char path[256];
+    snprintf(path, sizeof path, "/tmp/plx-crashtrace-freeze-%d.log", (int)getpid());
+    unlink(path);
+
+    int status = freeze_child(path, 2, 0);
+    expect("freeze: the process survives the probe", WIFEXITED(status) && WEXITSTATUS(status) == 23,
+           "the child did not run on to its own exit — the handler killed it or never returned");
+    size_t len = 0;
+    const char *log = slurp(path, &len);
+    /* BOTH sinks are the one file here, so every line appears twice. */
+    expect("freeze: first record written", count(log, "*** FREEZE seq=10 pc=0x") == 2,
+           "no seq=10 header: the record must carry Rust's number, not a count of its own");
+    expect("freeze: second record is seq=11", count(log, "*** FREEZE seq=11 pc=0x") == 2, "no seq=11 header");
+    expect("freeze: a time line follows", count(log, "\ntime: ") >= 4, "no time: lines");
+    expect("freeze: it is not a fault record", count(log, "*** SIGNAL") == 0,
+           "a freeze wrote a SIGNAL header, which every fault parser would take for a death");
+    unlink(path);
+
+    /* The backstop: a storm of probes writes at most PLX_MAX_FREEZE_RECORDS records. */
+    /* A SIGUSR2 from this process that Rust did not arm is not a probe: no record. */
+    status = freeze_child(path, 3, 1);
+    expect("freeze: a stray signal does not kill the process", WIFEXITED(status) && WEXITSTATUS(status) == 23,
+           "the child died");
+    log = slurp(path, &len);
+    expect("freeze: a signal with no armed probe writes nothing", count(log, "*** FREEZE") == 0,
+           "an unarmed SIGUSR2 produced a record, so the record numbers can drift from Rust's");
+    unlink(path);
+
+    /* An inherited SIG_IGN is replaced, as SIG_DFL is: the probe is answered. */
+    status = freeze_child(path, 1, 2);
+    expect("freeze: an inherited SIG_IGN does not kill the process", WIFEXITED(status) && WEXITSTATUS(status) == 23,
+           "the child died");
+    log = slurp(path, &len);
+    expect("freeze: an inherited SIG_IGN is installed over", count(log, "*** FREEZE seq=10 pc=0x") == 2,
+           "the tracer left an inherited SIG_IGN in place, so a freeze goes unrecorded");
+    unlink(path);
+
+    status = freeze_child(path, PLX_MAX_FREEZE_RECORDS + 4, 0);
+    expect("freeze: a storm of probes does not kill the process",
+           WIFEXITED(status) && WEXITSTATUS(status) == 23, "the child died");
+    log = slurp(path, &len);
+    expect("freeze: the record count is capped", count(log, "*** FREEZE seq=") == 2 * PLX_MAX_FREEZE_RECORDS,
+           "more (or fewer) records than the cap allows");
+    unlink(path);
+
+#ifdef __linux__
+    /* A probe from ANOTHER process is not ours to answer: `si_pid` is the parent's, not the
+     * child's own. The parent signals the child once it reports being installed. */
+    {
+        int ready[2];
+        if (pipe(ready) != 0) { fail("pipe", strerror(errno)); return; }
+        pid_t pid = fork();
+        if (pid == 0) {
+            int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+            plx_crash_install(fd, fd);
+            char c = 1;
+            if (write(ready[1], &c, 1) != 1) _exit(99);
+            struct timespec ts = { 0, 300 * 1000 * 1000 };
+            nanosleep(&ts, NULL);   /* EINTR is fine: either way the wait is over */
+            _exit(23);
+        }
+        char c;
+        if (read(ready[0], &c, 1) != 1) fail("freeze: stray", "child never installed");
+        kill(pid, SIGUSR2);
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0) { /* EINTR */ }
+        log = slurp(path, &len);
+        expect("freeze: a signal from another process is ignored", count(log, "*** FREEZE") == 0,
+               "a foreign SIGUSR2 produced a freeze record");
+        expect("freeze: and does not kill the process", WIFEXITED(st) && WEXITSTATUS(st) == 23, "the child died");
+        close(ready[0]);
+        close(ready[1]);
+        unlink(path);
+    }
+#endif
+}
+
+/* The multi-address `at:` scan a freeze uses: every mapping holding ANY of pc, lr or a walked
+ * frame is named, and a mapping holding none is silent. */
+static void freeze_maps_cases(void) {
+    char maps[256], sink[256];
+    snprintf(maps, sizeof maps, "/tmp/plx-crashtrace-fmaps-%d", (int)getpid());
+    snprintf(sink, sizeof sink, "/tmp/plx-crashtrace-fsink-%d", (int)getpid());
+    char a[512], b[512], c[512], all[2048];
+    map_line(a, sizeof a, "00010000", "0097f000", OURS, 0);
+    map_line(b, sizeof b, "b5000000", "b5240000", "other/libone.so", 0);
+    map_line(c, sizeof c, "b6000000", "b6100000", "other/libtwo.so", 0);
+    snprintf(all, sizeof all, "%s%s%s", a, b, c);
+    int mf = open(maps, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    (void)!write(mf, all, strlen(all));
+    close(mf);
+    int sf = open(sink, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0600);
+    plx_crash_install(sf, -1);
+    /* pc in neither, lr in libone, one walked frame in libtwo: both libraries and not ours. The
+     * binary's `bin:` line is still written (it is the load base), without an `at:`. */
+    const unsigned long addrs[3] = { 0x1000UL, 0xb5100000UL, 0xb6050000UL };
+    plx_freeze_scan_maps_file(maps, addrs, 3);
+    close(sf);
+    size_t len = 0;
+    const char *got = slurp(sink, &len);
+    expect("freeze maps: one at: per mapping holding an address", count(got, "at: ") == 2,
+           "expected libone and libtwo, and not the binary");
+    expect("freeze maps: the walked frame's library is named", strstr(got, "libtwo.so") != NULL,
+           "a frame beyond pc/lr was not attributed to its module");
+    expect("freeze maps: the binary's bin: line is kept", count(got, "bin: ") == 1, "no bin: line");
+    unlink(maps);
+    unlink(sink);
+}
+
 int main(void) {
     /* A genuine memory fault first: it is the only case that exercises the kernel-raised path, a
      * real faulting PC and a real si_addr. */
@@ -357,6 +499,10 @@ int main(void) {
     /* …and then the maps scan, which the crashes above cannot reach on a host with no /proc. */
     maps_cases();
 
+    /* The freeze probe: a record, and a process that lives. */
+    freeze_cases();
+    freeze_maps_cases();
+
     if (failures) {
         fprintf(stderr, "crashtrace: %d assertion(s) failed\n", failures);
         return 1;
@@ -372,7 +518,7 @@ int main(void) {
 #else
     const char *live = "live maps scan SKIPPED (no fault context off __arm__)";
 #endif
-    printf("crashtrace: ok (7 deliberate crashes re-raised; maps scan graded against fixtures; %s)\n",
+    printf("crashtrace: ok (7 deliberate crashes re-raised; freeze probe survived and recorded; maps scan graded against fixtures; %s)\n",
            live);
     return 0;
 }

@@ -15,7 +15,7 @@ pub(crate) use plx_media::player::lifecycle::{
     poll_foreground_flight, poll_foreground_load, resume_if_paused, set_paused,
     set_transport_paused, transport_target, viewer_paused, FlightLanding, ForegroundActivation,
     ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
-    ForegroundLoadStatus,
+    ForegroundLoadStatus, Successor,
 };
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
 // them would be an unused import.

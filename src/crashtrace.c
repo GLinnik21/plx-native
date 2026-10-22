@@ -109,24 +109,41 @@ static void s_write(int fd, const char *p, size_t n) {
     }
 }
 
+/* Static, because signal context has no business allocating and the stack is the one resource a
+ * SIGSEGV may have just exhausted.
+ *
+ * **Two sets, one per handler.** The fatal handler and the freeze probe's handler can both be in
+ * flight at once: a freeze record is being written on the main thread while another thread
+ * crashes. Sharing one set would let the crash's lines interleave with, or be clobbered by, the
+ * freeze's, and the crash is the record that must be whole. */
+struct bufs {
+    char chunk[4096];
+    char line[512];
+    char rec[1024];
+};
+static struct bufs crash_bufs;
+static struct bufs freeze_bufs;
+
+/* Set on entry to the fatal handler and never cleared: the process is dying. The freeze probe
+ * checks it before every line it writes, because a probe interrupting a thread while ANOTHER
+ * thread crashes must not put its lines into the middle of the crash's record. */
+static volatile sig_atomic_t crashing;
+
 /* Both sinks get every line, so the two logs tell the same story: the event log is where the rest
- * of the session is, and the crash log is the half that survives the relaunch. */
+ * of the session is, and the crash log is the half that survives the relaunch. A freeze line
+ * (written from the freeze buffers) is dropped once a crash has begun. */
 static void emit(const struct plx_sbuf *b) {
+    if (crashing && b->p == freeze_bufs.rec) return;
     s_write((int)event_fd, b->p, b->n);
     s_write((int)crash_fd, b->p, b->n);
 }
 
-/* Static, because signal context has no business allocating and the stack is the one resource a
- * SIGSEGV may have just exhausted. */
-static char maps_chunk[4096];
-static char maps_line[512];
-static char rec_buf[1024];
-
 /* One /proc/self/maps line: emit it as `at:` when it contains the PC or the LR, and as `bin:`
  * when it is our own executable's mapping (which is what gives triage the load base). */
-static void emit_map_line(const char *line, size_t n, unsigned long pc, unsigned long lr) {
-    int kind = plx_map_line_kind(line, n, pc, lr);
-    struct plx_sbuf b = { rec_buf, 0, sizeof rec_buf };
+static void emit_map_line(struct bufs *B, const char *line, size_t n,
+                          const unsigned long *addrs, size_t n_addrs) {
+    int kind = plx_map_line_kind_n(line, n, addrs, n_addrs);
+    struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
     if (kind & PLX_MAP_AT) {
         plx_s_str(&b, "at: ");
         for (size_t i = 0; i < n; i++) plx_s_ch(&b, line[i]);
@@ -153,26 +170,53 @@ static void emit_map_line(const char *line, size_t n, unsigned long pc, unsigned
  * (the app peaks at 31 threads, each with a stack mapping), it has no size to `stat`, and a static
  * buffer big enough for the worst case is memory this process holds for its whole life to use once
  * at death. A 4 KiB window with a carried partial line costs the same syscalls and is bounded. */
-void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr) {
+
+/* Feed every line of the maps-shaped file at `path` to `each(ctx, line, len)`, a chunk at a time.
+ * The shared reader under the `at:`/`bin:` scan, the freeze probe's executable-range collection
+ * and the install-time stack-bounds read. Async-signal-safe: `open`/`read`/`close` and the
+ * caller's static buffers. */
+static void for_each_map_line(struct bufs *B, const char *path,
+                              void (*each)(void *ctx, const char *line, size_t n), void *ctx) {
     int m = open(path, O_RDONLY);
     if (m < 0) return;
     size_t held = 0;
     for (;;) {
-        ssize_t r = read(m, maps_chunk, sizeof maps_chunk);
+        ssize_t r = read(m, B->chunk, sizeof B->chunk);
         if (r < 0) { if (errno == EINTR) continue; break; }
         if (r == 0) break;
         for (ssize_t i = 0; i < r; i++) {
-            char c = maps_chunk[i];
+            char c = B->chunk[i];
             /* An over-long line is TRUNCATED rather than dropped: the fields that matter (the
              * range, and the path's tail) are worth having even without the middle. */
-            if (held < sizeof maps_line) maps_line[held++] = c;
+            if (held < sizeof B->line) B->line[held++] = c;
             if (c != '\n') continue;
-            emit_map_line(maps_line, held, pc, lr);
+            each(ctx, B->line, held);
             held = 0;
         }
     }
-    if (held) emit_map_line(maps_line, held, pc, lr);
+    if (held) each(ctx, B->line, held);
     close(m);
+}
+
+struct at_scan { struct bufs *B; const unsigned long *addrs; size_t n; };
+
+static void at_scan_line(void *ctx, const char *line, size_t n) {
+    struct at_scan *a = ctx;
+    emit_map_line(a->B, line, n, a->addrs, a->n);
+}
+
+static void scan_maps(struct bufs *B, const char *path, const unsigned long *addrs, size_t n) {
+    struct at_scan a = { B, addrs, n };
+    for_each_map_line(B, path, at_scan_line, &a);
+}
+
+void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long lr) {
+    const unsigned long addrs[2] = { pc, lr };
+    scan_maps(&crash_bufs, path, addrs, 2);
+}
+
+void plx_freeze_scan_maps_file(const char *path, const unsigned long *addrs, size_t n) {
+    scan_maps(&freeze_bufs, path, addrs, n);
 }
 
 /* The registers, on their own `reg:` line.
@@ -187,13 +231,13 @@ void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long 
  * walk if two frames ever prove insufficient, and a `cpsr` with the T bit set says the fault was
  * in Thumb code — which changes how the address is read. */
 #if defined(__arm__)
-static void emit_regs(const struct sigcontext *c) {
+static void emit_regs(struct bufs *B, const struct sigcontext *c) {
     static const char *const NAMES[] = { "r0", "r1", "r2", "r3", "r4", "r5",
                                          "r6", "r7", "r8", "r9", "r10" };
     const unsigned long regs[] = { c->arm_r0, c->arm_r1, c->arm_r2, c->arm_r3,
                                    c->arm_r4, c->arm_r5, c->arm_r6, c->arm_r7,
                                    c->arm_r8, c->arm_r9, c->arm_r10 };
-    struct plx_sbuf b = { rec_buf, 0, sizeof rec_buf };
+    struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
     plx_s_str(&b, "reg: sp=");  plx_s_hex(&b, c->arm_sp);
     plx_s_str(&b, " fp=");      plx_s_hex(&b, c->arm_fp);
     plx_s_str(&b, " ip=");      plx_s_hex(&b, c->arm_ip);
@@ -210,6 +254,7 @@ static void emit_regs(const struct sigcontext *c) {
 #endif
 
 static void crash_handler(int sig, siginfo_t *si, void *uc) {
+    crashing = 1;
     /* Saved and restored around the body: every syscall below can set it, and a handler that
      * returns having clobbered `errno` corrupts whatever the interrupted code was about to read.
      * We do not return — the re-raise kills us — but the rule holds regardless of that. */
@@ -227,8 +272,8 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
 #endif
     unsigned long addr = si ? (unsigned long)si->si_addr : 0;
 
-    struct plx_sbuf b = { rec_buf, 0, sizeof rec_buf };
-    b.n = plx_fmt_signal(rec_buf, sizeof rec_buf, sig, signame(sig), addr, pc, lr);
+    struct plx_sbuf b = { crash_bufs.rec, 0, sizeof crash_bufs.rec };
+    b.n = plx_fmt_signal(crash_bufs.rec, sizeof crash_bufs.rec, sig, signame(sig), addr, pc, lr);
     emit(&b);
     /* The crash's wall-clock second, on its own line under the signal line (see `plx_fmt_time`).
      * `time()` is on POSIX's async-signal-safe list: it reads the clock and takes no lock and
@@ -240,11 +285,11 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
      * at all rather than a made-up one. */
     time_t now = time(NULL);
     if (now > 0) {
-        b.n = plx_fmt_time(rec_buf, sizeof rec_buf, (unsigned long)now);
+        b.n = plx_fmt_time(crash_bufs.rec, sizeof crash_bufs.rec, (unsigned long)now);
         emit(&b);
     }
 #if defined(__arm__)
-    emit_regs(&c->uc_mcontext);
+    emit_regs(&crash_bufs, &c->uc_mcontext);
 #endif
     plx_crash_scan_maps_file("/proc/self/maps", pc, lr);
 
@@ -300,6 +345,143 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
     _exit(128 + sig);   /* genuinely unreachable now — see above for when it was not */
 }
 
+/* ---------------------------------------------------------------------------------------------
+ * The freeze probe.
+ *
+ * The Rust main-loop watchdog (`plx_base::task::watchdog`) sees the main thread make no loop
+ * progress for `FREEZE_THRESHOLD_MS` while the app is in the foreground, and sends it
+ * `PLX_FREEZE_SIGNAL` with `pthread_kill`. This handler runs ON the frozen thread, writes what that
+ * thread was doing as a `*** FREEZE` record (`plx_fmt_freeze`) and RETURNS, so the thread carries on
+ * exactly where it was. The process is never terminated here.
+ *
+ * # Why SIGUSR2
+ *
+ * Nothing in this repository installs a handler for it, and the pinned sentry-native 0.17.4 source
+ * uses no SIGUSR at all: its backends hook the synchronous fault signals, and its one other signal,
+ * `SIGRTMIN + 4` for its experimental app-hang walker, is off unless
+ * `sentry_options_set_enable_app_hang_tracking` is called, which this app never does. This
+ * tracer's own list is SEGV/ABRT/BUS/FPE/ILL/SYS/TRAP, and glibc's NPTL owns real-time signals 32
+ * and 33. SDL2 and LG's closed libraries were NOT audited for a SIGUSR2 handler. The Rust side
+ * (`probe_main_thread`) refuses to send unless the installed handler is in this very binary
+ * (`handler_is_ours`: a `sigaction` query, then `dladdr` on the handler and on its own code,
+ * compared by the object they live in), so a library that took the signal after install is never
+ * signalled; `si_pid` below and the number Rust arms in `plx_freeze_seq` keep any other SIGUSR2
+ * out of the record.
+ *
+ * # What it does to the interrupted thread
+ *
+ * `SA_RESTART` restarts what the kernel may restart, but `poll`, `epoll_wait`, `nanosleep` and
+ * `futex` waits with a timeout return `EINTR` regardless. A frozen main thread is usually IN one
+ * of those, so the probe can make one blocking call in LG's closed code return early once per
+ * freeze. The Rust side bounds that: at most `MAX_FREEZE_PROBES` per process.
+ *
+ * # Async-signal-safety, and the ways this could turn a freeze into a crash
+ *
+ * Only `open`/`read`/`write`/`close`/`time`/`getpid` and hand formatting, as in the fatal handler,
+ * with their own buffers (a crash on another thread must not share them). Every function is called
+ * once at install so no lazy-binding resolver runs in the handler: a thread frozen inside `dlopen`
+ * holds the loader lock, and a first-use resolve here would wait on it forever. The frame walk
+ * dereferences only `[sp, main_stack_hi)` (see `plx_fp_walk`), the bound being checked rather than
+ * the pointer trusted. A probe from any other process is ignored (`si_pid`).
+ * ------------------------------------------------------------------------------------------- */
+static volatile int freeze_busy;      /* one freeze record at a time */
+static volatile int freeze_written;   /* records started this process, against the backstop */
+static unsigned long main_stack_hi;   /* end of the main thread's [stack], 0 = unknown, no walk */
+static struct plx_range exec_ranges[PLX_MAX_EXEC_RANGES];
+static size_t n_exec_ranges;
+
+static void collect_exec_range(void *ctx, const char *line, size_t n) {
+    (void)ctx;
+    if (n_exec_ranges < PLX_MAX_EXEC_RANGES &&
+        plx_map_line_exec(line, n, &exec_ranges[n_exec_ranges]))
+        n_exec_ranges++;
+}
+
+static void find_stack_end(void *ctx, const char *line, size_t n) {
+    unsigned long hi;
+    if (plx_map_line_stack_end(line, n, *(unsigned long *)ctx, &hi)) main_stack_hi = hi;
+}
+
+/* The deepest the main thread's live stack may be for the walk to trust `[sp, hi)`: the main
+ * thread's stack rlimit is 8 MiB on this firmware, so a gap wider than this means `sp` is not on
+ * the stack `hi` belongs to, and the span between them may be unmapped. */
+#define PLX_MAX_WALK_SPAN (8ul * 1024 * 1024)
+
+static void freeze_handler(int sig, siginfo_t *si, void *uc) {
+    (void)sig;
+#ifdef __linux__
+    /* A probe is `pthread_kill` from this process, which Linux reports as our own pid. A signal
+     * sent by another process (or by `kill` from a shell) is not ours to answer. */
+    if (!si || si->si_pid != getpid()) return;
+#else
+    (void)si;
+#endif
+    /* Rust arms the probe's number in `plx_freeze_seq` right before it signals, and it is taken
+     * back to 0 here whatever happens next, so one arming answers one signal. A SIGUSR2 that finds
+     * none is not a probe (nothing of ours sent it): it records nothing, and the record numbers
+     * stay Rust's. */
+    unsigned int seq = __sync_lock_test_and_set(&plx_freeze_seq, 0);
+    /* A probe that lands while a fatal-signal handler is running (Sentry's native backend waits up
+     * to 10 s for its daemon, in the crashing thread) would write a FREEZE record into the middle
+     * of a crash. Neither that handler nor ours uses SA_NODEFER, so the fatal signal stays in the
+     * blocked set for as long as one runs; `uc_sigmask` is the mask the probe interrupted. */
+    {
+        static const int fatal[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSYS, SIGTRAP};
+        const sigset_t *interrupted = &((const ucontext_t *)uc)->uc_sigmask;
+        for (size_t i = 0; i < sizeof fatal / sizeof fatal[0]; i++)
+            if (sigismember(interrupted, fatal[i]) == 1) return;
+    }
+    if (crashing) return;
+    if (__sync_lock_test_and_set(&freeze_busy, 1)) return;
+    if (!seq) { __sync_lock_release(&freeze_busy); return; }
+    int saved_errno = errno;
+    if (++freeze_written <= PLX_MAX_FREEZE_RECORDS) {
+        unsigned long pc = 0, lr = 0, sp = 0, fp = 0;
+#if defined(__arm__)
+        ucontext_t *c = (ucontext_t *)uc;
+        pc = (unsigned long)c->uc_mcontext.arm_pc;
+        lr = (unsigned long)c->uc_mcontext.arm_lr;
+        sp = (unsigned long)c->uc_mcontext.arm_sp;
+        fp = (unsigned long)c->uc_mcontext.arm_fp;
+#else
+        (void)uc;   /* off the target the interrupted context is not read; see the fatal handler */
+#endif
+        struct bufs *B = &freeze_bufs;
+        struct plx_sbuf b = { B->rec, 0, sizeof B->rec };
+        b.n = plx_fmt_freeze(B->rec, sizeof B->rec, (unsigned long)seq, pc, lr);
+        emit(&b);
+        time_t now = time(NULL);
+        if (now > 0) {
+            b.n = plx_fmt_time(B->rec, sizeof B->rec, (unsigned long)now);
+            emit(&b);
+        }
+#if defined(__arm__)
+        emit_regs(B, &c->uc_mcontext);
+#endif
+        unsigned long addrs[PLX_MAX_FREEZE_ADDRS];
+        size_t na = 0, nf = 0;
+        addrs[na++] = pc;
+        addrs[na++] = lr;
+        if (sp && fp && main_stack_hi && sp < main_stack_hi &&
+            main_stack_hi - sp <= PLX_MAX_WALK_SPAN) {
+            n_exec_ranges = 0;
+            for_each_map_line(B, "/proc/self/maps", collect_exec_range, NULL);
+            nf = plx_fp_walk(sp, fp, main_stack_hi, exec_ranges, n_exec_ranges,
+                             addrs + na, PLX_MAX_FREEZE_FRAMES);
+            for (size_t i = 0; i < nf; i += 8) {
+                size_t len = 0;
+                plx_fmt_frames(B->rec, sizeof B->rec, addrs + na, nf, i, 8, &len);
+                b.n = len;
+                emit(&b);
+            }
+            na += nf;
+        }
+        scan_maps(B, "/proc/self/maps", addrs, na);
+    }
+    errno = saved_errno;
+    __sync_lock_release(&freeze_busy);
+}
+
 void plx_crash_install(int ev_fd, int cr_fd) {
     struct sigaction sa;
     /* The sinks first, THEN `sigaction`. Ordering, not style: after the last line of this function
@@ -313,6 +495,30 @@ void plx_crash_install(int ev_fd, int cr_fd) {
      * crash. One call here resolves it at startup; the handler's own use is unchanged and
      * `time()` stays async-signal-safe. */
     (void)time(NULL);
+    /* The freeze probe's own first-use bindings, for the reason above and one more: it runs on a
+     * thread that is by definition stuck, possibly inside `dlopen` holding the loader lock. Each
+     * libc entry it uses is called once here, and the stack bound is read while this is still the
+     * main thread's own frame (`&sa` is on its stack). */
+    (void)getpid();
+    (void)sigismember(&(sigset_t){0}, SIGSEGV);
+    if (write(-1, "", 0) < 0) { /* EBADF is the point: the symbol is bound, nothing was written */ }
+    {
+        unsigned long here = (unsigned long)&sa;
+        for_each_map_line(&freeze_bufs, "/proc/self/maps", find_stack_end, &here);
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = freeze_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    {
+        /* A library constructor that already took SIGUSR2 owns it: decline rather than replace it
+         * (the watchdog also refuses to probe a handler that is not this binary's own). The two
+         * dispositions nobody owns are replaced: the default, and `SIG_IGN`, which a parent that
+         * ignored the signal hands down across `exec` and which would swallow every probe. */
+        struct sigaction prior;
+        if (sigaction(SIGUSR2, NULL, &prior) == 0 &&
+            (prior.sa_handler == SIG_DFL || prior.sa_handler == SIG_IGN))
+            sigaction(SIGUSR2, &sa, NULL);
+    }
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO;

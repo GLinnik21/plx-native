@@ -55,6 +55,21 @@ pub enum DiagEvent {
     RouteEntered {
         screen: &'static str,
     },
+    /// **A screen visit ended, and how the app felt on it** — performance data about the app, no
+    /// content. `screen` is the same table `RouteEntered` prints. The four fields are BUCKETS of
+    /// counts the frame loop keeps in every build (`plx_base::diag::heartbeat::health` has the
+    /// definitions and the edges): the share of presented frames that were slow, the number that
+    /// were frozen, the main-loop stall seconds per hour, and the repeated-key bursts (one key
+    /// pressed four times in a second with nothing taking it). Never the counts, a duration, a
+    /// key or a timestamp finer than the envelope's own. A visit too short to mean anything is not
+    /// reported at all.
+    RouteLeft {
+        screen: &'static str,
+        slow_frames: &'static str,
+        frozen_frames: &'static str,
+        hang: &'static str,
+        dead_presses: &'static str,
+    },
     /// plex.tv sign-in finished and the app reached Home or the profile picker. A user-initiated
     /// flow is bracketed by `started` and exactly one completed/failed/cancelled event; failures
     /// carry only the fixed coarse stage, never server text or an account value.
@@ -282,7 +297,7 @@ pub struct UsageContext {
     pub soc: String,
     pub hardware_revision: String,
     /// `local` / `remote` / `relay` / `unknown`. **Absent, not `unknown`, on an event with no one
-    /// server** — `app.launch`, `route.entered`, `signin.*` — since an account with N servers has
+    /// server** — `app.launch`, `route.entered`, `route.left`, `signin.*` — since an account with N servers has
     /// no single connection to report for those. Present (possibly `unknown`, when the winning
     /// client hasn't classified its link yet) on every event captured through
     /// [`UsageEnvelope::capture_for_snapshot`]. `#[serde(default)]` keeps an older spooled envelope,
@@ -527,6 +542,16 @@ pub fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
         DiagEvent::RouteEntered { screen } => {
             ("route.entered", vec![("screen", Value::Str(screen))])
         }
+        DiagEvent::RouteLeft { screen, slow_frames, frozen_frames, hang, dead_presses } => (
+            "route.left",
+            vec![
+                ("screen", Value::Str(screen)),
+                ("slow_frames", Value::Str(slow_frames)),
+                ("frozen_frames", Value::Str(frozen_frames)),
+                ("hang", Value::Str(hang)),
+                ("dead_presses", Value::Str(dead_presses)),
+            ],
+        ),
         DiagEvent::SignInCompleted => ("signin.completed", Vec::new()),
         DiagEvent::SignInStarted => ("signin.started", Vec::new()),
         DiagEvent::SignInFailed { kind } => {
@@ -650,6 +675,16 @@ pub const EVENT_SPECS: &[EventSpec] = &[
         name: "route.entered",
         fields: &[F { key: "screen", domain: "one of a fixed list of screen names" }],
     },
+    EventSpec {
+        name: "route.left",
+        fields: &[
+            F { key: "screen", domain: "one of a fixed list of screen names" },
+            F { key: "slow_frames", domain: "the share of presented frames that missed a refresh: `0` / `<1%` / `1-5%` / `5-20%` / `20%+` — never a count" },
+            F { key: "frozen_frames", domain: "frames over 700 ms: `0` / `1` / `2-3` / `4+`" },
+            F { key: "hang", domain: "seconds per hour the app did not respond for over 250 ms: `0` / `<1` / `1-10` / `10+` — never the interval" },
+            F { key: "dead_presses", domain: "times one remote key was pressed four times in a second with nothing happening: `0` / `1` / `2+` — never which key" },
+        ],
+    },
     EventSpec { name: "signin.completed", fields: &[] },
     EventSpec { name: "signin.started", fields: &[] },
     EventSpec { name: "signin.failed", fields: &[F { key: "kind", domain: "`pin_create` / `authorization` / `discovery` / `other`" }] },
@@ -746,7 +781,7 @@ pub const CONTEXT_SPECS: &[F] = &[
     F {
         key: "server_connection",
         domain: "`local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no \
-                  one server, such as `app.launch`, `route.entered` or a `signin.*` event",
+                  one server, such as `app.launch`, `route.entered`, `route.left` or a `signin.*` event",
     },
     F {
         key: "ip_version",
@@ -824,6 +859,13 @@ mod tests {
         let all = vec![
             DiagEvent::AppLaunch,
             DiagEvent::RouteEntered { screen: "home" },
+            DiagEvent::RouteLeft {
+                screen: "home",
+                slow_frames: "<1%",
+                frozen_frames: "0",
+                hang: "0",
+                dead_presses: "1",
+            },
             DiagEvent::SignInCompleted,
             DiagEvent::SignInStarted,
             DiagEvent::SignInFailed {
@@ -875,6 +917,7 @@ mod tests {
             match e {
                 DiagEvent::AppLaunch => {}
                 DiagEvent::RouteEntered { .. } => {}
+                DiagEvent::RouteLeft { .. } => {}
                 DiagEvent::SignInCompleted => {}
                 DiagEvent::SignInStarted => {}
                 DiagEvent::SignInFailed { .. } => {}

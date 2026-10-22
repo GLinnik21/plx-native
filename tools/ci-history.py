@@ -9,7 +9,7 @@ request) and commits the result to the orphan `ci-metrics` branch; the page fetc
 raw.githubusercontent.com. tools/ci-summary.py derives the page's "now" block from it.
 
 The file is `{"updated": ISO time, "ci": [row...], "sim": [row...], "nightly": [row...],
-"cancelled": {day: {"push": n, "pull_request": n}}, "daily": [entry...]}`. A row is
+"cancelled": {day: {"push": n, "pull_request": n}}, "daily": [entry...], "flaky": [event...]}`. A row is
 `{"id", "at" (run_started_at), "sha" (9 chars), "title" (the commit subject without its
 trailing "(#N)", first 120 chars), "pr", "event" (only on a pull request's run), "conclusion"
 ("success", "failure" or "timed_out"), "attempt" (run_attempt: 2 or more means the run was re-run),
@@ -52,6 +52,18 @@ can skip the commit.
 `--dry-run` does everything except write: it prints how many rows a real run would add and re-record
 (and the time span they cover) and leaves `--out` alone, so a backfill can be sized from a laptop.
 
+Flaky tests. A test is FLAKY when one run of one job gave it both a passing and a failing result: the same
+commit and configuration, two outcomes (in practice a re-run attempt; the job's name is part of the key, so the
+default-feature and hostsim jobs, which are different builds, are never compared with each other). The host unit jobs
+of ci.yml upload `test-results-<job slug>-<run_attempt>` (tools/ci-test-results.py) and for every NEW or RE-RUN run
+that failed or has attempt > 1, and whose head repository is this one (a fork's workflow file is its own, so its
+artifacts are not read), this tool downloads them and stores one event per flaky (job, test) in `flaky`:
+`{"run", "at", "sha", "pr", "job", "test", "fail": [attempts], "pass": [attempts]}`, sorted by `at`, merged
+by (job, test) when the run is recorded again (a later attempt can add flakes; an expired artifact never erases one) and dropped after the 90-day
+retention. Only the tests seen both ways are stored, never every pass (~6000 names a run): the pass lists live
+in the 14-day artifacts and are read once. At most RUN_EVENT_LIMIT events per run (more than that is an outage:
+none are recorded and a ::warning:: names the run). tools/ci-summary.py turns the events into the page's flaky list.
+
 Filtering happens here, not in the query: the `status=success` query parameter of the runs listing
 was verified stale on 2026-10-02 (it dropped every run after 2026-10-01). Needs `gh` and a token
 (GH_TOKEN in CI); read-only.
@@ -60,11 +72,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import io
 import json
 import os
 import re
 import statistics
+import subprocess
 import sys
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -90,6 +105,15 @@ PER_PAGE = 100
 FAILED = ("failure", "timed_out")
 KEPT = ("success",) + FAILED
 RETENTION_DAYS = 90         # per-run rows older than this are folded into one `daily` entry per workflow, event and day
+# Per-test results (flaky tests). ci.yml's host unit jobs upload `test-results-<job slug>-<run_attempt>`, a zip of one
+# `test-results.json` (tools/ci-test-results.py). The bounds below are on WORK and on the stored file, not on what a
+# reader can reach: a test seen both ways is recorded, and a run that has more than RUN_EVENT_LIMIT of them is an
+# outage (a runner that lost its disk fails and then passes everything), not a hundred flaky tests.
+RESULTS_ARTIFACT = re.compile(r"^test-results-([a-z0-9-]{1,60})-([0-9]{1,3})$")
+RESULTS_MEMBER = "test-results.json"
+RESULTS_BYTES = 8 * 1024 * 1024     # uncompressed size of the one member we read (the real file is ~0.4 MB)
+RESULTS_NAME_LEN = 300              # a longer test key is not a Rust test path
+RUN_EVENT_LIMIT = 100
 
 
 def load(path: str) -> dict:
@@ -100,7 +124,8 @@ def load(path: str) -> dict:
         text = ""
     doc = json.loads(text) if text.strip() else {}
     return {"updated": doc.get("updated"), **{k: list(doc.get(k) or []) for k in WORKFLOWS},
-            "cancelled": dict(doc.get("cancelled") or {}), "daily": list(doc.get("daily") or [])}
+            "cancelled": dict(doc.get("cancelled") or {}), "daily": list(doc.get("daily") or []),
+            "flaky": list(doc.get("flaky") or [])}
 
 
 def day_of(stamp: str) -> str:
@@ -273,6 +298,104 @@ def row_for(api, repo: str, run: dict, lookup=None) -> dict:
     return row
 
 
+def gh_blob(path: str) -> bytes:
+    """GET one API path through the gh CLI and return the raw bytes (an artifact's zip; gh follows the redirect)."""
+    try:
+        return subprocess.run(["gh", "api", path], check=True, capture_output=True, timeout=300).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = getattr(exc, "stderr", b"") or exc
+        raise ApiError(f"gh api {path} failed: {detail!r}") from exc
+
+
+def parse_results(data: bytes) -> tuple[str, set, set] | None:
+    """(job, failed, passed) of one `test-results-*` artifact, or None when it is not what ci.yml uploads.
+
+    The zip is attacker-shaped input as far as this reader can tell (it is made by a workflow a pull request
+    may have changed), so: it is read in memory, only the one expected member is opened, its declared size is
+    checked before and its real size while reading, nothing is extracted or executed, and every name is
+    validated. A malformed file is None, never an exception.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            info = z.getinfo(RESULTS_MEMBER)
+            if info.file_size > RESULTS_BYTES:
+                return None
+            with z.open(info) as f:
+                raw = f.read(RESULTS_BYTES + 1)
+        if len(raw) > RESULTS_BYTES:
+            return None
+        doc = json.loads(raw)
+        job, failed, passed = doc["job"], doc["failed"], doc["passed"]
+    except (KeyError, ValueError, TypeError, zipfile.BadZipFile):
+        return None
+
+    def names(items) -> set | None:
+        if not isinstance(items, list) or not all(isinstance(n, str) and 0 < len(n) <= RESULTS_NAME_LEN and n.isprintable() for n in items):
+            return None
+        return set(items)
+
+    failed, passed = names(failed), names(passed)
+    if failed is None or passed is None or not isinstance(job, str) or not 0 < len(job) <= 100 or not job.isprintable():
+        return None
+    return job, failed, passed - failed
+
+
+def flaky_tests(results: list[tuple[int, str, set, set]]) -> dict[tuple[str, str], tuple[list, list]]:
+    """{(job, test): (attempts it failed in, attempts it passed in)} for the tests seen BOTH ways.
+
+    `results` is (attempt, job, failed, passed) per artifact. A test is flaky when one run of one job
+    gave it a failing and a passing result: the same commit, the same configuration, two outcomes. Jobs are
+    never merged: the default-feature and the hostsim jobs run different builds of the same test names, so
+    a test that fails only under hostsim is a configuration difference, not a flake.
+    """
+    seen: dict = {}
+    for attempt, job, failed, passed in results:
+        for name in failed:
+            seen.setdefault((job, name), ([], []))[0].append(attempt)
+        for name in passed:
+            seen.setdefault((job, name), ([], []))[1].append(attempt)
+    return {k: (sorted(set(f)), sorted(set(p))) for k, (f, p) in seen.items() if f and p}
+
+
+def wants_results(run: dict, repo: str) -> bool:
+    """A run whose artifacts can hold a flake: it failed or was re-run, and its workflow file is ours.
+
+    A fork's pull request runs the workflow file of its own merge commit, so it can upload anything: its
+    artifacts are not read (the page would otherwise show whatever a stranger chose to write).
+    """
+    return ((run.get("conclusion") in FAILED or (run.get("run_attempt") or 1) > 1)
+            and (run.get("head_repository") or {}).get("full_name") == repo)
+
+
+def run_flaky(api, blob, repo: str, run: dict, row: dict) -> list[dict] | None:
+    """The flaky-test events of one run, from its `test-results-*` artifacts; None when they cannot be read.
+
+    One event per (job, test) seen both passing and failing across the run's attempts. A failure to list or
+    download is a warning and None (the run's stored events stay as they are), not an error that stops
+    the collector recording every other run.
+    """
+    try:
+        listed = api(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100").get("artifacts", [])
+        results = []
+        for art in listed:
+            m = RESULTS_ARTIFACT.match(art.get("name") or "")
+            if not m or art.get("expired") or (art.get("size_in_bytes") or 0) > RESULTS_BYTES:
+                continue
+            parsed = parse_results(blob(f"repos/{repo}/actions/artifacts/{art['id']}/zip"))
+            if parsed:
+                results.append((int(m.group(2)), *parsed))
+    except ApiError as exc:
+        print(f"ci-history: no per-test results for run {run['id']}: {exc}", file=sys.stderr)
+        return None
+    events = [{"run": run["id"], "at": row["at"], "sha": row["sha"], "pr": row["pr"], "job": job, "test": test, "fail": fail, "pass": ok}
+              for (job, test), (fail, ok) in sorted(flaky_tests(results).items())]
+    if len(events) > RUN_EVENT_LIMIT:       # an outage, not flakes: record none of it
+        print(f"::warning::ci-history: run {run['id']} has {len(events)} flaky tests (more than {RUN_EVENT_LIMIT}); "
+              "treated as an outage and none recorded", file=sys.stderr)
+        return []
+    return events
+
+
 def row_event(row: dict) -> str:
     return row.get("event") or "push"
 
@@ -308,6 +431,7 @@ def fold(doc: dict, now: str) -> int:
                              "longest": round(statistics.median(longest)) if longest else None})
     doc["daily"].sort(key=lambda d: (d["day"], d["wf"], d["event"]))
     doc["cancelled"] = {d: c for d, c in doc["cancelled"].items() if d >= edge}
+    doc["flaky"] = [e for e in doc["flaky"] if day_of(e["at"]) >= edge]      # flake events are not folded, only dropped
     return folded
 
 
@@ -335,9 +459,13 @@ def count_cancelled(doc: dict, infos: list[dict]) -> None:
     doc["cancelled"] = {**old, **counts}
 
 
-def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, full: bool = False) -> tuple[list, list]:
-    """Merge new and re-run rows into `doc` in place; returns (added, refreshed) rows."""
+def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, full: bool = False, blob=None) -> tuple[list, list]:
+    """Merge new and re-run rows into `doc` in place; returns (added, refreshed) rows.
+
+    `blob`, when given, downloads an artifact (path -> bytes); without it no per-test results are read.
+    """
     added, refreshed = [], []
+    flaky_before = json.dumps(doc["flaky"], sort_keys=True)
     cutoff = parse_time(now) - timedelta(days=RETENTION_DAYS)
     infos = []
     lookup = PrLookup(api, repo)
@@ -362,6 +490,15 @@ def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, fu
                         r["wall"] = wall
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             rows = list(pool.map(lambda r: row_for(api, repo, r, lookup), fresh))
+        if blob is not None and key == "ci":
+            for run, row in zip(fresh, rows):
+                events = run_flaky(api, blob, repo, run, row) if wants_results(run, repo) else None
+                if events is not None:
+                    # union, never replace: the artifacts are kept 14 days, so a late re-run rebuilds from the newest
+                    # attempt alone and must not erase what an earlier pass recorded. A (job, test) seen again takes the new event.
+                    seen = {(e["job"], e["test"]) for e in events}
+                    doc["flaky"] = ([e for e in doc["flaky"] if e["run"] != run["id"] or (e["job"], e["test"]) not in seen]
+                                    + events)
         unique = {r["id"]: r for r in doc[key] + rows}      # also heals duplicates an older file may hold
         doc[key] = sorted(unique.values(), key=lambda r: (r["at"], r["id"]))
         added += [r for r in rows if r["id"] not in known]
@@ -369,7 +506,9 @@ def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, fu
     before = (json.dumps(doc["cancelled"], sort_keys=True), len(doc["daily"]))
     count_cancelled(doc, infos)
     folded = fold(doc, now)
-    changed = before != (json.dumps(doc["cancelled"], sort_keys=True), len(doc["daily"])) or folded
+    doc["flaky"].sort(key=lambda e: (e["at"], e["run"], e["job"], e["test"]))
+    changed = (before != (json.dumps(doc["cancelled"], sort_keys=True), len(doc["daily"])) or folded
+               or flaky_before != json.dumps(doc["flaky"], sort_keys=True))
     if added or refreshed or changed or not doc.get("updated"):
         doc["updated"] = now
     return added, refreshed
@@ -382,10 +521,10 @@ def dump(doc: dict) -> str:
     cancelled = json.dumps(dict(sorted(doc["cancelled"].items())), separators=(",", ":"))
     return (f'{{"updated":{json.dumps(doc["updated"])},\n"ci":{block(doc["ci"])},\n'
             f'"sim":{block(doc["sim"])},\n"nightly":{block(doc["nightly"])},\n'
-            f'"cancelled":{cancelled},\n"daily":{block(doc["daily"])}}}\n')
+            f'"cancelled":{cancelled},\n"daily":{block(doc["daily"])},\n"flaky":{block(doc["flaky"])}}}\n')
 
 
-def main(argv=None, api=gh_api, now=None) -> int:
+def main(argv=None, api=gh_api, now=None, blob=gh_blob) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--in", dest="src", required=True, help="existing ci-history.json (missing or empty = start fresh)")
     ap.add_argument("--out", help="where to write the merged file")
@@ -400,7 +539,7 @@ def main(argv=None, api=gh_api, now=None) -> int:
     now = now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         doc = load(args.src)
-        added, refreshed = update(doc, api, args.repo, args.max_pages, args.workers, now, args.full)
+        added, refreshed = update(doc, api, args.repo, args.max_pages, args.workers, now, args.full, blob)
     except (ApiError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

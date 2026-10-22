@@ -862,7 +862,7 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// sheet". Set by the dispatcher's surface pass, never by a screen.
     pub underlay: Option<&'a crate::underlay::UnderlayField>,
     /// **The page element a surface lifts back out of the dim this frame** (item menu opener,
-    /// [`Screen::opener`]). A card section leaves that card OUT of the page pass
+    /// [`Screen::opener`]). A page leaves that element OUT of the page pass ([`Self::leaves_out`]: a card section, the Detail episode strip)
     /// (`cards::Shelf` / `Grid::draw_card`): the lift ([`Screen::redraw_focused`], drawn live above
     /// the host snapshot at the press's own scale) is its only copy, so the frozen page never holds
     /// a stale (dipped) copy under the growing one and the release spring of a taken hold is not
@@ -927,6 +927,22 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             lifting: None,
             stops: Vec::new(),
         }
+    }
+
+    /// **Does the page pass leave `elem` of `entry` out, because a surface lifts it?** The ONE
+    /// question every page asks of [`Self::lifted`] before it draws an element a surface can open
+    /// from (a card section's tile, a Detail episode's cell). `true` means the opener lift
+    /// ([`Screen::redraw_focused`]) draws the only copy above the host snapshot, so the page draws
+    /// NOTHING of it - not its art and not its label plate - and the snapshot never holds a stale
+    /// (dipped) copy under the lift's. It also says so to the press machine
+    /// ([`crate::popover::set_lift_owns`]), whose spring then is no page damage. The lift's own
+    /// frame carries no `lifted`, so it draws.
+    pub fn leaves_out(&self, entry: EntryId, elem: H::Elem) -> bool {
+        let out = self.lifted.is_some_and(|k| k.entry == entry && k.elem == elem);
+        if out {
+            crate::popover::set_lift_owns(true);
+        }
+        out
     }
 
     /// Carry this frame's presentation into a nested frame, including any container alpha.

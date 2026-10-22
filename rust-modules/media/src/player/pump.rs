@@ -681,6 +681,17 @@ fn land_recovery_flight(
     }
 }
 
+/// How close to the container's duration the playhead must be, after the EOS, to count as the end.
+const EOS_TAIL_NS: i64 = 1_000_000_000;
+
+/// Whether a stream whose EOS has been pushed has ended: the pipeline said so
+/// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
+/// duration is the longest track's, so a film whose audio outlasts its video by more than the
+/// tail never gets there on the arithmetic alone.
+fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) -> bool {
+    pipeline_eos || (duration_ns > 0 && pos_ns >= duration_ns - EOS_TAIL_NS)
+}
+
 /// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
 /// callers had already advanced the route reducer and then returned, leaving no Engine to publish
 /// the failure and (for Original) an `OriginalTrial` which could never receive its first frame.
@@ -2043,7 +2054,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     }
 
     // ---------- end-of-stream: the producer hit file EOF (eos_pushed → all AUs to the end were
-    // fed) and the pipeline has now played out to within EOS_TAIL of the duration. Mark ended so
+    // fed) and the pipeline has now played out to within EOS_TAIL of the duration, or the pipeline
+    // reported its own end-of-stream (`Shared::pipeline_eos`). Mark ended so
     // app.rs tears the player down at the credits instead of freezing on the last frame. Paused
     // at the end stays paused (playpos won't climb) — correct; it fires when resumed. Any seek
     // clears the flag (request_seek), so seeking back from the end doesn't re-trigger. ----------
@@ -2065,11 +2077,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         PlaybackState::Playing
     });
 
-    const EOS_TAIL_NS: i64 = 1_000_000_000;
     if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
         let dur = SHARED.duration_ns.load(Relaxed);
         let pos = SHARED.playpos_ns.load(Relaxed);
-        if dur > 0 && pos >= dur - EOS_TAIL_NS {
+        if stream_ended(pos, dur, SHARED.pipeline_eos.load(Relaxed)) {
             SHARED.ended.store(true, Relaxed);
             super::log(&format!(
                 "EOS reached: playpos={}s/{}s → ended",
@@ -2087,7 +2098,21 @@ mod tests {
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
         OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
+        stream_ended,
     };
+
+    /// **The pipeline's own end-of-stream ends the film even short of the duration.** C1,
+    /// 2026-10-20: audio ran 3 s past the last video frame, the clock stopped at 5894 s of
+    /// 5897 s after the EOS, and the player sat on the last frame for good because the playhead
+    /// never came within a second of the duration.
+    #[test]
+    fn the_pipelines_end_of_stream_ends_a_film_whose_audio_outlasts_its_video() {
+        const S: i64 = 1_000_000_000;
+        assert!(!stream_ended(5894 * S, 5897 * S, false), "short of the duration, nothing said");
+        assert!(stream_ended(5894 * S, 5897 * S, true), "the pipeline said it reached the end");
+        assert!(stream_ended(5896_500_000_000, 5897 * S, false), "within the tail, as before");
+        assert!(!stream_ended(5894 * S, 0, false), "no duration, no arithmetic");
+    }
     use std::sync::atomic::Ordering::{Relaxed, Release};
 
     /// The device's measured position-callback period, so the replay below advances in the same
@@ -4287,5 +4312,190 @@ mod native_seek_pump_tests {
         let (_, start, pause, _) = ffi_host::acb_calls_for_test();
         assert_eq!(start, 1, "the bind ran");
         assert_eq!(pause, 1, "ACB was left PLAYING under a paused pipeline");
+    }
+}
+
+/// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
+/// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`] of the
+/// container's duration (the longest track's) and only the pipeline's own end-of-stream can end
+/// the film. These drive the REAL feed lanes and the REAL `pump` against the clock sink and grade
+/// `player::ended()`. Nothing here sets `Shared::pipeline_eos` or `ended`: what is graded is the
+/// whole chain, the sink, its callback, the flag and the pump.
+#[cfg(all(test, feature = "hostsim"))]
+mod end_of_film_tests {
+    use super::*;
+    use crate::player::ffi_host;
+    use std::os::raw::c_int;
+
+    const S: i64 = 1_000_000_000;
+    const V_STEP_NS: i64 = 41_666_666; // 24 fps
+    const A_STEP_NS: i64 = 21_333_333; // AAC: 1024 samples at 48 kHz
+    const VIDEO_END_NS: i64 = 20 * S;
+    const AUDIO_END_NS: i64 = 23 * S;
+    /// The pipeline's position-callback period (`TICK_MS` in the sink), milliseconds.
+    const TICK_MS: i64 = 200;
+    /// Steps a run may take: 23 s at one tick per step is 115.
+    const STEP_BUDGET: usize = 400;
+
+    struct Rig {
+        ps: crate::route::PlaybackSession,
+        pa: super::super::adapter::PlayerAdapter,
+        now: u32,
+    }
+
+    impl Rig {
+        /// A direct-play session on a REALLY loaded host object (so `ACTIVE_EPOCH` is set and the
+        /// callback gate is open: otherwise the sink reports nothing and a red run would be a dead
+        /// instrument, not the defect), holding 20 s of video and 23 s of audio, primed to play.
+        fn new() -> Rig {
+            SHARED.reset_session();
+            TX.reset();
+            super::super::claim_hold::clear();
+            ffi_host::reset_native_lifecycle_for_test();
+            ffi_host::force_clocksink_for_test(true);
+            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let epoch = SHARED.begin_native_session().expect("native session");
+            assert_eq!(
+                unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) },
+                1,
+                "PRECONDITION FAILED, not the defect: the host Load did not take"
+            );
+            assert!(SHARED.mark_native_load_returned(epoch).is_some());
+            let mut eng = super::super::engine::streaming_engine_for_test(epoch);
+            eng.load_th = None;
+            assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
+            let au = [0u8; 64];
+            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..VIDEO_END_NS / V_STEP_NS {
+                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
+            }
+            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..AUDIO_END_NS / A_STEP_NS {
+                crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
+            }
+            pa.install(eng);
+            SHARED.duration_ns.store(AUDIO_END_NS, Relaxed);
+            Rig { ps: crate::route::PlaybackSession::IDLE, pa, now: 1_000 }
+        }
+
+        fn eng(&mut self) -> &mut Engine {
+            self.pa.engine().expect("engine")
+        }
+
+        /// The demuxer reached the end of the file: both lanes are complete.
+        fn producer_done(&mut self) {
+            let eng = self.eng();
+            for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
+                crate::aq::aq_set_eof(&mut **q as *mut crate::aq::AuQueue);
+            }
+        }
+
+        /// One pipeline period: the clock runs 200 ms, the sink takes its tick, the frame runs.
+        fn step(&mut self) {
+            ffi_host::advance_clock_for_test(TICK_MS);
+            ffi_host::tick_for_test();
+            let _frame = plx_base::task::FrameScope::enter();
+            self.now += TICK_MS as u32;
+            pump(&mut self.ps, &mut self.pa, self.now);
+        }
+
+        /// Step until `done`, within [`STEP_BUDGET`].
+        fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
+            for _ in 0..STEP_BUDGET {
+                self.step();
+                if done(self) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// What a failure message needs to explain itself.
+        fn facts(&mut self) -> String {
+            let (clock_ns, running) = ffi_host::clock_state_for_test();
+            let streaming = self.eng().stage >= Stage::Streaming;
+            let pending = self.eng().pending_video.is_some();
+            format!(
+                "playpos={}ms duration={}ms eos_pushed={} pipeline_eos={} ended={} \
+                 clock={}ms running={running} stage_streaming={streaming} pending_video={pending} \
+                 feed_allowed={} seek_pending={}",
+                SHARED.playpos_ns.load(Relaxed) / 1_000_000,
+                SHARED.duration_ns.load(Relaxed) / 1_000_000,
+                self.eng().eos_pushed,
+                SHARED.pipeline_eos.load(Relaxed),
+                crate::player::ended(),
+                clock_ns / 1_000_000,
+                TX.feed_allowed(),
+                TX.seek_to_ns.load(Relaxed),
+            )
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            ffi_host::reset_native_lifecycle_for_test();
+            ffi_host::force_clocksink_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            TX.reset();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    #[test]
+    fn a_film_whose_audio_outlasts_its_video_ends_on_the_host_sink() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+
+        // The picture plays out to the last video frame with the demuxer still producing: the
+        // sink has presented everything it was fed and has no end-of-stream to report.
+        let at_the_tail = |_: &mut Rig| {
+            let (position, running) = ffi_host::clock_state_for_test();
+            running && position >= VIDEO_END_NS - 2 * V_STEP_NS
+        };
+        assert!(
+            rig.run_until(at_the_tail),
+            "PRECONDITION FAILED, not the defect: the clock never reached the last video frame \
+             (the prime, the feed or the sink did not run): {}",
+            rig.facts()
+        );
+        assert!(crate::player::seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
+        for _ in 0..10 {
+            rig.step();
+        }
+        assert!(
+            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::ended(),
+            "the sink reported an end of stream nobody pushed: {}",
+            rig.facts()
+        );
+
+        // The file ends: the video lane drains and the engine pushes the EOS. The playhead is
+        // stopped at the last picture, short of the duration by more than the tail, so the
+        // arithmetic alone cannot end the film.
+        rig.producer_done();
+        assert!(
+            rig.run_until(|r| r.eng().eos_pushed),
+            "PRECONDITION FAILED, not the defect: the EOS was never pushed: {}",
+            rig.facts()
+        );
+        let stalled = SHARED.playpos_ns.load(Relaxed);
+        assert!(
+            stalled < AUDIO_END_NS - EOS_TAIL_NS - S,
+            "PRECONDITION FAILED, not the defect: the playhead ({stalled}ns) is within reach of the \
+             duration, so the arithmetic would end this film"
+        );
+        assert!(
+            rig.run_until(|_| crate::player::ended()),
+            "the film never ended: video ran to {}s, audio to {}s, and the pipeline's clock stopped \
+             at the last picture: {}",
+            VIDEO_END_NS / S,
+            AUDIO_END_NS / S,
+            rig.facts()
+        );
+        assert!(
+            SHARED.pipeline_eos.load(Relaxed),
+            "it ended on the pipeline's word, not on the arithmetic: {}",
+            rig.facts()
+        );
     }
 }
