@@ -2032,6 +2032,61 @@ mod foreground_resume_tests {
             }
         }
     }
+
+    /// The DID foreground that carries a launch link which ends playback: it claims nothing. A
+    /// parked state stays parked (`Suppressed`, so no Prepare or Load runs and `playback_may_run`
+    /// stays off until the link's `Superseded(Exit)` retires it); Idle is the ordinary start path;
+    /// every other state is already suppressed, exactly as `DidForeground` leaves it.
+    #[test]
+    fn did_foreground_superseded_claims_nothing() {
+        use ForegroundClaimResult::{Ordinary, Suppressed};
+        let paused = ForegroundClock::Paused;
+        let states: Vec<(&str, ForegroundState<u64>)> = vec![
+            ("Idle", ForegroundState::Idle),
+            ("Suspended", ForegroundState::Suspended { id: 1, saved_ns: 5, clock: paused }),
+            ("Claimed Prepare", ForegroundState::Claimed {
+                id: 1,
+                claim: ForegroundClaim::Prepare { saved_ns: 5, saved_clock: paused, resume_ns: 5, clock: paused },
+            }),
+            ("Claimed Load", ForegroundState::Claimed {
+                id: 1,
+                claim: ForegroundClaim::Load { resume_ns: 5, clock: paused },
+            }),
+            ("Claimed PlayClock", ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock }),
+            ("Prepared", ForegroundState::Prepared { id: 1, resume_ns: 5, clock: paused }),
+            ("LoadPending", ForegroundState::LoadPending { id: 1, attempt: 7, resume_ns: 5, clock: paused }),
+            ("PreparePending", ForegroundState::PreparePending {
+                id: 1, saved_ns: 5, saved_clock: paused, resume_ns: 5, clock: paused,
+            }),
+            ("RecoveryPending", ForegroundState::RecoveryPending { id: 1, resume_ns: 5, clock: paused }),
+            ("ClockPending", ForegroundState::ClockPending { id: 1 }),
+        ];
+        for (name, start) in states {
+            let want = if matches!(start, ForegroundState::Idle) { Ordinary } else { Suppressed };
+            let mut lifecycle = ForegroundLifecycle::<u64> { state: start, next_id: 1 };
+            assert_eq!(lifecycle.claim(ForegroundInput::DidForegroundSuperseded), want, "{name}: result");
+            assert_eq!(lifecycle.state, start, "{name}: no state moves");
+
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let mut lifecycle = ForegroundLifecycle::<u64> { state: start, next_id: 1 };
+            let mut actuator = FakeActuator::default();
+            let activation = drive_foreground(
+                &mut lifecycle, &mut ps, ForegroundInput::DidForegroundSuperseded, &mut actuator);
+            let expected = if want == Ordinary { ForegroundActivation::Ordinary } else { ForegroundActivation::Handled };
+            assert_eq!(activation, expected, "{name}: activation");
+            assert_eq!(lifecycle.state, start, "{name}: driven state");
+            assert!(actuator.after_loads.is_empty(), "{name}: after_load");
+            assert_eq!(
+                (actuator.load_calls, actuator.clock_calls, actuator.prepare_calls.len()),
+                (0, 0, 0),
+                "{name}: nothing runs"
+            );
+        }
+        // The one difference from `DidForeground`: it would claim a parked state.
+        let mut parked = ForegroundLifecycle::<u64> {
+            state: ForegroundState::Suspended { id: 1, saved_ns: 5, clock: paused }, next_id: 1 };
+        assert!(matches!(parked.claim(ForegroundInput::DidForeground), ForegroundClaimResult::Effect(_)));
+    }
 }
 
 #[cfg(all(test, feature = "hostsim"))]
